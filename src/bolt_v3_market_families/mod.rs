@@ -112,6 +112,9 @@ pub struct MarketSelectionTarget<'a> {
     pub family_key: &'a str,
     pub underlying_asset: &'a str,
     pub cadence_seconds: i64,
+    /// Static binary-event market slug compatibility slot. Updown
+    /// ignores this field and derives its slug token from cadence
+    /// seconds in the family binding.
     pub cadence_slug_token: &'a str,
     pub static_condition_id: Option<&'a str>,
     pub static_yes_outcome: Option<&'a str>,
@@ -203,8 +206,11 @@ pub struct TargetRuntimeFields {
     pub underlying_asset: String,
     pub cadence_seconds: i64,
     pub cadence_seconds_source_field: &'static str,
+    /// Computed by updown family bindings from cadence seconds; never
+    /// loaded from taker strategy config.
     pub cadence_slug_token: String,
     pub market_selection_rule: String,
+    pub static_market_slug: Option<String>,
     pub static_condition_id: Option<String>,
     pub static_yes_outcome: Option<String>,
     pub static_no_outcome: Option<String>,
@@ -1528,7 +1534,6 @@ mod tests {
             rotating_market_family = "updown"
             underlying_asset = "CONFIGURED_ASSET"
             cadence_secs = -1
-            cadence_slug_token = "configuredwindow"
             market_selection_rule = "active_or_next"
             retry_interval_secs = 1
             blocked_after_secs = 1

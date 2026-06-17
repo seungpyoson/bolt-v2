@@ -29,7 +29,6 @@ pub(super) fn valid_raw_config() -> Value {
         rotating_market_family = "updown"
         underlying_asset = "CONFIGURED_ASSET"
         cadence_seconds = 300
-        cadence_slug_token = "configuredwindow"
         market_selection_rule = "active_or_next"
         retry_interval_seconds = 5
         blocked_after_seconds = 60
@@ -528,7 +527,6 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             rotating_market_family: "updown".to_string(),
             underlying_asset: "CONFIGURED_ASSET".to_string(),
             cadence_seconds: 300,
-            cadence_slug_token: "configuredwindow".to_string(),
             market_selection_rule: "active_or_next".to_string(),
             retry_interval_seconds: 5,
             blocked_after_seconds: 60,
@@ -537,6 +535,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
             resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
             realized_volatility_surface_id: "<surface_id>".to_string(),
+            static_market_slug: None,
             static_condition_id: None,
             static_yes_outcome: None,
             static_no_outcome: None,

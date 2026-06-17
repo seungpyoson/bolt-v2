@@ -141,7 +141,6 @@ fn hyperliquid_updown_target_plan() -> MarketIdentityPlan {
         execution_client_id: "hyperliquid_perps".to_string(),
         underlying_asset: "BTC".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "window".to_string(),
     });
     plan
 }

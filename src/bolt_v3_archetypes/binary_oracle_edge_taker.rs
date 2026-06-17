@@ -633,12 +633,12 @@ pub fn raw_taker_config(
         "cadence_seconds",
         cadence_seconds,
     )?;
-    insert_string(&mut table, "cadence_slug_token", target.cadence_slug_token);
     insert_string(
         &mut table,
         "market_selection_rule",
         target.market_selection_rule,
     );
+    insert_optional_string(&mut table, "static_market_slug", target.static_market_slug);
     insert_optional_string(
         &mut table,
         "static_condition_id",

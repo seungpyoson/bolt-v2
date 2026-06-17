@@ -1337,8 +1337,8 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     assert_eq!(
         slugs,
         vec![
-            "configured_asset-updown-configuredwindow-600".to_string(),
-            "configured_asset-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-5m-600".to_string(),
+            "configured_asset-updown-5m-900".to_string(),
         ],
         "provider filter slug ordering must be [current, next]"
     );
@@ -1352,7 +1352,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     // Build three strategies whose declaration sequence is deliberately
     // NON-MONOTONIC across every likely accidental sort key
     // (strategy_instance_id, configured_target_id, underlying_asset,
-    // cadence_secs, cadence_slug_token). Any accidental `sort_by`
+    // cadence_secs). Any accidental `sort_by`
     // inside the binding layer would re-order at least one index and
     // trip a per-index slug assertion below.
     let mut second = loaded.strategies[0].clone();
@@ -1371,11 +1371,6 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
             toml::Value::String("ZETA".to_string()),
         );
         set_target_field(first, "cadence_secs", toml::Value::Integer(900));
-        set_target_field(
-            first,
-            "cadence_slug_token",
-            toml::Value::String("quarterhour".to_string()),
-        );
     }
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
     set_target_field(
@@ -1389,11 +1384,6 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         toml::Value::String("ALPHA".to_string()),
     );
     set_target_field(&mut second, "cadence_secs", toml::Value::Integer(300));
-    set_target_field(
-        &mut second,
-        "cadence_slug_token",
-        toml::Value::String("shortwindow".to_string()),
-    );
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
     set_target_field(
@@ -1407,11 +1397,6 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         toml::Value::String("MIKE".to_string()),
     );
     set_target_field(&mut third, "cadence_secs", toml::Value::Integer(3600));
-    set_target_field(
-        &mut third,
-        "cadence_slug_token",
-        toml::Value::String("hourwindow".to_string()),
-    );
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);
@@ -1448,24 +1433,24 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     assert_eq!(
         data.filters[0].market_slugs(),
         Some(vec![
-            "zeta-updown-quarterhour-7200".to_string(),
-            "zeta-updown-quarterhour-8100".to_string(),
+            "zeta-updown-15m-7200".to_string(),
+            "zeta-updown-15m-8100".to_string(),
         ]),
         "filters[0] must correspond to declared strategy [0] (zeta)"
     );
     assert_eq!(
         data.filters[1].market_slugs(),
         Some(vec![
-            "alpha-updown-shortwindow-7200".to_string(),
-            "alpha-updown-shortwindow-7500".to_string(),
+            "alpha-updown-5m-7200".to_string(),
+            "alpha-updown-5m-7500".to_string(),
         ]),
         "filters[1] must correspond to declared strategy [1] (alpha)"
     );
     assert_eq!(
         data.filters[2].market_slugs(),
         Some(vec![
-            "mike-updown-hourwindow-7200".to_string(),
-            "mike-updown-hourwindow-10800".to_string(),
+            "mike-updown-1h-7200".to_string(),
+            "mike-updown-1h-10800".to_string(),
         ]),
         "filters[2] must correspond to declared strategy [2] (mike)"
     );
@@ -1697,8 +1682,8 @@ fn provider_binding_composes_updown_outcome_group_and_static_filters_for_same_cl
     assert_eq!(
         data.filters[0].market_slugs(),
         Some(vec![
-            "configured_asset-updown-configuredwindow-600".to_string(),
-            "configured_asset-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-5m-600".to_string(),
+            "configured_asset-updown-5m-900".to_string(),
         ]),
         "updown filters must stay first"
     );
@@ -1839,8 +1824,8 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     assert_eq!(
         filter.market_slugs(),
         Some(vec![
-            "configured_asset-updown-configuredwindow-600".to_string(),
-            "configured_asset-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-5m-600".to_string(),
+            "configured_asset-updown-5m-900".to_string(),
         ]),
         "first market_slugs() call must reflect counter=601"
     );
@@ -1851,8 +1836,8 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     assert_eq!(
         filter.market_slugs(),
         Some(vec![
-            "configured_asset-updown-configuredwindow-900".to_string(),
-            "configured_asset-updown-configuredwindow-1200".to_string(),
+            "configured_asset-updown-5m-900".to_string(),
+            "configured_asset-updown-5m-1200".to_string(),
         ]),
         "second market_slugs() call must reflect counter=901; \
          caching the slug list would fail this assertion"

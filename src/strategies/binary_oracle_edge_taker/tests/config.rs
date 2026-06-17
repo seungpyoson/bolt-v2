@@ -838,6 +838,10 @@ fn builder_accepts_static_binary_event_market_family_with_configured_outcomes() 
         config.static_condition_id.as_deref(),
         Some("condition-sample-event")
     );
+    assert_eq!(
+        config.static_market_slug.as_deref(),
+        Some("will-sample-event-resolve-yes")
+    );
     assert_eq!(config.static_yes_outcome.as_deref(), Some("Yes"));
     assert_eq!(config.static_no_outcome.as_deref(), Some("No"));
     assert_eq!(
@@ -911,8 +915,8 @@ fn builder_rejects_static_event_fields_for_non_static_family() {
     raw.as_table_mut()
         .expect("valid config must be a table")
         .insert(
-            "static_yes_outcome".to_string(),
-            Value::String("Yes".to_string()),
+            "static_market_slug".to_string(),
+            Value::String("will-sample-event-resolve-yes".to_string()),
         );
     let mut errors = Vec::new();
 
@@ -920,7 +924,7 @@ fn builder_rejects_static_event_fields_for_non_static_family() {
 
     find_error(
         &errors,
-        "strategies[0].config.static_yes_outcome",
+        "strategies[0].config.static_market_slug",
         "static_field_for_non_static_family",
     );
 }
@@ -942,7 +946,7 @@ fn static_binary_event_raw_config() -> Value {
     );
     table.insert("cadence_seconds".to_string(), Value::Integer(1));
     table.insert(
-        "cadence_slug_token".to_string(),
+        "static_market_slug".to_string(),
         Value::String("will-sample-event-resolve-yes".to_string()),
     );
     table.insert(

@@ -44,6 +44,7 @@ use bolt_v2::{
     bolt_v3_config::{ClientBlock, LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::{
         MarketIdentityPlan, market_identity_plan_from_config as plan_market_identity,
+        outcome_group::OutcomeGroupTargetPlan, static_binary_event::StaticBinaryEventTargetPlan,
     },
     bolt_v3_outcome_group_sources::{
         GammaQueryBlock, OutcomeGroupSourceConfig, OutcomeGroupSourceKind as SourceConfigKind,
@@ -1606,6 +1607,118 @@ fn provider_binding_projects_only_referenced_polymarket_outcome_group_sources() 
 }
 
 #[test]
+fn provider_binding_deduplicates_repeated_polymarket_outcome_group_sources() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    configure_outcome_group_strategy(
+        &mut loaded,
+        vec![
+            "poly_market_source".to_string(),
+            "poly_market_source".to_string(),
+        ],
+    );
+    loaded.root.outcome_group_sources = Some(vec![outcome_market_slug_source(
+        "poly_market_source",
+        &["home-market", "draw-market"],
+    )]);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("outcome-group plan should derive cleanly");
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should support duplicate target source references");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(
+        data.filters.len(),
+        1,
+        "duplicate group_sources entries must not produce duplicate NT filters"
+    );
+    assert_eq!(
+        data.filters[0].market_slugs(),
+        Some(vec!["home-market".to_string(), "draw-market".to_string()])
+    );
+}
+
+#[test]
+fn provider_binding_composes_updown_outcome_group_and_static_filters_for_same_client() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.outcome_group_sources = Some(vec![outcome_market_slug_source(
+        "poly_market_source",
+        &["home-market", "draw-market"],
+    )]);
+    let mut plan =
+        plan_market_identity(&loaded).expect("fixture updown plan should derive cleanly");
+    plan.push_target(OutcomeGroupTargetPlan {
+        strategy_instance_id: "complete-set-sample".to_string(),
+        configured_target_id: "complete-set-target".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
+        group_sources: vec!["poly_market_source".to_string()],
+    });
+    plan.push_target(StaticBinaryEventTargetPlan {
+        strategy_instance_id: "static-sample".to_string(),
+        configured_target_id: "static-target".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
+        event_key: "sample_event_2026".to_string(),
+        market_slug: "will-sample-static-resolve-yes".to_string(),
+        condition_id: Some("condition-sample-static".to_string()),
+        yes_outcome: "Yes".to_string(),
+        no_outcome: "No".to_string(),
+    });
+    let resolved = fixture_resolved_secrets();
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should compose all fetch-only filter families");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(
+        data.filters.len(),
+        3,
+        "same-client updown, outcome-group, and static targets should each install one fetch filter"
+    );
+    assert_eq!(
+        data.filters[0].market_slugs(),
+        Some(vec![
+            "configured_asset-updown-configuredwindow-600".to_string(),
+            "configured_asset-updown-configuredwindow-900".to_string(),
+        ]),
+        "updown filters must stay first"
+    );
+    assert_eq!(
+        data.filters[1].market_slugs(),
+        Some(vec!["home-market".to_string(), "draw-market".to_string()]),
+        "outcome-group filters must stay after updown filters"
+    );
+    assert_eq!(
+        data.filters[2].market_slugs(),
+        Some(vec!["will-sample-static-resolve-yes".to_string()]),
+        "static binary-event filters must stay after outcome-group filters"
+    );
+    assert!(
+        data.new_market_filter.is_none(),
+        "composed target filters must not enable broad new-market subscriptions"
+    );
+}
+
+#[test]
 fn provider_binding_projects_bounded_polymarket_gamma_query_source() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -1637,6 +1750,53 @@ fn provider_binding_projects_bounded_polymarket_gamma_query_source() {
     assert!(
         data.new_market_filter.is_none(),
         "Gamma query sources must not use NT new_market_filter"
+    );
+}
+
+#[test]
+fn provider_binding_accepts_polymarket_gamma_event_query_without_tag() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    configure_outcome_group_strategy(&mut loaded, vec!["poly_query_source".to_string()]);
+    let mut source = outcome_gamma_query_source("poly_query_source");
+    let query = source
+        .gamma_query
+        .as_mut()
+        .expect("gamma query source fixture");
+    query.event_query = Some("world cup".to_string());
+    query.tag_id = None;
+    loaded.root.outcome_group_sources = Some(vec![source]);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("outcome-group plan should derive cleanly");
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should support event-query bounded outcome_group targets");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(data.filters.len(), 1);
+    let event_queries = data.filters[0]
+        .event_queries()
+        .expect("event_query source should use NT EventQueryFilter");
+    assert_eq!(event_queries.len(), 1);
+    assert_eq!(event_queries[0].0, "world cup");
+    assert_eq!(event_queries[0].1.tag_id, None);
+    assert_eq!(
+        event_queries[0].1.sports_market_types,
+        Some("moneyline".to_string())
+    );
+    assert_eq!(event_queries[0].1.max_markets, Some(3));
+    assert!(
+        data.new_market_filter.is_none(),
+        "Gamma event-query sources must not use NT new_market_filter"
     );
 }
 

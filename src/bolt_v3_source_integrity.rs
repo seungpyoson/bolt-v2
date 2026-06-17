@@ -146,11 +146,11 @@ mod tests {
     // registry-owned canonical source stream. The full re-derivation trail
     // belongs in git history, not in this invariant comment.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "6f8be5d97ee18a9c69081f2b8ee90693c416568dc5cb93e0f1a05ef63a253c3b";
+        "a8b3bd91df628df049dd821ade52c4268c6b938ccc5b4f1979c0302cbcb671b4";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "5cfefe7da1e4d9fb405543e861bb0f0f3a8a82836d7370504a9305a364f2121c";
     const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "f2b453cb898c99a20519188111e54cece67f7d3d1b01427e5a79c320d6350d1c";
+        "bafe2f9f5c3030524b8887f1aae76557be3ccb413c3d62f860466c46e06b184f";
 
     // Bound comfortably above the strategy source-set canonical stream and the
     // submit_admission single file.
@@ -358,6 +358,8 @@ mod tests {
                 "src/bolt_v3_outcome_group_sources.rs".to_string(),
                 "src/bolt_v3_outcome_groups.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
+                "src/strategies/complete_set_arbitrage/tests/mod.rs".to_string(),
+                "src/strategies/complete_set_arbitrage/tests/shell.rs".to_string(),
                 "src/strategy_runtime_bindings.rs".to_string(),
             ],
             "Task 11 covers the HIP-4 normalizer root alongside shared outcome-group roots"

@@ -778,6 +778,7 @@ book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
+min_observed_targets = 10
 
 # Live Chainlink Data Streams resolution-strike (price-to-beat) source. One
 # point-in-time strike per window-open timestamp, delivered as an NT

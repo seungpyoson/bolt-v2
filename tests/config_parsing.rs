@@ -8597,6 +8597,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
         approval_id,
         approval_artifact_path,
         product_proof_artifact_path,
+        private_key_ssm_path,
         outcome_settlement_poll_secs,
     ) in [
         (
@@ -8605,6 +8606,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             "hl-standard-perps-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json",
+            "/bolt/hyperliquid/master_api_wallet/standard_perps/private_key",
             0,
         ),
         (
@@ -8613,6 +8615,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             "hl-spot-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json",
+            "/bolt/hyperliquid/master_api_wallet/spot/private_key",
             0,
         ),
         (
@@ -8621,6 +8624,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             "hl-hip3-builder-perps-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json",
+            "/bolt/hyperliquid/master_api_wallet/hip3_builder_perps/private_key",
             0,
         ),
         (
@@ -8629,6 +8633,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             "hl-hip4-outcomes-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json",
+            "/bolt/hyperliquid/master_api_wallet/hip4_outcomes/private_key",
             30,
         ),
     ] {
@@ -8710,7 +8715,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             secrets
                 .get(stringify!(private_key_ssm_path))
                 .and_then(toml::Value::as_str),
-            Some("/bolt/hyperliquid/master_api_wallet/private_key")
+            Some(private_key_ssm_path)
         );
         assert_eq!(
             secrets
@@ -8741,6 +8746,79 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             ClientId::from("polymarket_main"),
             "{} must not route to Hyperliquid until the live-submit packet is operator-approved",
             strategy.relative_path
+        );
+    }
+}
+
+#[test]
+fn root_config_resolves_hyperliquid_execution_surfaces_with_distinct_api_wallets() {
+    use std::collections::BTreeSet;
+
+    use bolt_v2::{
+        bolt_v3_config::load_bolt_v3_config, bolt_v3_secrets::resolve_bolt_v3_secrets_with,
+    };
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("root.toml should load with Hyperliquid execution clients");
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/polymarket/private-key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/polymarket/api-key" => Ok("polymarket-api-key".to_string()),
+        "/bolt/polymarket/api-secret" => Ok("YWJj".to_string()),
+        "/bolt/polymarket/api-passphrase" => Ok("polymarket-passphrase".to_string()),
+        "/bolt/binance/api-key" => Ok("binance-api-key".to_string()),
+        "/bolt/binance/api-secret" => {
+            Ok("MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string())
+        }
+        "/bolt/testnet/chainlink/api-key" => Ok("chainlink-api-key".to_string()),
+        "/bolt/testnet/chainlink/api-secret" => Ok("chainlink-api-secret".to_string()),
+        "/bolt/polyresearch/api-key" => Ok("polyresearch-api-key".to_string()),
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/standard_perps/private_key" => {
+            Ok("0x1111111111111111111111111111111111111111111111111111111111111111".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/spot/private_key" => {
+            Ok("0x2222222222222222222222222222222222222222222222222222222222222222".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/hip3_builder_perps/private_key" => {
+            Ok("0x3333333333333333333333333333333333333333333333333333333333333333".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/hip4_outcomes/private_key" => {
+            Ok("0x4444444444444444444444444444444444444444444444444444444444444444".to_string())
+        }
+        _ => Err("unexpected root SSM path"),
+    })
+    .expect("root Hyperliquid execution clients should resolve with distinct API wallets");
+
+    let mut private_key_paths = BTreeSet::new();
+    for (client_key, private_key_ssm_path) in [
+        (
+            "hyperliquid_standard_perps_execution",
+            "/bolt/hyperliquid/master_api_wallet/standard_perps/private_key",
+        ),
+        (
+            "hyperliquid_spot_execution",
+            "/bolt/hyperliquid/master_api_wallet/spot/private_key",
+        ),
+        (
+            "hyperliquid_hip3_execution",
+            "/bolt/hyperliquid/master_api_wallet/hip3_builder_perps/private_key",
+        ),
+        (
+            "hyperliquid_hip4_execution",
+            "/bolt/hyperliquid/master_api_wallet/hip4_outcomes/private_key",
+        ),
+    ] {
+        assert!(
+            resolved.clients.contains_key(client_key),
+            "{client_key} should resolve through the root SSM resolver"
+        );
+        assert!(
+            private_key_paths.insert(private_key_ssm_path),
+            "{private_key_ssm_path} must be unique per Hyperliquid execution surface"
         );
     }
 }

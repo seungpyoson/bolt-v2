@@ -810,7 +810,7 @@ ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
 [clients.hyperliquid_standard_perps_execution.secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/standard_perps/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
 [clients.hyperliquid_spot_execution]
@@ -843,7 +843,7 @@ ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
 [clients.hyperliquid_spot_execution.secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/spot/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
 [clients.hyperliquid_hip3_execution]
@@ -876,7 +876,7 @@ ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
 [clients.hyperliquid_hip3_execution.secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/hip3_builder_perps/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
 [clients.hyperliquid_hip4_execution]
@@ -909,7 +909,7 @@ ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 30
 
 [clients.hyperliquid_hip4_execution.secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/hip4_outcomes/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
 # Live Chainlink Data Streams resolution-strike (price-to-beat) source. One

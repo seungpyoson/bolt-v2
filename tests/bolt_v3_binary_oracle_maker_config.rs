@@ -15,6 +15,9 @@ fn valid_raw() -> toml::Value {
         mu_stale_window_ms = 60000
         mu_min_floor = 0.05
         requote_min_interval_ms = 500
+        market_portfolio_max_active_markets = 3
+        market_portfolio_total_bankroll_notional = 1500.0
+        market_portfolio_min_slot_notional = 100.0
     }
     .into()
 }
@@ -41,6 +44,9 @@ fn maker_config_rejects_missing_execution_client_id() {
         mu_stale_window_ms = 60000
         mu_min_floor = 0.05
         requote_min_interval_ms = 500
+        market_portfolio_max_active_markets = 3
+        market_portfolio_total_bankroll_notional = 1500.0
+        market_portfolio_min_slot_notional = 100.0
     }
     .into();
 

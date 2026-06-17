@@ -166,8 +166,8 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
             interval_end_ms: 2_000,
             now_ms: 1_000,
             reference_quotes: &quotes,
-            strike_price: 0.50,
-            seconds_to_market_end: 0,
+            strike_price: Some(0.50),
+            seconds_to_market_end: Some(0),
             realized_volatility_snapshot: &realized_volatility_snapshot,
             pricing_kurtosis: f64::NAN,
         },
@@ -244,8 +244,8 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         interval_end_ms: 2_000,
         now_ms: 1_500,
         reference_quotes: &quotes,
-        strike_price: 100.0,
-        seconds_to_market_end: 300,
+        strike_price: Some(100.0),
+        seconds_to_market_end: Some(300),
         realized_volatility_snapshot: &realized_volatility_snapshot,
         pricing_kurtosis: 0.25,
     };
@@ -257,8 +257,14 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         .fair_value
         .expect("fresh backup reference current price should price");
     assert_eq!(fair.spot_price, 101.0);
-    assert_eq!(fair.strike_price, input.strike_price);
-    assert_eq!(fair.seconds_to_market_end, input.seconds_to_market_end);
+    assert_eq!(
+        fair.strike_price,
+        input.strike_price.expect("fixture strike")
+    );
+    assert_eq!(
+        fair.seconds_to_market_end,
+        input.seconds_to_market_end.expect("fixture expiry")
+    );
     assert_eq!(fair.realized_vol, 1.5);
     assert_eq!(fair.pricing_kurtosis, input.pricing_kurtosis);
     assert_eq!(fair.reference_current_price, 101.0);
@@ -278,8 +284,8 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         fair.fair_probability_up,
         updown::fair_probability_up(&FairProbabilityInputs {
             spot_price: 101.0,
-            strike_price: input.strike_price,
-            seconds_to_market_end: input.seconds_to_market_end,
+            strike_price: input.strike_price.expect("fixture strike"),
+            seconds_to_market_end: input.seconds_to_market_end.expect("fixture expiry"),
             realized_vol: 1.5,
             pricing_kurtosis: input.pricing_kurtosis,
         })
@@ -336,6 +342,50 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     assert_eq!(
         rv_blocked.blocked_by,
         Some(MakerRuntimeReferenceFairValueBlockReason::RealizedVolNotReady)
+    );
+
+    let mut missing_strike_selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string(), "backup".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let missing_strike = maker_reference_current_price_fair_value_decision(
+        &mut missing_strike_selector,
+        MakerRuntimeReferenceFairValueInput {
+            strike_price: None,
+            ..input
+        },
+    );
+
+    assert_eq!(missing_strike.fair_value, None);
+    assert_eq!(
+        missing_strike.blocked_by,
+        Some(MakerRuntimeReferenceFairValueBlockReason::StrikePriceMissing)
+    );
+
+    let mut missing_expiry_selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string(), "backup".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let missing_expiry = maker_reference_current_price_fair_value_decision(
+        &mut missing_expiry_selector,
+        MakerRuntimeReferenceFairValueInput {
+            seconds_to_market_end: None,
+            ..input
+        },
+    );
+
+    assert_eq!(missing_expiry.fair_value, None);
+    assert_eq!(
+        missing_expiry.blocked_by,
+        Some(MakerRuntimeReferenceFairValueBlockReason::SecondsToExpiryMissing)
     );
 }
 

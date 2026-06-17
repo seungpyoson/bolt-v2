@@ -230,15 +230,15 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         interval_end_ms: 2_000,
         now_ms: 1_500,
         reference_quotes: &quotes,
-        strike_price: 100.0,
-        seconds_to_market_end: 300,
+        strike_price: Some(100.0),
+        seconds_to_market_end: Some(300),
         realized_volatility_snapshot: &realized_volatility_snapshot,
         pricing_kurtosis: 0.25,
     };
     let expected_fair_probability_up = updown::fair_probability_up(&FairProbabilityInputs {
         spot_price: 100.05,
-        strike_price: fair_input.strike_price,
-        seconds_to_market_end: fair_input.seconds_to_market_end,
+        strike_price: fair_input.strike_price.expect("fixture strike"),
+        seconds_to_market_end: fair_input.seconds_to_market_end.expect("fixture expiry"),
         realized_vol: 1.5,
         pricing_kurtosis: fair_input.pricing_kurtosis,
     })
@@ -275,8 +275,14 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
         .as_ref()
         .expect("fresh backup reference current price should price");
     assert_eq!(fair.spot_price, 100.05);
-    assert_eq!(fair.strike_price, fair_input.strike_price);
-    assert_eq!(fair.seconds_to_market_end, fair_input.seconds_to_market_end);
+    assert_eq!(
+        fair.strike_price,
+        fair_input.strike_price.expect("fixture strike")
+    );
+    assert_eq!(
+        fair.seconds_to_market_end,
+        fair_input.seconds_to_market_end.expect("fixture expiry")
+    );
     assert_eq!(fair.realized_vol, 1.5);
     assert_eq!(fair.pricing_kurtosis, fair_input.pricing_kurtosis);
     assert_eq!(fair.reference_current_price, 100.05);
@@ -369,6 +375,77 @@ fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_
     assert_eq!(blocked_budget.submit_commands_in_window(), 0);
     assert_eq!(blocked_budget.rest_cost_in_window(), 0);
     assert_eq!(blocked_writer.records().len(), 0);
+
+    for (reference_fair_value, expected_blocker) in [
+        (
+            MakerRuntimeReferenceFairValueInput {
+                strike_price: None,
+                ..fair_input
+            },
+            MakerRuntimeReferenceFairValueBlockReason::StrikePriceMissing,
+        ),
+        (
+            MakerRuntimeReferenceFairValueInput {
+                seconds_to_market_end: None,
+                ..fair_input
+            },
+            MakerRuntimeReferenceFairValueBlockReason::SecondsToExpiryMissing,
+        ),
+    ] {
+        let missing_input_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+        let missing_input_admission = Arc::new(BoltV3SubmitAdmissionState::new(
+            missing_input_writer.clone(),
+        ));
+        let mut missing_input_maker = BinaryOracleMaker::new(
+            maker_config(),
+            maker_context(missing_input_writer.clone(), missing_input_admission),
+        );
+        register_maker_for_order_factory(&mut missing_input_maker);
+        let mut missing_input_selector = ReferencePriceSelector::new(
+            TEST_REFERENCE_ASSET,
+            vec!["primary".to_string(), "backup".to_string()],
+            1,
+            100,
+            25,
+        )
+        .expect("selector fixture should be valid");
+        let mut missing_input_market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+        let mut missing_input_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+            .expect("well-formed rate config builds a budget");
+
+        let missing_input = missing_input_maker
+            .route_maker_runtime_reference_quote(
+                &mut missing_input_market,
+                &mut missing_input_budget,
+                &mut missing_input_selector,
+                BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
+                    reference_fair_value,
+                    quote_plan: quote_plan_inputs(reference_fair_value.family_key),
+                    quote_set: quote_set_inputs(),
+                    order_plan: order_plan_inputs(),
+                    submit_template: &maker_limit_post_only_template(),
+                    price_precision: 2,
+                    quantity_precision: 2,
+                    submit_order_prefix: "maker_submit",
+                    max_fee_bps: Decimal::ZERO,
+                    submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+                },
+            )
+            .expect("maker reference quote shared fair-value blocker should be a route outcome");
+
+        assert_eq!(missing_input.fair_value.fair_value, None);
+        assert_eq!(missing_input.fair_value.blocked_by, Some(expected_blocker));
+        assert_eq!(
+            missing_input.blocked_by,
+            Some(BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(expected_blocker))
+        );
+        assert_eq!(missing_input.quote, None);
+        assert_eq!(missing_input.orders, None);
+        assert_eq!(missing_input_market.market_state(), MarketState::Idle);
+        assert_eq!(missing_input_budget.submit_commands_in_window(), 0);
+        assert_eq!(missing_input_budget.rest_cost_in_window(), 0);
+        assert_eq!(missing_input_writer.records().len(), 0);
+    }
 
     let unsupported_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let unsupported_admission =

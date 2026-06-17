@@ -242,7 +242,8 @@ def assert_rust_probe_not_merge_proof() -> None:
     ci_text = CI_WORKFLOW.read_text(encoding="utf-8")
     if "pull_request:" in workflow_text or "\npush:" in workflow_text:
         raise AssertionError("Rust Probe must remain workflow_dispatch-only")
-    if "rust-probe" in ci_text.lower():
+    ci_text_without_operator_hint = ci_text.lower().replace("just rust-probe suggest", "")
+    if "rust-probe" in ci_text_without_operator_hint:
         raise AssertionError("Rust Probe must not be added to full CI or gate needs")
     policy_text = POLICY.read_text(encoding="utf-8")
     full_ci_index = policy_text.find("[ci_provenance.full_ci]")
@@ -263,6 +264,58 @@ def assert_parser_exposes_rust_probe() -> None:
         args = owner.build_parser().parse_args(["rust-probe", "--repo", "/tmp/repo", "--runner-tier", "policy-tier", "check-lib"])
     if args.runner_tier != "policy-tier":
         raise AssertionError(args)
+
+
+def assert_parser_help_exposes_suggest_and_examples() -> None:
+    owner = load_owner_module()
+    stdout = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(stdout):
+            owner.build_parser().parse_args(["rust-probe", "--help"])
+    except SystemExit as exc:
+        if exc.code != 0:
+            raise AssertionError(exc.code) from exc
+    else:
+        raise AssertionError("rust-probe --help should exit after printing help")
+    help_text = stdout.getvalue()
+    for fragment in (
+        "suggest",
+        "Examples:",
+        "just rust-probe suggest",
+        "just rust-probe check-test-target <test_target>",
+        "just rust-probe nextest-test-target-name <test_target> <test_name>",
+    ):
+        if fragment not in help_text:
+            raise AssertionError(f"rust-probe help missing {fragment!r}:\n{help_text}")
+
+
+def assert_validation_errors_point_to_suggest() -> None:
+    owner = load_owner_module()
+    error = owner.validate_rust_probe_selection("nextest-test-target", "", "")
+    if error is None or "just rust-probe suggest" not in error or "Examples:" not in error:
+        raise AssertionError(error)
+
+
+def assert_changed_files_produce_targeted_suggestions() -> None:
+    owner = load_owner_module()
+    suggestions = owner.rust_probe_suggestions(
+        [
+            "src/lib.rs",
+            "tests/build_script_git_head_rerun_paths.rs",
+            "Cargo.lock",
+            "docs/ci/ubicloud-cost-governance.md",
+        ]
+    )
+    expected = [
+        "just rust-probe check-lib",
+        "just rust-probe check-test-target build_script_git_head_rerun_paths",
+        "just rust-probe nextest-no-run-test-target build_script_git_head_rerun_paths",
+        "just rust-probe nextest-test-target build_script_git_head_rerun_paths",
+        "just rust-probe nextest-test-target-name build_script_git_head_rerun_paths <test_name>",
+    ]
+    for command in expected:
+        if command not in suggestions:
+            raise AssertionError((command, suggestions))
 
 
 def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
@@ -564,6 +617,9 @@ def main() -> int:
     assert_workflow_contract()
     assert_rust_probe_not_merge_proof()
     assert_parser_exposes_rust_probe()
+    assert_parser_help_exposes_suggest_and_examples()
+    assert_validation_errors_point_to_suggest()
+    assert_changed_files_produce_targeted_suggestions()
     assert_preconditions_are_pr_free_and_exact_upstream()
     assert_dispatch_uses_declared_workflow_inputs()
     assert_cancelled_probe_is_superseded_not_code_failure()

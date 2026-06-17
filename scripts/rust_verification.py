@@ -58,6 +58,20 @@ RUST_PROBE_MODES = (
     "nextest-test-target",
     "nextest-test-target-name",
 )
+RUST_PROBE_SUGGEST_COMMAND = "suggest"
+RUST_PROBE_COMMANDS = (RUST_PROBE_SUGGEST_COMMAND, *RUST_PROBE_MODES)
+RUST_PROBE_HELP_EPILOG = """\
+Examples:
+  just rust-probe suggest
+  just rust-probe check-lib
+  just rust-probe check-test-target <test_target>
+  just rust-probe nextest-no-run-test-target <test_target>
+  just rust-probe nextest-test-target <test_target>
+  just rust-probe nextest-test-target-name <test_target> <test_name>
+
+Rust Probe is targeted remote debugging feedback only. It is not merge proof.
+Use just verify-remote only for final exact-head full-CI proof.
+"""
 RUST_PROBE_INPUT_KEYS = (
     "runner_tier",
     "job_timeout_minutes",
@@ -2337,7 +2351,8 @@ def local_compile_refusal_payload(
         "command_name": command_name,
         "dry_run": False,
         "next_steps": [
-            "for targeted Rust debugging after cheap local checks: push the branch and run the smallest just rust-probe ... command",
+            "for targeted Rust debugging after cheap local checks: run: just rust-probe suggest",
+            "then commit and push the branch before running the smallest suggested just rust-probe command",
             "for merge proof: commit local changes",
             "for merge proof: push the branch",
             "for merge proof: ensure a draft or open pull request exists",
@@ -3229,32 +3244,131 @@ def new_probe_id() -> str:
     return f"rust-probe-{uuid.uuid4().hex}"
 
 
+def rust_probe_validation_hint(message: str) -> str:
+    return f"{message}\n\n{RUST_PROBE_HELP_EPILOG}"
+
+
 def validate_rust_probe_selection(mode: str, test_target: str, test_name: str) -> str | None:
     target_regex = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
     name_regex = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_:.@/-]*$")
+    if mode == RUST_PROBE_SUGGEST_COMMAND:
+        if test_target or test_name:
+            return rust_probe_validation_hint("suggest does not accept test_target or test_name")
+        return None
     if mode == "check-lib":
         if test_target:
-            return "test_target is forbidden for mode check-lib"
+            return rust_probe_validation_hint("test_target is forbidden for mode check-lib")
         if test_name:
-            return "test_name is forbidden for mode check-lib"
+            return rust_probe_validation_hint("test_name is forbidden for mode check-lib")
         return None
     if mode in {"check-test-target", "nextest-no-run-test-target", "nextest-test-target"}:
         if not test_target:
-            return f"test_target is required for mode {mode}"
+            return rust_probe_validation_hint(f"test_target is required for mode {mode}")
         if test_name:
-            return f"test_name is forbidden for mode {mode}"
+            return rust_probe_validation_hint(f"test_name is forbidden for mode {mode}")
     elif mode == "nextest-test-target-name":
         if not test_target:
-            return "test_target is required for mode nextest-test-target-name"
+            return rust_probe_validation_hint("test_target is required for mode nextest-test-target-name")
         if not test_name:
-            return "test_name is required for mode nextest-test-target-name"
+            return rust_probe_validation_hint("test_name is required for mode nextest-test-target-name")
     else:
-        return f"unsupported mode: {mode}"
+        return rust_probe_validation_hint(f"unsupported mode: {mode}")
     if not target_regex.match(test_target):
-        return "test_target must be a safe Rust test target name"
+        return rust_probe_validation_hint("test_target must be a safe Rust test target name")
     if test_name and not name_regex.match(test_name):
-        return "test_name must be a safe nextest test name"
+        return rust_probe_validation_hint("test_name must be a safe nextest test name")
     return None
+
+
+def rust_probe_test_target_for_path(path: str) -> str | None:
+    normalized = path.strip().replace("\\", "/")
+    if not normalized:
+        return None
+    parsed = pathlib.PurePosixPath(normalized)
+    parts = parsed.parts
+    if len(parts) != 2 or parts[0] != "tests" or parsed.suffix != ".rs":
+        return None
+    return parsed.stem
+
+
+def rust_probe_suggestions(changed_files: list[str]) -> list[str]:
+    normalized = sorted({path.strip().replace("\\", "/") for path in changed_files if path.strip()})
+    targets = sorted(
+        {
+            target
+            for path in normalized
+            if (target := rust_probe_test_target_for_path(path)) is not None
+        }
+    )
+    suggestions: list[str] = []
+    lib_or_workspace_changed = any(
+        path == "Cargo.toml"
+        or path == "Cargo.lock"
+        or path == "build.rs"
+        or path.startswith("src/")
+        or path.startswith("crates/")
+        for path in normalized
+    )
+    if lib_or_workspace_changed:
+        suggestions.append("just rust-probe check-lib")
+    for target in targets:
+        suggestions.extend(
+            [
+                f"just rust-probe check-test-target {target}",
+                f"just rust-probe nextest-no-run-test-target {target}",
+                f"just rust-probe nextest-test-target {target}",
+                f"just rust-probe nextest-test-target-name {target} <test_name>",
+            ]
+        )
+    if suggestions:
+        return suggestions
+    return [
+        "No Rust source or top-level integration-test target was inferred from changed files.",
+        "just rust-probe check-lib",
+        "just rust-probe check-test-target <test_target>",
+        "just rust-probe nextest-test-target-name <test_target> <test_name>",
+    ]
+
+
+def rust_probe_changed_files(repo: pathlib.Path) -> tuple[list[str] | None, str | None]:
+    changed: set[str] = set()
+    working_tree, error = git_output(repo, "diff", "--name-only", "HEAD", "--")
+    if error is not None:
+        return None, error
+    changed.update(line for line in working_tree.splitlines() if line)
+    untracked, error = git_output(repo, "ls-files", "--others", "--exclude-standard")
+    if error is not None:
+        return None, error
+    changed.update(line for line in untracked.splitlines() if line)
+    upstream, error = git_output(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if error is None and upstream:
+        branch_diff, diff_error = git_output(repo, "diff", "--name-only", f"{upstream}...HEAD", "--")
+        if diff_error is None:
+            changed.update(line for line in branch_diff.splitlines() if line)
+    return sorted(changed), None
+
+
+def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    if args.runner_tier:
+        return verify_remote_fail("suggest does not accept --runner-tier because it does not dispatch a probe")
+    changed_files, error = rust_probe_changed_files(repo)
+    if error is not None or changed_files is None:
+        return verify_remote_fail(error or "unable to inspect changed files")
+    print("Rust Probe suggestions for targeted remote debugging:")
+    if changed_files:
+        print("changed files considered:")
+        for path in changed_files[:20]:
+            print(f"- {path}")
+        if len(changed_files) > 20:
+            print(f"- ... {len(changed_files) - 20} more")
+    else:
+        print("changed files considered: <none>")
+    print("commands:")
+    for suggestion in rust_probe_suggestions(changed_files):
+        print(f"- {suggestion}")
+    print("Rust Probe is not merge proof. For final exact-head full-CI proof: just verify-remote")
+    return 0
 
 
 def run_display_title(run: dict[str, Any]) -> str:
@@ -3441,6 +3555,8 @@ def wait_for_full_ci_run(
 
 def cmd_rust_probe(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
+    if args.mode == RUST_PROBE_SUGGEST_COMMAND:
+        return cmd_rust_probe_suggest(args)
     try:
         policy = load_policy(repo)
         probe_policy = remote_probe_policy(policy)
@@ -3558,6 +3674,11 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
     dispatch_config, error = ci_provenance_dispatch_config(repo)
     if error is not None or dispatch_config is None:
         return verify_remote_fail(error or "unable to inspect CI dispatch config")
+
+    print(
+        "verify-remote final-proof full CI: use just rust-probe suggest for targeted Rust debugging "
+        "before spending full CI."
+    )
 
     if bool(pr.get("isDraft")):
         is_fork, error = draft_pr_is_fork(repo, pr)
@@ -3910,10 +4031,12 @@ def build_parser() -> argparse.ArgumentParser:
     rust_probe = subparsers.add_parser(
         "rust-probe",
         description="Dispatch a bounded remote Rust Probe for debugging feedback; not merge proof.",
+        epilog=RUST_PROBE_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     rust_probe.add_argument("--repo", required=True)
     rust_probe.add_argument("--runner-tier")
-    rust_probe.add_argument("mode", choices=RUST_PROBE_MODES)
+    rust_probe.add_argument("mode", choices=RUST_PROBE_COMMANDS)
     rust_probe.add_argument("test_target", nargs="?")
     rust_probe.add_argument("test_name", nargs="?")
     rust_probe.set_defaults(func=cmd_rust_probe)

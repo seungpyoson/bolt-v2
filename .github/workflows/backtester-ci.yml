@@ -27,7 +27,10 @@ name: Backtester CI
 # events publish `backtester-gate-deferred` and defer the managed-heavy proof lanes. Only
 # `backtester-gate` is required-capable; `backtester-gate-deferred` is draft-only feedback and
 # must not be marked required. Marking the PR ready, dispatching the workflow manually, or pushing
-# to main still runs full backtester proof.
+# to main still runs full backtester proof. `bvs-fmt` remains cheap draft feedback and reports as
+# its own check; the deferred gate does not fold draft formatting failures into required proof.
+# Moving a ready PR back to draft does not rewrite a prior same-SHA `backtester-gate` result; the
+# GitHub draft state plus the non-required deferred context is the safety boundary.
 
 on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
@@ -53,6 +56,8 @@ on:
 concurrency:
   # Deferred and full PR runs intentionally use separate groups. Moving a ready PR back to draft
   # records an explicit deferred verdict without cancelling a full proof already in progress.
+  # Manual workflow_dispatch runs share one full-CI group per branch, so a newer manual proof
+  # cancels an older manual proof for that branch.
   group: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true

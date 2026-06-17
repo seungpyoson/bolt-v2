@@ -157,9 +157,9 @@ Verification:
 - `cargo test --locked --test hyperliquid_live_submit_artifact` - PASS, 17 tests
 - `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_` - PASS, 13 tests
 - `cargo test --locked --lib live_node_invalid_product_submit_proof_schema_does_not_spend_hyperliquid_approval_artifact` - PASS, 1 test
-- `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_hip4_execution_accepts_updown_market_family_target_after_consumed_approval` - PASS, 1 test
+- `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_hip4_accepts_updown_market_family_target_after_consumed_approval` - PASS, 1 test
 - `cargo test --locked --test bolt_v3_instrument_filters market_identity_plan_accepts_hyperliquid_static_instrument_target` - PASS, 1 test
-- `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_standard_perps_execution_accepts_static_instrument_target_after_consumed_approval` - PASS, 1 test
+- `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_standard_perps_accepts_static_instrument_target_after_consumed_approval` - PASS, 1 test
 - `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_static_instrument_target_surface_must_match_execution_surface` - PASS, 1 test
 - `cargo test --locked --lib live_node_static_target_surface_mismatch_does_not_spend_hyperliquid_approval_artifact` - PASS, 1 test
 - `cargo test --locked --lib trade_transport_config_keeps_only_proof_policy_client_without_strategies` - PASS, 1 test

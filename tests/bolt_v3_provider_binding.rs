@@ -418,7 +418,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     )
 }
 
-fn hyperliquid_hip4_execution_client_without_settlement_poll() -> ClientBlock {
+fn hyperliquid_hip4_client_without_settlement_poll() -> ClientBlock {
     data_only_client_from_toml(
         r#"
 venue = "HYPERLIQUID"
@@ -913,7 +913,7 @@ async fn provider_binding_reuses_hyperliquid_user_fees_across_instruments() {
 
 #[test]
 fn provider_binding_rejects_hip4_execution_without_settlement_poll() {
-    let client = hyperliquid_hip4_execution_client_without_settlement_poll();
+    let client = hyperliquid_hip4_client_without_settlement_poll();
     let errors = validate_client_block("hyperliquid_hip4", &client);
 
     assert!(

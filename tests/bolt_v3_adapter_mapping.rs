@@ -545,7 +545,7 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
 }
 
 #[test]
-fn hyperliquid_standard_perps_execution_requires_consumed_live_submit_approval() {
+fn hyperliquid_standard_perps_requires_consumed_live_submit_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -623,7 +623,7 @@ fn hyperliquid_data_maps_to_nt_market_data_adapter_without_execution_approval() 
 }
 
 #[test]
-fn hyperliquid_standard_perps_execution_maps_to_nt_after_consumed_approval() {
+fn hyperliquid_standard_perps_maps_to_nt_after_consumed_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -702,7 +702,7 @@ fn hyperliquid_standard_perps_execution_maps_to_nt_after_consumed_approval() {
 }
 
 #[test]
-fn hyperliquid_hip4_execution_accepts_updown_market_family_target_after_consumed_approval() {
+fn hyperliquid_hip4_accepts_updown_market_family_target_after_consumed_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_hip4();
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_hip4_approval();
@@ -769,7 +769,7 @@ fn hyperliquid_non_hip4_execution_rejects_updown_market_family_target() {
 }
 
 #[test]
-fn hyperliquid_hip4_execution_accepts_outcome_group_target_after_consumed_approval() {
+fn hyperliquid_hip4_accepts_outcome_group_target_after_consumed_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_hip4();
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_hip4_approval();
@@ -836,7 +836,7 @@ fn hyperliquid_non_hip4_execution_rejects_outcome_group_target() {
 }
 
 #[test]
-fn hyperliquid_standard_perps_execution_accepts_static_instrument_target_after_consumed_approval() {
+fn hyperliquid_standard_perps_accepts_static_instrument_target_after_consumed_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_standard_perps_approval();
@@ -993,7 +993,7 @@ fn hyperliquid_execution_requires_live_submit_block_for_active_surface() {
 }
 
 #[test]
-fn hyperliquid_spot_execution_requires_consumed_surface_approval() {
+fn hyperliquid_spot_requires_consumed_surface_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_spot();
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -1026,7 +1026,7 @@ fn hyperliquid_spot_execution_requires_consumed_surface_approval() {
 }
 
 #[test]
-fn hyperliquid_spot_execution_maps_to_nt_after_consumed_surface_approval() {
+fn hyperliquid_spot_maps_to_nt_after_consumed_surface_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_spot();
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_spot_approval();
@@ -1064,7 +1064,7 @@ fn hyperliquid_spot_execution_maps_to_nt_after_consumed_surface_approval() {
 }
 
 #[test]
-fn hyperliquid_hip3_execution_maps_to_nt_after_consumed_surface_approval() {
+fn hyperliquid_hip3_maps_to_nt_after_consumed_surface_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_hip3();
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_hip3_approval();
@@ -1095,7 +1095,7 @@ fn hyperliquid_hip3_execution_maps_to_nt_after_consumed_surface_approval() {
 }
 
 #[test]
-fn hyperliquid_hip4_execution_requires_positive_settlement_poll() {
+fn hyperliquid_hip4_requires_positive_settlement_poll() {
     let loaded = fixture_loaded_config_with_hyperliquid_hip4_without_settlement_poll();
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_hip4_approval();
@@ -1132,7 +1132,7 @@ fn hyperliquid_hip4_execution_requires_positive_settlement_poll() {
 }
 
 #[test]
-fn hyperliquid_hip4_execution_maps_to_nt_after_consumed_surface_approval() {
+fn hyperliquid_hip4_maps_to_nt_after_consumed_surface_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_hip4();
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_hip4_approval();

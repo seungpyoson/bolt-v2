@@ -114,8 +114,8 @@ impl MakerBacktestGateBlocker {
             Self::MissingUnderlyingSpotCausalJoin => "underlying_spot_causal_join",
             Self::NetEdgeNotPositive => "net_score_micros",
             Self::MissingStatisticalSignificance => "statistical_significance",
-            Self::MissingPassiveFillPowerFloor => "passive_fill_power_floor",
-            Self::MissingResolvedMarketCorpusFloor => "resolved_market_corpus_floor",
+            Self::MissingPassiveFillPowerFloor => "passive_fill_count",
+            Self::MissingResolvedMarketCorpusFloor => "resolved_market_count",
             Self::MissingSharedFairValuePricing => "shared_fair_value_pricing",
             Self::MissingSharedSettlementPrimitive => "shared_settlement_primitive",
         }
@@ -182,10 +182,10 @@ impl MakerBacktestGateBlocker {
                 "must confirm statistical significance for net edge > 0"
             }
             Self::MissingPassiveFillPowerFloor => {
-                "must confirm the passive-fill power floor was met"
+                "must meet a non-zero pre-registered passive-fill count floor"
             }
             Self::MissingResolvedMarketCorpusFloor => {
-                "must confirm the resolved-market corpus floor was met"
+                "must meet a non-zero pre-registered resolved-market count floor"
             }
             Self::MissingSharedFairValuePricing => {
                 "must confirm shared fair-value pricing was used"

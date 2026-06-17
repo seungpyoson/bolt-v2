@@ -11,7 +11,7 @@
 //! catalog, fills, and results.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     str::FromStr,
     sync::{Arc, Mutex},
@@ -21,7 +21,8 @@ use anyhow::{Context, Result, bail, ensure};
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
     bolt_v3_config::{
-        BacktestConfigOverrideReport, apply_backtest_config_override, load_bolt_v3_config,
+        BacktestConfigOverrideReport, LoadedStrategy, apply_backtest_config_override,
+        load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
@@ -492,6 +493,64 @@ struct AddedManifestStrategy {
     run_guard_writer: Option<Arc<BacktestDecisionEvidenceWriter>>,
 }
 
+fn register_backtest_data_clients(
+    engine: &mut BacktestEngine,
+    client_ids: impl IntoIterator<Item = ClientId>,
+) {
+    for client_id in client_ids {
+        engine.add_data_client_if_not_exists(client_id);
+    }
+}
+
+fn manifest_backtest_data_client_ids(manifest: &BacktestingRunManifest) -> BTreeSet<ClientId> {
+    let mut client_ids = BTreeSet::new();
+    for input in &manifest.catalog_inputs {
+        if let Some(client_id) = input.client_id.as_deref() {
+            client_ids.insert(ClientId::from(client_id));
+        }
+    }
+    for input in &manifest.reconstructed_reference_current_price {
+        client_ids.insert(ClientId::from(input.client_id.as_str()));
+    }
+    client_ids
+}
+
+fn effective_taker_subscription_data_client_ids(
+    strategy: &LoadedStrategy,
+    realized_volatility_runtime: &RealizedVolSurfaceRuntime,
+) -> BTreeSet<ClientId> {
+    let mut client_ids = BTreeSet::new();
+    for signal in strategy.config.signal_data.values() {
+        client_ids.insert(ClientId::from(signal.data_client_id.as_str()));
+    }
+    if let Some(resolution_data) = &strategy.config.resolution_data {
+        client_ids.insert(ClientId::from(resolution_data.data_client_id.as_str()));
+    }
+    if let Some(reference_current_price) = &strategy.config.reference_current_price {
+        for source_id in &reference_current_price.source_order {
+            let Some(source) = reference_current_price.sources.get(source_id) else {
+                continue;
+            };
+            if source.enabled {
+                client_ids.insert(ClientId::from(source.client_id.as_str()));
+            }
+        }
+    }
+    if let Some(surface_id) = strategy.config.realized_volatility_surface_id.as_deref() {
+        for (_, client_id) in realized_volatility_runtime
+            .quote_subscription_requests_for_surface(surface_id)
+            .into_iter()
+            .chain(realized_volatility_runtime.trade_subscription_requests_for_surface(surface_id))
+            .chain(realized_volatility_runtime.index_subscription_requests_for_surface(surface_id))
+        {
+            if let Some(client_id) = client_id {
+                client_ids.insert(client_id);
+            }
+        }
+    }
+    client_ids
+}
+
 /// Add the manifest-selected compiled Rust strategy to the engine.
 ///
 /// Only registered compiled Rust strategies are admissible; the manifest is
@@ -590,11 +649,14 @@ fn add_manifest_strategy(
                         })?;
                     let raw_config = raw_taker_config(loaded_strategy, &loaded)
                         .context("build raw taker config from overlaid production config")?;
-                    let runtime = Arc::new(Mutex::new(
-                        RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
-                            .map_err(|error| anyhow::anyhow!("{error}"))
-                            .context("build realized-volatility runtime from overlaid config")?,
-                    ));
+                    let runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
+                        .map_err(|error| anyhow::anyhow!("{error}"))
+                        .context("build realized-volatility runtime from overlaid config")?;
+                    register_backtest_data_clients(
+                        engine,
+                        effective_taker_subscription_data_client_ids(loaded_strategy, &runtime),
+                    );
+                    let runtime = Arc::new(Mutex::new(runtime));
                     (raw_config, Some(report), Some(runtime))
                 } else {
                     let raw_config =
@@ -790,6 +852,7 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         let engine = node
             .get_engine_mut(&manifest.run_id)
             .with_context(|| format!("no engine for run id {}", manifest.run_id))?;
+        register_backtest_data_clients(engine, manifest_backtest_data_client_ids(manifest));
         add_manifest_strategy(engine, manifest)?
     };
     if !reconstructed_reference_current_price_data.is_empty() {

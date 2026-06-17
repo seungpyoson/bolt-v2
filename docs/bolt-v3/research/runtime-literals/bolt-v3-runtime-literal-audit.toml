@@ -15900,10 +15900,10 @@ reason = "Stable maker backtest go-live evidence schema-field label used only to
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"full_net_scoring"'''
-context = '''Self::MissingFullNetScoring => "full_net_scoring",'''
+literal = '''"net_score_micros"'''
+context = '''Self::MissingFullNetScoring => "net_score_micros",'''
 classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+reason = "Stable maker backtest go-live score schema-field label used only to format startup-validation diagnostics; score component values remain TOML-owned in [parameters.backtest]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
@@ -16012,10 +16012,18 @@ reason = "Stable maker backtest go-live evidence schema-field label used only to
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"net_edge_positive"'''
-context = '''Self::NetEdgeNotPositive => "net_edge_positive",'''
+literal = '''"net_score_micros"'''
+context = '''Self::NetEdgeNotPositive => "net_score_micros",'''
 classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+reason = "Stable maker backtest go-live score schema-field label used only to format startup-validation diagnostics; score component values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''net_edge_positive: self.net_score_micros > 0,'''
+classification = "maker_backtest_go_live_score_lower_bound"
+reason = "Fail-closed lower bound requiring a positive reconciled maker backtest net score; the actual score remains TOML-owned in [parameters.backtest]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"

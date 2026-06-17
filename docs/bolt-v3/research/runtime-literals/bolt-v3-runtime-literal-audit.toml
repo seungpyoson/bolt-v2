@@ -15786,6 +15786,14 @@ classification = "strategy_runtime_validation_diagnostic_template"
 reason = "This formats maker backtest go-live validation diagnostics using schema-field labels supplied by bolt_v3_maker_go_live_gate; the evidence values remain TOML-owned in [parameters.backtest]."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"nt_backtest_node"'''
+context = '''const NT_BACKTEST_NODE_EXECUTION_MODEL: &str = "nt_backtest_node";'''
+classification = "bte_result_contract_execution_model"
+reason = "BTE BacktestResultContract execution_model discriminant required to prove NT BacktestNode replay; the observed execution_model value remains TOML-owned in [parameters.backtest.result_contract_replay]."
+
+[[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
 literal = '''"verdict"'''
@@ -15964,34 +15972,34 @@ reason = "Stable maker backtest go-live evidence schema-field label used only to
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"trade_ticks_present"'''
-context = '''Self::MissingTradeTicks => "trade_ticks_present",'''
-classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+literal = '''"result_contract_replay.catalog_data_types"'''
+context = '''Self::MissingTradeTicks => "result_contract_replay.catalog_data_types",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence schema-field label used only to format startup-validation diagnostics; the observed BTE catalog data types remain TOML-owned in [parameters.backtest.result_contract_replay]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"order_book_deltas_present"'''
-context = '''Self::MissingOrderBookDeltas => "order_book_deltas_present",'''
-classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+literal = '''"result_contract_replay.catalog_data_types"'''
+context = '''Self::MissingOrderBookDeltas => "result_contract_replay.catalog_data_types",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence schema-field label used only to format startup-validation diagnostics; the observed BTE catalog data types remain TOML-owned in [parameters.backtest.result_contract_replay]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"queue_position_enabled"'''
-context = '''Self::QueuePositionDisabled => "queue_position_enabled",'''
-classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+literal = '''"result_contract_replay.venue_queue_position"'''
+context = '''Self::QueuePositionDisabled => "result_contract_replay.venue_queue_position",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence schema-field label used only to format startup-validation diagnostics; the observed BTE queue-position flag remains TOML-owned in [parameters.backtest.result_contract_replay]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"nt_execution_model_used"'''
-context = '''Self::MissingNtExecutionModel => "nt_execution_model_used",'''
-classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+literal = '''"result_contract_replay.execution_model"'''
+context = '''Self::MissingNtExecutionModel => "result_contract_replay.execution_model",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence schema-field label used only to format startup-validation diagnostics; the observed BTE execution_model remains TOML-owned in [parameters.backtest.result_contract_replay]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"

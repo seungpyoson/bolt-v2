@@ -1160,6 +1160,70 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         self.assertTrue((common / "clean-merged-quarantine").is_dir(),
                         "quarantine must be created when --allow-detached-removal proceeds")
 
+    def test_non_git_dir_exits_gracefully(self) -> None:
+        """Soundness-fix review (gemini P2 / learnings #9 degraded-state): invoked
+        from a directory that is NOT a git repo, the tool must exit 0 (hook-safe —
+        never break the git op) for the normal lanes and exit non-zero with a clean
+        diagnostic, NOT a Python traceback, for --doctor. Guards the
+        CleanMergedError-catch + resolve-inside-try fix against regression; the
+        pre-fix code raised an uncaught CleanMergedError (traceback, rc!=0)."""
+        nongit = pathlib.Path(tempfile.mkdtemp(prefix="cm-nongit-"))
+        self.addCleanup(shutil.rmtree, nongit, ignore_errors=True)
+        env = os.environ.copy()
+        env.update(GIT_ENV)
+        script = str(REPO_ROOT / "scripts" / "clean_merged_artifacts.py")
+
+        def run_in_nongit(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([sys.executable, script, *args], cwd=nongit,
+                                  env=env, capture_output=True, text=True, timeout=60)
+
+        # Normal hook invocations must never break the git op -> exit 0, no crash.
+        for args in (("--quiet",), ("--lane", "h", "--apply", "--quiet")):
+            proc = run_in_nongit(*args)
+            self.assertEqual(proc.returncode, 0,
+                             f"{args} from a non-git dir must exit 0; stderr={proc.stderr!r}")
+            self.assertNotIn("Traceback", proc.stdout + proc.stderr,
+                             f"{args} from a non-git dir must not crash with a traceback")
+        # --doctor surfaces a diagnostic (rc=1) but still must not crash.
+        doc = run_in_nongit("--doctor")
+        self.assertEqual(doc.returncode, 1,
+                         f"--doctor from a non-git dir should report a problem (rc=1); stderr={doc.stderr!r}")
+        self.assertNotIn("Traceback", doc.stdout + doc.stderr,
+                         "--doctor from a non-git dir must not crash with a traceback")
+
+    def test_detached_refusal_uses_distinct_action_and_no_sentinel_leak(self) -> None:
+        """Soundness-fix review (Kimi P2 #1 / Claude): a refused detached-HEAD
+        worktree must be recorded with the distinct action 'refused-detached-head'
+        (so audit/doctor queries can find it) and must NOT leak the internal
+        sentinel into the operator-facing reason. Asserts the structured record —
+        a stdout-only check would miss a sentinel leak, and the pre-existing refuse
+        test asserts only survival + no-quarantine, not the action label."""
+        _run(["git", "commit", "--allow-empty", "-m", "c1"], cwd=self.work)
+        c1_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
+        _run(["git", "commit", "--allow-empty", "-m", "c2"], cwd=self.work)
+        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        wt_path = self.tmp / "wt-detached-label"
+        _run(["git", "worktree", "add", "--detach", str(wt_path), c1_sha], cwd=self.work)
+        old_env = os.environ.copy()
+        os.environ.update(GIT_ENV)
+        try:
+            config = cm.load_config(self.work)
+            # apply=False: the eligibility refusal is recorded before any mutation,
+            # so a dry run exercises the label mapping without removing anything.
+            records = cm.run_lane_w(
+                self.work, config, apply=False, keep=set(), quiet=True,
+                discard_ignored=False, remove_nested=False, discard_hidden=False)
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+        refused = [r for r in records if r["action"] == "refused-detached-head"]
+        self.assertEqual(len(refused), 1,
+                         f"detached refusal must use the distinct 'refused-detached-head' "
+                         f"action label; records={records}")
+        for r in records:
+            self.assertNotIn("__REFUSED_DETACHED", r.get("reason", ""),
+                             f"internal sentinel must not leak into the reason: {r}")
+
 
 if __name__ == "__main__":
     import lane_governor

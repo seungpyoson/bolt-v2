@@ -49,6 +49,13 @@ HOOK_MARKER = f"# {SCRIPT_NAME}-managed"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHORT_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 LOCK_FILE = "clean-merged.lock"
+# Internal marker that _lane_w_eligible prefixes onto the reason for a refused
+# detached-HEAD worktree; run_lane_w strips it and maps it to the distinct
+# 'refused-detached-head' action. Single source of truth shared by the producer
+# and the consumer (round-soundness-fix review: a one-sided edit to a duplicated
+# literal would silently drop the label AND leak the marker into the
+# operator-facing reason).
+_REFUSED_DETACHED_SENTINEL = "__REFUSED_DETACHED_HEAD__:"
 
 
 def _parse_toml_flat(text: str) -> dict[str, Any]:
@@ -1109,8 +1116,8 @@ def _lane_w_eligible(
             # Round-soundness-fix review (Kimi P2 #1): distinct reason so Lane W
             # can label this as 'refused-detached-head' in the audit log instead
             # of burying it under the generic 'skipped-not-eligible' action.
-            return (False, "__REFUSED_DETACHED_HEAD__:"
-                    " detached-HEAD worktree refused "
+            return (False, _REFUSED_DETACHED_SENTINEL
+                    + " detached-HEAD worktree refused "
                     "(use --allow-detached-removal to override; "
                     "reflog-only commits are not preserved by the archive)", None)
         # detached: HEAD must be ancestor of trunk
@@ -1212,9 +1219,9 @@ def run_lane_w(
                     # detached-refusal sentinel to a distinct action label so
                     # doctor / audit-log queries can find these specifically
                     # rather than digging through generic skipped-not-eligible.
-                    if reason.startswith("__REFUSED_DETACHED_HEAD__:"):
+                    if reason.startswith(_REFUSED_DETACHED_SENTINEL):
                         action = "refused-detached-head"
-                        reason = reason[len("__REFUSED_DETACHED_HEAD__:"):].strip()
+                        reason = reason[len(_REFUSED_DETACHED_SENTINEL):].strip()
                     else:
                         action = "skipped-not-eligible"
                     records.append({"lane": "W", "branch": label, "tip_sha": wt.head,

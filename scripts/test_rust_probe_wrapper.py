@@ -122,6 +122,10 @@ def assert_remote_probe_policy_validation() -> None:
     bad = valid_remote_probe()
     bad["suggest_base_ref"] = "origin main"
     expect_policy_error(owner, bad, "suggest_base_ref")
+    for ref in ("--octopus", "-rev", "-"):
+        bad = valid_remote_probe()
+        bad["suggest_base_ref"] = ref
+        expect_policy_error(owner, bad, "suggest_base_ref")
 
     bad = valid_remote_probe()
     bad["separate_workspaces"]["backtesting_vertical_slice"]["path"] = "../outside"
@@ -371,6 +375,9 @@ def assert_changed_files_produce_targeted_suggestions() -> None:
     generic_suggestions = owner.rust_probe_suggestions([], separate_workspaces)
     if "No Rust source or top-level integration-test target was inferred from changed files." not in generic_suggestions:
         raise AssertionError(generic_suggestions)
+    docs_only_suggestions = owner.rust_probe_suggestions(["docs/ci/ubicloud-cost-governance.md"], separate_workspaces)
+    if "just rust-probe check-lib" in docs_only_suggestions:
+        raise AssertionError(docs_only_suggestions)
     nested_test_suggestions = owner.rust_probe_suggestions(["tests/support/mod.rs"], separate_workspaces)
     if any("support" in suggestion for suggestion in nested_test_suggestions):
         raise AssertionError(nested_test_suggestions)
@@ -383,8 +390,8 @@ def assert_changed_files_use_integration_base_not_feature_upstream() -> None:
     owner = load_owner_module()
     merge_base = "b" * 40
     outputs = {
-        ("diff", "--name-only", "HEAD", "--"): ("", None),
-        ("ls-files", "--others", "--exclude-standard"): ("", None),
+        ("diff", "--name-only", "HEAD", "--"): ("scripts/rust_verification.py\n", None),
+        ("ls-files", "--others", "--exclude-standard"): ("docs/new-rust-probe-note.md\n", None),
         ("merge-base", "origin/main", "HEAD"): (merge_base, None),
         ("diff", "--name-only", merge_base, "HEAD", "--"): ("src/lib.rs\ntests/config_parsing.rs\n", None),
     }
@@ -399,23 +406,49 @@ def assert_changed_files_use_integration_base_not_feature_upstream() -> None:
     original_git_output = owner.git_output
     try:
         owner.git_output = fake_git_output
-        changed, error = owner.rust_probe_changed_files(REPO_ROOT, "origin/main")
+        changed, error, notes = owner.rust_probe_changed_files(REPO_ROOT, "origin/main")
     finally:
         owner.git_output = original_git_output
     if error is not None:
         raise AssertionError(error)
-    if changed != ["src/lib.rs", "tests/config_parsing.rs"]:
+    if notes:
+        raise AssertionError(notes)
+    if changed != [
+        "docs/new-rust-probe-note.md",
+        "scripts/rust_verification.py",
+        "src/lib.rs",
+        "tests/config_parsing.rs",
+    ]:
         raise AssertionError((changed, calls))
     outputs[("merge-base", "origin/main", "HEAD")] = (None, "git exited 128")
+    outputs[("diff", "--name-only", "origin/main", "HEAD", "--")] = ("docs/fallback-diff.md\n", None)
     calls.clear()
     original_git_output = owner.git_output
     try:
         owner.git_output = fake_git_output
-        changed, error = owner.rust_probe_changed_files(REPO_ROOT, "origin/main")
+        changed, error, notes = owner.rust_probe_changed_files(REPO_ROOT, "origin/main")
+    finally:
+        owner.git_output = original_git_output
+    if error is not None:
+        raise AssertionError(error)
+    if not any("merge-base" in note and "direct" in note for note in notes):
+        raise AssertionError(notes)
+    if changed != [
+        "docs/fallback-diff.md",
+        "docs/new-rust-probe-note.md",
+        "scripts/rust_verification.py",
+    ]:
+        raise AssertionError((changed, error, calls))
+    outputs[("diff", "--name-only", "origin/main", "HEAD", "--")] = (None, "git exited 129")
+    calls.clear()
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = fake_git_output
+        changed, error, notes = owner.rust_probe_changed_files(REPO_ROOT, "origin/main")
     finally:
         owner.git_output = original_git_output
     if changed is not None or error is None or "could not resolve configured base ref 'origin/main'" not in error:
-        raise AssertionError((changed, error, calls))
+        raise AssertionError((changed, error, notes, calls))
 
 
 def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> None:
@@ -425,9 +458,9 @@ def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> No
     def fake_load_policy(_repo: pathlib.Path) -> dict:
         return {"remote_probe": valid_remote_probe()}
 
-    def fake_changed_files(repo: pathlib.Path, suggest_base_ref: str) -> tuple[list[str] | None, str | None]:
+    def fake_changed_files(repo: pathlib.Path, suggest_base_ref: str) -> tuple[list[str] | None, str | None, list[str]]:
         changed_calls.append((repo, suggest_base_ref))
-        return ["tests/config_parsing.rs"], None
+        return ["tests/config_parsing.rs"], None, ["using direct base-to-HEAD tree diff"]
 
     original_load_policy = owner.load_policy
     original_changed_files = owner.rust_probe_changed_files
@@ -449,6 +482,10 @@ def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> No
             raise AssertionError(output)
         if "Rust Probe is not merge proof" not in output:
             raise AssertionError(output)
+        if "base ref: origin/main" not in output or "fetched and current" not in output:
+            raise AssertionError(output)
+        if "using direct base-to-HEAD tree diff" not in output:
+            raise AssertionError(output)
         if changed_calls != [(REPO_ROOT, "origin/main")]:
             raise AssertionError(changed_calls)
         stderr = io.StringIO()
@@ -457,6 +494,14 @@ def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> No
                 types.SimpleNamespace(repo=str(REPO_ROOT), runner_tier="")
             )
         if result != 2 or "suggest does not accept --runner-tier" not in stderr.getvalue():
+            raise AssertionError((result, stderr.getvalue()))
+        owner.load_policy = lambda _repo: (_ for _ in ()).throw(owner.PolicyError("policy is invalid"))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = owner.cmd_rust_probe_suggest(
+                types.SimpleNamespace(repo=str(REPO_ROOT), runner_tier=None)
+            )
+        if result != 2 or "policy is invalid" not in stderr.getvalue():
             raise AssertionError((result, stderr.getvalue()))
     finally:
         owner.load_policy = original_load_policy

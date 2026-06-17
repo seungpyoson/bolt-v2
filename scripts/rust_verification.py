@@ -382,6 +382,7 @@ def validate_git_ref(value: str, key: str) -> None:
     if (
         invalid
         or value.startswith(("/", "."))
+        or value.startswith("-")
         or value.endswith(("/", "."))
         or "//" in value
         or ".." in value
@@ -3401,31 +3402,36 @@ def rust_probe_suggestions(changed_files: list[str], separate_workspaces: dict[s
         ]
     return [
         "No Rust source or top-level integration-test target was inferred from changed files.",
-        "just rust-probe check-lib",
-        "just rust-probe check-test-target <test_target>",
-        "just rust-probe nextest-test-target-name <test_target> <test_name>",
+        "No targeted Rust Probe command was inferred.",
     ]
 
 
-def rust_probe_changed_files(repo: pathlib.Path, suggest_base_ref: str) -> tuple[list[str] | None, str | None]:
+def rust_probe_changed_files(repo: pathlib.Path, suggest_base_ref: str) -> tuple[list[str] | None, str | None, list[str]]:
     changed: set[str] = set()
+    notes: list[str] = []
     working_tree, error = git_output(repo, "diff", "--name-only", "HEAD", "--")
     if error is not None:
-        return None, error
+        return None, error, notes
     changed.update(line for line in working_tree.splitlines() if line)
     untracked, error = git_output(repo, "ls-files", "--others", "--exclude-standard")
     if error is not None:
-        return None, error
+        return None, error, notes
     changed.update(line for line in untracked.splitlines() if line)
     merge_base, error = git_output(repo, "merge-base", suggest_base_ref, "HEAD")
     if error is not None or not merge_base:
-        detail = f": {error}" if error is not None else ""
-        return None, f"rust-probe suggest could not resolve configured base ref {suggest_base_ref!r}{detail}"
-    branch_diff, error = git_output(repo, "diff", "--name-only", merge_base, "HEAD", "--")
+        notes.append(
+            f"merge-base for configured base ref {suggest_base_ref!r} was unavailable; "
+            "using direct base-to-HEAD tree diff"
+        )
+        branch_diff, error = git_output(repo, "diff", "--name-only", suggest_base_ref, "HEAD", "--")
+        if error is not None:
+            return None, f"rust-probe suggest could not resolve configured base ref {suggest_base_ref!r}: {error}", notes
+    else:
+        branch_diff, error = git_output(repo, "diff", "--name-only", merge_base, "HEAD", "--")
     if error is not None:
-        return None, error
+        return None, error, notes
     changed.update(line for line in branch_diff.splitlines() if line)
-    return sorted(changed), None
+    return sorted(changed), None, notes
 
 
 def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
@@ -3436,10 +3442,13 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
         probe_policy = remote_probe_policy(load_policy(repo))
     except (OSError, PolicyError, FileNotFoundError) as exc:
         return verify_remote_fail(str(exc))
-    changed_files, error = rust_probe_changed_files(repo, probe_policy["suggest_base_ref"])
+    changed_files, error, notes = rust_probe_changed_files(repo, probe_policy["suggest_base_ref"])
     if error is not None or changed_files is None:
         return verify_remote_fail(error or "unable to inspect changed files")
     print("Rust Probe suggestions for targeted remote debugging:")
+    print(f"base ref: {probe_policy['suggest_base_ref']} (ensure this ref is fetched and current)")
+    for note in notes:
+        print(f"note: {note}")
     if changed_files:
         print("changed files considered:")
         for path in changed_files[:20]:

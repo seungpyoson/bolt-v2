@@ -1550,6 +1550,14 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         event_count_ledger_hash: Some(spec.event_count_ledger_hash),
         selected_asset_ids_hash: Some(spec.selected_asset_ids_hash),
         strategy: &spec.manifest.strategy,
+        execution_model: &spec.manifest.execution_model,
+        venue_queue_position: spec.manifest.venue.queue_position,
+        catalog_data_types: spec
+            .manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(spec.manifest),
         market_structure_fixture: market_structure_label(spec.manifest),
         fidelity_class: SourceProofFidelityClass::L2Replay,

@@ -21,7 +21,8 @@ use super::{
 };
 
 /// Result contract schema version.
-pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v1";
+pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v2";
+const RESULT_CONTRACT_V1: &str = "backtest-result-contract.v1";
 
 /// This crate's manifest, embedded at compile time so the recorded NautilusTrader
 /// revision is exactly the one this binary was built against. This crate's own
@@ -157,6 +158,12 @@ pub struct BacktestResultContract {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_asset_ids_hash: Option<String>,
     pub strategy_config_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub execution_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venue_queue_position: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub catalog_data_types: Vec<String>,
     pub run_purpose: String,
     pub market_structure_fixture: String,
     pub fidelity_class: SourceProofFidelityClass,
@@ -303,6 +310,17 @@ impl BacktestResultContract {
         if self.claim_limits.is_empty() {
             return Err(ResultContractError::MissingField("claim_limits"));
         }
+        if self.contract_version != RESULT_CONTRACT_V1 {
+            if self.execution_model.trim().is_empty() {
+                return Err(ResultContractError::MissingField("execution_model"));
+            }
+            if self.venue_queue_position.is_none() {
+                return Err(ResultContractError::MissingField("venue_queue_position"));
+            }
+            if self.catalog_data_types.is_empty() {
+                return Err(ResultContractError::MissingField("catalog_data_types"));
+            }
+        }
         if self.fidelity_class == SourceProofFidelityClass::L2Replay
             && self
                 .event_count_ledger_hash
@@ -397,6 +415,9 @@ pub struct ResultContractInputs<'a> {
     pub event_count_ledger_hash: Option<&'a str>,
     pub selected_asset_ids_hash: Option<&'a str>,
     pub strategy: &'a StrategySource,
+    pub execution_model: &'a str,
+    pub venue_queue_position: bool,
+    pub catalog_data_types: Vec<String>,
     pub run_purpose: &'a str,
     pub market_structure_fixture: &'a str,
     pub fidelity_class: SourceProofFidelityClass,
@@ -440,6 +461,9 @@ pub fn build_result_contract(
         event_count_ledger_hash: inputs.event_count_ledger_hash.map(str::to_string),
         selected_asset_ids_hash: inputs.selected_asset_ids_hash.map(str::to_string),
         strategy_config_hash: strategy_config_hash(inputs.strategy),
+        execution_model: inputs.execution_model.to_string(),
+        venue_queue_position: Some(inputs.venue_queue_position),
+        catalog_data_types: inputs.catalog_data_types,
         run_purpose: inputs.run_purpose.to_string(),
         market_structure_fixture: inputs.market_structure_fixture.to_string(),
         fidelity_class: inputs.fidelity_class,
@@ -507,6 +531,9 @@ mod tests {
             event_count_ledger_hash: None,
             selected_asset_ids_hash: None,
             strategy_config_hash: HASH_0.to_string(),
+            execution_model: "nt_backtest_node".to_string(),
+            venue_queue_position: Some(false),
+            catalog_data_types: vec!["TradeTick".to_string()],
             run_purpose: "normal".to_string(),
             market_structure_fixture: "perps-spot".to_string(),
             fidelity_class: SourceProofFidelityClass::TradeReplay,
@@ -596,6 +623,9 @@ features = ["streaming", "examples"]
             "conversion_manifest_hash",
             "conversion_checkpoint_hash",
             "catalog_metadata_hash",
+            "execution_model",
+            "venue_queue_position",
+            "catalog_data_types",
         ] {
             assert!(
                 json.get(field).is_some(),
@@ -690,6 +720,48 @@ features = ["streaming", "examples"]
             c.validate().unwrap_err(),
             ResultContractError::MissingField("claim_limits")
         );
+    }
+
+    #[test]
+    fn v2_result_contract_requires_manifest_execution_evidence() {
+        let mut c = contract();
+        c.execution_model.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("execution_model")
+        );
+
+        let mut c = contract();
+        c.venue_queue_position = None;
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("venue_queue_position")
+        );
+
+        let mut c = contract();
+        c.catalog_data_types.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("catalog_data_types")
+        );
+    }
+
+    #[test]
+    fn v1_result_contract_without_manifest_execution_evidence_still_deserializes() {
+        let mut value = serde_json::to_value(contract()).expect("serialize");
+        value["contract_version"] = serde_json::json!(RESULT_CONTRACT_V1);
+        value.as_object_mut().unwrap().remove("execution_model");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("venue_queue_position");
+        value.as_object_mut().unwrap().remove("catalog_data_types");
+
+        let parsed: BacktestResultContract =
+            serde_json::from_value(value).expect("deserialize v1 contract");
+        parsed
+            .validate()
+            .expect("v1 contract remains readable as historical evidence");
     }
 
     #[test]

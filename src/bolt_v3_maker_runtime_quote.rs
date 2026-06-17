@@ -7,14 +7,18 @@
 //! and no config defaults; callers supply already-resolved runtime inputs.
 
 use crate::{
+    bolt_v3_fair_value_pricing::{
+        FairValuePricingBlockReason, FairValuePricingConfig, FairValuePricingRequest,
+        FairValuePricingState, FastSpotObservation,
+    },
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerOrderPlan, MakerOrderPlanInput, maker_order_intents_from_quote_set,
     },
     bolt_v3_maker_quote_plan::{MakerQuotePlan, MakerQuotePlanInputs, plan_maker_quote_targets},
     bolt_v3_maker_quote_set::{QuoteSetDecision, QuoteSetInput, drive_binary_quote_set},
     bolt_v3_maker_reservation::BuyCommitment,
-    bolt_v3_market_families::{FairProbabilityInputs, fair_probability_up_for_family},
     bolt_v3_quote_lifecycle::MarketQuote,
+    bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_requote_budget::RequoteBudgetPair,
 };
@@ -55,7 +59,7 @@ pub struct MakerRuntimeReferenceFairValueInput<'a> {
     pub reference_quotes: &'a [ReferenceQuote],
     pub strike_price: f64,
     pub seconds_to_market_end: u64,
-    pub realized_vol: f64,
+    pub realized_volatility_snapshot: &'a RealizedVolSnapshot,
     pub pricing_kurtosis: f64,
 }
 
@@ -64,12 +68,16 @@ pub struct MakerRuntimeReferenceFairValue {
     pub source_id: String,
     pub reference_current_price_source_id: String,
     pub reference_current_price: f64,
+    pub reference_current_price_observed_ts_ms: u64,
     pub failed_over: bool,
     pub reference_current_price_failed_over: bool,
     pub spot_price: f64,
     pub strike_price: f64,
     pub seconds_to_market_end: u64,
     pub realized_vol: f64,
+    pub realized_vol_surface_id: Option<String>,
+    pub realized_vol_source_venue: Option<String>,
+    pub realized_vol_source_ts_ms: Option<u64>,
     pub pricing_kurtosis: f64,
     pub fair_probability_up: f64,
 }
@@ -83,6 +91,10 @@ pub struct MakerRuntimeReferenceFairValueDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MakerRuntimeReferenceFairValueBlockReason {
     ReferenceCurrentPriceUnavailable,
+    SpotPriceMissing,
+    StrikePriceMissing,
+    SecondsToExpiryMissing,
+    RealizedVolNotReady,
     FairProbabilityUnavailable,
 }
 
@@ -121,39 +133,105 @@ pub fn maker_reference_current_price_fair_value_decision(
         );
     };
 
-    let spot_price = selection.price();
-    let Some(fair_probability_up) = fair_probability_up_for_family(
-        input.family_key,
-        &FairProbabilityInputs {
-            spot_price,
-            strike_price: input.strike_price,
-            seconds_to_market_end: input.seconds_to_market_end,
-            realized_vol: input.realized_vol,
-            pricing_kurtosis: input.pricing_kurtosis,
-        },
-    ) else {
+    let source_id = selection.source_id().to_string();
+    let Some(selected_quote) =
+        selected_reference_quote_for_selection(&input, selection.source_id())
+    else {
         return fair_value_blocked(
-            MakerRuntimeReferenceFairValueBlockReason::FairProbabilityUnavailable,
+            MakerRuntimeReferenceFairValueBlockReason::ReferenceCurrentPriceUnavailable,
         );
     };
+    let reference_observation = FastSpotObservation {
+        venue: source_id.clone(),
+        price: selection.price(),
+        observed_ts_ms: selected_quote.observed_ts_ms(),
+    };
+    let mut pricing = FairValuePricingState::from_realized_volatility_surface_id(
+        input.realized_volatility_snapshot.surface_id.clone(),
+    );
+    pricing.observe_reference_current_price(&reference_observation);
+    pricing.observe_pricing_spot(&reference_observation);
+    pricing.observe_realized_vol_snapshot((*input.realized_volatility_snapshot).clone());
+    let config = FairValuePricingConfig {
+        realized_volatility_surface_id: input.realized_volatility_snapshot.surface_id.as_str(),
+        pricing_kurtosis: input.pricing_kurtosis,
+        market_family: input.family_key,
+    };
+    let request = FairValuePricingRequest {
+        now_ms: input.now_ms,
+        strike_price: Some(input.strike_price),
+        seconds_to_market_end: Some(input.seconds_to_market_end),
+    };
+    let pricing_result = match pricing.fair_value_pricing_at(&config, request) {
+        Ok(pricing_result) => pricing_result,
+        Err(blocked_by) => {
+            let reason = blocked_by
+                .into_iter()
+                .map(maker_fair_value_block_reason_from_shared)
+                .next()
+                .unwrap_or(MakerRuntimeReferenceFairValueBlockReason::FairProbabilityUnavailable);
+            return fair_value_blocked(reason);
+        }
+    };
 
-    let source_id = selection.source_id().to_string();
     let failed_over = selection.failed_over();
     MakerRuntimeReferenceFairValueDecision {
         fair_value: Some(MakerRuntimeReferenceFairValue {
             source_id: source_id.clone(),
             reference_current_price_source_id: source_id,
-            reference_current_price: spot_price,
+            reference_current_price: pricing_result.spot_price,
+            reference_current_price_observed_ts_ms: selected_quote.observed_ts_ms(),
             failed_over,
             reference_current_price_failed_over: failed_over,
-            spot_price,
-            strike_price: input.strike_price,
-            seconds_to_market_end: input.seconds_to_market_end,
-            realized_vol: input.realized_vol,
+            spot_price: pricing_result.spot_price,
+            strike_price: pricing_result.strike_price,
+            seconds_to_market_end: pricing_result.seconds_to_market_end,
+            realized_vol: pricing_result.realized_vol,
+            realized_vol_surface_id: pricing_result.realized_vol_surface_id,
+            realized_vol_source_venue: pricing_result.realized_vol_source_venue,
+            realized_vol_source_ts_ms: pricing_result.realized_vol_source_ts_ms,
             pricing_kurtosis: input.pricing_kurtosis,
-            fair_probability_up,
+            fair_probability_up: pricing_result.fair_probability_up,
         }),
         blocked_by: None,
+    }
+}
+
+fn selected_reference_quote_for_selection<'a>(
+    input: &MakerRuntimeReferenceFairValueInput<'a>,
+    source_id: &str,
+) -> Option<&'a ReferenceQuote> {
+    input
+        .reference_quotes
+        .iter()
+        .filter(|quote| {
+            quote.source_id() == source_id
+                && quote.observed_ts_ms() >= input.interval_start_ms
+                && quote.observed_ts_ms() <= input.interval_end_ms
+                && quote.observed_ts_ms() <= input.now_ms
+        })
+        .max_by_key(|quote| quote.observed_ts_ms())
+}
+
+fn maker_fair_value_block_reason_from_shared(
+    reason: FairValuePricingBlockReason,
+) -> MakerRuntimeReferenceFairValueBlockReason {
+    match reason {
+        FairValuePricingBlockReason::SpotPriceMissing => {
+            MakerRuntimeReferenceFairValueBlockReason::SpotPriceMissing
+        }
+        FairValuePricingBlockReason::StrikePriceMissing => {
+            MakerRuntimeReferenceFairValueBlockReason::StrikePriceMissing
+        }
+        FairValuePricingBlockReason::SecondsToExpiryMissing => {
+            MakerRuntimeReferenceFairValueBlockReason::SecondsToExpiryMissing
+        }
+        FairValuePricingBlockReason::RealizedVolNotReady => {
+            MakerRuntimeReferenceFairValueBlockReason::RealizedVolNotReady
+        }
+        FairValuePricingBlockReason::FairProbabilityUnavailable => {
+            MakerRuntimeReferenceFairValueBlockReason::FairProbabilityUnavailable
+        }
     }
 }
 

@@ -60,8 +60,8 @@ use crate::{
         ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderLiveSubmitArmingPreflight, ProviderLiveSubmitOrderLimits,
         ProviderProductSubmitProofArtifactRequest, ProviderSecretRequirement,
-        ProviderSecretResolveContext, ProviderSsmPathReference, ResolvedClientSecrets,
-        SsmSecretResolver,
+        ProviderSecretResolveContext, ProviderSharedSignerOwnerContext, ProviderSsmPathReference,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     strategies::registry::FeeProvider,
@@ -826,6 +826,70 @@ pub fn configured_secret_paths(
         });
     }
     Ok(paths)
+}
+
+pub fn allow_shared_signer_owner(context: ProviderSharedSignerOwnerContext<'_>) -> bool {
+    if context.existing_client_keys.len() != 1 {
+        return false;
+    }
+    let Some(existing_paths) = configured_signer_ssm_paths(
+        context.region,
+        context.existing_client_key,
+        context.existing_client,
+    ) else {
+        return false;
+    };
+    let Some(paths) =
+        configured_signer_ssm_paths(context.region, context.client_key, context.client)
+    else {
+        return false;
+    };
+    if existing_paths != paths {
+        return false;
+    }
+    let Some(existing_surface) = single_product_surface(context.existing_client) else {
+        return false;
+    };
+    let Some(surface) = single_product_surface(context.client) else {
+        return false;
+    };
+    matches!(
+        (existing_surface, surface),
+        (
+            HyperliquidProductSurface::StandardPerps,
+            HyperliquidProductSurface::Spot
+        ) | (
+            HyperliquidProductSurface::Spot,
+            HyperliquidProductSurface::StandardPerps
+        )
+    )
+}
+
+fn configured_signer_ssm_paths(
+    region: &str,
+    client_key: &str,
+    client: &ClientBlock,
+) -> Option<(String, String)> {
+    let context = ProviderSecretResolveContext {
+        client_key,
+        region,
+        client,
+    };
+    parse_secrets_config(&context).ok().map(|secrets| {
+        (
+            secrets.private_key_ssm_path,
+            secrets.account_address_ssm_path,
+        )
+    })
+}
+
+fn single_product_surface(client: &ClientBlock) -> Option<HyperliquidProductSurface> {
+    let execution = client.execution.clone()?;
+    let cfg: HyperliquidExecutionConfig = execution.try_into().ok()?;
+    let [surface] = cfg.product_surfaces.as_slice() else {
+        return None;
+    };
+    Some(*surface)
 }
 
 pub fn load_live_submit_approval(

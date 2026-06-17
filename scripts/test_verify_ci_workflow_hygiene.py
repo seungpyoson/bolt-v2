@@ -33,7 +33,7 @@ GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]
             fi
 """
 GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
             exit 0
           fi
 """
@@ -728,7 +728,7 @@ jobs:
               echo "deferred CI policy outside deferred draft PR context"
               exit 1
             fi
-            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then
@@ -1917,6 +1917,15 @@ def assert_backtester_detect_includes_runner_config() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
     if any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in good_errors):
         raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
+    missing_policy_script = replace_once_after(
+        workflow,
+        "scripts/command_understanding.py",
+        "scripts/ci_provenance.py",
+        "",
+    )
+    policy_script_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_policy_script})
+    if not any("backtester detect paths must include scripts/ci_provenance.py" in error for error in policy_script_errors):
+        raise AssertionError(f"backtester detector must reject missing ci_provenance.py path, got: {policy_script_errors}")
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:
@@ -1927,15 +1936,150 @@ def assert_backtester_ci_requires_pr_event_types() -> None:
     if any("pull_request types must include" in error for error in errors):
         raise AssertionError(f"backtester-ci workflow must satisfy PR type policy, got: {errors}")
     for missing_type, fragment in (
-        ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
-        ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
+        ("ready_for_review", "types: [opened, synchronize, reopened, converted_to_draft, edited]"),
+        ("edited", "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"),
+        ("converted_to_draft", "types: [opened, synchronize, reopened, ready_for_review, edited]"),
     ):
-        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]", fragment)
         bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
         if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
             raise AssertionError(
                 f"backtester-ci workflow must require {missing_type} in pull_request types, got: {bad_errors}"
             )
+
+
+def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/backtester-ci.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("backtester draft deferral" in error for error in errors):
+        raise AssertionError(f"backtester-ci workflow must satisfy draft deferral policy, got: {errors}")
+
+    missing_required_gate_note = replace_once(
+        workflow,
+        "`backtester-gate` is required-capable; `backtester-gate-deferred` is draft-only feedback and\n"
+        "# must not be marked required. ",
+        "",
+    )
+    missing_required_gate_note_errors = verifier.verify_repo_automation_texts({workflow_name: missing_required_gate_note})
+    if not any("backtester draft deferral must document that only backtester-gate should be required" in error for error in missing_required_gate_note_errors):
+        raise AssertionError(
+            f"backtester-ci workflow must document the required-capable gate context, got: {missing_required_gate_note_errors}"
+        )
+
+    required_gate_note_decoy = (
+        missing_required_gate_note + "\n# " + verifier.BACKTESTER_REQUIRED_GATE_COMMENT + "\n"
+    )
+    required_gate_note_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: required_gate_note_decoy})
+    if not any(
+        "backtester draft deferral must document that only backtester-gate should be required" in error
+        for error in required_gate_note_decoy_errors
+    ):
+        raise AssertionError(
+            "backtester-ci workflow must reject required-gate documentation decoys outside the header, "
+            f"got: {required_gate_note_decoy_errors}"
+        )
+
+    missing_policy_gate = replace_once(
+        workflow,
+        "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}",
+        "if: ${{ needs.detect.outputs.bvs_changed == 'true' }}",
+    )
+    missing_policy_errors = verifier.verify_repo_automation_texts({workflow_name: missing_policy_gate})
+    if not any("backtester draft deferral managed-heavy jobs must require full CI policy" in error for error in missing_policy_errors):
+        raise AssertionError(f"backtester-ci workflow must reject unmanaged heavy policy gates, got: {missing_policy_errors}")
+
+    missing_gate_message = replace_once(
+        workflow,
+        "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready",
+        "backtester proof deferred",
+    )
+    missing_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_gate_message})
+    if not any("backtester draft deferral gate must explain how to request proof" in error for error in missing_gate_errors):
+        raise AssertionError(f"backtester-ci workflow must reject vague deferred proof messages, got: {missing_gate_errors}")
+
+    static_gate_name = replace_once(workflow, "'backtester-gate-deferred'", "'backtester-gate'")
+    static_gate_errors = verifier.verify_repo_automation_texts({workflow_name: static_gate_name})
+    if not any("backtester draft deferral gate must publish backtester-gate-deferred" in error for error in static_gate_errors):
+        raise AssertionError(f"backtester-ci workflow must reject static deferred gate names, got: {static_gate_errors}")
+
+    for job, display_name in (("fmt", "bvs-fmt"), ("clippy", "bvs-clippy"), ("test", "bvs-test")):
+        result_check = (
+            f'          if [[ "${{{{ needs.{job}.result }}}}" != "success" ]]; then\n'
+            f'            echo "{display_name} did not succeed (${{{{ needs.{job}.result }}}})"\n'
+            "            exit 1\n"
+            "          fi\n"
+        )
+        missing_result = replace_once(workflow, result_check, "")
+        missing_result_errors = verifier.verify_repo_automation_texts({workflow_name: missing_result})
+        if not any(f"backtester draft deferral gate must require {job} success on full proof path" in error for error in missing_result_errors):
+            raise AssertionError(f"backtester-ci workflow must reject missing full-proof {job} gate checks, got: {missing_result_errors}")
+
+    broken_concurrency = replace_once(
+        replace_once(
+            workflow,
+            "format('bvs-pr-{0}-deferred', github.event.number)",
+            "format('bvs-pr-{0}', github.event.number)",
+        ),
+        "format('bvs-pr-{0}-full', github.event.number)",
+        "format('bvs-pr-{0}', github.event.number)",
+    )
+    broken_concurrency += "\n# format('bvs-pr-{0}-deferred', github.event.number)\n# format('bvs-pr-{0}-full', github.event.number)\n"
+    broken_concurrency_errors = verifier.verify_repo_automation_texts({workflow_name: broken_concurrency})
+    if not any("backtester draft deferral concurrency must split deferred PR runs" in error for error in broken_concurrency_errors):
+        raise AssertionError(f"backtester-ci workflow must reject broken concurrency even with comment decoys, got: {broken_concurrency_errors}")
+
+    missing_concurrency_action_filter = replace_once(
+        workflow,
+        '        && contains(fromJSON(\'["opened","synchronize","reopened","converted_to_draft","edited"]\'), github.event.action)\n'
+        "        && format('bvs-pr-{0}-deferred', github.event.number)",
+        "        && format('bvs-pr-{0}-deferred', github.event.number)",
+    )
+    missing_concurrency_action_filter_errors = verifier.verify_repo_automation_texts({workflow_name: missing_concurrency_action_filter})
+    if not any("backtester draft deferral concurrency must use the deferred draft action filter" in error for error in missing_concurrency_action_filter_errors):
+        raise AssertionError(
+            "backtester-ci workflow must reject concurrency groups that drift from the deferred draft action filter, got: "
+            f"{missing_concurrency_action_filter_errors}"
+        )
+
+    drifted_defer_run_context = replace_once(
+        workflow,
+        'defer_run_context="${{ github.event_name == \'pull_request\' && github.event.pull_request.draft == true && contains(fromJSON(\'["opened","synchronize","reopened","converted_to_draft","edited"]\'), github.event.action) && \'true\' || \'false\' }}"',
+        'defer_run_context="${{ github.event_name == \'pull_request\' && github.event.pull_request.draft == true && contains(fromJSON(\'["opened","synchronize","reopened","edited"]\'), github.event.action) && \'true\' || \'false\' }}"',
+    )
+    drifted_defer_run_context_errors = verifier.verify_repo_automation_texts({workflow_name: drifted_defer_run_context})
+    if not any("backtester draft deferral must use one deferred draft action list across gate and concurrency" in error for error in drifted_defer_run_context_errors):
+        raise AssertionError(
+            "backtester-ci workflow must reject mismatched deferred draft action lists, got: "
+            f"{drifted_defer_run_context_errors}"
+        )
+
+    missing_deferred_trigger_type = replace_once(
+        workflow,
+        "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+        "types: [synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+    )
+    missing_deferred_trigger_type_errors = verifier.verify_repo_automation_texts({workflow_name: missing_deferred_trigger_type})
+    if not any("backtester draft deferral pull_request types must include deferred actions: opened" in error for error in missing_deferred_trigger_type_errors):
+        raise AssertionError(
+            "backtester-ci workflow must reject deferred draft actions missing from pull_request types, got: "
+            f"{missing_deferred_trigger_type_errors}"
+        )
+
+    policy_drift_defer_actions = workflow.replace(
+        '["opened","synchronize","reopened","converted_to_draft","edited"]',
+        '["opened","synchronize","reopened","converted_to_draft","edited","assigned"]',
+    ).replace(
+        "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+        "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited, assigned]",
+    )
+    policy_drift_defer_action_errors = verifier.verify_repo_automation_texts({workflow_name: policy_drift_defer_actions})
+    if not any("backtester draft deferral action list must match ci_provenance defer policy actions" in error for error in policy_drift_defer_action_errors):
+        raise AssertionError(
+            "backtester-ci workflow must reject deferred draft actions not backed by ci_provenance policy, got: "
+            f"{policy_drift_defer_action_errors}"
+        )
 
 
 def assert_actionlint_rejects_stale_config_variables() -> None:
@@ -7704,6 +7848,7 @@ def main() -> int:
     assert_security_key_public_prefix_is_validated()
     assert_backtester_detect_includes_runner_config()
     assert_backtester_ci_requires_pr_event_types()
+    assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
     assert_ci_docs_pass_stub_requires_pr_event_types()

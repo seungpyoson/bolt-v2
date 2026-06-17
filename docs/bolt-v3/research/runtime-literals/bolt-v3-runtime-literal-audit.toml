@@ -39,6 +39,14 @@ reason = "This joins configured reference_data role names in a validation diagno
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''" or "'''
+context = '''.join(" or ")'''
+classification = "strategy_archetype_diagnostic_separator"
+reason = "This joins provider-owned allowed time-in-force labels in a validation diagnostic; it is not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"binary_oracle_entry_order_unsupported_shape"'''
 context = '''"binary_oracle_entry_order_unsupported_shape";'''
 classification = "strategy_archetype_validation_error_code"
@@ -171,22 +179,6 @@ literal = '''"activation_price"'''
 context = '''insert_float(&mut order_table, "activation_price", activation_price);'''
 classification = "strategy_runtime_schema_field"
 reason = "This is the NT trailing-stop activation price field projected from TOML into the runtime strategy config."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"entry_order"'''
-context = '''let mut errors = check_enabled_order_template(context, "entry_order", entry);'''
-classification = "strategy_runtime_validation_field"
-reason = "This labels the existing nested entry order table in enabled NT order-template validation diagnostics; the table values remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"exit_order"'''
-context = '''let mut errors = check_enabled_order_template(context, "exit_order", exit);'''
-classification = "strategy_runtime_validation_field"
-reason = "This labels the existing nested exit order table in enabled NT order-template validation diagnostics; the table values remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -363,14 +355,6 @@ literal = '''"forced_exit_order"'''
 context = '''"forced_exit_order",'''
 classification = "strategy_runtime_schema_field"
 reason = "This is the configured forced-exit NT order-template table projected from bolt-v3 TOML into the runtime strategy config."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"forced_exit_order"'''
-context = '''let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);'''
-classification = "strategy_runtime_validation_field"
-reason = "This field-name literal labels the TOML-owned forced-exit NT order-template during generic order-template validation."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -16622,4 +16606,3 @@ literal = '''"/gated_source_roots.rs"'''
 context = '''include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));'''
 classification = "source_canonicalization_codegen_include"
 reason = "Build-time include path literal: the build.rs-generated GATED_SOURCE_ROOTS file name under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
-

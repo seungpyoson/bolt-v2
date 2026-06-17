@@ -1,0 +1,115 @@
+{
+  "schema_version": "artifact-index-producer-iam-scope-proof.v2",
+  "task_id": "BACKTESTING_ENGINE-006",
+  "artifact_kind": "backtests",
+  "proof_id": "backtesting-engine-006-iam-scope-backtests-complete-cli-20260615",
+  "recorded_at_utc": "2026-06-15T06:50:07Z",
+  "aws_mutation_performed": true,
+  "credential_values_printed": false,
+  "transient_key_material_removed": true,
+  "iam_user": {
+    "user_name": "bolt-artifact-index-producer-backtests",
+    "arn": "arn:aws:iam::675819144420:user/bolt-artifact-index-producer-backtests",
+    "inline_policy_name": "ArtifactIndexProducerBacktests"
+  },
+  "ssm_parameter_paths": {
+    "access_key_id": "/bolt/artifact-index/producers/backtests/access-key-id",
+    "secret_access_key": "/bolt/artifact-index/producers/backtests/secret-access-key"
+  },
+  "ssm_parameter_types": {
+    "access_key_id": "SecureString",
+    "secret_access_key": "SecureString"
+  },
+  "policy_scope": {
+    "allowed_actions": [
+      "s3:GetObject",
+      "s3:PutObject"
+    ],
+    "allowed_resource_prefixes": [
+      "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/events/kind=backtests/*",
+      "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/snapshots/kind=backtests/*",
+      "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/pointers/kind=backtests/latest.json",
+      "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/v1/audit/epochs/*",
+      "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1/events/kind=backtests/*",
+      "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1/snapshots/kind=backtests/*",
+      "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1/pointers/kind=backtests/latest.json",
+      "arn:aws:s3:::bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1/audit/epochs/*"
+    ],
+    "must_not_include": [
+      "kind=raw",
+      "kind=nt_catalog",
+      "kind=source_proofs",
+      "kind=artifact_index",
+      "kind=research_analytics",
+      "kind=*"
+    ]
+  },
+  "prior_scoped_create_only_proof": {
+    "proof_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-scope-proof.backtesting-engine-006.backtests.2026-06-15.json",
+    "proof_file_sha256": "ca70d9720dd94094b1a79fbc6cbf084b3706a8cd2383629e6588c0fcbf50d85f",
+    "allowed_backtests_create_only_writes": 3,
+    "allowed_backtests_path_kinds": [
+      "event",
+      "snapshot",
+      "latest_pointer"
+    ],
+    "denied_artifact_kinds": [
+      "research_analytics"
+    ],
+    "denied_write_attempts": 3,
+    "denied_write_rejections": 3,
+    "violation_count": 0
+  },
+  "real_s3_scope_probe": {
+    "bucket": "bolt-parquet",
+    "root": "nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests/artifact-index/v1",
+    "allowed_backtests_writes": 4,
+    "allowed_backtests_path_kinds": [
+      "event_create_only",
+      "snapshot_create_only",
+      "audit_epoch_create_only",
+      "latest_pointer_update_if_match"
+    ],
+    "prior_pointer_etag_observed": true,
+    "final_pointer_etag_observed": true,
+    "latest_pointer_update_if_match_proven": true,
+    "stale_etag_update_rejected": true,
+    "denied_artifact_kinds": [
+      "raw",
+      "nt_catalog",
+      "source_proofs",
+      "artifact_index",
+      "research_analytics"
+    ],
+    "denied_path_kinds_per_artifact_kind": [
+      "event",
+      "snapshot",
+      "latest_pointer"
+    ],
+    "denied_write_attempts": 15,
+    "denied_write_rejections": 15,
+    "violation_count": 0,
+    "producer_iam_scope_proven": true
+  },
+  "combined_backtests_producer_evidence": {
+    "event_create_only_proven_under_scoped_credential": true,
+    "snapshot_create_only_proven_under_scoped_credential": true,
+    "audit_epoch_create_only_proven_under_scoped_credential": true,
+    "latest_pointer_create_only_proven_under_scoped_credential": true,
+    "latest_pointer_update_if_match_proven_under_scoped_credential": true,
+    "stale_etag_update_rejected_under_scoped_credential": true,
+    "all_non_backtests_kind_event_snapshot_pointer_writes_rejected": true,
+    "denied_write_rejections": 15,
+    "violation_count": 0,
+    "backtests_producer_iam_scope_proven": true
+  },
+  "local_rust_proof_runner": {
+    "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin artifact_index_commit_proof -- --spec specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof.backtesting-engine-006-iam-scope-backtests.2026-06-15.toml",
+    "refused": true,
+    "refusal_code": "local_compile_disabled",
+    "policy_result": "Repo local Rust policy refused compile-heavy cargo run; no cargo bypass or break-glass was used."
+  },
+  "claim_limit": "This proves the AWS IAM scope and S3 commit operations exercised for the backtests Artifact Index producer identity. It does not provision or prove separate producer identities for raw, nt_catalog, source_proofs, artifact_index, research_analytics, or any future Artifact Index kind.",
+  "bte_006_backtests_producer_iam_scope_can_close": true,
+  "bte_006_broad_task_closure_requires_scope_decision": true
+}

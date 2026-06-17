@@ -35,7 +35,8 @@
   "fidelity_class": "L2_REPLAY",
   "l2_replay_evidence": {
     "order_book_delta_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-nt-mapping-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=8fffd3d416128db6e04b155c6af6d8f3083bb4279dc79c6b3b24e6fc8547b68a",
-    "sufficient_snapshot_cadence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=109db55890bc17a06963cf415b9f9dc6c14982a5e624cd6e7fc8f93e97817965"
+    "sufficient_snapshot_cadence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=109db55890bc17a06963cf415b9f9dc6c14982a5e624cd6e7fc8f93e97817965",
+    "no_tick_size_change_universe_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json sha256=36e2af98cae120d3b1320d2a99ee6bbfda326ca3f9c3154cf1c52e45824a84a4 selected_first_proof_policy.selector_predicate"
   },
   "forbidden_claims": [
     "No canonical, production, or broad NT catalog/backtest input from this pending binary-option L2 candidate proof.",
@@ -89,6 +90,14 @@
       "evidence_ref": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-sample-inspection.polymarket-pmxt-v2-orderbook.2026-06-08.json sha256=109db55890bc17a06963cf415b9f9dc6c14982a5e624cd6e7fc8f93e97817965"
     }
   ],
+  "acceptance_scope": {
+    "planned_objects": 1,
+    "completed_objects": 1,
+    "failed_objects": 0,
+    "skipped_objects": 0,
+    "accepted_bytes": 361365244,
+    "selector_scope_violations": 0
+  },
   "gap_policy_id": "",
   "required_checks": {
     "source_access": {

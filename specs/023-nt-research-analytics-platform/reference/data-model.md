@@ -148,8 +148,8 @@ Research Analytics may write only these derived families under the
 - `datasets`: point-in-time research datasets.
 - `feature-tables`: point-in-time feature tables.
 - `experiment-results`: experiment metadata, metrics pointers, consumed BTE
-  result ids, and leakage reports.
-- `promotion-packages`: promotion package states and typed config artifacts.
+  result ids, leakage reports, verdict fields, and optional typed
+  promotion-config refs for real GO findings.
 
 Every RA-owned artifact records owner, schema version, source refs, source
 hashes, content hash, lifecycle state, and Artifact Index event behavior. RA

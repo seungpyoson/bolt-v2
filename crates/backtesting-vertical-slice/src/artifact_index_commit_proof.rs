@@ -858,12 +858,6 @@ fn write_report(
             )
         })?;
     }
-    let hash = content_hash(report)?;
+    let hash = sha256_hex(&bytes);
     Ok((path, hash, bytes.len() as u64))
-}
-
-fn content_hash(report: &ArtifactIndexCommitProofReport) -> Result<String> {
-    let bytes = serde_json::to_vec(report)
-        .context("serialize Artifact Index commit proof report for hash")?;
-    Ok(sha256_hex(&bytes))
 }

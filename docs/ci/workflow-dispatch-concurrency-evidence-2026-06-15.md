@@ -192,8 +192,9 @@ All commands passed on this branch after the workflow change.
 
 Remote exact-head evidence belongs in PR #737 status and review metadata rather
 than this file: amending this evidence file changes the PR head SHA. Before
-merge, verify the current PR head with `gh pr checks 737` and the repo remote
-gate (`just verify-remote`).
+merge, use `just rust-probe suggest` for targeted Rust debugging and verify the
+current PR head with `gh pr checks 737` plus the final-proof repo remote gate
+(`just verify-remote`).
 
 ## Follow-Up Measurement
 

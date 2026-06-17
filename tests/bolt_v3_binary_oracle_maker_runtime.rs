@@ -4,12 +4,14 @@ use anyhow::Result;
 use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
     bolt_v3_decision_evidence::BoltV3AdmissionOutcome,
+    bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason},
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::MakerOrderDispatchOutcome,
     bolt_v3_maker_order_plan::{MakerLegBinding, MakerMarketActionOrderInput},
-    bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
+    bolt_v3_maker_quote_plan::{MakerQuotePlanInputs, plan_maker_quote_targets},
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
+    bolt_v3_maker_risk::{MakerLossRiskPolicy, MakerRiskBlockReason, MakerRiskMode},
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteInput, MakerRuntimeQuoteSetInput,
         MakerRuntimeReferenceFairValueBlockReason, MakerRuntimeReferenceFairValueInput,
@@ -18,7 +20,9 @@ use bolt_v2::{
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
     bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
-    bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
+    bolt_v3_quote_lifecycle::{
+        Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote, MarketState,
+    },
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
         RealizedVolSnapshot,
@@ -28,7 +32,7 @@ use bolt_v2::{
     strategies::{
         binary_oracle_maker::{
             BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerMarketActionRouteInput,
-            BinaryOracleMakerRuntimeQuoteRouteInput,
+            BinaryOracleMakerRiskRouteInput, BinaryOracleMakerRuntimeQuoteRouteInput,
             BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
             BinaryOracleMakerRuntimeReferenceQuoteRouteInput,
         },
@@ -634,6 +638,156 @@ fn maker_canceled_confirmation_routes_prepaid_replacement_submit_in_shadow() {
     assert_eq!(writer.admission_decisions().len(), 1);
 }
 
+#[test]
+fn maker_loss_risk_route_soft_holds_without_order_mutation() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.clone(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let mut market = resting_market_quote();
+    let loss_decision = accepted_loss_decision();
+    let submit_template = maker_limit_post_only_template();
+
+    let outcome = maker
+        .route_maker_loss_risk(
+            &mut market,
+            risk_route_input(
+                &loss_decision,
+                MakerLossRiskPolicy {
+                    on_loss_breach: MakerRiskMode::HardFlat,
+                    on_untrusted_snapshot: MakerRiskMode::CancelOnly,
+                },
+                &submit_template,
+            ),
+        )
+        .expect("accepted loss decision should route through risk shell");
+
+    assert_eq!(outcome.risk.mode, MakerRiskMode::SoftHold);
+    assert_eq!(outcome.risk.action, None);
+    assert_eq!(outcome.risk.blocked_by, None);
+    assert_eq!(outcome.orders, None);
+    assert_eq!(market.market_state(), MarketState::Quoting);
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(writer.records().len(), 0);
+    assert_eq!(writer.admission_decisions().len(), 0);
+}
+
+#[test]
+fn maker_loss_risk_route_drains_quotes_for_untrusted_loss_snapshot() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.clone(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let mut market = resting_market_quote();
+    let loss_decision = rejected_loss_decision(LossHaltReason::StaleLossSnapshot);
+    let submit_template = maker_limit_post_only_template();
+
+    let outcome = maker
+        .route_maker_loss_risk(
+            &mut market,
+            risk_route_input(
+                &loss_decision,
+                MakerLossRiskPolicy {
+                    on_loss_breach: MakerRiskMode::HardFlat,
+                    on_untrusted_snapshot: MakerRiskMode::CancelOnly,
+                },
+                &submit_template,
+            ),
+        )
+        .expect("untrusted loss snapshot should drain via shared maker order route");
+
+    assert_eq!(outcome.risk.mode, MakerRiskMode::CancelOnly);
+    assert_eq!(outcome.risk.action, Some(MarketAction::CancelAllBothLegs));
+    assert_eq!(outcome.risk.blocked_by, None);
+    let orders = outcome
+        .orders
+        .expect("cancel-only risk action should dispatch cancel-all commands");
+    assert_eq!(
+        orders.yes.dispatch,
+        Some(MakerOrderDispatchOutcome::CanceledAll {
+            leg: Some(Leg::Yes),
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            order_side: None,
+        })
+    );
+    assert_eq!(
+        orders.no.dispatch,
+        Some(MakerOrderDispatchOutcome::CanceledAll {
+            leg: Some(Leg::No),
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            order_side: None,
+        })
+    );
+    assert_eq!(market.market_state(), MarketState::Draining);
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(writer.records().len(), 0);
+    assert_eq!(writer.admission_decisions().len(), 0);
+}
+
+#[test]
+fn maker_loss_risk_route_hard_flat_does_not_hide_unsupported_active_reduce() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.clone(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let mut market = resting_market_quote();
+    let loss_decision = rejected_loss_decision(LossHaltReason::DailyLossLimit);
+    let submit_template = maker_limit_post_only_template();
+
+    let outcome = maker
+        .route_maker_loss_risk(
+            &mut market,
+            risk_route_input(
+                &loss_decision,
+                MakerLossRiskPolicy {
+                    on_loss_breach: MakerRiskMode::HardFlat,
+                    on_untrusted_snapshot: MakerRiskMode::CancelOnly,
+                },
+                &submit_template,
+            ),
+        )
+        .expect("hard-flat loss decision should drain through shared maker order route");
+
+    assert_eq!(outcome.risk.mode, MakerRiskMode::HardFlat);
+    assert_eq!(outcome.risk.action, Some(MarketAction::CancelAllBothLegs));
+    assert_eq!(
+        outcome.risk.blocked_by,
+        Some(MakerRiskBlockReason::HardFlatReduceUnsupported)
+    );
+    let orders = outcome
+        .orders
+        .expect("hard-flat drain action should dispatch cancel-all commands");
+    assert_eq!(
+        orders.yes.dispatch,
+        Some(MakerOrderDispatchOutcome::CanceledAll {
+            leg: Some(Leg::Yes),
+            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            order_side: None,
+        })
+    );
+    assert_eq!(
+        orders.no.dispatch,
+        Some(MakerOrderDispatchOutcome::CanceledAll {
+            leg: Some(Leg::No),
+            instrument_id: InstrumentId::from("NO.RUNTIME"),
+            order_side: None,
+        })
+    );
+    assert_eq!(market.market_state(), MarketState::Draining);
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(writer.records().len(), 0);
+    assert_eq!(writer.admission_decisions().len(), 0);
+}
+
 #[derive(Debug)]
 struct NoopFeeProvider;
 
@@ -741,6 +895,78 @@ fn order_plan_inputs() -> MakerRuntimeOrderPlanInput {
             active_order: None,
             next_order: Some(order_identity("MAKER-NO-1", 1)),
         },
+    }
+}
+
+fn risk_route_input<'a>(
+    loss_decision: &'a LossAdmissionDecision,
+    policy: MakerLossRiskPolicy,
+    submit_template: &'a NtOrderTemplate,
+) -> BinaryOracleMakerRiskRouteInput<'a> {
+    let quote_set = quote_set_inputs();
+    let order_plan = order_plan_inputs();
+    BinaryOracleMakerRiskRouteInput {
+        loss_decision,
+        policy,
+        targets: plan_maker_quote_targets(quote_plan_inputs(static_binary_event::KEY))
+            .expect("risk-route fixture should produce quote targets")
+            .targets,
+        yes_quantity: quote_set.yes_quantity,
+        no_quantity: quote_set.no_quantity,
+        yes: order_plan.yes,
+        no: order_plan.no,
+        submit_template,
+        price_precision: 2,
+        quantity_precision: 2,
+        submit_order_prefix: "maker_submit",
+        max_fee_bps: Decimal::ZERO,
+        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+    }
+}
+
+fn resting_market_quote() -> MarketQuote {
+    let mut market = MarketQuote::new(false);
+    assert_eq!(
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: false
+            }
+        ),
+        Some(MarketAction::Leg {
+            leg: Leg::Yes,
+            action: LifecycleAction::Submit,
+        })
+    );
+    assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
+    assert_eq!(
+        market.on_leg_event(
+            Leg::No,
+            LegEvent::QuoteTrigger {
+                requote_needed: false
+            }
+        ),
+        Some(MarketAction::Leg {
+            leg: Leg::No,
+            action: LifecycleAction::Submit,
+        })
+    );
+    assert_eq!(market.on_leg_event(Leg::No, LegEvent::Accepted), None);
+    assert_eq!(market.market_state(), MarketState::Quoting);
+    market
+}
+
+fn accepted_loss_decision() -> LossAdmissionDecision {
+    LossAdmissionDecision {
+        accepted: true,
+        halt_reasons: Vec::new(),
+    }
+}
+
+fn rejected_loss_decision(reason: LossHaltReason) -> LossAdmissionDecision {
+    LossAdmissionDecision {
+        accepted: false,
+        halt_reasons: vec![reason],
     }
 }
 

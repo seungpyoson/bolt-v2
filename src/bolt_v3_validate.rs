@@ -1149,12 +1149,6 @@ fn validate_data_engine_block(
             ));
         }
     }
-    if block.graceful_shutdown_on_error {
-        errors.push(
-            "nautilus.data_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
-                .to_string(),
-        );
-    }
     let nt_data_default = nautilus_live::config::LiveDataEngineConfig::default();
     if block.qsize != nt_data_default.qsize {
         errors.push(format!(
@@ -1206,11 +1200,6 @@ fn validate_exec_engine_block(
     if block.purge_from_database {
         errors.push(
             "nautilus.exec_engine.purge_from_database must be false; NT rejects true on the Rust live runtime".to_string(),
-        );
-    }
-    if block.graceful_shutdown_on_error {
-        errors.push(
-            "nautilus.exec_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime".to_string(),
         );
     }
     let nt_exec_default = nautilus_live::config::LiveExecEngineConfig::default();
@@ -1380,12 +1369,6 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     }
     if let Some(capital_pools) = block.capital_pools.as_ref() {
         errors.extend(validate_capital_pools(capital_pools));
-    }
-    if block.nautilus.graceful_shutdown_on_error {
-        errors.push(
-            "risk.nautilus.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
-                .to_string(),
-        );
     }
     let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
     if block.nautilus.qsize != nt_risk_default.qsize {

@@ -12,7 +12,7 @@
 name = "backtesting-vertical-slice"
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.95.0"
+rust-version = "1.96.0"
 publish = false
 
 [dependencies]
@@ -39,13 +39,13 @@ toml = "1.1"
 ustr = "1.1.0"
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
-nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["streaming", "examples"] }
-nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
-nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
-nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
-nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["cloud"] }
-nautilus-polymarket = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
-nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
+nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e", features = ["streaming", "examples"] }
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
+nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
+nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
+nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e", features = ["cloud"] }
+nautilus-polymarket = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
+nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6be5a5094716790a8ca2875445fde4fa2586107e" }
 
 [dev-dependencies]
 tempfile = "3"

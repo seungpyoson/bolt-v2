@@ -158,16 +158,22 @@ pub const FORBIDDEN_ENV_VARS: &[&str] = &[
 pub struct PolymarketDataConfig {
     pub base_url_http: String,
     pub base_url_ws: String,
+    pub base_url_rtds: String,
     pub base_url_gamma: String,
     pub base_url_data_api: String,
     pub http_timeout_secs: u64,
     pub ws_timeout_secs: u64,
     pub subscribe_new_markets: bool,
+    pub new_market_fetch_max_concurrency: u64,
     pub auto_load_missing_instruments: bool,
     pub auto_load_debounce_ms: u64,
     pub auto_load_max_retries: u32,
     pub auto_load_retry_delay_initial_secs: u64,
     pub auto_load_retry_delay_max_secs: u64,
+    pub resolve_poll_enabled: bool,
+    pub resolve_poll_interval_secs: u64,
+    pub resolve_poll_grace_secs: u64,
+    pub resolve_poll_max_wait_secs: u64,
     pub update_instruments_interval_mins: u64,
     pub ws_max_subscriptions: u64,
     pub transport_backend: TransportBackend,
@@ -414,6 +420,19 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
         (
             "update_instruments_interval_mins",
             data.update_instruments_interval_mins,
+        ),
+        (
+            "new_market_fetch_max_concurrency",
+            data.new_market_fetch_max_concurrency,
+        ),
+        (
+            "resolve_poll_interval_secs",
+            data.resolve_poll_interval_secs,
+        ),
+        ("resolve_poll_grace_secs", data.resolve_poll_grace_secs),
+        (
+            "resolve_poll_max_wait_secs",
+            data.resolve_poll_max_wait_secs,
         ),
         ("ws_max_subscriptions", data.ws_max_subscriptions),
         ("auto_load_debounce_ms", data.auto_load_debounce_ms),
@@ -796,22 +815,38 @@ fn map_data(
             ),
         }
     })?;
+    let new_market_fetch_max_concurrency = usize::try_from(cfg.new_market_fetch_max_concurrency)
+        .map_err(|_| BoltV3AdapterMappingError::NumericRange {
+            client_key: client_key.to_string(),
+            field: "data.new_market_fetch_max_concurrency",
+            message: format!(
+                "value {} does not fit in usize on this target",
+                cfg.new_market_fetch_max_concurrency
+            ),
+        })?;
     let filters = build_instrument_filters_for_client(root, plan, client_key, clock)?;
     Ok(PolymarketDataClientConfig {
+        instrument_config: None,
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
+        base_url_rtds: Some(cfg.base_url_rtds),
         base_url_gamma: Some(cfg.base_url_gamma),
         base_url_data_api: Some(cfg.base_url_data_api),
         http_timeout_secs: cfg.http_timeout_secs,
         ws_timeout_secs: cfg.ws_timeout_secs,
         ws_max_subscriptions,
-        update_instruments_interval_mins: cfg.update_instruments_interval_mins,
+        update_instruments_interval_mins: Some(cfg.update_instruments_interval_mins),
         subscribe_new_markets: cfg.subscribe_new_markets,
+        new_market_fetch_max_concurrency,
         auto_load_missing_instruments: cfg.auto_load_missing_instruments,
         auto_load_debounce_ms: cfg.auto_load_debounce_ms,
         auto_load_max_retries: cfg.auto_load_max_retries,
         auto_load_retry_delay_initial_secs: cfg.auto_load_retry_delay_initial_secs as f64,
         auto_load_retry_delay_max_secs: cfg.auto_load_retry_delay_max_secs as f64,
+        resolve_poll_enabled: cfg.resolve_poll_enabled,
+        resolve_poll_interval_secs: cfg.resolve_poll_interval_secs,
+        resolve_poll_grace_secs: cfg.resolve_poll_grace_secs,
+        resolve_poll_max_wait_secs: cfg.resolve_poll_max_wait_secs,
         transport_backend: cfg.transport_backend,
         filters,
         new_market_filter: None,

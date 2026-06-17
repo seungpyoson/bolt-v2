@@ -252,6 +252,12 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
         .expect("polymarket data block should parse with NT names");
     assert_eq!(data.update_instruments_interval_mins, 60);
     assert_eq!(data.ws_max_subscriptions, 200);
+    assert_eq!(data.base_url_rtds, "wss://ws-live-data.polymarket.com");
+    assert_eq!(data.new_market_fetch_max_concurrency, 8);
+    assert!(!data.resolve_poll_enabled);
+    assert_eq!(data.resolve_poll_interval_secs, 30);
+    assert_eq!(data.resolve_poll_grace_secs, 10);
+    assert_eq!(data.resolve_poll_max_wait_secs, 1800);
     assert!(!data.auto_load_missing_instruments);
     assert_eq!(data.auto_load_debounce_ms, 250);
     assert_eq!(data.auto_load_max_retries, 12);
@@ -607,8 +613,8 @@ fn bolt_v3_polymarket_client_rejects_execution_without_data_block_with_client_vo
     // provider-neutral per the source-fence.
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
-    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
+    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let split_fixture = format!(
         "{}{}",
         replace_in_fixture_root(polymarket_main_data_block, ""),
@@ -5016,6 +5022,7 @@ order_execution_mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -5036,7 +5043,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -5076,7 +5082,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -5089,7 +5094,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]
@@ -5302,14 +5306,12 @@ fn rejects_invalid_binance_reference_websocket_urls_before_nt_mapping() {
 fn rejects_invalid_binance_futures_websocket_url_without_spot_sbe_guidance() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_binance_reference_fixture(
-        "product_types = [\"spot\"]",
-        "product_types = [\"usd_m\"]",
-    )
-    .replace(
-        "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
-        "base_url_ws = \"https://fstream.binance.com/market/ws\"",
-    );
+    let mutated =
+        replace_in_binance_reference_fixture("product_type = \"spot\"", "product_type = \"usd_m\"")
+            .replace(
+                "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+                "base_url_ws = \"https://fstream.binance.com/market/ws\"",
+            );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("invalid futures websocket fixture should parse");
     let messages = validate_root_only(&root);
@@ -5446,6 +5448,7 @@ order_execution_mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -5466,7 +5469,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -5506,7 +5508,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -5519,7 +5520,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]
@@ -6372,10 +6372,9 @@ fn fixture_strategy_with_submit_orders(value: &str) -> String {
 /// Replace one-line key assignments inside a single TOML table.
 ///
 /// `replace_in_fixture_root` does a global `str::replace`, so a key that also
-/// appears in another table (e.g. `graceful_shutdown_on_error` / `qsize` live in
-/// both `[nautilus.data_engine]` and `[risk.nautilus]`) cannot be flipped in one
-/// block alone without a multi-line anchor — and a multi-line `\n` anchor breaks
-/// on a CRLF checkout. This walks the fixture line-by-line via `str::lines()`
+/// appears in another table (for example `qsize`) cannot be flipped in one block
+/// alone without a multi-line anchor — and a multi-line `\n` anchor breaks on a
+/// CRLF checkout. This walks the fixture line-by-line via `str::lines()`
 /// (LF/CRLF agnostic) and rewrites only the lines whose trimmed text matches a
 /// needle while inside `section_header`. Each needle must match exactly one line
 /// in that table, so the mutation is both scoped and platform-independent.
@@ -7512,15 +7511,17 @@ fn rejects_invalid_nt_data_engine_values() {
         "time_bars_interval_type = \"LEFT_OPEN\"",
         "time_bars_interval_type = \"SIDEWAYS\"",
     )
-    .replace("time_bars_origins = {}", "time_bars_origins = { INVALID = 1 }")
     .replace(
-        "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000\n\n[nautilus.exec_engine]",
-        "debug = false\ngraceful_shutdown_on_error = true\nqsize = 1000\n\n[nautilus.exec_engine]",
+        "time_bars_origins = {}",
+        "time_bars_origins = { INVALID = 1 }",
+    )
+    .replace(
+        "debug = false\nqsize = 100000",
+        "debug = false\nqsize = 1000",
     );
     assert!(
         mutated.contains("time_bars_interval_type = \"SIDEWAYS\"")
             && mutated.contains("time_bars_origins = { INVALID = 1 }")
-            && mutated.contains("graceful_shutdown_on_error = true")
             && mutated.contains("qsize = 1000"),
         "test fixture mutation must exercise every invalid data-engine branch"
     );
@@ -7530,7 +7531,6 @@ fn rejects_invalid_nt_data_engine_values() {
     for needle in [
         "nautilus.data_engine.time_bars_interval_type is not valid",
         "nautilus.data_engine.time_bars_origins key `INVALID` is not a valid Nautilus bar aggregation",
-        "nautilus.data_engine.graceful_shutdown_on_error must be false",
         "nautilus.data_engine.qsize must match NT default",
     ] {
         assert!(
@@ -7547,10 +7547,6 @@ fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
     let mutated = replace_in_fixture_root("snapshot_orders = false", "snapshot_orders = true")
         .replace("snapshot_positions = false", "snapshot_positions = true")
         .replace("purge_from_database = false", "purge_from_database = true")
-        .replace(
-            "graceful_shutdown_on_error = false",
-            "graceful_shutdown_on_error = true",
-        )
         .replace("qsize = 100000", "qsize = 1000");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("unsupported NT exec values fixture should parse");
@@ -7559,7 +7555,6 @@ fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
         "nautilus.exec_engine.snapshot_orders must be false",
         "nautilus.exec_engine.snapshot_positions must be false",
         "nautilus.exec_engine.purge_from_database must be false",
-        "nautilus.exec_engine.graceful_shutdown_on_error must be false",
         "nautilus.exec_engine.qsize must match NT default",
     ] {
         assert!(
@@ -7671,33 +7666,29 @@ fn shipped_root_configs_do_not_expose_nt_risk_bypass() {
 fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    // `graceful_shutdown_on_error` / `qsize` appear in both `[nautilus.data_engine]`
-    // and `[risk.nautilus]`. Scope the flip to the risk table via a line-wise,
-    // section-aware replace so the mutation never touches the data-engine block and
-    // never relies on a multi-line `\n` anchor (which a CRLF checkout would fail to
-    // match).
-    let mutated = replace_in_fixture_section(
-        "[risk.nautilus]",
-        &[
-            (
-                "graceful_shutdown_on_error = false",
-                "graceful_shutdown_on_error = true",
-            ),
-            ("qsize = 100000", "qsize = 1000"),
-        ],
-    );
+    let mutated =
+        replace_in_fixture_section("[risk.nautilus]", &[("qsize = 100000", "qsize = 1000")]);
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("unsupported NT risk values fixture should parse");
     let messages = validate_root_only(&root);
-    for needle in [
-        "risk.nautilus.graceful_shutdown_on_error must be false",
-        "risk.nautilus.qsize must match NT default",
-    ] {
+    for needle in ["risk.nautilus.qsize must match NT default"] {
         assert!(
             messages.iter().any(|m| m.contains(needle)),
             "expected `{needle}` in validation messages, got: {messages:#?}"
         );
     }
+}
+
+#[test]
+fn maps_top_level_nt_shutdown_on_error() {
+    use bolt_v2::{bolt_v3_config::LoadedBoltV3Config, bolt_v3_live_node::make_live_node_config};
+
+    let mutated = replace_in_fixture_root("shutdown_on_error = false", "shutdown_on_error = true");
+    let loaded: LoadedBoltV3Config =
+        toml::from_str(&mutated).expect("top-level shutdown_on_error fixture should parse");
+    let cfg = make_live_node_config(&loaded);
+
+    assert!(cfg.shutdown_on_error);
 }
 
 #[test]
@@ -8283,7 +8274,7 @@ fn rejects_polymarket_data_auto_load_retry_initial_after_max() {
 fn allows_multiple_configured_client_ids_for_same_nt_venue() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_client}");

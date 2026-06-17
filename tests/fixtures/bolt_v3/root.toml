@@ -39,6 +39,7 @@ order_execution_mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -59,7 +60,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -99,7 +99,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -150,7 +149,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]
@@ -213,16 +211,22 @@ venue = "POLYMARKET"
 [clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_rtds = "wss://ws-live-data.polymarket.com"
 base_url_gamma = "https://gamma-api.polymarket.com"
 base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_secs = 60
 ws_timeout_secs = 30
 subscribe_new_markets = false
+new_market_fetch_max_concurrency = 8
 auto_load_missing_instruments = false
 auto_load_debounce_ms = 250
 auto_load_max_retries = 12
 auto_load_retry_delay_initial_secs = 5
 auto_load_retry_delay_max_secs = 15
+resolve_poll_enabled = false
+resolve_poll_interval_secs = 30
+resolve_poll_grace_secs = 10
+resolve_poll_max_wait_secs = 1800
 update_instruments_interval_mins = 60
 ws_max_subscriptions = 200
 transport_backend = "sockudo"

@@ -209,6 +209,7 @@ const KRAKEN_DATA_FIELDS: &[&str] = &[
     "proxy_url",
     "timeout_secs",
     "heartbeat_interval_secs",
+    "ws_idle_timeout_ms",
     "max_requests_per_second",
     "transport_backend",
 ];

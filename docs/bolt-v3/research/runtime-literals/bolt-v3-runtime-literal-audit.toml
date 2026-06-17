@@ -8103,14 +8103,6 @@ reason = "Fail-closed diagnostic for a source root that is neither a file nor a 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
-literal = '''"src/strategies/binary_oracle_maker"'''
-context = '''relative_roots: &["src/strategies/binary_oracle_maker"],'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the binary-oracle maker strategy source module; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
 literal = '''"strategy"'''
 context = '''pub const STRATEGY_KEY: &str = "strategy";'''
 classification = "gated_source_registry_key"
@@ -15784,6 +15776,214 @@ literal = '''"client_id"'''
 context = '''"client_id".to_string(),'''
 classification = "strategy_runtime_schema_field"
 reason = "This is the maker strategy config schema field name populated from the configured bolt-v3 TOML execution_client_id; the client value remains TOML-owned and venue-generic."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"{context}: parameters.backtest.{} {}"'''
+context = '''"{context}: parameters.backtest.{} {}",'''
+classification = "strategy_runtime_validation_diagnostic_template"
+reason = "This formats maker backtest go-live validation diagnostics using schema-field labels supplied by bolt_v3_maker_go_live_gate; the evidence values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"verdict"'''
+context = '''Self::VerdictNotPass => "verdict",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"run_artifact"'''
+context = '''Self::MissingRunArtifact => "run_artifact",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"threshold_artifact"'''
+context = '''Self::MissingThresholdArtifact => "threshold_artifact",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"execution_model_artifact"'''
+context = '''Self::MissingExecutionModelArtifact => "execution_model_artifact",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"built_maker_replayed"'''
+context = '''Self::BuiltMakerNotReplayed => "built_maker_replayed",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"full_net_scoring"'''
+context = '''Self::MissingFullNetScoring => "full_net_scoring",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"thresholds_registered_before_run"'''
+context = '''Self::ThresholdsNotPreRegistered => "thresholds_registered_before_run",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"balanced_gate_evaluated"'''
+context = '''Self::BalancedGateNotEvaluated => "balanced_gate_evaluated",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"strict_gate_evaluated"'''
+context = '''Self::StrictGateNotEvaluated => "strict_gate_evaluated",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"balanced_gate_passed"'''
+context = '''Self::BalancedGateNotPassed => "balanced_gate_passed",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"historical_full_depth_l2"'''
+context = '''Self::MissingHistoricalFullDepthL2 => "historical_full_depth_l2",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"full_population_corpus"'''
+context = '''Self::MissingFullPopulationCorpus => "full_population_corpus",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"entry_gated_corpus_used"'''
+context = '''Self::EntryGatedCorpusUsed => "entry_gated_corpus_used",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"trade_ticks_present"'''
+context = '''Self::MissingTradeTicks => "trade_ticks_present",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"order_book_deltas_present"'''
+context = '''Self::MissingOrderBookDeltas => "order_book_deltas_present",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"queue_position_enabled"'''
+context = '''Self::QueuePositionDisabled => "queue_position_enabled",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"nt_execution_model_used"'''
+context = '''Self::MissingNtExecutionModel => "nt_execution_model_used",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"custom_fill_model_source_proven"'''
+context = '''Self::CustomFillModelWithoutSourceProof => "custom_fill_model_source_proven",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"underlying_spot_causal_join"'''
+context = '''Self::MissingUnderlyingSpotCausalJoin => "underlying_spot_causal_join",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"net_edge_positive"'''
+context = '''Self::NetEdgeNotPositive => "net_edge_positive",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"statistical_significance"'''
+context = '''Self::MissingStatisticalSignificance => "statistical_significance",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"passive_fill_power_floor"'''
+context = '''Self::MissingPassiveFillPowerFloor => "passive_fill_power_floor",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"resolved_market_corpus_floor"'''
+context = '''Self::MissingResolvedMarketCorpusFloor => "resolved_market_corpus_floor",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"shared_fair_value_pricing"'''
+context = '''Self::MissingSharedFairValuePricing => "shared_fair_value_pricing",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"shared_settlement_primitive"'''
+context = '''Self::MissingSharedSettlementPrimitive => "shared_settlement_primitive",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/config.rs"

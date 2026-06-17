@@ -8582,3 +8582,113 @@ fn root_config_wires_hyperliquid_data_only_client_without_execution_or_secrets()
         "production data clients must include strategy-free readiness coverage"
     );
 }
+
+#[test]
+fn root_config_wires_hyperliquid_hip4_execution_client_behind_live_submit_gates() {
+    use nautilus_model::identifiers::ClientId;
+
+    let loaded =
+        bolt_v2::bolt_v3_config::load_bolt_v3_config(&support::repo_path("config/root.toml"))
+            .expect("root.toml should load with Hyperliquid execution client");
+    let client = loaded
+        .root
+        .clients
+        .get("hyperliquid_hip4_execution")
+        .expect("hyperliquid_hip4_execution must be configured in root.toml");
+
+    assert_eq!(client.venue.as_str(), "HYPERLIQUID");
+    assert!(
+        client.data.is_none(),
+        "issue #785 wires execution separately from the data-only #784 client"
+    );
+    let execution = client
+        .execution
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_hip4_execution must declare an [execution] table");
+    assert_eq!(
+        execution
+            .get(stringify!(environment))
+            .and_then(toml::Value::as_str),
+        Some("mainnet")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(execution_mode))
+            .and_then(toml::Value::as_str),
+        Some("master_account_api_wallet")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(product_surfaces))
+            .and_then(toml::Value::as_array)
+            .expect("product_surfaces must be an array")
+            .iter()
+            .map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        vec![Some("hip4_outcomes")]
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(outcome_settlement_poll_secs))
+            .and_then(toml::Value::as_integer),
+        Some(30)
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(live_submit_approval_id))
+            .and_then(toml::Value::as_str),
+        Some("hl-hip4-outcomes-mainnet-001")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(live_submit_approval_artifact_path))
+            .and_then(toml::Value::as_str),
+        Some("/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-live-submit-approval.json")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(live_submit_product_proof_artifact_path))
+            .and_then(toml::Value::as_str),
+        Some("/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-product-submit-proof.json")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(live_submit_product_proof_artifact_sha256))
+            .and_then(toml::Value::as_str),
+        Some("0000000000000000000000000000000000000000000000000000000000000000")
+    );
+
+    let secrets = client
+        .secrets
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_hip4_execution must declare SSM-backed [secrets]");
+    assert_eq!(
+        secrets
+            .get(stringify!(private_key_ssm_path))
+            .and_then(toml::Value::as_str),
+        Some("/bolt/hyperliquid/master_api_wallet/private_key")
+    );
+    assert_eq!(
+        secrets
+            .get(stringify!(account_address_ssm_path))
+            .and_then(toml::Value::as_str),
+        Some("/bolt/hyperliquid/master_api_wallet/account_address")
+    );
+    for forbidden in ["private_key", "account_address", "vault_address"] {
+        assert!(
+            !secrets.contains_key(forbidden),
+            "Hyperliquid execution secrets must stay SSM-only; found raw field {forbidden}"
+        );
+    }
+
+    for strategy in &loaded.strategies {
+        assert_eq!(
+            strategy.config.execution_client_id,
+            ClientId::from("polymarket_main"),
+            "{} must not route to Hyperliquid until the live-submit packet is operator-approved",
+            strategy.relative_path
+        );
+    }
+}

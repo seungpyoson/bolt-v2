@@ -56,12 +56,6 @@ url = "2"
 ustr = "1.1.0"
 zeroize = "1.8.2"
 
-[build-dependencies]
-# Pinned to the SAME versions as `[dependencies]` so the build-time canonical
-# digest and the runtime digest are bit-identical.
-hex = "0.4"
-sha2 = "0.10.9"
-
 [dev-dependencies]
 arrow = "58.3.0"
 tempfile = "3"

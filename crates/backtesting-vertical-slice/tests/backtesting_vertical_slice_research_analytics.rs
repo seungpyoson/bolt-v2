@@ -377,7 +377,10 @@ fn sweep_orchestration_rejects_duplicate_materialization_paths_before_executor()
     })
     .expect_err("duplicate materialization paths must fail before executor");
 
-    assert_eq!(calls, 0, "executor must not run after duplicate path preflight");
+    assert_eq!(
+        calls, 0,
+        "executor must not run after duplicate path preflight"
+    );
     assert!(err.to_string().contains("duplicate"), "{err}");
 }
 

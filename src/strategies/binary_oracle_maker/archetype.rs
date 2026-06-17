@@ -27,7 +27,10 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use toml::{Value, map::Map};
 
-use nautilus_model::identifiers::StrategyId;
+use nautilus_model::{
+    data::{OrderBookDelta, TradeTick},
+    identifiers::StrategyId,
+};
 
 use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
 use crate::bolt_v3_maker_go_live_gate::{
@@ -45,6 +48,8 @@ use crate::bolt_v3_trade_flow::SignedTradeFlowConfig;
 use crate::strategies::binary_oracle_maker::{BinaryOracleMakerBuilder, KEY};
 use crate::strategies::production_strategy_registry;
 use crate::strategies::registry::StrategyBuilder;
+
+const NT_BACKTEST_NODE_EXECUTION_MODEL: &str = "nt_backtest_node";
 
 /// The maker runtime binding the production aggregator lists. `key` and
 /// `strategy_kind` both resolve to the single archetype constant
@@ -127,16 +132,22 @@ struct BacktestParametersBlock {
     historical_full_depth_l2: bool,
     full_population_corpus: bool,
     entry_gated_corpus_used: bool,
-    trade_ticks_present: bool,
-    order_book_deltas_present: bool,
-    queue_position_enabled: bool,
-    nt_execution_model_used: bool,
+    result_contract_replay: BacktestResultContractReplayBlock,
     custom_fill_model_used: bool,
     custom_fill_model_source_proven: bool,
     underlying_spot_causal_join: bool,
     statistical_significance: bool,
     shared_fair_value_pricing: bool,
     shared_settlement_primitive: bool,
+}
+
+/// Replay-specific fields copied from BTE's objective BacktestResultContract.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct BacktestResultContractReplayBlock {
+    execution_model: String,
+    venue_queue_position: bool,
+    catalog_data_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -174,10 +185,10 @@ impl BacktestParametersBlock {
             historical_full_depth_l2: self.historical_full_depth_l2,
             full_population_corpus: self.full_population_corpus,
             entry_gated_corpus_used: self.entry_gated_corpus_used,
-            trade_ticks_present: self.trade_ticks_present,
-            order_book_deltas_present: self.order_book_deltas_present,
-            queue_position_enabled: self.queue_position_enabled,
-            nt_execution_model_used: self.nt_execution_model_used,
+            trade_ticks_present: self.result_contract_replay.trade_ticks_present(),
+            order_book_deltas_present: self.result_contract_replay.order_book_deltas_present(),
+            queue_position_enabled: self.result_contract_replay.venue_queue_position,
+            nt_execution_model_used: self.result_contract_replay.nt_backtest_node_used(),
             custom_fill_model_used: self.custom_fill_model_used,
             custom_fill_model_source_proven: self.custom_fill_model_source_proven,
             underlying_spot_causal_join: self.underlying_spot_causal_join,
@@ -208,6 +219,26 @@ impl BacktestParametersBlock {
     }
 }
 
+impl BacktestResultContractReplayBlock {
+    fn trade_ticks_present(&self) -> bool {
+        self.catalog_data_types_contains(nt_contract_data_type_name::<TradeTick>())
+    }
+
+    fn order_book_deltas_present(&self) -> bool {
+        self.catalog_data_types_contains(nt_contract_data_type_name::<OrderBookDelta>())
+    }
+
+    fn nt_backtest_node_used(&self) -> bool {
+        self.execution_model.trim() == NT_BACKTEST_NODE_EXECUTION_MODEL
+    }
+
+    fn catalog_data_types_contains(&self, expected: &str) -> bool {
+        self.catalog_data_types
+            .iter()
+            .any(|data_type| data_type.trim() == expected)
+    }
+}
+
 impl MarketPortfolioParametersBlock {
     fn policy(&self) -> MakerMarketPortfolioPolicy {
         MakerMarketPortfolioPolicy {
@@ -220,6 +251,11 @@ impl MarketPortfolioParametersBlock {
 
 fn artifact_present(value: &str) -> bool {
     !value.trim().is_empty()
+}
+
+fn nt_contract_data_type_name<T>() -> &'static str {
+    let type_name = std::any::type_name::<T>();
+    type_name.rsplit("::").next().unwrap_or(type_name)
 }
 
 /// Bolt-v3 startup validation and **go-live gate** for the maker.
@@ -631,6 +667,17 @@ mod tests {
         }
     }
 
+    fn valid_result_contract_replay() -> BacktestResultContractReplayBlock {
+        BacktestResultContractReplayBlock {
+            execution_model: NT_BACKTEST_NODE_EXECUTION_MODEL.to_string(),
+            venue_queue_position: true,
+            catalog_data_types: vec![
+                nt_contract_data_type_name::<OrderBookDelta>().to_string(),
+                nt_contract_data_type_name::<TradeTick>().to_string(),
+            ],
+        }
+    }
+
     fn valid_backtest() -> BacktestParametersBlock {
         BacktestParametersBlock {
             verdict: BacktestVerdictParameter::Pass,
@@ -660,10 +707,7 @@ mod tests {
             historical_full_depth_l2: true,
             full_population_corpus: true,
             entry_gated_corpus_used: false,
-            trade_ticks_present: true,
-            order_book_deltas_present: true,
-            queue_position_enabled: true,
-            nt_execution_model_used: true,
+            result_contract_replay: valid_result_contract_replay(),
             custom_fill_model_used: false,
             custom_fill_model_source_proven: false,
             underlying_spot_causal_join: true,
@@ -702,16 +746,17 @@ mod tests {
             historical_full_depth_l2 = true
             full_population_corpus = true
             entry_gated_corpus_used = false
-            trade_ticks_present = true
-            order_book_deltas_present = true
-            queue_position_enabled = true
-            nt_execution_model_used = true
             custom_fill_model_used = false
             custom_fill_model_source_proven = false
             underlying_spot_causal_join = true
             statistical_significance = true
             shared_fair_value_pricing = true
             shared_settlement_primitive = true
+
+            [backtest.result_contract_replay]
+            execution_model = "nt_backtest_node"
+            venue_queue_position = true
+            catalog_data_types = ["OrderBookDelta", "TradeTick"]
             "#;
 
     const VALID_MARKET_PORTFOLIO_TOML: &str = r#"
@@ -1191,20 +1236,22 @@ mod tests {
     #[test]
     fn validate_parameter_bounds_rejects_missing_trade_and_book_corpus() {
         let errors = backtest_errors(BacktestParametersBlock {
-            trade_ticks_present: false,
-            order_book_deltas_present: false,
+            result_contract_replay: BacktestResultContractReplayBlock {
+                catalog_data_types: Vec::new(),
+                ..valid_result_contract_replay()
+            },
             ..valid_backtest()
         });
         assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("parameters.backtest.trade_ticks_present")),
+            errors.iter().any(|error| error
+                .contains("parameters.backtest.result_contract_replay.catalog_data_types")
+                && error.contains("TradeTick")),
             "{errors:?}"
         );
         assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("parameters.backtest.order_book_deltas_present")),
+            errors.iter().any(|error| error
+                .contains("parameters.backtest.result_contract_replay.catalog_data_types")
+                && error.contains("OrderBookDelta")),
             "{errors:?}"
         );
     }
@@ -1212,13 +1259,31 @@ mod tests {
     #[test]
     fn validate_parameter_bounds_rejects_disabled_queue_position() {
         let errors = backtest_errors(BacktestParametersBlock {
-            queue_position_enabled: false,
+            result_contract_replay: BacktestResultContractReplayBlock {
+                venue_queue_position: false,
+                ..valid_result_contract_replay()
+            },
             ..valid_backtest()
         });
         assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("parameters.backtest.queue_position_enabled")),
+            errors.iter().any(|error| error
+                .contains("parameters.backtest.result_contract_replay.venue_queue_position")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_non_nt_result_contract_execution_model() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            result_contract_replay: BacktestResultContractReplayBlock {
+                execution_model: "custom_fill_sim".to_string(),
+                ..valid_result_contract_replay()
+            },
+            ..valid_backtest()
+        });
+        assert!(
+            errors.iter().any(|error| error
+                .contains("parameters.backtest.result_contract_replay.execution_model")),
             "{errors:?}"
         );
     }
@@ -1344,10 +1409,6 @@ mod tests {
             historical_full_depth_l2 = true
             full_population_corpus = true
             entry_gated_corpus_used = false
-            trade_ticks_present = true
-            order_book_deltas_present = true
-            queue_position_enabled = true
-            nt_execution_model_used = true
             custom_fill_model_used = false
             custom_fill_model_source_proven = false
             underlying_spot_causal_join = true
@@ -1355,6 +1416,11 @@ mod tests {
             shared_fair_value_pricing = true
             shared_settlement_primitive = true
             surprise = true
+
+            [backtest.result_contract_replay]
+            execution_model = "nt_backtest_node"
+            venue_queue_position = true
+            catalog_data_types = ["OrderBookDelta", "TradeTick"]
             "#
         );
         assert!(

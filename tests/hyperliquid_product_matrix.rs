@@ -265,6 +265,11 @@ fn hip4_outcomes_product_matrix_records_nt_discovery_and_approval_gated_submit()
 }
 
 #[test]
+fn standard_perps_live_submit_enablement_rejects_without_consumed_surface_approval() {
+    assert_surface_without_approval_rejects_live_submit("standard_perps");
+}
+
+#[test]
 fn spot_live_submit_enablement_rejects_without_consumed_surface_approval() {
     assert_surface_without_approval_rejects_live_submit("spot");
 }

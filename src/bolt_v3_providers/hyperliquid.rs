@@ -948,9 +948,6 @@ fn selected_live_submit_surface_for_plan(
         }
         return Ok(Some(surface));
     }
-    if let [surface] = cfg.product_surfaces.as_slice() {
-        return Ok(Some(*surface));
-    }
     Ok(None)
 }
 

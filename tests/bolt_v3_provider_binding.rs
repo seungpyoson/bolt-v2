@@ -724,6 +724,101 @@ fn provider_binding_accepts_surface_scoped_hyperliquid_live_submit_with_multiple
 }
 
 #[test]
+fn provider_binding_rejects_hyperliquid_live_submit_surface_not_enabled() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "product_surfaces".to_string(),
+            toml::Value::Array(vec![toml::Value::String("spot".to_string())]),
+        );
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(
+        rendered.contains("execution.live_submit.standard_perps requires execution.product_surfaces to include standard_perps"),
+        "surface-scoped live_submit blocks must be enabled by product_surfaces: {rendered}"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_empty_product_surfaces() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert("product_surfaces".to_string(), toml::Value::Array(vec![]));
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(
+        rendered.contains(
+            "execution.product_surfaces must select at least one Hyperliquid product surface"
+        ),
+        "empty product_surfaces must fail closed: {rendered}"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_empty_hyperliquid_live_submit_table() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "live_submit".to_string(),
+            toml::Value::Table(toml::map::Map::new()),
+        );
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(
+        rendered.contains(
+            "execution.live_submit must configure at least one Hyperliquid product surface"
+        ),
+        "empty live_submit table must fail closed: {rendered}"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_live_submit_zero_max_order_count() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client)
+        .insert("max_order_count".to_string(), toml::Value::Integer(0));
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(
+        rendered.contains("execution.live_submit.standard_perps.max_order_count must be positive"),
+        "zero max_order_count must fail closed: {rendered}"
+    );
+}
+
+#[test]
 fn provider_binding_models_hyperliquid_egress_with_official_user_fees_weight() {
     let model = bolt_v2::bolt_v3_providers::venue_egress_model("HYPERLIQUID")
         .expect("Hyperliquid execution must have a REST egress model before live submit");

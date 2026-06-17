@@ -176,6 +176,25 @@ fn hyperliquid_static_instrument_target_plan(
     plan
 }
 
+fn hyperliquid_multi_static_instrument_target_plan() -> MarketIdentityPlan {
+    let mut plan = hyperliquid_static_instrument_target_plan(
+        ProductSurface::StandardPerps,
+        "BTC-PERP.HYPERLIQUID",
+    );
+    plan.push_target(HyperliquidInstrumentTargetPlan {
+        strategy_instance_id: "hyperliquid-static-spot-strategy".to_string(),
+        configured_target_id: "hyperliquid-static-spot-target".to_string(),
+        execution_client_id: "hyperliquid_perps".to_string(),
+        product_surface: ProductSurface::Spot,
+        instrument_id: InstrumentId::from("BTC/USDC.HYPERLIQUID"),
+        quantity_step: Decimal::new(1, 3),
+        notional_step: None,
+        min_quantity: Some(Decimal::new(1, 3)),
+        min_notional: Some(Decimal::new(100, 2)),
+    });
+    plan
+}
+
 fn fixed_market_clock(now_unix_seconds: i64) -> Arc<dyn Fn() -> i64 + Send + Sync> {
     Arc::new(move || now_unix_seconds)
 }
@@ -244,6 +263,27 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 "#,
     ))
     .expect("hyperliquid standard-perps client should parse")
+}
+
+fn set_hyperliquid_product_surfaces(
+    client: &mut bolt_v2::bolt_v3_config::ClientBlock,
+    surfaces: &[&str],
+) {
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "product_surfaces".to_string(),
+            toml::Value::Array(
+                surfaces
+                    .iter()
+                    .map(|surface| toml::Value::String((*surface).to_string()))
+                    .collect(),
+            ),
+        );
 }
 
 fn hyperliquid_data_client() -> bolt_v2::bolt_v3_config::ClientBlock {
@@ -862,6 +902,79 @@ fn hyperliquid_static_instrument_target_surface_must_match_execution_surface() {
             );
         }
         other => panic!("expected Hyperliquid static-instrument surface invariant, got {other}"),
+    }
+}
+
+#[test]
+fn hyperliquid_execution_rejects_multiple_active_product_surfaces() {
+    let mut client = hyperliquid_standard_perps_client();
+    set_hyperliquid_product_surfaces(&mut client, &["standard_perps", "spot"]);
+    let loaded = fixture_loaded_config_with_hyperliquid_client(client);
+    let resolved = fixture_resolved_hyperliquid_secrets();
+
+    let error =
+        bolt_v2::bolt_v3_adapters::map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+            &loaded,
+            &resolved,
+            &hyperliquid_multi_static_instrument_target_plan(),
+            fixed_market_clock(1_800_000_000),
+            ProviderRuntimeApprovals { live_submit: None },
+        )
+        .expect_err("one Hyperliquid execution client must not arm multiple active surfaces");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key,
+            field,
+            message,
+        } => {
+            assert_eq!(client_key, "hyperliquid_perps");
+            assert_eq!(field, "strategy.target.product_surface");
+            assert!(
+                message.contains("multiple active product surfaces")
+                    && message.contains("standard_perps")
+                    && message.contains("spot"),
+                "multiple-surface rejection should name the active surfaces: {message}"
+            );
+        }
+        other => panic!("expected Hyperliquid multi-surface invariant, got {other}"),
+    }
+}
+
+#[test]
+fn hyperliquid_execution_requires_live_submit_block_for_active_surface() {
+    let mut client = hyperliquid_standard_perps_client();
+    set_hyperliquid_product_surfaces(&mut client, &["standard_perps", "spot"]);
+    let loaded = fixture_loaded_config_with_hyperliquid_client(client);
+    let resolved = fixture_resolved_hyperliquid_secrets();
+
+    let error =
+        bolt_v2::bolt_v3_adapters::map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+            &loaded,
+            &resolved,
+            &hyperliquid_static_instrument_target_plan(
+                ProductSurface::Spot,
+                "BTC/USDC.HYPERLIQUID",
+            ),
+            fixed_market_clock(1_800_000_000),
+            ProviderRuntimeApprovals { live_submit: None },
+        )
+        .expect_err("active Hyperliquid surface must have a matching live_submit block");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key,
+            field,
+            message,
+        } => {
+            assert_eq!(client_key, "hyperliquid_perps");
+            assert_eq!(field, "execution.live_submit");
+            assert!(
+                message.contains("spot") && message.contains("configured execution.live_submit"),
+                "missing surface gate should name the active surface: {message}"
+            );
+        }
+        other => panic!("expected Hyperliquid live-submit surface invariant, got {other}"),
     }
 }
 

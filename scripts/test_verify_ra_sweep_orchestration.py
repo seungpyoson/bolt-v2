@@ -49,7 +49,7 @@ def write_common(
         "crates/backtesting-vertical-slice/src/operator.rs",
         operator_source
         if operator_source is not None
-        else "#[derive(Debug, Clone, Serialize, Deserialize)]\npub struct RunSpec {}\n",
+        else "#[derive(Debug, Clone, Serialize, Deserialize)]\n#[serde(deny_unknown_fields)]\npub struct RunSpec {}\n",
     )
     write_file(
         root,

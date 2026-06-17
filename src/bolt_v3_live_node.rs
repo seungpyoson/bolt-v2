@@ -6930,10 +6930,12 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         .expect_err("static target surface mismatch must fail before approval consumption");
 
         assert!(
-            error
-                .to_string()
-                .contains("strategy.target.product_surface"),
-            "failure should identify the target surface mismatch: {error}"
+            error.to_string().contains("execution.product_surfaces"),
+            "failure should identify the missing execution product surface: {error}"
+        );
+        assert!(
+            error.to_string().contains("spot"),
+            "failure should identify the active target surface: {error}"
         );
         let persisted: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&approval_path).expect("unconsumed approval should still read"),

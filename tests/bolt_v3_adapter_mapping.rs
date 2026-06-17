@@ -857,8 +857,8 @@ fn hyperliquid_static_instrument_target_surface_must_match_execution_surface() {
                 "target surface must be named: {message}"
             );
             assert!(
-                message.contains("standard_perps"),
-                "configured execution surface must be named: {message}"
+                message.contains("execution.product_surfaces does not include it"),
+                "configured execution surfaces must be identified as missing the target surface: {message}"
             );
         }
         other => panic!("expected Hyperliquid static-instrument surface invariant, got {other}"),

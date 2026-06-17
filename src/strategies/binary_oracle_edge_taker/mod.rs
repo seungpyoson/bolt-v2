@@ -1360,28 +1360,44 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn subscribe_realized_volatility_sources(&mut self) {
-        for (instrument_id, client_id) in self
+        let surface_id = self.config.realized_volatility_surface_id.clone();
+        let quote_requests = self
             .context
-            .realized_volatility_quote_subscription_requests()
-        {
+            .realized_volatility_quote_subscription_requests_for_surface(&surface_id);
+        let trade_requests = self
+            .context
+            .realized_volatility_trade_subscription_requests_for_surface(&surface_id);
+        let index_requests = self
+            .context
+            .realized_volatility_index_subscription_requests_for_surface(&surface_id);
+
+        // Defense-in-depth: make a zero-subscription configured surface observable. For a
+        // validated config this is typically unreachable because policy requires at least one
+        // enabled quorum source, but it still catches a validation regression or
+        // no-ready-source edge that would otherwise leave pricing silently
+        // `RealizedVolNotReady`. Pricing fails closed regardless; this warning is the only
+        // operator signal.
+        if quote_requests.is_empty() && trade_requests.is_empty() && index_requests.is_empty() {
+            log::warn!(
+                "binary_oracle_edge_taker configured RV surface `{}` has no enabled subscribable sources; pricing will stay RealizedVolNotReady (strategy_id={})",
+                surface_id,
+                self.config.strategy_id
+            );
+        }
+
+        for (instrument_id, client_id) in quote_requests {
             #[cfg(not(test))]
             self.subscribe_quotes(instrument_id, client_id, None);
             #[cfg(test)]
             let _ = (instrument_id, client_id);
         }
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_trade_subscription_requests()
-        {
+        for (instrument_id, client_id) in trade_requests {
             #[cfg(not(test))]
             self.subscribe_trades(instrument_id, client_id, None);
             #[cfg(test)]
             let _ = (instrument_id, client_id);
         }
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_index_subscription_requests()
-        {
+        for (instrument_id, client_id) in index_requests {
             #[cfg(not(test))]
             self.subscribe_index_prices(instrument_id, client_id, None);
             #[cfg(test)]
@@ -1819,9 +1835,10 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn unsubscribe_realized_volatility_sources(&mut self) {
+        let surface_id = self.config.realized_volatility_surface_id.clone();
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_quote_subscription_requests()
+            .realized_volatility_quote_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_quotes(instrument_id, client_id, None);
@@ -1830,7 +1847,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_trade_subscription_requests()
+            .realized_volatility_trade_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_trades(instrument_id, client_id, None);
@@ -1839,7 +1856,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_index_subscription_requests()
+            .realized_volatility_index_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_index_prices(instrument_id, client_id, None);
@@ -4109,13 +4126,9 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn realized_volatility_evidence_fields(&self) -> RealizedVolatilityEvidenceFields {
-        let realized_volatility_snapshot =
-            self.pricing
-                .latest_realized_vol_snapshot()
-                .filter(|snapshot| {
-                    self.config.realized_volatility_surface_id.as_str()
-                        == snapshot.surface_id.as_str()
-                });
+        let realized_volatility_snapshot = self
+            .pricing
+            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id);
         match realized_volatility_snapshot {
             Some(snapshot) => RealizedVolatilityEvidenceFields {
                 surface_id: snapshot.surface_id.clone(),
@@ -4876,11 +4889,10 @@ impl BinaryOracleEdgeTaker {
                 .contains(&EntryPricingBlockReason::RealizedVolNotReady)
             && self
                 .pricing
-                .latest_realized_vol_snapshot()
-                .is_some_and(|snapshot| {
-                    snapshot.surface_id.as_str()
-                        == self.config.realized_volatility_surface_id.as_str()
-                })
+                .latest_realized_vol_snapshot_for_surface(
+                    &self.config.realized_volatility_surface_id,
+                )
+                .is_some()
         {
             let strategy_input_snapshot =
                 self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, &decision)?;

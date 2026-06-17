@@ -12,6 +12,8 @@ use crate::{
     bolt_v3_realized_volatility::RealizedVolSnapshot,
 };
 
+use std::collections::BTreeMap;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FastSpotObservation {
     pub venue: String,
@@ -70,7 +72,11 @@ pub struct FairValuePricingState {
     last_reference_observed_ts_ms: Option<u64>,
     selected_pricing_spot: Option<FastSpotObservation>,
     realized_volatility_surface_id: String,
-    latest_realized_vol_snapshot: Option<RealizedVolSnapshot>,
+    // Latest RV snapshot per `surface_id`, as prescribed by issue #770. The shared runtime
+    // routes ticks by instrument, so a strategy may observe snapshots for surfaces it does
+    // not price; those foreign entries are retained under their own keys but are never read
+    // by this strategy for pricing.
+    latest_realized_vol_snapshots: BTreeMap<String, RealizedVolSnapshot>,
 }
 
 impl FairValuePricingState {
@@ -81,7 +87,7 @@ impl FairValuePricingState {
             last_reference_observed_ts_ms: None,
             selected_pricing_spot: None,
             realized_volatility_surface_id,
-            latest_realized_vol_snapshot: None,
+            latest_realized_vol_snapshots: BTreeMap::new(),
         }
     }
 
@@ -169,25 +175,26 @@ impl FairValuePricingState {
     }
 
     pub fn observe_realized_vol_snapshot(&mut self, snapshot: RealizedVolSnapshot) {
-        if snapshot.surface_id != self.realized_volatility_surface_id {
-            return;
-        }
-        if self
-            .latest_realized_vol_snapshot
-            .as_ref()
-            .is_none_or(|current| current.as_of_ms <= snapshot.as_of_ms)
-        {
-            self.latest_realized_vol_snapshot = Some(snapshot);
+        let surface_id = snapshot.surface_id.as_str();
+        let current = self.latest_realized_vol_snapshots.get(surface_id);
+        if current.is_none_or(|current| current.as_of_ms <= snapshot.as_of_ms) {
+            self.latest_realized_vol_snapshots
+                .insert(snapshot.surface_id.clone(), snapshot);
         }
     }
 
-    pub fn latest_realized_vol_snapshot(&self) -> Option<&RealizedVolSnapshot> {
-        self.latest_realized_vol_snapshot.as_ref()
+    /// Raw (readiness-unfiltered) latest snapshot for a surface, for evidence/audit.
+    pub fn latest_realized_vol_snapshot_for_surface(
+        &self,
+        surface_id: &str,
+    ) -> Option<&RealizedVolSnapshot> {
+        self.latest_realized_vol_snapshots.get(surface_id)
     }
 
     #[cfg(test)]
     pub fn clear_latest_realized_vol_snapshot(&mut self) {
-        self.latest_realized_vol_snapshot = None;
+        self.latest_realized_vol_snapshots
+            .remove(&self.realized_volatility_surface_id);
     }
 
     pub fn current_realized_vol_at(&self, now_ms: u64) -> Option<f64> {
@@ -318,11 +325,8 @@ impl FairValuePricingState {
         surface_id: &str,
         now_ms: u64,
     ) -> Option<&RealizedVolSnapshot> {
-        let snapshot = self.latest_realized_vol_snapshot.as_ref()?;
-        if snapshot.surface_id != surface_id
-            || snapshot.as_of_ms > now_ms
-            || snapshot.ready_realized_vol().is_none()
-        {
+        let snapshot = self.latest_realized_vol_snapshots.get(surface_id)?;
+        if snapshot.as_of_ms > now_ms || snapshot.ready_realized_vol().is_none() {
             return None;
         }
 

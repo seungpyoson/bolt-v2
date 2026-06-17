@@ -15820,6 +15820,14 @@ reason = "Stable maker backtest go-live evidence identity schema-field label use
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
+literal = '''"result_contract_replay.strategy_config_hash"'''
+context = '''"result_contract_replay.strategy_config_hash"'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence identity schema-field label used only to format startup-validation diagnostics; the observed BTE strategy config hash remains TOML-owned in [parameters.backtest.result_contract_replay]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
 literal = '''"run_artifact"'''
 context = '''Self::MissingRunArtifact => "run_artifact",'''
 classification = "maker_backtest_go_live_schema_field"

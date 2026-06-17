@@ -15,6 +15,7 @@ pub struct MakerBacktestEvidence {
     pub verdict: MakerBacktestVerdict,
     pub build_head_sha_valid: bool,
     pub strategy_config_hash_valid: bool,
+    pub result_contract_strategy_config_hash_valid: bool,
     pub run_artifact_present: bool,
     pub run_artifact_sha256_valid: bool,
     pub threshold_artifact_present: bool,
@@ -29,6 +30,7 @@ pub struct MakerBacktestEvidence {
     pub balanced_gate_evaluated: bool,
     pub strict_gate_evaluated: bool,
     pub balanced_gate_passed: bool,
+    pub strict_gate_passed: bool,
     pub historical_full_depth_l2: bool,
     pub full_population_corpus: bool,
     pub entry_gated_corpus_used: bool,
@@ -52,6 +54,7 @@ pub enum MakerBacktestGateBlocker {
     VerdictNotPass,
     MissingBuildHeadSha,
     MissingStrategyConfigHash,
+    ResultContractStrategyConfigHashMismatch,
     MissingRunArtifact,
     MissingRunArtifactDigest,
     MissingThresholdArtifact,
@@ -89,6 +92,9 @@ impl MakerBacktestGateBlocker {
             Self::VerdictNotPass => "verdict",
             Self::MissingBuildHeadSha => "build_head_sha",
             Self::MissingStrategyConfigHash => "strategy_config_hash",
+            Self::ResultContractStrategyConfigHashMismatch => {
+                "result_contract_replay.strategy_config_hash"
+            }
             Self::MissingRunArtifact => "run_artifact",
             Self::MissingRunArtifactDigest => "run_artifact_sha256",
             Self::MissingThresholdArtifact => "threshold_artifact",
@@ -129,6 +135,9 @@ impl MakerBacktestGateBlocker {
             }
             Self::MissingStrategyConfigHash => {
                 "must supply the lowercase SHA-256 strategy config hash replayed by the backtest"
+            }
+            Self::ResultContractStrategyConfigHashMismatch => {
+                "must match the BTE result-contract strategy_config_hash for the replayed run"
             }
             Self::MissingRunArtifact => "must name the immutable backtest run evidence artifact",
             Self::MissingRunArtifactDigest => {
@@ -217,6 +226,9 @@ pub fn maker_backtest_gate_blockers(
     }
     if !evidence.strategy_config_hash_valid {
         blockers.push(MakerBacktestGateBlocker::MissingStrategyConfigHash);
+    }
+    if !evidence.result_contract_strategy_config_hash_valid {
+        blockers.push(MakerBacktestGateBlocker::ResultContractStrategyConfigHashMismatch);
     }
     if !evidence.run_artifact_present {
         blockers.push(MakerBacktestGateBlocker::MissingRunArtifact);
@@ -321,6 +333,7 @@ mod tests {
             verdict: MakerBacktestVerdict::Pass,
             build_head_sha_valid: true,
             strategy_config_hash_valid: true,
+            result_contract_strategy_config_hash_valid: true,
             run_artifact_present: true,
             run_artifact_sha256_valid: true,
             threshold_artifact_present: true,
@@ -335,6 +348,7 @@ mod tests {
             balanced_gate_evaluated: true,
             strict_gate_evaluated: true,
             balanced_gate_passed: true,
+            strict_gate_passed: false,
             historical_full_depth_l2: true,
             full_population_corpus: true,
             entry_gated_corpus_used: false,
@@ -376,11 +390,15 @@ mod tests {
         let evidence = MakerBacktestEvidence {
             build_head_sha_valid: false,
             strategy_config_hash_valid: false,
+            result_contract_strategy_config_hash_valid: false,
             ..passing_evidence()
         };
         let blockers = maker_backtest_gate_blockers(&evidence);
         assert!(blockers.contains(&MakerBacktestGateBlocker::MissingBuildHeadSha));
         assert!(blockers.contains(&MakerBacktestGateBlocker::MissingStrategyConfigHash));
+        assert!(
+            blockers.contains(&MakerBacktestGateBlocker::ResultContractStrategyConfigHashMismatch)
+        );
     }
 
     #[test]

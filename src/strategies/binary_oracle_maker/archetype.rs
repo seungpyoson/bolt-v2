@@ -131,6 +131,7 @@ struct BacktestParametersBlock {
     balanced_gate_evaluated: bool,
     strict_gate_evaluated: bool,
     balanced_gate_passed: bool,
+    strict_gate_passed: bool,
     historical_full_depth_l2: bool,
     full_population_corpus: bool,
     entry_gated_corpus_used: bool,
@@ -147,6 +148,7 @@ struct BacktestParametersBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct BacktestResultContractReplayBlock {
+    strategy_config_hash: String,
     execution_model: String,
     venue_queue_position: bool,
     catalog_data_types: Vec<String>,
@@ -168,6 +170,9 @@ impl BacktestParametersBlock {
             },
             build_head_sha_valid: build_head_sha_matches_current(&self.build_head_sha),
             strategy_config_hash_valid: is_lowercase_sha256(&self.strategy_config_hash),
+            result_contract_strategy_config_hash_valid: self
+                .result_contract_replay
+                .strategy_config_hash_matches(&self.strategy_config_hash),
             run_artifact_present: artifact_present(&self.run_artifact),
             run_artifact_sha256_valid: is_lowercase_sha256(&self.run_artifact_sha256),
             threshold_artifact_present: artifact_present(&self.threshold_artifact),
@@ -184,6 +189,7 @@ impl BacktestParametersBlock {
             balanced_gate_evaluated: self.balanced_gate_evaluated,
             strict_gate_evaluated: self.strict_gate_evaluated,
             balanced_gate_passed: self.balanced_gate_passed,
+            strict_gate_passed: self.strict_gate_passed,
             historical_full_depth_l2: self.historical_full_depth_l2,
             full_population_corpus: self.full_population_corpus,
             entry_gated_corpus_used: self.entry_gated_corpus_used,
@@ -222,6 +228,10 @@ impl BacktestParametersBlock {
 }
 
 impl BacktestResultContractReplayBlock {
+    fn strategy_config_hash_matches(&self, expected: &str) -> bool {
+        is_lowercase_sha256(&self.strategy_config_hash) && self.strategy_config_hash == expected
+    }
+
     fn trade_ticks_present(&self) -> bool {
         self.catalog_data_types_contains(nt_contract_data_type_name::<TradeTick>())
     }
@@ -711,6 +721,7 @@ mod tests {
 
     fn valid_result_contract_replay() -> BacktestResultContractReplayBlock {
         BacktestResultContractReplayBlock {
+            strategy_config_hash: TEST_ARTIFACT_SHA256.to_string(),
             execution_model: NT_BACKTEST_NODE_EXECUTION_MODEL.to_string(),
             venue_queue_position: true,
             catalog_data_types: vec![
@@ -762,6 +773,7 @@ mod tests {
             balanced_gate_evaluated: true,
             strict_gate_evaluated: true,
             balanced_gate_passed: true,
+            strict_gate_passed: false,
             historical_full_depth_l2: true,
             full_population_corpus: true,
             entry_gated_corpus_used: false,
@@ -807,6 +819,7 @@ mod tests {
             balanced_gate_evaluated = true
             strict_gate_evaluated = true
             balanced_gate_passed = true
+            strict_gate_passed = false
             historical_full_depth_l2 = true
             full_population_corpus = true
             entry_gated_corpus_used = false
@@ -818,11 +831,13 @@ mod tests {
             shared_settlement_primitive = true
 
             [backtest.result_contract_replay]
+            strategy_config_hash = "{}"
             execution_model = "nt_backtest_node"
             venue_queue_position = true
             catalog_data_types = ["OrderBookDelta", "TradeTick"]
             "#,
             current_test_build_head_sha(),
+            strategy_config_hash,
             strategy_config_hash
         )
     }
@@ -1315,6 +1330,22 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_result_contract_strategy_hash_mismatch() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            result_contract_replay: BacktestResultContractReplayBlock {
+                strategy_config_hash: mismatched_strategy_config_hash(TEST_ARTIFACT_SHA256),
+                ..valid_result_contract_replay()
+            },
+            ..valid_backtest()
+        });
+        assert!(
+            errors.iter().any(|error| error
+                .contains("parameters.backtest.result_contract_replay.strategy_config_hash")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_noop_backtest_counts() {
         let errors = backtest_errors(BacktestParametersBlock {
             maker_order_count: 0,
@@ -1547,6 +1578,28 @@ mod tests {
     }
 
     #[test]
+    fn parameters_block_requires_strict_gate_verdict() {
+        let toml = format!(
+            "{}{}{}",
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
+            "#,
+            VALID_MARKET_PORTFOLIO_TOML,
+            valid_backtest_toml().replace("            strict_gate_passed = false\n", "")
+        );
+        assert!(
+            parameters_from_str(&toml).is_err(),
+            "missing strict_gate_passed must fail loud"
+        );
+    }
+
+    #[test]
     fn parameters_block_rejects_unknown_runtime_key() {
         let toml = format!(
             "{}{}{}",
@@ -1609,6 +1662,7 @@ mod tests {
             balanced_gate_evaluated = true
             strict_gate_evaluated = true
             balanced_gate_passed = true
+            strict_gate_passed = false
             historical_full_depth_l2 = true
             full_population_corpus = true
             entry_gated_corpus_used = false
@@ -1621,6 +1675,7 @@ mod tests {
             surprise = true
 
             [backtest.result_contract_replay]
+            strategy_config_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             execution_model = "nt_backtest_node"
             venue_queue_position = true
             catalog_data_types = ["OrderBookDelta", "TradeTick"]

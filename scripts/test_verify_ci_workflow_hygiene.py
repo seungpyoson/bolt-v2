@@ -2030,6 +2030,18 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
             f"{missing_concurrency_action_filter_errors}"
         )
 
+    drifted_defer_run_context = replace_once(
+        workflow,
+        'defer_run_context="${{ github.event_name == \'pull_request\' && github.event.pull_request.draft == true && contains(fromJSON(\'["opened","synchronize","reopened","converted_to_draft","edited"]\'), github.event.action) && \'true\' || \'false\' }}"',
+        'defer_run_context="${{ github.event_name == \'pull_request\' && github.event.pull_request.draft == true && contains(fromJSON(\'["opened","synchronize","reopened","edited"]\'), github.event.action) && \'true\' || \'false\' }}"',
+    )
+    drifted_defer_run_context_errors = verifier.verify_repo_automation_texts({workflow_name: drifted_defer_run_context})
+    if not any("backtester draft deferral must use one deferred draft action list across gate and concurrency" in error for error in drifted_defer_run_context_errors):
+        raise AssertionError(
+            "backtester-ci workflow must reject mismatched deferred draft action lists, got: "
+            f"{drifted_defer_run_context_errors}"
+        )
+
 
 def assert_actionlint_rejects_stale_config_variables() -> None:
     verifier = load_verifier()

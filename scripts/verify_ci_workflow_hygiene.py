@@ -8701,6 +8701,9 @@ BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION = """    name: >-
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'backtester-gate-deferred'
           || 'backtester-gate' }}"""
+BACKTESTER_DEFER_ACTION_LIST_RE = re.compile(
+    r"contains\(fromJSON\('(?P<actions>\[[^']+\])'\), github\.event\.action\)"
+)
 
 
 def backtester_concurrency_group_text(text: str) -> str:
@@ -8711,6 +8714,10 @@ def backtester_concurrency_group_text(text: str) -> str:
             break
         group_lines.append(line)
     return " ".join(line.strip() for line in group_lines if line.strip())
+
+
+def backtester_defer_action_lists(text: str) -> set[str]:
+    return {match.group("actions") for match in BACKTESTER_DEFER_ACTION_LIST_RE.finditer(text)}
 
 
 def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
@@ -8787,6 +8794,11 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester draft deferral concurrency must split deferred PR runs from full proof runs")
     if BACKTESTER_DEFER_ACTION_FILTER not in group_text:
         errors.append("backtester draft deferral concurrency must use the deferred draft action filter")
+    defer_action_lists = backtester_defer_action_lists(group_text)
+    if gate is not None:
+        defer_action_lists.update(backtester_defer_action_lists(gate_text))
+    if len(defer_action_lists) != 1:
+        errors.append("backtester draft deferral must use one deferred draft action list across gate and concurrency")
     return errors
 
 

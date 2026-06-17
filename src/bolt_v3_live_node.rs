@@ -3669,7 +3669,7 @@ pub async fn run_bolt_v3_data_client_probe(
     probe_loaded: &LoadedBoltV3Config,
     client_key: &str,
 ) -> Result<BoltV3DataClientProbeReport, BoltV3LiveNodeError> {
-    let handle = strategy_free_data_client_readiness_quote_probe_handle(&probe_loaded, client_key)?;
+    let handle = strategy_free_data_client_readiness_quote_probe_handle(probe_loaded, client_key)?;
     let readiness_probe = probe_loaded
         .root
         .clients
@@ -3703,10 +3703,8 @@ pub async fn run_bolt_v3_data_client_probe(
 
     match quote_target_source {
         DataClientReadinessProbeQuoteTargetSource::Configured => {
-            let subscriptions = strategy_free_configured_data_client_probe_subscriptions(
-                &probe_loaded,
-                client_key,
-            )?;
+            let subscriptions =
+                strategy_free_configured_data_client_probe_subscriptions(probe_loaded, client_key)?;
             for subscription in &subscriptions {
                 if let Err(error) = subscribe_strategy_free_probe_subscription(
                     &mut runtime,
@@ -3756,8 +3754,8 @@ pub async fn run_bolt_v3_data_client_probe(
     }
 
     let stop_handle = runtime.handle();
-    let run_timeout = Duration::from_secs(strategy_free_start_timeout_secs(&probe_loaded)?);
-    let stop_timeout = Duration::from_secs(strategy_free_stop_timeout_secs(&probe_loaded)?);
+    let run_timeout = Duration::from_secs(strategy_free_start_timeout_secs(probe_loaded)?);
+    let stop_timeout = Duration::from_secs(strategy_free_stop_timeout_secs(probe_loaded)?);
     let (run_result, driver_error) = if let Some(driver) = metadata_driver {
         let run_future = runtime.run_strategy_free_until_stop_or_timeout(run_timeout, stop_timeout);
         tokio::pin!(run_future);

@@ -13,6 +13,8 @@ pub enum MakerBacktestVerdict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MakerBacktestEvidence {
     pub verdict: MakerBacktestVerdict,
+    pub build_head_sha_valid: bool,
+    pub strategy_config_hash_valid: bool,
     pub run_artifact_present: bool,
     pub run_artifact_sha256_valid: bool,
     pub threshold_artifact_present: bool,
@@ -46,6 +48,8 @@ pub struct MakerBacktestEvidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MakerBacktestGateBlocker {
     VerdictNotPass,
+    MissingBuildHeadSha,
+    MissingStrategyConfigHash,
     MissingRunArtifact,
     MissingRunArtifactDigest,
     MissingThresholdArtifact,
@@ -79,6 +83,8 @@ impl MakerBacktestGateBlocker {
     pub fn parameter_path(self) -> &'static str {
         match self {
             Self::VerdictNotPass => "verdict",
+            Self::MissingBuildHeadSha => "build_head_sha",
+            Self::MissingStrategyConfigHash => "strategy_config_hash",
             Self::MissingRunArtifact => "run_artifact",
             Self::MissingRunArtifactDigest => "run_artifact_sha256",
             Self::MissingThresholdArtifact => "threshold_artifact",
@@ -112,6 +118,12 @@ impl MakerBacktestGateBlocker {
     pub fn required_state(self) -> &'static str {
         match self {
             Self::VerdictNotPass => "must be `pass` before maker go-live",
+            Self::MissingBuildHeadSha => {
+                "must supply the lowercase Git head SHA for the maker build replayed by the backtest"
+            }
+            Self::MissingStrategyConfigHash => {
+                "must supply the lowercase SHA-256 strategy config hash replayed by the backtest"
+            }
             Self::MissingRunArtifact => "must name the immutable backtest run evidence artifact",
             Self::MissingRunArtifactDigest => {
                 "must supply the lowercase SHA-256 digest for the backtest run artifact"
@@ -179,6 +191,12 @@ pub fn maker_backtest_gate_blockers(
     let mut blockers = Vec::new();
     if evidence.verdict != MakerBacktestVerdict::Pass {
         blockers.push(MakerBacktestGateBlocker::VerdictNotPass);
+    }
+    if !evidence.build_head_sha_valid {
+        blockers.push(MakerBacktestGateBlocker::MissingBuildHeadSha);
+    }
+    if !evidence.strategy_config_hash_valid {
+        blockers.push(MakerBacktestGateBlocker::MissingStrategyConfigHash);
     }
     if !evidence.run_artifact_present {
         blockers.push(MakerBacktestGateBlocker::MissingRunArtifact);
@@ -275,6 +293,8 @@ mod tests {
     fn passing_evidence() -> MakerBacktestEvidence {
         MakerBacktestEvidence {
             verdict: MakerBacktestVerdict::Pass,
+            build_head_sha_valid: true,
+            strategy_config_hash_valid: true,
             run_artifact_present: true,
             run_artifact_sha256_valid: true,
             threshold_artifact_present: true,
@@ -321,6 +341,18 @@ mod tests {
             maker_backtest_gate_blockers(&evidence),
             vec![MakerBacktestGateBlocker::VerdictNotPass]
         );
+    }
+
+    #[test]
+    fn missing_build_and_strategy_identity_blocks_go_live() {
+        let evidence = MakerBacktestEvidence {
+            build_head_sha_valid: false,
+            strategy_config_hash_valid: false,
+            ..passing_evidence()
+        };
+        let blockers = maker_backtest_gate_blockers(&evidence);
+        assert!(blockers.contains(&MakerBacktestGateBlocker::MissingBuildHeadSha));
+        assert!(blockers.contains(&MakerBacktestGateBlocker::MissingStrategyConfigHash));
     }
 
     #[test]

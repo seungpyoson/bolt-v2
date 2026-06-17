@@ -185,14 +185,8 @@ use crate::{
 };
 
 pub fn current_build_head_sha() -> Option<&'static str> {
-    option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))
-}
-
-fn is_git_head_sha(value: &str) -> bool {
-    value.len() == 40
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    option_env!("BOLT_V3_BUILD_HEAD_SHA")
+        .filter(|value| crate::bolt_v3_operator_artifacts::is_lowercase_git_sha(value))
 }
 
 pub struct BoltV3LiveNodeRuntime {

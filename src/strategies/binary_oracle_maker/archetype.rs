@@ -36,7 +36,7 @@ use crate::bolt_v3_maker_go_live_gate::{
 use crate::bolt_v3_maker_market_selection::{
     MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy, maker_market_portfolio_policy_blockers,
 };
-use crate::bolt_v3_operator_artifacts::is_lowercase_sha256;
+use crate::bolt_v3_operator_artifacts::{is_lowercase_git_sha, is_lowercase_sha256};
 use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -101,6 +101,8 @@ struct MarketPortfolioParametersBlock {
 #[serde(deny_unknown_fields)]
 struct BacktestParametersBlock {
     verdict: BacktestVerdictParameter,
+    build_head_sha: String,
+    strategy_config_hash: String,
     run_artifact: String,
     run_artifact_sha256: String,
     threshold_artifact: String,
@@ -145,6 +147,8 @@ impl BacktestParametersBlock {
                 BacktestVerdictParameter::Pass => MakerBacktestVerdict::Pass,
                 BacktestVerdictParameter::Fail => MakerBacktestVerdict::Fail,
             },
+            build_head_sha_valid: is_lowercase_git_sha(&self.build_head_sha),
+            strategy_config_hash_valid: is_lowercase_sha256(&self.strategy_config_hash),
             run_artifact_present: artifact_present(&self.run_artifact),
             run_artifact_sha256_valid: is_lowercase_sha256(&self.run_artifact_sha256),
             threshold_artifact_present: artifact_present(&self.threshold_artifact),
@@ -605,6 +609,8 @@ mod tests {
     fn valid_backtest() -> BacktestParametersBlock {
         BacktestParametersBlock {
             verdict: BacktestVerdictParameter::Pass,
+            build_head_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            strategy_config_hash: TEST_ARTIFACT_SHA256.to_string(),
             run_artifact: "artifact://maker/backtest/run".to_string(),
             run_artifact_sha256: TEST_ARTIFACT_SHA256.to_string(),
             threshold_artifact: "artifact://maker/backtest/thresholds".to_string(),
@@ -639,6 +645,8 @@ mod tests {
     const VALID_BACKTEST_TOML: &str = r#"
             [backtest]
             verdict = "pass"
+            build_head_sha = "0123456789abcdef0123456789abcdef01234567"
+            strategy_config_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             run_artifact = "artifact://maker/backtest/run"
             run_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             threshold_artifact = "artifact://maker/backtest/thresholds"
@@ -1001,6 +1009,27 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_missing_backtest_build_identity() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            build_head_sha: "not-a-git-sha".to_string(),
+            strategy_config_hash: "ABC".to_string(),
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.build_head_sha")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.strategy_config_hash")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_missing_backtest_artifact_digests() {
         let errors = backtest_errors(BacktestParametersBlock {
             run_artifact_sha256: "ABC".to_string(),
@@ -1158,6 +1187,8 @@ mod tests {
             r#"
             [backtest]
             verdict = "pass"
+            build_head_sha = "0123456789abcdef0123456789abcdef01234567"
+            strategy_config_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             run_artifact = "artifact://maker/backtest/run"
             run_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             threshold_artifact = "artifact://maker/backtest/thresholds"

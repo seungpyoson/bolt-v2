@@ -1917,6 +1917,10 @@ def assert_backtester_detect_includes_runner_config() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
     if any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in good_errors):
         raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
+    missing_policy_script = workflow.replace("            scripts/ci_provenance.py \\\n", "")
+    policy_script_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_policy_script})
+    if not any("backtester detect paths must include scripts/ci_provenance.py" in error for error in policy_script_errors):
+        raise AssertionError(f"backtester detector must reject missing ci_provenance.py path, got: {policy_script_errors}")
 
 
 def assert_backtester_ci_requires_pr_event_types() -> None:
@@ -1927,15 +1931,43 @@ def assert_backtester_ci_requires_pr_event_types() -> None:
     if any("pull_request types must include" in error for error in errors):
         raise AssertionError(f"backtester-ci workflow must satisfy PR type policy, got: {errors}")
     for missing_type, fragment in (
-        ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
-        ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
+        ("ready_for_review", "types: [opened, synchronize, reopened, converted_to_draft, edited]"),
+        ("edited", "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"),
+        ("converted_to_draft", "types: [opened, synchronize, reopened, ready_for_review, edited]"),
     ):
-        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
+        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]", fragment)
         bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
         if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
             raise AssertionError(
                 f"backtester-ci workflow must require {missing_type} in pull_request types, got: {bad_errors}"
             )
+
+
+def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/backtester-ci.yml"
+    workflow = repo_workflow_text(workflow_name)
+    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
+    if any("backtester draft deferral" in error for error in errors):
+        raise AssertionError(f"backtester-ci workflow must satisfy draft deferral policy, got: {errors}")
+
+    missing_policy_gate = replace_once(
+        workflow,
+        "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}",
+        "if: ${{ needs.detect.outputs.bvs_changed == 'true' }}",
+    )
+    missing_policy_errors = verifier.verify_repo_automation_texts({workflow_name: missing_policy_gate})
+    if not any("backtester draft deferral managed-heavy jobs must require full CI policy" in error for error in missing_policy_errors):
+        raise AssertionError(f"backtester-ci workflow must reject unmanaged heavy policy gates, got: {missing_policy_errors}")
+
+    missing_gate_message = replace_once(
+        workflow,
+        "backtester proof deferred for draft PR; run just verify-remote or mark ready",
+        "backtester proof deferred",
+    )
+    missing_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_gate_message})
+    if not any("backtester draft deferral gate must explain how to request proof" in error for error in missing_gate_errors):
+        raise AssertionError(f"backtester-ci workflow must reject vague deferred proof messages, got: {missing_gate_errors}")
 
 
 def assert_actionlint_rejects_stale_config_variables() -> None:
@@ -7704,6 +7736,7 @@ def main() -> int:
     assert_security_key_public_prefix_is_validated()
     assert_backtester_detect_includes_runner_config()
     assert_backtester_ci_requires_pr_event_types()
+    assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
     assert_ci_docs_pass_stub_requires_pr_event_types()

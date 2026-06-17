@@ -8680,13 +8680,86 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
     return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
 
 
+BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}"
+BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
+BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; run just verify-remote or mark ready"
+
+
+def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    jobs = parse_jobs(text)
+    errors: list[str] = []
+    policy = jobs.get("ci-policy")
+    if policy is None:
+        errors.append("backtester draft deferral must define ci-policy job")
+    else:
+        policy_text = uncommented_text(policy)
+        for required in [
+            "full_ci_required: ${{ steps.policy.outputs.full_ci_required }}",
+            "full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}",
+            "python3 scripts/ci_provenance.py ci-policy",
+            '--event-name "${{ github.event_name }}"',
+            '--event-action "${{ github.event.action || \'\' }}"',
+            '--pull-request-draft "${{ github.event.pull_request.draft || false }}"',
+            '--ref "${{ github.ref }}"',
+        ]:
+            if required not in policy_text:
+                errors.append(f"backtester draft deferral ci-policy job must include {required}")
+
+    for heavy_job in ("clippy", "test"):
+        job = jobs.get(heavy_job)
+        if job is None:
+            continue
+        needs = extract_needs(job)
+        if "ci-policy" not in needs:
+            errors.append(f"backtester draft deferral managed-heavy job {heavy_job} must need ci-policy")
+        if BACKTESTER_FULL_PROOF_IF not in uncommented_text(job):
+            errors.append("backtester draft deferral managed-heavy jobs must require full CI policy")
+
+    gate = jobs.get("gate")
+    if gate is None:
+        errors.append("backtester draft deferral must define backtester-gate")
+    else:
+        gate_text = uncommented_text(gate)
+        if "ci-policy" not in extract_needs(gate):
+            errors.append("backtester draft deferral gate must need ci-policy")
+        if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
+            errors.append("backtester draft deferral gate must read ci_policy_path")
+        if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
+            errors.append("backtester draft deferral gate must read full_ci_deferred")
+        if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
+            errors.append("backtester draft deferral gate must check needs.ci-policy.result")
+        if BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
+            errors.append("backtester draft deferral gate must compute deferred draft PR context")
+        defer_sections = top_level_if_body_and_remainder(gate_text, BACKTESTER_DEFER_CONDITION)
+        defer_body = defer_sections[0] if defer_sections is not None else None
+        if defer_body is None or not body_exits_zero(defer_body):
+            errors.append("backtester draft deferral gate must pass deferred draft PR proof")
+        if defer_body is None or BACKTESTER_DEFER_MESSAGE not in defer_body:
+            errors.append("backtester draft deferral gate must explain how to request proof")
+        if defer_body is None or not branch_exits_reachable(
+            defer_body,
+            "if",
+            '"$defer_run_context" != "true"',
+        ):
+            errors.append("backtester draft deferral gate must fail deferred policy outside deferred draft PR context")
+
+    if "format('bvs-pr-{0}-deferred', github.event.number)" not in text or "format('bvs-pr-{0}-full', github.event.number)" not in text:
+        errors.append("backtester draft deferral concurrency must split deferred PR runs from full proof runs")
+    return errors
+
+
 def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     if not file_name.endswith("backtester-ci.yml"):
         return []
     detect_job = parse_jobs(text).get("detect", [])
-    if any("ci/github-actions-runners.toml" in line for line in detect_job):
-        return []
-    return ["backtester detect paths must include ci/github-actions-runners.toml"]
+    errors: list[str] = []
+    for required in ("ci/github-actions-runners.toml", "scripts/ci_provenance.py"):
+        if not any(required in line for line in detect_job):
+            errors.append(f"backtester detect paths must include {required}")
+    return errors
 
 
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
@@ -8704,6 +8777,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_detect_path_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_draft_deferral_errors(file_name, text)),
         )
         if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
             add_unique_errors(
@@ -8723,7 +8800,7 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                     f"{file_name}: {error}"
                     for error in workflow_pull_request_type_errors(
                         text,
-                        required_types=("ready_for_review", "edited"),
+                        required_types=("ready_for_review", "edited", "converted_to_draft"),
                     )
                 ),
             )

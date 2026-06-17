@@ -56,6 +56,14 @@ def valid_remote_probe() -> dict:
             "probe-heavy": 60,
             "probe-light": 60,
         },
+        "suggest_base_ref": "origin/main",
+        "separate_workspaces": {
+            "backtesting_vertical_slice": {
+                "path": "crates/backtesting-vertical-slice",
+                "message": "backtesting-vertical-slice is a separate workspace; root Rust Probe does not cover it",
+                "commands": ["just bte-fmt-check"],
+            },
+        },
     }
 
 
@@ -79,6 +87,11 @@ def assert_remote_probe_policy_validation() -> None:
         raise AssertionError(loaded)
     if loaded["guard_timeout_minutes"] != 1:
         raise AssertionError(loaded)
+    if loaded["suggest_base_ref"] != "origin/main":
+        raise AssertionError(loaded)
+    separate_workspaces = loaded["separate_workspaces"]
+    if separate_workspaces["crates/backtesting-vertical-slice"]["commands"] != ["just bte-fmt-check"]:
+        raise AssertionError(separate_workspaces)
 
     heavy_only = valid_remote_probe()
     heavy_only["allowed_runner_tiers"] = ["heavy"]
@@ -105,6 +118,18 @@ def assert_remote_probe_policy_validation() -> None:
     bad = valid_remote_probe()
     bad["guard_timeout_minutes"] = 0
     expect_policy_error(owner, bad, "guard_timeout_minutes")
+
+    bad = valid_remote_probe()
+    bad["suggest_base_ref"] = "origin main"
+    expect_policy_error(owner, bad, "suggest_base_ref")
+
+    bad = valid_remote_probe()
+    bad["separate_workspaces"]["backtesting_vertical_slice"]["path"] = "../outside"
+    expect_policy_error(owner, bad, "separate_workspaces.backtesting_vertical_slice.path")
+
+    bad = valid_remote_probe()
+    bad["separate_workspaces"]["backtesting_vertical_slice"]["commands"] = []
+    expect_policy_error(owner, bad, "separate_workspaces.backtesting_vertical_slice.commands")
 
     for path in (
         "/.github/workflows/rust-probe.yml",
@@ -313,13 +338,15 @@ def assert_validation_errors_point_to_suggest() -> None:
 
 def assert_changed_files_produce_targeted_suggestions() -> None:
     owner = load_owner_module()
+    separate_workspaces = owner.remote_probe_policy({"remote_probe": valid_remote_probe()})["separate_workspaces"]
     suggestions = owner.rust_probe_suggestions(
         [
             "src/lib.rs",
             "tests/build_script_git_head_rerun_paths.rs",
             "Cargo.lock",
             "docs/ci/ubicloud-cost-governance.md",
-        ]
+        ],
+        separate_workspaces,
     )
     expected = [
         "just rust-probe check-lib",
@@ -331,13 +358,109 @@ def assert_changed_files_produce_targeted_suggestions() -> None:
     for command in expected:
         if command not in suggestions:
             raise AssertionError((command, suggestions))
-    bte_suggestions = owner.rust_probe_suggestions(["crates/backtesting-vertical-slice/src/lib.rs"])
+    bte_suggestions = owner.rust_probe_suggestions(
+        ["crates/backtesting-vertical-slice/src/lib.rs"],
+        separate_workspaces,
+    )
     if any(suggestion == "just rust-probe check-lib" for suggestion in bte_suggestions):
         raise AssertionError(bte_suggestions)
     if not any("backtesting-vertical-slice" in suggestion for suggestion in bte_suggestions):
         raise AssertionError(bte_suggestions)
-    if not any("bte-" in suggestion for suggestion in bte_suggestions):
+    if "just bte-fmt-check" not in bte_suggestions:
         raise AssertionError(bte_suggestions)
+    generic_suggestions = owner.rust_probe_suggestions([], separate_workspaces)
+    if "No Rust source or top-level integration-test target was inferred from changed files." not in generic_suggestions:
+        raise AssertionError(generic_suggestions)
+    nested_test_suggestions = owner.rust_probe_suggestions(["tests/support/mod.rs"], separate_workspaces)
+    if any("support" in suggestion for suggestion in nested_test_suggestions):
+        raise AssertionError(nested_test_suggestions)
+    unknown_crate_suggestions = owner.rust_probe_suggestions(["crates/future-workspace/src/lib.rs"], separate_workspaces)
+    if "just rust-probe check-lib" in unknown_crate_suggestions:
+        raise AssertionError(unknown_crate_suggestions)
+
+
+def assert_changed_files_use_integration_base_not_feature_upstream() -> None:
+    owner = load_owner_module()
+    merge_base = "b" * 40
+    outputs = {
+        ("diff", "--name-only", "HEAD", "--"): ("", None),
+        ("ls-files", "--others", "--exclude-standard"): ("", None),
+        ("merge-base", "origin/main", "HEAD"): (merge_base, None),
+        ("diff", "--name-only", merge_base, "HEAD", "--"): ("src/lib.rs\ntests/config_parsing.rs\n", None),
+    }
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git_output(_repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
+        calls.append(args)
+        if args not in outputs:
+            raise AssertionError(f"unexpected git call: {args}")
+        return outputs[args]
+
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = fake_git_output
+        changed, error = owner.rust_probe_changed_files(REPO_ROOT, "origin/main")
+    finally:
+        owner.git_output = original_git_output
+    if error is not None:
+        raise AssertionError(error)
+    if changed != ["src/lib.rs", "tests/config_parsing.rs"]:
+        raise AssertionError((changed, calls))
+    outputs[("merge-base", "origin/main", "HEAD")] = (None, "git exited 128")
+    calls.clear()
+    original_git_output = owner.git_output
+    try:
+        owner.git_output = fake_git_output
+        changed, error = owner.rust_probe_changed_files(REPO_ROOT, "origin/main")
+    finally:
+        owner.git_output = original_git_output
+    if changed is not None or error is None or "could not resolve configured base ref 'origin/main'" not in error:
+        raise AssertionError((changed, error, calls))
+
+
+def assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier() -> None:
+    owner = load_owner_module()
+    changed_calls: list[tuple[pathlib.Path, str]] = []
+
+    def fake_load_policy(_repo: pathlib.Path) -> dict:
+        return {"remote_probe": valid_remote_probe()}
+
+    def fake_changed_files(repo: pathlib.Path, suggest_base_ref: str) -> tuple[list[str] | None, str | None]:
+        changed_calls.append((repo, suggest_base_ref))
+        return ["tests/config_parsing.rs"], None
+
+    original_load_policy = owner.load_policy
+    original_changed_files = owner.rust_probe_changed_files
+    try:
+        owner.load_policy = fake_load_policy
+        owner.rust_probe_changed_files = fake_changed_files
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = owner.cmd_rust_probe_suggest(
+                types.SimpleNamespace(repo=str(REPO_ROOT), runner_tier=None)
+            )
+        if result != 0:
+            raise AssertionError((result, stdout.getvalue(), stderr.getvalue()))
+        output = stdout.getvalue()
+        if "tests/config_parsing.rs" not in output:
+            raise AssertionError(output)
+        if "just rust-probe check-test-target config_parsing" not in output:
+            raise AssertionError(output)
+        if "Rust Probe is not merge proof" not in output:
+            raise AssertionError(output)
+        if changed_calls != [(REPO_ROOT, "origin/main")]:
+            raise AssertionError(changed_calls)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result = owner.cmd_rust_probe_suggest(
+                types.SimpleNamespace(repo=str(REPO_ROOT), runner_tier="")
+            )
+        if result != 2 or "suggest does not accept --runner-tier" not in stderr.getvalue():
+            raise AssertionError((result, stderr.getvalue()))
+    finally:
+        owner.load_policy = original_load_policy
+        owner.rust_probe_changed_files = original_changed_files
 
 
 def assert_preconditions_are_pr_free_and_exact_upstream() -> None:
@@ -642,6 +765,8 @@ def main() -> int:
     assert_parser_help_exposes_suggest_and_examples()
     assert_validation_errors_point_to_suggest()
     assert_changed_files_produce_targeted_suggestions()
+    assert_changed_files_use_integration_base_not_feature_upstream()
+    assert_cmd_rust_probe_suggest_reports_policy_and_rejects_runner_tier()
     assert_preconditions_are_pr_free_and_exact_upstream()
     assert_dispatch_uses_declared_workflow_inputs()
     assert_cancelled_probe_is_superseded_not_code_failure()

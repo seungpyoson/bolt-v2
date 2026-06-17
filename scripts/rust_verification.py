@@ -82,12 +82,6 @@ RUST_PROBE_INPUT_KEYS = (
     "test_target",
     "test_name",
 )
-RUST_PROBE_SEPARATE_WORKSPACES = {
-    "crates/backtesting-vertical-slice": (
-        "backtesting-vertical-slice is a separate workspace; root Rust Probe does not cover it",
-        "just bte-fmt-check",
-    ),
-}
 SCRUB_ENV_KEYS = (
     "BOLT_ALLOW_LOCAL_RUST",
     "BOLT_MANAGED_JUST",
@@ -376,10 +370,35 @@ def require_non_empty_string(table: dict[str, Any], key: str, prefix: str) -> st
     return value
 
 
+def require_non_empty_string_array(table: dict[str, Any], key: str, prefix: str) -> list[str]:
+    value = table.get(key)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+        raise PolicyError(f"{prefix}.{key} must be a non-empty string array")
+    return value
+
+
+def validate_git_ref(value: str, key: str) -> None:
+    invalid = any(char.isspace() for char in value) or any(char in value for char in "\\^:?*[]~")
+    if (
+        invalid
+        or value.startswith(("/", "."))
+        or value.endswith(("/", "."))
+        or "//" in value
+        or ".." in value
+    ):
+        raise PolicyError(f"remote_probe.{key} must be a safe git ref")
+
+
 def validate_workflow_path(value: str, key: str) -> None:
     path = pathlib.PurePosixPath(value)
     if value.startswith("/") or ".." in path.parts or not value.endswith(".yml"):
         raise PolicyError(f"remote_probe.{key} must be a relative .yml workflow path")
+
+
+def validate_relative_workspace_path(value: str, prefix: str) -> None:
+    path = pathlib.PurePosixPath(value)
+    if value.startswith("/") or ".." in path.parts or not path.parts:
+        raise PolicyError(f"{prefix} must be a relative path")
 
 
 def validate_remote_probe_policy(data: dict[str, Any]) -> None:
@@ -390,6 +409,7 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     if workflow_name != "Rust Probe":
         raise PolicyError("remote_probe.workflow_name must be 'Rust Probe'")
     validate_workflow_path(require_non_empty_string(policy, "workflow_path", "remote_probe"), "workflow_path")
+    validate_git_ref(require_non_empty_string(policy, "suggest_base_ref", "remote_probe"), "suggest_base_ref")
     values: dict[str, int] = {}
     for key in (
         "poll_interval_seconds",
@@ -425,6 +445,28 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     max_workflow_timeout_seconds = max(int(timeouts[job]) for job in expected_timeout_keys) * 60
     if values["overall_timeout_seconds"] <= max_workflow_timeout_seconds:
         raise PolicyError("remote_probe.overall_timeout_seconds must exceed remote_probe.workflow_timeouts")
+    separate_workspaces = policy.get("separate_workspaces")
+    if not isinstance(separate_workspaces, dict) or not separate_workspaces:
+        raise PolicyError("remote_probe.separate_workspaces table is required")
+    paths: set[str] = set()
+    for name, workspace in separate_workspaces.items():
+        prefix = f"remote_probe.separate_workspaces.{name}"
+        if not SAFE_IDENTIFIER_RE.match(str(name)):
+            raise PolicyError("remote_probe.separate_workspaces keys must be safe identifiers")
+        if not isinstance(workspace, dict):
+            raise PolicyError(f"{prefix} must be a table")
+        path = require_non_empty_string(workspace, "path", prefix)
+        validate_relative_workspace_path(path, f"{prefix}.path")
+        if path in paths:
+            raise PolicyError("remote_probe.separate_workspaces paths must not contain duplicates")
+        paths.add(path)
+        message = require_non_empty_string(workspace, "message", prefix)
+        if message.strip() != message or "\n" in message:
+            raise PolicyError(f"{prefix}.message must be a single trimmed line")
+        commands = require_non_empty_string_array(workspace, "commands", prefix)
+        for command in commands:
+            if command.strip() != command or "\n" in command:
+                raise PolicyError(f"{prefix}.commands entries must be single trimmed lines")
 
 
 def status_for_repo(repo: pathlib.Path) -> str:
@@ -2607,6 +2649,13 @@ def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise PolicyError("remote_probe table is required for rust-probe")
     validate_remote_probe_policy(policy)
+    separate_workspaces = {
+        str(workspace["path"]): {
+            "message": str(workspace["message"]),
+            "commands": list(workspace["commands"]),
+        }
+        for workspace in raw["separate_workspaces"].values()
+    }
     return {
         "workflow_name": str(raw["workflow_name"]),
         "workflow_path": str(raw["workflow_path"]),
@@ -2619,6 +2668,8 @@ def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
         "allowed_runner_tiers": list(raw["allowed_runner_tiers"]),
         "mode_runner_tiers": dict(raw["mode_runner_tiers"]),
         "workflow_timeouts": dict(raw["workflow_timeouts"]),
+        "suggest_base_ref": str(raw["suggest_base_ref"]),
+        "separate_workspaces": separate_workspaces,
     }
 
 
@@ -3297,15 +3348,15 @@ def rust_probe_test_target_for_path(path: str) -> str | None:
     return parsed.stem
 
 
-def rust_probe_separate_workspace_for_path(path: str) -> tuple[str, str] | None:
+def rust_probe_separate_workspace_for_path(path: str, separate_workspaces: dict[str, Any]) -> tuple[str, ...] | None:
     normalized = path.strip().replace("\\", "/")
-    for prefix, suggestion in RUST_PROBE_SEPARATE_WORKSPACES.items():
+    for prefix, suggestion in separate_workspaces.items():
         if normalized == prefix or normalized.startswith(f"{prefix}/"):
-            return suggestion
+            return (str(suggestion["message"]), *(str(command) for command in suggestion["commands"]))
     return None
 
 
-def rust_probe_suggestions(changed_files: list[str]) -> list[str]:
+def rust_probe_suggestions(changed_files: list[str], separate_workspaces: dict[str, Any]) -> list[str]:
     normalized = sorted({path.strip().replace("\\", "/") for path in changed_files if path.strip()})
     targets = sorted(
         {
@@ -3320,15 +3371,18 @@ def rust_probe_suggestions(changed_files: list[str]) -> list[str]:
         or path == "Cargo.lock"
         or path == "build.rs"
         or path.startswith("src/")
-        or (path.startswith("crates/") and rust_probe_separate_workspace_for_path(path) is None)
         for path in normalized
     )
     if lib_or_workspace_changed:
         suggestions.append("just rust-probe check-lib")
-    for message, command in sorted(
-        {suggestion for path in normalized if (suggestion := rust_probe_separate_workspace_for_path(path)) is not None}
+    for suggestion_lines in sorted(
+        {
+            suggestion
+            for path in normalized
+            if (suggestion := rust_probe_separate_workspace_for_path(path, separate_workspaces)) is not None
+        }
     ):
-        suggestions.extend([message, command])
+        suggestions.extend(suggestion_lines)
     for target in targets:
         suggestions.extend(
             [
@@ -3340,6 +3394,11 @@ def rust_probe_suggestions(changed_files: list[str]) -> list[str]:
         )
     if suggestions:
         return suggestions
+    if any(path.startswith("crates/") for path in normalized):
+        return [
+            "No root Rust Probe suggestion was inferred for changed crates/ paths.",
+            "Configure remote_probe.separate_workspaces for separate workspaces that need non-root guidance.",
+        ]
     return [
         "No Rust source or top-level integration-test target was inferred from changed files.",
         "just rust-probe check-lib",
@@ -3348,7 +3407,7 @@ def rust_probe_suggestions(changed_files: list[str]) -> list[str]:
     ]
 
 
-def rust_probe_changed_files(repo: pathlib.Path) -> tuple[list[str] | None, str | None]:
+def rust_probe_changed_files(repo: pathlib.Path, suggest_base_ref: str) -> tuple[list[str] | None, str | None]:
     changed: set[str] = set()
     working_tree, error = git_output(repo, "diff", "--name-only", "HEAD", "--")
     if error is not None:
@@ -3358,19 +3417,26 @@ def rust_probe_changed_files(repo: pathlib.Path) -> tuple[list[str] | None, str 
     if error is not None:
         return None, error
     changed.update(line for line in untracked.splitlines() if line)
-    upstream, error = git_output(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
-    if error is None and upstream:
-        branch_diff, diff_error = git_output(repo, "diff", "--name-only", f"{upstream}...HEAD", "--")
-        if diff_error is None:
-            changed.update(line for line in branch_diff.splitlines() if line)
+    merge_base, error = git_output(repo, "merge-base", suggest_base_ref, "HEAD")
+    if error is not None or not merge_base:
+        detail = f": {error}" if error is not None else ""
+        return None, f"rust-probe suggest could not resolve configured base ref {suggest_base_ref!r}{detail}"
+    branch_diff, error = git_output(repo, "diff", "--name-only", merge_base, "HEAD", "--")
+    if error is not None:
+        return None, error
+    changed.update(line for line in branch_diff.splitlines() if line)
     return sorted(changed), None
 
 
 def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
-    if args.runner_tier:
+    if args.runner_tier is not None:
         return verify_remote_fail("suggest does not accept --runner-tier because it does not dispatch a probe")
-    changed_files, error = rust_probe_changed_files(repo)
+    try:
+        probe_policy = remote_probe_policy(load_policy(repo))
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        return verify_remote_fail(str(exc))
+    changed_files, error = rust_probe_changed_files(repo, probe_policy["suggest_base_ref"])
     if error is not None or changed_files is None:
         return verify_remote_fail(error or "unable to inspect changed files")
     print("Rust Probe suggestions for targeted remote debugging:")
@@ -3383,7 +3449,7 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
     else:
         print("changed files considered: <none>")
     print("commands:")
-    for suggestion in rust_probe_suggestions(changed_files):
+    for suggestion in rust_probe_suggestions(changed_files, probe_policy["separate_workspaces"]):
         print(f"- {suggestion}")
     print("Rust Probe is not merge proof. For final exact-head full-CI proof: just verify-remote")
     return 0

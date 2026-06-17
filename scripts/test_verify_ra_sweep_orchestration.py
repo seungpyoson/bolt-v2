@@ -61,6 +61,7 @@ fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() 
 fn sweep_orchestration_rejects_existing_run_spec_file_before_executor() {}
 fn sweep_orchestration_rejects_existing_output_dir_before_executor() {}
 fn sweep_orchestration_rejects_duplicate_materialization_paths_before_executor() {}
+fn sweep_orchestration_rejects_contract_not_bound_to_run_spec() {}
 """,
     )
     write_file(
@@ -110,6 +111,15 @@ pub fn run_backtest_sweep_with_executor() {
     let contract: BacktestResultContract = read_result_contract();
     let _parsed: BacktestResultContract = serde_json::from_slice(&bytes).unwrap();
     contract.validate();
+    validate_result_contract_matches_run(&contract, &run, &result_contract_path);
+    let expected_manifest_hash = run.run_spec.manifest.manifest_hash();
+    let expected_accepted_object_sha256 = sha256_hex(&run.accepted_object_bytes);
+    let expected_converter_config_hash = run.run_spec.converter.content_hash().unwrap();
+    let _ = contract.manifest_hash == expected_manifest_hash;
+    let _ = contract.accepted_object_sha256 == expected_accepted_object_sha256;
+    let _ = run.run_spec.accepted_object.sha256 == expected_accepted_object_sha256;
+    let _ = contract.strategy_config_hash == run.run_spec.manifest.strategy_config_hash;
+    let _ = contract.converter_config_hash == expected_converter_config_hash;
 }
 """
 

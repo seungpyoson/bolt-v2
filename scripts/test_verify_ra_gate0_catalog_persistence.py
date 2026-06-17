@@ -833,6 +833,47 @@ def test_cli_rejects_ambient_object_store_builder() -> None:
     assert any("SSM-resolved explicit credentials" in finding for finding in findings)
 
 
+def test_rejects_non_atomic_durable_result_contract_rewrite() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_compliant_tree(root)
+        operator = root / "crates/backtesting-vertical-slice/src/operator.rs"
+        operator.write_text(
+            compliant_operator()
+            + "\nfn rewrites_contract() { fs::write(&artifacts.contract_path, bytes)?; }\n",
+            encoding="utf-8",
+        )
+
+        findings = verifier.scan_root(root)
+
+    assert any("durable result contract rewrite must use atomic_write" in finding for finding in findings)
+
+
+def test_comments_and_strings_only_do_not_satisfy_rust_snippets() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_compliant_tree(root)
+        write_file(
+            root,
+            "crates/backtesting-vertical-slice/src/artifact_store.rs",
+            """
+// pub struct S3ArtifactStoreConfig
+// pub async fn persist_catalog_projection_for_source_binding
+// .with_conditional_put(S3ConditionalPut::ETagMatch)
+const STUFFED: &str = "CreateOnlyArtifactWriter::new duplicate_create_rejected";
+""",
+        )
+
+        findings = verifier.scan_root(root)
+
+    assert any("pub struct S3ArtifactStoreConfig" in finding for finding in findings)
+    assert any(
+        "persist_catalog_projection_for_source_binding" in finding for finding in findings
+    )
+
+
 def main() -> int:
     tests = [
         test_compliant_tree_passes,
@@ -841,6 +882,8 @@ def main() -> int:
         test_unchecked_ra001_task_is_a_finding,
         test_cli_fails_with_actionable_output,
         test_cli_rejects_ambient_object_store_builder,
+        test_rejects_non_atomic_durable_result_contract_rewrite,
+        test_comments_and_strings_only_do_not_satisfy_rust_snippets,
     ]
     for test in tests:
         test()

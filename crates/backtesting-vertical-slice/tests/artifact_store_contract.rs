@@ -17,8 +17,10 @@ use backtesting_vertical_slice::{
         StoredArtifactIndexPointer, persist_catalog_projection_for_source_binding,
     },
     nt_catalog_capability::{
+        NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION, NtCatalogCapabilityControls,
         NtCatalogCapabilityEvidence, NtCatalogCapabilityProof, NtCatalogCapabilityProofDocument,
         NtCatalogCapabilityRunSpec, NtCatalogCredentialSource, NtCatalogReadBackEvidence,
+        SYNTHETIC_SOURCE_PROOF_ID,
     },
     operator::{RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
     result_contract::BacktestResultContract,
@@ -121,6 +123,41 @@ fn successful_capability_evidence(
             duplicate_copy_rejected: true,
         },
     }
+}
+
+fn synthetic_capability_proof(
+    root: &ResolvedArtifactRoot,
+    proof_run_id: &str,
+    nt_revision: &str,
+    storage_options_keys: Vec<String>,
+) -> NtCatalogCapabilityProof {
+    let proof = NtCatalogCapabilityProof {
+        schema_version: NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION.to_string(),
+        proof_run_id: proof_run_id.to_string(),
+        nt_revision: nt_revision.to_string(),
+        artifact_root_uri: root.artifact_root_uri().to_string(),
+        synthetic_catalog_root_uri: root
+            .nt_catalog_synthetic_proof_root(proof_run_id)
+            .expect("synthetic proof root"),
+        credential_source: NtCatalogCredentialSource::Ssm,
+        storage_options_keys,
+        synthetic_fixture_coverage: vec![
+            MarketStructureFixture::BinaryOption,
+            MarketStructureFixture::PerpsSpot,
+        ],
+        synthetic_source_proof_id: SYNTHETIC_SOURCE_PROOF_ID.to_string(),
+        provenance: "synthetic".to_string(),
+        controls: NtCatalogCapabilityControls {
+            no_cloud_feature_gate_failed: true,
+            ambient_credentials_scrubbed: true,
+            invalid_credentials_write_failed: true,
+            ssm_credentials_write_reopen_query_succeeded: true,
+            conditional_put_probe_succeeded: true,
+            copy_if_not_exists_probe_succeeded: true,
+        },
+    };
+    proof.validate(root).expect("synthetic capability proof");
+    proof
 }
 
 fn artifact_config_toml() -> &'static str {
@@ -700,13 +737,12 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
     );
 
     let root = artifact_config().resolve().expect("valid artifact root");
-    let mut proof = NtCatalogCapabilityProof::synthetic_success(
+    let mut proof = synthetic_capability_proof(
         &root,
         "s3-proof-run-123",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         vec!["region".to_string()],
-    )
-    .expect("synthetic capability proof");
+    );
 
     assert_eq!(proof.credential_source, NtCatalogCredentialSource::Ssm);
     proof
@@ -719,26 +755,24 @@ async fn nt_catalog_capability_proof_requires_synthetic_ssm_direct_s3_controls()
         "capability proof must not point at the canonical NT catalog root"
     );
 
-    let mut proof = NtCatalogCapabilityProof::synthetic_success(
+    let mut proof = synthetic_capability_proof(
         &root,
         "s3-proof-run-456",
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         vec!["region".to_string()],
-    )
-    .expect("synthetic capability proof");
+    );
     proof.controls.invalid_credentials_write_failed = false;
     assert!(
         proof.direct_s3_catalog_access_proven(&root).is_err(),
         "credential negative control is required"
     );
 
-    let mut proof = NtCatalogCapabilityProof::synthetic_success(
+    let mut proof = synthetic_capability_proof(
         &root,
         "s3-proof-run-789",
         "cccccccccccccccccccccccccccccccccccccccc",
         vec!["region".to_string()],
-    )
-    .expect("synthetic capability proof");
+    );
     proof
         .synthetic_fixture_coverage
         .retain(|fixture| *fixture != MarketStructureFixture::BinaryOption);
@@ -1981,6 +2015,26 @@ async fn research_analytics_index_rejects_promotion_package_family() {
 
     assert!(err.to_string().contains("research analytics"), "{err}");
     assert!(err.to_string().contains("experiment-results"), "{err}");
+}
+
+#[tokio::test]
+async fn artifact_index_rejects_cross_kind_artifact_uri_squatting() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let event = backtest_event(
+        format!("{}/projection=projection-001/", root.typed_root(ArtifactKind::NtCatalog)),
+        "event-cross-kind",
+        "run-cross-kind",
+    );
+
+    let err = writer
+        .put_event(&root, &event)
+        .await
+        .expect_err("backtest event must not claim an NT catalog artifact URI");
+
+    assert!(err.to_string().contains("Backtests"), "{err}");
+    assert!(err.to_string().contains("/backtests/v1/"), "{err}");
 }
 
 #[tokio::test]

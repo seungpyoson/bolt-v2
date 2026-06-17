@@ -82,6 +82,7 @@ pub fn strategy_config_hash(strategy: &StrategySource) -> String {
 /// Objective pointer into the NautilusTrader result. Carries only mechanical
 /// run facts, never a judgement.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NautilusResultPointer {
     pub trader_id: String,
     pub machine_id: String,
@@ -118,6 +119,7 @@ impl NautilusResultPointer {
 
 /// Artifact URIs recorded by the contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResultArtifactUris {
     pub source_proof_uri: String,
     pub canonical_table_uri: String,
@@ -130,6 +132,7 @@ pub struct ResultArtifactUris {
 
 /// The objective backtest result contract.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BacktestResultContract {
     pub contract_version: String,
     pub run_id: String,
@@ -168,6 +171,7 @@ pub struct BacktestResultContract {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultContractError {
     MissingField(&'static str),
+    UnsupportedVersion { actual: String },
     SubjectivePromotionLanguage { field: String, phrase: String },
 }
 
@@ -175,6 +179,10 @@ impl std::fmt::Display for ResultContractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "missing required field: {field}"),
+            Self::UnsupportedVersion { actual } => write!(
+                f,
+                "unsupported result contract version: expected {RESULT_CONTRACT_VERSION}, got {actual:?}"
+            ),
             Self::SubjectivePromotionLanguage { field, phrase } => write!(
                 f,
                 "result contract field {field} contains subjective promotion language: {phrase:?}"
@@ -252,6 +260,11 @@ impl BacktestResultContract {
             if value.trim().is_empty() {
                 return Err(ResultContractError::MissingField(name));
             }
+        }
+        if self.contract_version != RESULT_CONTRACT_VERSION {
+            return Err(ResultContractError::UnsupportedVersion {
+                actual: self.contract_version.clone(),
+            });
         }
         if let Some(run_config_id) = &self.nt_result.run_config_id
             && run_config_id.trim().is_empty()
@@ -664,6 +677,46 @@ features = ["streaming", "examples"]
         assert_eq!(
             c.validate().unwrap_err(),
             ResultContractError::MissingField("contract_version")
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_contract_version() {
+        let mut c = contract();
+        c.contract_version = "backtest-result-contract.v999".to_string();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::UnsupportedVersion {
+                actual: "backtest-result-contract.v999".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_contract_fields() {
+        let c = contract();
+        let mut value = serde_json::to_value(&c).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("contract object")
+            .insert("future_schema_field".to_string(), serde_json::json!(true));
+        assert!(
+            serde_json::from_value::<BacktestResultContract>(value).is_err(),
+            "top-level unknown result contract fields must fail closed"
+        );
+
+        let mut value = serde_json::to_value(&c).expect("serialize");
+        value
+            .get_mut("artifact_uris")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("artifact_uris object")
+            .insert(
+                "future_artifact_uri".to_string(),
+                serde_json::json!("s3://example/future.json"),
+            );
+        assert!(
+            serde_json::from_value::<BacktestResultContract>(value).is_err(),
+            "nested unknown result contract fields must fail closed"
         );
     }
 

@@ -118,7 +118,8 @@ def scan_root(root: Path) -> list[str]:
 
     for label, pattern in (
         ("RA artifact family constants", r"\bRESEARCH_ANALYTICS_ARTIFACT_FAMILIES\b.*\bRESEARCH_ANALYTICS_DATASETS_SUBFAMILY\b.*\bRESEARCH_ANALYTICS_FEATURE_TABLES_SUBFAMILY\b.*\bRESEARCH_ANALYTICS_EXPERIMENT_RESULTS_SUBFAMILY\b"),
-        ("RA kind URI validator", r"\bfn\s+validate_artifact_uri_for_kind\b.*\bArtifactKind\s*::\s*ResearchAnalytics\b.*\btyped_root\s*\(\s*ArtifactKind\s*::\s*ResearchAnalytics\s*\).*?\bRESEARCH_ANALYTICS_ARTIFACT_FAMILIES\b.*?\bstarts_with\b"),
+        ("all artifact kinds require typed-root URI validation", r"\bfn\s+validate_artifact_uri_for_kind\b.*\btyped_root\s*=\s*artifact_root\s*\.\s*typed_root\s*\(\s*kind\s*\).*?\bstarts_with\b"),
+        ("RA kind URI validator", r"\bfn\s+validate_artifact_uri_for_kind\b.*\bArtifactKind\s*::\s*ResearchAnalytics\b.*\bRESEARCH_ANALYTICS_ARTIFACT_FAMILIES\b.*?\bstarts_with\b"),
         ("event validation uses kind URI validator", r"\bimpl\s+ArtifactIndexEvent\b.*\bfn\s+validate\b.*\bvalidate_artifact_uri_for_kind\b.*\bartifact_uri\b.*\bvalidate_artifact_uri_for_kind\b.*\bmanifest_uri\b"),
         ("snapshot row validation uses kind URI validator", r"\bimpl\s+ArtifactIndexSnapshotRow\b.*\bfn\s+validate\b.*\bvalidate_artifact_uri_for_kind\b.*\bartifact_uri\b.*\bvalidate_artifact_uri_for_kind\b.*\bmanifest_uri\b"),
         ("RA writer authority supports RA kind", r"\bArtifactIndexWriteAuthority\b.*\bauthorize_commit\b.*\bArtifactKind\b"),
@@ -138,6 +139,7 @@ def scan_root(root: Path) -> list[str]:
         ("RA active lifecycle assertion", r"\bArtifactLifecycleState\s*::\s*Active\b"),
         ("RA committed row assertion", r"\bArtifactIndexCommitState\s*::\s*Committed\b"),
         ("RA consumer mutation rejection test", r"\bfn\s+artifact_index_writer_rejects_consumer_mutation_of_research_analytics_records\b.*\bexpect_err\b"),
+        ("cross-kind artifact URI rejection test", r"\bfn\s+artifact_index_rejects_cross_kind_artifact_uri_squatting\b.*\bexpect_err\b"),
         ("RA promotion package rejection test", r"\bfn\s+research_analytics_index_rejects_promotion_package_family\b.*\bput_event\b.*\bexpect_err\b"),
     ):
         require_pattern(ARTIFACT_STORE_TEST_PATH, test_code, label, pattern, findings)

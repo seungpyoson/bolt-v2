@@ -71,12 +71,14 @@ impl BacktestRunCatalogList for ParquetDataCatalog {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunPointerResult {
     pub result_contract_uri: String,
     pub result_contract_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunPointerIndexRecord {
     pub run_id: String,
     pub params: BTreeMap<String, serde_json::Value>,
@@ -84,6 +86,7 @@ pub struct RunPointerIndexRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunPointerIndex {
     pub schema_version: u64,
     pub artifact_root: String,
@@ -360,6 +363,7 @@ where
             contract.run_id,
             run.run_spec.manifest.run_id
         );
+        validate_result_contract_matches_run(&contract, run, &result_contract_path)?;
 
         reports.push(BacktestSweepRunReport {
             run_id: run.run_spec.manifest.run_id.clone(),
@@ -376,6 +380,81 @@ where
 fn read_result_contract(path: &Path) -> Result<BacktestResultContract> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
+}
+
+fn validate_result_contract_matches_run(
+    contract: &BacktestResultContract,
+    run: &BacktestSweepRun,
+    result_contract_path: &Path,
+) -> Result<()> {
+    let expected_manifest_hash = run.run_spec.manifest.manifest_hash();
+    ensure!(
+        contract.manifest_hash == expected_manifest_hash,
+        "{} manifest_hash {:?} does not match run-spec manifest hash {:?}",
+        result_contract_path.display(),
+        contract.manifest_hash,
+        expected_manifest_hash
+    );
+
+    let expected_accepted_object_sha256 = sha256_hex(&run.accepted_object_bytes);
+    ensure!(
+        contract.accepted_object_sha256 == expected_accepted_object_sha256,
+        "{} accepted_object_sha256 {:?} does not match accepted object bytes {:?}",
+        result_contract_path.display(),
+        contract.accepted_object_sha256,
+        expected_accepted_object_sha256
+    );
+    ensure!(
+        run.run_spec.accepted_object.sha256 == expected_accepted_object_sha256,
+        "run-spec accepted_object.sha256 {:?} does not match accepted object bytes {:?}",
+        run.run_spec.accepted_object.sha256,
+        expected_accepted_object_sha256
+    );
+
+    ensure!(
+        contract.strategy_config_hash == run.run_spec.manifest.strategy_config_hash,
+        "{} strategy_config_hash {:?} does not match run-spec strategy_config_hash {:?}",
+        result_contract_path.display(),
+        contract.strategy_config_hash,
+        run.run_spec.manifest.strategy_config_hash
+    );
+
+    let expected_converter_config_hash = run
+        .run_spec
+        .converter
+        .content_hash()
+        .context("hash run-spec converter config")?;
+    ensure!(
+        contract.converter_config_hash == expected_converter_config_hash,
+        "{} converter_config_hash {:?} does not match run-spec converter config hash {:?}",
+        result_contract_path.display(),
+        contract.converter_config_hash,
+        expected_converter_config_hash
+    );
+
+    ensure!(
+        contract.source_proof_id == run.run_spec.manifest.source_proof_id,
+        "{} source_proof_id {:?} does not match manifest source_proof_id {:?}",
+        result_contract_path.display(),
+        contract.source_proof_id,
+        run.run_spec.manifest.source_proof_id
+    );
+    ensure!(
+        contract.source_proof_version == run.run_spec.manifest.source_proof_version,
+        "{} source_proof_version {} does not match manifest source_proof_version {}",
+        result_contract_path.display(),
+        contract.source_proof_version,
+        run.run_spec.manifest.source_proof_version
+    );
+    ensure!(
+        contract.nt_version == run.run_spec.manifest.resolved_nt_version,
+        "{} nt_version {:?} does not match manifest resolved_nt_version {:?}",
+        result_contract_path.display(),
+        contract.nt_version,
+        run.run_spec.manifest.resolved_nt_version
+    );
+
+    Ok(())
 }
 
 fn validate_run_pointer_artifact_root(artifact_root: &str) -> Result<String> {
@@ -463,6 +542,7 @@ impl ForbiddenPromotionAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceProofEvidenceRef {
     pub source_proof_id: String,
     pub source_proof_version: Option<u64>,
@@ -481,6 +561,7 @@ impl SourceProofEvidenceRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BacktestEvidenceRef {
     pub result_contract_id: String,
     pub result_contract_uri: String,
@@ -497,6 +578,7 @@ impl BacktestEvidenceRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactPointerRef {
     pub uri: String,
     pub sha256: String,
@@ -510,6 +592,7 @@ impl ArtifactPointerRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RaVerdict {
     pub verdict: RaVerdictKind,
     pub scope: String,
@@ -557,6 +640,9 @@ impl RaVerdict {
         for claim_limit in &self.preserved_claim_limits {
             validate_non_empty("verdict.preserved_claim_limits", claim_limit)?;
         }
+        if self.verdict == RaVerdictKind::Go && !self.is_real_go_finding() {
+            return Err(ResearchAnalyticsArtifactError::PromotionConfigRequiresGo);
+        }
         Ok(())
     }
 
@@ -574,6 +660,7 @@ impl RaVerdict {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromotionConfigRef {
     pub typed_config_uri: String,
     pub typed_config_hash: String,
@@ -609,6 +696,7 @@ impl PromotionConfigRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExperimentResultArtifact {
     pub artifact_schema_version: u64,
     pub artifact_id: String,
@@ -637,6 +725,12 @@ impl ExperimentResultArtifact {
         validate_experiment_results_uri("artifact_uri", &self.artifact_root, &self.artifact_uri)?;
         ensure_non_empty("source_refs", &self.source_refs)?;
         ensure_non_empty("source_hashes", &self.source_hashes)?;
+        if self.source_refs.len() != self.source_hashes.len() {
+            return Err(ResearchAnalyticsArtifactError::SourceRefHashCountMismatch {
+                source_refs: self.source_refs.len(),
+                source_hashes: self.source_hashes.len(),
+            });
+        }
         validate_sha256("content_hash", &self.content_hash)?;
         for source_ref in &self.source_refs {
             validate_non_empty("source_refs", source_ref)?;
@@ -718,6 +812,10 @@ pub enum ResearchAnalyticsArtifactError {
         missing: &'static str,
     },
     PromotionConfigRequiresGo,
+    SourceRefHashCountMismatch {
+        source_refs: usize,
+        source_hashes: usize,
+    },
     IncompatibleClaimFidelity {
         source_fidelity: SourceProofFidelityClass,
         requested_fidelity: SourceProofFidelityClass,
@@ -766,6 +864,13 @@ impl fmt::Display for ResearchAnalyticsArtifactError {
             Self::PromotionConfigRequiresGo => write!(
                 formatter,
                 "promotion_config is allowed only on a real GO finding"
+            ),
+            Self::SourceRefHashCountMismatch {
+                source_refs,
+                source_hashes,
+            } => write!(
+                formatter,
+                "source_refs count {source_refs} must match source_hashes count {source_hashes}"
             ),
             Self::IncompatibleClaimFidelity {
                 source_fidelity,

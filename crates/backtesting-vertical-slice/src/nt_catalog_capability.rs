@@ -1192,46 +1192,6 @@ impl NtCatalogCapabilityPlan {
 impl NtCatalogCapabilityProof {
     /// # Errors
     ///
-    /// Returns an error if the proof root cannot be derived from the configured
-    /// artifact root.
-    pub fn synthetic_success(
-        artifact_root: &ResolvedArtifactRoot,
-        proof_run_id: impl Into<String>,
-        nt_revision: impl Into<String>,
-        storage_options_keys: Vec<String>,
-    ) -> Result<Self> {
-        let proof_run_id = proof_run_id.into();
-        let synthetic_catalog_root_uri =
-            artifact_root.nt_catalog_synthetic_proof_root(&proof_run_id)?;
-        let proof = Self {
-            schema_version: NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION.to_string(),
-            proof_run_id,
-            nt_revision: nt_revision.into(),
-            artifact_root_uri: artifact_root.artifact_root_uri().to_string(),
-            synthetic_catalog_root_uri,
-            credential_source: NtCatalogCredentialSource::Ssm,
-            storage_options_keys,
-            synthetic_fixture_coverage: vec![
-                MarketStructureFixture::BinaryOption,
-                MarketStructureFixture::PerpsSpot,
-            ],
-            synthetic_source_proof_id: SYNTHETIC_SOURCE_PROOF_ID.to_string(),
-            provenance: SYNTHETIC_PROVENANCE.to_string(),
-            controls: NtCatalogCapabilityControls {
-                no_cloud_feature_gate_failed: true,
-                ambient_credentials_scrubbed: true,
-                invalid_credentials_write_failed: true,
-                ssm_credentials_write_reopen_query_succeeded: true,
-                conditional_put_probe_succeeded: true,
-                copy_if_not_exists_probe_succeeded: true,
-            },
-        };
-        proof.validate(artifact_root)?;
-        Ok(proof)
-    }
-
-    /// # Errors
-    ///
     /// Returns an error if the proof record is incomplete or points outside the
     /// configured synthetic-only catalog proof root.
     pub fn validate(&self, artifact_root: &ResolvedArtifactRoot) -> Result<()> {

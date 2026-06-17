@@ -1960,11 +1960,15 @@ fn validate_artifact_uri_for_kind(
     uri: &str,
 ) -> Result<()> {
     artifact_root.object_path_for_uri(uri)?;
+    let typed_root = artifact_root.typed_root(kind);
+    ensure!(
+        uri.starts_with(&format!("{typed_root}/")),
+        "{field} for {kind:?} artifact must live under {typed_root}/"
+    );
     if kind != ArtifactKind::ResearchAnalytics {
         return Ok(());
     }
 
-    let typed_root = artifact_root.typed_root(ArtifactKind::ResearchAnalytics);
     let in_ra_family = RESEARCH_ANALYTICS_ARTIFACT_FAMILIES
         .iter()
         .any(|family| uri.starts_with(&format!("{typed_root}/{family}/")));

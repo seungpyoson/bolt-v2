@@ -126,6 +126,27 @@ def scan_root(root: Path) -> list[str]:
         ("result contract filename", r"\bRESULT_CONTRACT_FILE\b"),
         ("persisted result-contract JSON read", r"\bread_result_contract\s*\("),
         ("result contract validation", r"\bcontract\s*\.\s*validate\s*\("),
+        ("result contract run binding helper", r"\bvalidate_result_contract_matches_run\s*\("),
+        (
+            "result contract manifest hash binding",
+            r"\bcontract\s*\.\s*manifest_hash\s*==\s*expected_manifest_hash\b",
+        ),
+        (
+            "result contract accepted-object hash binding",
+            r"\bcontract\s*\.\s*accepted_object_sha256\s*==\s*expected_accepted_object_sha256\b",
+        ),
+        (
+            "run-spec accepted-object hash binding",
+            r"\brun\s*\.\s*run_spec\s*\.\s*accepted_object\s*\.\s*sha256\s*==\s*expected_accepted_object_sha256\b",
+        ),
+        (
+            "result contract strategy config hash binding",
+            r"\bcontract\s*\.\s*strategy_config_hash\s*==\s*run\s*\.\s*run_spec\s*\.\s*manifest\s*\.\s*strategy_config_hash\b",
+        ),
+        (
+            "result contract converter config hash binding",
+            r"\bcontract\s*\.\s*converter_config_hash\s*==\s*expected_converter_config_hash\b",
+        ),
     ):
         require_pattern(RA_PATH, ra_code, label, pattern, findings)
 
@@ -166,6 +187,10 @@ def scan_root(root: Path) -> list[str]:
         (
             "duplicate materialization path regression test",
             r"\bsweep_orchestration_rejects_duplicate_materialization_paths_before_executor\b",
+        ),
+        (
+            "result contract run binding regression test",
+            r"\bsweep_orchestration_rejects_contract_not_bound_to_run_spec\b",
         ),
     ):
         require_pattern(TEST_PATH, test_code, label, pattern, findings)

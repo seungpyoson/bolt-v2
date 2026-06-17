@@ -126,6 +126,7 @@ def scan_root(root: Path) -> list[str]:
         ("ManifestLatencyModelConfig", r"\bpub\s+struct\s+ManifestLatencyModelConfig\b"),
         ("ManifestFeeModelConfig", r"\bpub\s+struct\s+ManifestFeeModelConfig\b"),
         ("fill model resolver", r"\bfn\s+resolve_fill_model\b.*\bProbabilisticFillModel\s*::\s*new\s*\(.*\bFillModelAny\s*::\s*Probabilistic\b"),
+        ("probabilistic fill model seed guard", r"\brandom_seed\b\s*\.\s*ok_or\s*\(\s*ManifestError\s*::\s*MissingField\s*\("),
         ("latency model resolver", r"\bfn\s+resolve_latency_model\b.*\bLatencyModelAny\s*::\s*Static\b.*\bStaticLatencyModel\s*::\s*new\s*\("),
         ("fee model resolver", r"\bfn\s+resolve_fee_model\b.*\bFeeModelAny\s*::\s*MakerTaker\s*\(\s*MakerTakerFeeModel\s*\)"),
         ("BTE fill registration", r"\.maybe_fill_model\s*\(\s*resolve_fill_model\s*\("),

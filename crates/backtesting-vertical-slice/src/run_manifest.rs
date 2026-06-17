@@ -2981,8 +2981,11 @@ fn resolve_fill_model(
             )?;
             let prob_slippage =
                 parse_probability(&config.prob_slippage, "venue.fill_model.prob_slippage")?;
+            let random_seed = config
+                .random_seed
+                .ok_or(ManifestError::MissingField("venue.fill_model.random_seed"))?;
             let model =
-                ProbabilisticFillModel::new(prob_fill_on_limit, prob_slippage, config.random_seed)
+                ProbabilisticFillModel::new(prob_fill_on_limit, prob_slippage, Some(random_seed))
                     .map_err(|_| ManifestError::InvalidVenueModelParameter {
                         field: "venue.fill_model",
                         value: config.kind.clone(),
@@ -5537,6 +5540,22 @@ mod tests {
                 field: "venue.latency_model.insert_latency_nanos",
                 value: "1".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn rejects_probabilistic_fill_model_without_random_seed() {
+        let mut manifest = valid_manifest();
+        manifest.venue.fill_model = Some(ManifestFillModelConfig {
+            kind: FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC.to_string(),
+            prob_fill_on_limit: "0.5".to_string(),
+            prob_slippage: "0".to_string(),
+            random_seed: None,
+        });
+
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("venue.fill_model.random_seed")
         );
     }
 

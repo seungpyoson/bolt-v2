@@ -354,9 +354,220 @@ RUN_SPEC_REQUIRED = (
     "nt-catalog-synthetic-proof",
 )
 
+RUST_LITERAL_REQUIRED_SNIPPETS = {
+    "FixtureMismatch",
+    "accepted.fixture_type",
+}
+
 
 def missing_snippets(path: Path, text: str, snippets: tuple[str, ...]) -> list[str]:
     return [f"{path}: missing `{snippet}`" for snippet in snippets if snippet not in text]
+
+
+def strip_rust_comments(text: str) -> str:
+    out: list[str] = []
+    i = 0
+    state = "code"
+    block_depth = 0
+    while i < len(text):
+        raw_end = raw_string_end(text, i)
+        if state == "code" and raw_end is not None:
+            out.append(text[i:raw_end])
+            i = raw_end
+            continue
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if state == "code":
+            if c == "/" and nxt == "/":
+                state = "line_comment"
+                out.extend("  ")
+                i += 2
+                continue
+            if c == "/" and nxt == "*":
+                state = "block_comment"
+                block_depth = 1
+                out.extend("  ")
+                i += 2
+                continue
+            if c == '"':
+                state = "string"
+                out.append(c)
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+            continue
+        if state == "line_comment":
+            if c == "\n":
+                state = "code"
+                out.append(c)
+            else:
+                out.append(" ")
+            i += 1
+            continue
+        if state == "block_comment":
+            if c == "/" and nxt == "*":
+                block_depth += 1
+                out.extend("  ")
+                i += 2
+                continue
+            if c == "*" and nxt == "/":
+                block_depth -= 1
+                out.extend("  ")
+                i += 2
+                if block_depth == 0:
+                    state = "code"
+                continue
+            out.append("\n" if c == "\n" else " ")
+            i += 1
+            continue
+        if state == "string":
+            out.append(c)
+            if c == "\\":
+                if i + 1 < len(text):
+                    out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                state = "code"
+            i += 1
+            continue
+    return "".join(out)
+
+
+def raw_string_end(text: str, i: int) -> int | None:
+    start = i
+    if text.startswith("br", i):
+        i += 2
+    elif text.startswith("r", i):
+        i += 1
+    else:
+        return None
+    hashes = 0
+    while i < len(text) and text[i] == "#":
+        hashes += 1
+        i += 1
+    if i >= len(text) or text[i] != '"':
+        return None
+    closing = '"' + ("#" * hashes)
+    end = text.find(closing, i + 1)
+    if end == -1:
+        return len(text)
+    return end + len(closing)
+
+
+def strip_rust_comments_and_literals(text: str) -> str:
+    out: list[str] = []
+    i = 0
+    state = "code"
+    block_depth = 0
+    while i < len(text):
+        raw_end = raw_string_end(text, i)
+        if state == "code" and raw_end is not None:
+            out.append('""')
+            out.extend("\n" for _ in range(text.count("\n", i, raw_end)))
+            i = raw_end
+            continue
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if state == "code":
+            if c == "/" and nxt == "/":
+                state = "line_comment"
+                out.extend("  ")
+                i += 2
+                continue
+            if c == "/" and nxt == "*":
+                state = "block_comment"
+                block_depth = 1
+                out.extend("  ")
+                i += 2
+                continue
+            if c == '"':
+                state = "string"
+                out.extend('""')
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+            continue
+        if state == "line_comment":
+            if c == "\n":
+                state = "code"
+                out.append(c)
+            else:
+                out.append(" ")
+            i += 1
+            continue
+        if state == "block_comment":
+            if c == "/" and nxt == "*":
+                block_depth += 1
+                out.extend("  ")
+                i += 2
+                continue
+            if c == "*" and nxt == "/":
+                block_depth -= 1
+                out.extend("  ")
+                i += 2
+                if block_depth == 0:
+                    state = "code"
+                continue
+            out.append("\n" if c == "\n" else " ")
+            i += 1
+            continue
+        if state == "string":
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                state = "code"
+            i += 1
+            continue
+    return "".join(out)
+
+
+def snippet_requires_literal_preservation(snippet: str) -> bool:
+    if snippet in RUST_LITERAL_REQUIRED_SNIPPETS:
+        return True
+    if '"' in snippet or "-" in snippet:
+        return True
+    if " " not in snippet:
+        return False
+    code_markers = (
+        "pub ",
+        "fn ",
+        "let ",
+        "struct ",
+        "enum ",
+        "impl ",
+        "=",
+        "?",
+        "(",
+        ")",
+        ".",
+        "::",
+        "[",
+        "]",
+        "{",
+        "}",
+        ",",
+        ";",
+    )
+    return not any(marker in snippet for marker in code_markers)
+
+
+def missing_rust_snippets(path: Path, text: str, snippets: tuple[str, ...]) -> list[str]:
+    comments_stripped = strip_rust_comments(text)
+    comments_and_literals_stripped = strip_rust_comments_and_literals(text)
+    findings = []
+    for snippet in snippets:
+        search_text = (
+            comments_stripped
+            if snippet_requires_literal_preservation(snippet)
+            else comments_and_literals_stripped
+        )
+        if snippet not in search_text:
+            findings.append(f"{path}: missing `{snippet}`")
+    return findings
 
 
 def validate_run_spec_toml(path: Path, text: str) -> list[str]:
@@ -411,7 +622,7 @@ def scan_root(root: Path) -> list[str]:
     else:
         artifact_store_text = artifact_store.read_text(encoding="utf-8")
         findings.extend(
-            missing_snippets(
+            missing_rust_snippets(
                 ARTIFACT_STORE,
                 artifact_store_text,
                 ARTIFACT_STORE_REQUIRED,
@@ -428,7 +639,7 @@ def scan_root(root: Path) -> list[str]:
         findings.append(f"{CAPABILITY_PROOF}: NT catalog capability proof module is missing")
     else:
         findings.extend(
-            missing_snippets(
+            missing_rust_snippets(
                 CAPABILITY_PROOF,
                 capability_proof.read_text(encoding="utf-8"),
                 CAPABILITY_PROOF_REQUIRED,
@@ -438,7 +649,11 @@ def scan_root(root: Path) -> list[str]:
     lib = root / LIB_PATH
     if not lib.exists():
         findings.append(f"{LIB_PATH}: lib.rs is missing")
-    elif "pub mod nt_catalog_capability;" not in lib.read_text(encoding="utf-8"):
+    elif missing_rust_snippets(
+        LIB_PATH,
+        lib.read_text(encoding="utf-8"),
+        ("pub mod nt_catalog_capability;",),
+    ):
         findings.append(f"{LIB_PATH}: missing public nt_catalog_capability module export")
 
     operator = root / OPERATOR
@@ -446,14 +661,19 @@ def scan_root(root: Path) -> list[str]:
         findings.append(f"{OPERATOR}: operator.rs is missing")
     else:
         text = operator.read_text(encoding="utf-8")
-        findings.extend(missing_snippets(OPERATOR, text, OPERATOR_REQUIRED))
+        findings.extend(missing_rust_snippets(OPERATOR, text, OPERATOR_REQUIRED))
+        operator_code = strip_rust_comments_and_literals(text)
+        if re.search(r"\bfs\s*::\s*write\s*\(\s*&\s*artifacts\s*\.\s*contract_path\b", operator_code):
+            findings.append(
+                f"{OPERATOR}: durable result contract rewrite must use atomic_write"
+            )
 
     main_rs = root / MAIN_RS
     if not main_rs.exists():
         findings.append(f"{MAIN_RS}: main.rs is missing")
     else:
         main_text = main_rs.read_text(encoding="utf-8")
-        findings.extend(missing_snippets(MAIN_RS, main_text, MAIN_REQUIRED))
+        findings.extend(missing_rust_snippets(MAIN_RS, main_text, MAIN_REQUIRED))
         if ".build_s3_object_store()" in main_text:
             findings.append(
                 f"{MAIN_RS}: runtime S3 object store must use SSM-resolved explicit credentials"
@@ -469,7 +689,7 @@ def scan_root(root: Path) -> list[str]:
         findings.append(f"{CONTRACT_TEST}: artifact store contract test is missing")
     else:
         findings.extend(
-            missing_snippets(
+            missing_rust_snippets(
                 CONTRACT_TEST,
                 test_file.read_text(encoding="utf-8"),
                 TEST_REQUIRED,

@@ -48,10 +48,11 @@ fn validate_artifact_uri_for_kind(
     uri: &str,
 ) -> Result<()> {
     artifact_root.object_path_for_uri(uri)?;
+    let typed_root = artifact_root.typed_root(kind);
+    uri.starts_with(&format!("{typed_root}/"));
     if kind != ArtifactKind::ResearchAnalytics {
         return Ok(());
     }
-    let typed_root = artifact_root.typed_root(ArtifactKind::ResearchAnalytics);
     RESEARCH_ANALYTICS_ARTIFACT_FAMILIES
         .iter()
         .any(|family| uri.starts_with(&format!("{typed_root}/{family}/")));
@@ -104,6 +105,10 @@ async fn artifact_index_writer_rejects_consumer_mutation_of_research_analytics_r
 async fn research_analytics_index_rejects_promotion_package_family() {
     let event = research_analytics_event(&root, "promotion-packages", "ra-event", "promotion-package-001", 'f');
     writer.put_event(&root, &event).await.expect_err("promotion-packages is not an RA artifact family");
+}
+
+async fn artifact_index_rejects_cross_kind_artifact_uri_squatting() {
+    writer.put_event(&root, &event).await.expect_err("backtest event must not claim an NT catalog artifact URI");
 }
 """
 

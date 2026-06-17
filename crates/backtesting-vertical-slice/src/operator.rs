@@ -1232,9 +1232,9 @@ where
         .contract
         .artifact_uris
         .nt_catalog_manifest_uri = Some(persisted.manifest_uri.clone());
-    fs::write(
+    atomic_write(
         &artifacts.contract_path,
-        serde_json::to_string_pretty(&artifacts.output.contract)
+        &serde_json::to_vec_pretty(&artifacts.output.contract)
             .context("serialize durable result contract")?,
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;

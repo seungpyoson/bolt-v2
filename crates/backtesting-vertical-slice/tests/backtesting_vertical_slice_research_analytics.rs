@@ -1,5 +1,6 @@
 use backtesting_vertical_slice::{
     artifact_index::LifecycleState,
+    hashing::sha256_hex,
     operator::{RESULT_CONTRACT_FILE, RunSpec},
     research_analytics::{
         ArtifactPointerRef, BacktestEvidenceRef, BacktestRunCatalogList, BacktestSweepPlan,
@@ -113,9 +114,10 @@ fn valid_experiment_result(kind: RaVerdictKind) -> ExperimentResultArtifact {
     }
 }
 
-fn run_spec(run_id: &str) -> RunSpec {
+fn run_spec(run_id: &str, accepted_object_bytes: &[u8]) -> RunSpec {
     let mut spec: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
     spec.manifest.run_id = run_id.to_string();
+    spec.accepted_object.sha256 = sha256_hex(accepted_object_bytes);
     spec
 }
 
@@ -179,10 +181,26 @@ fn contract(run_id: &str, result_contract_uri: &str) -> BacktestResultContract {
     }
 }
 
-fn write_contract(output_dir: &Path, run_id: &str) {
+fn contract_for_run_spec(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    result_contract_uri: &str,
+) -> BacktestResultContract {
+    let mut artifact = contract(&spec.manifest.run_id, result_contract_uri);
+    artifact.nt_version = spec.manifest.resolved_nt_version.clone();
+    artifact.source_proof_id = spec.manifest.source_proof_id.clone();
+    artifact.source_proof_version = spec.manifest.source_proof_version;
+    artifact.manifest_hash = spec.manifest.manifest_hash();
+    artifact.accepted_object_sha256 = sha256_hex(object_bytes);
+    artifact.converter_config_hash = spec.converter.content_hash().expect("converter hash");
+    artifact.strategy_config_hash = spec.manifest.strategy_config_hash.clone();
+    artifact
+}
+
+fn write_contract(output_dir: &Path, spec: &RunSpec, object_bytes: &[u8]) {
     fs::create_dir_all(output_dir).expect("create run output dir");
     let path = output_dir.join(RESULT_CONTRACT_FILE);
-    let artifact = contract(run_id, &path.to_string_lossy());
+    let artifact = contract_for_run_spec(spec, object_bytes, &path.to_string_lossy());
     fs::write(
         &path,
         serde_json::to_vec_pretty(&artifact).expect("serialize contract"),
@@ -235,13 +253,13 @@ fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() 
             BacktestSweepRun {
                 run_spec_file_name: "first-run.toml".to_string(),
                 output_dir_name: "first-run".to_string(),
-                run_spec: run_spec("ra-sweep-first"),
+                run_spec: run_spec("ra-sweep-first", &first_bytes),
                 accepted_object_bytes: first_bytes.clone(),
             },
             BacktestSweepRun {
                 run_spec_file_name: "second-run.toml".to_string(),
                 output_dir_name: "second-run".to_string(),
-                run_spec: run_spec("ra-sweep-second"),
+                run_spec: run_spec("ra-sweep-second", &second_bytes),
                 accepted_object_bytes: second_bytes.clone(),
             },
         ],
@@ -254,7 +272,7 @@ fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() 
             object_bytes.to_vec(),
             output_dir.to_path_buf(),
         ));
-        write_contract(output_dir, &spec.manifest.run_id);
+        write_contract(output_dir, spec, object_bytes);
         Ok(())
     })
     .expect("sweep orchestration succeeds");
@@ -292,6 +310,40 @@ fn sweep_orchestration_writes_typed_run_specs_invokes_bte_and_reads_contracts() 
 }
 
 #[test]
+fn sweep_orchestration_rejects_contract_not_bound_to_run_spec() {
+    let temp = TempDir::new().expect("temp dir");
+    let accepted_object_bytes = b"accepted-object-one".to_vec();
+    let spec = run_spec("ra-sweep-first", &accepted_object_bytes);
+    let plan = BacktestSweepPlan {
+        run_spec_dir: temp.path().join("run-spec-output"),
+        run_output_dir: temp.path().join("run-output"),
+        runs: vec![BacktestSweepRun {
+            run_spec_file_name: "first-run.toml".to_string(),
+            output_dir_name: "first-run".to_string(),
+            run_spec: spec.clone(),
+            accepted_object_bytes: accepted_object_bytes.clone(),
+        }],
+    };
+
+    let err = run_backtest_sweep_with_executor(&plan, |spec, object_bytes, output_dir| {
+        fs::create_dir_all(output_dir).expect("create output dir");
+        let path = output_dir.join(RESULT_CONTRACT_FILE);
+        let mut artifact = contract_for_run_spec(spec, object_bytes, &path.to_string_lossy());
+        artifact.manifest_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            .to_string();
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&artifact).expect("serialize contract"),
+        )
+        .expect("write mismatched contract");
+        Ok(())
+    })
+    .expect_err("sweep must reject result contracts not bound to the run-spec");
+
+    assert!(err.to_string().contains("manifest_hash"), "{err}");
+}
+
+#[test]
 fn sweep_orchestration_rejects_existing_run_spec_file_before_executor() {
     let temp = TempDir::new().expect("temp dir");
     let run_spec_dir = temp.path().join("run-spec-output");
@@ -303,7 +355,7 @@ fn sweep_orchestration_rejects_existing_run_spec_file_before_executor() {
         runs: vec![BacktestSweepRun {
             run_spec_file_name: "first-run.toml".to_string(),
             output_dir_name: "first-run".to_string(),
-            run_spec: run_spec("ra-sweep-first"),
+            run_spec: run_spec("ra-sweep-first", b"accepted-object-one"),
             accepted_object_bytes: b"accepted-object-one".to_vec(),
         }],
     };
@@ -324,15 +376,20 @@ fn sweep_orchestration_rejects_existing_run_spec_file_before_executor() {
 fn sweep_orchestration_rejects_existing_output_dir_before_executor() {
     let temp = TempDir::new().expect("temp dir");
     let output_dir = temp.path().join("run-output").join("first-run");
-    write_contract(&output_dir, "ra-sweep-first");
+    let accepted_object_bytes = b"accepted-object-one";
+    write_contract(
+        &output_dir,
+        &run_spec("ra-sweep-first", accepted_object_bytes),
+        accepted_object_bytes,
+    );
     let plan = BacktestSweepPlan {
         run_spec_dir: temp.path().join("run-spec-output"),
         run_output_dir: temp.path().join("run-output"),
         runs: vec![BacktestSweepRun {
             run_spec_file_name: "first-run.toml".to_string(),
             output_dir_name: "first-run".to_string(),
-            run_spec: run_spec("ra-sweep-first"),
-            accepted_object_bytes: b"accepted-object-one".to_vec(),
+            run_spec: run_spec("ra-sweep-first", accepted_object_bytes),
+            accepted_object_bytes: accepted_object_bytes.to_vec(),
         }],
     };
     let mut calls = 0;
@@ -358,13 +415,13 @@ fn sweep_orchestration_rejects_duplicate_materialization_paths_before_executor()
             BacktestSweepRun {
                 run_spec_file_name: "shared-run.toml".to_string(),
                 output_dir_name: "shared-run".to_string(),
-                run_spec: run_spec("ra-sweep-first"),
+                run_spec: run_spec("ra-sweep-first", b"accepted-object-one"),
                 accepted_object_bytes: b"accepted-object-one".to_vec(),
             },
             BacktestSweepRun {
                 run_spec_file_name: "shared-run.toml".to_string(),
                 output_dir_name: "shared-run".to_string(),
-                run_spec: run_spec("ra-sweep-second"),
+                run_spec: run_spec("ra-sweep-second", b"accepted-object-two"),
                 accepted_object_bytes: b"accepted-object-two".to_vec(),
             },
         ],
@@ -573,23 +630,21 @@ fn go_promotion_requires_accepted_source_proof_and_objective_backtest_refs() {
     let mut artifact = valid_experiment_result(RaVerdictKind::Go);
     artifact.verdict.source_proof_refs = vec![source_ref(false)];
     artifact.verdict.backtest_result_refs = vec![backtest_ref(true)];
-    artifact.promotion_config = Some(promotion_config());
 
     assert!(matches!(
         artifact
             .validate()
-            .expect_err("unaccepted source proof cannot be promoted"),
+            .expect_err("GO verdict requires accepted source proof evidence"),
         ResearchAnalyticsArtifactError::PromotionConfigRequiresGo
     ));
 
     let mut artifact = valid_experiment_result(RaVerdictKind::Go);
     artifact.verdict.backtest_result_refs = vec![backtest_ref(false)];
-    artifact.promotion_config = Some(promotion_config());
 
     assert!(matches!(
         artifact
             .validate()
-            .expect_err("subjective or non-objective backtest ref cannot be promoted"),
+            .expect_err("GO verdict requires objective backtest evidence"),
         ResearchAnalyticsArtifactError::PromotionConfigRequiresGo
     ));
 }
@@ -641,6 +696,39 @@ fn experiment_result_rejects_forbidden_promotion_actions() {
     assert!(
         message.contains("mutate production runtime config"),
         "{message}"
+    );
+}
+
+#[test]
+fn experiment_result_requires_source_refs_and_hashes_to_match() {
+    let mut artifact = valid_experiment_result(RaVerdictKind::NoGo);
+    artifact.source_hashes.push(
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+    );
+
+    assert!(matches!(
+        artifact
+            .validate()
+            .expect_err("source refs and hashes must stay one-to-one"),
+        ResearchAnalyticsArtifactError::SourceRefHashCountMismatch {
+            source_refs: 1,
+            source_hashes: 2,
+        }
+    ));
+}
+
+#[test]
+fn experiment_result_rejects_unknown_schema_fields() {
+    let artifact = valid_experiment_result(RaVerdictKind::NoGo);
+    let mut value = serde_json::to_value(&artifact).expect("serialize experiment result");
+    value
+        .as_object_mut()
+        .expect("experiment result object")
+        .insert("future_schema_field".to_string(), serde_json::json!(true));
+
+    assert!(
+        serde_json::from_value::<ExperimentResultArtifact>(value).is_err(),
+        "unknown experiment-result fields must fail closed"
     );
 }
 

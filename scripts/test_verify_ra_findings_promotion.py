@@ -65,6 +65,13 @@ pub struct RaVerdict {
 }
 
 impl RaVerdict {
+    fn validate(&self) -> Result<(), ResearchAnalyticsArtifactError> {
+        if self.verdict == RaVerdictKind::Go && !self.is_real_go_finding() {
+            return Err(ResearchAnalyticsArtifactError::PromotionConfigRequiresGo);
+        }
+        Ok(())
+    }
+
     fn is_real_go_finding(&self) -> bool {
         self.verdict == RaVerdictKind::Go
             && self.source_proof_refs.iter().all(|source_ref| source_ref.accepted)
@@ -268,6 +275,29 @@ def test_task_checkbox_is_required() -> None:
         assert any("RA-011 must be checked" in finding for finding in findings)
 
 
+def test_go_verdict_real_evidence_gate_is_required() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_common(
+            root,
+            ra=compliant_ra().replace(
+                """
+    fn validate(&self) -> Result<(), ResearchAnalyticsArtifactError> {
+        if self.verdict == RaVerdictKind::Go && !self.is_real_go_finding() {
+            return Err(ResearchAnalyticsArtifactError::PromotionConfigRequiresGo);
+        }
+        Ok(())
+    }
+
+""",
+                "",
+            ),
+        )
+        findings = verifier.scan_root(root)
+        assert any("GO verdict requires real evidence" in finding for finding in findings)
+
+
 def test_negative_promotion_package_path_test_is_required() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -282,6 +312,7 @@ def main() -> int:
     test_comments_and_strings_only_do_not_satisfy_code_patterns()
     test_active_promotion_package_model_is_rejected()
     test_task_checkbox_is_required()
+    test_go_verdict_real_evidence_gate_is_required()
     test_negative_promotion_package_path_test_is_required()
     print("OK: verify_ra_findings_promotion self-tests passed.")
     return 0

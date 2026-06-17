@@ -36,6 +36,7 @@ pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
 
 pub struct ManifestFillModelConfig {
     pub kind: String,
+    pub random_seed: Option<u64>,
 }
 
 pub struct ManifestLatencyModelConfig {
@@ -47,7 +48,11 @@ pub struct ManifestFeeModelConfig {
 }
 
 fn resolve_fill_model(config: Option<&ManifestFillModelConfig>) -> Result<Option<FillModelAny>, ManifestError> {
-    let model = ProbabilisticFillModel::new(0.7, 0.1, None)?;
+    let config = config.unwrap();
+    let random_seed = config
+        .random_seed
+        .ok_or(ManifestError::MissingField("venue.fill_model.random_seed"))?;
+    let model = ProbabilisticFillModel::new(0.7, 0.1, Some(random_seed))?;
     Ok(Some(FillModelAny::Probabilistic(model)))
 }
 
@@ -152,6 +157,23 @@ def test_model_fields_must_not_remain_in_unsupported_surface_block() -> None:
         assert any('"fill_model" must not remain unsupported' in finding for finding in findings)
 
 
+def test_probabilistic_fill_model_seed_guard_is_required() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        run_manifest = compliant_run_manifest().replace(
+            """
+    let random_seed = config
+        .random_seed
+        .ok_or(ManifestError::MissingField("venue.fill_model.random_seed"))?;
+""",
+            "",
+        )
+        write_common(root, run_manifest=run_manifest)
+        findings = verifier.scan_root(root)
+        assert any("probabilistic fill model seed guard" in finding for finding in findings)
+
+
 def test_task_checkbox_is_required() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -165,6 +187,7 @@ def main() -> int:
     test_compliant_fixture_passes()
     test_comments_and_strings_only_do_not_satisfy_code_patterns()
     test_model_fields_must_not_remain_in_unsupported_surface_block()
+    test_probabilistic_fill_model_seed_guard_is_required()
     test_task_checkbox_is_required()
     print("OK: verify_ra_cost_realism self-tests passed.")
     return 0

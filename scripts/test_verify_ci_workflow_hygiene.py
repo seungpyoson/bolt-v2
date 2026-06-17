@@ -33,7 +33,7 @@ GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]
             fi
 """
 GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+{GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
             exit 0
           fi
 """
@@ -728,7 +728,7 @@ jobs:
               echo "deferred CI policy outside deferred draft PR context"
               exit 1
             fi
-            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then

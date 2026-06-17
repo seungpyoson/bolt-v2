@@ -7672,7 +7672,13 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         errors.append("gate must branch on ci_policy_path tag_reuse")
     defer_sections = top_level_if_body_and_remainder(gate_text, GATE_DEFER_CONDITION)
     defer_body = defer_sections[0] if defer_sections is not None else None
-    if defer_body is None or "full CI deferred for draft PR" not in defer_body or not body_exits_zero(defer_body):
+    if (
+        defer_body is None
+        or "full CI deferred for draft PR" not in defer_body
+        or "just rust-probe suggest" not in defer_body
+        or "just verify-remote only for final proof" not in defer_body
+        or not body_exits_zero(defer_body)
+    ):
         errors.append("gate must pass deferred full CI without failing stale draft checks")
     if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
         errors.append("gate must fail deferred policy outside deferred draft PR context")

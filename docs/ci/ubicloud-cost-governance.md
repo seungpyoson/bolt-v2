@@ -9,9 +9,10 @@ Slice 2b remeasured: 2026-06-13
 Remote-first Rust verification remains the invariant:
 
 1. Run cheap local checks.
-2. Commit and push.
-3. Open or update a PR.
-4. Use exact-head PR CI evidence through `just verify-remote`.
+2. For Rust debugging, run `just rust-probe suggest` and choose the smallest targeted remote probe.
+3. Commit and push.
+4. Open or update a PR.
+5. For final proof, use exact-head PR CI evidence through `just verify-remote`.
 
 This policy does not move broad Rust verification back to local cargo and does not weaken the required final-head green CI gate.
 
@@ -159,7 +160,7 @@ Decision: go for a separate focused follow-up PR under #648 and #333.
 
 The one-day filtered lookback measured draft-stage runs at 709.484 `managed_heavy` minutes and 64.183 `managed_light` minutes. That is enough addressable spend to justify designing an on-demand heavy-lane flow, provided the required `gate` still blocks merge until a full green run or provenance-verified reuse exists on the exact final head SHA.
 
-Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first verification runs such as `just verify-remote` that operators would still request on draft PRs. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
+Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first final-proof runs such as `just verify-remote` that operators would still request before merge readiness. Normal Rust debugging should use targeted `just rust-probe ...` runs instead. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
 
 Slice 2b remeasurement before the topology change:
 
@@ -176,9 +177,9 @@ The meter generated the report at `2026-06-13T05:10:26Z`. It reported `9023.518`
 
 Slice 2b implements Lever B only for `.github/workflows/ci.yml`. `backtester-ci.yml` remains measured by the same meter, but its draft-stage policy is out of scope for this slice.
 
-Deferred draft CI publishes `gate-deferred`, not `gate`. A draft PR push runs cheap feedback, skips heavy full-CI lanes, and exits `gate-deferred` successfully with the operator path to run `just verify-remote` or mark the PR ready. This preserves branch-protection semantics: cheap draft feedback is not represented as merge-ready green CI because the required `gate` check is not published by deferred draft runs.
+Deferred draft CI publishes `gate-deferred`, not `gate`. A draft PR push runs cheap feedback, skips heavy full-CI lanes, and exits `gate-deferred` successfully with the operator path to use `just rust-probe suggest` for debugging, then run `just verify-remote` only for final proof or mark the PR ready. This preserves branch-protection semantics: cheap draft feedback is not represented as merge-ready green CI because the required `gate` check is not published by deferred draft runs.
 
-For draft PRs, `just verify-remote` dispatches configured full CI on the PR branch when no matching full-CI run already exists, then waits on the matching workflow run for the exact pushed head SHA. That dispatched run proves branch-head confidence for the operator. It is not a merge-readiness substitute; merge readiness still requires the ready/non-draft `pull_request` full run and branch protection to go green on that PR state.
+For draft PRs, `just verify-remote` is final-proof-only: it dispatches configured full CI on the PR branch when no matching full-CI run already exists, then waits on the matching workflow run for the exact pushed head SHA. That dispatched run proves branch-head confidence for the operator. It is not the normal debug loop and is not a merge-readiness substitute; merge readiness still requires the ready/non-draft `pull_request` full run and branch protection to go green on that PR state.
 
 Draft fork PRs fail closed because upstream `workflow_dispatch` cannot safely target arbitrary fork refs. The operator message is:
 

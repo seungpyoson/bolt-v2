@@ -58,10 +58,10 @@ struct RealizedVolSurfaceState {
 pub struct RealizedVolSurfaceRuntime {
     surfaces: BTreeMap<String, RealizedVolSurfaceState>,
     routes_by_event: BTreeMap<EventRouteKey, Vec<RealizedVolSourceRoute>>,
-    // Single source of truth for RV subscriptions, keyed by `surface_id`. Global accessors
-    // (`subscription_requests` and the quote/trade/index variants) are DERIVED deduped unions
-    // of this map so audit/fanout semantics are preserved; production strategy callers must
-    // use the `*_for_surface` variants so a strategy only subscribes its configured surface.
+    // Single source of truth for RV subscriptions, keyed by `surface_id`. The global
+    // `subscription_requests` accessor is only a DERIVED deduped union for audit/fanout
+    // semantics; production strategy callers must use the `*_for_surface` variants so a
+    // strategy only subscribes its configured surface.
     subscription_requests_by_surface: BTreeMap<String, Vec<RealizedVolSubscriptionRequest>>,
 }
 
@@ -190,8 +190,10 @@ impl RealizedVolSurfaceRuntime {
     }
 
     /// Deduped union of every surface's subscription requests, in canonical (sorted) order.
-    /// Kept as a derived view for audit/fanout (see `subscription_requests_by_surface`). A
-    /// strategy must NOT subscribe from this; use `*_for_surface` with its configured surface.
+    /// Test/audit-only derived view for fanout diagnostics (see
+    /// `subscription_requests_by_surface`). A strategy must NOT subscribe from this; use
+    /// `*_for_surface` with its configured surface.
+    #[doc(hidden)]
     pub fn subscription_requests(&self) -> Vec<RealizedVolSubscriptionRequest> {
         let mut union: BTreeSet<RealizedVolSubscriptionRequest> = BTreeSet::new();
         for requests in self.subscription_requests_by_surface.values() {

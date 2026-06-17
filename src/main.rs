@@ -14,7 +14,11 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
-    bolt_v3_live_node::{build_bolt_v3_live_node, current_build_head_sha, run_bolt_v3_live_node},
+    bolt_v3_live_node::{
+        build_bolt_v3_live_node, build_bolt_v3_strategy_free_data_client_probe_live_node,
+        current_build_head_sha, run_bolt_v3_data_client_census, run_bolt_v3_data_client_probe,
+        run_bolt_v3_live_node,
+    },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
@@ -81,6 +85,18 @@ enum OpsCommand {
         config: PathBuf,
         #[arg(long)]
         required_catalog_prefix: Option<PathBuf>,
+    },
+    DataClientProbe {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+    },
+    DataClientCensus {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
     },
 }
 
@@ -177,7 +193,49 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
             config,
             required_catalog_prefix,
         } => run_prestart_check(&config, required_catalog_prefix.as_deref()),
+        OpsCommand::DataClientProbe { config, client_key } => {
+            run_data_client_probe(&config, &client_key)
+        }
+        OpsCommand::DataClientCensus { config, client_key } => {
+            run_data_client_census(&config, &client_key)
+        }
     }
+}
+
+fn run_data_client_probe(
+    config: &Path,
+    client_key: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    let (node_runtime, probe_loaded) =
+        build_bolt_v3_strategy_free_data_client_probe_live_node(&loaded, client_key)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let local = tokio::task::LocalSet::new();
+    let report = runtime.block_on(local.run_until(async move {
+        run_bolt_v3_data_client_probe(node_runtime, &probe_loaded, client_key).await
+    }))?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_data_client_census(
+    config: &Path,
+    client_key: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    let (node_runtime, census_loaded) =
+        build_bolt_v3_strategy_free_data_client_probe_live_node(&loaded, client_key)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let local = tokio::task::LocalSet::new();
+    let report = runtime.block_on(local.run_until(async move {
+        run_bolt_v3_data_client_census(node_runtime, &census_loaded, client_key).await
+    }))?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn run_prestart_check(
@@ -644,6 +702,54 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn ops_data_client_probe_cli_parses_config_and_client_key() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "data-client-probe",
+            "--config",
+            "config/root.toml",
+            "--client-key",
+            "bybit_data",
+        ])
+        .expect("data-client probe command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::DataClientProbe { config, client_key },
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+                assert_eq!(client_key, "bybit_data");
+            }
+            _ => panic!("expected ops data-client-probe command"),
+        }
+    }
+
+    #[test]
+    fn ops_data_client_census_cli_parses_config_and_client_key() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "data-client-census",
+            "--config",
+            "config/root.toml",
+            "--client-key",
+            "bybit_data",
+        ])
+        .expect("data-client census command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::DataClientCensus { config, client_key },
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+                assert_eq!(client_key, "bybit_data");
+            }
+            _ => panic!("expected ops data-client-census command"),
+        }
+    }
 
     #[test]
     fn prestart_check_rejects_catalog_outside_required_prefix_before_disk_probe() {

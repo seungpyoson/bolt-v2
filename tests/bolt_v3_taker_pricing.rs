@@ -487,10 +487,10 @@ fn realized_vol_snapshot_for_surface(
     }
 }
 
-/// Regression for the #770 clobber: a newer-timestamp snapshot from a *foreign* surface must
-/// NOT evict the configured surface's snapshot. The shared runtime routes ticks by
-/// instrument, and instrument overlap can publish foreign surfaces, so per-surface keying is
-/// required (subscription scoping alone cannot guarantee isolation).
+/// Guard against a single unkeyed RV snapshot slot: a newer-timestamp snapshot from a
+/// *foreign* surface must NOT evict the configured surface's snapshot. The shared runtime
+/// routes ticks by instrument, and instrument overlap can publish foreign surfaces, so
+/// per-surface keying is required (subscription scoping alone cannot guarantee isolation).
 #[test]
 fn foreign_surface_snapshot_does_not_clobber_configured_surface_readiness() {
     let config = pricing_config(); // configured surface "<surface_id>"
@@ -502,7 +502,8 @@ fn foreign_surface_snapshot_does_not_clobber_configured_surface_readiness() {
         1.5,
         100,
     ));
-    // A foreign surface publishes a NEWER snapshot (would have clobbered the single slot).
+    // A foreign surface publishes a NEWER snapshot (would have clobbered a single unkeyed
+    // slot).
     pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
         "<foreign_surface>",
         9.9,
@@ -548,10 +549,10 @@ fn equal_timestamp_snapshot_replaces_and_older_snapshot_is_rejected_per_surface(
     assert_eq!(pricing.current_realized_vol_at(100), Some(2.0));
 }
 
-/// #770 multi-instance readiness non-interference: two pricing states configured for
+/// Multi-instance readiness non-interference: two pricing states configured for
 /// different surfaces, both fed by the same shared runtime (so both observe every published
 /// snapshot). Each must read only its own configured surface; one surface's snapshot must not
-/// affect the other instance's readiness, and a newer foreign snapshot must not evict the
+/// affect the other instance's readiness, and a newer foreign snapshot must not affect the
 /// configured surface's value.
 #[test]
 fn two_pricing_instances_with_distinct_configured_surfaces_do_not_interfere() {

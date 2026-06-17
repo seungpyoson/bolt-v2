@@ -2,7 +2,9 @@ mod support;
 
 use anyhow::Result;
 use bolt_v2::{
+    bolt_v3_adapters::map_bolt_v3_adapters,
     bolt_v3_archetypes::{binary_oracle_edge_taker, complete_set_arbitrage},
+    bolt_v3_client_registration::register_bolt_v3_clients,
     bolt_v3_config::{
         BoltV3RootConfig, ClientBlock, DataInstrumentBlock, RealizedVolatilityAggregationBlock,
         RealizedVolatilityPolicyBlock, RealizedVolatilitySampleKindBlock,
@@ -210,6 +212,23 @@ fn realized_volatility_validation_rejects_unknown_data_client_id() {
             insert_realized_volatility_surface(&mut loaded.root, surface);
         },
         "data_client_id",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_non_data_client_id() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let surface = valid_realized_volatility_surface();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded
+                .root
+                .clients
+                .get_mut(RV_DATA_CLIENT_ID)
+                .expect("test RV client should exist")
+                .data = None;
+        },
+        "must reference a data-capable client",
     );
 }
 
@@ -523,8 +542,13 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         };
-    let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
-        .expect("v3 LiveNodeBuilder should construct before strategy registration")
+    let adapters =
+        map_bolt_v3_adapters(&loaded, &resolved).expect("fixture adapters should map cleanly");
+    let builder = make_bolt_v3_live_node_builder(&empty_loaded)
+        .expect("v3 LiveNodeBuilder should construct before strategy registration");
+    let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
+        .expect("fixture data clients should register before strategy registration");
+    let mut node = builder
         .build()
         .expect("v3 LiveNode should build before strategy registration");
 
@@ -693,7 +717,15 @@ fn complete_set_live_node_build_registers_strategy_from_strategy_files_after_sou
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("complete-set LiveNode build should register after source-integrity coverage");
 
-    assert_eq!(summary.clients.len(), 1);
+    assert_eq!(summary.clients.len(), 2);
+    assert!(
+        summary.clients.contains_key("okx_data"),
+        "RV source client must be retained in the strategy transport"
+    );
+    assert!(
+        summary.clients.contains_key("polymarket_main"),
+        "complete-set strategy client must remain registered"
+    );
     assert_eq!(
         node.registered_strategy_ids(),
         vec![StrategyId::from("complete_set_arbitrage-901")]

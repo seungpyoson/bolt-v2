@@ -7681,11 +7681,20 @@ fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
 
 #[test]
 fn maps_top_level_nt_shutdown_on_error() {
-    use bolt_v2::{bolt_v3_config::LoadedBoltV3Config, bolt_v3_live_node::make_live_node_config};
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
+        bolt_v3_live_node::make_live_node_config,
+    };
 
     let mutated = replace_in_fixture_root("shutdown_on_error = false", "shutdown_on_error = true");
-    let loaded: LoadedBoltV3Config =
+    let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("top-level shutdown_on_error fixture should parse");
+    let loaded = LoadedBoltV3Config {
+        root_path: support::repo_path("tests/fixtures/bolt_v3/root.toml"),
+        config_bundle_checksum: "test-checksum".to_string(),
+        root,
+        strategies: Vec::new(),
+    };
     let cfg = make_live_node_config(&loaded);
 
     assert!(cfg.shutdown_on_error);

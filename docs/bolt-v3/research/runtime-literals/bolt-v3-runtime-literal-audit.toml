@@ -8261,7 +8261,7 @@ classification = "strategy_runtime_schema_field"
 reason = "Signal-data binding schema field name parsed from configured bolt-v3 TOML target data, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''40'''
 context = '''value.len() == 40'''
@@ -8272,7 +8272,7 @@ reason = "This validates lowercase git commit SHA shape for build/head binding."
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = '''"BOLT_V3_BUILD_HEAD_SHA"'''
-context = '''option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))'''
+context = '''option_env!("BOLT_V3_BUILD_HEAD_SHA")'''
 classification = "build_head_env_name"
 reason = "This is a compile-time Cargo environment variable emitted by build.rs to bind the binary to the built source head."
 
@@ -15792,6 +15792,22 @@ literal = '''"verdict"'''
 context = '''Self::VerdictNotPass => "verdict",'''
 classification = "maker_backtest_go_live_schema_field"
 reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"build_head_sha"'''
+context = '''Self::MissingBuildHeadSha => "build_head_sha",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence identity schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"strategy_config_hash"'''
+context = '''Self::MissingStrategyConfigHash => "strategy_config_hash",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence identity schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"

@@ -91,6 +91,41 @@ pub fn is_lowercase_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+pub fn is_lowercase_git_sha(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lowercase_hash_shape_helpers_reject_wrong_width_and_uppercase() {
+        assert!(is_lowercase_git_sha(
+            "0123456789abcdef0123456789abcdef01234567"
+        ));
+        assert!(!is_lowercase_git_sha(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!is_lowercase_git_sha(
+            "0123456789ABCDEF0123456789abcdef01234567"
+        ));
+
+        assert!(is_lowercase_sha256(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        assert!(!is_lowercase_sha256(
+            "0123456789abcdef0123456789abcdef01234567"
+        ));
+        assert!(!is_lowercase_sha256(
+            "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+    }
+}
+
 pub fn json_artifact_sha256<T: Serialize>(
     artifact: &T,
 ) -> Result<String, BoltV3OperatorArtifactError> {

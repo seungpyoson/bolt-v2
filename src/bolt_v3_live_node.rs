@@ -1925,24 +1925,27 @@ mod strategy_free_probe {
             {
                 return;
             }
-            let required = self.required.borrow().clone();
             let mut matched_required = false;
-            let mut trades = self.trades.borrow_mut();
-            for required in &required {
-                if trade.instrument_id == required.instrument_id {
-                    matched_required = true;
-                    trades.push(BoltV3StrategyFreeTrade {
-                        data_client_id: required.data_client_id.to_string(),
-                        instrument_id: required.instrument_id.to_string(),
-                        price: trade.price.as_f64(),
-                        size: trade.size.as_f64(),
-                        ts_event_unix_nanos: trade.ts_event.as_u64(),
-                        ts_init_unix_nanos: trade.ts_init.as_u64(),
-                        captured_at_unix_nanos: get_atomic_clock_realtime().get_time_ns().as_u64(),
-                    });
+            {
+                let required = self.required.borrow();
+                let mut trades = self.trades.borrow_mut();
+                for required in required.iter() {
+                    if trade.instrument_id == required.instrument_id {
+                        matched_required = true;
+                        trades.push(BoltV3StrategyFreeTrade {
+                            data_client_id: required.data_client_id.to_string(),
+                            instrument_id: required.instrument_id.to_string(),
+                            price: trade.price.as_f64(),
+                            size: trade.size.as_f64(),
+                            ts_event_unix_nanos: trade.ts_event.as_u64(),
+                            ts_init_unix_nanos: trade.ts_init.as_u64(),
+                            captured_at_unix_nanos: get_atomic_clock_realtime()
+                                .get_time_ns()
+                                .as_u64(),
+                        });
+                    }
                 }
             }
-            drop(trades);
             if matched_required && self.has_all_required_market_data() {
                 self.quote_notify.notify_one();
             }
@@ -2054,14 +2057,12 @@ mod strategy_free_probe {
     ) -> usize {
         let mut observed = BTreeSet::new();
         for required in required {
+            let required_instrument_id = required.instrument_id.to_string();
             if trades.iter().any(|trade| {
-                trade.data_client_id == required.data_client_id.to_string()
-                    && trade.instrument_id == required.instrument_id.to_string()
+                trade.data_client_id.as_str() == required.data_client_id.as_str()
+                    && trade.instrument_id.as_str() == required_instrument_id.as_str()
             }) {
-                observed.insert((
-                    required.data_client_id.to_string(),
-                    required.instrument_id.to_string(),
-                ));
+                observed.insert((&required.data_client_id, &required.instrument_id));
             }
         }
         observed.len()

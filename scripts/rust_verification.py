@@ -378,7 +378,7 @@ def require_non_empty_string_array(table: dict[str, Any], key: str, prefix: str)
 
 
 def validate_git_ref(value: str, key: str) -> None:
-    invalid = any(char.isspace() for char in value) or any(char in value for char in "\\^:?*[]~")
+    invalid = any(char.isspace() for char in value) or any(char in value for char in "\\^:?*[]~@{}")
     if (
         invalid
         or value.startswith(("/", "."))

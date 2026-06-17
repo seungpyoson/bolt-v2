@@ -122,7 +122,7 @@ def assert_remote_probe_policy_validation() -> None:
     bad = valid_remote_probe()
     bad["suggest_base_ref"] = "origin main"
     expect_policy_error(owner, bad, "suggest_base_ref")
-    for ref in ("--octopus", "-rev", "-"):
+    for ref in ("--octopus", "-rev", "-", "@", "@{u}", "@{1}", "main@{upstream}", "origin/{main}"):
         bad = valid_remote_probe()
         bad["suggest_base_ref"] = ref
         expect_policy_error(owner, bad, "suggest_base_ref")
@@ -376,6 +376,8 @@ def assert_changed_files_produce_targeted_suggestions() -> None:
     if "No Rust source or top-level integration-test target was inferred from changed files." not in generic_suggestions:
         raise AssertionError(generic_suggestions)
     docs_only_suggestions = owner.rust_probe_suggestions(["docs/ci/ubicloud-cost-governance.md"], separate_workspaces)
+    if "No targeted Rust Probe command was inferred." not in docs_only_suggestions:
+        raise AssertionError(docs_only_suggestions)
     if "just rust-probe check-lib" in docs_only_suggestions:
         raise AssertionError(docs_only_suggestions)
     nested_test_suggestions = owner.rust_probe_suggestions(["tests/support/mod.rs"], separate_workspaces)

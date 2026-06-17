@@ -9009,10 +9009,12 @@ configured_source_param = "configured-value"
         ))
         .expect("fixture config should load");
         assert!(
-            loaded.strategies.len() >= 2,
-            "fixture config should include at least two strategies for venue-cardinality coverage"
+            !loaded.strategies.is_empty(),
+            "fixture config should include a strategy for venue-cardinality coverage"
         );
-        loaded.strategies.truncate(2);
+        let cloned_strategy = loaded.strategies[0].clone();
+        loaded.strategies.truncate(1);
+        loaded.strategies.push(cloned_strategy);
         loaded.strategies[0].config.execution_client_id = ClientId::from("hyperliquid_a");
         loaded.strategies[1].config.execution_client_id = ClientId::from("hyperliquid_b");
         loaded.root.clients.insert(

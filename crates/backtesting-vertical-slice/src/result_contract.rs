@@ -276,7 +276,9 @@ impl BacktestResultContract {
                 return Err(ResultContractError::MissingField(name));
             }
         }
-        if self.contract_version != RESULT_CONTRACT_VERSION {
+        if self.contract_version != RESULT_CONTRACT_VERSION
+            && self.contract_version != RESULT_CONTRACT_V1
+        {
             return Err(ResultContractError::UnsupportedVersion {
                 actual: self.contract_version.clone(),
             });

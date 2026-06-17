@@ -161,7 +161,19 @@ SUBMIT_ADMISSION_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[SUBMIT_ADMISSION_KEY]
 SUBMIT_ADMISSION_SOURCE_ROOT = SUBMIT_ADMISSION_SOURCE_ROOTS[0]
 OUTCOME_GROUP_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[OUTCOME_GROUP_KEY]
 MAKER_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[MAKER_KEY]
-MAKER_SOURCE_ROOT = "src/strategies/binary_oracle_maker"
+# The maker's strategy-source directory, derived from the manifest (the single
+# owner) rather than restated, so a manifest rename cannot silently desync the
+# strategy-policy fence's maker scoping. Exactly one maker root lives under
+# src/strategies/; fail loud at import if that ceases to hold.
+_MAKER_STRATEGY_SOURCE_ROOTS = tuple(
+    root for root in MAKER_SOURCE_ROOTS if root.startswith("src/strategies/")
+)
+if len(_MAKER_STRATEGY_SOURCE_ROOTS) != 1:
+    raise ValueError(
+        "expected exactly one maker root under src/strategies/ in the manifest, "
+        f"got {list(_MAKER_STRATEGY_SOURCE_ROOTS)}"
+    )
+MAKER_SOURCE_ROOT = _MAKER_STRATEGY_SOURCE_ROOTS[0]
 # Union of every gated source set's roots, mirroring the full
 # `GATED_SOURCE_ROOTS` registry in `src/source_canonicalization.rs`. Gates that
 # reason about the set of gated roots — e.g. the strategy-policy fence's

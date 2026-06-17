@@ -112,7 +112,11 @@ struct BacktestParametersBlock {
     maker_order_count: u64,
     passive_fill_count: u64,
     built_maker_replayed: bool,
-    full_net_scoring: bool,
+    captured_spread_score_micros: i64,
+    fees_score_micros: i64,
+    adverse_selection_score_micros: i64,
+    settlement_loss_score_micros: i64,
+    net_score_micros: i64,
     thresholds_registered_before_run: bool,
     balanced_gate_evaluated: bool,
     strict_gate_evaluated: bool,
@@ -127,7 +131,6 @@ struct BacktestParametersBlock {
     custom_fill_model_used: bool,
     custom_fill_model_source_proven: bool,
     underlying_spot_causal_join: bool,
-    net_edge_positive: bool,
     statistical_significance: bool,
     passive_fill_power_floor: bool,
     resolved_market_corpus_floor: bool,
@@ -162,7 +165,7 @@ impl BacktestParametersBlock {
             maker_orders_observed: self.maker_order_count > 0,
             passive_fills_observed: self.passive_fill_count > 0,
             built_maker_replayed: self.built_maker_replayed,
-            full_net_scoring: self.full_net_scoring,
+            full_net_scoring: self.net_score_reconciles(),
             thresholds_registered_before_run: self.thresholds_registered_before_run,
             balanced_gate_evaluated: self.balanced_gate_evaluated,
             strict_gate_evaluated: self.strict_gate_evaluated,
@@ -177,13 +180,21 @@ impl BacktestParametersBlock {
             custom_fill_model_used: self.custom_fill_model_used,
             custom_fill_model_source_proven: self.custom_fill_model_source_proven,
             underlying_spot_causal_join: self.underlying_spot_causal_join,
-            net_edge_positive: self.net_edge_positive,
+            net_edge_positive: self.net_score_micros > 0,
             statistical_significance: self.statistical_significance,
             passive_fill_power_floor: self.passive_fill_power_floor,
             resolved_market_corpus_floor: self.resolved_market_corpus_floor,
             shared_fair_value_pricing: self.shared_fair_value_pricing,
             shared_settlement_primitive: self.shared_settlement_primitive,
         }
+    }
+
+    fn net_score_reconciles(&self) -> bool {
+        i128::from(self.captured_spread_score_micros)
+            - i128::from(self.fees_score_micros)
+            - i128::from(self.adverse_selection_score_micros)
+            - i128::from(self.settlement_loss_score_micros)
+            == i128::from(self.net_score_micros)
     }
 }
 
@@ -624,7 +635,11 @@ mod tests {
             maker_order_count: 3,
             passive_fill_count: 2,
             built_maker_replayed: true,
-            full_net_scoring: true,
+            captured_spread_score_micros: 1_000,
+            fees_score_micros: 100,
+            adverse_selection_score_micros: 200,
+            settlement_loss_score_micros: 300,
+            net_score_micros: 400,
             thresholds_registered_before_run: true,
             balanced_gate_evaluated: true,
             strict_gate_evaluated: true,
@@ -639,7 +654,6 @@ mod tests {
             custom_fill_model_used: false,
             custom_fill_model_source_proven: false,
             underlying_spot_causal_join: true,
-            net_edge_positive: true,
             statistical_significance: true,
             passive_fill_power_floor: true,
             resolved_market_corpus_floor: true,
@@ -662,7 +676,11 @@ mod tests {
             maker_order_count = 3
             passive_fill_count = 2
             built_maker_replayed = true
-            full_net_scoring = true
+            captured_spread_score_micros = 1000
+            fees_score_micros = 100
+            adverse_selection_score_micros = 200
+            settlement_loss_score_micros = 300
+            net_score_micros = 400
             thresholds_registered_before_run = true
             balanced_gate_evaluated = true
             strict_gate_evaluated = true
@@ -677,7 +695,6 @@ mod tests {
             custom_fill_model_used = false
             custom_fill_model_source_proven = false
             underlying_spot_causal_join = true
-            net_edge_positive = true
             statistical_significance = true
             passive_fill_power_floor = true
             resolved_market_corpus_floor = true
@@ -1059,6 +1076,38 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_unreconciled_net_score() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            net_score_micros: 401,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.net_score_micros")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_non_positive_net_score() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            captured_spread_score_micros: 300,
+            fees_score_micros: 100,
+            adverse_selection_score_micros: 100,
+            settlement_loss_score_micros: 100,
+            net_score_micros: 0,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.net_score_micros")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_missing_backtest_artifact_digests() {
         let errors = backtest_errors(BacktestParametersBlock {
             run_artifact_sha256: "ABC".to_string(),
@@ -1227,7 +1276,11 @@ mod tests {
             maker_order_count = 3
             passive_fill_count = 2
             built_maker_replayed = true
-            full_net_scoring = true
+            captured_spread_score_micros = 1000
+            fees_score_micros = 100
+            adverse_selection_score_micros = 200
+            settlement_loss_score_micros = 300
+            net_score_micros = 400
             thresholds_registered_before_run = true
             balanced_gate_evaluated = true
             strict_gate_evaluated = true
@@ -1242,7 +1295,6 @@ mod tests {
             custom_fill_model_used = false
             custom_fill_model_source_proven = false
             underlying_spot_causal_join = true
-            net_edge_positive = true
             statistical_significance = true
             passive_fill_power_floor = true
             resolved_market_corpus_floor = true

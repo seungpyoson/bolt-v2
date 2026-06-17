@@ -98,7 +98,7 @@ impl MakerBacktestGateBlocker {
             Self::MissingMakerOrders => "maker_order_count",
             Self::MissingPassiveFills => "passive_fill_count",
             Self::BuiltMakerNotReplayed => "built_maker_replayed",
-            Self::MissingFullNetScoring => "full_net_scoring",
+            Self::MissingFullNetScoring => "net_score_micros",
             Self::ThresholdsNotPreRegistered => "thresholds_registered_before_run",
             Self::BalancedGateNotEvaluated => "balanced_gate_evaluated",
             Self::StrictGateNotEvaluated => "strict_gate_evaluated",
@@ -112,7 +112,7 @@ impl MakerBacktestGateBlocker {
             Self::MissingNtExecutionModel => "nt_execution_model_used",
             Self::CustomFillModelWithoutSourceProof => "custom_fill_model_source_proven",
             Self::MissingUnderlyingSpotCausalJoin => "underlying_spot_causal_join",
-            Self::NetEdgeNotPositive => "net_edge_positive",
+            Self::NetEdgeNotPositive => "net_score_micros",
             Self::MissingStatisticalSignificance => "statistical_significance",
             Self::MissingPassiveFillPowerFloor => "passive_fill_power_floor",
             Self::MissingResolvedMarketCorpusFloor => "resolved_market_corpus_floor",
@@ -154,7 +154,7 @@ impl MakerBacktestGateBlocker {
             }
             Self::BuiltMakerNotReplayed => "must confirm the built maker was replayed",
             Self::MissingFullNetScoring => {
-                "must confirm net scoring includes spread, fees, adverse selection, and settlement loss"
+                "must reconcile net_score_micros = captured_spread_score_micros - fees_score_micros - adverse_selection_score_micros - settlement_loss_score_micros"
             }
             Self::ThresholdsNotPreRegistered => {
                 "must confirm thresholds were registered before scoring"
@@ -177,7 +177,7 @@ impl MakerBacktestGateBlocker {
             Self::MissingUnderlyingSpotCausalJoin => {
                 "must confirm the underlying spot join is point-in-time causal"
             }
-            Self::NetEdgeNotPositive => "must confirm net edge is positive",
+            Self::NetEdgeNotPositive => "must be positive after full net scoring reconciliation",
             Self::MissingStatisticalSignificance => {
                 "must confirm statistical significance for net edge > 0"
             }

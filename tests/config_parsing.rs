@@ -8582,3 +8582,241 @@ fn root_config_wires_hyperliquid_data_only_client_without_execution_or_secrets()
         "production data clients must include strategy-free readiness coverage"
     );
 }
+
+#[test]
+fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates() {
+    use nautilus_model::identifiers::ClientId;
+
+    let loaded =
+        bolt_v2::bolt_v3_config::load_bolt_v3_config(&support::repo_path("config/root.toml"))
+            .expect("root.toml should load with Hyperliquid execution clients");
+
+    for (
+        client_key,
+        product_surface,
+        approval_id,
+        approval_artifact_path,
+        product_proof_artifact_path,
+        private_key_ssm_path,
+        outcome_settlement_poll_secs,
+    ) in [
+        (
+            "hyperliquid_standard_perps_execution",
+            "standard_perps",
+            "hl-standard-perps-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json",
+            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
+            0,
+        ),
+        (
+            "hyperliquid_spot_execution",
+            "spot",
+            "hl-spot-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json",
+            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
+            0,
+        ),
+        (
+            "hyperliquid_hip3_execution",
+            "hip3_builder_perps",
+            "hl-hip3-builder-perps-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json",
+            "/bolt/hyperliquid/master_api_wallet/hip3/private_key",
+            0,
+        ),
+        (
+            "hyperliquid_hip4_execution",
+            "hip4_outcomes",
+            "hl-hip4-outcomes-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json",
+            "/bolt/hyperliquid/master_api_wallet/hip4/private_key",
+            30,
+        ),
+    ] {
+        let client = loaded
+            .root
+            .clients
+            .get(client_key)
+            .unwrap_or_else(|| panic!("{client_key} must be configured in root.toml"));
+
+        assert_eq!(client.venue.as_str(), "HYPERLIQUID");
+        assert!(
+            client.data.is_none(),
+            "issue #785 wires execution separately from the data-only #784 client"
+        );
+        let execution = client
+            .execution
+            .as_ref()
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("{client_key} must declare an [execution] table"));
+        assert_eq!(
+            execution
+                .get(stringify!(environment))
+                .and_then(toml::Value::as_str),
+            Some("mainnet")
+        );
+        assert_eq!(
+            execution
+                .get(stringify!(execution_mode))
+                .and_then(toml::Value::as_str),
+            Some("master_account_api_wallet")
+        );
+        assert_eq!(
+            execution
+                .get(stringify!(product_surfaces))
+                .and_then(toml::Value::as_array)
+                .unwrap_or_else(|| panic!("{client_key} product_surfaces must be an array"))
+                .iter()
+                .map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            vec![Some(product_surface)]
+        );
+        assert_eq!(
+            execution
+                .get(stringify!(outcome_settlement_poll_secs))
+                .and_then(toml::Value::as_integer),
+            Some(outcome_settlement_poll_secs)
+        );
+        assert_eq!(
+            execution
+                .get(stringify!(live_submit_approval_id))
+                .and_then(toml::Value::as_str),
+            Some(approval_id)
+        );
+        assert_eq!(
+            execution
+                .get(stringify!(live_submit_approval_artifact_path))
+                .and_then(toml::Value::as_str),
+            Some(approval_artifact_path)
+        );
+        assert_eq!(
+            execution
+                .get(stringify!(live_submit_product_proof_artifact_path))
+                .and_then(toml::Value::as_str),
+            Some(product_proof_artifact_path)
+        );
+        assert_eq!(
+            execution
+                .get(stringify!(live_submit_product_proof_artifact_sha256))
+                .and_then(toml::Value::as_str),
+            Some("0000000000000000000000000000000000000000000000000000000000000000")
+        );
+
+        let secrets = client
+            .secrets
+            .as_ref()
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("{client_key} must declare SSM-backed [secrets]"));
+        assert_eq!(
+            secrets
+                .get(stringify!(private_key_ssm_path))
+                .and_then(toml::Value::as_str),
+            Some(private_key_ssm_path)
+        );
+        assert_eq!(
+            secrets
+                .get(stringify!(account_address_ssm_path))
+                .and_then(toml::Value::as_str),
+            Some("/bolt/hyperliquid/master_api_wallet/account_address")
+        );
+        for forbidden in [
+            stringify!(private_key),
+            stringify!(account_address),
+            stringify!(vault_address),
+        ] {
+            assert!(
+                !secrets.contains_key(forbidden),
+                "Hyperliquid execution secrets must stay SSM-only; found raw field {forbidden}"
+            );
+        }
+        assert_eq!(
+            secrets.len(),
+            2,
+            "{client_key} must not introduce another secret source"
+        );
+    }
+
+    for strategy in &loaded.strategies {
+        assert_eq!(
+            strategy.config.execution_client_id,
+            ClientId::from("polymarket_main"),
+            "{} must not route to Hyperliquid until the live-submit packet is operator-approved",
+            strategy.relative_path
+        );
+    }
+}
+
+#[test]
+fn root_config_resolves_hyperliquid_execution_surfaces_with_approved_spotperp_api_wallet_sharing() {
+    use bolt_v2::{
+        bolt_v3_config::load_bolt_v3_config, bolt_v3_secrets::resolve_bolt_v3_secrets_with,
+    };
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("root.toml should load with Hyperliquid execution clients");
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/polymarket/private-key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/polymarket/api-key" => Ok("polymarket-api-key".to_string()),
+        "/bolt/polymarket/api-secret" => Ok("YWJj".to_string()),
+        "/bolt/polymarket/api-passphrase" => Ok("polymarket-passphrase".to_string()),
+        "/bolt/binance/api-key" => Ok("binance-api-key".to_string()),
+        "/bolt/binance/api-secret" => {
+            Ok("MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string())
+        }
+        "/bolt/testnet/chainlink/api-key" => Ok("chainlink-api-key".to_string()),
+        "/bolt/testnet/chainlink/api-secret" => Ok("chainlink-api-secret".to_string()),
+        "/bolt/polyresearch/api-key" => Ok("polyresearch-api-key".to_string()),
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/spotperp/private_key" => {
+            Ok("0x1111111111111111111111111111111111111111111111111111111111111111".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/hip3/private_key" => {
+            Ok("0x3333333333333333333333333333333333333333333333333333333333333333".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/hip4/private_key" => {
+            Ok("0x4444444444444444444444444444444444444444444444444444444444444444".to_string())
+        }
+        _ => Err("unexpected root SSM path"),
+    })
+    .expect("root Hyperliquid execution clients should resolve with approved spotperp sharing");
+
+    for (client_key, private_key_ssm_path) in [
+        (
+            "hyperliquid_standard_perps_execution",
+            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
+        ),
+        (
+            "hyperliquid_spot_execution",
+            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
+        ),
+        (
+            "hyperliquid_hip3_execution",
+            "/bolt/hyperliquid/master_api_wallet/hip3/private_key",
+        ),
+        (
+            "hyperliquid_hip4_execution",
+            "/bolt/hyperliquid/master_api_wallet/hip4/private_key",
+        ),
+    ] {
+        assert!(
+            resolved.clients.contains_key(client_key),
+            "{client_key} should resolve through the root SSM resolver"
+        );
+        let client = loaded.root.clients.get(client_key).unwrap();
+        let secrets = client.secrets.as_ref().unwrap().as_table().unwrap();
+        assert_eq!(
+            secrets
+                .get(stringify!(private_key_ssm_path))
+                .and_then(toml::Value::as_str),
+            Some(private_key_ssm_path)
+        );
+    }
+}

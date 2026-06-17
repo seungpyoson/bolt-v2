@@ -228,7 +228,7 @@ class LaneRTests(unittest.TestCase):
 
     def _gh_mock_returning(self, payload: list[dict[str, Any]] | None,
                             error: str | None = None) -> Callable[..., Any]:
-        def fake(repo_root: pathlib.Path, config: Any, branch: str) -> tuple[Any, Any]:
+        def fake(repo_root: pathlib.Path, config: Any, branch: str, tip: str) -> tuple[Any, Any]:
             return payload, error
         return fake
 
@@ -594,7 +594,7 @@ class InfraTests(unittest.TestCase):
         tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
         _run(["git", "checkout", "main"], cwd=self.work)
         with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
-                                lambda r, c, b: ([{
+                                lambda r, c, b, t: ([{
                                     "number": 9, "headRefOid": tip, "baseRefName": "main",
                                     "headRepositoryOwner": {"login": "t"},
                                     "isCrossRepository": False,
@@ -687,12 +687,30 @@ class GhCacheTests(unittest.TestCase):
             call_count["n"] += 1
             return [], None
 
+        tip = "0" * 40  # stable tip for repeat calls
         with mock.patch.object(cm, "gh_merged_pr_for_branch", counting_fake):
-            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x")
-            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x")
-            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x")
+            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x", tip)
+            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x", tip)
+            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x", tip)
         self.assertEqual(call_count["n"], 1,
-                          "TTL cache must collapse repeated calls into one gh query")
+                          "TTL cache must collapse repeated (branch, tip) calls into one gh query")
+
+    def test_cache_invalidates_on_tip_change(self) -> None:
+        """round-4.5 self-review / Grok P2: cache key by (branch, tip), not branch alone."""
+        config = cm.load_config(self.work)
+        call_count = {"n": 0}
+
+        def counting_fake(repo_root: pathlib.Path, branch: str, timeout: float):
+            call_count["n"] += 1
+            return [], None
+
+        tip_a = "a" * 40
+        tip_b = "b" * 40
+        with mock.patch.object(cm, "gh_merged_pr_for_branch", counting_fake):
+            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x", tip_a)
+            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x", tip_b)
+        self.assertEqual(call_count["n"], 2,
+                          "different tips must bypass the cache (key by branch+tip)")
 
     def test_cache_survives_corrupt_cache_file(self) -> None:
         config = cm.load_config(self.work)
@@ -701,7 +719,8 @@ class GhCacheTests(unittest.TestCase):
         cache_path.write_text("not json at all", encoding="utf-8")
         with mock.patch.object(cm, "gh_merged_pr_for_branch",
                                 lambda r, b, t: ([], None)):
-            prs, err = cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x")
+            prs, err = cm.gh_merged_pr_for_branch_cached(
+                self.work, config, "feat/x", "0" * 40)
         self.assertEqual(prs, [])
         self.assertIsNone(err)
 

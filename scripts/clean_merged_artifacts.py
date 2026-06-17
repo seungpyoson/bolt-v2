@@ -27,6 +27,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import pathlib
@@ -594,9 +595,13 @@ def gh_merged_pr_for_branch(
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Return (prs, error). prs=None means gh trouble (keep the branch)."""
     cmd = [
+        # --limit 100 (round-4.5: was 5; Kimi P1 noted that a branch reused
+        # >5x with the current tip = older PR would be missed. 100 covers any
+        # realistic reuse pattern; the headRefOid match makes false-positives
+        # impossible regardless of how many PRs are returned.)
         "gh", "pr", "list", "--head", branch, "--state", "merged",
         "--json", "number,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository",
-        "--limit", "5",
+        "--limit", "100",
     ]
     try:
         out = subprocess.run(
@@ -617,22 +622,27 @@ def gh_merged_pr_for_branch(
 
 
 def gh_merged_pr_for_branch_cached(
-    repo_root: pathlib.Path, config: Config, branch: str,
+    repo_root: pathlib.Path, config: Config, branch: str, tip: str,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Per-branch gh result with TTL cache (avoids re-Querying on every hook fire).
+    """Per-branch gh result with TTL cache (avoids re-querying on every hook fire).
 
-    Cache layout: {branch: {"fetched_at": <unix_ts>, "prs": [...], "error": str|None}}
+    Cache key is (branch, tip-sha[:12]) — round-4.5 self-review / Grok P2: keyed
+    by branch alone, a stale negative result (no merged PR for tip A) would
+    suppress cleanup for up to TTL after tip advances to a merged squash commit B.
+    Keying by (branch, tip) invalidates the entry automatically when the tip moves.
+
     Stored under <git-common-dir>/clean-merged-gh-cache.json. On any I/O trouble
     the cache is bypassed (fail-open to a fresh gh call), never fail-closed.
     """
     cache_path = _gh_cache_path(repo_root)
     now = time.time()
     cache = _load_gh_cache(cache_path)
-    entry = cache.get(branch)
+    cache_key = f"{branch}@{tip[:12]}"
+    entry = cache.get(cache_key)
     if isinstance(entry, dict) and (now - float(entry.get("fetched_at", 0))) < config.lane_r.cache_ttl_s:
         return entry.get("prs"), entry.get("error")
     prs, err = gh_merged_pr_for_branch(repo_root, branch, config.lane_r.gh_timeout_s)
-    cache[branch] = {"fetched_at": now, "prs": prs, "error": err}
+    cache[cache_key] = {"fetched_at": now, "prs": prs, "error": err}
     _save_gh_cache(cache_path, cache)
     return prs, err
 
@@ -868,7 +878,7 @@ def run_lane_r(
                                 "action": "would-delete", "reason": "ancestor of trunk"})
             continue
         # gh path
-        prs, err = gh_merged_pr_for_branch_cached(repo_root, config, br.name)
+        prs, err = gh_merged_pr_for_branch_cached(repo_root, config, br.name, br.sha)
         if prs is None:
             gh_unavailable = True
             records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
@@ -924,7 +934,6 @@ def _quarantine_target(config: Config, repo_root: pathlib.Path, name: str, sha: 
     # Hash the absolute worktree path to disambiguate multiple worktrees bound
     # to the same branch (rare but possible). Without it, two same-second
     # archives of the same branch would collide on the same quarantine dir.
-    import hashlib
     wt_hash = hashlib.sha1(str(wt_path).encode("utf-8")).hexdigest()[:8]
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
     return base / f"{safe}-{sha[:12]}-{ts}-{pid}-{wt_hash}"
@@ -968,7 +977,7 @@ def _lane_w_eligible(
     if is_ancestor(repo_root, head, trunk_sha):
         return True, "ancestor of trunk", None
     # gh path (Lane W is operator-invoked; network is acceptable here)
-    prs, err = gh_merged_pr_for_branch_cached(repo_root, config, branch)
+    prs, err = gh_merged_pr_for_branch_cached(repo_root, config, branch, head)
     if prs is None:
         return False, f"not ancestor and gh unavailable ({err})", None
     match = find_matching_merged_pr(prs, head, config.trunk_branch, config.origin_owner)
@@ -1110,6 +1119,19 @@ def run_lane_w(
                         records.append(rec)
                         write_audit(repo_root, config, rec)
                         continue
+                    # Worktree successfully removed. Flip the manifest's
+                    # worktree_remove_ok RIGHT NOW (before branch-delete / final
+                    # manifest write) so a crash between here and the end of the
+                    # iteration leaves the quarantine entry purge-eligible.
+                    # (round-4.5 self-review: previously the minimal manifest
+                    # stayed worktree_remove_ok=False until the final write,
+                    # so a crash left the entry unpurgeable forever.)
+                    minimal_manifest["worktree_remove_ok"] = True
+                    minimal_manifest["worktree_removed_at"] = (
+                        dt.datetime.now(dt.timezone.utc).isoformat())
+                    (quarantine / "clean-merged.manifest.json").write_text(
+                        json.dumps(minimal_manifest, indent=2, sort_keys=True),
+                        encoding="utf-8")
                     # Worktree gone. Re-read the branch tip now (round-4 P0 by Kimi/GPT):
                     # a commit may have landed in the worktree between list_worktrees()
                     # and now. If it moved, we must NOT delete with the stale SHA —
@@ -1250,7 +1272,33 @@ def cmd_purge_quarantine(
                 skipped += 1
                 continue
             if not manifest.get("worktree_remove_ok"):
-                skipped += 1
+                # Round-4.5 self-review: a dir with manifest but
+                # worktree_remove_ok=False is a stuck half-state (archive-failed,
+                # remove-failed-after-archive, or a crash between worktree-remove
+                # and the manifest flip). Hold for grace, then purge as cruft.
+                # The failure is already in the audit log; the cruft dir adds
+                # no recovery value (no successful archive in many cases, and
+                # when there IS an archive the operator was already notified).
+                try:
+                    mtime = child.stat().st_mtime
+                except OSError:
+                    skipped += 1
+                    continue
+                if mtime > cutoff:
+                    continue
+                try:
+                    size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
+                except OSError:
+                    size = 0
+                shutil.rmtree(child, ignore_errors=True)
+                total_bytes_freed += size
+                write_audit(repo_root, config, {
+                    "lane": "W", "branch": manifest.get("branch"),
+                    "action": "quarantine-purged-incomplete",
+                    "quarantine_path": str(child), "bytes_freed": size,
+                    "reason": "worktree_remove_ok was False; purged as cruft after grace",
+                })
+                purged += 1
                 continue
             try:
                 mtime = child.stat().st_mtime
@@ -1541,7 +1589,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    repo_root = _resolve_repo_root(pathlib.Path.cwd())
+    # Resolve to the MAIN worktree root, not the current worktree's root.
+    # (round-4.5 self-review / Kimi P1: if the operator runs Lane W from inside
+    # a worktree that Lane W removes, the cwd-based repo_root becomes invalid
+    # mid-sweep and subsequent _git calls raise FileNotFoundError. Pin to the
+    # main worktree root, which is never removed.)
+    repo_root = _main_worktree_root(_resolve_repo_root(pathlib.Path.cwd()))
     try:
         config = load_config(repo_root)
     except ConfigError as exc:

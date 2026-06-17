@@ -2987,9 +2987,9 @@ fn resolve_fill_model(
             let model =
                 ProbabilisticFillModel::new(prob_fill_on_limit, prob_slippage, Some(random_seed))
                     .map_err(|_| ManifestError::InvalidVenueModelParameter {
-                        field: "venue.fill_model",
-                        value: config.kind.clone(),
-                    })?;
+                    field: "venue.fill_model",
+                    value: config.kind.clone(),
+                })?;
             Ok(Some(FillModelAny::Probabilistic(model)))
         }
         other => Err(ManifestError::UnsupportedEnum {

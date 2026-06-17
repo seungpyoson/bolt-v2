@@ -2023,7 +2023,10 @@ async fn artifact_index_rejects_cross_kind_artifact_uri_squatting() {
     let store = InMemory::new();
     let writer = ArtifactIndexWriter::new(&store);
     let event = backtest_event(
-        format!("{}/projection=projection-001/", root.typed_root(ArtifactKind::NtCatalog)),
+        format!(
+            "{}/projection=projection-001/",
+            root.typed_root(ArtifactKind::NtCatalog)
+        ),
         "event-cross-kind",
         "run-cross-kind",
     );

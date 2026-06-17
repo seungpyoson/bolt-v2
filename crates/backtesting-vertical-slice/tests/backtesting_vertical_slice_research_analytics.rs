@@ -329,8 +329,8 @@ fn sweep_orchestration_rejects_contract_not_bound_to_run_spec() {
         fs::create_dir_all(output_dir).expect("create output dir");
         let path = output_dir.join(RESULT_CONTRACT_FILE);
         let mut artifact = contract_for_run_spec(spec, object_bytes, &path.to_string_lossy());
-        artifact.manifest_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-            .to_string();
+        artifact.manifest_hash =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
         fs::write(
             &path,
             serde_json::to_vec_pretty(&artifact).expect("serialize contract"),
@@ -702,9 +702,9 @@ fn experiment_result_rejects_forbidden_promotion_actions() {
 #[test]
 fn experiment_result_requires_source_refs_and_hashes_to_match() {
     let mut artifact = valid_experiment_result(RaVerdictKind::NoGo);
-    artifact.source_hashes.push(
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
-    );
+    artifact
+        .source_hashes
+        .push("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string());
 
     assert!(matches!(
         artifact

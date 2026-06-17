@@ -713,6 +713,48 @@ class GhCacheTests(unittest.TestCase):
         self.assertEqual(call_count["n"], 2,
                           "different tips must bypass the cache (key by branch+tip)")
 
+    def test_entry_is_live_rejects_malformed_and_non_finite(self) -> None:
+        """round-5.5 polish (Claude P3-2, GPT P2): malformed/non-finite fetched_at
+        must NOT crash the cache (read or save) AND must be treated as expired
+        so the tool self-heals instead of permanently caching a tampered value."""
+        now = 1000.0
+        ttl = 300.0
+        # Live entry
+        self.assertTrue(cm._entry_is_live({"fetched_at": now - 100}, now, ttl))
+        # Expired entry
+        self.assertFalse(cm._entry_is_live({"fetched_at": now - 1000}, now, ttl))
+        # Malformed: string
+        self.assertFalse(cm._entry_is_live({"fetched_at": "not-a-float"}, now, ttl))
+        # Malformed: missing key
+        self.assertFalse(cm._entry_is_live({}, now, ttl))
+        # Non-finite: inf (Claude P3-2 — float('inf') parses cleanly but age = -inf)
+        self.assertFalse(cm._entry_is_live({"fetched_at": float("inf")}, now, ttl))
+        # Non-finite: -inf
+        self.assertFalse(cm._entry_is_live({"fetched_at": float("-inf")}, now, ttl))
+        # Non-finite: nan
+        self.assertFalse(cm._entry_is_live({"fetched_at": float("nan")}, now, ttl))
+        # Non-dict
+        self.assertFalse(cm._entry_is_live(["not", "a", "dict"], now, ttl))
+        self.assertFalse(cm._entry_is_live(None, now, ttl))
+
+    def test_atomic_write_text_cleans_tmp_on_crash(self) -> None:
+        """round-5.5 polish (Kimi/Grok P2): if write_text or os.replace raises,
+        the tmp file must be cleaned up so dot-tmp.<pid> files don't accumulate."""
+        target = self.tmp / "atomic-target.txt"
+        target.write_text("ORIGINAL", encoding="utf-8")
+        # Patch os.replace to raise; verify tmp is removed + original preserved
+        # + original exception propagates.
+        tmp_files_before = list(self.tmp.glob(".atomic-target.txt.tmp.*"))
+        with mock.patch("os.replace", side_effect=OSError("simulated cross-filesystem")):
+            with self.assertRaises(OSError):
+                cm._atomic_write_text(target, "NEW")
+        # Tmp cleaned up
+        tmp_files_after = list(self.tmp.glob(".atomic-target.txt.tmp.*"))
+        self.assertEqual(tmp_files_after, tmp_files_before,
+                         "atomic write must clean up tmp file on exception")
+        # Original content preserved (write_text succeeded but replace failed)
+        self.assertEqual(target.read_text(encoding="utf-8"), "ORIGINAL")
+
     def test_cache_survives_corrupt_cache_file(self) -> None:
         config = cm.load_config(self.work)
         cache_path = cm._gh_cache_path(self.work)
@@ -938,6 +980,52 @@ class ActiveWorktreeSkipTests(unittest.TestCase):
         self.assertTrue(wt_path.exists(),
                         "Lane W must NOT archive the worktree the operator is standing in")
         self.assertIn("feat/invoker", git(self.work, "branch", "--list"))
+
+    def test_detached_invoker_does_not_skip_other_detached_worktrees(self) -> None:
+        """round-5.5 polish (Claude P3-1, GPT P2, Kimi P2): the dropped
+        `wt.branch is not None` guard meant an invoker on detached HEAD
+        (cur=None) caused EVERY detached worktree to match None==None → skip.
+        Restored guard + invoke_root path check ensures only the invoker's
+        own worktree is skipped; other eligible detached worktrees still
+        get cleaned."""
+        # Two ancestor-of-trunk detached worktrees: wt-other (eligible, should
+        # be removed) and wt-invoker (the operator's CWD, must survive).
+        # Create commits on trunk so detached HEADs land at ancestor-of-trunk.
+        _run(["git", "commit", "--allow-empty", "-m", "c1"], cwd=self.work)
+        c1_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
+        _run(["git", "commit", "--allow-empty", "-m", "c2"], cwd=self.work)
+        # Push so origin/main advances past c1; otherwise resolve_trunk_sha
+        # returns stale origin/main (at init) and c1 looks non-ancestor.
+        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        # wt-other at c1 (ancestor of current main); detached.
+        wt_other = self.tmp / "wt-other"
+        _run(["git", "worktree", "add", "--detach", str(wt_other), c1_sha], cwd=self.work)
+        # wt-invoker at c1 too (detached); the operator's CWD.
+        wt_invoker = self.tmp / "wt-invoker-detached"
+        _run(["git", "worktree", "add", "--detach", str(wt_invoker), c1_sha], cwd=self.work)
+        old_cwd = os.getcwd()
+        os.chdir(wt_invoker)
+        try:
+            old_env = os.environ.copy()
+            os.environ.update(GIT_ENV)
+            try:
+                rc = cm.main(["--include-worktrees", "--apply", "--quiet"])
+            finally:
+                os.environ.clear()
+                os.environ.update(old_env)
+        finally:
+            try:
+                os.chdir(old_cwd)
+            except OSError:
+                os.chdir(self.tmp)
+        self.assertEqual(rc, 0)
+        # wt-other (the eligible non-invoker detached worktree) MUST be removed.
+        self.assertFalse(wt_other.exists(),
+                         "Detached invoker must NOT cause other detached worktrees "
+                         "to be over-skipped (round-5.5 None-guard regression)")
+        # wt-invoker (the operator's CWD) MUST survive via invoke_root path check.
+        self.assertTrue(wt_invoker.exists(),
+                        "Invoker's detached worktree must still be protected")
 
 
 if __name__ == "__main__":

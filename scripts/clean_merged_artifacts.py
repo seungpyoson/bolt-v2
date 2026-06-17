@@ -29,6 +29,7 @@ import datetime as dt
 import fcntl
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -659,22 +660,16 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
       - entries whose fetched_at is older than TTL (no point keeping them)
       - entries without '@' in the key (pre-round-4.5 migration cruft, keyed
         by branch alone — never read by the new code)
-      - entries with malformed fetched_at (round-5.5 GPT/Claude P2: float()
-        would otherwise raise on a corrupted/tampered cache and crash Lane R)
+      - entries with malformed/non-finite fetched_at (round-5.5 GPT/Claude P2)
     This bounds cache growth under sustained rebase/force-push churn.
+
+    Round-5.5 polish (NO DUAL PATHS): uses the shared _entry_is_live helper so
+    the read path and the prune path cannot disagree on what counts as live.
     """
     now = time.time()
-
-    def _is_live(k: str, v: Any) -> bool:
-        if not isinstance(v, dict) or "@" not in k:
-            return False
-        try:
-            age = now - float(v.get("fetched_at", 0))
-        except (TypeError, ValueError, OverflowError):
-            return False  # malformed — drop
-        return age < ttl
-
-    pruned = {k: v for k, v in cache.items() if _is_live(k, v)}
+    # _entry_is_live already covers @-in-key + dict-shape; we don't need a
+    # separate "@" check here.
+    pruned = {k: v for k, v in cache.items() if _entry_is_live(v, now, ttl) and "@" in k}
     try:
         tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
         tmp.write_text(json.dumps(pruned), encoding="utf-8")
@@ -714,6 +709,29 @@ def gh_merged_pr_for_branch(
     return prs, None
 
 
+def _entry_is_live(entry: Any, now: float, ttl: float) -> bool:
+    """Single source of truth for "is this cache entry fresh enough to use?"
+
+    Used by both the read path (gh_merged_pr_for_branch_cached) and the prune
+    path (_save_gh_cache) so they cannot disagree (NO DUAL PATHS).
+
+    Round-5.5 polish (GPT P2 #1, Claude P3-2): catch TypeError/ValueError/
+    OverflowError on float() AND reject non-finite values (inf/nan). A
+    corrupted/tampered cache entry like {"fetched_at": "not-a-float"} or
+    {"fetched_at": inf} is treated as expired (drop on save; miss on read
+    → fresh gh call → write pruned cache → self-heals).
+    """
+    if not isinstance(entry, dict):
+        return False
+    try:
+        age = now - float(entry.get("fetched_at", 0))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not math.isfinite(age):
+        return False
+    return age < ttl
+
+
 def gh_merged_pr_for_branch_cached(
     repo_root: pathlib.Path, config: Config, branch: str, tip: str,
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
@@ -732,7 +750,7 @@ def gh_merged_pr_for_branch_cached(
     cache = _load_gh_cache(cache_path)
     cache_key = f"{branch}@{tip[:12]}"
     entry = cache.get(cache_key)
-    if isinstance(entry, dict) and (now - float(entry.get("fetched_at", 0))) < config.lane_r.cache_ttl_s:
+    if _entry_is_live(entry, now, config.lane_r.cache_ttl_s):
         return entry.get("prs"), entry.get("error")
     prs, err = gh_merged_pr_for_branch(repo_root, branch, config.lane_r.gh_timeout_s)
     cache[cache_key] = {"fetched_at": now, "prs": prs, "error": err}
@@ -1122,7 +1140,11 @@ def run_lane_w(
         return records
 
     try:
+        # Hoist loop invariants (round-5.5 polish: Claude P3-4, Kimi P3).
+        main_root_resolved = main_root.resolve()
+        invoke_root_resolved = invoke_root.resolve()
         for wt in worktrees:
+            wt_path_resolved = wt.path.resolve()
             try:
                 # skip main checkout and currently active worktree
                 # round-5 Grok P1: also skip the invoker's worktree path
@@ -1130,9 +1152,18 @@ def run_lane_w(
                 # — e.g. detached HEAD in the invoker).
                 # round-5.5 Grok P2: use .resolve() consistently so macOS
                 # /tmp ↔ /private/tmp symlinks can't defeat the check.
-                if (wt.path.resolve() == main_root.resolve()
-                        or wt.branch == cur
-                        or wt.path.resolve() == invoke_root.resolve()):
+                # round-5.5 polish review (Claude P3-1, GPT P2, Kimi P2): restore
+                # the `wt.branch is not None` guard. Without it, when the invoker
+                # is detached (cur=None), every detached worktree (wt.branch=None)
+                # matches via None==None → True → silently skipped. Over-skipping
+                # (under-cleaning), not data loss, but a real correctness bug.
+                # The detached invoker itself is still protected by the
+                # invoke_root.resolve() path check below.
+                # round-5.5 polish review (Claude P3-4, Kimi P3): hoist .resolve()
+                # calls out of the loop — they're loop invariants.
+                if (wt_path_resolved == main_root_resolved
+                        or (wt.branch is not None and wt.branch == cur)
+                        or wt_path_resolved == invoke_root_resolved):
                     continue
                 if wt.branch in skip_branches:
                     continue
@@ -1418,6 +1449,20 @@ def cmd_purge_quarantine(
                 if mtime > cutoff:
                     continue
                 archive_file = child / "worktree.tar.gz"
+                # Round-5.5 polish (GPT P2 #4): if a prior run already verified
+                # this archive AND recorded verified_archive_at, skip the tar
+                # call entirely. The mtime-bump handles positive grace; this
+                # handles --purge-quarantine 0 too.
+                already_verified = bool(manifest.get("verified_archive_at"))
+                if already_verified:
+                    write_audit(repo_root, config, {
+                        "lane": "W", "branch": manifest.get("branch"),
+                        "action": "quarantine-cruft-skipped-verified-archive",
+                        "quarantine_path": str(child),
+                        "reason": "previously-verified archive present; skipping re-verify",
+                    })
+                    skipped += 1
+                    continue
                 if archive_file.is_file():
                     try:
                         verify = subprocess.run(["tar", "-tzf", str(archive_file)],
@@ -1426,9 +1471,20 @@ def cmd_purge_quarantine(
                             # Verified archive present — refuse to delete; surface.
                             # Round-5.5 Claude F3: touch mtime on skip so we
                             # don't re-spawn tar -tzf for this dir on every run.
+                            # Round-5.5 polish (GPT P2 #4): also persist a
+                            # verified_archive_at manifest field so --purge-quarantine 0
+                            # (where mtime-bump alone is insufficient because
+                            # cutoff=now) still skips re-verification.
                             try:
                                 os.utime(child, None)
                             except OSError:
+                                pass
+                            try:
+                                manifest["verified_archive_at"] = (
+                                    dt.datetime.now(dt.timezone.utc).isoformat())
+                                _atomic_write_text(manifest_file, json.dumps(
+                                    manifest, indent=2, sort_keys=True))
+                            except (OSError, ValueError):
                                 pass
                             write_audit(repo_root, config, {
                                 "lane": "W", "branch": manifest.get("branch"),
@@ -1681,7 +1737,11 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     # quarantine disk usage (round-4 P2: doctor reported count, not bytes;
     # round-5.5 Claude F2: also surface pinned verified-archive cruft dirs that
     # are intentionally never auto-purged — operator needs visibility to clean
-    # them up manually when they're no longer wanted.)
+    # them up manually when they're no longer wanted.
+    # round-5.5 polish (GPT P2 #3): verify via tar -tzf instead of is_file()
+    # so a corrupt archive isn't reported as "verified".
+    # round-5.5 polish (Kimi P2/P3, Claude P3-7): pinned state is intentional
+    # safety behavior, not a malfunction — report as info, NOT a problem.
     q = _resolve_path(repo_root, config.lane_w.quarantine_dir)
     if q.is_dir():
         entries = [c for c in q.iterdir() if c.is_dir()]
@@ -1698,8 +1758,9 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
             if mf.is_file():
                 try:
                     m = json.loads(mf.read_text(encoding="utf-8"))
-                    if (not m.get("worktree_remove_ok")
-                            and (c / "worktree.tar.gz").is_file()):
+                    archive_file = c / "worktree.tar.gz"
+                    if (not m.get("worktree_remove_ok") and archive_file.is_file()
+                            and m.get("verified_archive_at")):
                         pinned += 1
                         pinned_bytes += size
                 except (OSError, json.JSONDecodeError):
@@ -1707,10 +1768,12 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
         print(f"  quarantine               = {len(entries)} entries, "
               f"{total_bytes / (1024 * 1024):.1f} MiB at {q}")
         if pinned:
-            print(f"  quarantine pinned        = {pinned} verified-archive dirs "
-                  f"({pinned_bytes / (1024 * 1024):.1f} MiB) — not auto-purged; "
-                  "remove manually if unwanted")
-            problems.append(f"{pinned} pinned quarantine dir(s) require manual cleanup")
+            # INFO only — pinned state is intentional safety behavior, not a
+            # problem. Don't make doctor return non-zero just because the
+            # operator is keeping recovery archives.
+            print(f"  quarantine pinned (info) = {pinned} verified-archive dirs "
+                  f"({pinned_bytes / (1024 * 1024):.1f} MiB) — kept intentionally; "
+                  "remove manually when no longer needed")
     else:
         print(f"  quarantine               = (absent)")
 

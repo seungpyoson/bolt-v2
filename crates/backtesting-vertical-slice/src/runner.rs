@@ -1781,8 +1781,8 @@ mod tests {
     };
     use crate::pmxt_one_off_backfill_projection::{
         PmxtBookLevel, PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
-        PmxtOneOffTickSide, PmxtOneOffTradeRow, project_pmxt_one_off_rows_to_nt,
-        write_pmxt_one_off_projection_to_catalog,
+        PmxtOneOffTickSide, PmxtOneOffTradeRow, PmxtPriceChangeRow,
+        project_pmxt_one_off_rows_to_nt, write_pmxt_one_off_projection_to_catalog,
     };
     use crate::run_manifest::{
         BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE,
@@ -2083,9 +2083,9 @@ mod tests {
     }
 
     const ISSUE_789_START_MS: u64 = 1_776_816_000_000;
-    const ISSUE_789_END_MS: u64 = 1_776_816_020_000;
+    const ISSUE_789_END_MS: u64 = 1_776_816_060_000;
     const ISSUE_789_START_NS: i64 = 1_776_816_000_000_000_000;
-    const ISSUE_789_END_NS: i64 = 1_776_816_020_000_000_000;
+    const ISSUE_789_END_NS: i64 = 1_776_816_060_000_000_000;
     const ISSUE_789_CONDITION_ID: &str =
         "0xb98f764c4d5dd36580c8c9903bc75ddcb631428d84e9c1e532f0da236f77054c";
     const ISSUE_789_UP_TOKEN: &str =
@@ -2100,7 +2100,7 @@ mod tests {
         let tempdir = tempfile::TempDir::new().context("create issue #789 temp catalog root")?;
         let okx_quotes = seeded_quote_table(
             include_str!(
-                "../tests/fixtures/issue_789_first_pl/okx_btc_usdt_l2_20260422_000000_000020.jsonl"
+                "../tests/fixtures/issue_789_first_pl/okx_btc_usdt_l2_20260422_000000_000060.jsonl"
             ),
             okx_seeded_l2_mapping(),
             QuoteTableSpec {
@@ -2114,7 +2114,7 @@ mod tests {
         )?;
         let bybit_quotes = seeded_quote_table(
             include_str!(
-                "../tests/fixtures/issue_789_first_pl/bybit_btc_usdt_l2_20260422_000000_000020.jsonl"
+                "../tests/fixtures/issue_789_first_pl/bybit_btc_usdt_l2_20260422_000000_000060.jsonl"
             ),
             bybit_seeded_l2_mapping(),
             QuoteTableSpec {
@@ -2237,7 +2237,7 @@ mod tests {
             output.config_override_report
         );
         println!(
-            "issue_789_feed_labels=signal:OKX real snapshot-seeded L2 BBO; rv:OKX real snapshot-seeded L2 BBO; rv:Bybit real snapshot-seeded L2 BBO; tradable:PMXT real R2 archive book/trades; strike/reference:reconstructed-from-spot not raw Chainlink"
+            "issue_789_feed_labels=signal:OKX real snapshot-seeded L2 BBO; rv:OKX real snapshot-seeded L2 BBO; rv:Bybit real snapshot-seeded L2 BBO; tradable:PMXT real R2 archive book/price_change/trades; strike/reference:reconstructed-from-spot not raw Chainlink"
         );
         println!(
             "issue_789_guard total_orders={} total_positions={} armed={} traded={} signal_quote_received={} rv_ready={} price_to_beat_received={} reference_fresh={} latest_market_id={:?} latest_spot_price={:?} latest_price_to_beat={:?} latest_reference={:?} rv_sources={:?} rv_blockers={:?}",
@@ -2293,7 +2293,7 @@ mod tests {
                 "signal": "OKX real snapshot-seeded L2 BBO",
                 "rv_okx": "OKX real snapshot-seeded L2 BBO",
                 "rv_bybit": "Bybit real snapshot-seeded L2 BBO",
-                "tradable": "PMXT real R2 archive book/trades",
+                "tradable": "PMXT real R2 archive book/price_change/trades",
                 "strike": "reconstructed-from-spot, not raw Chainlink",
                 "reference": "reconstructed-from-spot, not raw Chainlink"
             },
@@ -2442,6 +2442,8 @@ mod tests {
         price: Option<String>,
         size: Option<String>,
         side: Option<String>,
+        best_bid: Option<String>,
+        best_ask: Option<String>,
         transaction_hash: Option<String>,
         fee_rate_bps: Option<String>,
         timestamp_ms: String,
@@ -2471,6 +2473,19 @@ mod tests {
                         asset_id: row.asset_id.clone(),
                         bids: parse_pmxt_book_levels(row.bids.as_deref().context("book bids")?)?,
                         asks: parse_pmxt_book_levels(row.asks.as_deref().context("book asks")?)?,
+                        timestamp_ms: row.timestamp_ms.clone(),
+                        ts_init: UnixNanos::from(row.ts_init_ns),
+                    }))
+                }
+                "price_change" => {
+                    selected.push(PmxtOneOffSelectedRow::PriceChange(PmxtPriceChangeRow {
+                        market: ISSUE_789_CONDITION_ID.to_string(),
+                        asset_id: row.asset_id.clone(),
+                        price: row.price.clone().context("price_change price")?,
+                        side: parse_pmxt_side(row.side.as_deref().context("price_change side")?)?,
+                        size: row.size.clone().context("price_change size")?,
+                        best_bid: row.best_bid.clone(),
+                        best_ask: row.best_ask.clone(),
                         timestamp_ms: row.timestamp_ms.clone(),
                         ts_init: UnixNanos::from(row.ts_init_ns),
                     }))

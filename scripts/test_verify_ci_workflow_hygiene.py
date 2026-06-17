@@ -1968,6 +1968,19 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
             f"backtester-ci workflow must document the required-capable gate context, got: {missing_required_gate_note_errors}"
         )
 
+    required_gate_note_decoy = (
+        missing_required_gate_note + "\n# " + verifier.BACKTESTER_REQUIRED_GATE_COMMENT + "\n"
+    )
+    required_gate_note_decoy_errors = verifier.verify_repo_automation_texts({workflow_name: required_gate_note_decoy})
+    if not any(
+        "backtester draft deferral must document that only backtester-gate should be required" in error
+        for error in required_gate_note_decoy_errors
+    ):
+        raise AssertionError(
+            "backtester-ci workflow must reject required-gate documentation decoys outside the header, "
+            f"got: {required_gate_note_decoy_errors}"
+        )
+
     missing_policy_gate = replace_once(
         workflow,
         "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}",

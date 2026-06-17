@@ -8727,6 +8727,15 @@ def backtester_concurrency_group_text(text: str) -> str:
     return " ".join(line.strip() for line in group_lines if line.strip())
 
 
+def workflow_header_text(text: str) -> str:
+    header_lines: list[str] = []
+    for line in text.splitlines():
+        if line.strip() == "on:":
+            break
+        header_lines.append(line)
+    return "\n".join(header_lines)
+
+
 def backtester_defer_action_lists(text: str) -> set[str]:
     return {match.group("actions") for match in BACKTESTER_DEFER_ACTION_LIST_RE.finditer(text)}
 
@@ -8749,7 +8758,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         return []
     jobs = parse_jobs(text)
     errors: list[str] = []
-    if BACKTESTER_REQUIRED_GATE_COMMENT not in text:
+    if BACKTESTER_REQUIRED_GATE_COMMENT not in workflow_header_text(text):
         errors.append("backtester draft deferral must document that only backtester-gate should be required")
     policy = jobs.get("ci-policy")
     if policy is None:

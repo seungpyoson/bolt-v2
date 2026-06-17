@@ -36,14 +36,7 @@ Validation:
 - `product_surfaces`: enabled discovery surfaces.
 - `account_id`
 - execution endpoints and retry policy.
-- `live_submit_approval_id`
-- `live_submit_approval_artifact_path`
-- `live_submit_approval_artifact_max_bytes`
-- `live_submit_max_order_count`
-- `live_submit_max_order_notional`
-- `live_submit_product_proof_artifact_path`
-- `live_submit_product_proof_artifact_sha256`
-- `live_submit_product_proof_artifact_max_bytes`
+- `live_submit`: optional per-surface map keyed by product surface (`standard_perps`, `spot`, `hip3_builder_perps`, `hip4_outcomes`), declared as `[clients.<id>.execution.live_submit.<surface>]`. Each surface entry requires `approval_id`, `approval_artifact_path`, `approval_artifact_max_bytes`, `max_order_count`, `max_order_notional`, `product_proof_artifact_path`, `product_proof_artifact_sha256`, and `product_proof_artifact_max_bytes`. Every configured `live_submit` surface must also appear in `product_surfaces`.
 
 Validation:
 - Execution requires SSM-backed secrets.

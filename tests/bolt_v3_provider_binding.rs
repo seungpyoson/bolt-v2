@@ -1056,6 +1056,241 @@ fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runt
 }
 
 #[test]
+fn provider_binding_rejects_operator_surface_not_enabled_by_product_surfaces() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+
+    let error = writer(
+        ProviderLiveSubmitApprovalContext {
+            loaded: &loaded,
+            client_key: "hyperliquid_perps",
+            client: loaded
+                .root
+                .clients
+                .get("hyperliquid_perps")
+                .expect("test client should exist"),
+            resolved: &resolved,
+            product_surface: Some("spot"),
+            now_unix_seconds,
+            build_head_sha: &build_head_sha,
+        },
+        now_unix_seconds + 600,
+    )
+    .expect_err("operator surface outside execution.product_surfaces must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("is not enabled by execution.product_surfaces"),
+        "error should identify the disabled operator surface: {error}"
+    );
+    assert!(
+        !approval_path.exists(),
+        "no approval artifact may be written when the operator surface is not enabled"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_unsupported_operator_product_surface_name() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+
+    let error = writer(
+        ProviderLiveSubmitApprovalContext {
+            loaded: &loaded,
+            client_key: "hyperliquid_perps",
+            client: loaded
+                .root
+                .clients
+                .get("hyperliquid_perps")
+                .expect("test client should exist"),
+            resolved: &resolved,
+            product_surface: Some("perpetuals_that_do_not_exist"),
+            now_unix_seconds,
+            build_head_sha: &build_head_sha,
+        },
+        now_unix_seconds + 600,
+    )
+    .expect_err("an unsupported operator product surface name must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported Hyperliquid product surface"),
+        "error should reject the unsupported operator surface name: {error}"
+    );
+    assert!(
+        !approval_path.exists(),
+        "no approval artifact may be written for an unsupported product surface name"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_operator_surface_without_matching_live_submit_block() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "product_surfaces".to_string(),
+            toml::Value::Array(vec![
+                toml::Value::String("standard_perps".to_string()),
+                toml::Value::String("spot".to_string()),
+            ]),
+        );
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+
+    let error = writer(
+        ProviderLiveSubmitApprovalContext {
+            loaded: &loaded,
+            client_key: "hyperliquid_perps",
+            client: loaded
+                .root
+                .clients
+                .get("hyperliquid_perps")
+                .expect("test client should exist"),
+            resolved: &resolved,
+            product_surface: Some("spot"),
+            now_unix_seconds,
+            build_head_sha: &build_head_sha,
+        },
+        now_unix_seconds + 600,
+    )
+    .expect_err("a selected surface without a live_submit block must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("no matching execution.live_submit block is configured"),
+        "error should identify the missing per-surface live_submit block: {error}"
+    );
+    assert!(
+        !approval_path.exists(),
+        "no approval artifact may be written when the selected surface has no live_submit block"
+    );
+}
+
+#[test]
 fn provider_binding_preflights_hyperliquid_live_submit_arming_without_consuming_approval() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let operator_dir = temp.path().join("operator");

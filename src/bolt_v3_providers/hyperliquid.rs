@@ -1101,6 +1101,7 @@ pub fn write_configured_live_submit_approval_artifact(
             "Hyperliquid approval materialization requires a selected live-submit product surface",
         )
     })?;
+    validate_target_surfaces_for_live_submit_approval(&context, &cfg)?;
     let approval_path = selected.live_submit.approval_artifact_path.as_str();
     if expires_at_unix_seconds <= context.now_unix_seconds {
         return Err(hyperliquid_adapter_validation_error(

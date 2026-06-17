@@ -52,7 +52,7 @@ Each product surface must record:
 
 ## Live Submit Artifact Contract
 
-When `live_submit_approval_id` is configured, runtime TOML must also provide the provider-owned approval fields in `[clients.<id>.execution]`: `live_submit_approval_artifact_path`, `live_submit_approval_artifact_max_bytes`, `live_submit_max_order_count`, `live_submit_max_order_notional`, `live_submit_product_proof_artifact_path`, `live_submit_product_proof_artifact_sha256`, and `live_submit_product_proof_artifact_max_bytes`.
+When a product surface enables live submit, runtime TOML must provide the provider-owned approval fields under `[clients.<id>.execution.live_submit.<surface>]`: `approval_id`, `approval_artifact_path`, `approval_artifact_max_bytes`, `max_order_count`, `max_order_notional`, `product_proof_artifact_path`, `product_proof_artifact_sha256`, and `product_proof_artifact_max_bytes`. One execution client may carry per-surface `live_submit` blocks for any of its `product_surfaces` (each `live_submit` surface must appear in `product_surfaces`); a single live node arms at most one surface per execution client.
 
 A live-submit approval artifact is valid only when all fields match the current runtime:
 

@@ -111,6 +111,9 @@ struct BacktestParametersBlock {
     execution_model_artifact_sha256: String,
     maker_order_count: u64,
     passive_fill_count: u64,
+    min_passive_fill_count: u64,
+    resolved_market_count: u64,
+    min_resolved_market_count: u64,
     built_maker_replayed: bool,
     captured_spread_score_micros: i64,
     fees_score_micros: i64,
@@ -132,8 +135,6 @@ struct BacktestParametersBlock {
     custom_fill_model_source_proven: bool,
     underlying_spot_causal_join: bool,
     statistical_significance: bool,
-    passive_fill_power_floor: bool,
-    resolved_market_corpus_floor: bool,
     shared_fair_value_pricing: bool,
     shared_settlement_primitive: bool,
 }
@@ -182,8 +183,8 @@ impl BacktestParametersBlock {
             underlying_spot_causal_join: self.underlying_spot_causal_join,
             net_edge_positive: self.net_score_micros > 0,
             statistical_significance: self.statistical_significance,
-            passive_fill_power_floor: self.passive_fill_power_floor,
-            resolved_market_corpus_floor: self.resolved_market_corpus_floor,
+            passive_fill_power_floor: self.passive_fill_floor_met(),
+            resolved_market_corpus_floor: self.resolved_market_floor_met(),
             shared_fair_value_pricing: self.shared_fair_value_pricing,
             shared_settlement_primitive: self.shared_settlement_primitive,
         }
@@ -195,6 +196,15 @@ impl BacktestParametersBlock {
             - i128::from(self.adverse_selection_score_micros)
             - i128::from(self.settlement_loss_score_micros)
             == i128::from(self.net_score_micros)
+    }
+
+    fn passive_fill_floor_met(&self) -> bool {
+        self.min_passive_fill_count > 0 && self.passive_fill_count >= self.min_passive_fill_count
+    }
+
+    fn resolved_market_floor_met(&self) -> bool {
+        self.min_resolved_market_count > 0
+            && self.resolved_market_count >= self.min_resolved_market_count
     }
 }
 
@@ -634,6 +644,9 @@ mod tests {
             execution_model_artifact_sha256: TEST_ARTIFACT_SHA256.to_string(),
             maker_order_count: 3,
             passive_fill_count: 2,
+            min_passive_fill_count: 2,
+            resolved_market_count: 5,
+            min_resolved_market_count: 5,
             built_maker_replayed: true,
             captured_spread_score_micros: 1_000,
             fees_score_micros: 100,
@@ -655,8 +668,6 @@ mod tests {
             custom_fill_model_source_proven: false,
             underlying_spot_causal_join: true,
             statistical_significance: true,
-            passive_fill_power_floor: true,
-            resolved_market_corpus_floor: true,
             shared_fair_value_pricing: true,
             shared_settlement_primitive: true,
         }
@@ -675,6 +686,9 @@ mod tests {
             execution_model_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             maker_order_count = 3
             passive_fill_count = 2
+            min_passive_fill_count = 2
+            resolved_market_count = 5
+            min_resolved_market_count = 5
             built_maker_replayed = true
             captured_spread_score_micros = 1000
             fees_score_micros = 100
@@ -696,8 +710,6 @@ mod tests {
             custom_fill_model_source_proven = false
             underlying_spot_causal_join = true
             statistical_significance = true
-            passive_fill_power_floor = true
-            resolved_market_corpus_floor = true
             shared_fair_value_pricing = true
             shared_settlement_primitive = true
             "#;
@@ -1076,6 +1088,47 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_unsatisfied_backtest_count_floors() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            passive_fill_count: 1,
+            min_passive_fill_count: 2,
+            resolved_market_count: 4,
+            min_resolved_market_count: 5,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.passive_fill_count")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.resolved_market_count")),
+            "{errors:?}"
+        );
+
+        let zero_floor_errors = backtest_errors(BacktestParametersBlock {
+            min_passive_fill_count: 0,
+            min_resolved_market_count: 0,
+            ..valid_backtest()
+        });
+        assert!(
+            zero_floor_errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.passive_fill_count")),
+            "{zero_floor_errors:?}"
+        );
+        assert!(
+            zero_floor_errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.resolved_market_count")),
+            "{zero_floor_errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_unreconciled_net_score() {
         let errors = backtest_errors(BacktestParametersBlock {
             net_score_micros: 401,
@@ -1275,6 +1328,9 @@ mod tests {
             execution_model_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             maker_order_count = 3
             passive_fill_count = 2
+            min_passive_fill_count = 2
+            resolved_market_count = 5
+            min_resolved_market_count = 5
             built_maker_replayed = true
             captured_spread_score_micros = 1000
             fees_score_micros = 100
@@ -1296,8 +1352,6 @@ mod tests {
             custom_fill_model_source_proven = false
             underlying_spot_causal_join = true
             statistical_significance = true
-            passive_fill_power_floor = true
-            resolved_market_corpus_floor = true
             shared_fair_value_pricing = true
             shared_settlement_primitive = true
             surprise = true

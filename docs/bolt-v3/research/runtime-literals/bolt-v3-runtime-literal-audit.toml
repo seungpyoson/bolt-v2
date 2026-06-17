@@ -16036,18 +16036,34 @@ reason = "Stable maker backtest go-live evidence schema-field label used only to
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"passive_fill_power_floor"'''
-context = '''Self::MissingPassiveFillPowerFloor => "passive_fill_power_floor",'''
+literal = '''"passive_fill_count"'''
+context = '''Self::MissingPassiveFillPowerFloor => "passive_fill_count",'''
 classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+reason = "Stable maker backtest go-live count schema-field label used only to format startup-validation diagnostics; count and floor values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.min_passive_fill_count > 0 && self.passive_fill_count >= self.min_passive_fill_count'''
+classification = "maker_backtest_go_live_count_floor_lower_bound"
+reason = "Fail-closed lower bound requiring a non-zero pre-registered passive-fill count floor; actual count and floor values remain TOML-owned in [parameters.backtest]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"resolved_market_corpus_floor"'''
-context = '''Self::MissingResolvedMarketCorpusFloor => "resolved_market_corpus_floor",'''
+literal = '''"resolved_market_count"'''
+context = '''Self::MissingResolvedMarketCorpusFloor => "resolved_market_count",'''
 classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+reason = "Stable maker backtest go-live count schema-field label used only to format startup-validation diagnostics; count and floor values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.min_resolved_market_count > 0'''
+classification = "maker_backtest_go_live_count_floor_lower_bound"
+reason = "Fail-closed lower bound requiring a non-zero pre-registered resolved-market count floor; actual count and floor values remain TOML-owned in [parameters.backtest]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"

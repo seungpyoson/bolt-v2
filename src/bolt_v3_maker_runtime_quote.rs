@@ -57,8 +57,8 @@ pub struct MakerRuntimeReferenceFairValueInput<'a> {
     pub interval_end_ms: u64,
     pub now_ms: u64,
     pub reference_quotes: &'a [ReferenceQuote],
-    pub strike_price: f64,
-    pub seconds_to_market_end: u64,
+    pub strike_price: Option<f64>,
+    pub seconds_to_market_end: Option<u64>,
     pub realized_volatility_snapshot: &'a RealizedVolSnapshot,
     pub pricing_kurtosis: f64,
 }
@@ -159,8 +159,8 @@ pub fn maker_reference_current_price_fair_value_decision(
     };
     let request = FairValuePricingRequest {
         now_ms: input.now_ms,
-        strike_price: Some(input.strike_price),
-        seconds_to_market_end: Some(input.seconds_to_market_end),
+        strike_price: input.strike_price,
+        seconds_to_market_end: input.seconds_to_market_end,
     };
     let pricing_result = match pricing.fair_value_pricing_at(&config, request) {
         Ok(pricing_result) => pricing_result,

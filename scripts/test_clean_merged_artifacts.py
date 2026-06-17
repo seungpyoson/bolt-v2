@@ -803,6 +803,49 @@ class HookEndToEndTests(unittest.TestCase):
         hb = self._heartbeat()
         self.assertIsNotNone(hb, "post-rewrite must fire Lane H which writes the heartbeat")
 
+    def test_kill_switch_parity_disabled_zero_does_not_silence(self) -> None:
+        """round-4.5 self-review: bash hooks used `[ -n ]` (any non-empty disables),
+        Python used `_is_disabled` (empty/0/false/no/off = enabled). The mismatch
+        meant CLEAN_MERGED_DISABLED=0 silenced hooks but enabled manual Python runs.
+        Assert parity: DISABLED=0 does NOT silence the hook (matches Python)."""
+        # eligible branch on main; advance remote
+        _run(["git", "branch", "feat/parity"], cwd=self.work)
+        self._advance_remote()
+        # Remove any prior heartbeat so we can detect a fresh write.
+        common = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       cwd=self.work).stdout.strip()
+        pathlib.Path(common, "clean-merged.heartbeat").unlink(missing_ok=True)
+        # Pull with DISABLED=0 in the environment.
+        pull_env = {"CLEAN_MERGED_DISABLED": "0"}
+        full_env = os.environ.copy()
+        full_env.update(GIT_ENV)
+        full_env.update(pull_env)
+        subprocess.run(
+            ["git", "pull", "--ff-only", "origin", "main"],
+            cwd=self.work, env=full_env, capture_output=True, text=True, timeout=30,
+        )
+        hb = pathlib.Path(common, "clean-merged.heartbeat")
+        self.assertTrue(hb.is_file(),
+                        "CLEAN_MERGED_DISABLED=0 must NOT silence the hook (parity with Python)")
+
+    def test_kill_switch_parity_disabled_one_silences(self) -> None:
+        """Counterpart: CLEAN_MERGED_DISABLED=1 must silence both bash and Python."""
+        _run(["git", "branch", "feat/parity-off"], cwd=self.work)
+        self._advance_remote()
+        common = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       cwd=self.work).stdout.strip()
+        pathlib.Path(common, "clean-merged.heartbeat").unlink(missing_ok=True)
+        full_env = os.environ.copy()
+        full_env.update(GIT_ENV)
+        full_env.update({"CLEAN_MERGED_DISABLED": "1"})
+        subprocess.run(
+            ["git", "pull", "--ff-only", "origin", "main"],
+            cwd=self.work, env=full_env, capture_output=True, text=True, timeout=30,
+        )
+        hb = pathlib.Path(common, "clean-merged.heartbeat")
+        self.assertFalse(hb.is_file(),
+                          "CLEAN_MERGED_DISABLED=1 must silence the hook")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

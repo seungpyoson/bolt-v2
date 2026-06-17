@@ -1368,11 +1368,15 @@ def cmd_prune_backups(
 def _is_disabled(env_value: str | None) -> bool:
     """Shared kill-switch truthiness so bash hooks and Python agree.
 
-    Bash hooks use `[ -n "${CLEAN_MERGED_DISABLED:-}" ]` (any non-empty value
-    disables). Python previously used `== "1"` only — split-brain meant
-    CLEAN_MERGED_DISABLED=0 silenced hooks but allowed manual/just/cron runs
-    (round-4 P1-5 by Claude). The shared rule: empty/0/false/no/off (case-
-    insensitive) = enabled; anything else = disabled.
+    Round-4 (Claude P1-5) flagged the original split-brain: bash used
+    `[ -n ... ]` (any non-empty disables), Python used `== "1"` only — so
+    CLEAN_MERGED_DISABLED=0 silenced hooks but enabled manual runs. Round-4's
+    fix updated Python only; round-4.5 self-review caught that bash was still
+    on `[ -n ]`, leaving the parity claim false. Bash hooks now use a `case`
+    block matching this exact rule.
+
+    Shared rule: empty/0/false/no/off (case-insensitive) = enabled;
+    anything else = disabled.
     """
     if env_value is None:
         return False

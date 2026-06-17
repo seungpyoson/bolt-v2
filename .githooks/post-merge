@@ -10,9 +10,17 @@
 # raw git) fires this hook.
 #
 # Never breaks the git op: every path exits 0; crashes/missing-deps no-op silently.
-set -uo pipefail
 
-[ -n "${CLEAN_MERGED_DISABLED:-}" ] && exit 0
+# Shared kill-switch truthiness (round-4.5 self-review: round-4 fix updated Python
+# but left bash on `[ -n ]`, so CLEAN_MERGED_DISABLED=0 disabled hooks but enabled
+# Python. Bash now matches Python: empty/0/false/no/off = enabled; else disabled.)
+_cm_disabled() {
+    case "${CLEAN_MERGED_DISABLED:-}" in
+        ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+_cm_disabled && exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
 common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"

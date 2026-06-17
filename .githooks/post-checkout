@@ -10,7 +10,13 @@
 # early-exited before any appended code could run — see issue #802 review round 3.
 #
 # Never breaks the git op: every path exits 0.
-set -uo pipefail
+
+_cm_disabled() {
+    case "${CLEAN_MERGED_DISABLED:-}" in
+        ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) return 1 ;;
+        *) return 0 ;;
+    esac
+}
 
 prev_head="${1:-}"
 new_head="${2:-}"
@@ -21,7 +27,7 @@ branch_checkout="${3:-0}"
 # $3==1. Now also resolve the new HEAD's branch and dispatch only when landing
 # on the configured trunk. Lane H is read-mostly so running on every checkout
 # was harmless, but it added latency to every feature-branch switch.
-if [ "$branch_checkout" = "1" ] && [ -z "${CLEAN_MERGED_DISABLED:-}" ]; then
+if [ "$branch_checkout" = "1" ] && ! _cm_disabled; then
     command -v python3 >/dev/null 2>&1 && {
         new_head_branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
         if [ "$new_head_branch" = "main" ] || [ "$new_head_branch" = "master" ]; then

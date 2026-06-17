@@ -4,7 +4,7 @@ use object_store::{
     ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
 };
-use std::{fmt, fs, io::Write};
+use std::{fmt, fs, io::Write, path::Path};
 
 use backtesting_vertical_slice::{
     artifact_store::{
@@ -43,6 +43,31 @@ fn gzip(text: &str) -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(text.as_bytes()).expect("gzip write");
     encoder.finish().expect("gzip finish")
+}
+
+async fn assert_store_uri_matches_file(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    uri: &str,
+    local_path: &Path,
+) {
+    let expected = fs::read(local_path).expect("local artifact bytes");
+    let object_path = artifact_root
+        .object_path_for_uri(uri)
+        .expect("artifact URI under root");
+    let stored = store
+        .get(&object_path)
+        .await
+        .expect("durable contract artifact exists")
+        .bytes()
+        .await
+        .expect("durable contract artifact bytes");
+    assert_eq!(
+        stored.as_ref(),
+        expected.as_slice(),
+        "durable artifact {uri} must match {}",
+        local_path.display()
+    );
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1481,7 +1506,8 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     );
     assert_eq!(
         artifacts.output.contract.catalog_hash,
-        persisted_projection.manifest_sha256
+        artifacts.output.conversion_catalog_metadata.catalog_hash,
+        "durable result contract must keep catalog_hash coherent with catalog metadata"
     );
     assert_eq!(
         artifacts
@@ -1529,8 +1555,8 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let persisted_contract: BacktestResultContract =
         serde_json::from_str(&persisted_contract_json).expect("durable contract parses");
     assert_eq!(
-        persisted_contract.catalog_hash,
-        persisted_projection.manifest_sha256
+        persisted_contract.catalog_hash, persisted_metadata.catalog_hash,
+        "persisted durable contract must keep catalog_hash coherent with persisted metadata"
     );
     assert_eq!(
         persisted_contract
@@ -1552,6 +1578,34 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         contract_json.contains(expected_catalog_root.as_str()),
         "durable contract must contain canonical catalog root: {contract_json}"
     );
+    assert_store_uri_matches_file(
+        &store,
+        &artifact_root,
+        &persisted_contract.artifact_uris.source_proof_uri,
+        &artifacts.proof_path,
+    )
+    .await;
+    assert_store_uri_matches_file(
+        &store,
+        &artifact_root,
+        &persisted_contract.artifact_uris.canonical_table_uri,
+        &artifacts.canonical_artifact_path,
+    )
+    .await;
+    assert_store_uri_matches_file(
+        &store,
+        &artifact_root,
+        &persisted_contract.artifact_uris.catalog_metadata_uri,
+        &artifacts.catalog_metadata_path,
+    )
+    .await;
+    assert_store_uri_matches_file(
+        &store,
+        &artifact_root,
+        &persisted_contract.artifact_uris.result_contract_uri,
+        &artifacts.contract_path,
+    )
+    .await;
     for object in &artifacts.persisted_catalog_objects {
         let object_path = artifact_root
             .object_path_for_uri(&object.uri)

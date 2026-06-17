@@ -507,6 +507,64 @@ fn replace_contract_claim_limit_uri(
     }
 }
 
+async fn persist_durable_contract_artifact(
+    writer: &CreateOnlyArtifactWriter<'_>,
+    artifact_root: &ResolvedArtifactRoot,
+    local_path: &Path,
+    uri: &str,
+) -> Result<()> {
+    let path = artifact_root.object_path_for_uri(uri)?;
+    let payload = fs::read(local_path).with_context(|| {
+        format!(
+            "read durable contract artifact {} for {}",
+            local_path.display(),
+            uri
+        )
+    })?;
+    writer
+        .put_create_idempotent(&path, payload)
+        .await
+        .with_context(|| format!("persist durable contract artifact {uri}"))?;
+    Ok(())
+}
+
+async fn persist_durable_contract_artifacts(
+    writer: &CreateOnlyArtifactWriter<'_>,
+    artifact_root: &ResolvedArtifactRoot,
+    artifacts: &RunArtifacts,
+) -> Result<()> {
+    let uris = &artifacts.output.contract.artifact_uris;
+    persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.proof_path,
+        &uris.source_proof_uri,
+    )
+    .await?;
+    persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.canonical_artifact_path,
+        &uris.canonical_table_uri,
+    )
+    .await?;
+    persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.catalog_metadata_path,
+        &uris.catalog_metadata_uri,
+    )
+    .await?;
+    persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.contract_path,
+        &uris.result_contract_uri,
+    )
+    .await?;
+    Ok(())
+}
+
 fn verify_completed_result_contract(
     path: &Path,
     contract: &BacktestResultContract,
@@ -1361,7 +1419,6 @@ where
         &artifacts.output.conversion_checkpoint,
         &artifacts.output.conversion_catalog_metadata,
     )?;
-    artifacts.output.contract.catalog_hash = persisted.manifest_sha256.clone();
     artifacts.output.contract.catalog_metadata_hash = artifacts
         .output
         .conversion_catalog_metadata
@@ -1395,6 +1452,7 @@ where
             .context("serialize durable result contract")?,
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
+    persist_durable_contract_artifacts(&writer, &artifact_root, &artifacts).await?;
     artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri.clone());
     artifacts.nt_catalog_capability_plan = Some(nt_catalog_capability_plan);
     artifacts.nt_catalog_capability_proof_artifact = Some(nt_catalog_capability_proof_artifact);

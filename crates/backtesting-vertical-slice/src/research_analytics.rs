@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     artifact_index::LifecycleState,
-    hashing::sha256_hex,
+    hashing::{is_lowercase_sha256_hex, sha256_hex},
     operator::{RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec},
     result_contract::BacktestResultContract,
     source_proof::SourceProofFidelityClass,
@@ -117,7 +117,7 @@ impl RunPointerIndex {
             "run-pointer index artifact_root must be normalized without a trailing slash"
         );
         ensure!(
-            is_sha256_hex(&self.content_hash),
+            is_lowercase_sha256_hex(&self.content_hash),
             "run-pointer index content_hash must be lowercase sha256 hex"
         );
         ensure!(
@@ -196,7 +196,7 @@ impl RunPointerResult {
             "result_contract_uri must live under artifact_root {artifact_root:?}"
         );
         ensure!(
-            is_sha256_hex(&self.result_contract_hash),
+            is_lowercase_sha256_hex(&self.result_contract_hash),
             "result_contract_hash must be lowercase sha256 hex"
         );
         Ok(())
@@ -1025,7 +1025,7 @@ fn ensure_non_empty<T>(
 }
 
 fn validate_sha256(field: &'static str, value: &str) -> Result<(), ResearchAnalyticsArtifactError> {
-    if is_sha256_hex(value) {
+    if is_lowercase_sha256_hex(value) {
         Ok(())
     } else {
         Err(ResearchAnalyticsArtifactError::InvalidSha256 {
@@ -1033,13 +1033,6 @@ fn validate_sha256(field: &'static str, value: &str) -> Result<(), ResearchAnaly
             value: value.to_string(),
         })
     }
-}
-
-fn is_sha256_hex(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn source_fidelity_supports_claim(

@@ -425,8 +425,10 @@ fn run_spec(
 
 fn l2_provenance() -> Option<RunSpecSelectorProvenance> {
     Some(RunSpecSelectorProvenance {
-        event_count_ledger_hash: "eventledgerabc".to_string(),
-        selected_asset_ids_hash: "selectedassetsabc".to_string(),
+        event_count_ledger_hash: "7777777777777777777777777777777777777777777777777777777777777777"
+            .to_string(),
+        selected_asset_ids_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+            .to_string(),
     })
 }
 
@@ -578,7 +580,7 @@ fn jsonl_snapshot_deltas_run_spec_end_to_end() {
     );
     assert_eq!(
         artifacts.contract.event_count_ledger_hash.as_deref(),
-        Some("eventledgerabc")
+        Some("7777777777777777777777777777777777777777777777777777777777777777")
     );
     assert!(
         artifacts.conversion_tables_path.is_none(),

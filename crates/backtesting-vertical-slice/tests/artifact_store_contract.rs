@@ -993,6 +993,30 @@ async fn create_only_probe_requires_duplicate_create_rejection() {
 }
 
 #[tokio::test]
+async fn create_only_probe_replays_existing_same_payload_sentinels() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = CreateOnlyArtifactWriter::new(&store);
+
+    let first = writer
+        .probe_create_only(&root, "probe-run-123")
+        .await
+        .expect("first create-only probe");
+    let replay = writer
+        .probe_create_only(&root, "probe-run-123")
+        .await
+        .expect("same-payload probe replay must be idempotent");
+
+    assert_eq!(replay.probe_uri, first.probe_uri);
+    assert_eq!(replay.copy_source_uri, first.copy_source_uri);
+    assert_eq!(replay.copy_dest_uri, first.copy_dest_uri);
+    assert!(replay.first_create_succeeded);
+    assert!(replay.duplicate_create_rejected);
+    assert!(replay.first_copy_succeeded);
+    assert!(replay.duplicate_copy_rejected);
+}
+
+#[tokio::test]
 async fn persists_catalog_projection_directory_with_create_only_dispatch() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = CatalogDispatchConfig {
@@ -1132,6 +1156,46 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
     assert_eq!(
         catalog_object.create_only_write,
         CreateOnlyWriteDisposition::Created
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn rejects_catalog_projection_symlink_without_following() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = CatalogDispatchConfig {
+        bindings: vec![CatalogProjectionBinding {
+            source_binding: "binary-official".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            catalog_projection_id: "projection-run-123".to_string(),
+        }],
+    };
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let outside = tempfile::TempDir::new().expect("outside dir");
+    fs::create_dir_all(outside.path().join("data/trade_tick")).expect("outside catalog dir");
+    fs::write(
+        outside.path().join("data/trade_tick/part-000.parquet"),
+        b"outside-root",
+    )
+    .expect("outside catalog data");
+    std::os::unix::fs::symlink(outside.path(), temp.path().join("linked-catalog"))
+        .expect("catalog symlink");
+
+    let store = InMemory::new();
+    let err = persist_catalog_projection_for_source_binding(
+        &store,
+        &root,
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+    )
+    .await
+    .expect_err("catalog projection must reject symlinks instead of following them");
+
+    assert!(
+        format!("{err:#}").contains("catalog projection contains non-regular file linked-catalog"),
+        "{err:#}"
     );
 }
 

@@ -1462,12 +1462,20 @@ mod tests {
         let hashes = selector_provenance_hashes(
             SourceProofFidelityClass::L2Replay,
             Some(BacktestSelectorProvenance {
-                event_count_ledger_hash: "eventledgerabc",
-                selected_asset_ids_hash: "selectedassetsabc",
+                event_count_ledger_hash:
+                    "7777777777777777777777777777777777777777777777777777777777777777",
+                selected_asset_ids_hash:
+                    "8888888888888888888888888888888888888888888888888888888888888888",
             }),
         )
         .expect("selector provenance");
-        assert_eq!(hashes, (Some("eventledgerabc"), Some("selectedassetsabc")));
+        assert_eq!(
+            hashes,
+            (
+                Some("7777777777777777777777777777777777777777777777777777777777777777"),
+                Some("8888888888888888888888888888888888888888888888888888888888888888")
+            )
+        );
 
         assert_eq!(
             selector_provenance_hashes(SourceProofFidelityClass::TradeReplay, None)

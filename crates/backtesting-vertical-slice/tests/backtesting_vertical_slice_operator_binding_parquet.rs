@@ -529,8 +529,10 @@ fn dual_emission_run_spec(
 
 fn l2_provenance() -> Option<RunSpecSelectorProvenance> {
     Some(RunSpecSelectorProvenance {
-        event_count_ledger_hash: "eventledgerabc".to_string(),
-        selected_asset_ids_hash: "selectedassetsabc".to_string(),
+        event_count_ledger_hash: "7777777777777777777777777777777777777777777777777777777777777777"
+            .to_string(),
+        selected_asset_ids_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+            .to_string(),
     })
 }
 

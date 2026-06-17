@@ -130,7 +130,8 @@ fn contract(run_id: &str, result_contract_uri: &str) -> BacktestResultContract {
         nt_version: "nt-test-rev".to_string(),
         source_proof_id: "source-proof-example-trades".to_string(),
         source_proof_version: 1,
-        manifest_hash: "manifest-hash".to_string(),
+        manifest_hash: "9999999999999999999999999999999999999999999999999999999999999999"
+            .to_string(),
         acceptance_mode: AcceptanceMode::Manual,
         accepted_by: "research-analytics-test".to_string(),
         accepted_at: "2026-06-14T00:00:00Z".to_string(),

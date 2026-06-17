@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
+    hashing::is_lowercase_sha256_hex,
     run_manifest::StrategySource,
     source_proof::{AcceptanceMode, SourceProofFidelityClass},
 };
@@ -171,6 +172,7 @@ pub struct BacktestResultContract {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultContractError {
     MissingField(&'static str),
+    InvalidSha256 { field: &'static str, value: String },
     UnsupportedVersion { actual: String },
     SubjectivePromotionLanguage { field: String, phrase: String },
 }
@@ -179,6 +181,12 @@ impl std::fmt::Display for ResultContractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "missing required field: {field}"),
+            Self::InvalidSha256 { field, value } => {
+                write!(
+                    f,
+                    "{field} must be a lowercase SHA-256 hex digest, got {value:?}"
+                )
+            }
             Self::UnsupportedVersion { actual } => write!(
                 f,
                 "unsupported result contract version: expected {RESULT_CONTRACT_VERSION}, got {actual:?}"
@@ -266,6 +274,27 @@ impl BacktestResultContract {
                 actual: self.contract_version.clone(),
             });
         }
+        for (field, value) in [
+            ("manifest_hash", self.manifest_hash.as_str()),
+            (
+                "accepted_object_sha256",
+                self.accepted_object_sha256.as_str(),
+            ),
+            ("converter_config_hash", self.converter_config_hash.as_str()),
+            (
+                "conversion_manifest_hash",
+                self.conversion_manifest_hash.as_str(),
+            ),
+            (
+                "conversion_checkpoint_hash",
+                self.conversion_checkpoint_hash.as_str(),
+            ),
+            ("catalog_hash", self.catalog_hash.as_str()),
+            ("catalog_metadata_hash", self.catalog_metadata_hash.as_str()),
+            ("strategy_config_hash", self.strategy_config_hash.as_str()),
+        ] {
+            validate_sha256(field, value)?;
+        }
         if let Some(run_config_id) = &self.nt_result.run_config_id
             && run_config_id.trim().is_empty()
         {
@@ -282,6 +311,9 @@ impl BacktestResultContract {
         {
             return Err(ResultContractError::MissingField("event_count_ledger_hash"));
         }
+        if let Some(hash) = self.event_count_ledger_hash.as_deref() {
+            validate_sha256("event_count_ledger_hash", hash)?;
+        }
         if self.fidelity_class == SourceProofFidelityClass::L2Replay
             && self
                 .selected_asset_ids_hash
@@ -289,6 +321,9 @@ impl BacktestResultContract {
                 .is_none_or(|hash| hash.trim().is_empty())
         {
             return Err(ResultContractError::MissingField("selected_asset_ids_hash"));
+        }
+        if let Some(hash) = self.selected_asset_ids_hash.as_deref() {
+            validate_sha256("selected_asset_ids_hash", hash)?;
         }
         self.assert_objective()
     }
@@ -328,6 +363,17 @@ impl BacktestResultContract {
             }
         }
         Ok(())
+    }
+}
+
+fn validate_sha256(field: &'static str, value: &str) -> Result<(), ResultContractError> {
+    if is_lowercase_sha256_hex(value) {
+        Ok(())
+    } else {
+        Err(ResultContractError::InvalidSha256 {
+            field,
+            value: value.to_string(),
+        })
     }
 }
 
@@ -428,6 +474,16 @@ mod tests {
         }
     }
 
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const HASH_D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    const HASH_E: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    const HASH_F: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    const HASH_0: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    const HASH_1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const HASH_2: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
     fn contract() -> BacktestResultContract {
         BacktestResultContract {
             contract_version: RESULT_CONTRACT_VERSION.to_string(),
@@ -435,7 +491,7 @@ mod tests {
             nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
-            manifest_hash: "manifestabc".to_string(),
+            manifest_hash: HASH_A.to_string(),
             acceptance_mode: AcceptanceMode::Manual,
             accepted_by: "vertical-slice-operator".to_string(),
             accepted_at: "2026-06-02T00:00:00Z".to_string(),
@@ -443,14 +499,14 @@ mod tests {
                 "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598".to_string(),
             converter_identity: "csv-native-trades-to-canonical-trades.v1".to_string(),
             converter_version: "1".to_string(),
-            converter_config_hash: "converterconfigabc".to_string(),
-            conversion_manifest_hash: "conversionmanifestabc".to_string(),
-            conversion_checkpoint_hash: "conversioncheckpointabc".to_string(),
-            catalog_hash: "abc123".to_string(),
-            catalog_metadata_hash: "metahashabc".to_string(),
+            converter_config_hash: HASH_B.to_string(),
+            conversion_manifest_hash: HASH_C.to_string(),
+            conversion_checkpoint_hash: HASH_D.to_string(),
+            catalog_hash: HASH_E.to_string(),
+            catalog_metadata_hash: HASH_F.to_string(),
             event_count_ledger_hash: None,
             selected_asset_ids_hash: None,
-            strategy_config_hash: "def456".to_string(),
+            strategy_config_hash: HASH_0.to_string(),
             run_purpose: "normal".to_string(),
             market_structure_fixture: "perps-spot".to_string(),
             fidelity_class: SourceProofFidelityClass::TradeReplay,
@@ -505,7 +561,7 @@ features = ["streaming", "examples"]
     fn result_contract_binds_manifest_and_acceptance_provenance() {
         let c = contract();
 
-        assert_eq!(c.manifest_hash, "manifestabc");
+        assert_eq!(c.manifest_hash, HASH_A);
         assert_eq!(c.acceptance_mode, AcceptanceMode::Manual);
         assert_eq!(c.accepted_by, "vertical-slice-operator");
         assert_eq!(c.accepted_at, "2026-06-02T00:00:00Z");
@@ -518,10 +574,10 @@ features = ["streaming", "examples"]
             "csv-native-trades-to-canonical-trades.v1"
         );
         assert_eq!(c.converter_version, "1");
-        assert_eq!(c.converter_config_hash, "converterconfigabc");
-        assert_eq!(c.conversion_manifest_hash, "conversionmanifestabc");
-        assert_eq!(c.conversion_checkpoint_hash, "conversioncheckpointabc");
-        assert_eq!(c.catalog_metadata_hash, "metahashabc");
+        assert_eq!(c.converter_config_hash, HASH_B);
+        assert_eq!(c.conversion_manifest_hash, HASH_C);
+        assert_eq!(c.conversion_checkpoint_hash, HASH_D);
+        assert_eq!(c.catalog_metadata_hash, HASH_F);
         assert_eq!(
             c.artifact_uris.catalog_metadata_uri,
             "s3://.../catalog-metadata.json"
@@ -650,23 +706,77 @@ features = ["streaming", "examples"]
     fn l2_result_contract_requires_and_binds_selected_asset_ids_hash() {
         let mut c = contract();
         c.fidelity_class = SourceProofFidelityClass::L2Replay;
-        c.event_count_ledger_hash = Some("eventledgerabc".to_string());
+        c.event_count_ledger_hash = Some(HASH_1.to_string());
         assert_eq!(
             c.validate().unwrap_err(),
             ResultContractError::MissingField("selected_asset_ids_hash")
         );
 
-        c.selected_asset_ids_hash = Some("selectedassetsabc".to_string());
+        c.selected_asset_ids_hash = Some(HASH_2.to_string());
         c.validate()
             .expect("L2 contract with selector hashes is complete");
         let json = serde_json::to_value(&c).expect("serialize");
         assert_eq!(
             json.get("event_count_ledger_hash").and_then(|v| v.as_str()),
-            Some("eventledgerabc")
+            Some(HASH_1)
         );
         assert_eq!(
             json.get("selected_asset_ids_hash").and_then(|v| v.as_str()),
-            Some("selectedassetsabc")
+            Some(HASH_2)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_hash_fields() {
+        type HashMutator = fn(&mut BacktestResultContract, &str);
+        let cases: [(&str, HashMutator, &str); 3] = [
+            (
+                "manifest_hash",
+                |c: &mut BacktestResultContract, value: &str| {
+                    c.manifest_hash = value.to_string();
+                },
+                "abc123",
+            ),
+            (
+                "converter_config_hash",
+                |c: &mut BacktestResultContract, value: &str| {
+                    c.converter_config_hash = value.to_string();
+                },
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ),
+            (
+                "catalog_metadata_hash",
+                |c: &mut BacktestResultContract, value: &str| {
+                    c.catalog_metadata_hash = value.to_string();
+                },
+                "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+            ),
+        ];
+        for (field, mutate, value) in cases {
+            let mut c = contract();
+            mutate(&mut c, value);
+            assert_eq!(
+                c.validate().unwrap_err(),
+                ResultContractError::InvalidSha256 {
+                    field,
+                    value: value.to_string()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn l2_result_contract_rejects_malformed_selector_hashes() {
+        let mut c = contract();
+        c.fidelity_class = SourceProofFidelityClass::L2Replay;
+        c.event_count_ledger_hash = Some("abc123".to_string());
+        c.selected_asset_ids_hash = Some(HASH_2.to_string());
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::InvalidSha256 {
+                field: "event_count_ledger_hash",
+                value: "abc123".to_string()
+            }
         );
     }
 

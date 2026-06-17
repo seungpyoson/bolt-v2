@@ -961,9 +961,9 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         let probe_uri = artifact_root.create_only_probe_uri(probe_id);
         let path = artifact_root.object_path_for_uri(&probe_uri)?;
         let payload = probe_id.as_bytes().to_vec();
-        self.put_create(&path, payload.clone())
+        self.put_create_idempotent(&path, payload.clone())
             .await
-            .with_context(|| format!("create-only probe first write {probe_uri}"))?;
+            .with_context(|| format!("create-only probe setup write {probe_uri}"))?;
 
         match self.put_create(&path, payload.clone()).await {
             Ok(()) => bail!("create-only probe accepted duplicate write to {probe_uri}"),
@@ -979,15 +979,17 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
         let copy_dest_uri = artifact_root.create_only_probe_copy_dest_uri(probe_id);
         let copy_source_path = artifact_root.object_path_for_uri(&copy_source_uri)?;
         let copy_dest_path = artifact_root.object_path_for_uri(&copy_dest_uri)?;
-        self.put_create(&copy_source_path, payload)
+        self.put_create_idempotent(&copy_source_path, payload.clone())
             .await
-            .with_context(|| format!("create-only probe copy source write {copy_source_uri}"))?;
-        self.store
-            .copy_if_not_exists(&copy_source_path, &copy_dest_path)
-            .await
-            .with_context(|| {
-                format!("create-only probe first copy-if-not-exists {copy_source_uri} -> {copy_dest_uri}")
-            })?;
+            .with_context(|| format!("create-only probe copy source setup {copy_source_uri}"))?;
+        self.copy_if_not_exists_idempotent(
+            &copy_source_path,
+            &copy_dest_path,
+            payload.as_slice(),
+            &copy_source_uri,
+            &copy_dest_uri,
+        )
+        .await?;
 
         match self
             .store
@@ -1007,6 +1009,45 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             Err(err) => Err(err).with_context(|| {
                 format!(
                     "create-only probe duplicate copy-if-not-exists failed unexpectedly for {copy_dest_uri}"
+                )
+            }),
+        }
+    }
+
+    async fn copy_if_not_exists_idempotent(
+        &self,
+        copy_source_path: &ObjectPath,
+        copy_dest_path: &ObjectPath,
+        expected_payload: &[u8],
+        copy_source_uri: &str,
+        copy_dest_uri: &str,
+    ) -> Result<()> {
+        match self
+            .store
+            .copy_if_not_exists(copy_source_path, copy_dest_path)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(err) if is_object_store_create_only_conflict(&err) => {
+                let existing = self
+                    .store
+                    .get(copy_dest_path)
+                    .await
+                    .with_context(|| {
+                        format!("read existing create-only probe copy destination {copy_dest_uri}")
+                    })?;
+                let existing_bytes = existing.bytes().await.with_context(|| {
+                    format!("read existing create-only probe copy bytes {copy_dest_uri}")
+                })?;
+                ensure!(
+                    existing_bytes.as_ref() == expected_payload,
+                    "create-only probe copy destination {copy_dest_uri} already exists with different payload"
+                );
+                Ok(())
+            }
+            Err(err) => Err(err).with_context(|| {
+                format!(
+                    "create-only probe copy-if-not-exists setup {copy_source_uri} -> {copy_dest_uri}"
                 )
             }),
         }

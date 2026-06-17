@@ -422,16 +422,19 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
             data.update_instruments_interval_mins,
         ),
         (
-            "new_market_fetch_max_concurrency",
+            stringify!(new_market_fetch_max_concurrency),
             data.new_market_fetch_max_concurrency,
         ),
         (
-            "resolve_poll_interval_secs",
+            stringify!(resolve_poll_interval_secs),
             data.resolve_poll_interval_secs,
         ),
-        ("resolve_poll_grace_secs", data.resolve_poll_grace_secs),
         (
-            "resolve_poll_max_wait_secs",
+            stringify!(resolve_poll_grace_secs),
+            data.resolve_poll_grace_secs,
+        ),
+        (
+            stringify!(resolve_poll_max_wait_secs),
             data.resolve_poll_max_wait_secs,
         ),
         ("ws_max_subscriptions", data.ws_max_subscriptions),

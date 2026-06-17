@@ -5465,6 +5465,8 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         bypass_logging: false,
         file_config: None,
         clear_log_file: false,
+        fileout_sync_on_flush: true,
+        buffered_stdout: false,
     };
     let nautilus = &loaded.root.nautilus;
     let data = &nautilus.data_engine;
@@ -10113,6 +10115,8 @@ configured_source_param = "configured-value"
         assert!(!cfg.logging.bypass_logging);
         assert!(cfg.logging.file_config.is_none());
         assert!(!cfg.logging.clear_log_file);
+        assert!(cfg.logging.fileout_sync_on_flush);
+        assert!(!cfg.logging.buffered_stdout);
     }
 
     #[test]

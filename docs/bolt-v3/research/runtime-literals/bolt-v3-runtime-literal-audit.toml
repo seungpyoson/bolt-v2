@@ -1631,38 +1631,6 @@ reason = "This label names the Polymarket data auto-load max retry-delay config 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
-literal = '''"new_market_fetch_max_concurrency"'''
-context = '''"new_market_fetch_max_concurrency",'''
-classification = "validation_field_label"
-reason = "This label names the Polymarket data new-market fetch concurrency config field being validated in a positive-integer check."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
-literal = '''"resolve_poll_interval_secs"'''
-context = '''"resolve_poll_interval_secs",'''
-classification = "validation_field_label"
-reason = "This label names the Polymarket data resolve-poll interval config field being validated in a positive-integer check."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
-literal = '''"resolve_poll_grace_secs"'''
-context = '''("resolve_poll_grace_secs", data.resolve_poll_grace_secs),'''
-classification = "validation_field_label"
-reason = "This label names the Polymarket data resolve-poll grace config field being validated in a positive-integer check."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
-literal = '''"resolve_poll_max_wait_secs"'''
-context = '''"resolve_poll_max_wait_secs",'''
-classification = "validation_field_label"
-reason = "This label names the Polymarket data resolve-poll max-wait config field being validated in a positive-integer check."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket.rs"
-kind = "string"
 literal = '''"fee_cache_ttl_secs"'''
 context = '''("fee_cache_ttl_secs", execution.fee_cache_ttl_secs),'''
 classification = "validation_field_label"

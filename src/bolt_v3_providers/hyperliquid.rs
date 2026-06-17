@@ -1339,7 +1339,7 @@ fn hyperliquid_fee_http_client(
             .vault_address
             .as_ref()
             .map(|vault_address| vault_address.as_str().to_owned()),
-        Some(secrets.account_address.as_str().to_owned()),
+        Some(secrets.account_address.as_str()),
         nt_environment(cfg.environment),
         cfg.http_timeout_secs,
         cfg.proxy_url.clone(),

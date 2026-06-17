@@ -17151,3 +17151,11 @@ literal = '''0'''
 context = '''let submit_ok = submit_cost == 0 || submit_trial.try_acquire(now_ms, submit_cost);'''
 classification = "requote_budget_zero_submit_cost_skip_guard"
 reason = "A zero submit cost (a standalone cancel) skips the submit-governor acquisition entirely, leaving the submit budget untouched. A structural sentinel guard, not a tunable value."
+
+[[allowed]]
+path = "src/bolt_v3_maker_market_selection.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''value.is_finite() && value > 0.0'''
+classification = "maker_market_selection_positive_notional_guard"
+reason = "This is the zero lower-bound sentinel for caller/TOML-owned maker portfolio notional validation; the bankroll and slot-floor values remain runtime-owned by config."

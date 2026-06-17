@@ -103,7 +103,7 @@ impl MakerBacktestGateBlocker {
             Self::MissingExecutionModelArtifactDigest => "execution_model_artifact_sha256",
             Self::MissingMakerOrders => "maker_order_count",
             Self::MissingPassiveFills => "passive_fill_count",
-            Self::BuiltMakerNotReplayed => "built_maker_replayed",
+            Self::BuiltMakerNotReplayed => "result_contract_replay.strategy_registry_key",
             Self::MissingFullNetScoring => "net_score_micros",
             Self::ThresholdsNotPreRegistered => "thresholds_registered_before_run",
             Self::BalancedGateNotEvaluated => "balanced_gate_evaluated",
@@ -161,7 +161,9 @@ impl MakerBacktestGateBlocker {
             Self::MissingPassiveFills => {
                 "must prove the built maker observed at least one passive fill in the backtest"
             }
-            Self::BuiltMakerNotReplayed => "must confirm the built maker was replayed",
+            Self::BuiltMakerNotReplayed => {
+                "must match the built maker strategy registry key replayed by BTE"
+            }
             Self::MissingFullNetScoring => {
                 "must reconcile net_score_micros = captured_spread_score_micros - fees_score_micros - adverse_selection_score_micros - settlement_loss_score_micros"
             }

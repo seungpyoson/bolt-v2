@@ -121,7 +121,6 @@ struct BacktestParametersBlock {
     min_passive_fill_count: u64,
     resolved_market_count: u64,
     min_resolved_market_count: u64,
-    built_maker_replayed: bool,
     captured_spread_score_micros: i64,
     fees_score_micros: i64,
     adverse_selection_score_micros: i64,
@@ -148,6 +147,7 @@ struct BacktestParametersBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct BacktestResultContractReplayBlock {
+    strategy_registry_key: String,
     strategy_config_hash: String,
     execution_model: String,
     venue_queue_position: bool,
@@ -183,7 +183,7 @@ impl BacktestParametersBlock {
             ),
             maker_orders_observed: self.maker_order_count > 0,
             passive_fills_observed: self.passive_fill_count > 0,
-            built_maker_replayed: self.built_maker_replayed,
+            built_maker_replayed: self.result_contract_replay.built_maker_replayed(),
             full_net_scoring: self.net_score_reconciles(),
             thresholds_registered_before_run: self.thresholds_registered_before_run,
             balanced_gate_evaluated: self.balanced_gate_evaluated,
@@ -228,6 +228,10 @@ impl BacktestParametersBlock {
 }
 
 impl BacktestResultContractReplayBlock {
+    fn built_maker_replayed(&self) -> bool {
+        self.strategy_registry_key.trim() == KEY
+    }
+
     fn strategy_config_hash_matches(&self, expected: &str) -> bool {
         is_lowercase_sha256(&self.strategy_config_hash) && self.strategy_config_hash == expected
     }
@@ -721,6 +725,7 @@ mod tests {
 
     fn valid_result_contract_replay() -> BacktestResultContractReplayBlock {
         BacktestResultContractReplayBlock {
+            strategy_registry_key: KEY.to_string(),
             strategy_config_hash: TEST_ARTIFACT_SHA256.to_string(),
             execution_model: NT_BACKTEST_NODE_EXECUTION_MODEL.to_string(),
             venue_queue_position: true,
@@ -763,7 +768,6 @@ mod tests {
             min_passive_fill_count: 2,
             resolved_market_count: 5,
             min_resolved_market_count: 5,
-            built_maker_replayed: true,
             captured_spread_score_micros: 1_000,
             fees_score_micros: 100,
             adverse_selection_score_micros: 200,
@@ -809,7 +813,6 @@ mod tests {
             min_passive_fill_count = 2
             resolved_market_count = 5
             min_resolved_market_count = 5
-            built_maker_replayed = true
             captured_spread_score_micros = 1000
             fees_score_micros = 100
             adverse_selection_score_micros = 200
@@ -831,6 +834,7 @@ mod tests {
             shared_settlement_primitive = true
 
             [backtest.result_contract_replay]
+            strategy_registry_key = "binary_oracle_maker"
             strategy_config_hash = "{}"
             execution_model = "nt_backtest_node"
             venue_queue_position = true
@@ -1346,6 +1350,22 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_non_maker_result_contract_strategy_key() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            result_contract_replay: BacktestResultContractReplayBlock {
+                strategy_registry_key: "mechanical_trade_replay_probe".to_string(),
+                ..valid_result_contract_replay()
+            },
+            ..valid_backtest()
+        });
+        assert!(
+            errors.iter().any(|error| error
+                .contains("parameters.backtest.result_contract_replay.strategy_registry_key")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_noop_backtest_counts() {
         let errors = backtest_errors(BacktestParametersBlock {
             maker_order_count: 0,
@@ -1652,7 +1672,6 @@ mod tests {
             min_passive_fill_count = 2
             resolved_market_count = 5
             min_resolved_market_count = 5
-            built_maker_replayed = true
             captured_spread_score_micros = 1000
             fees_score_micros = 100
             adverse_selection_score_micros = 200
@@ -1675,6 +1694,7 @@ mod tests {
             surprise = true
 
             [backtest.result_contract_replay]
+            strategy_registry_key = "binary_oracle_maker"
             strategy_config_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             execution_model = "nt_backtest_node"
             venue_queue_position = true

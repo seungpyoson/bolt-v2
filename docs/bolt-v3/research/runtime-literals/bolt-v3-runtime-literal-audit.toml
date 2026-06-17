@@ -15908,10 +15908,10 @@ reason = "Fail-closed lower bound for operator-supplied maker backtest passive-f
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
-literal = '''"built_maker_replayed"'''
-context = '''Self::BuiltMakerNotReplayed => "built_maker_replayed",'''
-classification = "maker_backtest_go_live_schema_field"
-reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+literal = '''"result_contract_replay.strategy_registry_key"'''
+context = '''Self::BuiltMakerNotReplayed => "result_contract_replay.strategy_registry_key",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence identity schema-field label used only to format startup-validation diagnostics; the observed BTE strategy registry key remains TOML-owned in [parameters.backtest.result_contract_replay]."
 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"

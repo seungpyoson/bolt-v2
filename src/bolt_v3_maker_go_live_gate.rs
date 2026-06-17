@@ -21,6 +21,8 @@ pub struct MakerBacktestEvidence {
     pub threshold_artifact_sha256_valid: bool,
     pub execution_model_artifact_present: bool,
     pub execution_model_artifact_sha256_valid: bool,
+    pub maker_orders_observed: bool,
+    pub passive_fills_observed: bool,
     pub built_maker_replayed: bool,
     pub full_net_scoring: bool,
     pub thresholds_registered_before_run: bool,
@@ -56,6 +58,8 @@ pub enum MakerBacktestGateBlocker {
     MissingThresholdArtifactDigest,
     MissingExecutionModelArtifact,
     MissingExecutionModelArtifactDigest,
+    MissingMakerOrders,
+    MissingPassiveFills,
     BuiltMakerNotReplayed,
     MissingFullNetScoring,
     ThresholdsNotPreRegistered,
@@ -91,6 +95,8 @@ impl MakerBacktestGateBlocker {
             Self::MissingThresholdArtifactDigest => "threshold_artifact_sha256",
             Self::MissingExecutionModelArtifact => "execution_model_artifact",
             Self::MissingExecutionModelArtifactDigest => "execution_model_artifact_sha256",
+            Self::MissingMakerOrders => "maker_order_count",
+            Self::MissingPassiveFills => "passive_fill_count",
             Self::BuiltMakerNotReplayed => "built_maker_replayed",
             Self::MissingFullNetScoring => "full_net_scoring",
             Self::ThresholdsNotPreRegistered => "thresholds_registered_before_run",
@@ -139,6 +145,12 @@ impl MakerBacktestGateBlocker {
             }
             Self::MissingExecutionModelArtifactDigest => {
                 "must supply the lowercase SHA-256 digest for the NT execution-model source evidence artifact"
+            }
+            Self::MissingMakerOrders => {
+                "must prove the built maker placed at least one order in the backtest"
+            }
+            Self::MissingPassiveFills => {
+                "must prove the built maker observed at least one passive fill in the backtest"
             }
             Self::BuiltMakerNotReplayed => "must confirm the built maker was replayed",
             Self::MissingFullNetScoring => {
@@ -215,6 +227,12 @@ pub fn maker_backtest_gate_blockers(
     }
     if !evidence.execution_model_artifact_sha256_valid {
         blockers.push(MakerBacktestGateBlocker::MissingExecutionModelArtifactDigest);
+    }
+    if !evidence.maker_orders_observed {
+        blockers.push(MakerBacktestGateBlocker::MissingMakerOrders);
+    }
+    if !evidence.passive_fills_observed {
+        blockers.push(MakerBacktestGateBlocker::MissingPassiveFills);
     }
     if !evidence.built_maker_replayed {
         blockers.push(MakerBacktestGateBlocker::BuiltMakerNotReplayed);
@@ -301,6 +319,8 @@ mod tests {
             threshold_artifact_sha256_valid: true,
             execution_model_artifact_present: true,
             execution_model_artifact_sha256_valid: true,
+            maker_orders_observed: true,
+            passive_fills_observed: true,
             built_maker_replayed: true,
             full_net_scoring: true,
             thresholds_registered_before_run: true,
@@ -353,6 +373,18 @@ mod tests {
         let blockers = maker_backtest_gate_blockers(&evidence);
         assert!(blockers.contains(&MakerBacktestGateBlocker::MissingBuildHeadSha));
         assert!(blockers.contains(&MakerBacktestGateBlocker::MissingStrategyConfigHash));
+    }
+
+    #[test]
+    fn missing_orders_and_passive_fills_block_go_live() {
+        let evidence = MakerBacktestEvidence {
+            maker_orders_observed: false,
+            passive_fills_observed: false,
+            ..passing_evidence()
+        };
+        let blockers = maker_backtest_gate_blockers(&evidence);
+        assert!(blockers.contains(&MakerBacktestGateBlocker::MissingMakerOrders));
+        assert!(blockers.contains(&MakerBacktestGateBlocker::MissingPassiveFills));
     }
 
     #[test]

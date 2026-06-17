@@ -192,6 +192,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(iv) = &root.iv {
         errors.extend(crate::bolt_v3_iv::config::validate_iv_root_config(iv));
     }
+    errors.extend(validate_realized_volatility_source_clients(root));
     errors.extend(validate_iv_source_clients(root));
     errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
 
@@ -218,6 +219,35 @@ pub(crate) fn validate_iv_source_clients(root: &BoltV3RootConfig) -> Vec<String>
                 Some(client) if client.data.is_none() => errors.push(format!(
                     "{context}.client_id `{}` must reference a data-capable client (the referenced client has no [data] block)",
                     source.client_id
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+
+    errors
+}
+
+pub(crate) fn validate_realized_volatility_source_clients(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(realized_volatility_surfaces) = root.realized_volatility_surfaces.as_ref() else {
+        return errors;
+    };
+
+    for (surface_id, surface) in realized_volatility_surfaces {
+        for source in surface.sources.iter().filter(|source| source.enabled) {
+            let context = format!(
+                "realized_volatility_surfaces.{surface_id}.sources.{}",
+                source.source_id
+            );
+            match root.clients.get(source.data_client_id.as_str()) {
+                None => errors.push(format!(
+                    "{context}.data_client_id `{}` does not match any [clients.<id>] block",
+                    source.data_client_id
+                )),
+                Some(client) if client.data.is_none() => errors.push(format!(
+                    "{context}.data_client_id `{}` must reference a data-capable client (no [data] block)",
+                    source.data_client_id
                 )),
                 Some(_) => {}
             }
@@ -458,21 +488,6 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                     "{source_context}.source_id duplicate source_id `{}`",
                     source.source_id
                 ));
-            }
-
-            match root.clients.get(source.data_client_id.as_str()) {
-                None => errors.push(format!(
-                    "{source_context}.data_client_id `{}` does not match any [clients.<id>] block",
-                    source.data_client_id
-                )),
-                Some(client) => {
-                    if client.data.is_none() {
-                        errors.push(format!(
-                            "{source_context}.data_client_id `{}` must reference a data-capable client (the referenced client has no [data] block)",
-                            source.data_client_id
-                        ));
-                    }
-                }
             }
 
             let source_base_asset = instrument_base_asset(&source.instrument_id);

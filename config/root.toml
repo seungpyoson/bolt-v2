@@ -656,7 +656,7 @@ venue = "BYBIT"
 
 [clients.bybit_data.data]
 product_types = ["spot", "linear", "inverse", "option"]
-environment = "testnet"
+environment = "mainnet"
 transport_backend = "sockudo"
 
 [clients.bybit_data.readiness_probe]
@@ -665,6 +665,7 @@ book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
+min_observed_targets = 10
 
 [clients.coinbase_data]
 venue = "COINBASE"
@@ -681,12 +682,13 @@ max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
 min_observed_targets = 10
 
+# probe-only: not subscribed by any strategy; production endpoint proven via ops data-client-probe
 [clients.deribit_data]
 venue = "DERIBIT"
 
 [clients.deribit_data.data]
 product_types = ["future", "option", "spot", "future_combo", "option_combo"]
-environment = "testnet"
+environment = "mainnet"
 transport_backend = "sockudo"
 
 [clients.deribit_data.readiness_probe]
@@ -711,12 +713,13 @@ quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
 
+# probe-only: not subscribed by any strategy; production endpoint proven via ops data-client-probe
 [clients.kraken_futures_data]
 venue = "KRAKEN"
 
 [clients.kraken_futures_data.data]
 product_type = "futures"
-environment = "demo"
+environment = "live"
 transport_backend = "sockudo"
 
 [clients.kraken_futures_data.readiness_probe]

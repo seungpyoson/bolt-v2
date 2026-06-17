@@ -18,7 +18,7 @@ use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
 use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 use nautilus_live::node::LiveNode;
-use nautilus_model::identifiers::StrategyId;
+use nautilus_model::identifiers::{ClientId, StrategyId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -375,6 +375,8 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
     iv_query_handles: Arc<BoltV3IvQueryHandleRegistry>,
 ) -> Result<BoltV3StrategyRegistrationSummary, BoltV3StrategyRegistrationError> {
     let mut summary = BoltV3StrategyRegistrationSummary::empty();
+    validate_realized_volatility_runtime_source_clients(loaded)?;
+    validate_realized_volatility_node_transport_membership(node, loaded)?;
     let realized_volatility_runtime = Arc::new(Mutex::new(
         RealizedVolSurfaceRuntime::from_loaded_config(loaded).map_err(|error| {
             BoltV3StrategyRegistrationError::RealizedVolatilityRuntime { message: error }
@@ -410,4 +412,59 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
     }
 
     Ok(summary)
+}
+
+fn validate_realized_volatility_runtime_source_clients(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3StrategyRegistrationError> {
+    let errors = crate::bolt_v3_validate::validate_realized_volatility_source_clients(&loaded.root);
+    if errors.is_empty() {
+        return Ok(());
+    }
+    Err(BoltV3StrategyRegistrationError::RealizedVolatilityRuntime {
+        message: format!(
+            "realized-volatility source client validation failed: {}",
+            errors.join("; ")
+        ),
+    })
+}
+
+fn validate_realized_volatility_node_transport_membership(
+    node: &LiveNode,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3StrategyRegistrationError> {
+    let Some(realized_volatility_surfaces) = loaded.root.realized_volatility_surfaces.as_ref()
+    else {
+        return Ok(());
+    };
+
+    let registered = node
+        .kernel()
+        .data_engine
+        .borrow()
+        .registered_clients()
+        .into_iter()
+        .collect::<BTreeSet<ClientId>>();
+    let mut missing = BTreeSet::new();
+    for (surface_id, surface) in realized_volatility_surfaces {
+        for source in surface.sources.iter().filter(|source| source.enabled) {
+            let client_id = ClientId::from(source.data_client_id.as_str());
+            if !registered.contains(&client_id) {
+                missing.insert(format!(
+                    "realized_volatility_surfaces.{surface_id}.sources.{}.data_client_id `{}`",
+                    source.source_id, source.data_client_id
+                ));
+            }
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(BoltV3StrategyRegistrationError::RealizedVolatilityRuntime {
+        message: format!(
+            "realized-volatility source client(s) not registered on this node's transport \
+             (built without RV retention?): {}",
+            missing.into_iter().collect::<Vec<_>>().join("; ")
+        ),
+    })
 }

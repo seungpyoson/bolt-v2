@@ -255,7 +255,7 @@ fn artifact_present(value: &str) -> bool {
 
 fn nt_contract_data_type_name<T>() -> &'static str {
     let type_name = std::any::type_name::<T>();
-    type_name.rsplit("::").next().unwrap_or(type_name)
+    type_name.rsplit(':').next().unwrap_or(type_name)
 }
 
 /// Bolt-v3 startup validation and **go-live gate** for the maker.

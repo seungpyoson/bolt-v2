@@ -21,6 +21,10 @@ use bolt_v2::{
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
+    bolt_v3_realized_volatility::{
+        RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
+        RealizedVolSnapshot,
+    },
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
 };
 use nautilus_common::{
@@ -33,9 +37,46 @@ use nautilus_model::{
     orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 const TEST_REFERENCE_ASSET: &str = "reference_asset";
+const TEST_REALIZED_VOL_SURFACE_ID: &str = "maker_reference_surface";
+const TEST_REALIZED_VOL_SOURCE_ID: &str = "maker_reference_rv";
+
+fn ready_realized_vol_snapshot(as_of_ms: u64, realized_vol: f64) -> RealizedVolSnapshot {
+    realized_vol_snapshot(as_of_ms, realized_vol, true)
+}
+
+fn unready_realized_vol_snapshot(as_of_ms: u64, realized_vol: f64) -> RealizedVolSnapshot {
+    realized_vol_snapshot(as_of_ms, realized_vol, false)
+}
+
+fn realized_vol_snapshot(as_of_ms: u64, realized_vol: f64, ready: bool) -> RealizedVolSnapshot {
+    RealizedVolSnapshot {
+        surface_id: TEST_REALIZED_VOL_SURFACE_ID.to_string(),
+        as_of_ms,
+        annualized_realized_vol_decimal: Some(realized_vol),
+        measured_annualized_realized_vol_decimal: Some(realized_vol),
+        noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
+        continuous_annualized_realized_vol_decimal: Some(realized_vol),
+        jump_annualized_realized_vol_decimal: Some(0.0),
+        forecast_annualized_realized_vol_decimal: None,
+        pricing_component: RealizedVolPricingComponent::Measured,
+        ready,
+        sources_used: vec![TEST_REALIZED_VOL_SOURCE_ID.to_string()],
+        source_diagnostics: Vec::new(),
+        horizon_estimates: Vec::new(),
+        unknown_source_rejections: BTreeMap::new(),
+        blocked_reasons: if ready {
+            Vec::new()
+        } else {
+            vec![RealizedVolBlockReason::QuorumNotReady]
+        },
+        aggregate_method: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        seconds_per_annum: 31_536_000.0,
+        config_fingerprint: String::new(),
+    }
+}
 
 #[test]
 fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
@@ -115,6 +156,7 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
         0.63,
         1_000,
     )];
+    let realized_volatility_snapshot = ready_realized_vol_snapshot(1_000, 1.5);
 
     let fair = maker_reference_current_price_fair_value(
         &mut selector,
@@ -124,9 +166,9 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
             interval_end_ms: 2_000,
             now_ms: 1_000,
             reference_quotes: &quotes,
-            strike_price: f64::NAN,
+            strike_price: 0.50,
             seconds_to_market_end: 0,
-            realized_vol: f64::NAN,
+            realized_volatility_snapshot: &realized_volatility_snapshot,
             pricing_kurtosis: f64::NAN,
         },
     )
@@ -134,6 +176,16 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
 
     assert_eq!(fair.source_id, "primary");
     assert_eq!(fair.reference_current_price, 0.63);
+    assert_eq!(fair.reference_current_price_observed_ts_ms, 1_000);
+    assert_eq!(
+        fair.realized_vol_surface_id.as_deref(),
+        Some(TEST_REALIZED_VOL_SURFACE_ID)
+    );
+    assert_eq!(
+        fair.realized_vol_source_venue.as_deref(),
+        Some(TEST_REALIZED_VOL_SOURCE_ID)
+    );
+    assert_eq!(fair.realized_vol_source_ts_ms, Some(1_000));
     assert_eq!(fair.fair_probability_up, 0.63);
     assert!(!fair.failed_over);
 
@@ -177,6 +229,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         reference_quote(TEST_REFERENCE_ASSET, "primary", 99.0, 1_000),
         reference_quote(TEST_REFERENCE_ASSET, "backup", 101.0, 1_490),
     ];
+    let realized_volatility_snapshot = ready_realized_vol_snapshot(1_400, 1.5);
     let mut selector = ReferencePriceSelector::new(
         TEST_REFERENCE_ASSET,
         vec!["primary".to_string(), "backup".to_string()],
@@ -193,7 +246,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
         reference_quotes: &quotes,
         strike_price: 100.0,
         seconds_to_market_end: 300,
-        realized_vol: 1.5,
+        realized_volatility_snapshot: &realized_volatility_snapshot,
         pricing_kurtosis: 0.25,
     };
 
@@ -206,18 +259,28 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     assert_eq!(fair.spot_price, 101.0);
     assert_eq!(fair.strike_price, input.strike_price);
     assert_eq!(fair.seconds_to_market_end, input.seconds_to_market_end);
-    assert_eq!(fair.realized_vol, input.realized_vol);
+    assert_eq!(fair.realized_vol, 1.5);
     assert_eq!(fair.pricing_kurtosis, input.pricing_kurtosis);
     assert_eq!(fair.reference_current_price, 101.0);
     assert_eq!(fair.reference_current_price_source_id, "backup");
+    assert_eq!(fair.reference_current_price_observed_ts_ms, 1_490);
     assert!(fair.reference_current_price_failed_over);
+    assert_eq!(
+        fair.realized_vol_surface_id.as_deref(),
+        Some(TEST_REALIZED_VOL_SURFACE_ID)
+    );
+    assert_eq!(
+        fair.realized_vol_source_venue.as_deref(),
+        Some(TEST_REALIZED_VOL_SOURCE_ID)
+    );
+    assert_eq!(fair.realized_vol_source_ts_ms, Some(1_400));
     assert_eq!(
         fair.fair_probability_up,
         updown::fair_probability_up(&FairProbabilityInputs {
             spot_price: 101.0,
             strike_price: input.strike_price,
             seconds_to_market_end: input.seconds_to_market_end,
-            realized_vol: input.realized_vol,
+            realized_vol: 1.5,
             pricing_kurtosis: input.pricing_kurtosis,
         })
         .expect("same updown fair-value inputs should price")
@@ -241,7 +304,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
             reference_quotes: &[],
             strike_price: input.strike_price,
             seconds_to_market_end: input.seconds_to_market_end,
-            realized_vol: input.realized_vol,
+            realized_volatility_snapshot: input.realized_volatility_snapshot,
             pricing_kurtosis: input.pricing_kurtosis,
         },
     );
@@ -250,6 +313,29 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
     assert_eq!(
         blocked.blocked_by,
         Some(MakerRuntimeReferenceFairValueBlockReason::ReferenceCurrentPriceUnavailable)
+    );
+
+    let unready_snapshot = unready_realized_vol_snapshot(1_400, 1.5);
+    let mut rv_blocked_selector = ReferencePriceSelector::new(
+        TEST_REFERENCE_ASSET,
+        vec!["primary".to_string(), "backup".to_string()],
+        1,
+        100,
+        25,
+    )
+    .expect("selector fixture should be valid");
+    let rv_blocked = maker_reference_current_price_fair_value_decision(
+        &mut rv_blocked_selector,
+        MakerRuntimeReferenceFairValueInput {
+            realized_volatility_snapshot: &unready_snapshot,
+            ..input
+        },
+    );
+
+    assert_eq!(rv_blocked.fair_value, None);
+    assert_eq!(
+        rv_blocked.blocked_by,
+        Some(MakerRuntimeReferenceFairValueBlockReason::RealizedVolNotReady)
     );
 }
 

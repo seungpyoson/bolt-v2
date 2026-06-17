@@ -60,6 +60,47 @@ class MarketFamilyCouplingFenceTests(unittest.TestCase):
 
         self.assertEqual(violations, [])
 
+    def test_detects_maker_runtime_direct_family_fair_value_import(self) -> None:
+        violations = VERIFIER.find_maker_runtime_quote_fair_value_violations_in_text(
+            "use crate::bolt_v3_market_families::FairProbabilityInputs;\n"
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].line, 1)
+
+    def test_detects_maker_runtime_direct_family_fair_value_call(self) -> None:
+        violations = VERIFIER.find_maker_runtime_quote_fair_value_violations_in_text(
+            """
+            fn price(input: Input) {
+                fair_probability_up_for_family(input.family_key, input.inputs);
+            }
+            """
+        )
+
+        self.assertEqual(len(violations), 1)
+
+    def test_maker_runtime_shared_fair_value_api_is_allowed(self) -> None:
+        violations = VERIFIER.find_maker_runtime_quote_fair_value_violations_in_text(
+            """
+            use crate::bolt_v3_fair_value_pricing::FairValuePricingState;
+            fn price(state: &FairValuePricingState) {
+                state.fair_value_pricing_at(config, request);
+            }
+            """
+        )
+
+        self.assertEqual(violations, [])
+
+    def test_maker_runtime_fair_value_ignores_comments_and_string_literals(self) -> None:
+        violations = VERIFIER.find_maker_runtime_quote_fair_value_violations_in_text(
+            """
+            // fair_probability_up_for_family is discussed in a comment.
+            const NOTE: &str = "FairProbabilityInputs appears only in a literal";
+            """
+        )
+
+        self.assertEqual(violations, [])
+
     def test_current_static_binary_event_has_no_sibling_family_dependency(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])
 

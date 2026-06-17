@@ -56,7 +56,9 @@ use crate::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
-    bolt_v3_providers::{polymarket, resolve_fee_provider},
+    bolt_v3_providers::{
+        ProviderMarketExitOrderConstraints, binding_for_provider_key, resolve_fee_provider,
+    },
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
     },
@@ -286,12 +288,12 @@ pub fn validate_strategy(
         }
     };
 
-    let enforce_polymarket_market_exit_shape =
-        strategy_execution_client_venue_is(root, strategy, polymarket::KEY);
+    let market_exit_order_constraints =
+        strategy_execution_client_market_exit_order_constraints(root, strategy);
     errors.extend(validate_order_parameters(
         context,
         strategy.manage_stop,
-        enforce_polymarket_market_exit_shape,
+        market_exit_order_constraints,
         &parameters.entry_order,
         &parameters.exit_order,
         &parameters.forced_exit_order,
@@ -1552,7 +1554,7 @@ fn validate_reference_current_price_forced_flat_grace(
 fn validate_order_parameters(
     context: &str,
     manage_stop: bool,
-    enforce_polymarket_market_exit_shape: bool,
+    market_exit_order_constraints: Option<ProviderMarketExitOrderConstraints>,
     entry: &OrderParams,
     exit: &OrderParams,
     forced_exit: &OrderParams,
@@ -1562,13 +1564,13 @@ fn validate_order_parameters(
     errors.extend(check_entry_order_combination(context, entry));
     errors.extend(check_exit_order_combination(
         context,
-        enforce_polymarket_market_exit_shape,
+        market_exit_order_constraints,
         exit,
     ));
     errors.extend(check_forced_exit_order_combination(
         context,
         manage_stop,
-        enforce_polymarket_market_exit_shape,
+        market_exit_order_constraints,
         exit,
         forced_exit,
     ));
@@ -1751,17 +1753,16 @@ fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
 
 fn check_exit_order_combination(
     context: &str,
-    enforce_polymarket_market_exit_shape: bool,
+    market_exit_order_constraints: Option<ProviderMarketExitOrderConstraints>,
     exit: &OrderParams,
 ) -> Vec<String> {
     let mut errors = check_enabled_order_template(context, "exit_order", exit);
-    if enforce_polymarket_market_exit_shape {
-        errors.extend(check_polymarket_market_exit_shape(
-            context,
-            "exit_order",
-            exit,
-        ));
-    }
+    errors.extend(check_provider_market_exit_shape(
+        context,
+        "exit_order",
+        exit,
+        market_exit_order_constraints,
+    ));
     if exit.is_quote_quantity {
         errors.push(format!(
             "{context}: parameters.exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` exits are sized from base position quantity"
@@ -1773,18 +1774,17 @@ fn check_exit_order_combination(
 fn check_forced_exit_order_combination(
     context: &str,
     manage_stop: bool,
-    enforce_polymarket_market_exit_shape: bool,
+    market_exit_order_constraints: Option<ProviderMarketExitOrderConstraints>,
     exit: &OrderParams,
     forced_exit: &OrderParams,
 ) -> Vec<String> {
     let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);
-    if enforce_polymarket_market_exit_shape {
-        errors.extend(check_polymarket_market_exit_shape(
-            context,
-            "forced_exit_order",
-            forced_exit,
-        ));
-    }
+    errors.extend(check_provider_market_exit_shape(
+        context,
+        "forced_exit_order",
+        forced_exit,
+        market_exit_order_constraints,
+    ));
     if forced_exit.is_quote_quantity {
         errors.push(format!(
             "{context}: parameters.forced_exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` forced exits are sized from base position quantity"
@@ -1803,32 +1803,37 @@ fn check_forced_exit_order_combination(
     errors
 }
 
-fn strategy_execution_client_venue_is(
+fn strategy_execution_client_market_exit_order_constraints(
     root: &BoltV3RootConfig,
     strategy: &BoltV3StrategyConfig,
-    provider_key: &str,
-) -> bool {
-    root.clients
-        .get(strategy.execution_client_id.as_str())
-        .is_some_and(|client| client.venue.as_str() == provider_key)
+) -> Option<ProviderMarketExitOrderConstraints> {
+    let client = root.clients.get(strategy.execution_client_id.as_str())?;
+    let binding = binding_for_provider_key(client.venue.as_str())?;
+    Some(binding.market_exit_order_constraints)
 }
 
-fn check_polymarket_market_exit_shape(
+fn check_provider_market_exit_shape(
     context: &str,
     field: &str,
     order: &OrderParams,
+    constraints: Option<ProviderMarketExitOrderConstraints>,
 ) -> Vec<String> {
     if order.order_type != OrderType::Market {
         return Vec::new();
     }
+    let Some(constraints) = constraints else {
+        return Vec::new();
+    };
 
     let mut errors = Vec::new();
-    if !matches!(order.time_in_force, TimeInForce::Ioc | TimeInForce::Fok) {
+    if let Some(allowed_time_in_forces) = constraints.allowed_market_time_in_forces
+        && !allowed_time_in_forces.contains(&order.time_in_force)
+    {
         errors.push(format!(
-            "{context}: parameters.{field} order_type=market must use time_in_force=ioc or fok because the configured execution provider rejects market gtc/gtd orders before submit"
+            "{context}: parameters.{field} order_type=market must use time_in_force=ioc or fok because the configured execution provider rejects unsupported market time-in-force values before submit"
         ));
     }
-    if order.is_reduce_only {
+    if order.is_reduce_only && !constraints.market_reduce_only_supported {
         errors.push(format!(
             "{context}: parameters.{field}.is_reduce_only must be false for market exits because the configured execution provider rejects reduce-only orders before submit"
         ));

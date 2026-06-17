@@ -299,8 +299,14 @@ impl TakerPricingState {
         self.fair_value.current_realized_vol_source_at(now_ms)
     }
 
-    pub(crate) fn latest_realized_vol_snapshot(&self) -> Option<&RealizedVolSnapshot> {
-        self.fair_value.latest_realized_vol_snapshot()
+    /// Raw (readiness-unfiltered) latest snapshot for a surface, for evidence/audit. Use the
+    /// readiness-gating path for entry decisions, which also enforces `as_of_ms <= now_ms`.
+    pub(crate) fn latest_realized_vol_snapshot_for_surface(
+        &self,
+        surface_id: &str,
+    ) -> Option<&RealizedVolSnapshot> {
+        self.fair_value
+            .latest_realized_vol_snapshot_for_surface(surface_id)
     }
 
     #[cfg(test)]

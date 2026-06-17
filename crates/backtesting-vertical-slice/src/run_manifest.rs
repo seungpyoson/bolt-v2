@@ -2741,8 +2741,16 @@ fn resolve_artifact_store_secret<F>(
 where
     F: FnMut(&str, &str) -> Result<String, String>,
 {
-    resolver(region, path)
-        .map_err(|source| ManifestError::ArtifactStoreSecretResolution { field, source })
+    let value = resolver(region, path)
+        .map_err(|source| ManifestError::ArtifactStoreSecretResolution { field, source })?;
+    if value.trim().is_empty() || value.trim() != value {
+        return Err(ManifestError::ArtifactStoreSecretResolution {
+            field,
+            source: "resolved value must be non-empty and must not contain leading or trailing whitespace"
+                .to_string(),
+        });
+    }
+    Ok(value)
 }
 
 /// The single per-input admittance predicate: a data-type string is admissible
@@ -3685,6 +3693,49 @@ mod tests {
         assert_eq!(
             options.get("session_token"),
             Some(&"session-value".to_string())
+        );
+    }
+
+    #[test]
+    fn artifact_store_rejects_empty_or_whitespace_resolved_ssm_credentials() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        manifest.artifact_store.ssm_parameters = Some(ManifestArtifactStoreSsmParameters {
+            region: "us-east-1".to_string(),
+            access_key_id: "/bolt/artifacts/access-key-id".to_string(),
+            secret_access_key: "/bolt/artifacts/secret-access-key".to_string(),
+            session_token: Some("/bolt/artifacts/session-token".to_string()),
+        });
+
+        let empty_access_key_err = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, path| match path {
+                "/bolt/artifacts/access-key-id" => Ok(String::new()),
+                "/bolt/artifacts/secret-access-key" => Ok("secret-value".to_string()),
+                "/bolt/artifacts/session-token" => Ok("session-value".to_string()),
+                other => Err(format!("unexpected path {other}")),
+            })
+            .expect_err("empty resolved access key must fail closed");
+        assert!(
+            empty_access_key_err
+                .to_string()
+                .contains("artifact_store.ssm_parameters.access_key_id"),
+            "{empty_access_key_err}"
+        );
+
+        let whitespace_secret_err = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, path| match path {
+                "/bolt/artifacts/access-key-id" => Ok("AKIATEST".to_string()),
+                "/bolt/artifacts/secret-access-key" => Ok(" secret-value ".to_string()),
+                "/bolt/artifacts/session-token" => Ok("session-value".to_string()),
+                other => Err(format!("unexpected path {other}")),
+            })
+            .expect_err("whitespace-padded resolved secret must fail closed");
+        assert!(
+            whitespace_secret_err
+                .to_string()
+                .contains("artifact_store.ssm_parameters.secret_access_key"),
+            "{whitespace_secret_err}"
         );
     }
 

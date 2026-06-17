@@ -1038,7 +1038,7 @@ impl<'a> CreateOnlyArtifactWriter<'a> {
             .await
         {
             Ok(result) => Ok((result.into(), CreateOnlyWriteDisposition::Created)),
-            Err(object_store::Error::AlreadyExists { .. }) => {
+            Err(err) if is_object_store_create_only_conflict(&err) => {
                 let existing = self
                     .store
                     .get(path)

@@ -122,7 +122,15 @@ impl LeadLagCatalogReadConfig {
             if alias.asset_id.trim().is_empty() {
                 bail!("lead-lag catalog alias missing asset_id");
             }
-            aliases.insert(alias.instrument_id.clone(), alias.asset_id.clone());
+            if aliases
+                .insert(alias.instrument_id.clone(), alias.asset_id.clone())
+                .is_some()
+            {
+                bail!(
+                    "lead-lag catalog alias duplicated for instrument_id {}",
+                    alias.instrument_id
+                );
+            }
         }
         for instrument_id in &self.instrument_ids {
             if !aliases.contains_key(instrument_id) {
@@ -353,5 +361,37 @@ asset_id = "token-a"
         let err = config.alias_map().expect_err("missing alias must fail");
 
         assert!(err.to_string().contains("missing.POLYMARKET"));
+    }
+
+    #[test]
+    fn rejects_duplicate_instrument_aliases() {
+        let config = LeadLagCatalogReadConfig {
+            catalog_uri: "file:///catalog".to_string(),
+            storage_options: None,
+            instrument_ids: vec!["token-a.POLYMARKET".to_string()],
+            start: None,
+            end: None,
+            where_clause: None,
+            files: None,
+            optimize_file_loading: true,
+            book_type: LeadLagCatalogBookType::L2Mbp,
+            clock: LeadLagCatalogClock::TsEvent,
+            instrument_aliases: vec![
+                LeadLagInstrumentAlias {
+                    instrument_id: "token-a.POLYMARKET".to_string(),
+                    asset_id: "token-a".to_string(),
+                },
+                LeadLagInstrumentAlias {
+                    instrument_id: "token-a.POLYMARKET".to_string(),
+                    asset_id: "token-b".to_string(),
+                },
+            ],
+        };
+
+        let err = config
+            .alias_map()
+            .expect_err("duplicate alias must fail closed");
+
+        assert!(err.to_string().contains("token-a.POLYMARKET"));
     }
 }

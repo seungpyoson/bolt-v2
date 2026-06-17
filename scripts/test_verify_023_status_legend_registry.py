@@ -142,6 +142,23 @@ def test_missing_required_value_is_a_finding() -> None:
     assert any("stale" in finding for finding in findings)
 
 
+def test_required_value_mentioned_only_in_prose_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        contracts = (
+            registry_text(omit_value="stale")
+            + "\nThe stale key is mentioned here only as prose, not as a registry row.\n"
+            + "| `extra_placeholder` | proof_status | Extra | Extra placeholder row keeps the row count high. | reference/contracts.md | Backtesting Engine | Dashboard |\n"
+        )
+        write_file(root, "specs/023-nt-research-analytics-platform/reference/contracts.md", contracts)
+
+        findings = verifier.scan_root(root)
+
+    assert any("stale" in finding for finding in findings)
+
+
 def test_unchecked_root_task_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -184,6 +201,7 @@ def main() -> int:
     tests = [
         test_complete_registry_passes,
         test_missing_required_value_is_a_finding,
+        test_required_value_mentioned_only_in_prose_is_a_finding,
         test_unchecked_root_task_is_a_finding,
         test_missing_source_fence_wiring_is_a_finding,
         test_cli_fails_with_actionable_output,

@@ -1,7 +1,7 @@
 use futures_util::stream::BoxStream;
 use object_store::{
     CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult,
+    ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
 };
 use std::{fmt, fs, io::Write};
@@ -342,6 +342,100 @@ impl ObjectStore for NoListObjectStore {
     }
 }
 
+#[derive(Debug)]
+struct S3PreconditionOnCreateConflictStore {
+    inner: InMemory,
+}
+
+impl S3PreconditionOnCreateConflictStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemory::new(),
+        }
+    }
+}
+
+impl fmt::Display for S3PreconditionOnCreateConflictStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("S3PreconditionOnCreateConflictStore")
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for S3PreconditionOnCreateConflictStore {
+    async fn put_opts(
+        &self,
+        location: &ObjectPath,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> ObjectStoreResult<PutResult> {
+        if matches!(opts.mode, PutMode::Create) && self.inner.head(location).await.is_ok() {
+            return Err(object_store::Error::Precondition {
+                path: location.to_string(),
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "object already exists",
+                )),
+            });
+        }
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjectPath,
+        opts: PutMultipartOptions,
+    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &ObjectPath,
+        options: GetOptions,
+    ) -> ObjectStoreResult<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, ObjectStoreResult<ObjectPath>>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectPath>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&ObjectPath>,
+        offset: &ObjectPath,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> ObjectStoreResult<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjectPath,
+        to: &ObjectPath,
+        options: CopyOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
 #[test]
 fn resolves_nt_catalog_projection_root_from_single_toml_artifact_root() {
     let root = artifact_config().resolve().expect("valid artifact root");
@@ -384,6 +478,29 @@ fn resolves_synthetic_nt_catalog_proof_root_outside_canonical_catalog() {
     assert!(
         root.nt_catalog_synthetic_proof_root("bad/proof").is_err(),
         "synthetic proof ids must be path tokens"
+    );
+}
+
+#[tokio::test]
+async fn create_only_idempotent_replay_accepts_s3_precondition_for_same_payload() {
+    let store = S3PreconditionOnCreateConflictStore::new();
+    let writer = CreateOnlyArtifactWriter::new(&store);
+    let path = ObjectPath::from("artifact-index/v1/events/kind=backtests/event=event-001.json");
+    let payload = br#"{"event_id":"event-001"}"#.to_vec();
+
+    let (_version, disposition) = writer
+        .put_create_idempotent_with_disposition(&path, payload.clone())
+        .await
+        .expect("first create succeeds");
+    assert_eq!(disposition, CreateOnlyWriteDisposition::Created);
+
+    let (_version, disposition) = writer
+        .put_create_idempotent_with_disposition(&path, payload)
+        .await
+        .expect("S3 precondition conflict with same payload is idempotent");
+    assert_eq!(
+        disposition,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
     );
 }
 

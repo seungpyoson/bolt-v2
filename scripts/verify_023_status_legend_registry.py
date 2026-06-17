@@ -128,7 +128,11 @@ def scan_root(root: Path) -> list[str]:
         findings.append(
             f"{CONTRACTS_PATH}: registry must contain at least {len(REQUIRED_VALUES)} value rows; found {len(rows)}"
         )
+    row_keys: set[str] = set()
     for row in rows:
+        if row["key"] in row_keys:
+            findings.append(f"{CONTRACTS_PATH}: duplicate registry row for `{row['key']}`")
+        row_keys.add(row["key"])
         if not row["label"].strip():
             findings.append(f"{CONTRACTS_PATH}: `{row['key']}` registry row has empty display label")
         if len(row["legend"].strip()) < 12:
@@ -137,6 +141,9 @@ def scan_root(root: Path) -> list[str]:
             findings.append(f"{CONTRACTS_PATH}: `{row['key']}` registry row has empty setter rule")
         if row["displayers"].strip() == "":
             findings.append(f"{CONTRACTS_PATH}: `{row['key']}` registry row has empty display rule")
+    for required_value in REQUIRED_VALUES:
+        if required_value not in row_keys:
+            findings.append(f"{CONTRACTS_PATH}: missing registry row for `{required_value}`")
 
     if tasks_text and not CHECKED_ROOT009.search(tasks_text):
         findings.append(f"{TASKS_PATH}: ROOT-009 must be checked once the registry is canonical")

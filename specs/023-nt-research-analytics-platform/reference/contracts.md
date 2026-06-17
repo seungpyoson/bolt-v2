@@ -147,7 +147,7 @@ nt-catalog/v1/projection=<catalog_projection_id>/
 source-proofs/v1/source_binding=<key>/fixture=<binary-option|perps-spot>/proof=<source_proof_id>/version=<version>/
 backtests/v1/fixture=<binary-option|perps-spot>/run=<run_id>/
 artifact-index/v1/<events|snapshots|pointers>/...
-research-analytics/v1/<datasets|feature-tables|experiment-results|promotion-packages>/...
+research-analytics/v1/<datasets|feature-tables|experiment-results>/...
 ```
 
 The `nt-catalog/` path is special: Bolt stops at the catalog projection root and
@@ -173,9 +173,11 @@ pointers. The required logical pieces are:
 
 The top-level artifact kinds are `raw`, `nt-catalog`, `source-proofs`,
 `backtests`, `artifact-index`, and `research-analytics`. Research Analytics
-subfamilies (`datasets`, `feature-tables`, `experiment-results`, and
-`promotion-packages`) commit into the single `research-analytics` kind snapshot;
-they do not get separate latest pointers.
+subfamilies (`datasets`, `feature-tables`, and `experiment-results`) commit
+into the single `research-analytics` kind snapshot; they do not get separate
+latest pointers. Typed promotion config, when allowed by a real GO finding,
+rides on the `experiment-results` artifact rather than a separate artifact
+family/path.
 
 The pointer path is:
 
@@ -273,8 +275,9 @@ limits, warnings, and mechanical blockers.
 
 It must not carry a subjective promotion recommendation such as "use this
 strategy" or "escalate this strategy." Strategy review status belongs to a
-Research Analytics `PromotionPackage` or a later explicitly owned review
-artifact that consumes one or more backtest result contracts as evidence.
+Research Analytics experiment-result verdict, optional typed promotion-config
+fields on that experiment-result, or a later explicitly owned review artifact
+that consumes one or more backtest result contracts as evidence.
 
 Reproduction, audit, regression, or migration results are historical/mechanical
 artifacts. They must not be presented as normal current performance.

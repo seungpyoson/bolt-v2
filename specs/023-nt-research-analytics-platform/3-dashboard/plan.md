@@ -55,8 +55,9 @@ Additional source rules:
   `run_purpose`, `proof_pin_reason_code`, and `proof_pin_reason_detail` for
   non-latest proof pins.
 - Dashboard may render strategy-review or promotion status only when it comes
-  from `PromotionPackage` or later RA-owned review artifacts. It must not infer
-  that status from backtest metrics or mutate it.
+  from experiment-result verdict/promotion-config fields or later RA-owned
+  review artifacts. It must not infer that status from backtest metrics or
+  mutate it.
 - Missing PnL or exposure sources must produce omitted fields or explicit
   partial/unavailable labels. Dashboard must not compute independent account,
   PnL, exposure, or MTM truth.
@@ -139,7 +140,7 @@ dashboard fields and source columns.
 | Historical PnL | Durable trade-history/PnL path from #77 or omit/render explicit gap label. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
 | Redemption-realized PnL | Include only after #36 scope decision, otherwise mark excluded/unavailable. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
 | Strategy state/outlook | Accepted source contract or omit/render exploratory/non-trading-truth label. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
-| Strategy review/promotion status | RA-owned `PromotionPackage` or review artifact only; never inferred from BTE metrics. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
+| Strategy review/promotion status | RA-owned experiment-result verdict/promotion-config fields or review artifact only; never inferred from BTE metrics. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
 | Data health/freshness | Source timestamp plus configured stale threshold. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
 
 ## Product Gate

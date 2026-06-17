@@ -1684,7 +1684,7 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    let mut errors = check_enabled_order_template(context, "entry_order", entry);
+    let mut errors = check_enabled_order_template(context, stringify!(entry_order), entry);
     if !executable_entry_order_shape_supported(entry) {
         errors.push(archetype_validation_error(
             context,
@@ -1756,10 +1756,10 @@ fn check_exit_order_combination(
     market_exit_order_constraints: Option<ProviderMarketExitOrderConstraints>,
     exit: &OrderParams,
 ) -> Vec<String> {
-    let mut errors = check_enabled_order_template(context, "exit_order", exit);
+    let mut errors = check_enabled_order_template(context, stringify!(exit_order), exit);
     errors.extend(check_provider_market_exit_shape(
         context,
-        "exit_order",
+        stringify!(exit_order),
         exit,
         market_exit_order_constraints,
     ));
@@ -1778,10 +1778,11 @@ fn check_forced_exit_order_combination(
     exit: &OrderParams,
     forced_exit: &OrderParams,
 ) -> Vec<String> {
-    let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);
+    let mut errors =
+        check_enabled_order_template(context, stringify!(forced_exit_order), forced_exit);
     errors.extend(check_provider_market_exit_shape(
         context,
-        "forced_exit_order",
+        stringify!(forced_exit_order),
         forced_exit,
         market_exit_order_constraints,
     ));

@@ -20,11 +20,10 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-/// The ONE consolidated lowercase-hex SHA-256 primitive. Every source-integrity
-/// digest in the crate (verifier, producer, providers, tests) routes through
-/// this. `hex::encode` and `format!("{digest:x}")` are byte-identical for a
-/// 32-byte SHA-256 digest (both lowercase hex), so this is behavior-identical to
-/// every helper it replaces.
+/// The ONE consolidated lowercase-hex SHA-256 primitive, used by the provider
+/// artifact hashes (and tests). `hex::encode` and `format!("{digest:x}")` are
+/// byte-identical for a 32-byte SHA-256 digest (both lowercase hex), so this is
+/// behavior-identical to every helper it replaces.
 pub fn sha256_hex_lower(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -53,7 +52,7 @@ fn read_file_bounded(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
 
 /// Recursively collect every `*.rs` file under `dir`, sorted lexicographically
 /// by relative-path raw UTF-8 bytes (locale/OS-independent), with path
-/// components joined by `/` in the relative path used for ordering and framing.
+/// components joined by `/` in the relative path used for ordering.
 /// Backslash bytes inside a component are rejected so Unix filenames like
 /// `a\b.rs` cannot collide with `a/b.rs`. Returns
 /// `(relative_path_bytes, absolute_path)` pairs in canonical order.
@@ -159,12 +158,9 @@ fn source_root_file_type(root: &Path) -> io::Result<std::fs::FileType> {
     Ok(file_type)
 }
 
-/// Whole-module source text for a `root`, in the SAME canonicalization order as
-/// the digest. IDENTITY case: the file's verbatim text. DIRECTORY case: the
-/// framed-order concatenation of every file's UTF-8 text WITHOUT the binary
-/// frame bytes (path/NUL/length) — i.e. just the file contents joined in
-/// canonical order. There is exactly ONE order across the digest and the text
-/// accessors.
+/// Whole-module source text for a `root`, in canonical file order. IDENTITY
+/// case: the file's verbatim text. DIRECTORY case: every file's UTF-8 text
+/// concatenated in canonical order (raw file contents, no separators).
 pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
     let file_type = source_root_file_type(root)?;
     if file_type.is_file() {
@@ -209,9 +205,8 @@ pub fn module_source_set_text(
     Ok(text)
 }
 
-/// Production-only module source text for a `root`, in the SAME canonicalization
-/// order as the digest, with the bottom `#[cfg(test)] mod tests` submodule
-/// excluded.
+/// Production-only module source text for a `root`, in canonical file order,
+/// with the bottom `#[cfg(test)] mod tests` submodule excluded.
 ///
 /// This is the SINGLE definition of the production/test boundary for both the
 /// IDENTITY and DIRECTORY cases.
@@ -434,7 +429,7 @@ pub const OUTCOME_GROUP_KEY: &str = "outcome_group";
 
 /// One registry entry: a stable key + its repo-relative source roots. A
 /// one-element set preserves the old single-root semantics; a multi-root set is
-/// framed by full repo-relative file path.
+/// ordered by full repo-relative file path.
 pub struct GatedSourceRoot {
     pub key: &'static str,
     /// Repo-relative paths from the crate manifest dir.

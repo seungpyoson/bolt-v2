@@ -232,28 +232,39 @@ class LegacyDefaultFenceTests(unittest.TestCase):
     def test_python_source_roots_match_manifest(self) -> None:
         # The gated root list lives in one place: gated_source_roots.manifest,
         # read by both build.rs (Rust) and bolt_v3_source_roots.py (Python). This
-        # asserts the Python module's exposed roots equal an INDEPENDENT parse of
-        # that manifest, so a Python-side parser regression fails loudly. The Rust
-        # side is pinned by the registry-membership tests in
-        # bolt_v3_source_integrity.rs, which assert the generated constant equals
-        # the same expected list.
+        # asserts the Python module's exposed roots equal an INDEPENDENT, PER-KEY
+        # parse of that manifest — section membership and order preserved, not a
+        # flat set — so a Python-side parser regression, including a root assigned
+        # to the wrong section, fails loudly. The Rust side is pinned by the
+        # registry-membership tests in bolt_v3_source_integrity.rs, which assert
+        # the generated constant equals the same expected list.
         manifest = (
             source_roots.REPO_ROOT / "gated_source_roots.manifest"
         ).read_text(encoding="utf-8")
-        manifest_roots = {
-            line.strip()
-            for line in manifest.splitlines()
-            if line.strip()
-            and not line.strip().startswith("#")
-            and not line.strip().startswith("[")
-        }
+        sections: dict[str, list[str]] = {}
+        current: str | None = None
+        for raw_line in manifest.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                current = line[1:-1].strip()
+                sections[current] = []
+                continue
+            self.assertIsNotNone(current, f"root {line!r} precedes any [section]")
+            assert current is not None  # narrow type for the checker
+            sections[current].append(line)
 
         self.assertEqual(
-            manifest_roots,
+            sections,
             {
-                *source_roots.STRATEGY_SOURCE_ROOTS,
-                source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
-                *source_roots.OUTCOME_GROUP_SOURCE_ROOTS,
+                source_roots.STRATEGY_KEY: list(source_roots.STRATEGY_SOURCE_ROOTS),
+                source_roots.SUBMIT_ADMISSION_KEY: list(
+                    source_roots.SUBMIT_ADMISSION_SOURCE_ROOTS
+                ),
+                source_roots.OUTCOME_GROUP_KEY: list(
+                    source_roots.OUTCOME_GROUP_SOURCE_ROOTS
+                ),
             },
         )
 

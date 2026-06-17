@@ -10,9 +10,10 @@
 //!    into [`GATED_SOURCE_ROOTS`]; this module re-exports that generated table.
 //! 2. The text accessors [`module_source_text`] (whole-module text) and
 //!    [`production_module_source_text`] (test-submodule-free text), both in the
-//!    SAME canonical file order, re-exported from the
-//!    [`crate::source_canonicalization`] walk module so there is exactly one
-//!    transcription of the walk + text-extraction logic.
+//!    SAME canonical file order. These are thin wrappers over the
+//!    [`crate::source_canonicalization`] walk module's text functions
+//!    (delegating with a fixed byte cap), so there is exactly one transcription
+//!    of the walk + text-extraction logic.
 //!
 //! The lowercase-hex SHA-256 helper [`sha256_hex_lower`] is re-exported here for
 //! provider artifact code. The binary source-digest/framing primitives this
@@ -41,7 +42,7 @@ pub fn registry_relative_roots(key: &str) -> &'static [&'static str] {
 
 /// Primary repo-relative root path for a registry key. For source-set entries,
 /// this remains the strategy directory used by older path-based collector tests;
-/// registry-keyed hashing/text helpers use every root in the set.
+/// registry-keyed text helpers use every root in the set.
 pub fn registry_relative_root(key: &str) -> &'static str {
     registry_relative_roots(key)
         .first()
@@ -73,17 +74,13 @@ pub fn registry_module_source_text(key: &str, max_bytes: u64) -> io::Result<Stri
 }
 
 /// A bound large enough to admit either gated root: the submit_admission single
-/// file and the strategy source set (strategy directory plus shared execution
-/// sources, whose framed canonical stream is the raw content plus per-file
-/// path/length frames). Used by the text accessors (whole module / production
-/// text), where there is no operator-supplied cap.
-///
-/// Single source for the in-process text-accessor bound; the digest path uses
-/// the operator-configured `max_source_bytes` instead.
+/// file and the strategy source set (the strategy directory plus the shared
+/// execution sources). Used by the text accessors (whole module / production
+/// text), where there is no operator-supplied cap; it is the single source for
+/// that in-process text-accessor bound.
 const TEXT_ACCESSOR_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Whole-module source text for a registry key, in the same canonical order as
-/// the digest.
+/// Whole-module source text for a registry key, in canonical file order.
 pub fn module_source_text(key: &str) -> String {
     canonical_module_source_set_text(
         Path::new(env!("CARGO_MANIFEST_DIR")),
@@ -231,6 +228,18 @@ mod tests {
                 "src/bolt_v3_sizing.rs",
                 "src/bolt_v3_taker_updown_signal.rs",
             ]
+        );
+    }
+
+    #[test]
+    fn submit_admission_source_set_is_the_single_admission_module() {
+        // Pins the generated constant for the third registry key, so a manifest
+        // change to `[submit_admission]` fails this test the same way the strategy
+        // and outcome-group sets are pinned (rather than only surfacing later as a
+        // `registry_entry` panic).
+        assert_eq!(
+            registry_relative_roots(SUBMIT_ADMISSION_KEY),
+            &["src/bolt_v3_submit_admission.rs"]
         );
     }
 

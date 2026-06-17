@@ -82,10 +82,21 @@ def _load_gated_source_roots() -> dict[str, tuple[str, ...]]:
     for key in order:
         if not sections[key]:
             raise ValueError(f"{GATED_SOURCE_ROOTS_MANIFEST}: section [{key}] has no roots")
-    for required in (STRATEGY_KEY, SUBMIT_ADMISSION_KEY, OUTCOME_GROUP_KEY):
+    # The manifest must declare EXACTLY these three registry keys (mirrors the
+    # build.rs parser): reject both missing and unexpected sections so a typo'd
+    # header fails loudly here and on the Rust side instead of silently dropping
+    # roots from the gated set.
+    required_keys = (STRATEGY_KEY, SUBMIT_ADMISSION_KEY, OUTCOME_GROUP_KEY)
+    for required in required_keys:
         if required not in sections:
             raise ValueError(
                 f"{GATED_SOURCE_ROOTS_MANIFEST}: required section [{required}] is missing"
+            )
+    for key in order:
+        if key not in required_keys:
+            raise ValueError(
+                f"{GATED_SOURCE_ROOTS_MANIFEST}: unexpected section [{key}] "
+                f"(expected exactly {list(required_keys)})"
             )
     return {key: tuple(sections[key]) for key in order}
 
@@ -108,7 +119,7 @@ def source_files(relative_root: str, repo_root: Path | None = None) -> list[Path
     IDENTITY case (the root is a regular `.rs` file): a single-element list with
     that file. DIRECTORY case: every `*.rs` file under the root, sorted
     lexicographically by the relative path's raw POSIX bytes — the same canonical
-    order the Rust walk uses for framing and hashing.
+    order the Rust walk uses.
     """
     resolved_repo_root = REPO_ROOT if repo_root is None else repo_root
     root = resolved_repo_root / relative_root
@@ -172,9 +183,10 @@ def source_set_files(
 def module_text(relative_root: str | tuple[str, ...]) -> str:
     """Whole-module UTF-8 text of a gated root or source set, joined in canonical order.
 
-    DIRECTORY case: each file's text concatenated in canonical order WITHOUT any
-    framing bytes — the same content order as the Rust `module_source_text`
-    accessor, suitable for grepping function/marker presence across the module.
+    DIRECTORY case: each file's text concatenated in canonical order (raw file
+    contents, no separators) — the same content order as the Rust
+    `module_source_text` accessor, suitable for grepping function/marker presence
+    across the module.
     """
     texts = []
     if isinstance(relative_root, str):

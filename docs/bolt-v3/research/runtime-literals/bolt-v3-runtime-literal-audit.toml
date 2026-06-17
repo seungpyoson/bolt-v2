@@ -7961,8 +7961,8 @@ path = "src/source_canonicalization.rs"
 kind = "number"
 literal = '''0'''
 context = '''out.sort_by(|a, b| a.0.cmp(&b.0));'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
+classification = "source_canonicalization_sort_tuple_index"
+reason = "Tuple-field index selecting the relative-path key when the canonical source walk sorts files into deterministic order; a structural constant, not an operator runtime value."
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -7985,8 +7985,8 @@ path = "src/source_canonicalization.rs"
 kind = "number"
 literal = '''1'''
 context = '''file.take(max_bytes.saturating_add(1))'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
+classification = "source_canonicalization_read_bound_increment"
+reason = "Read-bound increment: the walk reads one byte past `max_bytes` so an over-cap source file is detected and rejected; a structural constant, not an operator runtime value."
 
 [[allowed]]
 path = "src/source_canonicalization.rs"
@@ -7994,7 +7994,7 @@ kind = "string"
 literal = '''"/"'''
 context = '''Ok(parts.join("/").into_bytes())'''
 classification = '''source_canonicalization_path_separator'''
-reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent ordering; a fixed structural constant, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -8002,7 +8002,7 @@ kind = '''string'''
 literal = '''"/"'''
 context = '''Ok(components.join("/").into_bytes())'''
 classification = '''source_canonicalization_path_separator'''
-reason = '''Canonical forward-slash path separator normalizing directory-root relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+reason = '''Canonical forward-slash path separator normalizing directory-root relative paths for OS-independent ordering; a fixed structural constant, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''

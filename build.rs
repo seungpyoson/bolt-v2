@@ -65,6 +65,10 @@ fn emit_gated_source_roots(manifest_dir: &Path) {
 /// (`#`) and blank lines are ignored; `[key]` starts a section; every other line
 /// is a repo-relative root. Invalid roots (absolute, backslash, `.`/`..`/empty
 /// components) and structural errors fail the build with a file:line message.
+/// The manifest must declare exactly the three registry sections (`[strategy]`,
+/// `[submit_admission]`, `[outcome_group]`): a missing or unexpected section
+/// fails the build. `scripts/bolt_v3_source_roots.py` enforces the same set, so
+/// the two parsers are equivalent and a malformed manifest fails loudly on both.
 fn parse_gated_source_roots(text: &str, manifest_path: &Path) -> Vec<(String, Vec<String>)> {
     let mut entries: Vec<(String, Vec<String>)> = Vec::new();
     for (index, raw_line) in text.lines().enumerate() {
@@ -109,6 +113,29 @@ fn parse_gated_source_roots(text: &str, manifest_path: &Path) -> Vec<(String, Ve
         assert!(
             !roots.is_empty(),
             "{}: section `[{key}]` has no roots",
+            manifest_path.display()
+        );
+    }
+    // The manifest must declare EXACTLY the three registry keys the crate consumes
+    // (STRATEGY_KEY / SUBMIT_ADMISSION_KEY / OUTCOME_GROUP_KEY in
+    // `src/source_canonicalization.rs`). build.rs cannot import those crate consts,
+    // so they are mirrored here; `scripts/bolt_v3_source_roots.py` enforces the
+    // same set. Rejecting both missing AND unexpected sections means a typo'd
+    // header (e.g. `[strategies]`) fails the build instead of silently dropping
+    // roots from the gated set or panicking later at `registry_entry`.
+    const REQUIRED_KEYS: [&str; 3] = ["strategy", "submit_admission", "outcome_group"];
+    let keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+    for required in REQUIRED_KEYS {
+        assert!(
+            keys.contains(&required),
+            "{}: required section `[{required}]` is missing",
+            manifest_path.display()
+        );
+    }
+    for key in &keys {
+        assert!(
+            REQUIRED_KEYS.contains(key),
+            "{}: unexpected section `[{key}]` (expected exactly {REQUIRED_KEYS:?})",
             manifest_path.display()
         );
     }

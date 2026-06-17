@@ -1819,27 +1819,42 @@ fn check_provider_market_exit_shape(
     order: &OrderParams,
     constraints: Option<ProviderMarketExitOrderConstraints>,
 ) -> Vec<String> {
-    if order.order_type != OrderType::Market {
-        return Vec::new();
-    }
     let Some(constraints) = constraints else {
         return Vec::new();
     };
 
     let mut errors = Vec::new();
+    if order.is_reduce_only && !constraints.reduce_only_supported {
+        errors.push(format!(
+            "{context}: parameters.{field}.is_reduce_only must be false because the configured execution provider rejects reduce-only exits before submit"
+        ));
+    }
+    if order.order_type != OrderType::Market {
+        return errors;
+    }
     if let Some(allowed_time_in_forces) = constraints.allowed_market_time_in_forces
         && !allowed_time_in_forces.contains(&order.time_in_force)
     {
+        let configured = time_in_force_config_label(order.time_in_force);
+        let allowed = allowed_time_in_forces_config_label(allowed_time_in_forces);
         errors.push(format!(
-            "{context}: parameters.{field} order_type=market must use time_in_force=ioc or fok because the configured execution provider rejects unsupported market time-in-force values before submit"
-        ));
-    }
-    if order.is_reduce_only && !constraints.market_reduce_only_supported {
-        errors.push(format!(
-            "{context}: parameters.{field}.is_reduce_only must be false for market exits because the configured execution provider rejects reduce-only orders before submit"
+            "{context}: parameters.{field} order_type=market has time_in_force={configured}; must use time_in_force={allowed} because the configured execution provider rejects unsupported market time-in-force values before submit"
         ));
     }
     errors
+}
+
+fn time_in_force_config_label(time_in_force: TimeInForce) -> String {
+    time_in_force.to_string().to_ascii_lowercase()
+}
+
+fn allowed_time_in_forces_config_label(time_in_forces: &[TimeInForce]) -> String {
+    time_in_forces
+        .iter()
+        .copied()
+        .map(time_in_force_config_label)
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 fn check_enabled_order_template(context: &str, field: &str, order: &OrderParams) -> Vec<String> {

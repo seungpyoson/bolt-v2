@@ -513,19 +513,19 @@ pub struct ProviderSecretRequirement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderMarketExitOrderConstraints {
     pub allowed_market_time_in_forces: Option<&'static [TimeInForce]>,
-    pub market_reduce_only_supported: bool,
+    pub reduce_only_supported: bool,
 }
 
 pub const DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS: ProviderMarketExitOrderConstraints =
     ProviderMarketExitOrderConstraints {
         allowed_market_time_in_forces: None,
-        market_reduce_only_supported: true,
+        reduce_only_supported: true,
     };
 
 const IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS: ProviderMarketExitOrderConstraints =
     ProviderMarketExitOrderConstraints {
         allowed_market_time_in_forces: Some(&[TimeInForce::Ioc, TimeInForce::Fok]),
-        market_reduce_only_supported: false,
+        reduce_only_supported: false,
     };
 
 pub struct ProviderBinding {

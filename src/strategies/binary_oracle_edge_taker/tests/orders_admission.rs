@@ -1609,7 +1609,7 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
 }
 
 #[test]
-fn forced_flat_exit_order_object_uses_polymarket_supported_market_shape() {
+fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.active.phase = SelectionPhase::Freeze;

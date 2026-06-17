@@ -39,6 +39,14 @@ reason = "This joins configured reference_data role names in a validation diagno
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''" or "'''
+context = '''.join(" or ")'''
+classification = "strategy_archetype_diagnostic_separator"
+reason = "This joins provider-owned allowed time-in-force labels in a validation diagnostic; it is not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"binary_oracle_entry_order_unsupported_shape"'''
 context = '''"binary_oracle_entry_order_unsupported_shape";'''
 classification = "strategy_archetype_validation_error_code"

@@ -25,7 +25,7 @@ use backtesting_vertical_slice::{
     },
     operator::{RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
     result_contract::BacktestResultContract,
-    run_manifest::MarketStructureFixture,
+    run_manifest::{ManifestArtifactStoreSsmParameters, MarketStructureFixture},
 };
 use flate2::{Compression, write::GzEncoder};
 use serde::Deserialize;
@@ -1270,12 +1270,12 @@ async fn operator_artifact_store_path_rejects_artifact_store_ssm_region_mismatch
 {
     let gz = gzip(SAMPLE_CSV);
     let mut spec = committed_run_spec_for(&gz);
-    spec.manifest
-        .artifact_store
-        .ssm_parameters
-        .as_mut()
-        .expect("run spec carries artifact-store SSM parameters")
-        .region = "us-west-2".to_string();
+    spec.manifest.artifact_store.ssm_parameters = Some(ManifestArtifactStoreSsmParameters {
+        region: "us-west-2".to_string(),
+        access_key_id: "/bolt-v2/test/access-key-id".to_string(),
+        secret_access_key: "/bolt-v2/test/secret-access-key".to_string(),
+        session_token: None,
+    });
     let output_dir = tempfile::TempDir::new().expect("temp dir");
     let store = InMemory::new();
 
@@ -1566,8 +1566,16 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             == persisted_projection.objects.len()
     );
 
+    let mut second_spec = spec.clone();
+    second_spec.create_only_probe_id =
+        Some("backtesting-vertical-slice-bnbusdc-2026-03-01-rerun".to_string());
+    second_spec
+        .nt_catalog_capability_proof
+        .as_mut()
+        .expect("run spec carries NT catalog capability proof")
+        .proof_run_id = "synthetic-capability-proof-rerun".to_string();
     let second = run_from_run_spec_with_artifact_store(
-        &spec,
+        &second_spec,
         &gz,
         output_dir.path(),
         &store,
@@ -1612,7 +1620,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .as_ref()
             .expect("second proof artifact")
             .proof_artifact_create_only_write,
-        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+        CreateOnlyWriteDisposition::Created
     );
     let second_contract: BacktestResultContract = serde_json::from_str(
         &fs::read_to_string(&second.contract_path).expect("second durable contract json"),

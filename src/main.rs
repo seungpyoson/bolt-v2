@@ -108,6 +108,8 @@ enum ProviderArtifactsCommand {
         #[arg(long)]
         client_key: String,
         #[arg(long)]
+        product_surface: String,
+        #[arg(long)]
         expires_at_unix_seconds: u64,
     },
     PreflightLiveSubmitArming {
@@ -115,6 +117,8 @@ enum ProviderArtifactsCommand {
         config: PathBuf,
         #[arg(long)]
         client_key: String,
+        #[arg(long)]
+        product_surface: String,
     },
     GenerateProductSubmitProof(Box<GenerateProductSubmitProofArgs>),
     SyncClobV2BalanceAllowanceCache {
@@ -455,6 +459,7 @@ fn run_provider_artifacts_command(
         ProviderArtifactsCommand::GenerateLiveSubmitApproval {
             config,
             client_key,
+            product_surface,
             expires_at_unix_seconds,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
@@ -486,6 +491,7 @@ fn run_provider_artifacts_command(
                     client_key: &client_key,
                     client,
                     resolved: &resolved,
+                    product_surface: Some(&product_surface),
                     now_unix_seconds,
                     build_head_sha,
                 },
@@ -493,7 +499,11 @@ fn run_provider_artifacts_command(
             )?;
             print_written_artifact(&written)
         }
-        ProviderArtifactsCommand::PreflightLiveSubmitArming { config, client_key } => {
+        ProviderArtifactsCommand::PreflightLiveSubmitArming {
+            config,
+            client_key,
+            product_surface,
+        } => {
             let loaded = load_bolt_v3_config(&config)?;
             check_no_forbidden_credential_env_vars(&loaded.root)?;
             let client = loaded.root.clients.get(&client_key).ok_or_else(|| {
@@ -522,6 +532,7 @@ fn run_provider_artifacts_command(
                 client_key: &client_key,
                 client,
                 resolved: &resolved,
+                product_surface: Some(&product_surface),
                 now_unix_seconds,
                 build_head_sha,
             })?

@@ -56,10 +56,6 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
-live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-live_submit_product_proof_artifact_max_bytes = 65536
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -72,6 +68,16 @@ market_order_slippage_bps = 50
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
+
+[execution.live_submit.standard_perps]
+approval_id = "hl-standard-perps-approval-001"
+approval_artifact_path = "operator/hyperliquid-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+product_proof_artifact_max_bytes = 65536
 
 [execution.latency_profile]
 local_info_node_url = "http://127.0.0.1:3001/info"
@@ -185,7 +191,7 @@ fn latency_profile_cannot_bypass_live_submit_approval_gate() {
             message,
         } => {
             assert_eq!(client_key, "hyperliquid_perps");
-            assert_eq!(field, "execution.live_submit_approval_id");
+            assert_eq!(field, "execution.live_submit.approval_id");
             assert!(
                 message.contains("consumed live-submit approval"),
                 "latency profile must not bypass submit gate: {message}"

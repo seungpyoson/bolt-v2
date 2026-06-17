@@ -82,10 +82,6 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["{surface}"]
-live_submit_approval_id = "hl-unproven-surface-approval"
-live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-live_submit_product_proof_artifact_max_bytes = 65536
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -98,6 +94,16 @@ market_order_slippage_bps = 50
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = {outcome_settlement_poll_secs}
+
+[execution.live_submit.{surface}]
+approval_id = "hl-unproven-surface-approval"
+approval_artifact_path = "operator/hyperliquid-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+product_proof_artifact_max_bytes = 65536
 
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
@@ -150,7 +156,7 @@ fn assert_surface_without_approval_rejects_live_submit(surface: &str) {
             message,
         } => {
             assert_eq!(client_key, "hyperliquid_unproven_surface");
-            assert_eq!(field, "execution.live_submit_approval_id");
+            assert_eq!(field, "execution.live_submit.approval_id");
             assert!(
                 message.contains("consumed live-submit approval"),
                 "surface rejection must name missing approval: {message}"

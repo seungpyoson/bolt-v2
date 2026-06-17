@@ -195,14 +195,14 @@ fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
 
 fn hyperliquid_client(
     product_surface: &str,
-    live_submit_approval_id: &str,
+    approval_id: &str,
 ) -> bolt_v2::bolt_v3_config::ClientBlock {
-    hyperliquid_client_with_outcome_settlement_poll(product_surface, live_submit_approval_id, 0)
+    hyperliquid_client_with_outcome_settlement_poll(product_surface, approval_id, 0)
 }
 
 fn hyperliquid_client_with_outcome_settlement_poll(
     product_surface: &str,
-    live_submit_approval_id: &str,
+    approval_id: &str,
     outcome_settlement_poll_secs: u64,
 ) -> bolt_v2::bolt_v3_config::ClientBlock {
     let product_proof_hash = "d".repeat(64);
@@ -215,10 +215,6 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["{product_surface}"]
-live_submit_approval_id = "{live_submit_approval_id}"
-live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "{product_proof_hash}"
-live_submit_product_proof_artifact_max_bytes = 65536
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -231,6 +227,16 @@ market_order_slippage_bps = 50
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = {outcome_settlement_poll_secs}
+
+[execution.live_submit.{product_surface}]
+approval_id = "{approval_id}"
+approval_artifact_path = "operator/hyperliquid-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+product_proof_artifact_sha256 = "{product_proof_hash}"
+product_proof_artifact_max_bytes = 65536
 
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
@@ -518,7 +524,7 @@ fn hyperliquid_standard_perps_execution_requires_consumed_live_submit_approval()
             message,
         } => {
             assert_eq!(client_key, "hyperliquid_perps");
-            assert_eq!(field, "execution.live_submit_approval_id");
+            assert_eq!(field, "execution.live_submit.approval_id");
             assert!(message.contains("consumed live-submit approval"));
         }
         other => panic!("expected Hyperliquid live-submit approval invariant, got {other}"),
@@ -879,7 +885,7 @@ fn hyperliquid_spot_execution_requires_consumed_surface_approval() {
             message,
         } => {
             assert_eq!(client_key, "hyperliquid_perps");
-            assert_eq!(field, "execution.live_submit_approval_id");
+            assert_eq!(field, "execution.live_submit.approval_id");
             assert!(message.contains("consumed live-submit approval"));
         }
         other => panic!("expected Hyperliquid spot approval invariant, got {other}"),

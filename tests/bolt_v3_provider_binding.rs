@@ -223,38 +223,58 @@ fn add_hyperliquid_live_submit_approval(client: &mut ClientBlock) {
         .expect("test Hyperliquid client should have execution")
         .as_table_mut()
         .expect("test Hyperliquid execution should be a table");
-    execution.insert(
-        "live_submit_approval_id".to_string(),
+    let mut standard_perps = toml::map::Map::new();
+    standard_perps.insert(
+        "approval_id".to_string(),
         toml::Value::String("hl-standard-perps-approval-001".to_string()),
     );
-    execution.insert(
-        "live_submit_approval_artifact_path".to_string(),
+    standard_perps.insert(
+        "approval_artifact_path".to_string(),
         toml::Value::String("operator/hyperliquid-live-submit-approval.json".to_string()),
     );
-    execution.insert(
-        "live_submit_approval_artifact_max_bytes".to_string(),
+    standard_perps.insert(
+        "approval_artifact_max_bytes".to_string(),
         toml::Value::Integer(65536),
     );
-    execution.insert(
-        "live_submit_max_order_count".to_string(),
-        toml::Value::Integer(1),
-    );
-    execution.insert(
-        "live_submit_max_order_notional".to_string(),
+    standard_perps.insert("max_order_count".to_string(), toml::Value::Integer(1));
+    standard_perps.insert(
+        "max_order_notional".to_string(),
         toml::Value::String("10.00".to_string()),
     );
-    execution.insert(
-        "live_submit_product_proof_artifact_path".to_string(),
+    standard_perps.insert(
+        "product_proof_artifact_path".to_string(),
         toml::Value::String("operator/hyperliquid-product-submit-proof.json".to_string()),
     );
-    execution.insert(
-        "live_submit_product_proof_artifact_sha256".to_string(),
+    standard_perps.insert(
+        "product_proof_artifact_sha256".to_string(),
         toml::Value::String("d".repeat(64)),
     );
-    execution.insert(
-        "live_submit_product_proof_artifact_max_bytes".to_string(),
+    standard_perps.insert(
+        "product_proof_artifact_max_bytes".to_string(),
         toml::Value::Integer(65536),
     );
+    let mut live_submit = toml::map::Map::new();
+    live_submit.insert(
+        "standard_perps".to_string(),
+        toml::Value::Table(standard_perps),
+    );
+    execution.insert("live_submit".to_string(), toml::Value::Table(live_submit));
+}
+
+fn hyperliquid_standard_perps_live_submit_mut(
+    client: &mut ClientBlock,
+) -> &mut toml::map::Map<String, toml::Value> {
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .get_mut("live_submit")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|live_submit| live_submit.get_mut("standard_perps"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("test Hyperliquid live_submit.standard_perps should be a table")
 }
 
 fn set_hyperliquid_base_url_http(client: &mut ClientBlock, url: String) {
@@ -676,7 +696,8 @@ fn provider_binding_accepts_hyperliquid_live_submit_when_official_user_fees_weig
 }
 
 #[test]
-fn provider_binding_rejects_hyperliquid_live_submit_with_multiple_product_surfaces() {
+fn provider_binding_accepts_surface_scoped_hyperliquid_live_submit_with_multiple_product_surfaces()
+{
     let mut client = hyperliquid_execution_client(
         "/bolt/hyperliquid/master_api_wallet/private_key",
         "/bolt/hyperliquid/master_api_wallet/account_address",
@@ -696,13 +717,9 @@ fn provider_binding_rejects_hyperliquid_live_submit_with_multiple_product_surfac
             ]),
         );
 
-    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
-
-    assert!(
-        rendered.contains(
-            "clients.hyperliquid_perps.execution.product_surfaces must select exactly one Hyperliquid product surface when live_submit_approval_id is configured"
-        ),
-        "multi-surface live-submit config must fail validation before mapping: {rendered}"
+    assert_eq!(
+        validate_client_block("hyperliquid_perps", &client),
+        Vec::<String>::new()
     );
 }
 
@@ -863,21 +880,15 @@ fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runt
         "/bolt/hyperliquid/master_api_wallet/account_address",
     );
     add_hyperliquid_live_submit_approval(&mut client);
-    client
-        .execution
-        .as_mut()
-        .expect("test Hyperliquid client should have execution")
-        .as_table_mut()
-        .expect("test Hyperliquid execution should be a table")
-        .insert(
-            "live_submit_approval_artifact_path".to_string(),
-            toml::Value::String(
-                approval_path
-                    .to_str()
-                    .expect("approval path should be utf-8")
-                    .to_string(),
-            ),
-        );
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
     loaded
         .root
         .clients
@@ -908,6 +919,7 @@ fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runt
                 .get("hyperliquid_perps")
                 .expect("test client should exist"),
             resolved: &resolved,
+            product_surface: Some("standard_perps"),
             now_unix_seconds,
             build_head_sha: &build_head_sha,
         },
@@ -1005,16 +1017,10 @@ fn provider_binding_preflights_hyperliquid_live_submit_arming_without_consuming_
         "/bolt/hyperliquid/master_api_wallet/account_address",
     );
     add_hyperliquid_live_submit_approval(&mut client);
-    client
-        .execution
-        .as_mut()
-        .expect("test Hyperliquid client should have execution")
-        .as_table_mut()
-        .expect("test Hyperliquid execution should be a table")
-        .insert(
-            "live_submit_product_proof_artifact_sha256".to_string(),
-            toml::Value::String(product_written.sha256),
-        );
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "product_proof_artifact_sha256".to_string(),
+        toml::Value::String(product_written.sha256),
+    );
     loaded
         .root
         .clients
@@ -1031,6 +1037,7 @@ fn provider_binding_preflights_hyperliquid_live_submit_arming_without_consuming_
             .get("hyperliquid_perps")
             .expect("test client should exist"),
         resolved: &resolved,
+        product_surface: Some("standard_perps"),
         now_unix_seconds,
         build_head_sha: &build_head_sha,
     };
@@ -1106,6 +1113,7 @@ fn provider_binding_preflight_rejects_missing_product_submit_proof_without_consu
             .get("hyperliquid_perps")
             .expect("test client should exist"),
         resolved: &resolved,
+        product_surface: Some("standard_perps"),
         now_unix_seconds,
         build_head_sha: &build_head_sha,
     };

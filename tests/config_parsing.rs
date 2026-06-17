@@ -8921,15 +8921,87 @@ fn root_config_wires_single_hyperliquid_execution_client_for_all_surfaces() {
             .and_then(toml::Value::as_integer),
         Some(30)
     );
-    for absent in [
-        stringify!(live_submit_approval_id),
-        stringify!(live_submit_approval_artifact_path),
-        stringify!(live_submit_product_proof_artifact_path),
-        stringify!(live_submit_product_proof_artifact_sha256),
+    let live_submit = execution
+        .get(stringify!(live_submit))
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_execution must declare per-surface live-submit gates");
+    for (surface, approval_id, approval_artifact_path, product_proof_artifact_path) in [
+        (
+            "standard_perps",
+            "hl-standard-perps-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json",
+        ),
+        (
+            "spot",
+            "hl-spot-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json",
+        ),
+        (
+            "hip3_builder_perps",
+            "hl-hip3-builder-perps-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json",
+        ),
+        (
+            "hip4_outcomes",
+            "hl-hip4-outcomes-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json",
+        ),
     ] {
-        assert!(
-            !execution.contains_key(absent),
-            "hyperliquid_execution must stay unarmed until a per-surface approval design lands; found {absent}"
+        let surface_config = live_submit
+            .get(surface)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("live_submit.{surface} must be configured"));
+        assert_eq!(
+            surface_config
+                .get(stringify!(approval_id))
+                .and_then(toml::Value::as_str),
+            Some(approval_id)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(approval_artifact_path))
+                .and_then(toml::Value::as_str),
+            Some(approval_artifact_path)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(approval_artifact_max_bytes))
+                .and_then(toml::Value::as_integer),
+            Some(65536)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(max_order_count))
+                .and_then(toml::Value::as_integer),
+            Some(1)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(max_order_notional))
+                .and_then(toml::Value::as_str),
+            Some("10.00")
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(product_proof_artifact_path))
+                .and_then(toml::Value::as_str),
+            Some(product_proof_artifact_path)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(product_proof_artifact_sha256))
+                .and_then(toml::Value::as_str),
+            Some("0000000000000000000000000000000000000000000000000000000000000000")
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(product_proof_artifact_max_bytes))
+                .and_then(toml::Value::as_integer),
+            Some(65536)
         );
     }
 

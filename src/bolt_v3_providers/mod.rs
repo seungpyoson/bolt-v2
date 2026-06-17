@@ -128,6 +128,7 @@ pub struct ProviderLiveSubmitApprovalContext<'a> {
     pub client_key: &'a str,
     pub client: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
+    pub product_surface: Option<&'a str>,
     pub now_unix_seconds: u64,
     pub build_head_sha: &'a str,
 }

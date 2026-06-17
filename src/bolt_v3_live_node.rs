@@ -9101,6 +9101,127 @@ configured_source_param = "configured-value"
     }
 
     #[test]
+    fn trade_transport_subscribed_retains_union_of_enabled_rv_sources_across_surfaces() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded
+            .root
+            .clients
+            .insert("rv_union_a".to_string(), test_data_client("OKX"));
+        loaded
+            .root
+            .clients
+            .insert("rv_union_b".to_string(), test_data_client("OKX"));
+        insert_test_rv_surface(
+            &mut loaded,
+            "union_rv_surface_a",
+            vec![test_rv_source(
+                "union_midpoint_a",
+                "rv_union_a",
+                "CONFIGURED_ASSET-USDT-UNION-A.OKX",
+                true,
+            )],
+        );
+        insert_test_rv_surface(
+            &mut loaded,
+            "union_rv_surface_b",
+            vec![test_rv_source(
+                "union_midpoint_b",
+                "rv_union_b",
+                "CONFIGURED_ASSET-USDT-UNION-B.OKX",
+                true,
+            )],
+        );
+
+        let scoped =
+            trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
+                .expect("trade transport should retain every enabled RV source client");
+
+        assert!(scoped.root.clients.contains_key("rv_union_a"));
+        assert!(scoped.root.clients.contains_key("rv_union_b"));
+    }
+
+    #[test]
+    fn trade_transport_subscribed_dedupes_duplicate_rv_source_clients() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded
+            .root
+            .clients
+            .insert("shared_rv_data".to_string(), test_data_client("OKX"));
+        insert_test_rv_surface(
+            &mut loaded,
+            "shared_rv_surface_a",
+            vec![test_rv_source(
+                "shared_midpoint_a",
+                "shared_rv_data",
+                "CONFIGURED_ASSET-USDT-SHARED-A.OKX",
+                true,
+            )],
+        );
+        insert_test_rv_surface(
+            &mut loaded,
+            "shared_rv_surface_b",
+            vec![test_rv_source(
+                "shared_midpoint_b",
+                "shared_rv_data",
+                "CONFIGURED_ASSET-USDT-SHARED-B.OKX",
+                true,
+            )],
+        );
+
+        let keys =
+            trade_transport_client_keys(&loaded, RealizedVolatilityTransportScope::Subscribed)
+                .expect("duplicate RV source clients should still produce transport keys");
+
+        assert_eq!(
+            keys.iter()
+                .filter(|client_key| client_key.as_str() == "shared_rv_data")
+                .count(),
+            1,
+            "RV source client retention must be a set across surfaces"
+        );
+    }
+
+    #[test]
+    fn trade_transport_subscribed_retains_enabled_unsupported_kind_rv_sources() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded
+            .root
+            .clients
+            .insert("mark_rv_data".to_string(), test_data_client("OKX"));
+        let mut mark_source = test_rv_source(
+            "mark_midpoint",
+            "mark_rv_data",
+            "CONFIGURED_ASSET-USDT-MARK.OKX",
+            true,
+        );
+        mark_source.source_class = RealizedVolatilitySourceClassBlock::Mark;
+        mark_source.sample_kind = RealizedVolatilitySampleKindBlock::Mark;
+        insert_test_rv_surface(&mut loaded, "mark_rv_surface", vec![mark_source]);
+
+        let scoped = trade_transport_loaded_config(
+            &loaded,
+            RealizedVolatilityTransportScope::Subscribed,
+        )
+        .expect(
+            "transport retention must over-retain enabled RV sources before runtime validation",
+        );
+
+        assert!(
+            scoped.root.clients.contains_key("mark_rv_data"),
+            "transport retention must include every enabled RV source client, even if later validation rejects the source kind"
+        );
+    }
+
+    #[test]
     fn trade_transport_subscribed_excludes_disabled_rv_sources() {
         let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
             "tests/fixtures/bolt_v3/root.toml",

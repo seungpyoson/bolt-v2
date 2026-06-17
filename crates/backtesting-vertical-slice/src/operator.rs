@@ -105,6 +105,9 @@ pub const ACCEPTED_SOURCE_PROOF_FILE: &str = "accepted-source-proof.json";
 /// Published-catalog `BacktestNode` proof artifact filename.
 pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
 
+const OPERATOR_ATTESTED_REDACTED: &str = "operator-attested-redacted";
+const OPERATOR_ATTESTED_ELAPSED_TIME_SECS: f64 = 0.0;
+
 /// Config-driven dataset facts for one operator run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -482,7 +485,7 @@ fn portable_artifact_uris(manifest: &BacktestingRunManifest) -> ResultArtifactUr
 }
 
 fn redact_operator_contract(output: &mut BacktestRunOutput, local_catalog_root: &Path) {
-    output.contract.nt_result.machine_id = "operator-attested-redacted".to_string();
+    stabilize_operator_contract_nt_result(&mut output.contract);
     let local_catalog_root = local_catalog_root.to_string_lossy();
     if !local_catalog_root.is_empty() {
         let portable_catalog_uri = output.contract.artifact_uris.nt_catalog_uri.clone();
@@ -492,6 +495,12 @@ fn redact_operator_contract(output: &mut BacktestRunOutput, local_catalog_root: 
             &portable_catalog_uri,
         );
     }
+}
+
+fn stabilize_operator_contract_nt_result(contract: &mut BacktestResultContract) {
+    contract.nt_result.machine_id = OPERATOR_ATTESTED_REDACTED.to_string();
+    contract.nt_result.instance_id = OPERATOR_ATTESTED_REDACTED.to_string();
+    contract.nt_result.elapsed_time_secs = OPERATOR_ATTESTED_ELAPSED_TIME_SECS;
 }
 
 fn replace_contract_claim_limit_uri(
@@ -2336,7 +2345,7 @@ fn redact_multi_operator_contract(
     manifest: &BacktestingRunManifest,
     planned: &[PlannedTable],
 ) {
-    contract.nt_result.machine_id = "operator-attested-redacted".to_string();
+    stabilize_operator_contract_nt_result(contract);
     for table in planned {
         let local = table.subroot.to_string_lossy();
         if local.is_empty() {
@@ -3908,7 +3917,12 @@ mod tests {
 
         let contract_json = fs::read_to_string(&artifacts.contract_path).unwrap();
         let parsed: BacktestResultContract = serde_json::from_str(&contract_json).unwrap();
-        assert_eq!(parsed.nt_result.machine_id, "operator-attested-redacted");
+        assert_eq!(parsed.nt_result.machine_id, OPERATOR_ATTESTED_REDACTED);
+        assert_eq!(parsed.nt_result.instance_id, OPERATOR_ATTESTED_REDACTED);
+        assert_eq!(
+            parsed.nt_result.elapsed_time_secs,
+            OPERATOR_ATTESTED_ELAPSED_TIME_SECS
+        );
         for uri in [
             &parsed.artifact_uris.source_proof_uri,
             &parsed.artifact_uris.canonical_table_uri,

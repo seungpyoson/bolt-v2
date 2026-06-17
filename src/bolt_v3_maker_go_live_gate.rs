@@ -125,7 +125,7 @@ impl MakerBacktestGateBlocker {
         match self {
             Self::VerdictNotPass => "must be `pass` before maker go-live",
             Self::MissingBuildHeadSha => {
-                "must supply the lowercase Git head SHA for the maker build replayed by the backtest"
+                "must match this binary's lowercase Git head SHA for the maker build replayed by the backtest"
             }
             Self::MissingStrategyConfigHash => {
                 "must supply the lowercase SHA-256 strategy config hash replayed by the backtest"

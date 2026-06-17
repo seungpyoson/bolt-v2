@@ -8269,10 +8269,10 @@ classification = "git_head_sha_shape_bound"
 reason = "This validates lowercase git commit SHA shape for build/head binding."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"BOLT_V3_BUILD_HEAD_SHA"'''
-context = '''option_env!("BOLT_V3_BUILD_HEAD_SHA")'''
+context = '''option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_lowercase_git_sha(value))'''
 classification = "build_head_env_name"
 reason = "This is a compile-time Cargo environment variable emitted by build.rs to bind the binary to the built source head."
 

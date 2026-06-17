@@ -14,7 +14,7 @@
 //! resolved error type carries client key, secret-config field, and SSM
 //! field context, but never the resolved secret value or raw SSM path itself.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map::Entry};
 
 use zeroize::Zeroizing;
 
@@ -276,10 +276,14 @@ where
                     });
                 }
             }
-            exclusive_signer_owners
-                .entry(owner_key)
-                .or_default()
-                .push(client_key.clone());
+            match exclusive_signer_owners.entry(owner_key) {
+                Entry::Occupied(mut entry) => {
+                    entry.get_mut().push(client_key.clone());
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(vec![client_key.clone()]);
+                }
+            }
         }
         clients.insert(client_key.clone(), resolved);
     }

@@ -1394,7 +1394,10 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         persisted_projection.manifest_sha256
     );
     assert_eq!(
-        artifacts.output.conversion_catalog_metadata.execution_catalog_uri,
+        artifacts
+            .output
+            .conversion_catalog_metadata
+            .execution_catalog_uri,
         expected_catalog_root,
         "artifact-store path must rewrite catalog metadata to the durable catalog root"
     );
@@ -1419,8 +1422,7 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     )
     .expect("catalog metadata parses");
     assert_eq!(
-        persisted_metadata,
-        artifacts.output.conversion_catalog_metadata,
+        persisted_metadata, artifacts.output.conversion_catalog_metadata,
         "catalog-metadata.json must be rewritten with durable execution access"
     );
     assert_eq!(

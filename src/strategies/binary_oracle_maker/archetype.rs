@@ -31,7 +31,7 @@ use nautilus_model::identifiers::StrategyId;
 
 use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
 use crate::bolt_v3_maker_go_live_gate::{
-    MakerBacktestGateEvidence, MakerBacktestVerdict, maker_backtest_gate_blockers,
+    MakerBacktestEvidence, MakerBacktestVerdict, maker_backtest_gate_blockers,
 };
 use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
@@ -120,8 +120,8 @@ enum BacktestVerdictParameter {
 }
 
 impl BacktestParametersBlock {
-    fn evidence(&self) -> MakerBacktestGateEvidence {
-        MakerBacktestGateEvidence {
+    fn evidence(&self) -> MakerBacktestEvidence {
+        MakerBacktestEvidence {
             verdict: match self.verdict {
                 BacktestVerdictParameter::Pass => MakerBacktestVerdict::Pass,
                 BacktestVerdictParameter::Fail => MakerBacktestVerdict::Fail,

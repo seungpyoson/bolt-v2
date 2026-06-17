@@ -2093,7 +2093,6 @@ mod tests {
     const ISSUE_789_DOWN_TOKEN: &str =
         "39327110184724906690545821148183414832224062782460969169826610548819991310639";
     const ISSUE_789_MARKET_SLUG: &str = "btc-updown-5m-1776816000";
-    const ISSUE_789_PRICE_TO_BEAT: &str = "76350.167293";
 
     #[test]
     fn issue_789_first_real_free_data_taker_pl() -> Result<()> {
@@ -2188,7 +2187,7 @@ mod tests {
                 .context("write PMXT Down catalog")?;
 
         let chainlink_catalog = tempdir.path().join("chainlink_price_to_beat");
-        let chainlink_table = reconstructed_chainlink_price_to_beat_table();
+        let chainlink_table = reconstructed_chainlink_price_to_beat_table(&okx_quotes)?;
         let chainlink_projection = project_canonical_index_to_catalog(
             &chainlink_table,
             &spot_spec(
@@ -2570,13 +2569,7 @@ mod tests {
   "enableOrderBook": true,
   "orderPriceMinTickSize": 0.001,
   "orderMinSize": 5,
-  "slug": "{slug}",
-  "feeSchedule": {{
-    "exponent": 1,
-    "rate": 0.07,
-    "takerOnly": true,
-    "rebateRate": 0.2
-  }}
+  "slug": "{slug}"
 }}]"#,
             condition = ISSUE_789_CONDITION_ID,
             up = ISSUE_789_UP_TOKEN,
@@ -2586,14 +2579,43 @@ mod tests {
         .context("parse issue #789 Gamma market metadata")
     }
 
-    fn reconstructed_chainlink_price_to_beat_table() -> CanonicalIndexPricesTable {
+    fn reconstructed_chainlink_price_to_beat_table(
+        okx_quotes: &CanonicalQuotesTable,
+    ) -> Result<CanonicalIndexPricesTable> {
+        // The price-to-beat (resolution strike) is the underlying price at the
+        // market's interval open, fixed for the interval. Reconstruct it from
+        // the real OKX BBO midpoint at the earliest in-window sample — never a
+        // hardcoded literal. Mirrors `reconstructed_reference_rows_from_okx`.
+        let open_quote = okx_quotes
+            .rows
+            .iter()
+            .filter(|row| {
+                u64::try_from(row.event_time / 1_000_000)
+                    .map(|ms| (ISSUE_789_START_MS..ISSUE_789_END_MS).contains(&ms))
+                    .unwrap_or(false)
+            })
+            .min_by_key(|row| row.event_time)
+            .context("OKX fixture carries no quote at the issue #789 interval open")?;
+        let open_bid = open_quote
+            .bid
+            .parse::<Decimal>()
+            .context("parse OKX interval-open bid")?;
+        let open_ask = open_quote
+            .ask
+            .parse::<Decimal>()
+            .context("parse OKX interval-open ask")?;
+        let price_to_beat = ((open_bid + open_ask) / Decimal::from(2))
+            .normalize()
+            .to_string();
         let rows = (0..20)
             .map(|second| {
                 let ts = ISSUE_789_START_NS + i64::from(second) * 1_000_000_000;
                 CanonicalIndexPriceRow {
                     schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
                     ingest_run_id: "issue-789-first-real-pl".to_string(),
-                    source_binding: "chainlink-price-to-beat-reconstructed-from-spot".to_string(),
+                    source_binding:
+                        "chainlink-price-to-beat-reconstructed-from-okx-interval-open-bbo"
+                            .to_string(),
                     venue: "CHAINLINK".to_string(),
                     product_family: "index".to_string(),
                     product_category: "price_to_beat".to_string(),
@@ -2607,15 +2629,13 @@ mod tests {
                     source_sequence: Some(format!("issue-789-reconstructed-strike-{second}")),
                     raw_payload_id: "issue-789-chainlink-reconstruction".to_string(),
                     source_proof_id: "issue-789-chainlink-reconstructed-strike".to_string(),
-                    payload_hash: sha256_hex(
-                        format!("{}-{second}", ISSUE_789_PRICE_TO_BEAT).as_bytes(),
-                    ),
+                    payload_hash: sha256_hex(format!("{price_to_beat}-{second}").as_bytes()),
                     transform_hash: sha256_hex(b"canonical-chainlink-reconstruction.v1"),
-                    value: ISSUE_789_PRICE_TO_BEAT.to_string(),
+                    value: price_to_beat.clone(),
                 }
             })
             .collect();
-        CanonicalIndexPricesTable {
+        Ok(CanonicalIndexPricesTable {
             schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
             partition: TradesPartition {
                 venue: "CHAINLINK".to_string(),
@@ -2629,9 +2649,9 @@ mod tests {
             fidelity_class: SourceProofFidelityClass::IndexReplay,
             forbidden_claims: vec!["raw_chainlink_data_streams_replay".to_string()],
             transform_hash: sha256_hex(b"canonical-chainlink-reconstruction.v1"),
-            payload_hash: sha256_hex(ISSUE_789_PRICE_TO_BEAT.as_bytes()),
+            payload_hash: sha256_hex(price_to_beat.as_bytes()),
             rows,
-        }
+        })
     }
 
     fn reconstructed_reference_rows_from_okx(

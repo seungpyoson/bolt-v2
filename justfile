@@ -424,6 +424,8 @@ setup:
     set -euo pipefail
     echo "Setting git hooks path..."
     git config core.hooksPath .githooks
+    # Ensure managed hooks are executable (git warns + skips otherwise).
+    chmod +x .githooks/post-merge .githooks/post-checkout .githooks/post-rewrite 2>/dev/null || true
 
     echo "Enabling remote.origin.prune (auto-prune deleted upstreams on fetch)..."
     git config remote.origin.prune true

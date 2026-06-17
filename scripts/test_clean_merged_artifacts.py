@@ -450,30 +450,49 @@ class LaneWTests(unittest.TestCase):
         self.assertFalse(wt_path.exists())
         self.assertNotIn("feat/disc", git(self.work, "branch", "--list"))
 
+    def _setup_merged_worktree_with_tracked_file(
+        self, name: str, tracked_filename: str = "tracked.txt",
+    ) -> tuple[pathlib.Path, pathlib.Path]:
+        """Set up an eligible (ancestor-of-trunk) worktree bound to `name`,
+        with a tracked file already committed on trunk. Returns (wt_path, file_path).
+
+        Used by the hidden-index-bits tests so the guard is the actual refusal
+        point (the branch IS eligible), not branch ineligibility.
+        """
+        # Commit tracked.txt on trunk first so it inherits to the worktree.
+        (self.work / tracked_filename).write_text("v1\n", encoding="utf-8")
+        _run(["git", "add", tracked_filename], cwd=self.work)
+        _run(["git", "commit", "-m", "add tracked"], cwd=self.work)
+        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        # Branch at this HEAD; then advance trunk so branch is an ancestor.
+        _run(["git", "branch", name], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        wt_path = self.tmp / f"wt-{name.replace('/', '-')}"
+        add_worktree(self.work, name, wt_path)
+        return wt_path, wt_path / tracked_filename
+
     def test_assume_unchanged_refused(self) -> None:
-        wt_path = self._setup_merged_worktree_branch("feat/au")
-        # tracked file with assume-unchanged bit
-        (wt_path / "tracked.txt").write_text("v1\n", encoding="utf-8")
-        _run(["git", "add", "tracked.txt"], cwd=wt_path)
-        _run(["git", "commit", "-m", "add tracked"], cwd=wt_path)
-        (wt_path / "tracked.txt").write_text("modified-but-hidden\n", encoding="utf-8")
-        _run(["git", "update-index", "--assume-unchanged", "tracked.txt"], cwd=wt_path)
+        wt_path, tracked = self._setup_merged_worktree_with_tracked_file("feat/au")
+        # Modify the tracked file in the worktree, then hide the modification.
+        tracked.write_text("modified-but-hidden\n", encoding="utf-8")
+        _run(["git", "update-index", "--assume-unchanged", tracked.name], cwd=wt_path)
         rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
         self.assertEqual(rc, 0)
-        # refused: still present
+        # refused: worktree + branch still present
         self.assertTrue(wt_path.exists())
         self.assertIn("feat/au", git(self.work, "branch", "--list"))
+        # And specifically refused for the hidden-bits reason (not dirty/other):
+        # git status --porcelain would be empty (the bit hides the modification),
+        # so without the guard the worktree would have been removed.
 
     def test_skip_worktree_refused(self) -> None:
-        wt_path = self._setup_merged_worktree_branch("feat/sw")
-        (wt_path / "tracked.txt").write_text("v1\n", encoding="utf-8")
-        _run(["git", "add", "tracked.txt"], cwd=wt_path)
-        _run(["git", "commit", "-m", "add tracked"], cwd=wt_path)
-        (wt_path / "tracked.txt").write_text("hidden\n", encoding="utf-8")
-        _run(["git", "update-index", "--skip-worktree", "tracked.txt"], cwd=wt_path)
+        wt_path, tracked = self._setup_merged_worktree_with_tracked_file("feat/sw")
+        tracked.write_text("hidden\n", encoding="utf-8")
+        _run(["git", "update-index", "--skip-worktree", tracked.name], cwd=wt_path)
         rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
         self.assertEqual(rc, 0)
-        self.assertTrue(wt_path.exists())
+        self.assertTrue(wt_path.exists(),
+                        "skip-worktree (uppercase S in ls-files -v) must block removal")
         self.assertIn("feat/sw", git(self.work, "branch", "--list"))
 
     def test_dirty_worktree_refused(self) -> None:
@@ -631,7 +650,20 @@ class FallbackTomlParserTests(unittest.TestCase):
 
     def test_rejects_invalid_value(self) -> None:
         with self.assertRaises(ValueError):
-            cm._parse_toml_flat("key = [1, 2, 3]\n")
+            # datetime / unsupported bare value
+            cm._parse_toml_flat("key = 2024-01-01\n")
+
+    def test_parses_arrays_and_inline_hash_in_strings(self) -> None:
+        # Round-4 P2: arrays of strings + '#' inside quoted strings.
+        text = (
+            'keep = ["branch-a", "branch-b"]\n'
+            'note = "see # here for details"\n'
+            'trunk_branch = "main"  # configured trunk\n'
+        )
+        data = cm._parse_toml_flat(text)
+        self.assertEqual(data["keep"], ["branch-a", "branch-b"])
+        self.assertEqual(data["note"], "see # here for details")
+        self.assertEqual(data["trunk_branch"], "main")
 
 
 # ---------------------------------------------------------------------------

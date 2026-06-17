@@ -12,9 +12,10 @@ Three execution lanes split by trust/speed profile:
     worktree-bound branches (those flow to Lane W).
 - Lane W (worktree, explicit):
     Owns worktree-bound branches end-to-end BEFORE the ref is deleted.
-    `git worktree move` to quarantine (atomic), then `git branch -D`.
-    Fail-closed on ignored content, assume-unchanged/skip-worktree bits,
-    nested `.git`.
+    tar + verify + `git worktree remove`, then CAS `update-ref -d` with the
+    re-read tip. Fail-closed on ignored content, assume-unchanged/skip-worktree
+    bits (BOTH lowercase ls-files -v flags AND uppercase `S`), nested `.git`,
+    dirty. Re-validates hidden-bits + ignored at the TOCTOU point too.
 
 See docs/ops/clean-merged-design.md for the full design and accepted risks.
 Config lives in config/clean-merged.toml (single source of truth).
@@ -62,11 +63,6 @@ def _parse_toml_flat(text: str) -> dict[str, Any]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        # strip inline comment (naive — our config has no # inside strings)
-        if "#" in line:
-            line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
         if line.startswith("[") and line.endswith("]"):
             section = line[1:-1].strip()
             parts = section.split(".")
@@ -83,6 +79,22 @@ def _parse_toml_flat(text: str) -> dict[str, Any]:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
+        # Strip inline comments OUTSIDE quoted strings (round-4 P2 by Kimi/GPT:
+        # a # inside "foo # bar" was corrupting the value).
+        if value and value[0] in "\"'":
+            quote = value[0]
+            end = value.find(quote, 1)
+            if end == -1:
+                raise ValueError(f"unterminated string: {raw_line!r}")
+            # Keep the quoted token; trailing data must be a comment or whitespace.
+            value = value[: end + 1]
+        else:
+            # Bare value: cut at the first '#' that's a comment start.
+            hash_idx = value.find("#")
+            if hash_idx != -1:
+                value = value[:hash_idx].strip()
+                if not value:
+                    continue
         parsed: Any
         if value == "true":
             parsed = True
@@ -92,6 +104,27 @@ def _parse_toml_flat(text: str) -> dict[str, Any]:
             parsed = value[1:-1]
         elif value.startswith("'") and value.endswith("'"):
             parsed = value[1:-1]
+        elif value.startswith("[") and value.endswith("]"):
+            # array of scalars (round-4 P2: future-proofs against `key = ["a", "b"]`).
+            inner = value[1:-1].strip()
+            if not inner:
+                parsed = []
+            else:
+                items: list[Any] = []
+                for raw_item in inner.split(","):
+                    item = raw_item.strip()
+                    if (item.startswith('"') and item.endswith('"')) or \
+                       (item.startswith("'") and item.endswith("'")):
+                        items.append(item[1:-1])
+                    else:
+                        try:
+                            items.append(int(item))
+                        except ValueError:
+                            try:
+                                items.append(float(item))
+                            except ValueError:
+                                raise ValueError(f"unsupported TOML array item: {item!r}")
+                parsed = items
         else:
             try:
                 parsed = int(value)
@@ -129,7 +162,6 @@ class ConfigError(CleanMergedError):
 class LaneRConfig:
     gh_timeout_s: float
     cache_ttl_s: float
-    hook_spawn_detached: bool
 
 
 @dataclasses.dataclass(frozen=True)
@@ -159,7 +191,6 @@ class Config:
     enabled: bool
     trunk_branch: str
     remote_name: str
-    hook_detach: bool
     lane_r: LaneRConfig
     lane_w: LaneWConfig
     logging: LoggingConfig
@@ -204,8 +235,12 @@ def _resolve_origin_owner(repo_root: pathlib.Path, remote_name: str) -> str | No
     if out.returncode != 0:
         return None
     url = out.stdout.strip()
-    # SSH: git@github.com:owner/repo.git
+    # SSH scp-style: git@github.com:owner/repo.git
     m = re.match(r"git@[^:]+:([^/]+)/([^/]+?)(?:\.git)?$", url)
+    if m:
+        return m.group(1)
+    # ssh:// or git+ssh://: ssh://git@github.com/owner/repo(.git)?
+    m = re.match(r"(?:git\+)?ssh://(?:[^@]+@)?[^/]+/([^/]+)/([^/]+?)(?:\.git)?$", url)
     if m:
         return m.group(1)
     # HTTPS: https://github.com/owner/repo(.git)?
@@ -253,12 +288,10 @@ def load_config(repo_root: pathlib.Path) -> Config:
     enabled = bool(_get_nested(data, "clean-merged.enabled", True))
     trunk_branch = str(_get_nested(data, "clean-merged.trunk_branch", "main"))
     remote_name = str(_get_nested(data, "clean-merged.remote_name", "origin"))
-    hook_detach = bool(_get_nested(data, "clean-merged.hook_detach", False))
 
     lane_r = LaneRConfig(
         gh_timeout_s=float(_get_nested(data, "clean-merged.lane_r.gh_timeout_s", 5.0)),
         cache_ttl_s=float(_get_nested(data, "clean-merged.lane_r.cache_ttl_s", 300.0)),
-        hook_spawn_detached=bool(_get_nested(data, "clean-merged.lane_r.hook_spawn_detached", True)),
     )
     lane_w = LaneWConfig(
         quarantine_dir=str(_get_nested(data, "clean-merged.lane_w.quarantine_dir",
@@ -284,7 +317,7 @@ def load_config(repo_root: pathlib.Path) -> Config:
 
     return Config(
         enabled=enabled, trunk_branch=trunk_branch, remote_name=remote_name,
-        hook_detach=hook_detach, lane_r=lane_r, lane_w=lane_w,
+        lane_r=lane_r, lane_w=lane_w,
         logging=logging_cfg, backups=backups, origin_owner=origin_owner,
     )
 
@@ -411,15 +444,42 @@ def write_backup_ref(repo_root: pathlib.Path, branch: str, tip: str) -> str:
     return ref
 
 
-def delete_branch_with_d(repo_root: pathlib.Path, branch: str) -> tuple[bool, str]:
-    """Lane H: `git branch -d`. Refuses if not merged (free safety guard)."""
-    out = _git(repo_root, ["branch", "-d", branch], check=False)
+def delete_branch_with_d(repo_root: pathlib.Path, branch: str, expected_sha: str) -> tuple[bool, str]:
+    """Lane H/R: CAS delete via `git update-ref -d refs/heads/<branch> <expected_sha>`.
+
+    We do NOT use `git branch -d` because its merged-ness check is against HEAD
+    or the branch's upstream — not the trunk we already verified ancestor-against.
+    When Lane H runs from a hook while HEAD is on a feature branch (or behind
+    trunk), `branch -d` may refuse eligible branches (Claude/GPT round-4 P1-2).
+    The is_ancestor(<B>, <trunk>) check above already proved merged-ness; CAS
+    deletes exactly that tip and refuses on SHA drift.
+    """
+    out = _git(repo_root, ["update-ref", "-d", f"refs/heads/{branch}", expected_sha],
+               check=False)
     return out.returncode == 0, out.stderr.strip()
 
 
 def delete_branch_with_force(repo_root: pathlib.Path, branch: str) -> tuple[bool, str]:
-    """Lane W post-move: `git branch -D` after explicit eligibility verification."""
+    """Lane W post-move (legacy): `git branch -D` after explicit eligibility verification.
+
+    Prefer delete_branch_with_force_cas (CAS) for new code paths — it refuses
+    on SHA drift, defending against the round-4 P0 where a commit lands in the
+    worktree between list_worktrees() and branch deletion.
+    """
     out = _git(repo_root, ["branch", "-D", branch], check=False)
+    return out.returncode == 0, out.stderr.strip()
+
+
+def delete_branch_with_force_cas(repo_root: pathlib.Path, branch: str,
+                                  expected_sha: str) -> tuple[bool, str]:
+    """Lane W post-remove: CAS delete via `git update-ref -d <ref> <verified_sha>`.
+
+    Used after the worktree is gone and we've just re-read the branch tip.
+    Refuses on SHA drift, defending against a commit landing in the worktree
+    between list_worktrees() and now (round-4 P0 by Kimi/GPT).
+    """
+    out = _git(repo_root, ["update-ref", "-d", f"refs/heads/{branch}", expected_sha],
+               check=False)
     return out.returncode == 0, out.stderr.strip()
 
 
@@ -441,10 +501,17 @@ def _resolve_path(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
 
 
 def _acquire_lock(lock_path: pathlib.Path, exclusive: bool = True) -> int | None:
+    """Acquire fcntl.flock on lock_path. Returns fd, or None if it would block.
+
+    Round-4 P2 (Claude): the exclusive case previously had no LOCK_NB, so it
+    blocked indefinitely (the "another instance holds the lock; aborting"
+    branch was dead code). Now non-blocking in both modes.
+    """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH | fcntl.LOCK_NB)
+        flags = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
+        fcntl.flock(fd, flags)
     except BlockingIOError:
         os.close(fd)
         return None
@@ -508,8 +575,16 @@ def _load_gh_cache(path: pathlib.Path) -> dict[str, Any]:
 
 
 def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any]) -> None:
+    """Atomic write via tmp + os.replace (round-4 P2 by Kimi/Grok/GPT).
+
+    Concurrent detached Lane R processes RMW the cache; non-atomic
+    path.write_text() can interleave/truncate. Atomic rename makes the worst
+    case a lost update (one writer wins), never corruption.
+    """
     try:
-        path.write_text(json.dumps(cache), encoding="utf-8")
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(json.dumps(cache), encoding="utf-8")
+        os.replace(str(tmp), str(path))
     except OSError:
         pass
 
@@ -565,14 +640,22 @@ def gh_merged_pr_for_branch_cached(
 def find_matching_merged_pr(
     prs: list[dict[str, Any]], tip: str, trunk: str, origin_owner: str | None,
 ) -> dict[str, Any] | None:
-    """Return the PR whose headRefOid == tip AND baseRefName == trunk AND same-repo."""
+    """Return the PR whose headRefOid == tip AND baseRefName == trunk AND same-repo.
+
+    Round-4 P2 (Claude P2-E): when resolve_trunk_sha falls back master↔main,
+    the config.trunk_branch name no longer matches the actual trunk. Accept
+    either name in the baseRefName filter so the fallback doesn't silently
+    suppress all matches.
+    """
+    fallback_trunk = "master" if trunk == "main" else "main"
+    acceptable_bases = {trunk, fallback_trunk}
     for pr in prs:
         head_oid = pr.get("headRefOid")
         if not isinstance(head_oid, str) or not SHA_RE.match(head_oid):
             continue
         if head_oid != tip:
             continue
-        if pr.get("baseRefName") != trunk:
+        if pr.get("baseRefName") not in acceptable_bases:
             continue
         if pr.get("isCrossRepository"):
             continue
@@ -590,7 +673,18 @@ def find_matching_merged_pr(
 
 
 def has_hidden_index_bits(wt_path: pathlib.Path) -> list[str]:
-    """Return paths with assume-unchanged/skip-worktree bits (lowercase flag in ls-files -v)."""
+    """Return paths with assume-unchanged/skip-worktree bits.
+
+    `git ls-files -v` uses lowercase letters for assume-unchanged (e.g. `h`
+    instead of `H` for cached) and UPPERCASE `S` for skip-worktree. Both bits
+    hide modifications from `git status --porcelain`, so both must be detected
+    or Lane W will archive+remove worktrees with hidden dirty state.
+
+    Per `git help ls-files`: identified flags are c/m/k/? for various states,
+    H for cached; the lowercase variant means assume-unchanged is set; the
+    dedicated skip-worktree marker is uppercase S. We flag any line whose
+    first char is a lowercase alpha (assume-unchanged) OR an uppercase S.
+    """
     out = subprocess.run(
         ["git", "-C", str(wt_path), "ls-files", "-v"],
         capture_output=True, text=True, check=True,
@@ -600,8 +694,9 @@ def has_hidden_index_bits(wt_path: pathlib.Path) -> list[str]:
         if not line:
             continue
         flag = line[0]
-        # lowercase letters = assume-unchanged or skip-worktree bit set on a tracked file
-        if flag.islower() and flag.isalpha():
+        # lowercase alpha = assume-unchanged bit on a tracked file
+        # uppercase 'S' = skip-worktree bit on a tracked file
+        if (flag.islower() and flag.isalpha()) or flag == "S":
             flagged.append(line[2:].strip())
     return flagged
 
@@ -682,13 +777,31 @@ def run_lane_h(
         if not is_ancestor(repo_root, br.sha, trunk_sha):
             continue
         if apply:
-            backup = write_backup_ref(repo_root, br.name, br.sha)
-            ok, err = delete_branch_with_d(repo_root, br.name)
-            action = "deleted" if ok else "delete-refused"
+            # Re-read tip immediately before delete in case the branch moved
+            # between list_local_branches() above and now. CAS refuses on drift.
+            fresh_tip = _git(repo_root, ["rev-parse", br.name], check=False).stdout.strip()
+            if not fresh_tip or not SHA_RE.match(fresh_tip):
+                continue
+            if fresh_tip != br.sha:
+                records.append({"lane": "H", "branch": br.name, "tip_sha": br.sha,
+                                "action": "skipped-tip-moved",
+                                "reason": f"tip drifted {br.sha[:12]} -> {fresh_tip[:12]}"})
+                continue
+            # Re-verify worktree binding (round-4 P0): a worktree may have been
+            # bound to this branch between function entry and the CAS delete.
+            fresh_bound = worktree_bound_branches(repo_root)
+            if br.name in fresh_bound:
+                records.append({"lane": "H", "branch": br.name, "tip_sha": br.sha,
+                                "action": "skipped-worktree-bound-toctou",
+                                "reason": "branch became worktree-bound after eligibility check"})
+                continue
+            backup = write_backup_ref(repo_root, br.name, fresh_tip)
+            ok, err = delete_branch_with_d(repo_root, br.name, fresh_tip)
+            action = "deleted" if ok else "delete-cas-refused"
             reason = "" if ok else err
-            records.append({"lane": "H", "branch": br.name, "tip_sha": br.sha,
+            records.append({"lane": "H", "branch": br.name, "tip_sha": fresh_tip,
                             "action": action, "reason": reason, "backup_ref": backup,
-                            "recovery_hint": {"type": "ref", "ref": backup, "sha": br.sha}})
+                            "recovery_hint": {"type": "ref", "ref": backup, "sha": fresh_tip}})
         else:
             records.append({"lane": "H", "branch": br.name, "tip_sha": br.sha,
                             "action": "would-delete", "reason": "ancestor of trunk"})
@@ -730,12 +843,26 @@ def run_lane_r(
         # ancestor path (Lane H may have skipped due to no hook fired yet)
         if is_ancestor(repo_root, br.sha, trunk_sha):
             if apply:
-                backup = write_backup_ref(repo_root, br.name, br.sha)
-                ok, err = delete_branch_with_d(repo_root, br.name)
-                records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
-                                "action": "deleted" if ok else "delete-refused",
+                fresh_tip = _git(repo_root, ["rev-parse", br.name], check=False).stdout.strip()
+                if not fresh_tip or not SHA_RE.match(fresh_tip):
+                    continue
+                if fresh_tip != br.sha:
+                    records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
+                                    "action": "skipped-tip-moved",
+                                    "reason": f"tip drifted {br.sha[:12]} -> {fresh_tip[:12]}"})
+                    continue
+                fresh_bound = worktree_bound_branches(repo_root)
+                if br.name in fresh_bound:
+                    records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
+                                    "action": "skipped-worktree-bound-toctou",
+                                    "reason": "branch became worktree-bound after eligibility"})
+                    continue
+                backup = write_backup_ref(repo_root, br.name, fresh_tip)
+                ok, err = delete_branch_with_d(repo_root, br.name, fresh_tip)
+                records.append({"lane": "R", "branch": br.name, "tip_sha": fresh_tip,
+                                "action": "deleted" if ok else "delete-cas-refused",
                                 "reason": "" if ok else err, "backup_ref": backup,
-                                "recovery_hint": {"type": "ref", "ref": backup, "sha": br.sha}})
+                                "recovery_hint": {"type": "ref", "ref": backup, "sha": fresh_tip}})
             else:
                 records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
                                 "action": "would-delete", "reason": "ancestor of trunk"})
@@ -751,13 +878,27 @@ def run_lane_r(
         if match is None:
             continue
         if apply:
-            backup = write_backup_ref(repo_root, br.name, br.sha)
-            ok, err = delete_branch_cas(repo_root, br.name, br.sha)
+            fresh_tip = _git(repo_root, ["rev-parse", br.name], check=False).stdout.strip()
+            if not fresh_tip or not SHA_RE.match(fresh_tip):
+                continue
+            if fresh_tip != br.sha:
+                records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
+                                "action": "skipped-tip-moved",
+                                "reason": f"tip drifted {br.sha[:12]} -> {fresh_tip[:12]}"})
+                continue
+            fresh_bound = worktree_bound_branches(repo_root)
+            if br.name in fresh_bound:
+                records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
+                                "action": "skipped-worktree-bound-toctou",
+                                "reason": "branch became worktree-bound after gh match"})
+                continue
+            backup = write_backup_ref(repo_root, br.name, fresh_tip)
+            ok, err = delete_branch_cas(repo_root, br.name, fresh_tip)
             action = "deleted" if ok else "delete-cas-refused"
-            records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
+            records.append({"lane": "R", "branch": br.name, "tip_sha": fresh_tip,
                             "action": action, "reason": "" if ok else err,
                             "backup_ref": backup, "pr_number": match.get("number"),
-                            "recovery_hint": {"type": "ref", "ref": backup, "sha": br.sha}})
+                            "recovery_hint": {"type": "ref", "ref": backup, "sha": fresh_tip}})
         else:
             records.append({"lane": "R", "branch": br.name, "tip_sha": br.sha,
                             "action": "would-delete",
@@ -775,14 +916,18 @@ def run_lane_r(
 # Lane W
 
 
-def _quarantine_target(config: Config, repo_root: pathlib.Path, name: str, sha: str) -> pathlib.Path:
+def _quarantine_target(config: Config, repo_root: pathlib.Path, name: str, sha: str,
+                        wt_path: pathlib.Path) -> pathlib.Path:
     base = _resolve_path(repo_root, config.lane_w.quarantine_dir)
     ts = int(time.time())
     pid = os.getpid()
+    # Hash the absolute worktree path to disambiguate multiple worktrees bound
+    # to the same branch (rare but possible). Without it, two same-second
+    # archives of the same branch would collide on the same quarantine dir.
+    import hashlib
+    wt_hash = hashlib.sha1(str(wt_path).encode("utf-8")).hexdigest()[:8]
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
-    # pid in the name prevents same-second collisions if two worktrees of the
-    # same branch are archived concurrently (rare but possible).
-    return base / f"{safe}-{sha[:12]}-{ts}-{pid}"
+    return base / f"{safe}-{sha[:12]}-{ts}-{pid}-{wt_hash}"
 
 
 def _archive_worktree(wt_path: pathlib.Path, archive_path: pathlib.Path) -> tuple[bool, str]:
@@ -902,19 +1047,50 @@ def run_lane_w(
                                     "reason": f"uncommitted changes: {clean_reason}"})
                     continue
 
-                quarantine = _quarantine_target(config, repo_root, label, wt.head)
+                quarantine = _quarantine_target(config, repo_root, label, wt.head, wt.path)
                 if apply:
-                    # TOCTOU revalidate right before archive (still under our lock)
+                    # TOCTOU revalidate right before archive (still under our lock).
+                    # Re-run hidden-bits + ignored too: another process could have
+                    # set assume-unchanged/skip-worktree OR dropped an ignored file
+                    # in the window since the upfront guards (round-4 P1 by Grok).
                     clean2, clean_reason2 = is_worktree_clean(wt.path)
                     if not clean2:
-                        rec = {"lane": "W", "branch": label, "tip_sha": wt.head,
-                                "worktree": str(wt.path), "action": "refused-dirty-toctou",
-                                "reason": f"TOCTOU: {clean_reason2}"}
-                        records.append(rec)
+                        records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
+                                        "worktree": str(wt.path), "action": "refused-dirty-toctou",
+                                        "reason": f"TOCTOU: {clean_reason2}"})
                         continue
-                    # prepare quarantine dir; archive + manifest live INSIDE it (one unit per purge)
+                    hidden2 = has_hidden_index_bits(wt.path)
+                    if hidden2 and not discard_hidden:
+                        records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
+                                        "worktree": str(wt.path),
+                                        "action": "refused-hidden-index-bits-toctou",
+                                        "reason": f"TOCTOU: {len(hidden2)} hidden-bit file(s)"})
+                        continue
+                    ignored2 = has_ignored_content(wt.path)
+                    if ignored2 and not discard_ignored:
+                        records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
+                                        "worktree": str(wt.path),
+                                        "action": "refused-ignored-content-toctou",
+                                        "reason": f"TOCTOU: {len(ignored2)} ignored path(s)"})
+                        continue
+                    # prepare quarantine dir; archive + manifest live INSIDE it.
+                    # Write a minimal manifest IMMEDIATELY so a crash between here
+                    # and the final manifest update still leaves a recoverable
+                    # trail (round-4 P1 by GPT).
                     quarantine.mkdir(parents=True, exist_ok=True)
                     archive_path = quarantine / "worktree.tar.gz"
+                    minimal_manifest = {
+                        "branch": wt.branch, "tip_sha_at_archive_time": wt.head,
+                        "moved_from": str(wt.path), "archive": str(archive_path),
+                        "archived_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                        "eligibility": reason,
+                        "worktree_remove_ok": False,        # set True after remove
+                        "branch_delete_ok": False,          # set after branch delete
+                        "backup_ref": None,                 # set after backup write
+                        "final_tip_sha": None,              # set after re-read
+                    }
+                    (quarantine / "clean-merged.manifest.json").write_text(
+                        json.dumps(minimal_manifest, indent=2, sort_keys=True), encoding="utf-8")
                     # tar the worktree to quarantine + verify integrity
                     ok, err = _archive_worktree(wt.path, archive_path)
                     if not ok:
@@ -934,40 +1110,56 @@ def run_lane_w(
                         records.append(rec)
                         write_audit(repo_root, config, rec)
                         continue
-                    # worktree gone; branch is now unbound -> safe to delete.
-                    # Audit the worktree removal IMMEDIATELY so a crash between here
-                    # and branch-delete leaves a forensic trail.
+                    # Worktree gone. Re-read the branch tip now (round-4 P0 by Kimi/GPT):
+                    # a commit may have landed in the worktree between list_worktrees()
+                    # and now. If it moved, we must NOT delete with the stale SHA —
+                    # the new commit would be lost (the backup ref points to the old tip).
+                    fresh_tip = wt.head
+                    if wt.branch:
+                        fresh_tip_out = _git(repo_root, ["rev-parse", wt.branch], check=False)
+                        if fresh_tip_out.returncode == 0:
+                            fresh_tip = fresh_tip_out.stdout.strip()
+                    # Audit IMMEDIATELY so a crash between here and branch-delete
+                    # leaves a forensic trail. Include recovery_hint this time
+                    # (round-4 P1 by Kimi).
                     rec_worktree_removed = {
-                        "lane": "W", "branch": label, "tip_sha": wt.head,
+                        "lane": "W", "branch": label, "tip_sha": fresh_tip,
                         "worktree": str(wt.path), "quarantine_path": str(quarantine),
                         "action": "worktree-removed-branch-pending",
                         "reason": "worktree archived and removed; branch delete pending",
+                        "recovery_hint": {"type": "quarantine", "path": str(quarantine),
+                                          "archive": str(archive_path)},
                     }
                     write_audit(repo_root, config, rec_worktree_removed)
                     backup_ref = None
+                    branch_action: str
                     if wt.branch:
-                        backup_ref = write_backup_ref(repo_root, wt.branch, wt.head)
-                        ok_del, err_del = delete_branch_with_force(repo_root, wt.branch)
+                        backup_ref = write_backup_ref(repo_root, wt.branch, fresh_tip)
+                        # CAS delete with the FRESH tip (not the stale wt.head).
+                        ok_del, err_del = delete_branch_with_force_cas(
+                            repo_root, wt.branch, fresh_tip)
                         branch_action = "branch-deleted" if ok_del else "branch-delete-failed"
                         err = err_del if not ok_del else ""
                     else:
                         branch_action = "no-bound-branch"
-                    # write manifest alongside the archive (inside quarantine)
-                    manifest = {
-                        "branch": wt.branch, "tip_sha": wt.head,
-                        "moved_from": str(wt.path), "archive": str(archive_path),
-                        "archived_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                        "eligibility": reason, "worktree_remove_ok": True,
+                    # finalize manifest
+                    final_manifest = {
+                        **minimal_manifest,
+                        "worktree_remove_ok": True,
+                        "branch_delete_ok": branch_action == "branch-deleted",
                         "backup_ref": backup_ref,
+                        "final_tip_sha": fresh_tip,
+                        "tip_drifted": fresh_tip != wt.head,
                     }
                     (quarantine / "clean-merged.manifest.json").write_text(
-                        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+                        json.dumps(final_manifest, indent=2, sort_keys=True), encoding="utf-8")
                     rec = {
-                        "lane": "W", "branch": label, "tip_sha": wt.head,
+                        "lane": "W", "branch": label, "tip_sha": fresh_tip,
                         "worktree": str(wt.path), "quarantine_path": str(quarantine),
                         "action": branch_action, "reason": err, "backup_ref": backup_ref,
+                        "tip_drifted": fresh_tip != wt.head,
                         "recovery_hint": {"type": "quarantine", "path": str(quarantine),
-                                          **({"ref": backup_ref, "sha": wt.head} if backup_ref else {})},
+                                          **({"ref": backup_ref, "sha": fresh_tip} if backup_ref else {})},
                     }
                     records.append(rec)
                     write_audit(repo_root, config, rec)
@@ -1012,67 +1204,179 @@ def cmd_purge_quarantine(
         return 0
     grace = grace_days if grace_days is not None else config.lane_w.quarantine_grace_days
     cutoff = time.time() - grace * 86400
+    # Acquire the same lock Lane W holds so a concurrent sweep can't race us
+    # mid-manifest-write (round-4 P1 by Kimi).
+    main_common = git_common_dir(repo_root)
+    lock_path = main_common / LOCK_FILE
+    fd = _acquire_lock(lock_path)
+    if fd is None:
+        if not quiet:
+            print(f"[{SCRIPT_NAME}] purge: another instance holds the lock; aborting",
+                  file=sys.stderr)
+        return 0
     purged = 0
     skipped = 0
-    for child in base.iterdir():
-        if not child.is_dir():
-            continue
-        manifest_file = child / "clean-merged.manifest.json"
-        if not manifest_file.is_file():
-            skipped += 1
-            continue
-        try:
-            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            skipped += 1
-            continue
-        if not manifest.get("worktree_remove_ok"):
-            skipped += 1
-            continue
-        try:
-            mtime = child.stat().st_mtime
-        except OSError:
-            continue
-        if mtime > cutoff:
-            continue
-        # within 7d warning was logged at write time; purge now
-        shutil.rmtree(child, ignore_errors=True)
-        write_audit(repo_root, config, {
-            "lane": "W", "branch": manifest.get("branch"),
-            "tip_sha": manifest.get("tip_sha"), "action": "quarantine-purged",
-            "quarantine_path": str(child),
-        })
-        purged += 1
+    total_bytes_freed = 0
+    try:
+        for child in base.iterdir():
+            if not child.is_dir():
+                continue
+            manifest_file = child / "clean-merged.manifest.json"
+            if not manifest_file.is_file():
+                # Round-4 P2-B: orphan dir (Lane W crashed before manifest write).
+                # Use the dir's mtime as fallback so it doesn't sit forever.
+                try:
+                    mtime = child.stat().st_mtime
+                except OSError:
+                    skipped += 1
+                    continue
+                if mtime > cutoff:
+                    continue
+                try:
+                    size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
+                except OSError:
+                    size = 0
+                shutil.rmtree(child, ignore_errors=True)
+                total_bytes_freed += size
+                write_audit(repo_root, config, {
+                    "lane": "W", "action": "quarantine-purged-orphan",
+                    "quarantine_path": str(child),
+                })
+                purged += 1
+                continue
+            try:
+                manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                skipped += 1
+                continue
+            if not manifest.get("worktree_remove_ok"):
+                skipped += 1
+                continue
+            try:
+                mtime = child.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > cutoff:
+                continue
+            try:
+                size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
+            except OSError:
+                size = 0
+            shutil.rmtree(child, ignore_errors=True)
+            total_bytes_freed += size
+            write_audit(repo_root, config, {
+                "lane": "W", "branch": manifest.get("branch"),
+                "tip_sha": manifest.get("tip_sha"), "action": "quarantine-purged",
+                "quarantine_path": str(child), "bytes_freed": size,
+            })
+            purged += 1
+    finally:
+        _release_lock(fd)
     if not quiet:
-        print(f"[{SCRIPT_NAME}] purge: {purged} purged, {skipped} skipped (no/failed manifest)")
+        print(f"[{SCRIPT_NAME}] purge: {purged} purged, {skipped} skipped "
+              f"(no/failed manifest), {total_bytes_freed} bytes freed")
     return purged
 
 
 def cmd_prune_backups(
     repo_root: pathlib.Path, config: Config, *, days: int, quiet: bool,
 ) -> int:
-    out = _git(repo_root, ["for-each-ref", "--format=%(refname)\t%(committerdate:unix)",
-                            "refs/clean-merged/"])
+    """Prune backup refs older than `days`.
+
+    Backup ref names embed the creation timestamp: refs/clean-merged/<branch>-<sha>-<unix_ts>.
+    Round-4 P1 (Claude/GPT): pruning by %(committerdate:unix) used the ORIGINAL
+    commit's date, not the backup's creation time — so a backup created today
+    for a year-old commit was immediately prune-eligible (effective recovery
+    window ~0s). We now parse the embedded creation timestamp from the ref name.
+    """
+    out = _git(repo_root, ["for-each-ref", "--format=%(refname)", "refs/clean-merged/"])
     cutoff = time.time() - days * 86400
     pruned = 0
+    skipped_unparseable = 0
     for line in out.stdout.splitlines():
-        if not line.strip():
+        ref = line.strip()
+        if not ref:
             continue
-        parts = line.split("\t")
-        if len(parts) != 2:
+        # Ref name ends with <safe-branch>-<short-sha>-<unix-ts>. Parse from the right.
+        m = re.match(r"^(.+)-([0-9a-f]{7,40})-(\d+)$", ref[len("refs/clean-merged/"):])
+        if not m:
+            skipped_unparseable += 1
             continue
-        ref, ts_str = parts
         try:
-            ts = int(ts_str)
+            created_ts = int(m.group(3))
         except ValueError:
+            skipped_unparseable += 1
             continue
-        if ts > cutoff:
+        if created_ts > cutoff:
             continue
         _git(repo_root, ["update-ref", "-d", ref], check=False)
         pruned += 1
     if not quiet:
-        print(f"[{SCRIPT_NAME}] prune-backups: {pruned} backup refs removed (>{days}d old)")
+        print(f"[{SCRIPT_NAME}] prune-backups: {pruned} removed (>{days}d old), "
+              f"{skipped_unparseable} unparseable skipped")
     return pruned
+
+
+def _is_disabled(env_value: str | None) -> bool:
+    """Shared kill-switch truthiness so bash hooks and Python agree.
+
+    Bash hooks use `[ -n "${CLEAN_MERGED_DISABLED:-}" ]` (any non-empty value
+    disables). Python previously used `== "1"` only — split-brain meant
+    CLEAN_MERGED_DISABLED=0 silenced hooks but allowed manual/just/cron runs
+    (round-4 P1-5 by Claude). The shared rule: empty/0/false/no/off (case-
+    insensitive) = enabled; anything else = disabled.
+    """
+    if env_value is None:
+        return False
+    v = env_value.strip().lower()
+    return v not in ("", "0", "false", "no", "off")
+
+
+def cmd_doctor_on_error(repo_root: pathlib.Path, exc: Exception) -> int:
+    """Doctor path that runs even when config parse failed (round-4 P1-6).
+
+    main() catches ConfigError before the doctor dispatch and returned 0 — so
+    the one failure doctor most needs to report was unsurfaced. This helper
+    reports the config error and the install state, returns 1.
+    """
+    print(f"[{SCRIPT_NAME}] doctor")
+    print(f"  CONFIG ERROR             = {exc}")
+    print(f"  python                   = {sys.version_info.major}.{sys.version_info.minor} "
+          f"(tomllib={'yes' if _HAS_TOMLLIB else 'fallback flat parser'})")
+    try:
+        common = git_common_dir(repo_root)
+        print(f"  git-common-dir           = {common}")
+        active = _git(repo_root, ["config", "--get", "core.hooksPath"], check=False)
+        if active.returncode == 0 and active.stdout.strip():
+            hooks_dir = pathlib.Path(active.stdout.strip())
+            if not hooks_dir.is_absolute():
+                hooks_dir = repo_root / hooks_dir
+            print(f"  core.hooksPath           = {hooks_dir}")
+            for h in ("post-merge", "post-checkout", "post-rewrite"):
+                f = hooks_dir / h
+                managed = f.is_file() and HOOK_MARKER in f.read_text(encoding="utf-8", errors="replace")
+                print(f"  hook {h:14s} managed={managed}")
+        # heartbeat freshness even on config error
+        import datetime as _dt
+        hb_paths = [
+            common / "clean-merged.heartbeat",
+            repo_root / ".git" / "clean-merged.heartbeat",
+        ]
+        for hb in hb_paths:
+            if hb.is_file():
+                try:
+                    hb_ts = _dt.datetime.fromisoformat(hb.read_text(encoding="utf-8").strip())
+                    age = _dt.datetime.now(_dt.timezone.utc) - hb_ts
+                    print(f"  heartbeat age            = {age} (at {hb})")
+                except (ValueError, OSError):
+                    pass
+                break
+    except Exception as inner:  # noqa: BLE001
+        print(f"  (additional error during doctor: {inner})")
+    print()
+    print(f"[{SCRIPT_NAME}] config parse failed; lanes are silently halted. "
+          "Fix the config to resume automatic cleanup.")
+    return 1
 
 
 def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
@@ -1122,11 +1426,12 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
         print("  core.hooksPath           = (unset; hooks would live in .git/hooks)")
         problems.append("core.hooksPath unset; clean-merged hooks not active")
 
-    # remote.origin.prune
-    prune = _git(repo_root, ["config", "--get", "remote.origin.prune"], check=False)
-    print(f"  remote.origin.prune      = {prune.stdout.strip() or '(unset)'}")
+    # remote.<remote>.prune (round-4 P2: was hardcoded to origin)
+    prune_key = f"remote.{config.remote_name}.prune"
+    prune = _git(repo_root, ["config", "--get", prune_key], check=False)
+    print(f"  {prune_key:25s} = {prune.stdout.strip() or '(unset)'}")
     if prune.stdout.strip() != "true":
-        problems.append("remote.origin.prune != true (run `just setup`)")
+        problems.append(f"{prune_key} != true (run `just setup`)")
 
     # gh
     gh_check = subprocess.run(["gh", "--version"], capture_output=True, text=True)
@@ -1149,11 +1454,18 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     else:
         print("  heartbeat                = (none yet)")
 
-    # quarantine disk usage
+    # quarantine disk usage (round-4 P2: doctor reported count, not bytes)
     q = _resolve_path(repo_root, config.lane_w.quarantine_dir)
     if q.is_dir():
-        n = sum(1 for _ in q.iterdir() if _.is_dir())
-        print(f"  quarantine entries       = {n} at {q}")
+        entries = [c for c in q.iterdir() if c.is_dir()]
+        total_bytes = 0
+        for c in entries:
+            try:
+                total_bytes += sum(f.stat().st_size for f in c.rglob("*") if f.is_file())
+            except OSError:
+                pass
+        print(f"  quarantine               = {len(entries)} entries, "
+              f"{total_bytes / (1024 * 1024):.1f} MiB at {q}")
     else:
         print(f"  quarantine               = (absent)")
 
@@ -1234,11 +1546,15 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(repo_root)
     except ConfigError as exc:
         # Don't crash the hook chain on config errors; just warn.
+        # Round-4 P1-6: BUT if the operator explicitly asked for --doctor,
+        # surface the diagnostic and exit non-zero.
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] config error: {exc}", file=sys.stderr)
+        if args.doctor:
+            return cmd_doctor_on_error(repo_root, exc)
         return 0
 
-    if os.environ.get("CLEAN_MERGED_DISABLED") == "1" or not config.enabled:
+    if _is_disabled(os.environ.get("CLEAN_MERGED_DISABLED")) or not config.enabled:
         if not args.quiet:
             print(f"[{SCRIPT_NAME}] disabled (kill switch)", file=sys.stderr)
         return 0

@@ -7,25 +7,23 @@
 schema_version = 1
 
 [clean-merged]
-# Global kill switch. Also honored as env CLEAN_MERGED_DISABLED=1.
+# Global kill switch. Truthy values per the shared rule (any non-empty value
+# except 0/false/no/off, case-insensitive) — bash hooks and Python agree.
+# Env: CLEAN_MERGED_DISABLED=1
 enabled = true
 # Trunk branch. Falls back to "master" dynamically if "main" is absent.
+# (When fallback engages, Lane R's baseRefName filter accepts either name.)
 trunk_branch = "main"
 # Remote name to consider as origin for upstream/prune purposes.
 remote_name = "origin"
-# Run Lane H detached from the hook (false = synchronous; the default).
-# Only enable if profiling shows the synchronous sweep blocks the git op.
-hook_detach = false
 
 [clean-merged.lane_r]
-# Hard timeout for the gh subprocess call (seconds). No macOS `timeout` binary
-# exists; the timeout is enforced in Python via subprocess.run(timeout=...).
+# Hard timeout for the gh subprocess call (seconds). Enforced in Python via
+# subprocess.run(timeout=...) — macOS has no `timeout` binary.
 gh_timeout_s = 5
-# In-process cache TTL for gh query results (seconds).
+# In-process cache TTL for gh query results (seconds). Per-branch cache stored
+# at <git-common-dir>/clean-merged-gh-cache.json; written atomically.
 cache_ttl_s = 300
-# When true, the post-merge hook spawns Lane R detached with strict timeout
-# so squash-merged branches are cleaned without per-session instruction.
-hook_spawn_detached = true
 
 [clean-merged.lane_w]
 # Quarantine directory. Resolved relative to git-common-dir; NEVER inside a

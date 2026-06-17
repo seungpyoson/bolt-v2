@@ -15,8 +15,8 @@ use std::{
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{
-        build_bolt_v3_live_node, current_build_head_sha, run_bolt_v3_data_client_probe,
-        run_bolt_v3_live_node,
+        build_bolt_v3_live_node, build_bolt_v3_strategy_free_data_client_probe_live_node,
+        current_build_head_sha, run_bolt_v3_data_client_probe, run_bolt_v3_live_node,
     },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_providers::{
@@ -197,13 +197,15 @@ fn run_data_client_probe(
     client_key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_bolt_v3_config(config)?;
+    let (node_runtime, probe_loaded) =
+        build_bolt_v3_strategy_free_data_client_probe_live_node(&loaded, client_key)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     let local = tokio::task::LocalSet::new();
-    let report = runtime.block_on(
-        local.run_until(async { run_bolt_v3_data_client_probe(&loaded, client_key).await }),
-    )?;
+    let report = runtime.block_on(local.run_until(async move {
+        run_bolt_v3_data_client_probe(node_runtime, &probe_loaded, client_key).await
+    }))?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }

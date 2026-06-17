@@ -3659,12 +3659,16 @@ pub fn build_bolt_v3_strategy_free_data_client_probe_live_node(
     Ok((runtime, strategy_free_loaded))
 }
 
+/// Run an already-built strategy-free data-client probe node.
+///
+/// The caller must build `runtime` at a synchronous startup boundary before
+/// entering Tokio, because the build path owns SSM resolution through
+/// `SsmResolverSession`.
 pub async fn run_bolt_v3_data_client_probe(
-    loaded: &LoadedBoltV3Config,
+    mut runtime: BoltV3LiveNodeRuntime,
+    probe_loaded: &LoadedBoltV3Config,
     client_key: &str,
 ) -> Result<BoltV3DataClientProbeReport, BoltV3LiveNodeError> {
-    let (mut runtime, probe_loaded) =
-        build_bolt_v3_strategy_free_data_client_probe_live_node(loaded, client_key)?;
     let handle = strategy_free_data_client_readiness_quote_probe_handle(&probe_loaded, client_key)?;
     let readiness_probe = probe_loaded
         .root

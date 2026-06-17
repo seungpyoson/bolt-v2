@@ -95,14 +95,6 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"cadence_slug_token"'''
-context = '''insert_string(&mut table, "cadence_slug_token", target.cadence_slug_token);'''
-classification = "strategy_runtime_schema_field"
-reason = "This is a taker strategy config schema field name, populated from the configured bolt-v3 TOML target cadence slug token."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"client_id"'''
 context = '''"client_id",'''
 classification = "strategy_runtime_schema_field"
@@ -1047,18 +1039,82 @@ reason = "This is the accepted updown underlying_asset identifier length bound d
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
-literal = '''32'''
-context = '''} else if cadence_slug_token.chars().count() > 32 {'''
-classification = "market_identity_shape_bound"
-reason = "This is the accepted updown cadence_slug_token identifier length bound; the token value itself is TOML-owned."
+literal = '''60'''
+context = '''60 => Ok("1m"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one entry in the accepted updown cadence-seconds to slug-token contract table documented in docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md lines 281-288."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"1m"'''
+context = '''60 => Ok("1m"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one slug-token value in the accepted updown cadence contract table; callers derive it from target.cadence_secs rather than TOML."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
-literal = '''60'''
-context = '''} else if cadence_secs % 60 != 0 {'''
-classification = "runtime_contract_cadence_alignment"
-reason = "The updown cadence validator requires minute-aligned periods; the market slug token paired with the cadence is TOML-owned."
+literal = '''300'''
+context = '''300 => Ok("5m"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one entry in the accepted updown cadence-seconds to slug-token contract table documented in docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md lines 281-288."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"5m"'''
+context = '''300 => Ok("5m"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one slug-token value in the accepted updown cadence contract table; callers derive it from target.cadence_secs rather than TOML."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''900'''
+context = '''900 => Ok("15m"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one entry in the accepted updown cadence-seconds to slug-token contract table documented in docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md lines 281-288."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"15m"'''
+context = '''900 => Ok("15m"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one slug-token value in the accepted updown cadence contract table; callers derive it from target.cadence_secs rather than TOML."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''3600'''
+context = '''3600 => Ok("1h"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one entry in the accepted updown cadence-seconds to slug-token contract table documented in docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md lines 281-288."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"1h"'''
+context = '''3600 => Ok("1h"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one slug-token value in the accepted updown cadence contract table; callers derive it from target.cadence_secs rather than TOML."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''14400'''
+context = '''14400 => Ok("4h"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one entry in the accepted updown cadence-seconds to slug-token contract table documented in docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md lines 281-288."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"4h"'''
+context = '''14400 => Ok("4h"),'''
+classification = "runtime_contract_cadence_slug_table"
+reason = "This is one slug-token value in the accepted updown cadence contract table; callers derive it from target.cadence_secs rather than TOML."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -1211,6 +1267,14 @@ literal = '''"target.cadence_secs"'''
 context = '''cadence_seconds_source_field: "target.cadence_secs",'''
 classification = "market_family_source_field_label"
 reason = "This labels the TOML field that supplied cadence seconds when projecting target runtime fields for diagnostics and evidence."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"{prefix}target.cadence_secs={cadence_secs} is absent from the updown cadence slug-token runtime contract table"'''
+context = '''"{prefix}target.cadence_secs={cadence_secs} is absent from the updown cadence slug-token runtime contract table",'''
+classification = "diagnostic_template"
+reason = "This fail-closed validation diagnostic names the cadence contract-table rejection; the cadence value itself remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -16131,6 +16195,14 @@ reason = "Static binary-event fair-probability source strategy config field name
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"static_market_slug"'''
+context = '''insert_optional_string(&mut table, "static_market_slug", target.static_market_slug);'''
+classification = "strategy_runtime_schema_field"
+reason = "Static binary-event market-slug strategy config field name; the value is projected from the TOML target and remains operator-configured."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"static_no_outcome"'''
 context = '''insert_optional_string(&mut table, "static_no_outcome", target.static_no_outcome);'''
 classification = "strategy_runtime_schema_field"
@@ -16347,6 +16419,14 @@ reason = "Stable machine-readable validation code for a missing static fair-prob
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
+literal = '''"missing_static_market_slug"'''
+context = '''("static_market_slug", "missing_static_market_slug"),'''
+classification = "strategy_archetype_validation_error_code"
+reason = "Stable machine-readable validation code for a missing static market slug field."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
 literal = '''"missing_static_no_outcome"'''
 context = '''("static_no_outcome", "missing_static_no_outcome"),'''
 classification = "strategy_archetype_validation_error_code"
@@ -16407,6 +16487,38 @@ literal = '''"static_fair_probability_source"'''
 context = '''| "static_fair_probability_source"'''
 classification = "strategy_runtime_schema_field"
 reason = "Static binary-event fair-probability source field admitted by the strategy config schema."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_market_slug"'''
+context = '''"static_market_slug",'''
+classification = "strategy_runtime_schema_field"
+reason = "Static binary-event market-slug strategy config field name; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_market_slug"'''
+context = '''("static_market_slug", "missing_static_market_slug"),'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation lookup for requiring the static binary-event market slug field."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_market_slug"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "static_market_slug", errors);'''
+classification = "strategy_runtime_validation_field"
+reason = "Validation field label for the optional static binary-event market slug."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
+kind = "string"
+literal = '''"static_market_slug"'''
+context = '''| "static_market_slug"'''
+classification = "strategy_runtime_schema_field"
+reason = "Static binary-event market slug field admitted by the strategy config schema."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
@@ -16823,3 +16935,59 @@ literal = '''"settlement signal remains gated by Task 0 disposition"'''
 context = '''.expect_err("settlement signal remains gated by Task 0 disposition");'''
 classification = "strategy_test_diagnostic"
 reason = "Strategy-local shell unit-test assertion message; not runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override RV keep selector `{}` matched {matches} sources in surface `{}`"'''
+context = '''"backtest override RV keep selector `{}` matched {matches} sources in surface `{}`",'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic; selector, count, and surface values come from the loaded production TOML plus explicit backtest override input."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override keep_realized_volatility_sources selector `{label}` is duplicated"'''
+context = '''"backtest override keep_realized_volatility_sources selector `{label}` is duplicated"'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic for duplicate explicit RV keep selectors; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override surface `{}` min_ready_sources {} exceeds enabled quorum sources {} after filtering"'''
+context = '''"backtest override surface `{}` min_ready_sources {} exceeds enabled quorum sources {} after filtering",'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic comparing TOML-owned RV quorum policy with the explicit backtest keep-set."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"label"'''
+context = '''("label", override_spec.label.as_str()),'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"realized_volatility_surface_id"'''
+context = '''"realized_volatility_surface_id",'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"signal_role"'''
+context = '''("signal_role", override_spec.signal_role.as_str()),'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"strategy_instance_id"'''
+context = '''"strategy_instance_id",'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."

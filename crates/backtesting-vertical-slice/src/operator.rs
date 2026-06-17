@@ -48,7 +48,9 @@ use crate::{
         normalize_registered_jsonl_multi_interval_bar_converter,
         normalize_registered_mark_converter, normalize_registered_order_book_delta_converter,
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
-        normalize_registered_tar_order_book_delta_converter, require_registered_source_adapter,
+        normalize_registered_seeded_l2_quote_converter,
+        normalize_registered_tar_order_book_delta_converter,
+        normalize_registered_tar_seeded_l2_quote_converter, require_registered_source_adapter,
         require_registered_source_adapter_for_table_family,
     },
     catalog_projection::{
@@ -81,9 +83,9 @@ use crate::{
         assert_delta_read_back_matches, assert_index_read_back_matches,
         assert_mark_read_back_matches, assert_quote_read_back_matches, assert_read_back_matches,
         assert_time_window_overlaps_data, expected_iterations, iterations_mismatch,
-        market_structure_label, nt_extension_surface_claim_limits, result_contract_warnings,
-        run_backtest, run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data,
-        window_bound_nanos,
+        market_structure_label, nt_extension_surface_claim_limits, result_contract_feed_labels,
+        result_contract_warnings, run_backtest, run_nt_backtest_node, run_purpose_label,
+        time_window_excludes_all_data, window_bound_nanos,
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
@@ -443,7 +445,16 @@ fn ensure_container_matches_adapter_kind(
         | SourceAdapterKind::JsonlSnapshotDeltas
         | SourceAdapterKind::SnapshotQuotes => matches!(
             container,
-            RawPayloadContainer::JsonlText | RawPayloadContainer::JsonlGzip
+            RawPayloadContainer::JsonlText
+                | RawPayloadContainer::JsonlGzip
+                | RawPayloadContainer::SingleJsonlZip
+        ),
+        SourceAdapterKind::SeededL2Quotes => matches!(
+            container,
+            RawPayloadContainer::JsonlText
+                | RawPayloadContainer::JsonlGzip
+                | RawPayloadContainer::SingleJsonlZip
+                | RawPayloadContainer::TarGzipJsonl
         ),
         SourceAdapterKind::TarJsonlSnapshotDeltas => {
             matches!(container, RawPayloadContainer::TarGzipJsonl)
@@ -498,6 +509,7 @@ fn validate_raw_payload_config(config: &RawPayloadConfig) -> Result<()> {
         | RawPayloadContainer::CsvText
         | RawPayloadContainer::JsonlText
         | RawPayloadContainer::JsonlGzip
+        | RawPayloadContainer::SingleJsonlZip
         | RawPayloadContainer::ParquetFile => {
             ensure!(
                 config.zip_member.is_none(),
@@ -707,6 +719,23 @@ fn decode_object_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Resu
             config.max_decoded_bytes,
             "gzip jsonl object",
         )?)),
+        RawPayloadContainer::SingleJsonlZip => {
+            let mut member = crate::zip_reader::zip_member_reader(object_bytes)
+                .context("open jsonl zip object")?;
+            ensure!(
+                member.declared_len() as u64 <= config.max_decoded_bytes,
+                "ZIP JSONL member declared size {} exceeds converter.raw_payload.max_decoded_bytes {}",
+                member.declared_len(),
+                config.max_decoded_bytes
+            );
+            let text = read_limited_csv_text(
+                &mut member,
+                config.max_decoded_bytes,
+                "single-member zip jsonl object",
+            )?;
+            member.verify().context("verify jsonl zip member")?;
+            Ok(DecodedPayload::Text(text))
+        }
         RawPayloadContainer::SingleCsvZip => {
             let member_name = config
                 .zip_member
@@ -849,6 +878,8 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
     let crate::runner::NtBacktestNodeRun {
         result: nt_result,
         order_terminals,
+        config_override_report,
+        run_guard_report,
     } = run_nt_backtest_node(&inputs.manifest)?;
     let expected = expected_iterations(
         &canonical_table.rows,
@@ -887,6 +918,9 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         claim_limits,
         warnings: result_contract_warnings(&nt_result),
         mechanical_blockers: Vec::new(),
+        config_override_report: config_override_report.as_ref(),
+        run_guard_report: run_guard_report.as_ref(),
+        feed_labels: result_contract_feed_labels(&inputs.manifest),
         nt_result: &nt_result,
         artifact_uris: inputs.artifact_uris,
         created_at: inputs.created_at,
@@ -1804,6 +1838,35 @@ fn normalize_tables_for_kind(
             .map(NormalizedTable::Quotes)
             .collect()
         }
+        SourceAdapterKind::SeededL2Quotes => match payload {
+            DecodedPayload::Text(text) => normalize_registered_seeded_l2_quote_converter(
+                &spec.converter,
+                accepted,
+                spec.identity.single()?,
+                &text,
+                capture_time_nanos,
+                run_id,
+            )?
+            .into_iter()
+            .map(NormalizedTable::Quotes)
+            .collect(),
+            DecodedPayload::TarMembers(members) => {
+                normalize_registered_tar_seeded_l2_quote_converter(
+                    &spec.converter,
+                    accepted,
+                    spec.identity.single()?,
+                    members,
+                    capture_time_nanos,
+                    run_id,
+                )?
+                .into_iter()
+                .map(NormalizedTable::Quotes)
+                .collect()
+            }
+            DecodedPayload::ParquetBytes(_) => {
+                anyhow::bail!("seeded L2 quote adapter requires a text or tar payload container")
+            }
+        },
         SourceAdapterKind::IndexPrices => {
             let DecodedPayload::Text(text) = payload else {
                 anyhow::bail!("index-price adapter requires a text payload container");
@@ -2096,17 +2159,14 @@ fn multi_artifact_uris(
     }
 }
 
-/// Zero-order warning for multi-table runs: none of the projected families
-/// carries quote ticks, and the registered strategies' order entry is
-/// quote-driven.
+/// Zero-order warning for multi-table runs.
 fn multi_result_contract_warnings(nt_result: &BacktestResult) -> Vec<String> {
     let mut warnings = Vec::new();
     if nt_result.total_orders == 0 {
         warnings.push(
-            "No orders were placed: the projected catalog families carry no quote ticks and \
-             the configured strategy's order entry is quote-driven. NautilusTrader still \
-             consumed every projected data point (iteration gate). This reflects the source \
-             fidelity, not a defect."
+            "No orders were placed. Treat P/L as non-armed unless the run_guard_report shows \
+             armed=true and traded=true; inspect run_guard_report.did_not_arm_reason for the \
+             missing or stale feed."
                 .to_string(),
         );
     }
@@ -2399,7 +2459,10 @@ pub fn run_multi_table_from_run_spec(
         multi_selector_provenance(spec, &planned)?;
 
     // Gate 5: ONE BacktestNode run over the N-input manifest.
-    let nt_result = run_nt_backtest_node(&local_manifest)?.result;
+    let nt_run = run_nt_backtest_node(&local_manifest)?;
+    let nt_result = nt_run.result;
+    let config_override_report = nt_run.config_override_report;
+    let run_guard_report = nt_run.run_guard_report;
     let window_start = window_bound_nanos("start_time", local_manifest.start_time)?;
     let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
     let mut expected = 0usize;
@@ -2484,6 +2547,9 @@ pub fn run_multi_table_from_run_spec(
         claim_limits,
         warnings: multi_result_contract_warnings(&nt_result),
         mechanical_blockers: Vec::new(),
+        config_override_report: config_override_report.as_ref(),
+        run_guard_report: run_guard_report.as_ref(),
+        feed_labels: result_contract_feed_labels(&local_manifest),
         nt_result: &nt_result,
         artifact_uris,
         created_at: &spec.created_at_utc,
@@ -2699,7 +2765,10 @@ fn run_multi_from_completed_output(
     let (event_count_ledger_hash, selected_asset_ids_hash) =
         multi_selector_provenance(spec, &planned)?;
 
-    let nt_result = run_nt_backtest_node(&local_manifest)?.result;
+    let nt_run = run_nt_backtest_node(&local_manifest)?;
+    let nt_result = nt_run.result;
+    let config_override_report = nt_run.config_override_report;
+    let run_guard_report = nt_run.run_guard_report;
     let window_start = window_bound_nanos("start_time", local_manifest.start_time)?;
     let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
     let mut expected = 0usize;
@@ -2740,6 +2809,9 @@ fn run_multi_from_completed_output(
         claim_limits,
         warnings: multi_result_contract_warnings(&nt_result),
         mechanical_blockers: Vec::new(),
+        config_override_report: config_override_report.as_ref(),
+        run_guard_report: run_guard_report.as_ref(),
+        feed_labels: result_contract_feed_labels(&local_manifest),
         nt_result: &nt_result,
         artifact_uris,
         created_at: &spec.created_at_utc,
@@ -3410,6 +3482,26 @@ mod tests {
     }
 
     #[test]
+    fn decode_single_jsonl_zip_payload_decodes_with_crc_verification() {
+        let mut config = payload_config(RawPayloadContainer::SingleJsonlZip);
+        config.max_decoded_bytes = 128;
+        let payload = decode_object_payload(&config, &zip_single_csv("book.data", "{\"a\":1}\n"))
+            .expect("jsonl zip decodes");
+        match payload {
+            DecodedPayload::Text(text) => assert_eq!(text, "{\"a\":1}\n"),
+            DecodedPayload::TarMembers(_) | DecodedPayload::ParquetBytes(_) => {
+                panic!("jsonl zip container must decode to a text payload")
+            }
+        }
+
+        config.max_decoded_bytes = 4;
+        let err = decode_object_payload(&config, &zip_single_csv("book.data", "{\"a\":1}\n"))
+            .err()
+            .expect("over-bound jsonl zip must be rejected");
+        assert!(err.to_string().contains("max_decoded_bytes"), "{err}");
+    }
+
+    #[test]
     fn decode_tar_gzip_jsonl_streams_matching_members_in_order() {
         let mut config = payload_config(RawPayloadContainer::TarGzipJsonl);
         config.member_suffix = Some(".jsonl".to_string());
@@ -3494,6 +3586,7 @@ mod tests {
             RawPayloadContainer::CsvText,
             RawPayloadContainer::JsonlText,
             RawPayloadContainer::JsonlGzip,
+            RawPayloadContainer::SingleJsonlZip,
             RawPayloadContainer::ParquetFile,
         ] {
             let mut config = payload_config(container);
@@ -3517,6 +3610,7 @@ mod tests {
         for container in [
             RawPayloadContainer::JsonlText,
             RawPayloadContainer::JsonlGzip,
+            RawPayloadContainer::SingleJsonlZip,
             RawPayloadContainer::TarGzipJsonl,
             RawPayloadContainer::ParquetFile,
         ] {

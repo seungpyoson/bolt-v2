@@ -12,10 +12,15 @@
 //! from a Research Analytics experiment result; it never
 //! carries executable strategy code or a runtime path.
 
-use std::{collections::BTreeMap, fmt::Debug, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Debug,
+    str::FromStr,
+};
 
 use anyhow::{Result, bail};
 use bolt_v2::{
+    bolt_v3_config::{BacktestConfigOverride, RealizedVolatilitySourceSelector},
     bolt_v3_order_execution::BoltV3OrderExecutionMode,
     strategies::{
         binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder, production_strategy_registry,
@@ -34,7 +39,7 @@ use nautilus_execution::models::{
 use nautilus_model::{
     data::BarType,
     enums::{AccountType, BookType, OmsType, OtoTriggerMode},
-    identifiers::InstrumentId,
+    identifiers::{ClientId, InstrumentId},
     types::{Currency, Money, Quantity},
 };
 use rust_decimal::{Decimal, prelude::ToPrimitive};
@@ -84,11 +89,6 @@ pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] =
     &["leverages", "margin_model", "modules", "settlement_prices"];
 /// NT data-query surfaces declared in TOML but rejected until typed mappings are proven.
 pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
-    (
-        "catalog.client_id",
-        "catalog_inputs.client_id",
-        "BacktestDataConfig.client_id",
-    ),
     (
         "catalog.metadata",
         "catalog_inputs.metadata",
@@ -338,6 +338,72 @@ pub struct StrategySource {
     /// SHA-256 of the experiment-results artifact for RA-generated configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experiment_result_hash: Option<String>,
+    /// Production config root plus one documented run-only overlay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_overlay: Option<StrategyConfigOverlaySource>,
+}
+
+/// Run-only strategy config overlay source.
+///
+/// The production root TOML is loaded unchanged, then the delta is applied in
+/// memory for this backtest. The resolved delta is copied into the result
+/// contract by the runner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StrategyConfigOverlaySource {
+    pub production_root_config_path: String,
+    pub override_delta: ManifestBacktestConfigOverride,
+}
+
+/// String-only backtest config delta encoded in the run manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestBacktestConfigOverride {
+    pub label: String,
+    pub strategy_instance_id: String,
+    pub signal_role: String,
+    pub signal_data_client_id: String,
+    pub signal_instrument_id: String,
+    pub realized_volatility_surface_id: String,
+    pub keep_realized_volatility_sources: Vec<ManifestRealizedVolatilitySourceSelector>,
+}
+
+/// String-only selector for an already-configured production RV source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestRealizedVolatilitySourceSelector {
+    pub data_client_id: String,
+    pub instrument_id: String,
+}
+
+impl StrategyConfigOverlaySource {
+    #[must_use]
+    pub fn to_bolt_v3_override(&self) -> BacktestConfigOverride {
+        BacktestConfigOverride {
+            label: self.override_delta.label.clone(),
+            strategy_instance_id: self.override_delta.strategy_instance_id.clone(),
+            signal_role: self.override_delta.signal_role.clone(),
+            signal_data_client_id: ClientId::from(
+                self.override_delta.signal_data_client_id.as_str(),
+            ),
+            signal_instrument_id: InstrumentId::from(
+                self.override_delta.signal_instrument_id.as_str(),
+            ),
+            realized_volatility_surface_id: self
+                .override_delta
+                .realized_volatility_surface_id
+                .clone(),
+            keep_realized_volatility_sources: self
+                .override_delta
+                .keep_realized_volatility_sources
+                .iter()
+                .map(|selector| RealizedVolatilitySourceSelector {
+                    data_client_id: ClientId::from(selector.data_client_id.as_str()),
+                    instrument_id: InstrumentId::from(selector.instrument_id.as_str()),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Simulated venue settings mapped into [`BacktestVenueConfig`].
@@ -477,7 +543,7 @@ pub struct ManifestCatalogInput {
     /// NT catalog filter expression. Declared but unsupported until mapped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter_expr: Option<String>,
-    /// NT data client id. Declared but unsupported until mapped.
+    /// NT data client id for routing catalog data to named strategy subscriptions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     /// NT catalog query metadata. Declared but unsupported until mapped.
@@ -492,6 +558,32 @@ pub struct ManifestCatalogInput {
     /// NT directory-based file loading optimization. Declared but unsupported until mapped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optimize_file_loading: Option<bool>,
+}
+
+/// Reconstructed reference-current-price custom data replayed into the
+/// BacktestEngine data queue.
+///
+/// NT BacktestRunConfig does not expose CustomData as a catalog-loaded enum
+/// variant, so these records are manifest-owned side inputs. The runner maps
+/// them into the production `ReferencePriceUpdate` custom-data type before
+/// `BacktestNode::run`, and result labels must keep them reconstructed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestReferenceCurrentPriceInput {
+    pub client_id: String,
+    pub asset: String,
+    pub source_id: String,
+    pub provider: String,
+    pub provider_instrument: String,
+    pub price: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<String>,
+    pub observed_ts_ms: u64,
+    pub received_ts_ms: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provenance: BTreeMap<String, String>,
 }
 
 /// Artifact output store options used for publishing and published-catalog proof.
@@ -574,7 +666,13 @@ pub struct BacktestingRunManifest {
     /// SHA-256 of the effective typed strategy config.
     pub strategy_config_hash: String,
     pub venue: ManifestVenueConfig,
+    /// Additional simulated venues needed by non-execution data feeds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_venues: Vec<ManifestVenueConfig>,
     pub catalog_inputs: Vec<ManifestCatalogInput>,
+    /// Reconstructed reference-current-price custom data side input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reconstructed_reference_current_price: Vec<ManifestReferenceCurrentPriceInput>,
     /// SHA-256 of the NT catalog consumed by the run.
     pub catalog_hash: String,
     /// Execution model selected for this run, for example `nt_backtest_node`.
@@ -634,6 +732,10 @@ pub enum ManifestError {
         field: &'static str,
         uri: String,
         expected_prefix: String,
+    },
+    InvalidStrategyConfigOverlay {
+        field: &'static str,
+        message: String,
     },
     InvalidStartingBalance {
         balance: String,
@@ -769,6 +871,9 @@ impl std::fmt::Display for ManifestError {
                 f,
                 "{field} {uri:?} is outside the allowed strategy source prefix {expected_prefix:?}"
             ),
+            Self::InvalidStrategyConfigOverlay { field, message } => {
+                write!(f, "invalid {field}: {message}")
+            }
             Self::InvalidStartingBalance { balance } => {
                 write!(f, "invalid starting balance: {balance:?}")
             }
@@ -952,11 +1057,19 @@ fn validate_strategy_source(
                 .map_err(|_| ManifestError::MissingField("strategy.parameters.bar_type"))?;
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
-            for parameter in [
-                STRATEGY_PARAM_CONFIG_TOML,
-                STRATEGY_PARAM_FEE_BPS,
-                STRATEGY_PARAM_ORDER_EXECUTION_MODE,
-            ] {
+            let has_config_overlay = strategy.config_overlay.is_some();
+            if has_config_overlay && strategy.parameters.contains_key(STRATEGY_PARAM_CONFIG_TOML) {
+                return Err(ManifestError::InvalidStrategyConfigOverlay {
+                    field: "strategy.config_overlay",
+                    message: "cannot be combined with strategy.parameters.config_toml".to_string(),
+                });
+            }
+            let mut required_parameters =
+                vec![STRATEGY_PARAM_FEE_BPS, STRATEGY_PARAM_ORDER_EXECUTION_MODE];
+            if !has_config_overlay {
+                required_parameters.push(STRATEGY_PARAM_CONFIG_TOML);
+            }
+            for parameter in required_parameters {
                 if !strategy.parameters.contains_key(parameter) {
                     return Err(ManifestError::MissingField(match parameter {
                         STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
@@ -987,27 +1100,29 @@ fn validate_strategy_source(
             if fee_bps < rust_decimal::Decimal::ZERO {
                 return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
             }
-            let raw_config = strategy
-                .parameters
-                .get(STRATEGY_PARAM_CONFIG_TOML)
-                .expect("presence checked above");
-            let raw_config = toml::from_str::<toml::Value>(raw_config)
-                .map_err(|_| ManifestError::MissingField("strategy.parameters.config_toml"))?;
-            let registry =
-                production_strategy_registry().map_err(|_| ManifestError::UnknownStrategy {
-                    registry_key: BinaryOracleEdgeTakerBuilder::kind().to_string(),
-                })?;
-            let mut errors = Vec::new();
-            registry.validate(
-                BinaryOracleEdgeTakerBuilder::kind(),
-                &raw_config,
-                "strategy.parameters.config_toml",
-                &mut errors,
-            );
-            if !errors.is_empty() {
-                return Err(ManifestError::MissingField(
+            if !has_config_overlay {
+                let raw_config = strategy
+                    .parameters
+                    .get(STRATEGY_PARAM_CONFIG_TOML)
+                    .expect("presence checked above");
+                let raw_config = toml::from_str::<toml::Value>(raw_config)
+                    .map_err(|_| ManifestError::MissingField("strategy.parameters.config_toml"))?;
+                let registry =
+                    production_strategy_registry().map_err(|_| ManifestError::UnknownStrategy {
+                        registry_key: BinaryOracleEdgeTakerBuilder::kind().to_string(),
+                    })?;
+                let mut errors = Vec::new();
+                registry.validate(
+                    BinaryOracleEdgeTakerBuilder::kind(),
+                    &raw_config,
                     "strategy.parameters.config_toml",
-                ));
+                    &mut errors,
+                );
+                if !errors.is_empty() {
+                    return Err(ManifestError::MissingField(
+                        "strategy.parameters.config_toml",
+                    ));
+                }
             }
         }
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
@@ -1082,7 +1197,110 @@ fn validate_strategy_source(
         }
         _ => unreachable!("registered strategy was already matched"),
     }
+    validate_strategy_config_overlay(strategy, key)?;
     validate_strategy_source_provenance(strategy, artifact_root)?;
+    Ok(())
+}
+
+fn validate_strategy_config_overlay(
+    strategy: &StrategySource,
+    registry_key: &str,
+) -> Result<(), ManifestError> {
+    let Some(overlay) = &strategy.config_overlay else {
+        return Ok(());
+    };
+    if registry_key != STRATEGY_BINARY_ORACLE_EDGE_TAKER {
+        return Err(ManifestError::InvalidStrategyConfigOverlay {
+            field: "strategy.config_overlay",
+            message: format!("not supported for strategy {registry_key:?}"),
+        });
+    }
+    for (field, value) in [
+        (
+            "strategy.config_overlay.production_root_config_path",
+            overlay.production_root_config_path.as_str(),
+        ),
+        (
+            "strategy.config_overlay.override_delta.label",
+            overlay.override_delta.label.as_str(),
+        ),
+        (
+            "strategy.config_overlay.override_delta.strategy_instance_id",
+            overlay.override_delta.strategy_instance_id.as_str(),
+        ),
+        (
+            "strategy.config_overlay.override_delta.signal_role",
+            overlay.override_delta.signal_role.as_str(),
+        ),
+        (
+            "strategy.config_overlay.override_delta.signal_data_client_id",
+            overlay.override_delta.signal_data_client_id.as_str(),
+        ),
+        (
+            "strategy.config_overlay.override_delta.signal_instrument_id",
+            overlay.override_delta.signal_instrument_id.as_str(),
+        ),
+        (
+            "strategy.config_overlay.override_delta.realized_volatility_surface_id",
+            overlay
+                .override_delta
+                .realized_volatility_surface_id
+                .as_str(),
+        ),
+    ] {
+        if value.trim().is_empty() {
+            return Err(ManifestError::MissingField(field));
+        }
+    }
+    overlay
+        .override_delta
+        .signal_instrument_id
+        .parse::<InstrumentId>()
+        .map_err(|_| ManifestError::InvalidInstrumentId {
+            instrument_id: overlay.override_delta.signal_instrument_id.clone(),
+        })?;
+    if overlay
+        .override_delta
+        .keep_realized_volatility_sources
+        .is_empty()
+    {
+        return Err(ManifestError::MissingField(
+            "strategy.config_overlay.override_delta.keep_realized_volatility_sources",
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for selector in &overlay.override_delta.keep_realized_volatility_sources {
+        for (field, value) in [
+            (
+                "strategy.config_overlay.override_delta.keep_realized_volatility_sources.data_client_id",
+                selector.data_client_id.as_str(),
+            ),
+            (
+                "strategy.config_overlay.override_delta.keep_realized_volatility_sources.instrument_id",
+                selector.instrument_id.as_str(),
+            ),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ManifestError::MissingField(field));
+            }
+        }
+        selector
+            .instrument_id
+            .parse::<InstrumentId>()
+            .map_err(|_| ManifestError::InvalidInstrumentId {
+                instrument_id: selector.instrument_id.clone(),
+            })?;
+        let key = (&selector.data_client_id, &selector.instrument_id);
+        if !seen.insert(key) {
+            return Err(ManifestError::InvalidStrategyConfigOverlay {
+                field: "strategy.config_overlay.override_delta.keep_realized_volatility_sources",
+                message: format!(
+                    "duplicate selector {}:{}",
+                    selector.data_client_id, selector.instrument_id
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -1114,6 +1332,15 @@ fn validate_strategy_source_provenance(
             )
         }
         StrategySourceKind::HumanTypedConfig => {
+            if strategy.config_overlay.is_some() {
+                return Err(ManifestError::InvalidStrategyConfigOverlay {
+                    field: "strategy.config_overlay",
+                    message: format!(
+                        "not allowed for strategy source kind {:?}",
+                        strategy.source_kind
+                    ),
+                });
+            }
             validate_strategy_artifact_ref(
                 "strategy.typed_config_uri",
                 "strategy.typed_config_hash",
@@ -1133,6 +1360,15 @@ fn validate_strategy_source_provenance(
             )
         }
         StrategySourceKind::ResearchAnalyticsExperimentResult => {
+            if strategy.config_overlay.is_some() {
+                return Err(ManifestError::InvalidStrategyConfigOverlay {
+                    field: "strategy.config_overlay",
+                    message: format!(
+                        "not allowed for strategy source kind {:?}",
+                        strategy.source_kind
+                    ),
+                });
+            }
             let experiment_result_prefix =
                 research_analytics_experiment_result_prefix(artifact_root);
             validate_strategy_artifact_ref(
@@ -1227,6 +1463,41 @@ fn validate_starting_balances(balances: &[String]) -> Result<(), ManifestError> 
         })?;
     }
     Ok(())
+}
+
+fn manifest_venue_to_nt_config(
+    venue: &ManifestVenueConfig,
+) -> Result<BacktestVenueConfig, ManifestError> {
+    ensure_unsupported_nt_venue_surfaces_absent(venue)?;
+    Ok(BacktestVenueConfig::builder()
+        .name(Ustr::from(&venue.nt_venue))
+        .oms_type(parse_oms_type(&venue.oms_type)?)
+        .account_type(parse_account_type(&venue.account_type)?)
+        .book_type(parse_book_type(&venue.book_type)?)
+        .starting_balances(venue.starting_balances.clone())
+        .routing(venue.routing)
+        .frozen_account(venue.frozen_account)
+        .reject_stop_orders(venue.reject_stop_orders)
+        .support_gtd_orders(venue.support_gtd_orders)
+        .support_contingent_orders(venue.support_contingent_orders)
+        .use_position_ids(venue.use_position_ids)
+        .use_random_ids(venue.use_random_ids)
+        .use_reduce_only(venue.use_reduce_only)
+        .bar_execution(venue.bar_execution)
+        .bar_adaptive_high_low_ordering(venue.bar_adaptive_high_low_ordering)
+        .trade_execution(venue.trade_execution)
+        .use_market_order_acks(venue.use_market_order_acks)
+        .liquidity_consumption(venue.liquidity_consumption)
+        .allow_cash_borrowing(venue.allow_cash_borrowing)
+        .queue_position(venue.queue_position)
+        .oto_trigger_mode(parse_oto_trigger_mode(&venue.oto_trigger_mode)?)
+        .maybe_base_currency(parse_base_currency(&venue.base_currency)?)
+        .default_leverage(parse_default_leverage(&venue.default_leverage)?)
+        .maybe_fill_model(resolve_fill_model(venue.fill_model.as_ref())?)
+        .maybe_latency_model(resolve_latency_model(venue.latency_model.as_ref())?)
+        .maybe_fee_model(resolve_fee_model(venue.fee_model.as_ref())?)
+        .price_protection_points(venue.price_protection_points)
+        .build())
 }
 
 impl BacktestingRunManifest {
@@ -1592,6 +1863,12 @@ impl BacktestingRunManifest {
                     option_value(data.filter_expr()),
                 ),
                 resolved_surface(
+                    &format!("{prefix}.client_id"),
+                    NtSurfaceClassification::PassThrough,
+                    "BacktestDataConfig.client_id",
+                    option_value(data.client_id()),
+                ),
+                resolved_surface(
                     &format!("{prefix}.optimize_file_loading"),
                     NtSurfaceClassification::PassThrough,
                     "BacktestDataConfig.optimize_file_loading",
@@ -1690,6 +1967,33 @@ impl BacktestingRunManifest {
         if self.catalog_inputs.is_empty() {
             return Err(ManifestError::MissingField("catalog_inputs"));
         }
+        for venue in &self.additional_venues {
+            for (name, value) in [
+                ("additional_venues.nt_venue", venue.nt_venue.as_str()),
+                ("additional_venues.oms_type", venue.oms_type.as_str()),
+                (
+                    "additional_venues.account_type",
+                    venue.account_type.as_str(),
+                ),
+                ("additional_venues.book_type", venue.book_type.as_str()),
+                (
+                    "additional_venues.oto_trigger_mode",
+                    venue.oto_trigger_mode.as_str(),
+                ),
+                (
+                    "additional_venues.base_currency",
+                    venue.base_currency.as_str(),
+                ),
+                (
+                    "additional_venues.default_leverage",
+                    venue.default_leverage.as_str(),
+                ),
+            ] {
+                if value.trim().is_empty() {
+                    return Err(ManifestError::MissingField(name));
+                }
+            }
+        }
         for input in &self.catalog_inputs {
             for (name, value) in [
                 ("catalog_inputs.catalog_path", input.catalog_path.as_str()),
@@ -1707,9 +2011,44 @@ impl BacktestingRunManifest {
                 }
             }
         }
+        for input in &self.reconstructed_reference_current_price {
+            for (name, value) in [
+                (
+                    "reconstructed_reference_current_price.client_id",
+                    input.client_id.as_str(),
+                ),
+                (
+                    "reconstructed_reference_current_price.asset",
+                    input.asset.as_str(),
+                ),
+                (
+                    "reconstructed_reference_current_price.source_id",
+                    input.source_id.as_str(),
+                ),
+                (
+                    "reconstructed_reference_current_price.provider",
+                    input.provider.as_str(),
+                ),
+                (
+                    "reconstructed_reference_current_price.provider_instrument",
+                    input.provider_instrument.as_str(),
+                ),
+                (
+                    "reconstructed_reference_current_price.price",
+                    input.price.as_str(),
+                ),
+            ] {
+                if value.trim().is_empty() {
+                    return Err(ManifestError::MissingField(name));
+                }
+            }
+        }
         ensure_supported_enums(self)?;
         ensure_supported_domain_metrics(self)?;
         ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
+        for venue in &self.additional_venues {
+            ensure_unsupported_nt_venue_surfaces_absent(venue)?;
+        }
         for input in &self.catalog_inputs {
             ensure_unsupported_nt_catalog_query_surfaces_absent(input)?;
             ensure_supported_data_type(&input.data_type)?;
@@ -1748,6 +2087,9 @@ impl BacktestingRunManifest {
         ensure_order_book_delta_inputs_require_l2_mbp(&self.catalog_inputs, &self.venue.book_type)?;
         validate_strategy_source(&self.strategy, &self.artifact_root)?;
         validate_starting_balances(&self.venue.starting_balances)?;
+        for venue in &self.additional_venues {
+            validate_starting_balances(&venue.starting_balances)?;
+        }
 
         // Data must be accepted: the only admissible input is the accepted
         // dataset, matched by source proof id and version.
@@ -1832,36 +2174,7 @@ impl BacktestingRunManifest {
     ///
     /// Returns an error if an enum value is unsupported.
     pub fn to_nt_venue_config(&self) -> Result<BacktestVenueConfig, ManifestError> {
-        ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
-        Ok(BacktestVenueConfig::builder()
-            .name(Ustr::from(&self.venue.nt_venue))
-            .oms_type(parse_oms_type(&self.venue.oms_type)?)
-            .account_type(parse_account_type(&self.venue.account_type)?)
-            .book_type(parse_book_type(&self.venue.book_type)?)
-            .starting_balances(self.venue.starting_balances.clone())
-            .routing(self.venue.routing)
-            .frozen_account(self.venue.frozen_account)
-            .reject_stop_orders(self.venue.reject_stop_orders)
-            .support_gtd_orders(self.venue.support_gtd_orders)
-            .support_contingent_orders(self.venue.support_contingent_orders)
-            .use_position_ids(self.venue.use_position_ids)
-            .use_random_ids(self.venue.use_random_ids)
-            .use_reduce_only(self.venue.use_reduce_only)
-            .bar_execution(self.venue.bar_execution)
-            .bar_adaptive_high_low_ordering(self.venue.bar_adaptive_high_low_ordering)
-            .trade_execution(self.venue.trade_execution)
-            .use_market_order_acks(self.venue.use_market_order_acks)
-            .liquidity_consumption(self.venue.liquidity_consumption)
-            .allow_cash_borrowing(self.venue.allow_cash_borrowing)
-            .queue_position(self.venue.queue_position)
-            .oto_trigger_mode(parse_oto_trigger_mode(&self.venue.oto_trigger_mode)?)
-            .maybe_base_currency(parse_base_currency(&self.venue.base_currency)?)
-            .default_leverage(parse_default_leverage(&self.venue.default_leverage)?)
-            .maybe_fill_model(resolve_fill_model(self.venue.fill_model.as_ref())?)
-            .maybe_latency_model(resolve_latency_model(self.venue.latency_model.as_ref())?)
-            .maybe_fee_model(resolve_fee_model(self.venue.fee_model.as_ref())?)
-            .price_protection_points(self.venue.price_protection_points)
-            .build())
+        manifest_venue_to_nt_config(&self.venue)
     }
 
     /// Map all catalog inputs into NautilusTrader [`BacktestDataConfig`]s.
@@ -1963,7 +2276,10 @@ impl BacktestingRunManifest {
     ///
     /// Returns an error if venue or data mapping fails.
     pub fn to_nt_run_config(&self) -> Result<BacktestRunConfig, ManifestError> {
-        let venue = self.to_nt_venue_config()?;
+        let mut venues = vec![self.to_nt_venue_config()?];
+        for venue in &self.additional_venues {
+            venues.push(manifest_venue_to_nt_config(venue)?);
+        }
         let data = self.to_nt_data_configs()?;
         let start = self
             .start_time
@@ -1975,7 +2291,7 @@ impl BacktestingRunManifest {
             .transpose()?;
         Ok(BacktestRunConfig::builder()
             .id(self.run_id.clone())
-            .venues(vec![venue])
+            .venues(venues)
             .data(data)
             .maybe_start(start)
             .maybe_end(end)
@@ -2058,6 +2374,7 @@ fn catalog_input_to_nt_data_config(
         .maybe_start_time(start_time)
         .maybe_end_time(end_time)
         .maybe_filter_expr(input.filter_expr.clone())
+        .maybe_client_id(input.client_id.as_deref().map(ClientId::from))
         .maybe_optimize_file_loading(input.optimize_file_loading)
         .build())
 }
@@ -2265,15 +2582,21 @@ where
 }
 
 fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), ManifestError> {
-    parse_oms_type(&manifest.venue.oms_type)?;
-    parse_account_type(&manifest.venue.account_type)?;
-    parse_book_type(&manifest.venue.book_type)?;
-    parse_oto_trigger_mode(&manifest.venue.oto_trigger_mode)?;
-    parse_base_currency(&manifest.venue.base_currency)?;
-    parse_default_leverage(&manifest.venue.default_leverage)?;
-    resolve_fill_model(manifest.venue.fill_model.as_ref())?;
-    resolve_latency_model(manifest.venue.latency_model.as_ref())?;
-    resolve_fee_model(manifest.venue.fee_model.as_ref())?;
+    for venue in manifest
+        .additional_venues
+        .iter()
+        .chain(std::iter::once(&manifest.venue))
+    {
+        parse_oms_type(&venue.oms_type)?;
+        parse_account_type(&venue.account_type)?;
+        parse_book_type(&venue.book_type)?;
+        parse_oto_trigger_mode(&venue.oto_trigger_mode)?;
+        parse_base_currency(&venue.base_currency)?;
+        parse_default_leverage(&venue.default_leverage)?;
+        resolve_fill_model(venue.fill_model.as_ref())?;
+        resolve_latency_model(venue.latency_model.as_ref())?;
+        resolve_fee_model(venue.fee_model.as_ref())?;
+    }
     Ok(())
 }
 
@@ -2320,14 +2643,10 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
     for (field, present) in [
         (
             UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[0].1,
-            catalog.client_id.is_some(),
-        ),
-        (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[1].1,
             catalog.metadata.is_some(),
         ),
         (
-            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[3].1,
+            UNSUPPORTED_NT_CATALOG_QUERY_SURFACES[2].1,
             catalog.bar_types.is_some(),
         ),
     ] {
@@ -2393,10 +2712,12 @@ struct AdmittanceRow {
 /// streams (each its own primary fidelity class, per the v3 tier map: Tier A
 /// quotes/index_prices/mark_prices). Their canonical tables and canonical->NT
 /// projections landed in S3 (`project_canonical_{quotes,index,mark}_to_catalog`
-/// and `read_back_{quotes,index,mark}`); the raw venue-wire normalizers that
-/// populate those tables from source bytes remain a follow-up slice (bolt-v2
-/// #685). Auxiliary status/close pairing for the three new classes is
-/// deliberately omitted here — each new class carries a single primary row.
+/// and `read_back_{quotes,index,mark}`). Snapshot-seeded L2 quote archives now
+/// populate `QuoteTick` through the seeded-L2 quote adapter; the older flat
+/// snapshot-quote, index-price, and mark-price raw normalizers still fail loud
+/// until their source-specific acquisition slices land. Auxiliary status/close
+/// pairing for the three new classes is deliberately omitted here — each new
+/// class carries a single primary row.
 const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
     // TradeReplay: native trade prints are primary; status/close auxiliary.
     AdmittanceRow {
@@ -2457,7 +2778,8 @@ const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
         role: AdmittanceRole::Auxiliary,
     },
     // QuoteReplay/IndexReplay/MarkReplay: gate-capable in S2; projection lands
-    // in S3 (normalization-catalog-plan.v3.md Tier A quotes/index_prices/mark_prices).
+    // in S3. Seeded L2 quote archives can now populate QuoteTick; the flat
+    // snapshot-quote/index/mark raw seams still fail loud.
     AdmittanceRow {
         data_type: NautilusDataType::QuoteTick,
         fidelity: SourceProofFidelityClass::QuoteReplay,
@@ -3114,6 +3436,7 @@ mod tests {
                 typed_config_hash: None,
                 experiment_result_uri: None,
                 experiment_result_hash: None,
+                config_overlay: None,
             },
             strategy_config_hash: TEST_SHA256_ZERO.to_string(),
             venue: ManifestVenueConfig {
@@ -3149,6 +3472,7 @@ mod tests {
                 fee_model: None,
                 settlement_prices: None,
             },
+            additional_venues: Vec::new(),
             catalog_inputs: vec![ManifestCatalogInput {
                 catalog_path: "/tmp/catalog".to_string(),
                 catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
@@ -3166,6 +3490,7 @@ mod tests {
                 bar_types: None,
                 optimize_file_loading: None,
             }],
+            reconstructed_reference_current_price: Vec::new(),
             catalog_hash: TEST_SHA256_ONE.to_string(),
             execution_model: "nt_backtest_node".to_string(),
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),
@@ -3189,6 +3514,23 @@ mod tests {
         assert_eq!(run.id(), TEST_RUN_ID);
         assert_eq!(run.venues().len(), 1);
         assert_eq!(run.data().len(), 1);
+    }
+
+    #[test]
+    fn additional_venues_map_to_nt_run_config() {
+        let mut manifest = valid_manifest();
+        let mut okx = manifest.venue.clone();
+        okx.nt_venue = "OKX".to_string();
+        okx.book_type = "L1_MBP".to_string();
+        okx.starting_balances = vec!["1_000_000 USDT".to_string()];
+        manifest.additional_venues.push(okx);
+
+        manifest.validate(&accepted_dataset()).expect("valid");
+        let run = manifest.to_nt_run_config().expect("run config");
+
+        assert_eq!(run.venues().len(), 2);
+        assert_eq!(run.venues()[0].name().as_str(), TEST_NT_VENUE);
+        assert_eq!(run.venues()[1].name().as_str(), "OKX");
     }
 
     #[test]
@@ -4283,6 +4625,72 @@ mod tests {
         ));
     }
 
+    fn binary_oracle_config_overlay() -> StrategyConfigOverlaySource {
+        StrategyConfigOverlaySource {
+            production_root_config_path: "config/root.toml".to_string(),
+            override_delta: ManifestBacktestConfigOverride {
+                label: "production config + documented OKX/Bybit override".to_string(),
+                strategy_instance_id: "binary_oracle_btc".to_string(),
+                signal_role: "primary".to_string(),
+                signal_data_client_id: "okx_data".to_string(),
+                signal_instrument_id: "BTC-USDT.OKX".to_string(),
+                realized_volatility_surface_id: "btc_usdt_midpoint_rv".to_string(),
+                keep_realized_volatility_sources: vec![
+                    ManifestRealizedVolatilitySourceSelector {
+                        data_client_id: "okx_data".to_string(),
+                        instrument_id: "BTC-USDT.OKX".to_string(),
+                    },
+                    ManifestRealizedVolatilitySourceSelector {
+                        data_client_id: "bybit_data".to_string(),
+                        instrument_id: "BTC-USDT.BYBIT".to_string(),
+                    },
+                ],
+            },
+        }
+    }
+
+    fn binary_oracle_overlay_manifest() -> BacktestingRunManifest {
+        let mut manifest = valid_manifest();
+        manifest.strategy.registry_key = STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string();
+        manifest.strategy.parameters = BTreeMap::from([
+            (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
+            (
+                STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
+                "shadow".to_string(),
+            ),
+        ]);
+        manifest.strategy.config_overlay = Some(binary_oracle_config_overlay());
+        manifest.strategy_config_hash =
+            "2222222222222222222222222222222222222222222222222222222222222222".to_string();
+        manifest
+    }
+
+    #[test]
+    fn binary_oracle_accepts_production_config_overlay_without_inline_config_toml() {
+        let manifest = binary_oracle_overlay_manifest();
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("binary-oracle production config overlay should validate");
+    }
+
+    #[test]
+    fn binary_oracle_rejects_config_overlay_plus_inline_config_toml() {
+        let mut manifest = binary_oracle_overlay_manifest();
+        manifest
+            .strategy
+            .parameters
+            .insert(STRATEGY_PARAM_CONFIG_TOML.to_string(), String::new());
+
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidStrategyConfigOverlay {
+                field: "strategy.config_overlay",
+                ..
+            }
+        ));
+    }
+
     #[test]
     fn resolved_nt_surfaces_record_unsupported_catalog_query_mappings() {
         let manifest = valid_manifest();
@@ -4307,6 +4715,7 @@ mod tests {
         manifest.catalog_inputs[0].start_time = Some(1_772_323_200_000_000_000);
         manifest.catalog_inputs[0].end_time = Some(1_772_409_600_000_000_000);
         manifest.catalog_inputs[0].filter_expr = Some("price > 0".to_string());
+        manifest.catalog_inputs[0].client_id = Some("TEST-CLIENT".to_string());
         manifest.catalog_inputs[0].optimize_file_loading = Some(true);
 
         let data = manifest
@@ -4322,6 +4731,7 @@ mod tests {
             Some(UnixNanos::from(1_772_409_600_000_000_000))
         );
         assert_eq!(data.filter_expr(), Some("price > 0"));
+        assert_eq!(data.client_id(), Some(ClientId::from("TEST-CLIENT")));
         assert!(data.optimize_file_loading());
     }
 
@@ -5619,7 +6029,6 @@ mod tests {
         let serialized = toml::to_string(&valid_manifest()).expect("serialize");
         let bar_types = format!("[\"{TEST_BAR_TYPE}\"]");
         for (field, value) in [
-            ("client_id", "\"TEST-CLIENT\""),
             ("metadata", "{ source = \"proof\" }"),
             ("bar_types", bar_types.as_str()),
         ] {

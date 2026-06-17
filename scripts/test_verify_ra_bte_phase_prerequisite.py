@@ -143,7 +143,7 @@ use bolt_v2::{
     bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::{
-        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
+        production_strategy_registry,
         registry::StrategyBuildContext,
     },
 };
@@ -162,14 +162,21 @@ fn add_manifest_strategy(engine: &mut Engine, manifest: &Manifest) -> Result<()>
             let submit_admission =
                 Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
             let fee_provider = Arc::new(ManifestFeeProvider { fee_bps });
-            let context = StrategyBuildContext::new(
+            let build_context = StrategyBuildContext::new(
                 fee_provider,
                 decision_evidence,
                 submit_admission,
                 Venue::from(manifest.venue.nt_venue.as_str()),
             );
-            let strategy = BinaryOracleEdgeTakerBuilder::build_strategy(&raw_config, &context).unwrap();
-            engine.add_strategy(strategy).unwrap();
+            let registry = production_strategy_registry().unwrap();
+            registry
+                .register_strategy(
+                    STRATEGY_BINARY_ORACLE_EDGE_TAKER,
+                    &raw_config,
+                    &build_context,
+                    engine.kernel().trader(),
+                )
+                .unwrap();
         }
         _ => {}
     }
@@ -242,8 +249,8 @@ def test_runner_tokens_in_comments_and_strings_do_not_satisfy_wiring() -> None:
             """
 const FAKE: &str = "STRATEGY_BINARY_ORACLE_EDGE_TAKER BinaryOracleEdgeTakerBuilder \
 BoltV3SubmitAdmissionState BoltV3DecisionEvidenceWriter StrategyBuildContext::new \
-Venue::from(manifest.venue.nt_venue.as_str()) BinaryOracleEdgeTakerBuilder::build_strategy \
-engine.add_strategy(strategy)";
+Venue::from(manifest.venue.nt_venue.as_str()) production_strategy_registry \
+registry.register_strategy engine.kernel().trader";
 
 // STRATEGY_BINARY_ORACLE_EDGE_TAKER
 // BinaryOracleEdgeTakerBuilder
@@ -251,8 +258,9 @@ engine.add_strategy(strategy)";
 // BoltV3DecisionEvidenceWriter
 // StrategyBuildContext::new
 // Venue::from(manifest.venue.nt_venue.as_str())
-// BinaryOracleEdgeTakerBuilder::build_strategy
-// engine.add_strategy(strategy)
+// production_strategy_registry
+// registry.register_strategy
+// engine.kernel().trader
 fn add_manifest_strategy() {}
 """,
         )

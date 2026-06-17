@@ -65,7 +65,8 @@ use crate::{
     run_manifest::{BacktestingRunManifest, MarketStructureFixture, parse_manifest_toml},
     runner::{
         iterations_mismatch, market_structure_label, nt_extension_surface_claim_limits,
-        result_contract_warnings, run_nt_backtest_node, run_purpose_label,
+        result_contract_feed_labels, result_contract_warnings, run_nt_backtest_node,
+        run_purpose_label,
     },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
     source_proof::{AcceptanceMode, SourceProofFidelityClass, SourceProofUsageScope},
@@ -869,8 +870,11 @@ pub fn project_pmxt_one_off_rows_to_nt(
             }
         }
     }
-    let (trade_ticks, trade_dedupe_provenance) =
+    let (mut trade_ticks, trade_dedupe_provenance) =
         project_pmxt_trade_rows_to_nt(instrument_id, price_precision, size_precision, trade_rows)?;
+    order_book_deltas.sort_by_key(|delta| (delta.ts_init, delta.ts_event));
+    quote_ticks.sort_by_key(|quote| (quote.ts_init, quote.ts_event));
+    trade_ticks.sort_by_key(|tick| (tick.ts_init, tick.ts_event));
 
     Ok(PmxtOneOffNtProjection {
         source_binding: request.source_binding,
@@ -1520,9 +1524,8 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         "PMXT one-off manifest source_proof_version does not match conversion fingerprint"
     );
 
-    let nt_result = run_nt_backtest_node(spec.manifest)
-        .context("run PMXT one-off L2 BacktestNode")?
-        .result;
+    let nt_run = run_nt_backtest_node(spec.manifest).context("run PMXT one-off L2 BacktestNode")?;
+    let nt_result = nt_run.result;
     let expected_iterations = expected_pmxt_backtest_iterations(spec.manifest, completed)?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected_iterations) {
         bail!("PMXT one-off BacktestNode did not consume verified L2 catalog: {reason}");
@@ -1556,6 +1559,9 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         claim_limits,
         warnings: result_contract_warnings(&nt_result),
         mechanical_blockers: Vec::new(),
+        config_override_report: nt_run.config_override_report.as_ref(),
+        run_guard_report: nt_run.run_guard_report.as_ref(),
+        feed_labels: result_contract_feed_labels(spec.manifest),
         nt_result: &nt_result,
         artifact_uris: spec.artifact_uris,
         created_at: spec.created_at,

@@ -219,7 +219,16 @@ jobs:
       - name: test
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"
+          BOLT_ISSUE_789_RESULT_PATH: ${{ github.workspace }}/crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json
         run: just bte-test
+
+      - name: Upload issue #789 first-P/L artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
+          path: crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json
+          if-no-files-found: ignore
 
   gate:
     name: backtester-gate

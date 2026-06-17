@@ -234,7 +234,19 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
             if line.startswith("worktree "):
                 candidate = pathlib.Path(line[len("worktree "):].strip())
                 if candidate.is_dir():
-                    return candidate
+                    if (candidate / ".git").exists():
+                        return candidate
+                    try:
+                        worktree_val = subprocess.run(
+                            ["git", "-C", str(candidate), "config", "--get", "core.worktree"],
+                            check=True, capture_output=True, text=True,
+                        ).stdout.strip()
+                        if worktree_val:
+                            resolved = (candidate / worktree_val).resolve()
+                            if (resolved / ".git").exists() or (resolved.is_dir() and (resolved / "config").exists()):
+                                return resolved
+                    except subprocess.CalledProcessError:
+                        pass
     except subprocess.CalledProcessError:
         pass
     # Fallback for normal repos / linked worktrees (not submodules).
@@ -829,7 +841,7 @@ def run_lane_h(
     branches = list_local_branches(repo_root)
     bound = worktree_bound_branches(repo_root)
 
-    skip_names = {config.trunk_branch, "master", cur} | keep
+    skip_names = {b for b in (config.trunk_branch, "master", cur) if b} | keep
 
     for br in branches:
         if br.name in skip_names:
@@ -894,7 +906,7 @@ def run_lane_r(
     cur = current_branch(repo_root)
     branches = list_local_branches(repo_root)
     bound = worktree_bound_branches(repo_root)
-    skip_names = {config.trunk_branch, "master", cur} | keep
+    skip_names = {b for b in (config.trunk_branch, "master", cur) if b} | keep
 
     gh_unavailable = False
     for br in branches:
@@ -1009,15 +1021,25 @@ def _archive_worktree(wt_path: pathlib.Path, archive_path: pathlib.Path) -> tupl
         return False, "tar timeout"
     if out.returncode != 0:
         return False, out.stderr.strip()[:200]
-    # integrity check
-    verify = subprocess.run(["tar", "-tzf", str(archive_path)],
-                            capture_output=True, text=True, timeout=30)
-    if verify.returncode != 0:
+    # integrity check (round-5.5: catch TimeoutExpired — a malformed/huge
+    # archive could hang tar, and uncaught it would propagate out of Lane W's
+    # per-iteration except as a crash here, or out of cmd_purge_quarantine
+    # entirely killing the rest of the sweep).
+    try:
+        verify = subprocess.run(["tar", "-tzf", str(archive_path)],
+                                capture_output=True, text=True, timeout=30)
+        if verify.returncode != 0:
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, f"archive integrity check failed: {verify.stderr.strip()[:200]}"
+    except subprocess.TimeoutExpired:
         try:
             archive_path.unlink(missing_ok=True)
         except OSError:
             pass
-        return False, f"archive integrity check failed: {verify.stderr.strip()[:200]}"
+        return False, "archive integrity check timed out (possible malformed archive)"
     return True, ""
 
 
@@ -1061,7 +1083,7 @@ def run_lane_w(
     # the invoker's worktree.
     invoke_root = invoke_root or repo_root
     cur = current_branch(invoke_root)
-    skip_branches = {config.trunk_branch, "master", cur} | keep
+    skip_branches = {b for b in (config.trunk_branch, "master", cur) if b} | keep
 
     worktrees = list_worktrees(repo_root)
     main_common = git_common_dir(repo_root)
@@ -1082,7 +1104,7 @@ def run_lane_w(
                 # round-5 Grok P1: also skip the invoker's worktree path
                 # explicitly (in case invoke_root's branch resolution missed it
                 # — e.g. detached HEAD in the invoker).
-                if (wt.path == main_root or wt.branch == cur
+                if (wt.path == main_root or (wt.branch is not None and wt.branch == cur)
                         or wt.path.resolve() == invoke_root.resolve()):
                     continue
                 if wt.branch in skip_branches:
@@ -1370,16 +1392,26 @@ def cmd_purge_quarantine(
                     continue
                 archive_file = child / "worktree.tar.gz"
                 if archive_file.is_file():
-                    verify = subprocess.run(["tar", "-tzf", str(archive_file)],
-                                            capture_output=True, text=True, timeout=30)
-                    if verify.returncode == 0:
-                        # Verified archive present — refuse to delete; surface.
+                    try:
+                        verify = subprocess.run(["tar", "-tzf", str(archive_file)],
+                                                capture_output=True, text=True, timeout=30)
+                        if verify.returncode == 0:
+                            # Verified archive present — refuse to delete; surface.
+                            write_audit(repo_root, config, {
+                                "lane": "W", "branch": manifest.get("branch"),
+                                "action": "quarantine-cruft-skipped-verified-archive",
+                                "quarantine_path": str(child),
+                                "reason": "worktree_remove_ok=False but verified archive present; "
+                                          "operator must remove explicitly if unwanted",
+                            })
+                            skipped += 1
+                            continue
+                    except Exception as exc:
                         write_audit(repo_root, config, {
                             "lane": "W", "branch": manifest.get("branch"),
-                            "action": "quarantine-cruft-skipped-verified-archive",
+                            "action": "quarantine-cruft-skipped-archive-verify-error",
                             "quarantine_path": str(child),
-                            "reason": "worktree_remove_ok=False but verified archive present; "
-                                      "operator must remove explicitly if unwanted",
+                            "reason": f"archive verification failed with exception: {exc}",
                         })
                         skipped += 1
                         continue

@@ -719,7 +719,55 @@ pub struct ExperimentResultArtifact {
     pub post_verdict_actions: Vec<ForbiddenPromotionAction>,
 }
 
+#[derive(Serialize)]
+struct ExperimentResultArtifactHashPayload<'a> {
+    artifact_schema_version: u64,
+    artifact_id: &'a str,
+    artifact_root: &'a str,
+    artifact_uri: &'a str,
+    owner: &'a str,
+    source_refs: &'a [String],
+    source_hashes: &'a [String],
+    lifecycle_state: &'a LifecycleState,
+    verdict: &'a RaVerdict,
+    promotion_config: Option<&'a PromotionConfigRef>,
+    dashboard_field_refs: &'a [String],
+    notebook_runtime_code_refs: &'a [String],
+    accepts_source_proofs: bool,
+    mutates_source_proofs: bool,
+    mutates_backtest_result_contracts: bool,
+    weakens_forbidden_claims: bool,
+    post_verdict_actions: &'a [ForbiddenPromotionAction],
+}
+
 impl ExperimentResultArtifact {
+    #[must_use]
+    pub fn expected_content_hash(&self) -> String {
+        let payload = ExperimentResultArtifactHashPayload {
+            artifact_schema_version: self.artifact_schema_version,
+            artifact_id: &self.artifact_id,
+            artifact_root: &self.artifact_root,
+            artifact_uri: &self.artifact_uri,
+            owner: &self.owner,
+            source_refs: &self.source_refs,
+            source_hashes: &self.source_hashes,
+            lifecycle_state: &self.lifecycle_state,
+            verdict: &self.verdict,
+            promotion_config: self.promotion_config.as_ref(),
+            dashboard_field_refs: &self.dashboard_field_refs,
+            notebook_runtime_code_refs: &self.notebook_runtime_code_refs,
+            accepts_source_proofs: self.accepts_source_proofs,
+            mutates_source_proofs: self.mutates_source_proofs,
+            mutates_backtest_result_contracts: self.mutates_backtest_result_contracts,
+            weakens_forbidden_claims: self.weakens_forbidden_claims,
+            post_verdict_actions: &self.post_verdict_actions,
+        };
+        sha256_hex(
+            &serde_json::to_vec(&payload)
+                .expect("experiment-results hash payload serialization cannot fail"),
+        )
+    }
+
     pub fn validate(&self) -> Result<(), ResearchAnalyticsArtifactError> {
         validate_experiment_result_identity(self)?;
         validate_experiment_results_uri("artifact_uri", &self.artifact_root, &self.artifact_uri)?;
@@ -756,6 +804,13 @@ impl ExperimentResultArtifact {
                 return Err(ResearchAnalyticsArtifactError::PromotionConfigRequiresGo);
             }
             promotion_config.validate(&self.artifact_root)?;
+        }
+        let expected_content_hash = self.expected_content_hash();
+        if self.content_hash != expected_content_hash {
+            return Err(ResearchAnalyticsArtifactError::ContentHashMismatch {
+                expected: expected_content_hash,
+                actual: self.content_hash.clone(),
+            });
         }
         Ok(())
     }
@@ -823,6 +878,10 @@ pub enum ResearchAnalyticsArtifactError {
     ForbiddenPromotionBehavior {
         violations: Vec<String>,
     },
+    ContentHashMismatch {
+        expected: String,
+        actual: String,
+    },
 }
 
 impl fmt::Display for ResearchAnalyticsArtifactError {
@@ -883,6 +942,10 @@ impl fmt::Display for ResearchAnalyticsArtifactError {
                 formatter,
                 "experiment-results artifact contains forbidden promotion behavior: {}",
                 violations.join(", ")
+            ),
+            Self::ContentHashMismatch { expected, actual } => write!(
+                formatter,
+                "experiment-results content_hash {actual:?} does not match expected payload hash {expected:?}"
             ),
         }
     }

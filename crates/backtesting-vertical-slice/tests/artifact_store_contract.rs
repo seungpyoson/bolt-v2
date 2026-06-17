@@ -23,7 +23,7 @@ use backtesting_vertical_slice::{
         NtCatalogCapabilityRunSpec, NtCatalogCredentialSource, NtCatalogReadBackEvidence,
         SYNTHETIC_SOURCE_PROOF_ID,
     },
-    operator::{RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
+    operator::{CATALOG_DIR, RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
     result_contract::BacktestResultContract,
     run_manifest::{ManifestArtifactStoreSsmParameters, MarketStructureFixture},
 };
@@ -1355,6 +1355,24 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     assert_eq!(
         artifacts.output.contract.artifact_uris.nt_catalog_uri,
         expected_catalog_root
+    );
+    let transient_catalog_uri = format!(
+        "{}/{}",
+        spec.manifest.output_prefix.trim_end_matches('/'),
+        CATALOG_DIR
+    );
+    for claim_limit in &artifacts.output.contract.claim_limits {
+        assert!(
+            !claim_limit.contains(&transient_catalog_uri),
+            "durable contract claim limit must not reference transient catalog URI: {claim_limit}"
+        );
+    }
+    assert!(
+        artifacts.output.contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT pass_through surface catalog.catalog_path")
+                && limit.contains(&expected_catalog_root)
+        }),
+        "durable contract claim limits must reference the persisted catalog root"
     );
     assert!(
         artifacts

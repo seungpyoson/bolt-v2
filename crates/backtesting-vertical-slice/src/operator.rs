@@ -486,9 +486,24 @@ fn redact_operator_contract(output: &mut BacktestRunOutput, local_catalog_root: 
     let local_catalog_root = local_catalog_root.to_string_lossy();
     if !local_catalog_root.is_empty() {
         let portable_catalog_uri = output.contract.artifact_uris.nt_catalog_uri.clone();
-        for claim_limit in &mut output.contract.claim_limits {
-            *claim_limit = claim_limit.replace(local_catalog_root.as_ref(), &portable_catalog_uri);
-        }
+        replace_contract_claim_limit_uri(
+            &mut output.contract,
+            local_catalog_root.as_ref(),
+            &portable_catalog_uri,
+        );
+    }
+}
+
+fn replace_contract_claim_limit_uri(
+    contract: &mut BacktestResultContract,
+    from_uri: &str,
+    to_uri: &str,
+) {
+    if from_uri.is_empty() || from_uri == to_uri {
+        return;
+    }
+    for claim_limit in &mut contract.claim_limits {
+        *claim_limit = claim_limit.replace(from_uri, to_uri);
     }
 }
 
@@ -1352,7 +1367,13 @@ where
         .conversion_catalog_metadata
         .content_hash()
         .context("hash durable catalog metadata")?;
+    let transient_catalog_uri = artifacts.output.contract.artifact_uris.nt_catalog_uri.clone();
     artifacts.output.contract.artifact_uris.nt_catalog_uri = persisted.catalog_root_uri.clone();
+    replace_contract_claim_limit_uri(
+        &mut artifacts.output.contract,
+        &transient_catalog_uri,
+        &persisted.catalog_root_uri,
+    );
     artifacts
         .output
         .contract

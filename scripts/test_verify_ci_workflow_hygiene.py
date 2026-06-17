@@ -1974,6 +1974,37 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
     if not any("backtester draft deferral gate must explain how to request proof" in error for error in missing_gate_errors):
         raise AssertionError(f"backtester-ci workflow must reject vague deferred proof messages, got: {missing_gate_errors}")
 
+    static_gate_name = replace_once(workflow, "'backtester-gate-deferred'", "'backtester-gate'")
+    static_gate_errors = verifier.verify_repo_automation_texts({workflow_name: static_gate_name})
+    if not any("backtester draft deferral gate must publish backtester-gate-deferred" in error for error in static_gate_errors):
+        raise AssertionError(f"backtester-ci workflow must reject static deferred gate names, got: {static_gate_errors}")
+
+    missing_clippy_result = replace_once(
+        workflow,
+        '          if [[ "${{ needs.clippy.result }}" != "success" ]]; then\n'
+        '            echo "bvs-clippy did not succeed (${{ needs.clippy.result }})"\n'
+        "            exit 1\n"
+        "          fi\n",
+        "",
+    )
+    missing_clippy_errors = verifier.verify_repo_automation_texts({workflow_name: missing_clippy_result})
+    if not any("backtester draft deferral gate must require clippy success on full proof path" in error for error in missing_clippy_errors):
+        raise AssertionError(f"backtester-ci workflow must reject missing full-proof clippy gate checks, got: {missing_clippy_errors}")
+
+    broken_concurrency = replace_once(
+        replace_once(
+            workflow,
+            "format('bvs-pr-{0}-deferred', github.event.number)",
+            "format('bvs-pr-{0}', github.event.number)",
+        ),
+        "format('bvs-pr-{0}-full', github.event.number)",
+        "format('bvs-pr-{0}', github.event.number)",
+    )
+    broken_concurrency += "\n# format('bvs-pr-{0}-deferred', github.event.number)\n# format('bvs-pr-{0}-full', github.event.number)\n"
+    broken_concurrency_errors = verifier.verify_repo_automation_texts({workflow_name: broken_concurrency})
+    if not any("backtester draft deferral concurrency must split deferred PR runs" in error for error in broken_concurrency_errors):
+        raise AssertionError(f"backtester-ci workflow must reject broken concurrency even with comment decoys, got: {broken_concurrency_errors}")
+
 
 def assert_actionlint_rejects_stale_config_variables() -> None:
     verifier = load_verifier()

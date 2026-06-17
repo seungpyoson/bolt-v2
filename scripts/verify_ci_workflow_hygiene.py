@@ -8684,6 +8684,22 @@ BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 
 BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
+BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION = """    name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
+          && 'backtester-gate-deferred'
+          || 'backtester-gate' }}"""
+
+
+def backtester_concurrency_group_text(text: str) -> str:
+    block = top_level_block(text, "concurrency")
+    group_lines: list[str] = []
+    for line in block:
+        if line.strip().startswith("cancel-in-progress:"):
+            break
+        group_lines.append(line)
+    return " ".join(line.strip() for line in group_lines if line.strip())
 
 
 def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
@@ -8723,6 +8739,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester draft deferral must define backtester-gate")
     else:
         gate_text = uncommented_text(gate)
+        if BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION not in gate_text:
+            errors.append("backtester draft deferral gate must publish backtester-gate-deferred for deferred draft PR runs")
         if "ci-policy" not in extract_needs(gate):
             errors.append("backtester draft deferral gate must need ci-policy")
         if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
@@ -8745,8 +8763,14 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '"$defer_run_context" != "true"',
         ):
             errors.append("backtester draft deferral gate must fail deferred policy outside deferred draft PR context")
+        full_body = defer_sections[1] if defer_sections is not None else gate_text
+        for job in ("fmt", "clippy", "test"):
+            condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
+            if not branch_exits_reachable(full_body, "if", condition):
+                errors.append(f"backtester draft deferral gate must require {job} success on full proof path")
 
-    if "format('bvs-pr-{0}-deferred', github.event.number)" not in text or "format('bvs-pr-{0}-full', github.event.number)" not in text:
+    group_text = backtester_concurrency_group_text(text)
+    if "format('bvs-pr-{0}-deferred', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:
         errors.append("backtester draft deferral concurrency must split deferred PR runs from full proof runs")
     return errors
 

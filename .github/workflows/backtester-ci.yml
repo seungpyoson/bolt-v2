@@ -260,7 +260,12 @@ jobs:
         run: just bte-test
 
   gate:
-    name: backtester-gate
+    name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
+          && 'backtester-gate-deferred'
+          || 'backtester-gate' }}
     needs: [ci-policy, detect, fmt, clippy, test]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}

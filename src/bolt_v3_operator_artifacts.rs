@@ -98,6 +98,14 @@ pub fn is_lowercase_git_sha(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+pub fn current_build_head_sha() -> Option<&'static str> {
+    option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_lowercase_git_sha(value))
+}
+
+pub fn build_head_sha_matches_current(value: &str) -> bool {
+    current_build_head_sha().is_some_and(|build_head_sha| value == build_head_sha)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +131,14 @@ mod tests {
         assert!(!is_lowercase_sha256(
             "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"
         ));
+    }
+
+    #[test]
+    fn current_build_head_sha_is_valid_when_emitted() {
+        if let Some(build_head_sha) = current_build_head_sha() {
+            assert!(is_lowercase_git_sha(build_head_sha));
+            assert!(build_head_sha_matches_current(build_head_sha));
+        }
     }
 }
 

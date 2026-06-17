@@ -39,7 +39,7 @@ use crate::bolt_v3_maker_go_live_gate::{
 use crate::bolt_v3_maker_market_selection::{
     MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy, maker_market_portfolio_policy_blockers,
 };
-use crate::bolt_v3_operator_artifacts::{is_lowercase_git_sha, is_lowercase_sha256};
+use crate::bolt_v3_operator_artifacts::{build_head_sha_matches_current, is_lowercase_sha256};
 use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -164,7 +164,7 @@ impl BacktestParametersBlock {
                 BacktestVerdictParameter::Pass => MakerBacktestVerdict::Pass,
                 BacktestVerdictParameter::Fail => MakerBacktestVerdict::Fail,
             },
-            build_head_sha_valid: is_lowercase_git_sha(&self.build_head_sha),
+            build_head_sha_valid: build_head_sha_matches_current(&self.build_head_sha),
             strategy_config_hash_valid: is_lowercase_sha256(&self.strategy_config_hash),
             run_artifact_present: artifact_present(&self.run_artifact),
             run_artifact_sha256_valid: is_lowercase_sha256(&self.run_artifact_sha256),
@@ -678,10 +678,26 @@ mod tests {
         }
     }
 
+    fn current_test_build_head_sha() -> String {
+        crate::bolt_v3_operator_artifacts::current_build_head_sha()
+            .expect("test binary must carry BOLT_V3_BUILD_HEAD_SHA")
+            .to_string()
+    }
+
+    fn mismatched_test_build_head_sha() -> String {
+        let current = current_test_build_head_sha();
+        let mismatch = "0123456789abcdef0123456789abcdef01234567";
+        if current == mismatch {
+            "89abcdef0123456789abcdef0123456789abcdef".to_string()
+        } else {
+            mismatch.to_string()
+        }
+    }
+
     fn valid_backtest() -> BacktestParametersBlock {
         BacktestParametersBlock {
             verdict: BacktestVerdictParameter::Pass,
-            build_head_sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            build_head_sha: current_test_build_head_sha(),
             strategy_config_hash: TEST_ARTIFACT_SHA256.to_string(),
             run_artifact: "artifact://maker/backtest/run".to_string(),
             run_artifact_sha256: TEST_ARTIFACT_SHA256.to_string(),
@@ -717,10 +733,12 @@ mod tests {
         }
     }
 
-    const VALID_BACKTEST_TOML: &str = r#"
+    fn valid_backtest_toml() -> String {
+        format!(
+            r#"
             [backtest]
             verdict = "pass"
-            build_head_sha = "0123456789abcdef0123456789abcdef01234567"
+            build_head_sha = "{}"
             strategy_config_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             run_artifact = "artifact://maker/backtest/run"
             run_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -757,7 +775,10 @@ mod tests {
             execution_model = "nt_backtest_node"
             venue_queue_position = true
             catalog_data_types = ["OrderBookDelta", "TradeTick"]
-            "#;
+            "#,
+            current_test_build_head_sha()
+        )
+    }
 
     const VALID_MARKET_PORTFOLIO_TOML: &str = r#"
             [market_portfolio]
@@ -1112,6 +1133,20 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_mismatched_backtest_build_head_sha() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            build_head_sha: mismatched_test_build_head_sha(),
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.build_head_sha")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_noop_backtest_counts() {
         let errors = backtest_errors(BacktestParametersBlock {
             maker_order_count: 0,
@@ -1335,7 +1370,7 @@ mod tests {
             requote_min_interval_ms = 500
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
-            VALID_BACKTEST_TOML
+            valid_backtest_toml()
         );
         let parsed = parameters_from_str(&toml).expect("valid block deserializes");
         assert_eq!(parsed.runtime, valid_runtime());
@@ -1358,7 +1393,7 @@ mod tests {
             surprise = 1
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
-            VALID_BACKTEST_TOML
+            valid_backtest_toml()
         );
         assert!(
             parameters_from_str(&toml).is_err(),
@@ -1478,7 +1513,7 @@ mod tests {
             min_slot_notional = 100.0
             surprise = true
             "#,
-            VALID_BACKTEST_TOML
+            valid_backtest_toml()
         );
         assert!(
             parameters_from_str(&toml).is_err(),
@@ -1499,7 +1534,7 @@ mod tests {
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
             "#,
-            VALID_BACKTEST_TOML
+            valid_backtest_toml()
         );
         assert!(
             parameters_from_str(&toml).is_err(),
@@ -1519,7 +1554,7 @@ mod tests {
             mu_stale_window_ms = 60000
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
-            VALID_BACKTEST_TOML
+            valid_backtest_toml()
         );
         assert!(
             parameters_from_str(&toml).is_err(),
@@ -1545,7 +1580,7 @@ mod tests {
             max_active_markets = 3
             total_bankroll_notional = 1500.0
             "#,
-            VALID_BACKTEST_TOML
+            valid_backtest_toml()
         );
         assert!(
             parameters_from_str(&toml).is_err(),

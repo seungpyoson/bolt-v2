@@ -1367,7 +1367,12 @@ where
         .conversion_catalog_metadata
         .content_hash()
         .context("hash durable catalog metadata")?;
-    let transient_catalog_uri = artifacts.output.contract.artifact_uris.nt_catalog_uri.clone();
+    let transient_catalog_uri = artifacts
+        .output
+        .contract
+        .artifact_uris
+        .nt_catalog_uri
+        .clone();
     artifacts.output.contract.artifact_uris.nt_catalog_uri = persisted.catalog_root_uri.clone();
     replace_contract_claim_limit_uri(
         &mut artifacts.output.contract,

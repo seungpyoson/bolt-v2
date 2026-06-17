@@ -1962,7 +1962,7 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_gate_message = replace_once(
         workflow,
-        "backtester proof deferred for draft PR; run just verify-remote or mark ready",
+        "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready",
         "backtester proof deferred",
     )
     missing_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_gate_message})

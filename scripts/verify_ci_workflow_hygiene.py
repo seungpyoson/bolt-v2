@@ -8683,7 +8683,7 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
 BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}"
 BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
-BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; run just verify-remote or mark ready"
+BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
 
 
 def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:

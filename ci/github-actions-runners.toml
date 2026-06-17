@@ -34,6 +34,7 @@ gate = "github_hosted"
 deploy = "github_hosted"
 
 [workflows.backtester_ci]
+ci-policy = "github_hosted"
 detect = "github_hosted"
 fmt = "managed_light"
 # clippy compiles the full NT-heavy crate (same footprint as test) and rides above the disk-pressure

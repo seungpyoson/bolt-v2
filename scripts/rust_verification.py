@@ -82,6 +82,12 @@ RUST_PROBE_INPUT_KEYS = (
     "test_target",
     "test_name",
 )
+RUST_PROBE_SEPARATE_WORKSPACES = {
+    "crates/backtesting-vertical-slice": (
+        "backtesting-vertical-slice is a separate workspace; root Rust Probe does not cover it",
+        "just bte-fmt-check",
+    ),
+}
 SCRUB_ENV_KEYS = (
     "BOLT_ALLOW_LOCAL_RUST",
     "BOLT_MANAGED_JUST",
@@ -3291,6 +3297,14 @@ def rust_probe_test_target_for_path(path: str) -> str | None:
     return parsed.stem
 
 
+def rust_probe_separate_workspace_for_path(path: str) -> tuple[str, str] | None:
+    normalized = path.strip().replace("\\", "/")
+    for prefix, suggestion in RUST_PROBE_SEPARATE_WORKSPACES.items():
+        if normalized == prefix or normalized.startswith(f"{prefix}/"):
+            return suggestion
+    return None
+
+
 def rust_probe_suggestions(changed_files: list[str]) -> list[str]:
     normalized = sorted({path.strip().replace("\\", "/") for path in changed_files if path.strip()})
     targets = sorted(
@@ -3306,11 +3320,15 @@ def rust_probe_suggestions(changed_files: list[str]) -> list[str]:
         or path == "Cargo.lock"
         or path == "build.rs"
         or path.startswith("src/")
-        or path.startswith("crates/")
+        or (path.startswith("crates/") and rust_probe_separate_workspace_for_path(path) is None)
         for path in normalized
     )
     if lib_or_workspace_changed:
         suggestions.append("just rust-probe check-lib")
+    for message, command in sorted(
+        {suggestion for path in normalized if (suggestion := rust_probe_separate_workspace_for_path(path)) is not None}
+    ):
+        suggestions.extend([message, command])
     for target in targets:
         suggestions.extend(
             [
@@ -3555,6 +3573,11 @@ def wait_for_full_ci_run(
 
 def cmd_rust_probe(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
+    test_target = args.test_target or ""
+    test_name = args.test_name or ""
+    selection_error = validate_rust_probe_selection(args.mode, test_target, test_name)
+    if selection_error is not None:
+        return verify_remote_fail(selection_error)
     if args.mode == RUST_PROBE_SUGGEST_COMMAND:
         return cmd_rust_probe_suggest(args)
     try:
@@ -3562,11 +3585,6 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
         probe_policy = remote_probe_policy(policy)
     except (OSError, PolicyError, FileNotFoundError) as exc:
         return verify_remote_fail(str(exc))
-    test_target = args.test_target or ""
-    test_name = args.test_name or ""
-    selection_error = validate_rust_probe_selection(args.mode, test_target, test_name)
-    if selection_error is not None:
-        return verify_remote_fail(selection_error)
     head, branch, error = ensure_rust_probe_preconditions(repo)
     if error is not None or head is None or branch is None:
         return verify_remote_fail(error or "unable to inspect git state")

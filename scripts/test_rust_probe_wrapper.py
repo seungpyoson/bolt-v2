@@ -294,6 +294,21 @@ def assert_validation_errors_point_to_suggest() -> None:
     error = owner.validate_rust_probe_selection("nextest-test-target", "", "")
     if error is None or "just rust-probe suggest" not in error or "Examples:" not in error:
         raise AssertionError(error)
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        result = owner.cmd_rust_probe(
+            types.SimpleNamespace(
+                repo=str(REPO_ROOT),
+                mode="suggest",
+                test_target="unexpected-target",
+                test_name=None,
+                runner_tier=None,
+            )
+        )
+    output = stdout.getvalue() + stderr.getvalue()
+    if result != 2 or "suggest does not accept test_target or test_name" not in output:
+        raise AssertionError((result, output))
 
 
 def assert_changed_files_produce_targeted_suggestions() -> None:
@@ -316,6 +331,13 @@ def assert_changed_files_produce_targeted_suggestions() -> None:
     for command in expected:
         if command not in suggestions:
             raise AssertionError((command, suggestions))
+    bte_suggestions = owner.rust_probe_suggestions(["crates/backtesting-vertical-slice/src/lib.rs"])
+    if any(suggestion == "just rust-probe check-lib" for suggestion in bte_suggestions):
+        raise AssertionError(bte_suggestions)
+    if not any("backtesting-vertical-slice" in suggestion for suggestion in bte_suggestions):
+        raise AssertionError(bte_suggestions)
+    if not any("bte-" in suggestion for suggestion in bte_suggestions):
+        raise AssertionError(bte_suggestions)
 
 
 def assert_preconditions_are_pr_free_and_exact_upstream() -> None:

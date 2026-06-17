@@ -151,6 +151,12 @@ in two specific ways. Stated precisely:)
   deliberately. This is the cost of the design's foundational invariant:
   never do irreversible work in a hook. The operator must periodically run
   `just clean-merged-backlog` (dry-run first) to reclaim the worktree backlog.
+- **Detached-HEAD worktrees require an additional explicit override.** Even
+  inside Lane W (`--include-worktrees`), detached-HEAD worktrees are REFUSED
+  by default. The operator must pass `--allow-detached-removal` to override,
+  accepting that reflog-only commits in the detached worktree are NOT
+  preserved by the archive. See "Accepted risks" below for the recovery hole
+  this closes.
 
 ## Accepted risks
 

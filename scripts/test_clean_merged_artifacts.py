@@ -1139,6 +1139,27 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         self.assertFalse((common / "clean-merged-quarantine").exists(),
                          "no quarantine should be created for refused detached worktree")
 
+    def test_detached_worktree_removed_with_allow_flag(self) -> None:
+        """Soundness-fix review (Kimi P2 #3): --allow-detached-removal actually
+        allows removal. Without this test, the override flag could be silently
+        no-op and the suite would stay green."""
+        _run(["git", "commit", "--allow-empty", "-m", "c1"], cwd=self.work)
+        c1_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
+        _run(["git", "commit", "--allow-empty", "-m", "c2"], cwd=self.work)
+        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        wt_path = self.tmp / "wt-detached-allowed"
+        _run(["git", "worktree", "add", "--detach", str(wt_path), c1_sha], cwd=self.work)
+        rc = run_clean(self.work, "--include-worktrees", "--apply",
+                       "--allow-detached-removal", "--quiet")
+        self.assertEqual(rc, 0)
+        self.assertFalse(wt_path.exists(),
+                         "--allow-detached-removal must actually permit removal "
+                         "of an eligible detached-HEAD worktree")
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        self.assertTrue((common / "clean-merged-quarantine").is_dir(),
+                        "quarantine must be created when --allow-detached-removal proceeds")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

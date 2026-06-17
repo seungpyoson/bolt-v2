@@ -1106,7 +1106,13 @@ def _lane_w_eligible(
     """
     if branch is None:
         if not allow_detached_removal:
-            return False, "detached-HEAD worktree refused (use --allow-detached-removal to override; reflog-only commits are not preserved by the archive)", None
+            # Round-soundness-fix review (Kimi P2 #1): distinct reason so Lane W
+            # can label this as 'refused-detached-head' in the audit log instead
+            # of burying it under the generic 'skipped-not-eligible' action.
+            return (False, "__REFUSED_DETACHED_HEAD__:"
+                    " detached-HEAD worktree refused "
+                    "(use --allow-detached-removal to override; "
+                    "reflog-only commits are not preserved by the archive)", None)
         # detached: HEAD must be ancestor of trunk
         if is_ancestor(repo_root, head, trunk_sha):
             return True, "detached HEAD ancestor of trunk (--allow-detached-removal)", None
@@ -1190,8 +1196,17 @@ def run_lane_w(
                     allow_detached_removal=allow_detached_removal,
                 )
                 if not eligible:
+                    # Round-soundness-fix review (Kimi P2 #1): map the
+                    # detached-refusal sentinel to a distinct action label so
+                    # doctor / audit-log queries can find these specifically
+                    # rather than digging through generic skipped-not-eligible.
+                    if reason.startswith("__REFUSED_DETACHED_HEAD__:"):
+                        action = "refused-detached-head"
+                        reason = reason[len("__REFUSED_DETACHED_HEAD__:"):].strip()
+                    else:
+                        action = "skipped-not-eligible"
                     records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
-                                    "worktree": str(wt.path), "action": "skipped-not-eligible",
+                                    "worktree": str(wt.path), "action": action,
                                     "reason": reason})
                     continue
 

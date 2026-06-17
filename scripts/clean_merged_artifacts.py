@@ -1088,12 +1088,28 @@ def _archive_worktree(wt_path: pathlib.Path, archive_path: pathlib.Path) -> tupl
 def _lane_w_eligible(
     repo_root: pathlib.Path, config: Config, *,
     branch: str | None, head: str, trunk_sha: str,
+    allow_detached_removal: bool = False,
 ) -> tuple[bool, str, dict[str, Any] | None]:
-    """Verify Lane H/R eligibility from inside Lane W (ref still exists)."""
+    """Verify Lane H/R eligibility from inside Lane W (ref still exists).
+
+    Soundness (GPT P0 / Kimi RECOVERY_HOLE, round-soundness): detached-HEAD
+    worktrees are REFUSED by default. Scenario defeated: operator makes an
+    exploratory commit in a detached worktree, resets back to trunk, then runs
+    Lane W. The worktree's HEAD is now at trunk (ancestor-of-trunk → previously
+    eligible), but the reset-away commit lives only in the worktree's reflog.
+    Lane W's archive captures the post-reset working tree (NOT the orphaned
+    commit), `git worktree remove` deletes the worktree's reflog with the
+    admin entry, and the commit becomes unreachable — permanently lost after
+    gc. Default refuse; require explicit --allow-detached-removal to override
+    after accepting that reflog-only commits in detached worktrees will not be
+    preserved by the archive.
+    """
     if branch is None:
+        if not allow_detached_removal:
+            return False, "detached-HEAD worktree refused (use --allow-detached-removal to override; reflog-only commits are not preserved by the archive)", None
         # detached: HEAD must be ancestor of trunk
         if is_ancestor(repo_root, head, trunk_sha):
-            return True, "detached HEAD ancestor of trunk", None
+            return True, "detached HEAD ancestor of trunk (--allow-detached-removal)", None
         return False, "detached HEAD not ancestor of trunk", None
     if is_ancestor(repo_root, head, trunk_sha):
         return True, "ancestor of trunk", None
@@ -1112,6 +1128,7 @@ def run_lane_w(
     apply: bool, keep: set[str], quiet: bool,
     discard_ignored: bool, remove_nested: bool, discard_hidden: bool,
     invoke_root: pathlib.Path | None = None,
+    allow_detached_removal: bool = False,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if not config.enabled:
@@ -1170,6 +1187,7 @@ def run_lane_w(
                 label = wt.branch or f"detached-{wt.head[:8]}"
                 eligible, reason, match = _lane_w_eligible(
                     repo_root, config, branch=wt.branch, head=wt.head, trunk_sha=trunk_sha,
+                    allow_detached_removal=allow_detached_removal,
                 )
                 if not eligible:
                     records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
@@ -1847,6 +1865,12 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Lane W: override nested-.git refusal")
     p.add_argument("--discard-hidden-index-bits", action="store_true",
                    help="Lane W: override assume-unchanged/skip-worktree refusal")
+    p.add_argument("--allow-detached-removal", action="store_true",
+                   help="Lane W: override detached-HEAD worktree refusal. "
+                        "DANGEROUS: reflog-only commits in the detached worktree "
+                        "are NOT preserved by the archive and become unreachable "
+                        "after git gc. Only use when you have verified the detached "
+                        "HEAD has no exploratory commits you want to keep.")
     p.add_argument("--purge-quarantine", nargs="?", const=-1, type=int, default=None,
                    metavar="DAYS", help="purge quarantined worktrees older than DAYS")
     p.add_argument("--prune-backups", nargs="?", const=-1, type=int, default=None,
@@ -1918,6 +1942,7 @@ def main(argv: list[str] | None = None) -> int:
             remove_nested=args.remove_nested_repos,
             discard_hidden=args.discard_hidden_index_bits,
             invoke_root=invoke_root,
+            allow_detached_removal=args.allow_detached_removal,
         )
     else:
         # default mode: lane H + (lane R if --reconcile)
@@ -1931,6 +1956,7 @@ def main(argv: list[str] | None = None) -> int:
                 remove_nested=args.remove_nested_repos,
                 discard_hidden=args.discard_hidden_index_bits,
                 invoke_root=invoke_root,
+                allow_detached_removal=args.allow_detached_removal,
             )
 
     # audit successful mutations.

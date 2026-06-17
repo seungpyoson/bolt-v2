@@ -133,10 +133,37 @@ Path: `$(git rev-parse --git-common-dir)/clean-merged.log`. Rotation under
 action, reason, backup_ref, quarantine_path, recovery_hint` (structured
 pointer, not literal shell — survives shell-sensitive branch names).
 
+## Contract: what "always-on" actually means
+
+(round-soundness GPT/Kimi/Claude: the original "always-on" framing overclaimed
+in two specific ways. Stated precisely:)
+
+- **Always-on per clone, after `just setup`.** The tool is inert in a fresh
+  clone until `just setup` runs `git config core.hooksPath .githooks`. Git
+  cannot auto-run hooks on clone without local config; there is no in-tree
+  bootstrap. `just clean-merged-doctor` reports an unset hooksPath as a problem.
+- **Always-on for branch ref cleanup (Lane H + Lane R).** Every `git pull`
+  (incl. FF — empirically verified) and `git checkout main` fires the hooks
+  and cleans eligible branches automatically.
+- **NOT always-on for worktree removal (Lane W).** Lane W is opt-in
+  (`--include-worktrees` / `just clean-merged-backlog`). Worktree-bound
+  branches that are merged upstream accumulate until the operator runs Lane W
+  deliberately. This is the cost of the design's foundational invariant:
+  never do irreversible work in a hook. The operator must periodically run
+  `just clean-merged-backlog` (dry-run first) to reclaim the worktree backlog.
+
 ## Accepted risks
 
 - Lane H only cleans non-worktree-bound branches. Worktree-bound branches
   flow to Lane W (explicit). Cost of never doing irreversible work in a hook.
+- **Detached-HEAD worktrees are refused by default** (round-soundness GPT P0 /
+  Kimi RECOVERY_HOLE). Scenario defeated: operator makes an exploratory commit
+  in a detached worktree, resets back to trunk, then runs Lane W. The worktree's
+  HEAD is at trunk (eligible), but the reset-away commit lives only in the
+  worktree's reflog. The archive captures the post-reset working tree (NOT the
+  orphaned commit); `git worktree remove` deletes the worktree's reflog with
+  the admin entry; the commit becomes unreachable. `--allow-detached-removal`
+  overrides after accepting that reflog-only commits are not preserved.
 - Lane R hook-spawn runs gh per merge (detached, timeout-bounded). Persistent
   gh unavailability → squash-merged branches accumulate until online manual
   reconcile. Documented; no data loss.
@@ -145,6 +172,17 @@ pointer, not literal shell — survives shell-sensitive branch names).
   backup-ref pruning.
 - Assume-unchanged/skip-worktree files default-refused; explicit override
   destroys hidden modifications.
+- **Silent hook-death detection latency** (round-soundness GPT/Kimi/Claude).
+  If `python3` becomes unavailable (brew upgrade removes the symlink, PATH
+  change after OS update), the hooks silently no-op via `command -v python3 ||
+  exit 0`. The fail-open contract is intentional — a hook that broke `git pull`
+  over a missing dep would be strictly worse. The only detector is
+  `--doctor`'s heartbeat-freshness check (7-day floor); doctor is opt-in/pull-
+  based (no cron/launchd wiring), so real detection latency is 7 days + however
+  long until someone runs doctor. The failure cost equals the no-tool baseline
+  (merged branches linger; committed work stays reachable via reflog); prior
+  deletions are backup-ref protected. Run `just clean-merged-doctor`
+  periodically.
 
 ## Design provenance
 

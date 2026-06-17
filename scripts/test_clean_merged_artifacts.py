@@ -523,10 +523,10 @@ class LaneWTests(unittest.TestCase):
         original = cm._lane_w_eligible
         captured: dict[str, Any] = {}
 
-        def spy(repo_root, config, *, branch, head, trunk_sha):
+        def spy(repo_root, config, *, branch, head, trunk_sha, **kwargs):
             refs = git(repo_root, "for-each-ref", f"refs/heads/{branch}")
             captured["ref_present"] = branch in refs
-            return original(repo_root, config, branch=branch, head=head, trunk_sha=trunk_sha)
+            return original(repo_root, config, branch=branch, head=head, trunk_sha=trunk_sha, **kwargs)
 
         with mock.patch.object(cm, "_lane_w_eligible", spy):
             rc = run_clean_inproc(self.work, "--include-worktrees", "--apply", "--quiet")
@@ -1009,7 +1009,11 @@ class ActiveWorktreeSkipTests(unittest.TestCase):
         (cur=None) caused EVERY detached worktree to match None==None → skip.
         Restored guard + invoke_root path check ensures only the invoker's
         own worktree is skipped; other eligible detached worktrees still
-        get cleaned."""
+        get cleaned.
+
+        round-soundness update: detached-HEAD worktrees are now REFUSED by
+        default (GPT P0 RECOVERY_HOLE). This test now passes
+        --allow-detached-removal to exercise the underlying skip logic."""
         # Two ancestor-of-trunk detached worktrees: wt-other (eligible, should
         # be removed) and wt-invoker (the operator's CWD, must survive).
         # Create commits on trunk so detached HEADs land at ancestor-of-trunk.
@@ -1031,7 +1035,10 @@ class ActiveWorktreeSkipTests(unittest.TestCase):
             old_env = os.environ.copy()
             os.environ.update(GIT_ENV)
             try:
-                rc = cm.main(["--include-worktrees", "--apply", "--quiet"])
+                # --allow-detached-removal: explicitly override the post-soundness
+                # default refuse so the underlying skip logic is exercised.
+                rc = cm.main(["--include-worktrees", "--apply",
+                              "--allow-detached-removal", "--quiet"])
             finally:
                 os.environ.clear()
                 os.environ.update(old_env)
@@ -1048,6 +1055,89 @@ class ActiveWorktreeSkipTests(unittest.TestCase):
         # wt-invoker (the operator's CWD) MUST survive via invoke_root path check.
         self.assertTrue(wt_invoker.exists(),
                         "Invoker's detached worktree must still be protected")
+
+
+# ---------------------------------------------------------------------------
+# Soundness-gap regression: Lane W is OPT-IN (round-soundness Claude finding #1)
+# A future refactor that accidentally hook-fires Lane W would violate the
+# foundational "never do irreversible work in a hook" invariant. These tests
+# pin the invariant: default mode + --reconcile MUST NOT remove worktrees.
+
+
+class LaneWOptInInvariantTests(unittest.TestCase):
+    """Pin the architectural invariant that Lane W is opt-in.
+
+    Without these, flipping --include-worktrees's default to True (or adding
+    run_lane_w() to the default else-branch) would silently violate the
+    'no irreversible work in a hook' contract and 43 tests would stay green.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-optin-"))
+        self.work = make_repo(self.tmp)
+        make_config(self.work)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _setup_eligible_worktree_bound_branch(self) -> pathlib.Path:
+        _run(["git", "branch", "feat/wb"], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        wt_path = self.tmp / "wt-wb"
+        add_worktree(self.work, "feat/wb", wt_path)
+        return wt_path
+
+    def test_default_mode_does_not_run_lane_w(self) -> None:
+        """--apply without --include-worktrees must NOT touch worktrees."""
+        wt_path = self._setup_eligible_worktree_bound_branch()
+        # Plain --apply (no --include-worktrees, no --lane w)
+        rc = run_clean(self.work, "--apply", "--quiet")
+        self.assertEqual(rc, 0)
+        self.assertTrue(wt_path.exists(),
+                        "default mode MUST NOT remove worktrees (Lane W is opt-in)")
+        self.assertIn("feat/wb", git(self.work, "branch", "--list"))
+        # No quarantine created
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        self.assertFalse((common / "clean-merged-quarantine").exists(),
+                         "default mode MUST NOT create quarantine")
+
+    def test_reconcile_apply_does_not_run_lane_w(self) -> None:
+        """--reconcile --apply (the hook's invocation pattern) must NOT touch worktrees."""
+        wt_path = self._setup_eligible_worktree_bound_branch()
+        rc = run_clean(self.work, "--reconcile", "--apply", "--quiet")
+        self.assertEqual(rc, 0)
+        self.assertTrue(wt_path.exists(),
+                        "--reconcile MUST NOT remove worktrees (Lane W is opt-in)")
+        self.assertIn("feat/wb", git(self.work, "branch", "--list"))
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        self.assertFalse((common / "clean-merged-quarantine").exists(),
+                         "--reconcile MUST NOT create quarantine")
+
+    def test_detached_worktree_refused_without_flag(self) -> None:
+        """Soundness GPT P0 / Kimi RECOVERY_HOLE: detached-HEAD worktree with
+        reflog-only commits must be REFUSED by default. The archive doesn't
+        capture the orphaned commit; the worktree's reflog dies with the admin
+        entry on `git worktree remove`; commit becomes unreachable."""
+        # Set up: trunk with two commits, detached worktree at the older one.
+        _run(["git", "commit", "--allow-empty", "-m", "c1"], cwd=self.work)
+        c1_sha = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
+        _run(["git", "commit", "--allow-empty", "-m", "c2"], cwd=self.work)
+        _run(["git", "push", "-q", "origin", "main"], cwd=self.work)
+        wt_path = self.tmp / "wt-detached"
+        _run(["git", "worktree", "add", "--detach", str(wt_path), c1_sha], cwd=self.work)
+        # Default Lane W invocation: detached must be refused.
+        rc = run_clean(self.work, "--include-worktrees", "--apply", "--quiet")
+        self.assertEqual(rc, 0)
+        self.assertTrue(wt_path.exists(),
+                        "detached-HEAD worktree MUST be refused by default "
+                        "(reflog-only commits are not preserved by the archive)")
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        self.assertFalse((common / "clean-merged-quarantine").exists(),
+                         "no quarantine should be created for refused detached worktree")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ pub mod bolt_v3_decision_evidence;
 pub mod bolt_v3_executable_cost;
 pub mod bolt_v3_fair_value_pricing;
 pub mod bolt_v3_instrument_filters;
+mod bolt_v3_instrument_metadata_bus;
 pub mod bolt_v3_iv;
 pub mod bolt_v3_kill_switch;
 pub mod bolt_v3_kill_switch_store;

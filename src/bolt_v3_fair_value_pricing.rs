@@ -74,8 +74,8 @@ pub struct FairValuePricingState {
     realized_volatility_surface_id: String,
     // Latest RV snapshot per `surface_id`, as prescribed by issue #770. The shared runtime
     // routes ticks by instrument, so a strategy may observe snapshots for surfaces it does
-    // not price; those foreign entries are never read by this strategy and are bounded by
-    // the configured-surface count.
+    // not price; those foreign entries are retained under their own keys but are never read
+    // by this strategy for pricing.
     latest_realized_vol_snapshots: BTreeMap<String, RealizedVolSnapshot>,
 }
 

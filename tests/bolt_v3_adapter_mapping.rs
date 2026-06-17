@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use bolt_v2::{
     bolt_v3_adapters::{
         BoltV3AdapterMappingError, map_bolt_v3_adapters,
-        map_bolt_v3_adapters_with_runtime_approvals,
+        map_bolt_v3_adapters_with_market_identity_and_runtime_approvals,
     },
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
@@ -554,8 +554,17 @@ fn hyperliquid_standard_perps_execution_requires_consumed_live_submit_approval()
     );
     let resolved = ResolvedBoltV3Secrets { clients };
 
-    let error = map_bolt_v3_adapters(&loaded, &resolved)
-        .expect_err("Hyperliquid live submit must fail without consumed approval");
+    let error = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+        &loaded,
+        &resolved,
+        &hyperliquid_static_instrument_target_plan(
+            ProductSurface::StandardPerps,
+            "BTC-PERP.HYPERLIQUID",
+        ),
+        fixed_market_clock(1_800_000_000),
+        ProviderRuntimeApprovals::none(),
+    )
+    .expect_err("Hyperliquid live submit must fail without consumed approval");
 
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
@@ -624,9 +633,14 @@ fn hyperliquid_standard_perps_execution_maps_to_nt_after_consumed_approval() {
     let resolved = ResolvedBoltV3Secrets { clients };
     let consumed = consumed_hyperliquid_standard_perps_approval();
 
-    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+    let configs = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
         &loaded,
         &resolved,
+        &hyperliquid_static_instrument_target_plan(
+            ProductSurface::StandardPerps,
+            "BTC-PERP.HYPERLIQUID",
+        ),
+        fixed_market_clock(1_800_000_000),
         ProviderRuntimeApprovals {
             live_submit: Some(&consumed),
         },
@@ -988,8 +1002,14 @@ fn hyperliquid_spot_execution_requires_consumed_surface_approval() {
     );
     let resolved = ResolvedBoltV3Secrets { clients };
 
-    let error = map_bolt_v3_adapters(&loaded, &resolved)
-        .expect_err("Hyperliquid spot live submit must fail without consumed approval");
+    let error = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+        &loaded,
+        &resolved,
+        &hyperliquid_static_instrument_target_plan(ProductSurface::Spot, "BTC/USDC.HYPERLIQUID"),
+        fixed_market_clock(1_800_000_000),
+        ProviderRuntimeApprovals::none(),
+    )
+    .expect_err("Hyperliquid spot live submit must fail without consumed approval");
 
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
@@ -1011,9 +1031,11 @@ fn hyperliquid_spot_execution_maps_to_nt_after_consumed_surface_approval() {
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_spot_approval();
 
-    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+    let configs = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
         &loaded,
         &resolved,
+        &hyperliquid_static_instrument_target_plan(ProductSurface::Spot, "BTC/USDC.HYPERLIQUID"),
+        fixed_market_clock(1_800_000_000),
         ProviderRuntimeApprovals {
             live_submit: Some(&consumed),
         },
@@ -1047,9 +1069,14 @@ fn hyperliquid_hip3_execution_maps_to_nt_after_consumed_surface_approval() {
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_hip3_approval();
 
-    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+    let configs = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
         &loaded,
         &resolved,
+        &hyperliquid_static_instrument_target_plan(
+            ProductSurface::Hip3BuilderPerps,
+            "BTC-PERP.HYPERLIQUID",
+        ),
+        fixed_market_clock(1_800_000_000),
         ProviderRuntimeApprovals {
             live_submit: Some(&consumed),
         },
@@ -1073,9 +1100,14 @@ fn hyperliquid_hip4_execution_requires_positive_settlement_poll() {
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_hip4_approval();
 
-    let error = map_bolt_v3_adapters_with_runtime_approvals(
+    let error = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
         &loaded,
         &resolved,
+        &hyperliquid_static_instrument_target_plan(
+            ProductSurface::Hip4Outcomes,
+            "BTC-YES.HYPERLIQUID",
+        ),
+        fixed_market_clock(1_800_000_000),
         ProviderRuntimeApprovals {
             live_submit: Some(&consumed),
         },
@@ -1105,9 +1137,14 @@ fn hyperliquid_hip4_execution_maps_to_nt_after_consumed_surface_approval() {
     let resolved = fixture_resolved_hyperliquid_secrets();
     let consumed = consumed_hyperliquid_hip4_approval();
 
-    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+    let configs = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
         &loaded,
         &resolved,
+        &hyperliquid_static_instrument_target_plan(
+            ProductSurface::Hip4Outcomes,
+            "BTC-YES.HYPERLIQUID",
+        ),
+        fixed_market_clock(1_800_000_000),
         ProviderRuntimeApprovals {
             live_submit: Some(&consumed),
         },
@@ -1136,9 +1173,14 @@ fn hyperliquid_surface_approval_cannot_authorize_different_surface() {
     let consumed =
         consumed_hyperliquid_approval(HyperliquidProductSurface::Spot, "hl-hip3-approval-001");
 
-    let error = map_bolt_v3_adapters_with_runtime_approvals(
+    let error = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
         &loaded,
         &resolved,
+        &hyperliquid_static_instrument_target_plan(
+            ProductSurface::Hip3BuilderPerps,
+            "BTC-PERP.HYPERLIQUID",
+        ),
+        fixed_market_clock(1_800_000_000),
         ProviderRuntimeApprovals {
             live_submit: Some(&consumed),
         },

@@ -58,6 +58,20 @@ RUST_PROBE_MODES = (
     "nextest-test-target",
     "nextest-test-target-name",
 )
+RUST_PROBE_SUGGEST_COMMAND = "suggest"
+RUST_PROBE_COMMANDS = (RUST_PROBE_SUGGEST_COMMAND, *RUST_PROBE_MODES)
+RUST_PROBE_HELP_EPILOG = """\
+Examples:
+  just rust-probe suggest
+  just rust-probe check-lib
+  just rust-probe check-test-target <test_target>
+  just rust-probe nextest-no-run-test-target <test_target>
+  just rust-probe nextest-test-target <test_target>
+  just rust-probe nextest-test-target-name <test_target> <test_name>
+
+Rust Probe is targeted remote debugging feedback only. It is not merge proof.
+Use just verify-remote only for final exact-head full-CI proof.
+"""
 RUST_PROBE_INPUT_KEYS = (
     "runner_tier",
     "job_timeout_minutes",
@@ -356,10 +370,36 @@ def require_non_empty_string(table: dict[str, Any], key: str, prefix: str) -> st
     return value
 
 
+def require_non_empty_string_array(table: dict[str, Any], key: str, prefix: str) -> list[str]:
+    value = table.get(key)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+        raise PolicyError(f"{prefix}.{key} must be a non-empty string array")
+    return value
+
+
+def validate_git_ref(value: str, key: str) -> None:
+    invalid = any(char.isspace() for char in value) or any(char in value for char in "\\^:?*[]~@{}")
+    if (
+        invalid
+        or value.startswith(("/", "."))
+        or value.startswith("-")
+        or value.endswith(("/", "."))
+        or "//" in value
+        or ".." in value
+    ):
+        raise PolicyError(f"remote_probe.{key} must be a safe git ref")
+
+
 def validate_workflow_path(value: str, key: str) -> None:
     path = pathlib.PurePosixPath(value)
     if value.startswith("/") or ".." in path.parts or not value.endswith(".yml"):
         raise PolicyError(f"remote_probe.{key} must be a relative .yml workflow path")
+
+
+def validate_relative_workspace_path(value: str, prefix: str) -> None:
+    path = pathlib.PurePosixPath(value)
+    if value.startswith("/") or ".." in path.parts or not path.parts:
+        raise PolicyError(f"{prefix} must be a relative path")
 
 
 def validate_remote_probe_policy(data: dict[str, Any]) -> None:
@@ -370,6 +410,7 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     if workflow_name != "Rust Probe":
         raise PolicyError("remote_probe.workflow_name must be 'Rust Probe'")
     validate_workflow_path(require_non_empty_string(policy, "workflow_path", "remote_probe"), "workflow_path")
+    validate_git_ref(require_non_empty_string(policy, "suggest_base_ref", "remote_probe"), "suggest_base_ref")
     values: dict[str, int] = {}
     for key in (
         "poll_interval_seconds",
@@ -405,6 +446,28 @@ def validate_remote_probe_policy(data: dict[str, Any]) -> None:
     max_workflow_timeout_seconds = max(int(timeouts[job]) for job in expected_timeout_keys) * 60
     if values["overall_timeout_seconds"] <= max_workflow_timeout_seconds:
         raise PolicyError("remote_probe.overall_timeout_seconds must exceed remote_probe.workflow_timeouts")
+    separate_workspaces = policy.get("separate_workspaces")
+    if not isinstance(separate_workspaces, dict) or not separate_workspaces:
+        raise PolicyError("remote_probe.separate_workspaces table is required")
+    paths: set[str] = set()
+    for name, workspace in separate_workspaces.items():
+        prefix = f"remote_probe.separate_workspaces.{name}"
+        if not SAFE_IDENTIFIER_RE.match(str(name)):
+            raise PolicyError("remote_probe.separate_workspaces keys must be safe identifiers")
+        if not isinstance(workspace, dict):
+            raise PolicyError(f"{prefix} must be a table")
+        path = require_non_empty_string(workspace, "path", prefix)
+        validate_relative_workspace_path(path, f"{prefix}.path")
+        if path in paths:
+            raise PolicyError("remote_probe.separate_workspaces paths must not contain duplicates")
+        paths.add(path)
+        message = require_non_empty_string(workspace, "message", prefix)
+        if message.strip() != message or "\n" in message:
+            raise PolicyError(f"{prefix}.message must be a single trimmed line")
+        commands = require_non_empty_string_array(workspace, "commands", prefix)
+        for command in commands:
+            if command.strip() != command or "\n" in command:
+                raise PolicyError(f"{prefix}.commands entries must be single trimmed lines")
 
 
 def status_for_repo(repo: pathlib.Path) -> str:
@@ -2337,7 +2400,8 @@ def local_compile_refusal_payload(
         "command_name": command_name,
         "dry_run": False,
         "next_steps": [
-            "for targeted Rust debugging after cheap local checks: push the branch and run the smallest just rust-probe ... command",
+            "for targeted Rust debugging after cheap local checks: run: just rust-probe suggest",
+            "then commit and push the branch before running the smallest suggested just rust-probe command",
             "for merge proof: commit local changes",
             "for merge proof: push the branch",
             "for merge proof: ensure a draft or open pull request exists",
@@ -2586,6 +2650,13 @@ def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise PolicyError("remote_probe table is required for rust-probe")
     validate_remote_probe_policy(policy)
+    separate_workspaces = {
+        str(workspace["path"]): {
+            "message": str(workspace["message"]),
+            "commands": list(workspace["commands"]),
+        }
+        for workspace in raw["separate_workspaces"].values()
+    }
     return {
         "workflow_name": str(raw["workflow_name"]),
         "workflow_path": str(raw["workflow_path"]),
@@ -2598,6 +2669,8 @@ def remote_probe_policy(policy: dict[str, Any]) -> dict[str, Any]:
         "allowed_runner_tiers": list(raw["allowed_runner_tiers"]),
         "mode_runner_tiers": dict(raw["mode_runner_tiers"]),
         "workflow_timeouts": dict(raw["workflow_timeouts"]),
+        "suggest_base_ref": str(raw["suggest_base_ref"]),
+        "separate_workspaces": separate_workspaces,
     }
 
 
@@ -3229,32 +3302,166 @@ def new_probe_id() -> str:
     return f"rust-probe-{uuid.uuid4().hex}"
 
 
+def rust_probe_validation_hint(message: str) -> str:
+    return f"{message}\n\n{RUST_PROBE_HELP_EPILOG}"
+
+
 def validate_rust_probe_selection(mode: str, test_target: str, test_name: str) -> str | None:
     target_regex = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
     name_regex = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_:.@/-]*$")
+    if mode == RUST_PROBE_SUGGEST_COMMAND:
+        if test_target or test_name:
+            return rust_probe_validation_hint("suggest does not accept test_target or test_name")
+        return None
     if mode == "check-lib":
         if test_target:
-            return "test_target is forbidden for mode check-lib"
+            return rust_probe_validation_hint("test_target is forbidden for mode check-lib")
         if test_name:
-            return "test_name is forbidden for mode check-lib"
+            return rust_probe_validation_hint("test_name is forbidden for mode check-lib")
         return None
     if mode in {"check-test-target", "nextest-no-run-test-target", "nextest-test-target"}:
         if not test_target:
-            return f"test_target is required for mode {mode}"
+            return rust_probe_validation_hint(f"test_target is required for mode {mode}")
         if test_name:
-            return f"test_name is forbidden for mode {mode}"
+            return rust_probe_validation_hint(f"test_name is forbidden for mode {mode}")
     elif mode == "nextest-test-target-name":
         if not test_target:
-            return "test_target is required for mode nextest-test-target-name"
+            return rust_probe_validation_hint("test_target is required for mode nextest-test-target-name")
         if not test_name:
-            return "test_name is required for mode nextest-test-target-name"
+            return rust_probe_validation_hint("test_name is required for mode nextest-test-target-name")
     else:
-        return f"unsupported mode: {mode}"
+        return rust_probe_validation_hint(f"unsupported mode: {mode}")
     if not target_regex.match(test_target):
-        return "test_target must be a safe Rust test target name"
+        return rust_probe_validation_hint("test_target must be a safe Rust test target name")
     if test_name and not name_regex.match(test_name):
-        return "test_name must be a safe nextest test name"
+        return rust_probe_validation_hint("test_name must be a safe nextest test name")
     return None
+
+
+def rust_probe_test_target_for_path(path: str) -> str | None:
+    normalized = path.strip().replace("\\", "/")
+    if not normalized:
+        return None
+    parsed = pathlib.PurePosixPath(normalized)
+    parts = parsed.parts
+    if len(parts) != 2 or parts[0] != "tests" or parsed.suffix != ".rs":
+        return None
+    return parsed.stem
+
+
+def rust_probe_separate_workspace_for_path(path: str, separate_workspaces: dict[str, Any]) -> tuple[str, ...] | None:
+    normalized = path.strip().replace("\\", "/")
+    for prefix, suggestion in separate_workspaces.items():
+        if normalized == prefix or normalized.startswith(f"{prefix}/"):
+            return (str(suggestion["message"]), *(str(command) for command in suggestion["commands"]))
+    return None
+
+
+def rust_probe_suggestions(changed_files: list[str], separate_workspaces: dict[str, Any]) -> list[str]:
+    normalized = sorted({path.strip().replace("\\", "/") for path in changed_files if path.strip()})
+    targets = sorted(
+        {
+            target
+            for path in normalized
+            if (target := rust_probe_test_target_for_path(path)) is not None
+        }
+    )
+    suggestions: list[str] = []
+    lib_or_workspace_changed = any(
+        path == "Cargo.toml"
+        or path == "Cargo.lock"
+        or path == "build.rs"
+        or path.startswith("src/")
+        for path in normalized
+    )
+    if lib_or_workspace_changed:
+        suggestions.append("just rust-probe check-lib")
+    for suggestion_lines in sorted(
+        {
+            suggestion
+            for path in normalized
+            if (suggestion := rust_probe_separate_workspace_for_path(path, separate_workspaces)) is not None
+        }
+    ):
+        suggestions.extend(suggestion_lines)
+    for target in targets:
+        suggestions.extend(
+            [
+                f"just rust-probe check-test-target {target}",
+                f"just rust-probe nextest-no-run-test-target {target}",
+                f"just rust-probe nextest-test-target {target}",
+                f"just rust-probe nextest-test-target-name {target} <test_name>",
+            ]
+        )
+    if suggestions:
+        return suggestions
+    if any(path.startswith("crates/") for path in normalized):
+        return [
+            "No root Rust Probe suggestion was inferred for changed crates/ paths.",
+            "Configure remote_probe.separate_workspaces for separate workspaces that need non-root guidance.",
+        ]
+    return [
+        "No Rust source or top-level integration-test target was inferred from changed files.",
+        "No targeted Rust Probe command was inferred.",
+    ]
+
+
+def rust_probe_changed_files(repo: pathlib.Path, suggest_base_ref: str) -> tuple[list[str] | None, str | None, list[str]]:
+    changed: set[str] = set()
+    notes: list[str] = []
+    working_tree, error = git_output(repo, "diff", "--name-only", "HEAD", "--")
+    if error is not None:
+        return None, error, notes
+    changed.update(line for line in working_tree.splitlines() if line)
+    untracked, error = git_output(repo, "ls-files", "--others", "--exclude-standard")
+    if error is not None:
+        return None, error, notes
+    changed.update(line for line in untracked.splitlines() if line)
+    merge_base, error = git_output(repo, "merge-base", suggest_base_ref, "HEAD")
+    if error is not None or not merge_base:
+        notes.append(
+            f"merge-base for configured base ref {suggest_base_ref!r} was unavailable; "
+            "using direct base-to-HEAD tree diff"
+        )
+        branch_diff, error = git_output(repo, "diff", "--name-only", suggest_base_ref, "HEAD", "--")
+        if error is not None:
+            return None, f"rust-probe suggest could not resolve configured base ref {suggest_base_ref!r}: {error}", notes
+    else:
+        branch_diff, error = git_output(repo, "diff", "--name-only", merge_base, "HEAD", "--")
+    if error is not None:
+        return None, error, notes
+    changed.update(line for line in branch_diff.splitlines() if line)
+    return sorted(changed), None, notes
+
+
+def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
+    repo = repo_path(args.repo)
+    if args.runner_tier is not None:
+        return verify_remote_fail("suggest does not accept --runner-tier because it does not dispatch a probe")
+    try:
+        probe_policy = remote_probe_policy(load_policy(repo))
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        return verify_remote_fail(str(exc))
+    changed_files, error, notes = rust_probe_changed_files(repo, probe_policy["suggest_base_ref"])
+    if error is not None or changed_files is None:
+        return verify_remote_fail(error or "unable to inspect changed files")
+    print("Rust Probe suggestions for targeted remote debugging:")
+    print(f"base ref: {probe_policy['suggest_base_ref']} (ensure this ref is fetched and current)")
+    for note in notes:
+        print(f"note: {note}")
+    if changed_files:
+        print("changed files considered:")
+        for path in changed_files[:20]:
+            print(f"- {path}")
+        if len(changed_files) > 20:
+            print(f"- ... {len(changed_files) - 20} more")
+    else:
+        print("changed files considered: <none>")
+    print("commands:")
+    for suggestion in rust_probe_suggestions(changed_files, probe_policy["separate_workspaces"]):
+        print(f"- {suggestion}")
+    print("Rust Probe is not merge proof. For final exact-head full-CI proof: just verify-remote")
+    return 0
 
 
 def run_display_title(run: dict[str, Any]) -> str:
@@ -3441,16 +3648,18 @@ def wait_for_full_ci_run(
 
 def cmd_rust_probe(args: argparse.Namespace) -> int:
     repo = repo_path(args.repo)
-    try:
-        policy = load_policy(repo)
-        probe_policy = remote_probe_policy(policy)
-    except (OSError, PolicyError, FileNotFoundError) as exc:
-        return verify_remote_fail(str(exc))
     test_target = args.test_target or ""
     test_name = args.test_name or ""
     selection_error = validate_rust_probe_selection(args.mode, test_target, test_name)
     if selection_error is not None:
         return verify_remote_fail(selection_error)
+    if args.mode == RUST_PROBE_SUGGEST_COMMAND:
+        return cmd_rust_probe_suggest(args)
+    try:
+        policy = load_policy(repo)
+        probe_policy = remote_probe_policy(policy)
+    except (OSError, PolicyError, FileNotFoundError) as exc:
+        return verify_remote_fail(str(exc))
     head, branch, error = ensure_rust_probe_preconditions(repo)
     if error is not None or head is None or branch is None:
         return verify_remote_fail(error or "unable to inspect git state")
@@ -3558,6 +3767,11 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
     dispatch_config, error = ci_provenance_dispatch_config(repo)
     if error is not None or dispatch_config is None:
         return verify_remote_fail(error or "unable to inspect CI dispatch config")
+
+    print(
+        "verify-remote final-proof full CI: use just rust-probe suggest for targeted Rust debugging "
+        "before spending full CI."
+    )
 
     if bool(pr.get("isDraft")):
         is_fork, error = draft_pr_is_fork(repo, pr)
@@ -3910,10 +4124,12 @@ def build_parser() -> argparse.ArgumentParser:
     rust_probe = subparsers.add_parser(
         "rust-probe",
         description="Dispatch a bounded remote Rust Probe for debugging feedback; not merge proof.",
+        epilog=RUST_PROBE_HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     rust_probe.add_argument("--repo", required=True)
     rust_probe.add_argument("--runner-tier")
-    rust_probe.add_argument("mode", choices=RUST_PROBE_MODES)
+    rust_probe.add_argument("mode", choices=RUST_PROBE_COMMANDS)
     rust_probe.add_argument("test_target", nargs="?")
     rust_probe.add_argument("test_name", nargs="?")
     rust_probe.set_defaults(func=cmd_rust_probe)

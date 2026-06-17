@@ -39,7 +39,9 @@ use crate::bolt_v3_maker_go_live_gate::{
 use crate::bolt_v3_maker_market_selection::{
     MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy, maker_market_portfolio_policy_blockers,
 };
-use crate::bolt_v3_operator_artifacts::{build_head_sha_matches_current, is_lowercase_sha256};
+use crate::bolt_v3_operator_artifacts::{
+    build_head_sha_matches_current, is_lowercase_sha256, json_artifact_sha256,
+};
 use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -288,7 +290,9 @@ pub fn validate_strategy(
             )];
         }
     };
-    validate_parameter_bounds(context, &parameters)
+    let mut errors = validate_parameter_bounds(context, &parameters);
+    validate_strategy_config_hash_binding(context, strategy, &parameters, &mut errors);
+    errors
 }
 
 /// Fail-closed bounds for the maker's μ runtime knobs (the go-live gate). Each
@@ -392,6 +396,34 @@ fn validate_market_portfolio_policy(
             "{context}: parameters.market_portfolio.total_bankroll_notional must be >= parameters.market_portfolio.min_slot_notional (otherwise no market slot can receive the configured minimum allocation)"
         ));
     }
+}
+
+fn validate_strategy_config_hash_binding(
+    context: &str,
+    strategy: &BoltV3StrategyConfig,
+    parameters: &ParametersBlock,
+    errors: &mut Vec<String>,
+) {
+    if !is_lowercase_sha256(&parameters.backtest.strategy_config_hash) {
+        return;
+    }
+    match maker_strategy_config_hash(strategy, parameters) {
+        Ok(expected) if parameters.backtest.strategy_config_hash == expected => {}
+        Ok(_) => errors.push(format!(
+            "{context}: parameters.backtest.strategy_config_hash must match the canonical maker strategy config hash for this loaded strategy"
+        )),
+        Err(message) => errors.push(format!(
+            "{context}: parameters.backtest.strategy_config_hash could not be computed from this loaded strategy: {message}"
+        )),
+    }
+}
+
+fn maker_strategy_config_hash(
+    strategy: &BoltV3StrategyConfig,
+    parameters: &ParametersBlock,
+) -> Result<String, String> {
+    let raw = raw_maker_config_from_parts(strategy, parameters)?;
+    json_artifact_sha256(&raw).map_err(|error| error.to_string())
 }
 
 fn market_portfolio_blocker_parameter_path(
@@ -499,24 +531,34 @@ pub fn register_runtime_strategy(
 /// portfolio policy are read from the operator `[parameters]` block and threaded
 /// in flat under the same names `BinaryOracleMakerConfig` consumes.
 fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
-    if strategy.config.strategy_archetype.as_str() != KEY {
+    raw_maker_config_from_config(&strategy.config)
+}
+
+fn raw_maker_config_from_config(strategy: &BoltV3StrategyConfig) -> Result<Value, String> {
+    if strategy.strategy_archetype.as_str() != KEY {
         return Err(format!(
             "strategy_archetype `{}` is not `{KEY}`",
-            strategy.config.strategy_archetype.as_str()
+            strategy.strategy_archetype.as_str()
         ));
     }
     let parameters: ParametersBlock = strategy
-        .config
         .parameters
         .clone()
         .try_into()
         .map_err(|error| format!("invalid [parameters] block: {error}"))?;
+    raw_maker_config_from_parts(strategy, &parameters)
+}
+
+fn raw_maker_config_from_parts(
+    strategy: &BoltV3StrategyConfig,
+    parameters: &ParametersBlock,
+) -> Result<Value, String> {
     let runtime = &parameters.runtime;
     let market_portfolio = &parameters.market_portfolio;
 
-    let mut strategy_id = strategy.config.strategy_archetype.as_str().to_string();
+    let mut strategy_id = strategy.strategy_archetype.as_str().to_string();
     strategy_id.push('-');
-    strategy_id.push_str(&strategy.config.order_id_tag);
+    strategy_id.push_str(&strategy.order_id_tag);
     StrategyId::new_checked(&strategy_id)
         .map_err(|error| format!("maps to invalid NT StrategyId `{strategy_id}`: {error}"))?;
 
@@ -524,15 +566,15 @@ fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
     table.insert("strategy_id".to_string(), Value::String(strategy_id));
     table.insert(
         "order_id_tag".to_string(),
-        Value::String(strategy.config.order_id_tag.clone()),
+        Value::String(strategy.order_id_tag.clone()),
     );
     table.insert(
         "oms_type".to_string(),
-        Value::String(strategy.config.oms_type.to_string().to_ascii_lowercase()),
+        Value::String(strategy.oms_type.to_string().to_ascii_lowercase()),
     );
     table.insert(
         "client_id".to_string(),
-        Value::String(strategy.config.execution_client_id.to_string()),
+        Value::String(strategy.execution_client_id.to_string()),
     );
     insert_runtime_knobs(&mut table, runtime)?;
     insert_market_portfolio_knobs(&mut table, market_portfolio)?;
@@ -734,12 +776,16 @@ mod tests {
     }
 
     fn valid_backtest_toml() -> String {
+        valid_backtest_toml_with_strategy_config_hash(TEST_ARTIFACT_SHA256)
+    }
+
+    fn valid_backtest_toml_with_strategy_config_hash(strategy_config_hash: &str) -> String {
         format!(
             r#"
             [backtest]
             verdict = "pass"
             build_head_sha = "{}"
-            strategy_config_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            strategy_config_hash = "{}"
             run_artifact = "artifact://maker/backtest/run"
             run_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             threshold_artifact = "artifact://maker/backtest/thresholds"
@@ -776,8 +822,14 @@ mod tests {
             venue_queue_position = true
             catalog_data_types = ["OrderBookDelta", "TradeTick"]
             "#,
-            current_test_build_head_sha()
+            current_test_build_head_sha(),
+            strategy_config_hash
         )
+    }
+
+    fn prefixed_valid_backtest_toml(strategy_config_hash: &str) -> String {
+        valid_backtest_toml_with_strategy_config_hash(strategy_config_hash)
+            .replace("[backtest", "[parameters.backtest")
     }
 
     const VALID_MARKET_PORTFOLIO_TOML: &str = r#"
@@ -786,6 +838,78 @@ mod tests {
             total_bankroll_notional = 1500.0
             min_slot_notional = 100.0
             "#;
+
+    fn valid_strategy_toml(strategy_config_hash: &str) -> String {
+        format!(
+            r#"
+            schema_version = 2
+            strategy_instance_id = "maker-001"
+            strategy_archetype = "binary_oracle_maker"
+            order_id_tag = "001"
+            oms_type = "netting"
+            use_uuid_client_order_ids = true
+            use_hyphens_in_client_order_ids = false
+            external_order_claims = []
+            manage_contingent_orders = false
+            manage_gtd_expiry = false
+            manage_stop = false
+            market_exit_interval_ms = 100
+            market_exit_max_attempts = 100
+            log_events = true
+            log_commands = true
+            log_rejected_due_post_only_as_warning = true
+            execution_client_id = "maker_execution"
+
+            [target]
+            kind = "test"
+
+            [signal_data.primary]
+            data_client_id = "maker_data"
+            instrument_id = "GENERIC.TEST"
+
+            [parameters.runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
+
+            [parameters.market_portfolio]
+            max_active_markets = 3
+            total_bankroll_notional = 1500.0
+            min_slot_notional = 100.0
+
+            {}
+            "#,
+            prefixed_valid_backtest_toml(strategy_config_hash)
+        )
+    }
+
+    fn valid_strategy_config_with_hash(strategy_config_hash: &str) -> BoltV3StrategyConfig {
+        toml::from_str(&valid_strategy_toml(strategy_config_hash))
+            .expect("valid maker strategy config fixture parses")
+    }
+
+    fn valid_strategy_config() -> BoltV3StrategyConfig {
+        let placeholder = valid_strategy_config_with_hash(TEST_ARTIFACT_SHA256);
+        let parameters: ParametersBlock = placeholder
+            .parameters
+            .clone()
+            .try_into()
+            .expect("placeholder parameters parse");
+        let expected_hash = maker_strategy_config_hash(&placeholder, &parameters)
+            .expect("maker strategy config hash computes");
+        valid_strategy_config_with_hash(&expected_hash)
+    }
+
+    fn mismatched_strategy_config_hash(expected_hash: &str) -> String {
+        if expected_hash == TEST_ARTIFACT_SHA256 {
+            "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567".to_string()
+        } else {
+            TEST_ARTIFACT_SHA256.to_string()
+        }
+    }
 
     fn bounds_errors(runtime: RuntimeParametersBlock) -> Vec<String> {
         validate_parameter_bounds(
@@ -1142,6 +1266,50 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.contains("parameters.backtest.build_head_sha")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_strategy_config_hash_binding_accepts_current_raw_maker_config() {
+        let strategy = valid_strategy_config();
+        let parameters: ParametersBlock = strategy
+            .parameters
+            .clone()
+            .try_into()
+            .expect("valid parameters parse");
+        let mut errors = Vec::new();
+        validate_strategy_config_hash_binding(CONTEXT, &strategy, &parameters, &mut errors);
+        assert!(
+            errors.is_empty(),
+            "matching strategy config hash must pass: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_strategy_config_hash_binding_rejects_mismatched_hash() {
+        let expected = {
+            let strategy = valid_strategy_config_with_hash(TEST_ARTIFACT_SHA256);
+            let parameters: ParametersBlock = strategy
+                .parameters
+                .clone()
+                .try_into()
+                .expect("placeholder parameters parse");
+            maker_strategy_config_hash(&strategy, &parameters)
+                .expect("maker strategy config hash computes")
+        };
+        let strategy = valid_strategy_config_with_hash(&mismatched_strategy_config_hash(&expected));
+        let parameters: ParametersBlock = strategy
+            .parameters
+            .clone()
+            .try_into()
+            .expect("valid parameters parse");
+        let mut errors = Vec::new();
+        validate_strategy_config_hash_binding(CONTEXT, &strategy, &parameters, &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.strategy_config_hash")),
             "{errors:?}"
         );
     }

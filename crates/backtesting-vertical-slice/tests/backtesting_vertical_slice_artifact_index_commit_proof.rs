@@ -6,6 +6,7 @@ use backtesting_vertical_slice::{
         ARTIFACT_INDEX_COMMIT_PROOF_REPORT_FILE, ArtifactIndexCommitProofReport,
         ArtifactIndexCommitProofSpec, run_artifact_index_commit_proof_with_object_store,
     },
+    hashing::sha256_hex,
     run_manifest::ManifestArtifactStore,
 };
 use object_store::{memory::InMemory, path::Path as ObjectPath};
@@ -48,9 +49,14 @@ fn artifact_index_commit_proof_executes_pointer_swap_and_stale_etag_rejection() 
     assert!(artifact.report_bytes > 0);
     assert_eq!(artifact.content_hash.len(), 64);
 
+    let report_bytes = std::fs::read(&artifact.report_path).expect("report bytes");
+    assert_eq!(
+        artifact.content_hash,
+        sha256_hex(&report_bytes),
+        "commit proof hash must bind the exact report bytes written to disk"
+    );
     let report: ArtifactIndexCommitProofReport =
-        serde_json::from_slice(&std::fs::read(&artifact.report_path).expect("report bytes"))
-            .expect("report json");
+        serde_json::from_slice(&report_bytes).expect("report json");
     assert_eq!(report.proof_id, spec.proof_id);
     assert_eq!(report.artifact_kind, ArtifactKind::Backtests);
     assert!(report.event_create_only_proven);

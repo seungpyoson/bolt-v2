@@ -16,6 +16,7 @@ use backtesting_vertical_slice::{
         CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
         StoredArtifactIndexPointer, persist_catalog_projection_for_source_binding,
     },
+    conversion_boundary::ConversionCatalogMetadata,
     nt_catalog_capability::{
         NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION, NtCatalogCapabilityControls,
         NtCatalogCapabilityEvidence, NtCatalogCapabilityProof, NtCatalogCapabilityProofDocument,
@@ -1391,6 +1392,36 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     assert_eq!(
         artifacts.output.contract.catalog_hash,
         persisted_projection.manifest_sha256
+    );
+    assert_eq!(
+        artifacts.output.conversion_catalog_metadata.execution_catalog_uri,
+        expected_catalog_root,
+        "artifact-store path must rewrite catalog metadata to the durable catalog root"
+    );
+    assert!(
+        artifacts
+            .output
+            .conversion_catalog_metadata
+            .direct_s3_catalog_access_proven,
+        "artifact-store path must record the proved direct-S3 catalog access"
+    );
+    assert_eq!(
+        artifacts.output.contract.catalog_metadata_hash,
+        artifacts
+            .output
+            .conversion_catalog_metadata
+            .content_hash()
+            .expect("catalog metadata hash"),
+        "durable result contract must bind the rewritten catalog metadata"
+    );
+    let persisted_metadata: ConversionCatalogMetadata = serde_json::from_str(
+        &fs::read_to_string(&artifacts.catalog_metadata_path).expect("catalog metadata json"),
+    )
+    .expect("catalog metadata parses");
+    assert_eq!(
+        persisted_metadata,
+        artifacts.output.conversion_catalog_metadata,
+        "catalog-metadata.json must be rewritten with durable execution access"
     );
     assert_eq!(
         artifacts

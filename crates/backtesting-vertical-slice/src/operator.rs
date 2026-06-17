@@ -107,6 +107,7 @@ pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
 
 /// Config-driven dataset facts for one operator run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunSpec {
     /// Ingest capture timestamp (RFC 3339).
     pub capture_time_utc: String,
@@ -1225,13 +1226,34 @@ where
     )
     .await?;
 
+    artifacts.output.conversion_catalog_metadata = artifacts
+        .output
+        .conversion_catalog_metadata
+        .clone()
+        .with_execution_catalog_access(persisted.catalog_root_uri.clone(), true);
+    write_completed_conversion_artifacts(
+        output_dir,
+        &artifacts.output.conversion_manifest,
+        &artifacts.output.conversion_checkpoint,
+        &artifacts.output.conversion_catalog_metadata,
+    )?;
     artifacts.output.contract.catalog_hash = persisted.manifest_sha256.clone();
+    artifacts.output.contract.catalog_metadata_hash = artifacts
+        .output
+        .conversion_catalog_metadata
+        .content_hash()
+        .context("hash durable catalog metadata")?;
     artifacts.output.contract.artifact_uris.nt_catalog_uri = persisted.catalog_root_uri.clone();
     artifacts
         .output
         .contract
         .artifact_uris
         .nt_catalog_manifest_uri = Some(persisted.manifest_uri.clone());
+    artifacts
+        .output
+        .contract
+        .validate()
+        .map_err(|error| anyhow::anyhow!("durable result contract validation failed: {error}"))?;
     atomic_write(
         &artifacts.contract_path,
         &serde_json::to_vec_pretty(&artifacts.output.contract)
@@ -3305,6 +3327,28 @@ mod tests {
             member_suffix: None,
         };
         spec
+    }
+
+    #[test]
+    fn run_spec_rejects_unknown_top_level_fields() {
+        let mut value: toml::Value =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses as TOML");
+        value
+            .as_table_mut()
+            .expect("committed run-spec is a TOML table")
+            .insert(
+                "unexpected_top_level".to_string(),
+                toml::Value::String("must fail closed".to_string()),
+            );
+        let text = toml::to_string(&value).expect("serialize mutated run-spec");
+
+        let err = toml::from_str::<RunSpec>(&text)
+            .expect_err("RunSpec must reject unknown top-level fields");
+        let message = err.to_string();
+        assert!(
+            message.contains("unknown field") && message.contains("unexpected_top_level"),
+            "{message}"
+        );
     }
 
     fn pending_run_spec_for(gz_bytes: &[u8]) -> RunSpec {

@@ -38,7 +38,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry},
     path::PathBuf,
     rc::Rc,
     str::FromStr,
@@ -4406,7 +4406,38 @@ fn trade_transport_loaded_config(
         .root
         .clients
         .retain(|client_key, _| required_clients.contains(client_key));
+    validate_trade_transport_execution_venue_cardinality(&transport_loaded)?;
     Ok(transport_loaded)
+}
+
+fn validate_trade_transport_execution_venue_cardinality(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let mut execution_clients_by_venue: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (client_key, client) in &loaded.root.clients {
+        if client.execution.is_some() {
+            match execution_clients_by_venue.entry(client.venue.as_str().to_string()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(vec![client_key.clone()]);
+                }
+                Entry::Occupied(mut entry) => {
+                    entry.get_mut().push(client_key.clone());
+                }
+            }
+        }
+    }
+    for (venue, client_keys) in execution_clients_by_venue {
+        if client_keys.len() > 1 {
+            return Err(BoltV3LiveNodeError::LiveTransportScope {
+                reason: format!(
+                    "multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue",
+                    venue,
+                    client_keys.join(", ")
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Whether this transport build path will register strategies whose shared RV
@@ -5784,7 +5815,9 @@ mod tests {
         AccountType, BookAction, CurrencyType, OrderSide, TimeInForce, TradingState,
     };
     use nautilus_model::events::{AccountState, OrderAccepted, OrderEventAny, OrderSubmitted};
-    use nautilus_model::identifiers::{AccountId, ClientOrderId, TraderId, Venue, VenueOrderId};
+    use nautilus_model::identifiers::{
+        AccountId, ClientId, ClientOrderId, TraderId, Venue, VenueOrderId,
+    };
     use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
     use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
     use rust_decimal::Decimal;
@@ -7400,6 +7433,16 @@ configured_data_param = "configured-value"
         }
     }
 
+    fn test_execution_client(venue: &str) -> ClientBlock {
+        ClientBlock {
+            venue: Venue::from(venue),
+            data: None,
+            execution: Some(toml::Value::Table(toml::map::Map::new())),
+            secrets: None,
+            readiness_probe: None,
+        }
+    }
+
     fn test_rv_source(
         source_id: &str,
         client_id: &str,
@@ -8943,33 +8986,55 @@ configured_source_param = "configured-value"
         let loaded =
             crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
                 .expect("production root config should load");
-        for client_key in [
-            "hyperliquid_standard_perps_execution",
-            "hyperliquid_spot_execution",
-            "hyperliquid_hip3_execution",
-            "hyperliquid_hip4_execution",
-        ] {
-            assert!(
-                loaded.root.clients.contains_key(client_key),
-                "{client_key} should be configured in root.toml before transport pruning"
-            );
-        }
+        assert!(
+            loaded.root.clients.contains_key("hyperliquid_execution"),
+            "hyperliquid_execution should be configured in root.toml before transport pruning"
+        );
 
         let scoped =
             trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
                 .expect("production trade transport scope should derive cleanly");
 
-        for client_key in [
-            "hyperliquid_standard_perps_execution",
-            "hyperliquid_spot_execution",
-            "hyperliquid_hip3_execution",
-            "hyperliquid_hip4_execution",
-        ] {
-            assert!(
-                !scoped.root.clients.contains_key(client_key),
-                "{client_key} is not strategy-referenced and must not reach live-node registration"
-            );
-        }
+        assert!(
+            !scoped.root.clients.contains_key("hyperliquid_execution"),
+            "hyperliquid_execution is not strategy-referenced and must not reach live-node registration"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_rejects_multiple_referenced_execution_clients_for_same_venue() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        assert!(
+            loaded.strategies.len() >= 2,
+            "fixture config should include at least two strategies for venue-cardinality coverage"
+        );
+        loaded.strategies.truncate(2);
+        loaded.strategies[0].config.execution_client_id = ClientId::from("hyperliquid_a");
+        loaded.strategies[1].config.execution_client_id = ClientId::from("hyperliquid_b");
+        loaded.root.clients.insert(
+            "hyperliquid_a".to_string(),
+            test_execution_client("HYPERLIQUID"),
+        );
+        loaded.root.clients.insert(
+            "hyperliquid_b".to_string(),
+            test_execution_client("HYPERLIQUID"),
+        );
+
+        let error =
+            trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
+                .expect_err("multiple active execution clients for one venue must fail closed");
+        let BoltV3LiveNodeError::LiveTransportScope { reason } = error else {
+            panic!("expected LiveTransportScope error for duplicate execution venue");
+        };
+        assert!(
+            reason.contains("multiple execution clients share venue `HYPERLIQUID`")
+                && reason.contains("hyperliquid_a")
+                && reason.contains("hyperliquid_b"),
+            "duplicate execution venue error should identify venue and clients: {reason}"
+        );
     }
 
     #[test]

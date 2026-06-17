@@ -679,7 +679,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: hyperliquid::FORBIDDEN_ENV_VARS,
         resolve_secrets: hyperliquid::resolve_secrets,
         configured_secret_paths: hyperliquid::configured_secret_paths,
-        allow_shared_signer_owner: Some(hyperliquid::allow_shared_signer_owner),
+        allow_shared_signer_owner: None,
         map_adapters: hyperliquid::map_adapters,
         load_live_submit_approval: Some(hyperliquid::load_live_submit_approval),
         preflight_live_submit_arming: Some(hyperliquid::preflight_live_submit_arming),

@@ -1230,7 +1230,7 @@ fn provider_binding_rejects_duplicate_hyperliquid_signer_owner() {
 }
 
 #[test]
-fn provider_binding_allows_only_one_hyperliquid_standard_perps_spot_signer_pair() {
+fn provider_binding_rejects_duplicate_hyperliquid_signer_owner_when_paths_match() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     loaded.root.clients.clear();
@@ -1242,160 +1242,26 @@ fn provider_binding_allows_only_one_hyperliquid_standard_perps_spot_signer_pair(
             client_key.to_string(),
             hyperliquid_execution_client_for_surface(
                 surface,
-                "/bolt/hyperliquid/spotperp/private_key",
-                "/bolt/hyperliquid/spotperp/account_address",
-            ),
-        );
-    }
-
-    resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
-        .expect("one standard-perps/spot pair may intentionally share one API wallet path");
-}
-
-#[test]
-fn provider_binding_rejects_hyperliquid_shared_signer_for_unapproved_surface_pair() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.clients.clear();
-    for (client_key, surface) in [
-        ("hyperliquid_standard_perps", "standard_perps"),
-        ("hyperliquid_hip3", "hip3_builder_perps"),
-    ] {
-        loaded.root.clients.insert(
-            client_key.to_string(),
-            hyperliquid_execution_client_for_surface(
-                surface,
-                "/bolt/hyperliquid/spotperp/private_key",
-                "/bolt/hyperliquid/spotperp/account_address",
-            ),
-        );
-    }
-
-    let error = resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
-        .expect_err("only the standard-perps/spot pair may share one Hyperliquid signer");
-
-    assert!(error.to_string().contains("signer/API-wallet owner"));
-}
-
-#[test]
-fn provider_binding_rejects_hyperliquid_shared_signer_when_paths_differ() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.clients.clear();
-    for (client_key, surface, private_key_path) in [
-        (
-            "hyperliquid_standard_perps",
-            "standard_perps",
-            "/bolt/hyperliquid/standard_perps/private_key",
-        ),
-        (
-            "hyperliquid_spot",
-            "spot",
-            "/bolt/hyperliquid/spot/private_key",
-        ),
-    ] {
-        loaded.root.clients.insert(
-            client_key.to_string(),
-            hyperliquid_execution_client_for_surface(
-                surface,
-                private_key_path,
-                "/bolt/hyperliquid/spotperp/account_address",
+                "/bolt/hyperliquid/master_api_wallet/private_key",
+                "/bolt/hyperliquid/master_api_wallet/account_address",
             ),
         );
     }
 
     let error = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
-        "/bolt/hyperliquid/standard_perps/private_key" | "/bolt/hyperliquid/spot/private_key" => {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
             Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
         }
-        "/bolt/hyperliquid/spotperp/account_address" => {
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
             Ok("0x1111111111111111111111111111111111111111".to_string())
         }
         _ => Err("unexpected SSM path requested by Hyperliquid binding"),
     })
-    .expect_err("same resolved key through different SSM paths must fail closed");
+    .expect_err(
+        "multiple Hyperliquid clients must not share one signer after the single-client collapse",
+    );
 
     assert!(error.to_string().contains("signer/API-wallet owner"));
-}
-
-#[test]
-fn provider_binding_rejects_hyperliquid_shared_signer_when_account_address_paths_differ() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.clients.clear();
-    for (client_key, surface, account_address_path) in [
-        (
-            "hyperliquid_standard_perps",
-            "standard_perps",
-            "/bolt/hyperliquid/standard_perps/account_address",
-        ),
-        (
-            "hyperliquid_spot",
-            "spot",
-            "/bolt/hyperliquid/spot/account_address",
-        ),
-    ] {
-        loaded.root.clients.insert(
-            client_key.to_string(),
-            hyperliquid_execution_client_for_surface(
-                surface,
-                "/bolt/hyperliquid/spotperp/private_key",
-                account_address_path,
-            ),
-        );
-    }
-
-    let error = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
-        "/bolt/hyperliquid/spotperp/private_key" => {
-            Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
-        }
-        "/bolt/hyperliquid/standard_perps/account_address"
-        | "/bolt/hyperliquid/spot/account_address" => {
-            Ok("0x1111111111111111111111111111111111111111".to_string())
-        }
-        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
-    })
-    .expect_err("shared signer clients must also share the account-address SSM path");
-
-    assert!(error.to_string().contains("signer/API-wallet owner"));
-}
-
-#[test]
-fn provider_binding_rejects_third_hyperliquid_client_on_shared_signer_path() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.clients.clear();
-    for (client_key, surface) in [
-        ("hl_a_standard_perps", "standard_perps"),
-        ("hl_b_spot", "spot"),
-        ("hl_c_spot", "spot"),
-    ] {
-        loaded.root.clients.insert(
-            client_key.to_string(),
-            hyperliquid_execution_client_for_surface(
-                surface,
-                "/bolt/hyperliquid/spotperp/private_key",
-                "/bolt/hyperliquid/spotperp/account_address",
-            ),
-        );
-    }
-
-    let error = resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
-        .expect_err("only one standard-perps client and one spot client may share the signer");
-
-    assert!(error.to_string().contains("signer/API-wallet owner"));
-}
-
-fn hyperliquid_shared_spotperp_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
-    match path {
-        "/bolt/hyperliquid/spotperp/private_key" => {
-            Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
-        }
-        "/bolt/hyperliquid/spotperp/account_address" => {
-            Ok("0x1111111111111111111111111111111111111111".to_string())
-        }
-        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
-    }
 }
 
 #[test]

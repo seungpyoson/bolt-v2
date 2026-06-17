@@ -14242,6 +14242,22 @@ classification = "live_node_fail_closed_diagnostic_template"
 reason = "The live-node IV client validator joins fail-closed config diagnostics; the referenced profile/source/client identifiers are TOML-owned."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue"'''
+context = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue",'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "Fail-closed live transport diagnostic for multiple strategy-referenced execution clients on one NT venue; venue and client identifiers are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''", "'''
+context = '''client_keys.join(", ")'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "Diagnostic separator for listing TOML-owned execution client identifiers that share one NT venue in the live transport scope."
+
+[[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
 literal = '''"iv.profiles.{}.sources.{}"'''

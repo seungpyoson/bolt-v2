@@ -23,10 +23,12 @@ use backtesting_vertical_slice::{
     backfill_execution_plan::{
         BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
     },
+    nt_catalog_capability::NtCatalogSsmCredentialResolver,
     operator::{
         MultiTableRunArtifacts, OperatorRunArtifacts, PublishOptions, PublishedArtifact,
         PublishedCatalogProof, RunArtifacts, RunSpec,
-        run_from_run_spec_and_publish_with_resolved_storage_options, run_operator_from_run_spec,
+        run_from_run_spec_and_publish_with_resolved_storage_options,
+        run_from_run_spec_with_artifact_store, run_operator_from_run_spec,
         validate_run_spec_manifest_for_object_hash,
     },
 };
@@ -54,11 +56,21 @@ struct Cli {
     prove_published_catalog: bool,
 }
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut object_reader =
         |path: &Path, expected_bytes: u64| read_object_checked(path, expected_bytes);
     let (spec, run_spec_hash) = read_run_spec_with_hash(&cli.run_spec)?;
+    if cli.publish_output && cli.prove_published_catalog {
+        return run_cli_durable_catalog_with_spec_object_reader(
+            &cli,
+            spec,
+            &run_spec_hash,
+            &mut object_reader,
+        )
+        .await;
+    }
     if cli.publish_output && spec.manifest.artifact_store.ssm_parameters.is_some() {
         let mut resolver = ArtifactStoreSsmResolver::new()?;
         run_cli_with_spec_object_reader_and_resolver(
@@ -80,6 +92,53 @@ fn main() -> Result<()> {
             &mut resolver,
         )
     }
+}
+
+async fn run_cli_durable_catalog_with_spec_object_reader<F>(
+    cli: &Cli,
+    spec: RunSpec,
+    run_spec_hash: &str,
+    object_reader: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&Path, u64) -> Result<Vec<u8>>,
+{
+    let execution_plan = read_execution_plan(&cli.execution_plan)?;
+    validate_execution_plan_for_run_spec(&execution_plan, run_spec_hash, &spec)
+        .with_context(|| format!("execution plan {}", cli.execution_plan.display()))?;
+    validate_run_spec_manifest_for_object_hash(
+        &spec,
+        &cli.output_dir,
+        &spec.accepted_object.sha256,
+    )
+    .with_context(|| format!("run-manifest {}", cli.run_spec.display()))?;
+    ensure_object_read_within_raw_payload_limit(&spec)?;
+    let object_bytes = object_reader(&cli.object_path, spec.accepted_object.bytes)?;
+    let artifact_store = spec.required_artifact_store()?;
+    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
+    let artifact_root = artifact_store.resolve()?;
+    let credential_resolver =
+        NtCatalogSsmCredentialResolver::from_region(artifact_root.s3_region()).await?;
+    let credentials = credential_resolver
+        .resolve(&nt_catalog_capability_proof.ssm_parameter_refs)
+        .await?;
+    let store = artifact_root.build_s3_object_store_with_credentials(&credentials)?;
+    let artifacts = run_from_run_spec_with_artifact_store(
+        &spec,
+        &object_bytes,
+        &cli.output_dir,
+        &store,
+        |_, _, create_only_probe| {
+            nt_catalog_capability_proof.runtime_evidence(
+                artifact_store,
+                &credentials,
+                create_only_probe,
+            )
+        },
+    )
+    .await?;
+    print_trade_run(&artifacts, None, None);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -171,7 +230,9 @@ fn print_trade_run(
         "canonical_artifact = {}",
         artifacts.canonical_artifact_path.display()
     );
-    println!("nt_catalog_root = {}", artifacts.catalog_root.display());
+    if let Some(canonical_catalog_uri) = &artifacts.canonical_catalog_uri {
+        println!("nt_catalog_uri = {canonical_catalog_uri}");
+    }
     println!("catalog_hash = {}", output.projection.catalog_hash);
     println!("catalog_read_back_trade_ticks = {}", output.read_back_count);
     println!("nt_version = {}", output.contract.nt_version);

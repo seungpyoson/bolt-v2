@@ -18,8 +18,10 @@ use crate::{
     bolt_v3_config::ReferencePriceBlock,
     bolt_v3_market_families,
     bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
-    strategies::registry::ValidationError,
+    strategies::registry::{StrategyBuildContext, ValidationError},
 };
+
+use super::BinaryOracleEdgeTaker;
 
 trait TomlValueExt {
     fn as_float_or_integer(&self) -> Option<f64>;
@@ -315,6 +317,16 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::ensure_executable_entry_order_shape(&config)?;
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
+    }
+
+    pub fn build_strategy(
+        raw: &Value,
+        context: &StrategyBuildContext,
+    ) -> Result<BinaryOracleEdgeTaker> {
+        Ok(BinaryOracleEdgeTaker::new(
+            Self::parse_config(raw)?,
+            context.clone(),
+        ))
     }
 
     fn ensure_bps_runtime_knobs_within_full_scale(

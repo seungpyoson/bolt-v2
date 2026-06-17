@@ -2,7 +2,7 @@
   "schema_version": "source-catalog-mapping-readiness-report.v2",
   "readiness_id": "polymarket-parquet-archive-index-canonical-source-catalog-mapping-readiness",
   "status": "blocked",
-  "catalog_mapping_evaluation_hash": "d4c82f57a260432ddc609e408cd8389028e75fae6d0e2a1a155d9fd9a057d162",
+  "catalog_mapping_evaluation_hash": "b316ae3e76d26a50dbdc0f73f321b9799c24816f704a38560db6f577d7e36881",
   "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
   "source_proof_version": 1,
   "source_binding": "polymarket-parquet-archive-index",
@@ -10,6 +10,9 @@
   "required_nt_data_types": [
     "OrderBookDelta",
     "TradeTick"
+  ],
+  "required_claim_evidence_refs": [
+    "source-proof://polymarket-parquet-archive-index/dynamic-tick-size-replay-ready"
   ],
   "allowed_current_bte_statuses": [
     "accepted"
@@ -41,10 +44,12 @@
       "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-row-to-nt-contract.2026-06-08.json"
     ]
   },
+  "observed_claim_evidence_refs": {},
   "observed_current_bte_status": "one_off_current_artifact_proven_broad_backfill_blocked",
   "observed_parquet_catalog_status": "one_off_current_artifact_proven_broad_backfill_blocked",
   "nt_catalog_mapping_proven": false,
   "blockers": [
+    "required_claim_evidence_missing",
     "usage_scope_not_allowed",
     "current_bte_status_not_allowed",
     "parquet_catalog_status_not_allowed"

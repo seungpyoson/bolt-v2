@@ -38,7 +38,11 @@
     ]
   },
   "proof_denied_artifact_kinds": [
+    "raw",
+    "nt_catalog",
+    "source_proofs",
+    "artifact_index",
     "research_analytics"
   ],
-  "expected_denied_write_attempts": 3
+  "expected_denied_write_attempts": 15
 }

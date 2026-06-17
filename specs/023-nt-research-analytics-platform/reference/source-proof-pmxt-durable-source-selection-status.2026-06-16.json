@@ -1,0 +1,119 @@
+{
+  "schema_version": "source-proof-pmxt-durable-source-selection-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "observed_at_utc": "2026-06-16T01:55:00Z",
+  "durable_source_selection_status": "blocked_pending_source_proof",
+  "source_binding": "polymarket-parquet-archive-index",
+  "source_proof_set_spec": {
+    "path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+    "sha256": "2b0ece5774eea20a610a326e1a3819b2c6816229b687b6966a8d0985e0750ad6",
+    "status": "pending",
+    "source_selection_status": "PENDING_MORE_PROOF",
+    "usage_scope": "one_off_backfill_data",
+    "fidelity_class": "L2_REPLAY"
+  },
+  "source_proof_admissibility_status": {
+    "status": "source_fenced_current_contract_rejected",
+    "proof_uri": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+    "proof_fixture": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+      "sha256": "0ce36fc546f7da91a8b174e54bce7ec81dbc94e6f8459d49cf20483dd2732ce0"
+    },
+    "admissibility_contract": {
+      "path": "repo://crates/backtesting-vertical-slice/src/source_proof_admissibility.rs",
+      "sha256": "b52df4d20d6c8b5e656294ee331758c648f1cb1eb27c0c1b6fbb7e2c021fcf12"
+    },
+    "acceptance_contract": {
+      "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
+      "sha256": "4ae656aadc60dff4c4e466dac5d73e0aa8ba2a94cb224664c78a4fd33e4ee573"
+    },
+    "current_contract_deserializes": true,
+    "expected_record_status": "current_contract_rejected",
+    "missing_current_contract_fields": [],
+    "blocking_issues": [
+      "acceptance_failed"
+    ],
+    "acceptance_error": "raw_sample_uri must be a staged s3:// URI, got \"https://r2v2.pmxt.dev/polymarket_orderbook_2026-05-20T22.parquet\"",
+    "source_proof_id": "source-proof-polymarket-pmxt-v2-orderbook-binary-option-pending-2026-06-08",
+    "source_binding": "polymarket-parquet-archive-index",
+    "usage_scope": "one_off_backfill_data",
+    "source_selection_status": "PENDING_MORE_PROOF"
+  },
+  "committed_input_hashes": {
+    "source_universe_manifest": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+      "sha256": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6"
+    },
+    "category_manifest": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json",
+      "sha256": "807108d31702a59a3a1cf6036fca817428f5f950ef8fad3f3bb2f335ac5a5a18"
+    },
+    "archive_index_manifest": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json",
+      "sha256": "dc76ed0a60f55e0a0f2c082b5aa6031ac89f8bd869c7c039a4f1d294a6552ed9"
+    },
+    "conversion_queue_spec": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/source-universe-conversion-queue.toml",
+      "sha256": "f1c3dce0c210ec478792f8453b56e88503ff2fe79285e761eb9ac99908c331c8"
+    },
+    "venue_acceptance_ledger_spec": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml",
+      "sha256": "41778a9fac8dbf9fb5cafd56f2c207361ef9c623fe0727a24d15f4356ee3bf90"
+    },
+    "pending_source_fixture": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+      "sha256": "0ce36fc546f7da91a8b174e54bce7ec81dbc94e6f8459d49cf20483dd2732ce0"
+    }
+  },
+  "manifest_scope": {
+    "object_count": 1351,
+    "verified_head_count": 1351,
+    "accepted_bytes": 557815904970,
+    "source_accepted_proof_count": 0
+  },
+  "source_proof_count": 1,
+  "source_accepted_proof_count": 0,
+  "pending_required_checks": [
+    "instrument_universe",
+    "coverage",
+    "retention_freshness",
+    "completeness",
+    "cost",
+    "storage"
+  ],
+  "passed_required_checks": [
+    "source_access",
+    "license",
+    "schema",
+    "time_semantics",
+    "granularity",
+    "nt_mapping"
+  ],
+  "generated_artifact_policy": {
+    "status": "bulk_json_evicted",
+    "gitignore_refs": [
+      "specs/023-nt-research-analytics-platform/reference/source-universe-conversion-queues/pmxt-polymarket-v2-current/queue/*.json",
+      "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/*.json",
+      "specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/*/ledger/*.json"
+    ],
+    "reason": "Issue #704 Phase 2 Tier 1 evicts generated source-universe reference JSON artifacts; committed TOML specs, compact status, and static verification are the source-controlled guard."
+  },
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_pmxt_durable_source.py",
+    "self_test": "repo://scripts/test_verify_bte_022_pmxt_durable_source.py",
+    "source_fence_static": true
+  },
+  "claim_limits": [
+    "This records a durable-source guardrail, not an accepted durable PMXT source.",
+    "The PMXT full-current universe must remain blocked while source_accepted_proof_count is zero.",
+    "Generated queue/proof/ledger bulk JSON remains evicted; the committed TOML/status/verifier chain is the reviewable guard.",
+    "This does not prove expanded coverage, object gates, conversion run plans, broad backfill efficiency, or dynamic tick-size replay."
+  ],
+  "remaining_blockers": [
+    "durable_source_selection_unproven",
+    "expanded_tranche_coverage_and_cost_unproven",
+    "dynamic_tick_size_replay_unproven",
+    "broad_backfill_efficiency_unproven"
+  ],
+  "bte_022_can_close": false
+}

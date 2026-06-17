@@ -21,7 +21,7 @@ use arrow::array::{
 use nautilus_backtest::result::BacktestResult;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{OrderBookDelta, TradeTick},
+    data::{OrderBookDelta, QuoteTick, TradeTick},
     enums::AggressorSide,
     identifiers::InstrumentId,
     identifiers::TradeId,
@@ -39,7 +39,10 @@ use nautilus_polymarket::{
         messages::{
             PolymarketBookLevel, PolymarketBookSnapshot, PolymarketQuote, PolymarketQuotes,
         },
-        parse::{parse_book_deltas, parse_book_snapshot},
+        parse::{
+            parse_book_deltas, parse_book_snapshot, parse_quote_from_price_change,
+            parse_timestamp_ms,
+        },
     },
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -70,6 +73,7 @@ use crate::{
 
 /// NautilusTrader data type written by the PMXT one-off L2 projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
+pub const NT_DATA_TYPE_QUOTE_TICK: &str = "QuoteTick";
 pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 pub const PMXT_ONE_OFF_RESULT_CONTRACT_FILE: &str = "backtest-result-contract.json";
 
@@ -185,6 +189,7 @@ pub struct PmxtOneOffNtProjection {
     pub usage_scope: SourceProofUsageScope,
     pub instrument: InstrumentAny,
     pub order_book_deltas: Vec<OrderBookDelta>,
+    pub quote_ticks: Vec<QuoteTick>,
     pub trade_ticks: Vec<TradeTick>,
     pub trade_dedupe_provenance: Vec<PmxtTradeDedupeProvenance>,
     pub nt_surfaces_used: Vec<String>,
@@ -207,6 +212,7 @@ pub struct PmxtOneOffCatalogProjection {
     pub usage_scope: SourceProofUsageScope,
     pub nt_instrument_id: String,
     pub order_book_delta_count: u64,
+    pub quote_tick_count: u64,
     pub trade_tick_count: u64,
     pub catalog_hash: String,
 }
@@ -748,6 +754,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
     let (instrument_id, price_precision, size_precision) = binary_option_l2_metadata(&instrument)?;
 
     let mut order_book_deltas = Vec::new();
+    let mut quote_ticks = Vec::new();
     let mut trade_rows = Vec::new();
     let mut nt_surfaces_used = vec![
         "nautilus_polymarket::http::parse::parse_gamma_market".to_string(),
@@ -791,17 +798,41 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     &request.selected_condition_id,
                     &request.selected_token_id,
                 )?;
+                let quote = PolymarketQuote {
+                    asset_id: Ustr::from(row.asset_id.as_str()),
+                    price: row.price,
+                    side: row.side.into(),
+                    size: row.size,
+                    hash: String::new(),
+                    best_bid: row.best_bid,
+                    best_ask: row.best_ask,
+                };
+                let ts_event = parse_timestamp_ms(&row.timestamp_ms)
+                    .context("parse PMXT one-off price_change timestamp with NT parser")?;
+                if let Some(quote_tick) = parse_quote_from_price_change(
+                    &quote,
+                    instrument_id,
+                    price_precision,
+                    size_precision,
+                    quote_ticks.last(),
+                    ts_event,
+                    row.ts_init,
+                )
+                .context("parse PMXT one-off price_change quote with NT Polymarket parser")?
+                {
+                    quote_ticks.push(quote_tick);
+                }
+                push_surface_once(
+                    &mut nt_surfaces_used,
+                    "nautilus_polymarket::websocket::parse::parse_timestamp_ms",
+                );
+                push_surface_once(
+                    &mut nt_surfaces_used,
+                    "nautilus_polymarket::websocket::parse::parse_quote_from_price_change",
+                );
                 let quotes = PolymarketQuotes {
                     market: Ustr::from(row.market.as_str()),
-                    price_changes: vec![PolymarketQuote {
-                        asset_id: Ustr::from(row.asset_id.as_str()),
-                        price: row.price,
-                        side: row.side.into(),
-                        size: row.size,
-                        hash: String::new(),
-                        best_bid: row.best_bid,
-                        best_ask: row.best_ask,
-                    }],
+                    price_changes: vec![quote],
                     timestamp: row.timestamp_ms,
                 };
                 let parsed = parse_book_deltas(
@@ -846,6 +877,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
         usage_scope: request.usage_scope,
         instrument,
         order_book_deltas,
+        quote_ticks,
         trade_ticks,
         trade_dedupe_provenance,
         nt_surfaces_used,
@@ -1030,6 +1062,11 @@ pub fn write_pmxt_one_off_projection_to_catalog(
             .write_to_parquet(projection.order_book_deltas.clone(), None, None, None)
             .context("write PMXT one-off L2 deltas to NT catalog")?;
     }
+    if !projection.quote_ticks.is_empty() {
+        catalog
+            .write_to_parquet(projection.quote_ticks.clone(), None, None, None)
+            .context("write PMXT one-off quote ticks to NT catalog")?;
+    }
     if !projection.trade_ticks.is_empty() {
         catalog
             .write_to_parquet(projection.trade_ticks.clone(), None, None, None)
@@ -1042,6 +1079,7 @@ pub fn write_pmxt_one_off_projection_to_catalog(
         usage_scope: projection.usage_scope,
         nt_instrument_id: instrument_id,
         order_book_delta_count: projection.order_book_deltas.len() as u64,
+        quote_tick_count: projection.quote_ticks.len() as u64,
         trade_tick_count: projection.trade_ticks.len() as u64,
         catalog_hash: logical_catalog_hash(catalog_root)?,
     })
@@ -1249,6 +1287,8 @@ fn reuse_completed_pmxt_one_off_conversion_projection(
             nt_instrument_id,
             order_book_delta_count: u64::try_from(canonical_rows)
                 .context("PMXT one-off OrderBookDelta count does not fit u64")?,
+            quote_tick_count: u64::try_from(spec.projection.quote_ticks.len())
+                .context("PMXT one-off QuoteTick count does not fit u64")?,
             trade_tick_count: u64::try_from(spec.projection.trade_ticks.len())
                 .context("PMXT one-off TradeTick count does not fit u64")?,
             catalog_hash,
@@ -1271,6 +1311,13 @@ fn catalog_rows_by_nt_data_type(
         usize::try_from(catalog_projection.order_book_delta_count)
             .context("PMXT one-off OrderBookDelta count does not fit usize")?,
     );
+    if catalog_projection.quote_tick_count > 0 {
+        rows.insert(
+            NT_DATA_TYPE_QUOTE_TICK.to_string(),
+            usize::try_from(catalog_projection.quote_tick_count)
+                .context("PMXT one-off QuoteTick count does not fit usize")?,
+        );
+    }
     if catalog_projection.trade_tick_count > 0 {
         rows.insert(
             NT_DATA_TYPE_TRADE_TICK.to_string(),
@@ -1287,6 +1334,12 @@ fn projection_rows_by_nt_data_type(projection: &PmxtOneOffNtProjection) -> BTree
         NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
         projection.order_book_deltas.len(),
     );
+    if !projection.quote_ticks.is_empty() {
+        rows.insert(
+            NT_DATA_TYPE_QUOTE_TICK.to_string(),
+            projection.quote_ticks.len(),
+        );
+    }
     if !projection.trade_ticks.is_empty() {
         rows.insert(
             NT_DATA_TYPE_TRADE_TICK.to_string(),
@@ -1311,6 +1364,7 @@ fn ensure_pmxt_manifest_catalog_inputs_match_conversion(
         .to_str()
         .context("PMXT one-off catalog root is not valid UTF-8")?;
     let mut has_order_book_delta = false;
+    let mut seen_data_types = BTreeSet::new();
     for input in &manifest.catalog_inputs {
         ensure!(
             input.catalog_path == catalog_root,
@@ -1321,10 +1375,16 @@ fn ensure_pmxt_manifest_catalog_inputs_match_conversion(
             input.nt_instrument_id == completed.catalog_projection.nt_instrument_id,
             "PMXT one-off manifest instrument does not match conversion output"
         );
+        ensure!(
+            seen_data_types.insert(input.data_type.clone()),
+            "PMXT one-off manifest duplicates data_type {:?}",
+            input.data_type
+        );
         match input.data_type.as_str() {
             NT_DATA_TYPE_ORDER_BOOK_DELTA => {
                 has_order_book_delta = true;
             }
+            NT_DATA_TYPE_QUOTE_TICK => {}
             NT_DATA_TYPE_TRADE_TICK => {}
             other => bail!("PMXT one-off manifest data_type {other:?} is not supported"),
         }
@@ -1347,6 +1407,13 @@ fn expected_pmxt_backtest_iterations(
                 expected = expected
                     .checked_add(usize::try_from(
                         completed.catalog_projection.order_book_delta_count,
+                    )?)
+                    .context("PMXT one-off expected iteration count overflow")?;
+            }
+            NT_DATA_TYPE_QUOTE_TICK => {
+                expected = expected
+                    .checked_add(usize::try_from(
+                        completed.catalog_projection.quote_tick_count,
                     )?)
                     .context("PMXT one-off expected iteration count overflow")?;
             }

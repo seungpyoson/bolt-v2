@@ -6,6 +6,7 @@ source_proof_version = 1
 source_binding = "polymarket-parquet-archive-index"
 required_table_family = "order_book_snapshot_deltas"
 required_nt_data_types = ["OrderBookDelta", "TradeTick"]
+required_claim_evidence_refs = ["source-proof://polymarket-parquet-archive-index/dynamic-tick-size-replay-ready"]
 allowed_current_bte_statuses = ["accepted"]
 allowed_parquet_catalog_statuses = ["proven"]
 allowed_usage_scopes = ["canonical_backfill_input"]

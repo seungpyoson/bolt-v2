@@ -1,16 +1,16 @@
 {
   "schema_version": "artifact-index-commit-proof-status.v1",
   "task_id": "BACKTESTING_ENGINE-006",
-  "status": "open_iam_scope_unproven",
+  "status": "closed_per_kind_iam_scope_proven_for_all_current_artifact_kinds",
   "recorded_at": "2026-06-08",
-  "reconciled_at": "2026-06-09",
-  "decision": "Do not rely on Artifact Index producer commits for broad backfill until per-kind producer IAM scope is proven, or an approved coordinator/table format is selected.",
+  "reconciled_at": "2026-06-15",
+  "decision": "BACKTESTING_ENGINE-006 can close for the current Artifact Index kind set. Direct S3 commit mechanics are proven, the backtests producer scope is proven, and the remaining raw, nt_catalog, source_proofs, artifact_index, and research_analytics producer identities now have scoped SSM credentials and S3 proofs rejecting cross-kind event, snapshot, and latest-pointer writes.",
   "store_commit_mechanics": {
     "status": "proven",
     "direct_s3_commit_proven": true,
     "real_s3_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-20260608-3d6b1529",
     "report_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json",
-    "report_content_hash": "091501378ca70ca99b353d2252f040ef6b4d20c3d9b9e6db1dc29cc5d0489bf8",
+    "report_file_sha256": "091501378ca70ca99b353d2252f040ef6b4d20c3d9b9e6db1dc29cc5d0489bf8",
     "event_create_only_proven": true,
     "snapshot_create_only_proven": true,
     "audit_epoch_create_only_proven": true,
@@ -21,34 +21,105 @@
     "snapshot_readback_proven": true
   },
   "producer_iam_scope": {
-    "status": "blocked_by_broad_generic_credential",
-    "current_generic_ssm_binding": "/bolt/artifact-store/s3/*",
-    "real_s3_artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca",
-    "report_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-iam-scope.2026-06-08.json",
-    "report_content_hash": "be58042fd0f0391523720b9e94f32b5df88da139cd5237a914bac5ee57109c64",
-    "denied_artifact_kinds": [
-      "research_analytics"
-    ],
-    "denied_write_attempts": 3,
-    "denied_write_rejections": 0,
-    "violation_count": 3,
-    "producer_iam_scope_proven": false
+    "status": "all_current_artifact_kind_credentials_proven",
+    "historical_generic_credential_failure": {
+      "status": "failed_denied_kind_probe",
+      "generic_ssm_binding": "/bolt/artifact-store/s3/*",
+      "artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-iam-scope-20260608-ca7445ca",
+      "report_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-iam-scope.2026-06-08.json",
+      "report_file_sha256": "be58042fd0f0391523720b9e94f32b5df88da139cd5237a914bac5ee57109c64",
+      "denied_artifact_kinds": [
+        "research_analytics"
+      ],
+      "denied_write_attempts": 3,
+      "denied_write_rejections": 0,
+      "violation_count": 3,
+      "producer_iam_scope_proven": false
+    },
+    "current_backtests_producer_proof": {
+      "status": "proven_for_backtests_vs_all_current_non_backtests_kinds",
+      "proof_id": "backtesting-engine-006-iam-scope-backtests-complete-cli-20260615",
+      "artifact_kind": "backtests",
+      "artifact_root": "s3://bolt-parquet/nt-research-analytics/artifact-index/proofs/backtesting-engine-006-artifact-index-iam-backtests",
+      "proof_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-scope-proof.backtesting-engine-006.backtests-complete.2026-06-15.json",
+      "proof_file_sha256": "1e963b6f66ea71c4be2b443b81b439202d8bad801ae1c136a86106c496ffe4c7",
+      "ssm_parameter_prefix": "/bolt/artifact-index/producers/backtests",
+      "denied_artifact_kinds": [
+        "raw",
+        "nt_catalog",
+        "source_proofs",
+        "artifact_index",
+        "research_analytics"
+      ],
+      "denied_write_attempts": 15,
+      "denied_write_rejections": 15,
+      "violation_count": 0,
+      "event_create_only_proven_under_scoped_credential": true,
+      "snapshot_create_only_proven_under_scoped_credential": true,
+      "audit_epoch_create_only_proven_under_scoped_credential": true,
+      "latest_pointer_create_only_proven_under_scoped_credential": true,
+      "latest_pointer_update_if_match_proven_under_scoped_credential": true,
+      "stale_etag_update_rejected_under_scoped_credential": true,
+      "producer_iam_scope_proven": true,
+      "claim_limit": "This proves the per-kind AWS IAM scope and exercised S3 commit operations for the backtests Artifact Index producer identity only. It does not provision or prove separate producer identities for raw, nt_catalog, source_proofs, artifact_index, research_analytics, or any future Artifact Index kind."
+    },
+    "all_current_producer_proof": {
+      "status": "proven_for_all_current_artifact_kinds",
+      "proof_path": "specs/023-nt-research-analytics-platform/reference/artifact-index-all-producer-iam-scope-proof.backtesting-engine-006.2026-06-15.json",
+      "proof_file_sha256": "cc762ae15550340b1f13ca56cc7302dbaa279b6bdc087311fb8464d8dcbf4474",
+      "current_artifact_kinds": [
+        "raw",
+        "nt_catalog",
+        "source_proofs",
+        "backtests",
+        "artifact_index",
+        "research_analytics"
+      ],
+      "additional_producer_identities_proven": [
+        "raw",
+        "nt_catalog",
+        "source_proofs",
+        "artifact_index",
+        "research_analytics"
+      ],
+      "additional_denied_write_attempts": 75,
+      "additional_denied_write_rejections": 75,
+      "combined_denied_write_attempts": 90,
+      "combined_denied_write_rejections": 90,
+      "combined_violation_count": 0,
+      "all_current_producer_scopes_proven": true
+    },
+    "broad_scope_status": "proven_for_all_current_artifact_kinds",
+    "remaining_broad_scope_gap": "Future ArtifactKind variants or changed Artifact Index path shapes require their own scoped producer proof before relying on them."
   },
-  "read_only_ssm_probe": {
+  "ssm_parameter_probe": {
     "observed_at_utc": "2026-06-08T21:29:52Z",
-    "rechecked_at_utc": "2026-06-09T03:55:04Z",
+    "post_provision_rechecked_at_utc": "2026-06-15T07:00:12Z",
     "commands": [
       "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-index --query Parameters[].Name --output text",
       "aws ssm describe-parameters --parameter-filters Key=Name,Option=BeginsWith,Values=/bolt/artifact-store --query Parameters[].Name --output text"
     ],
-    "artifact_index_parameter_names": [],
+    "artifact_index_parameter_names": [
+      "/bolt/artifact-index/producers/artifact_index/access-key-id",
+      "/bolt/artifact-index/producers/artifact_index/secret-access-key",
+      "/bolt/artifact-index/producers/backtests/access-key-id",
+      "/bolt/artifact-index/producers/backtests/secret-access-key",
+      "/bolt/artifact-index/producers/nt_catalog/access-key-id",
+      "/bolt/artifact-index/producers/nt_catalog/secret-access-key",
+      "/bolt/artifact-index/producers/raw/access-key-id",
+      "/bolt/artifact-index/producers/raw/secret-access-key",
+      "/bolt/artifact-index/producers/research_analytics/access-key-id",
+      "/bolt/artifact-index/producers/research_analytics/secret-access-key",
+      "/bolt/artifact-index/producers/source_proofs/access-key-id",
+      "/bolt/artifact-index/producers/source_proofs/secret-access-key"
+    ],
     "artifact_store_parameter_names": [
       "/bolt/artifact-store/s3/access-key-id",
       "/bolt/artifact-store/s3/secret-access-key"
     ],
     "credential_values_read": false,
-    "aws_mutation_performed": false,
-    "conclusion": "Current SSM state has only the broad artifact-store S3 credential binding and no per-kind /bolt/artifact-index producer credential namespace, so the denied-kind IAM proof cannot be closed by rerunning with current parameters."
+    "aws_mutation_performed": true,
+    "conclusion": "The per-kind /bolt/artifact-index producer credential namespace now exists as SecureString parameters for every current ArtifactKind. Credential values are not recorded in repo artifacts."
   },
   "repo_side_progress": {
     "per_kind_policy_generator": "crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs",
@@ -67,15 +138,13 @@
     "prevents_recursive_discovery_dependency": true,
     "prevents_unconditional_pointer_overwrite": true,
     "prevents_silent_reuse_of_partial_outputs": true,
-    "remaining_risk": "A broad producer credential can still write another artifact kind's event/snapshot/pointer paths, so producer ownership is not enforced by AWS yet."
+    "remaining_risk": "The current ArtifactKind set is covered. Future ArtifactKind variants or changed Artifact Index path shapes require new scoped IAM proof before relying on them."
   },
   "next_required_evidence": [
-    "Use repo://specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-closeout-plan.backtesting-engine-006.2026-06-09.json as the current closeout plan: current SSM state still has no /bolt/artifact-index producer parameters, direct S3 mechanics are proven, and BTE-006 can close only through per-kind Artifact Index producer credentials or an approved coordinator/table format.",
-    "Explicit approval for AWS security mutation if per-kind IAM is the selected path.",
-    "Provision one producer identity and SSM parameter set per top-level Artifact Index kind using the generated provisioning plan and policy.",
-    "Rerun artifact_index_commit_proof with denied_artifact_kinds configured so denied event, snapshot, and latest-pointer writes are rejected by permissions.",
-    "If per-kind IAM is not acceptable, select and prove an approved commit coordinator or table format before relying on Artifact Index commits."
+    "Before adding a new ArtifactKind variant, provision and prove a scoped producer identity and denied-kind proof for that kind.",
+    "If reviewers require canonical runner evidence rather than focused AWS S3 API proof, run artifact_index_commit_proof under each scoped SSM credential through an approved remote or break-glass lane."
   ],
-  "no_aws_mutation_performed_by_this_record": true,
-  "bte_006_can_close": false
+  "no_aws_mutation_performed_by_this_record": false,
+  "bte_006_backtests_producer_can_close": true,
+  "bte_006_can_close": true
 }

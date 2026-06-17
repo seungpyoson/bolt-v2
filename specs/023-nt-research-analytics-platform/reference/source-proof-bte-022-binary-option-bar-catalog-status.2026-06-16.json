@@ -1,0 +1,45 @@
+{
+  "schema_version": "source-proof-bte-022-binary-option-bar-catalog-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "observed_at_utc": "2026-06-16T13:54:39Z",
+  "scope": {
+    "purpose": "Resolve the stale BTE-022 claim that Bar is not admitted by proving the binary-option Bar catalog projection/read-back path.",
+    "not_source_selection": true,
+    "not_backfill_authorization": true,
+    "not_bte_022_closure": true
+  },
+  "source_binding": "kalshi-official-historical-api",
+  "source_proof_id": "source-proof-kalshi-official-historical-binary-option-pending-2026-06-08",
+  "source_proof_version": 1,
+  "usage_scope": "staged_mapping_proof_only",
+  "fixture_type": "binary-option",
+  "table_family": "bars",
+  "fidelity_class": "TRADE_BAR_REPLAY",
+  "nt_data_class": "Bar",
+  "current_bte_manifest_status": "bar_admitted_under_trade_bar_replay",
+  "parquet_catalog_status": "binary_option_bar_projection_readback_source_fenced",
+  "source_sample_status": "historical_candlestick_shape_available_source_acceptance_pending",
+  "mapping_decision": {
+    "decision": "The BTE-compatible ParquetDataCatalog path for binary-option Bar data is source-fenced through a Rust projection/read-back test using CatalogInstrumentSpec::BinaryOption. This resolves the stale Bar-not-admitted conflict, but it does not select Kalshi, accept a source proof, or prove raw Kalshi candlestick normalization.",
+    "bte_022_conflict_resolved": "Bar is no longer a rejected BTE data class; run_manifest.rs admits Bar as the primary TradeBarReplay input.",
+    "remaining_limitations": [
+      "Kalshi official historical data still needs accepted source proof evidence before use as canonical backfill input.",
+      "The staged catalog proof starts from a canonical Bar table; raw Kalshi candlestick normalization remains separate evidence.",
+      "PMXT broad Polymarket L2 backfill remains blocked by durable-source, coverage/cost, dynamic tick-size replay, and broad-backfill efficiency evidence."
+    ]
+  },
+  "evidence_refs": {
+    "catalog_projection_test": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs#binary_option_bar_catalog_projection_round_trips_through_nt_catalog",
+    "catalog_projection_function": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs#project_canonical_bars_to_catalog",
+    "catalog_readback_function": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs#read_back_bars",
+    "manifest_admittance_table": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs#ADMITTANCE_TABLE",
+    "kalshi_pending_source_proof": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.kalshi-official-historical-pending.v1.json",
+    "kalshi_endpoint_inspection": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-endpoint-inspection.kalshi-official-historical-api.2026-06-08.json"
+  },
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_binary_option_bar_catalog.py",
+    "self_test": "repo://scripts/test_verify_bte_022_binary_option_bar_catalog.py",
+    "source_fence": "just source-fence-static"
+  },
+  "bte_022_can_close": false
+}

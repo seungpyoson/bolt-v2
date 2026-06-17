@@ -17159,3 +17159,91 @@ literal = '''0.0'''
 context = '''value.is_finite() && value > 0.0'''
 classification = "maker_market_selection_positive_notional_guard"
 reason = "This is the zero lower-bound sentinel for caller/TOML-owned maker portfolio notional validation; the bankroll and slot-floor values remain runtime-owned by config."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"market_portfolio_max_active_markets"'''
+context = '''"market_portfolio_max_active_markets",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio config schema field name written into the flat NT config table from the operator [parameters.market_portfolio] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"market_portfolio_total_bankroll_notional"'''
+context = '''"market_portfolio_total_bankroll_notional".to_string(),'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio config schema field name written into the flat NT config table from the operator [parameters.market_portfolio] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"market_portfolio_min_slot_notional"'''
+context = '''"market_portfolio_min_slot_notional".to_string(),'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio config schema field name written into the flat NT config table from the operator [parameters.market_portfolio] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"max_active_markets"'''
+context = '''MakerMarketPortfolioBlocker::InvalidMaxActiveMarkets => "max_active_markets",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio validation diagnostic field label for the operator [parameters.market_portfolio] block; the actual concurrency cap remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"total_bankroll_notional"'''
+context = '''MakerMarketPortfolioBlocker::InvalidTotalBankroll => "total_bankroll_notional",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio validation diagnostic field label for the operator [parameters.market_portfolio] block; the actual bankroll remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"min_slot_notional"'''
+context = '''MakerMarketPortfolioBlocker::InvalidMinSlotNotional => "min_slot_notional",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio validation diagnostic field label for the operator [parameters.market_portfolio] block; the actual minimum slot notional remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"policy"'''
+context = '''| MakerMarketPortfolioBlocker::InsufficientSlotAllocation => "policy",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio validation diagnostic fallback label for candidate/runtime-only policy blockers; the runtime market inputs and policy values remain caller/TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"{context}: parameters.market_portfolio.{} {}"'''
+context = '''"{context}: parameters.market_portfolio.{} {}",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Stable maker market-portfolio validation diagnostic prefix for the operator [parameters.market_portfolio] block; no runtime value is embedded beyond validated TOML-owned field names."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"market_portfolio_max_active_markets"'''
+context = '''const MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD: &str = "market_portfolio_max_active_markets";'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"market_portfolio_total_bankroll_notional"'''
+context = '''"market_portfolio_total_bankroll_notional";'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"market_portfolio_min_slot_notional"'''
+context = '''const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slot_notional";'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."

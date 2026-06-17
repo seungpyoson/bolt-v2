@@ -108,6 +108,23 @@ struct MakerMarketSlotSeed<'a> {
 }
 
 #[must_use]
+pub fn maker_market_portfolio_policy_blockers<'a>(
+    policy: MakerMarketPortfolioPolicy,
+) -> Vec<MakerMarketPortfolioBlocker<'a>> {
+    let mut blockers = Vec::new();
+    if policy.max_active_markets == 0 {
+        blockers.push(MakerMarketPortfolioBlocker::InvalidMaxActiveMarkets);
+    }
+    if !is_positive_finite(policy.total_bankroll_notional) {
+        blockers.push(MakerMarketPortfolioBlocker::InvalidTotalBankroll);
+    }
+    if !is_positive_finite(policy.min_slot_notional) {
+        blockers.push(MakerMarketPortfolioBlocker::InvalidMinSlotNotional);
+    }
+    blockers
+}
+
+#[must_use]
 pub fn plan_maker_market_portfolio<'a>(
     policy: MakerMarketPortfolioPolicy,
     candidates: &[MakerMarketCandidate<'a>],
@@ -249,16 +266,7 @@ fn portfolio_input_blockers<'a>(
     candidates: &[MakerMarketCandidate<'a>],
     active_slots: &[MakerMarketSlotState<'a>],
 ) -> Vec<MakerMarketPortfolioBlocker<'a>> {
-    let mut blockers = Vec::new();
-    if policy.max_active_markets == 0 {
-        blockers.push(MakerMarketPortfolioBlocker::InvalidMaxActiveMarkets);
-    }
-    if !is_positive_finite(policy.total_bankroll_notional) {
-        blockers.push(MakerMarketPortfolioBlocker::InvalidTotalBankroll);
-    }
-    if !is_positive_finite(policy.min_slot_notional) {
-        blockers.push(MakerMarketPortfolioBlocker::InvalidMinSlotNotional);
-    }
+    let mut blockers = maker_market_portfolio_policy_blockers(policy);
     push_market_key_blockers(
         candidates.iter().map(|candidate| candidate.market_key),
         MakerMarketPortfolioBlocker::EmptyCandidateMarketKey,

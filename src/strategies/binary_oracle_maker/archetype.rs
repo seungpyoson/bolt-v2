@@ -33,6 +33,9 @@ use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrate
 use crate::bolt_v3_maker_go_live_gate::{
     MakerBacktestEvidence, MakerBacktestVerdict, maker_backtest_gate_blockers,
 };
+use crate::bolt_v3_maker_market_selection::{
+    MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy, maker_market_portfolio_policy_blockers,
+};
 use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -59,6 +62,7 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
 #[serde(deny_unknown_fields)]
 struct ParametersBlock {
     runtime: RuntimeParametersBlock,
+    market_portfolio: MarketPortfolioParametersBlock,
     backtest: BacktestParametersBlock,
 }
 
@@ -76,6 +80,17 @@ struct RuntimeParametersBlock {
     mu_stale_window_ms: u64,
     mu_min_floor: f64,
     requote_min_interval_ms: u64,
+}
+
+/// Operator policy for generic Slice 9 market portfolio selection. Discovery and
+/// eligibility live upstream; this policy bounds how many eligible markets may
+/// quote concurrently and how bankroll is split across isolated per-market slots.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct MarketPortfolioParametersBlock {
+    max_active_markets: usize,
+    total_bankroll_notional: f64,
+    min_slot_notional: f64,
 }
 
 /// Operator-supplied go-live evidence for the maker backtest. These are not
@@ -155,6 +170,16 @@ impl BacktestParametersBlock {
     }
 }
 
+impl MarketPortfolioParametersBlock {
+    fn policy(&self) -> MakerMarketPortfolioPolicy {
+        MakerMarketPortfolioPolicy {
+            max_active_markets: self.max_active_markets,
+            total_bankroll_notional: self.total_bankroll_notional,
+            min_slot_notional: self.min_slot_notional,
+        }
+    }
+}
+
 fn artifact_present(value: &str) -> bool {
     !value.trim().is_empty()
 }
@@ -210,6 +235,7 @@ pub fn validate_strategy(
 ///   blocks every non-degenerate μ.
 fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec<String> {
     let runtime = &parameters.runtime;
+    let market_portfolio = &parameters.market_portfolio;
     let mut errors = Vec::new();
     if runtime.trade_flow_window_secs == 0 {
         errors.push(format!(
@@ -260,6 +286,7 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
             "{context}: parameters.runtime.requote_min_interval_ms must be > 0 (a zero requote interval disables the same-tick throttle the requote budget relies on, so the budget rejects construction)"
         ));
     }
+    validate_market_portfolio_policy(context, market_portfolio, &mut errors);
     for blocker in maker_backtest_gate_blockers(&parameters.backtest.evidence()) {
         errors.push(format!(
             "{context}: parameters.backtest.{} {}",
@@ -268,6 +295,69 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
         ));
     }
     errors
+}
+
+fn validate_market_portfolio_policy(
+    context: &str,
+    market_portfolio: &MarketPortfolioParametersBlock,
+    errors: &mut Vec<String>,
+) {
+    let policy = market_portfolio.policy();
+    for blocker in maker_market_portfolio_policy_blockers(policy) {
+        errors.push(format!(
+            "{context}: parameters.market_portfolio.{} {}",
+            market_portfolio_blocker_parameter_path(blocker),
+            market_portfolio_blocker_required_state(blocker)
+        ));
+    }
+    if crate::bolt_v3_numeric::is_positive_finite(policy.total_bankroll_notional)
+        && crate::bolt_v3_numeric::is_positive_finite(policy.min_slot_notional)
+        && policy.total_bankroll_notional < policy.min_slot_notional
+    {
+        errors.push(format!(
+            "{context}: parameters.market_portfolio.total_bankroll_notional must be >= parameters.market_portfolio.min_slot_notional (otherwise no market slot can receive the configured minimum allocation)"
+        ));
+    }
+}
+
+fn market_portfolio_blocker_parameter_path(
+    blocker: MakerMarketPortfolioBlocker<'_>,
+) -> &'static str {
+    match blocker {
+        MakerMarketPortfolioBlocker::InvalidMaxActiveMarkets => "max_active_markets",
+        MakerMarketPortfolioBlocker::InvalidTotalBankroll => "total_bankroll_notional",
+        MakerMarketPortfolioBlocker::InvalidMinSlotNotional => "min_slot_notional",
+        MakerMarketPortfolioBlocker::EmptyCandidateMarketKey
+        | MakerMarketPortfolioBlocker::DuplicateCandidateMarket { .. }
+        | MakerMarketPortfolioBlocker::EmptyActiveMarketKey
+        | MakerMarketPortfolioBlocker::DuplicateActiveMarket { .. }
+        | MakerMarketPortfolioBlocker::NoEligibleCandidates
+        | MakerMarketPortfolioBlocker::InsufficientSlotAllocation => "policy",
+    }
+}
+
+fn market_portfolio_blocker_required_state(
+    blocker: MakerMarketPortfolioBlocker<'_>,
+) -> &'static str {
+    match blocker {
+        MakerMarketPortfolioBlocker::InvalidMaxActiveMarkets => {
+            "must be > 0 so the maker can select at least one market"
+        }
+        MakerMarketPortfolioBlocker::InvalidTotalBankroll => {
+            "must be a positive finite bankroll notional"
+        }
+        MakerMarketPortfolioBlocker::InvalidMinSlotNotional => {
+            "must be a positive finite per-market slot notional"
+        }
+        MakerMarketPortfolioBlocker::EmptyCandidateMarketKey
+        | MakerMarketPortfolioBlocker::DuplicateCandidateMarket { .. }
+        | MakerMarketPortfolioBlocker::EmptyActiveMarketKey
+        | MakerMarketPortfolioBlocker::DuplicateActiveMarket { .. }
+        | MakerMarketPortfolioBlocker::NoEligibleCandidates
+        | MakerMarketPortfolioBlocker::InsufficientSlotAllocation => {
+            "must be valid when candidate markets are discovered"
+        }
+    }
 }
 
 /// Register the maker on the live node.
@@ -331,9 +421,9 @@ pub fn register_runtime_strategy(
 /// `StrategyId`), mirroring the taker's `nt_strategy_id`; `oms_type` is the
 /// lowercased NT enum display, matching how the maker config deserializes it.
 /// `client_id` is the configured execution client id the runtime submit/cancel
-/// bridge passes into NT routing context. The μ runtime knobs are read from the
-/// operator `[parameters.runtime]` block and threaded in flat under the same
-/// names `BinaryOracleMakerConfig` consumes.
+/// bridge passes into NT routing context. The μ runtime knobs and market
+/// portfolio policy are read from the operator `[parameters]` block and threaded
+/// in flat under the same names `BinaryOracleMakerConfig` consumes.
 fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
     if strategy.config.strategy_archetype.as_str() != KEY {
         return Err(format!(
@@ -348,6 +438,7 @@ fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
         .try_into()
         .map_err(|error| format!("invalid [parameters] block: {error}"))?;
     let runtime = &parameters.runtime;
+    let market_portfolio = &parameters.market_portfolio;
 
     let mut strategy_id = strategy.config.strategy_archetype.as_str().to_string();
     strategy_id.push('-');
@@ -370,6 +461,7 @@ fn raw_maker_config(strategy: &LoadedStrategy) -> Result<Value, String> {
         Value::String(strategy.config.execution_client_id.to_string()),
     );
     insert_runtime_knobs(&mut table, runtime)?;
+    insert_market_portfolio_knobs(&mut table, market_portfolio)?;
     Ok(Value::Table(table))
 }
 
@@ -410,10 +502,44 @@ fn insert_runtime_knobs(
     Ok(())
 }
 
+/// Thread the operator `[parameters.market_portfolio]` policy into the flat
+/// config table under the exact field names `BinaryOracleMakerConfig` consumes.
+fn insert_market_portfolio_knobs(
+    table: &mut Map<String, Value>,
+    market_portfolio: &MarketPortfolioParametersBlock,
+) -> Result<(), String> {
+    insert_usize_field(
+        table,
+        "market_portfolio_max_active_markets",
+        market_portfolio.max_active_markets,
+    )?;
+    table.insert(
+        "market_portfolio_total_bankroll_notional".to_string(),
+        Value::Float(market_portfolio.total_bankroll_notional),
+    );
+    table.insert(
+        "market_portfolio_min_slot_notional".to_string(),
+        Value::Float(market_portfolio.min_slot_notional),
+    );
+    Ok(())
+}
+
 /// Insert a `u64` runtime knob into the flat config table as a TOML integer.
 /// TOML integers are signed 64-bit, so a value above `i64::MAX` cannot round-trip
 /// and fails closed here rather than silently wrapping.
 fn insert_u64_field(table: &mut Map<String, Value>, key: &str, value: u64) -> Result<(), String> {
+    let integer = i64::try_from(value).map_err(|_| {
+        format!("runtime knob `{key}` ({value}) exceeds the supported TOML integer range")
+    })?;
+    table.insert(key.to_string(), Value::Integer(integer));
+    Ok(())
+}
+
+fn insert_usize_field(
+    table: &mut Map<String, Value>,
+    key: &str,
+    value: usize,
+) -> Result<(), String> {
     let integer = i64::try_from(value).map_err(|_| {
         format!("runtime knob `{key}` ({value}) exceeds the supported TOML integer range")
     })?;
@@ -454,6 +580,14 @@ mod tests {
             mu_stale_window_ms: 60_000,
             mu_min_floor: 0.05,
             requote_min_interval_ms: 500,
+        }
+    }
+
+    fn valid_market_portfolio() -> MarketPortfolioParametersBlock {
+        MarketPortfolioParametersBlock {
+            max_active_markets: 3,
+            total_bankroll_notional: 1500.0,
+            min_slot_notional: 100.0,
         }
     }
 
@@ -518,11 +652,30 @@ mod tests {
             shared_settlement_primitive = true
             "#;
 
+    const VALID_MARKET_PORTFOLIO_TOML: &str = r#"
+            [market_portfolio]
+            max_active_markets = 3
+            total_bankroll_notional = 1500.0
+            min_slot_notional = 100.0
+            "#;
+
     fn bounds_errors(runtime: RuntimeParametersBlock) -> Vec<String> {
         validate_parameter_bounds(
             CONTEXT,
             &ParametersBlock {
                 runtime,
+                market_portfolio: valid_market_portfolio(),
+                backtest: valid_backtest(),
+            },
+        )
+    }
+
+    fn market_portfolio_errors(market_portfolio: MarketPortfolioParametersBlock) -> Vec<String> {
+        validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                market_portfolio,
                 backtest: valid_backtest(),
             },
         )
@@ -533,6 +686,7 @@ mod tests {
             CONTEXT,
             &ParametersBlock {
                 runtime: valid_runtime(),
+                market_portfolio: valid_market_portfolio(),
                 backtest,
             },
         )
@@ -554,6 +708,14 @@ mod tests {
         assert!(
             bounds_errors(valid_runtime()).is_empty(),
             "valid runtime knobs must pass the go-live gate"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_accepts_valid_market_portfolio_policy() {
+        assert!(
+            market_portfolio_errors(valid_market_portfolio()).is_empty(),
+            "valid market portfolio policy must pass the go-live gate"
         );
     }
 
@@ -718,6 +880,68 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_zero_market_concurrency_cap() {
+        let errors = market_portfolio_errors(MarketPortfolioParametersBlock {
+            max_active_markets: 0,
+            ..valid_market_portfolio()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.market_portfolio.max_active_markets")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_invalid_market_bankroll() {
+        for total_bankroll_notional in [0.0, f64::NAN] {
+            let errors = market_portfolio_errors(MarketPortfolioParametersBlock {
+                total_bankroll_notional,
+                ..valid_market_portfolio()
+            });
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error
+                        .contains("parameters.market_portfolio.total_bankroll_notional")),
+                "bankroll {total_bankroll_notional} must be rejected: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_invalid_market_slot_floor() {
+        for min_slot_notional in [0.0, f64::INFINITY] {
+            let errors = market_portfolio_errors(MarketPortfolioParametersBlock {
+                min_slot_notional,
+                ..valid_market_portfolio()
+            });
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("parameters.market_portfolio.min_slot_notional")),
+                "slot floor {min_slot_notional} must be rejected: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_bankroll_below_minimum_slot() {
+        let errors = market_portfolio_errors(MarketPortfolioParametersBlock {
+            total_bankroll_notional: 99.0,
+            min_slot_notional: 100.0,
+            ..valid_market_portfolio()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("total_bankroll_notional must be >=")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_failed_backtest_verdict() {
         let errors = backtest_errors(BacktestParametersBlock {
             verdict: BacktestVerdictParameter::Fail,
@@ -830,7 +1054,7 @@ mod tests {
     #[test]
     fn parameters_block_deserializes_nested_runtime() {
         let toml = format!(
-            "{}{}",
+            "{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -840,17 +1064,19 @@ mod tests {
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
             "#,
+            VALID_MARKET_PORTFOLIO_TOML,
             VALID_BACKTEST_TOML
         );
         let parsed = parameters_from_str(&toml).expect("valid block deserializes");
         assert_eq!(parsed.runtime, valid_runtime());
+        assert_eq!(parsed.market_portfolio, valid_market_portfolio());
         assert_eq!(parsed.backtest, valid_backtest());
     }
 
     #[test]
     fn parameters_block_rejects_unknown_runtime_key() {
         let toml = format!(
-            "{}{}",
+            "{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -861,6 +1087,7 @@ mod tests {
             requote_min_interval_ms = 500
             surprise = 1
             "#,
+            VALID_MARKET_PORTFOLIO_TOML,
             VALID_BACKTEST_TOML
         );
         assert!(
@@ -872,7 +1099,7 @@ mod tests {
     #[test]
     fn parameters_block_rejects_unknown_backtest_key() {
         let toml = format!(
-            "{}{}",
+            "{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -882,6 +1109,7 @@ mod tests {
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
             "#,
+            VALID_MARKET_PORTFOLIO_TOML,
             r#"
             [backtest]
             verdict = "pass"
@@ -930,7 +1158,8 @@ mod tests {
     #[test]
     fn parameters_block_rejects_missing_backtest_table() {
         assert!(
-            parameters_from_str(
+            parameters_from_str(&format!(
+                "{}{}",
                 r#"
                 [runtime]
                 trade_flow_window_secs = 600
@@ -940,14 +1169,43 @@ mod tests {
                 mu_min_floor = 0.05
                 requote_min_interval_ms = 500
                 "#,
-            )
+                VALID_MARKET_PORTFOLIO_TOML
+            ))
             .is_err(),
             "an absent [parameters.backtest] table must fail loud"
         );
     }
 
     #[test]
-    fn parameters_block_rejects_missing_runtime_knob() {
+    fn parameters_block_rejects_unknown_market_portfolio_key() {
+        let toml = format!(
+            "{}{}{}",
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
+            "#,
+            r#"
+            [market_portfolio]
+            max_active_markets = 3
+            total_bankroll_notional = 1500.0
+            min_slot_notional = 100.0
+            surprise = true
+            "#,
+            VALID_BACKTEST_TOML
+        );
+        assert!(
+            parameters_from_str(&toml).is_err(),
+            "an unknown [parameters.market_portfolio] key must fail loud"
+        );
+    }
+
+    #[test]
+    fn parameters_block_rejects_missing_market_portfolio_table() {
         let toml = format!(
             "{}{}",
             r#"
@@ -956,7 +1214,29 @@ mod tests {
             trade_flow_max_samples = 1000
             mu_min_classified_samples = 4
             mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
             "#,
+            VALID_BACKTEST_TOML
+        );
+        assert!(
+            parameters_from_str(&toml).is_err(),
+            "an absent [parameters.market_portfolio] table must fail loud"
+        );
+    }
+
+    #[test]
+    fn parameters_block_rejects_missing_runtime_knob() {
+        let toml = format!(
+            "{}{}{}",
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            "#,
+            VALID_MARKET_PORTFOLIO_TOML,
             VALID_BACKTEST_TOML
         );
         assert!(
@@ -966,8 +1246,34 @@ mod tests {
     }
 
     #[test]
-    fn runtime_knobs_thread_into_consumer_config() {
-        // The load-bearing bridge test: `insert_runtime_knobs` must write exactly
+    fn parameters_block_rejects_missing_market_portfolio_knob() {
+        let toml = format!(
+            "{}{}{}",
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
+            "#,
+            r#"
+            [market_portfolio]
+            max_active_markets = 3
+            total_bankroll_notional = 1500.0
+            "#,
+            VALID_BACKTEST_TOML
+        );
+        assert!(
+            parameters_from_str(&toml).is_err(),
+            "a missing market-portfolio knob must fail loud"
+        );
+    }
+
+    #[test]
+    fn operator_knobs_thread_into_consumer_config() {
+        // The load-bearing bridge test: the insert_* helpers must write exactly
         // the field names `BinaryOracleMakerConfig` deserializes. A key-name drift
         // fails the consumer config's `deny_unknown_fields` parse below; a value
         // drift fails an assertion.
@@ -984,6 +1290,8 @@ mod tests {
             Value::String("maker_execution_client".to_string()),
         );
         insert_runtime_knobs(&mut table, &valid_runtime()).expect("knobs thread");
+        insert_market_portfolio_knobs(&mut table, &valid_market_portfolio())
+            .expect("market portfolio policy threads");
         let config =
             parse_config(&Value::Table(table)).expect("flat table parses into the consumer config");
         assert_eq!(config.client_id, "maker_execution_client");
@@ -993,6 +1301,9 @@ mod tests {
         assert_eq!(config.mu_stale_window_ms, 60_000);
         assert_eq!(config.mu_min_floor, 0.05);
         assert_eq!(config.requote_min_interval_ms, 500);
+        assert_eq!(config.market_portfolio_max_active_markets, 3);
+        assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
+        assert_eq!(config.market_portfolio_min_slot_notional, 100.0);
     }
 
     #[test]
@@ -1002,5 +1313,20 @@ mod tests {
             insert_u64_field(&mut table, "trade_flow_window_secs", u64::MAX).is_err(),
             "a u64 above i64::MAX cannot round-trip through TOML and must fail closed"
         );
+    }
+
+    #[test]
+    fn insert_usize_field_rejects_value_above_i64_max() {
+        let mut table = Map::new();
+        let too_large = usize::try_from(i64::MAX)
+            .ok()
+            .and_then(|value| value.checked_add(1));
+        if let Some(value) = too_large {
+            assert!(
+                insert_usize_field(&mut table, "market_portfolio_max_active_markets", value)
+                    .is_err(),
+                "a usize above i64::MAX cannot round-trip through TOML and must fail closed"
+            );
+        }
     }
 }

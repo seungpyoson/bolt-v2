@@ -2,9 +2,10 @@
 //!
 //! This is the **flat NautilusTrader config** the strategy consumes at build:
 //! the `StrategyCore` envelope (`strategy_id`, `order_id_tag`, `oms_type`) plus
-//! the μ-estimator / health-gate runtime knobs the archetype threads in from the
-//! operator `[strategies.<id>.parameters.runtime]` block (Slice 2, #488). It is
-//! built by `archetype::raw_maker_config`, never written by an operator directly.
+//! the μ-estimator / health-gate runtime knobs and market-portfolio policy the
+//! archetype threads in from the operator `[strategies.<id>.parameters]` block
+//! (Slices 2 and 9, #488). It is built by `archetype::raw_maker_config`, never
+//! written by an operator directly.
 //! `deny_unknown_fields` fails loud on any stray key.
 //!
 //! This struct validates only the flat table's **structure** (field presence,
@@ -23,8 +24,10 @@ use crate::strategies::registry::ValidationError;
 /// Flat NautilusTrader config the maker consumes at build. The `StrategyConfig`
 /// envelope fields `BinaryOracleMaker::new` feeds into `StrategyCore::new` plus
 /// the μ runtime knobs `MakerMuState::new` projects into its estimator,
-/// health-gate, and trade-flow config views. Every other `StrategyConfig` field
-/// is left at NT's documented default (see `StrategyConfig::default`).
+/// health-gate, and trade-flow config views, and the generic Slice 9
+/// market-portfolio policy later runtime selection consumes. Every other
+/// `StrategyConfig` field is left at NT's documented default (see
+/// `StrategyConfig::default`).
 /// `deny_unknown_fields` fails loud on any stray key so a typo in the operator
 /// TOML cannot be silently ignored. `Eq` is intentionally not derived because
 /// `mu_min_floor` is an `f64`.
@@ -54,6 +57,12 @@ pub struct BinaryOracleMakerConfig {
     /// submit-rate and venue REST caps are NOT config knobs — they come from
     /// `risk.nautilus.max_order_submit_rate` and the venue egress model.
     pub requote_min_interval_ms: u64,
+    /// Maximum number of markets the portfolio selector may quote concurrently.
+    pub market_portfolio_max_active_markets: u64,
+    /// Total bankroll notional allocated to the market-selection portfolio.
+    pub market_portfolio_total_bankroll_notional: f64,
+    /// Minimum per-market slot notional after the bankroll split.
+    pub market_portfolio_min_slot_notional: f64,
 }
 
 /// Zero-sized factory the `StrategyBuilder` trait is implemented for (in
@@ -79,6 +88,10 @@ const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";
 const MU_STALE_WINDOW_MS_FIELD: &str = "mu_stale_window_ms";
 const MU_MIN_FLOOR_FIELD: &str = "mu_min_floor";
 const REQUOTE_MIN_INTERVAL_MS_FIELD: &str = "requote_min_interval_ms";
+const MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD: &str = "market_portfolio_max_active_markets";
+const MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD: &str =
+    "market_portfolio_total_bankroll_notional";
+const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slot_notional";
 
 /// Deserialize the maker config from its TOML table. Fails loud if the table is
 /// missing required envelope fields or carries unknown keys (via
@@ -120,6 +133,9 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
                 | MU_STALE_WINDOW_MS_FIELD
                 | MU_MIN_FLOOR_FIELD
                 | REQUOTE_MIN_INTERVAL_MS_FIELD
+                | MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD
+                | MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD
+                | MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD
         ) {
             errors.push(ValidationError {
                 field: format!("{field_prefix}.{key}"),
@@ -224,6 +240,9 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            market_portfolio_max_active_markets = 3
+            market_portfolio_total_bankroll_notional = 1500.0
+            market_portfolio_min_slot_notional = 100.0
         }
         .into()
     }
@@ -241,6 +260,9 @@ mod tests {
         assert_eq!(config.mu_stale_window_ms, 60_000);
         assert_eq!(config.mu_min_floor, 0.05);
         assert_eq!(config.requote_min_interval_ms, 500);
+        assert_eq!(config.market_portfolio_max_active_markets, 3);
+        assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
+        assert_eq!(config.market_portfolio_min_slot_notional, 100.0);
     }
 
     #[test]
@@ -264,11 +286,38 @@ mod tests {
             trade_flow_max_samples = 1000
             mu_min_classified_samples = 4
             mu_stale_window_ms = 60000
+            requote_min_interval_ms = 500
+            market_portfolio_max_active_markets = 3
+            market_portfolio_total_bankroll_notional = 1500.0
+            market_portfolio_min_slot_notional = 100.0
         }
         .into();
         assert!(
             parse_config(&raw).is_err(),
             "missing mu_min_floor must fail to parse"
+        );
+    }
+
+    #[test]
+    fn parse_config_rejects_missing_market_portfolio_knob() {
+        let raw: Value = toml::toml! {
+            strategy_id = "BINARY-ORACLE-MAKER-001"
+            order_id_tag = "001"
+            oms_type = "netting"
+            client_id = "maker_execution_client"
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
+            market_portfolio_max_active_markets = 3
+            market_portfolio_total_bankroll_notional = 1500.0
+        }
+        .into();
+        assert!(
+            parse_config(&raw).is_err(),
+            "missing market_portfolio_min_slot_notional must fail to parse"
         );
     }
 

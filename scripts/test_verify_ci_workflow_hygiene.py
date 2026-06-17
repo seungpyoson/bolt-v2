@@ -1917,7 +1917,12 @@ def assert_backtester_detect_includes_runner_config() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": workflow})
     if any("backtester detect paths must include ci/github-actions-runners.toml" in error for error in good_errors):
         raise AssertionError(f"backtester detector path check must pass when present, got: {good_errors}")
-    missing_policy_script = workflow.replace("            scripts/ci_provenance.py \\\n", "")
+    missing_policy_script = replace_once_after(
+        workflow,
+        "scripts/command_understanding.py",
+        "scripts/ci_provenance.py",
+        "",
+    )
     policy_script_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": missing_policy_script})
     if not any("backtester detect paths must include scripts/ci_provenance.py" in error for error in policy_script_errors):
         raise AssertionError(f"backtester detector must reject missing ci_provenance.py path, got: {policy_script_errors}")

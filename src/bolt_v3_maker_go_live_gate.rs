@@ -14,8 +14,11 @@ pub enum MakerBacktestVerdict {
 pub struct MakerBacktestEvidence {
     pub verdict: MakerBacktestVerdict,
     pub run_artifact_present: bool,
+    pub run_artifact_sha256_valid: bool,
     pub threshold_artifact_present: bool,
+    pub threshold_artifact_sha256_valid: bool,
     pub execution_model_artifact_present: bool,
+    pub execution_model_artifact_sha256_valid: bool,
     pub built_maker_replayed: bool,
     pub full_net_scoring: bool,
     pub thresholds_registered_before_run: bool,
@@ -44,8 +47,11 @@ pub struct MakerBacktestEvidence {
 pub enum MakerBacktestGateBlocker {
     VerdictNotPass,
     MissingRunArtifact,
+    MissingRunArtifactDigest,
     MissingThresholdArtifact,
+    MissingThresholdArtifactDigest,
     MissingExecutionModelArtifact,
+    MissingExecutionModelArtifactDigest,
     BuiltMakerNotReplayed,
     MissingFullNetScoring,
     ThresholdsNotPreRegistered,
@@ -74,8 +80,11 @@ impl MakerBacktestGateBlocker {
         match self {
             Self::VerdictNotPass => "verdict",
             Self::MissingRunArtifact => "run_artifact",
+            Self::MissingRunArtifactDigest => "run_artifact_sha256",
             Self::MissingThresholdArtifact => "threshold_artifact",
+            Self::MissingThresholdArtifactDigest => "threshold_artifact_sha256",
             Self::MissingExecutionModelArtifact => "execution_model_artifact",
+            Self::MissingExecutionModelArtifactDigest => "execution_model_artifact_sha256",
             Self::BuiltMakerNotReplayed => "built_maker_replayed",
             Self::MissingFullNetScoring => "full_net_scoring",
             Self::ThresholdsNotPreRegistered => "thresholds_registered_before_run",
@@ -104,11 +113,20 @@ impl MakerBacktestGateBlocker {
         match self {
             Self::VerdictNotPass => "must be `pass` before maker go-live",
             Self::MissingRunArtifact => "must name the immutable backtest run evidence artifact",
+            Self::MissingRunArtifactDigest => {
+                "must supply the lowercase SHA-256 digest for the backtest run artifact"
+            }
             Self::MissingThresholdArtifact => {
                 "must name the immutable pre-registered threshold artifact"
             }
+            Self::MissingThresholdArtifactDigest => {
+                "must supply the lowercase SHA-256 digest for the pre-registered threshold artifact"
+            }
             Self::MissingExecutionModelArtifact => {
                 "must name the immutable NT execution-model source evidence artifact"
+            }
+            Self::MissingExecutionModelArtifactDigest => {
+                "must supply the lowercase SHA-256 digest for the NT execution-model source evidence artifact"
             }
             Self::BuiltMakerNotReplayed => "must confirm the built maker was replayed",
             Self::MissingFullNetScoring => {
@@ -165,11 +183,20 @@ pub fn maker_backtest_gate_blockers(
     if !evidence.run_artifact_present {
         blockers.push(MakerBacktestGateBlocker::MissingRunArtifact);
     }
+    if !evidence.run_artifact_sha256_valid {
+        blockers.push(MakerBacktestGateBlocker::MissingRunArtifactDigest);
+    }
     if !evidence.threshold_artifact_present {
         blockers.push(MakerBacktestGateBlocker::MissingThresholdArtifact);
     }
+    if !evidence.threshold_artifact_sha256_valid {
+        blockers.push(MakerBacktestGateBlocker::MissingThresholdArtifactDigest);
+    }
     if !evidence.execution_model_artifact_present {
         blockers.push(MakerBacktestGateBlocker::MissingExecutionModelArtifact);
+    }
+    if !evidence.execution_model_artifact_sha256_valid {
+        blockers.push(MakerBacktestGateBlocker::MissingExecutionModelArtifactDigest);
     }
     if !evidence.built_maker_replayed {
         blockers.push(MakerBacktestGateBlocker::BuiltMakerNotReplayed);
@@ -249,8 +276,11 @@ mod tests {
         MakerBacktestEvidence {
             verdict: MakerBacktestVerdict::Pass,
             run_artifact_present: true,
+            run_artifact_sha256_valid: true,
             threshold_artifact_present: true,
+            threshold_artifact_sha256_valid: true,
             execution_model_artifact_present: true,
+            execution_model_artifact_sha256_valid: true,
             built_maker_replayed: true,
             full_net_scoring: true,
             thresholds_registered_before_run: true,
@@ -291,6 +321,20 @@ mod tests {
             maker_backtest_gate_blockers(&evidence),
             vec![MakerBacktestGateBlocker::VerdictNotPass]
         );
+    }
+
+    #[test]
+    fn missing_artifact_digests_block_go_live() {
+        let evidence = MakerBacktestEvidence {
+            run_artifact_sha256_valid: false,
+            threshold_artifact_sha256_valid: false,
+            execution_model_artifact_sha256_valid: false,
+            ..passing_evidence()
+        };
+        let blockers = maker_backtest_gate_blockers(&evidence);
+        assert!(blockers.contains(&MakerBacktestGateBlocker::MissingRunArtifactDigest));
+        assert!(blockers.contains(&MakerBacktestGateBlocker::MissingThresholdArtifactDigest));
+        assert!(blockers.contains(&MakerBacktestGateBlocker::MissingExecutionModelArtifactDigest));
     }
 
     #[test]

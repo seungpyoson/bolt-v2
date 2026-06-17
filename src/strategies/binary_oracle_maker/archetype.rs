@@ -36,6 +36,7 @@ use crate::bolt_v3_maker_go_live_gate::{
 use crate::bolt_v3_maker_market_selection::{
     MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy, maker_market_portfolio_policy_blockers,
 };
+use crate::bolt_v3_operator_artifacts::is_lowercase_sha256;
 use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -101,8 +102,11 @@ struct MarketPortfolioParametersBlock {
 struct BacktestParametersBlock {
     verdict: BacktestVerdictParameter,
     run_artifact: String,
+    run_artifact_sha256: String,
     threshold_artifact: String,
+    threshold_artifact_sha256: String,
     execution_model_artifact: String,
+    execution_model_artifact_sha256: String,
     built_maker_replayed: bool,
     full_net_scoring: bool,
     thresholds_registered_before_run: bool,
@@ -142,8 +146,13 @@ impl BacktestParametersBlock {
                 BacktestVerdictParameter::Fail => MakerBacktestVerdict::Fail,
             },
             run_artifact_present: artifact_present(&self.run_artifact),
+            run_artifact_sha256_valid: is_lowercase_sha256(&self.run_artifact_sha256),
             threshold_artifact_present: artifact_present(&self.threshold_artifact),
+            threshold_artifact_sha256_valid: is_lowercase_sha256(&self.threshold_artifact_sha256),
             execution_model_artifact_present: artifact_present(&self.execution_model_artifact),
+            execution_model_artifact_sha256_valid: is_lowercase_sha256(
+                &self.execution_model_artifact_sha256,
+            ),
             built_maker_replayed: self.built_maker_replayed,
             full_net_scoring: self.full_net_scoring,
             thresholds_registered_before_run: self.thresholds_registered_before_run,
@@ -571,6 +580,8 @@ mod tests {
     use super::*;
 
     const CONTEXT: &str = "strategy `maker-001`";
+    const TEST_ARTIFACT_SHA256: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn valid_runtime() -> RuntimeParametersBlock {
         RuntimeParametersBlock {
@@ -595,8 +606,11 @@ mod tests {
         BacktestParametersBlock {
             verdict: BacktestVerdictParameter::Pass,
             run_artifact: "artifact://maker/backtest/run".to_string(),
+            run_artifact_sha256: TEST_ARTIFACT_SHA256.to_string(),
             threshold_artifact: "artifact://maker/backtest/thresholds".to_string(),
+            threshold_artifact_sha256: TEST_ARTIFACT_SHA256.to_string(),
             execution_model_artifact: "artifact://maker/backtest/execution-model".to_string(),
+            execution_model_artifact_sha256: TEST_ARTIFACT_SHA256.to_string(),
             built_maker_replayed: true,
             full_net_scoring: true,
             thresholds_registered_before_run: true,
@@ -626,8 +640,11 @@ mod tests {
             [backtest]
             verdict = "pass"
             run_artifact = "artifact://maker/backtest/run"
+            run_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             threshold_artifact = "artifact://maker/backtest/thresholds"
+            threshold_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             execution_model_artifact = "artifact://maker/backtest/execution-model"
+            execution_model_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             built_maker_replayed = true
             full_net_scoring = true
             thresholds_registered_before_run = true
@@ -984,6 +1001,34 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_missing_backtest_artifact_digests() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            run_artifact_sha256: "ABC".to_string(),
+            threshold_artifact_sha256: String::new(),
+            execution_model_artifact_sha256: "not-a-sha256".to_string(),
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.run_artifact_sha256")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.threshold_artifact_sha256")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.execution_model_artifact_sha256")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_missing_trade_and_book_corpus() {
         let errors = backtest_errors(BacktestParametersBlock {
             trade_ticks_present: false,
@@ -1114,8 +1159,11 @@ mod tests {
             [backtest]
             verdict = "pass"
             run_artifact = "artifact://maker/backtest/run"
+            run_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             threshold_artifact = "artifact://maker/backtest/thresholds"
+            threshold_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             execution_model_artifact = "artifact://maker/backtest/execution-model"
+            execution_model_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             built_maker_replayed = true
             full_net_scoring = true
             thresholds_registered_before_run = true

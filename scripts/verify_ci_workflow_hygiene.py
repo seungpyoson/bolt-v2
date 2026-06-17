@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import json
 import pathlib
 import re
 import shlex
@@ -808,10 +809,7 @@ def parse_inline_yaml_list(value: str) -> set[str]:
     return {item.strip().strip("'\"") for item in stripped[1:-1].split(",") if item.strip()}
 
 
-def workflow_pull_request_type_errors(
-    workflow_text: str,
-    required_types: tuple[str, ...] = ("ready_for_review", "converted_to_draft", "edited"),
-) -> list[str]:
+def workflow_pull_request_types(workflow_text: str) -> set[str]:
     block = workflow_trigger_block(workflow_text, "pull_request")
     types: set[str] = set()
     for index, line in enumerate(block):
@@ -824,6 +822,14 @@ def workflow_pull_request_type_errors(
                 if not child_stripped.startswith("- "):
                     break
                 types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
+    return types
+
+
+def workflow_pull_request_type_errors(
+    workflow_text: str,
+    required_types: tuple[str, ...] = ("ready_for_review", "converted_to_draft", "edited"),
+) -> list[str]:
+    types = workflow_pull_request_types(workflow_text)
     errors: list[str] = []
     for required_type in required_types:
         if required_type not in types:
@@ -8704,6 +8710,11 @@ BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION = """    name: >-
 BACKTESTER_DEFER_ACTION_LIST_RE = re.compile(
     r"contains\(fromJSON\('(?P<actions>\[[^']+\])'\), github\.event\.action\)"
 )
+BACKTESTER_POLICY_DEFER_ACTIONS = {
+    row.removeprefix("draft_pr_") if row.startswith("draft_pr_") else row
+    for row, path in CI_PROVENANCE_POLICY_EXPECTED.items()
+    if path == "defer"
+}
 
 
 def backtester_concurrency_group_text(text: str) -> str:
@@ -8718,6 +8729,19 @@ def backtester_concurrency_group_text(text: str) -> str:
 
 def backtester_defer_action_lists(text: str) -> set[str]:
     return {match.group("actions") for match in BACKTESTER_DEFER_ACTION_LIST_RE.finditer(text)}
+
+
+def backtester_defer_actions(text: str) -> set[str] | None:
+    actions: set[str] = set()
+    for raw_actions in backtester_defer_action_lists(text):
+        try:
+            parsed_actions = json.loads(raw_actions)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed_actions, list) or not all(isinstance(action, str) for action in parsed_actions):
+            return None
+        actions.update(parsed_actions)
+    return actions
 
 
 def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
@@ -8799,6 +8823,18 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         defer_action_lists.update(backtester_defer_action_lists(gate_text))
     if len(defer_action_lists) != 1:
         errors.append("backtester draft deferral must use one deferred draft action list across gate and concurrency")
+    defer_actions = backtester_defer_actions(group_text + "\n" + (gate_text if gate is not None else ""))
+    if defer_actions is None:
+        errors.append("backtester draft deferral must use a valid deferred draft action list")
+    elif defer_actions:
+        missing_trigger_actions = sorted(defer_actions - workflow_pull_request_types(text))
+        if missing_trigger_actions:
+            errors.append(
+                "backtester draft deferral pull_request types must include deferred actions: "
+                + ", ".join(missing_trigger_actions)
+            )
+        if defer_actions != BACKTESTER_POLICY_DEFER_ACTIONS:
+            errors.append("backtester draft deferral action list must match ci_provenance defer policy actions")
     return errors
 
 

@@ -2042,6 +2042,32 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
             f"{drifted_defer_run_context_errors}"
         )
 
+    missing_deferred_trigger_type = replace_once(
+        workflow,
+        "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+        "types: [synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+    )
+    missing_deferred_trigger_type_errors = verifier.verify_repo_automation_texts({workflow_name: missing_deferred_trigger_type})
+    if not any("backtester draft deferral pull_request types must include deferred actions: opened" in error for error in missing_deferred_trigger_type_errors):
+        raise AssertionError(
+            "backtester-ci workflow must reject deferred draft actions missing from pull_request types, got: "
+            f"{missing_deferred_trigger_type_errors}"
+        )
+
+    policy_drift_defer_actions = workflow.replace(
+        '["opened","synchronize","reopened","converted_to_draft","edited"]',
+        '["opened","synchronize","reopened","converted_to_draft","edited","assigned"]',
+    ).replace(
+        "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]",
+        "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited, assigned]",
+    )
+    policy_drift_defer_action_errors = verifier.verify_repo_automation_texts({workflow_name: policy_drift_defer_actions})
+    if not any("backtester draft deferral action list must match ci_provenance defer policy actions" in error for error in policy_drift_defer_action_errors):
+        raise AssertionError(
+            "backtester-ci workflow must reject deferred draft actions not backed by ci_provenance policy, got: "
+            f"{policy_drift_defer_action_errors}"
+        )
+
 
 def assert_actionlint_rejects_stale_config_variables() -> None:
     verifier = load_verifier()

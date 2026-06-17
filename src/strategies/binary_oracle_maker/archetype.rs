@@ -109,6 +109,8 @@ struct BacktestParametersBlock {
     threshold_artifact_sha256: String,
     execution_model_artifact: String,
     execution_model_artifact_sha256: String,
+    maker_order_count: u64,
+    passive_fill_count: u64,
     built_maker_replayed: bool,
     full_net_scoring: bool,
     thresholds_registered_before_run: bool,
@@ -157,6 +159,8 @@ impl BacktestParametersBlock {
             execution_model_artifact_sha256_valid: is_lowercase_sha256(
                 &self.execution_model_artifact_sha256,
             ),
+            maker_orders_observed: self.maker_order_count > 0,
+            passive_fills_observed: self.passive_fill_count > 0,
             built_maker_replayed: self.built_maker_replayed,
             full_net_scoring: self.full_net_scoring,
             thresholds_registered_before_run: self.thresholds_registered_before_run,
@@ -617,6 +621,8 @@ mod tests {
             threshold_artifact_sha256: TEST_ARTIFACT_SHA256.to_string(),
             execution_model_artifact: "artifact://maker/backtest/execution-model".to_string(),
             execution_model_artifact_sha256: TEST_ARTIFACT_SHA256.to_string(),
+            maker_order_count: 3,
+            passive_fill_count: 2,
             built_maker_replayed: true,
             full_net_scoring: true,
             thresholds_registered_before_run: true,
@@ -653,6 +659,8 @@ mod tests {
             threshold_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             execution_model_artifact = "artifact://maker/backtest/execution-model"
             execution_model_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            maker_order_count = 3
+            passive_fill_count = 2
             built_maker_replayed = true
             full_net_scoring = true
             thresholds_registered_before_run = true
@@ -1030,6 +1038,27 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_noop_backtest_counts() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            maker_order_count: 0,
+            passive_fill_count: 0,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.maker_order_count")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.passive_fill_count")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_missing_backtest_artifact_digests() {
         let errors = backtest_errors(BacktestParametersBlock {
             run_artifact_sha256: "ABC".to_string(),
@@ -1195,6 +1224,8 @@ mod tests {
             threshold_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             execution_model_artifact = "artifact://maker/backtest/execution-model"
             execution_model_artifact_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            maker_order_count = 3
+            passive_fill_count = 2
             built_maker_replayed = true
             full_net_scoring = true
             thresholds_registered_before_run = true

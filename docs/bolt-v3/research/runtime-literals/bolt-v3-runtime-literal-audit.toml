@@ -15860,6 +15860,38 @@ reason = "Stable maker backtest go-live evidence digest schema-field label used 
 [[allowed]]
 path = "src/bolt_v3_maker_go_live_gate.rs"
 kind = "string"
+literal = '''"maker_order_count"'''
+context = '''Self::MissingMakerOrders => "maker_order_count",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence count schema-field label used only to format startup-validation diagnostics; the count value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''maker_orders_observed: self.maker_order_count > 0,'''
+classification = "maker_backtest_go_live_count_lower_bound"
+reason = "Fail-closed lower bound for operator-supplied maker backtest order count evidence; the actual count remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"passive_fill_count"'''
+context = '''Self::MissingPassiveFills => "passive_fill_count",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence count schema-field label used only to format startup-validation diagnostics; the count value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''passive_fills_observed: self.passive_fill_count > 0,'''
+classification = "maker_backtest_go_live_count_lower_bound"
+reason = "Fail-closed lower bound for operator-supplied maker backtest passive-fill count evidence; the actual count remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
 literal = '''"built_maker_replayed"'''
 context = '''Self::BuiltMakerNotReplayed => "built_maker_replayed",'''
 classification = "maker_backtest_go_live_schema_field"

@@ -11,7 +11,7 @@ pub enum MakerBacktestVerdict {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MakerBacktestGateEvidence {
+pub struct MakerBacktestEvidence {
     pub verdict: MakerBacktestVerdict,
     pub run_artifact_present: bool,
     pub threshold_artifact_present: bool,
@@ -156,7 +156,7 @@ impl MakerBacktestGateBlocker {
 }
 
 pub fn maker_backtest_gate_blockers(
-    evidence: &MakerBacktestGateEvidence,
+    evidence: &MakerBacktestEvidence,
 ) -> Vec<MakerBacktestGateBlocker> {
     let mut blockers = Vec::new();
     if evidence.verdict != MakerBacktestVerdict::Pass {
@@ -237,7 +237,7 @@ pub fn maker_backtest_gate_blockers(
     blockers
 }
 
-pub fn maker_backtest_gate_passes(evidence: &MakerBacktestGateEvidence) -> bool {
+pub fn maker_backtest_gate_passes(evidence: &MakerBacktestEvidence) -> bool {
     maker_backtest_gate_blockers(evidence).is_empty()
 }
 
@@ -245,8 +245,8 @@ pub fn maker_backtest_gate_passes(evidence: &MakerBacktestGateEvidence) -> bool 
 mod tests {
     use super::*;
 
-    fn passing_evidence() -> MakerBacktestGateEvidence {
-        MakerBacktestGateEvidence {
+    fn passing_evidence() -> MakerBacktestEvidence {
+        MakerBacktestEvidence {
             verdict: MakerBacktestVerdict::Pass,
             run_artifact_present: true,
             threshold_artifact_present: true,
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn failed_verdict_blocks_go_live() {
-        let evidence = MakerBacktestGateEvidence {
+        let evidence = MakerBacktestEvidence {
             verdict: MakerBacktestVerdict::Fail,
             ..passing_evidence()
         };
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn missing_queue_position_blocks_go_live() {
-        let evidence = MakerBacktestGateEvidence {
+        let evidence = MakerBacktestEvidence {
             queue_position_enabled: false,
             ..passing_evidence()
         };
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn trade_and_book_corpus_are_both_required() {
-        let evidence = MakerBacktestGateEvidence {
+        let evidence = MakerBacktestEvidence {
             trade_ticks_present: false,
             order_book_deltas_present: false,
             ..passing_evidence()
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn custom_fill_model_requires_source_proof() {
-        let evidence = MakerBacktestGateEvidence {
+        let evidence = MakerBacktestEvidence {
             custom_fill_model_used: true,
             custom_fill_model_source_proven: false,
             ..passing_evidence()
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn source_proven_custom_fill_does_not_block_by_itself() {
-        let evidence = MakerBacktestGateEvidence {
+        let evidence = MakerBacktestEvidence {
             custom_fill_model_used: true,
             custom_fill_model_source_proven: true,
             ..passing_evidence()

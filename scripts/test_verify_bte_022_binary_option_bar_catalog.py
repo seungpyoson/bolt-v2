@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,23 @@ def test_source_text_must_contain_binary_option_bar_round_trip(module) -> None:
     assert_finding(findings, "binary_option_bar_catalog_projection_round_trips")
 
 
+def test_comments_and_strings_only_do_not_satisfy_code_requirements(module) -> None:
+    catalog_projection = "\n".join(
+        f"// {snippet}\nconst STUFFED: &str = {json.dumps(snippet)};"
+        for snippet in module.CATALOG_PROJECTION_REQUIRED_SOURCE_SNIPPETS
+    )
+    run_manifest = "\n".join(
+        f"/* {snippet} */\nconst STUFFED: &str = {json.dumps(snippet)};"
+        for snippet in module.RUN_MANIFEST_REQUIRED_SOURCE_SNIPPETS
+    )
+
+    findings: list[str] = []
+    module.verify_code(catalog_projection, run_manifest, findings)
+
+    assert_finding(findings, "binary_option_bar_catalog_projection_round_trips")
+    assert_finding(findings, "trade_bar_replay_accepts_bar_data_config")
+
+
 def test_mapping_evaluation_rejects_stale_bar_rejection(module) -> None:
     evaluation = copy.deepcopy(module.load_json(module.MAPPING_EVALUATION))
     exposure = evaluation["nt_surface_evidence"]["current_bte_manifest_exposure"]
@@ -81,6 +99,7 @@ def main() -> int:
     test_status_must_stay_fail_closed(module)
     test_status_requires_bar_mapping(module)
     test_source_text_must_contain_binary_option_bar_round_trip(module)
+    test_comments_and_strings_only_do_not_satisfy_code_requirements(module)
     test_mapping_evaluation_rejects_stale_bar_rejection(module)
     test_justfile_requires_source_fence_wiring(module)
     print("OK: BTE-022 binary-option Bar catalog verifier self-tests passed.")

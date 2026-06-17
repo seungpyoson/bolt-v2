@@ -32,6 +32,22 @@ REQUIRED_SOURCE_FENCE_COMMANDS = (
     "python3 scripts/verify_bte_022_binary_option_bar_catalog.py",
 )
 
+CATALOG_PROJECTION_REQUIRED_SOURCE_SNIPPETS = (
+    "fn binary_option_bar_catalog_projection_round_trips_through_nt_catalog()",
+    "project_canonical_bars_to_catalog(",
+    "&binary_option_spec()",
+    "read_back_bars(dir.path(),",
+    "InstrumentAny::BinaryOption",
+    "NT_DATA_TYPE_BAR",
+    "SourceProofFidelityClass::TradeBarReplay",
+)
+
+RUN_MANIFEST_REQUIRED_SOURCE_SNIPPETS = (
+    "data_type: NautilusDataType::Bar",
+    "fidelity: SourceProofFidelityClass::TradeBarReplay",
+    "fn trade_bar_replay_accepts_bar_data_config()",
+)
+
 
 def load_json(path: Path) -> Any:
     with path.open(encoding="utf-8") as handle:
@@ -60,6 +76,95 @@ def require_text(path: Path, text: str, needle: str, findings: list[str]) -> Non
 
 def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def raw_string_end(text: str, i: int) -> int | None:
+    if text.startswith("br", i):
+        i += 2
+    elif text.startswith("r", i):
+        i += 1
+    else:
+        return None
+    hashes = 0
+    while i < len(text) and text[i] == "#":
+        hashes += 1
+        i += 1
+    if i >= len(text) or text[i] != '"':
+        return None
+    closing = '"' + ("#" * hashes)
+    end = text.find(closing, i + 1)
+    if end == -1:
+        return len(text)
+    return end + len(closing)
+
+
+def strip_rust_comments_and_literals(text: str) -> str:
+    out: list[str] = []
+    i = 0
+    state = "code"
+    block_depth = 0
+    while i < len(text):
+        raw_end = raw_string_end(text, i)
+        if state == "code" and raw_end is not None:
+            out.append('""')
+            out.extend("\n" for _ in range(text.count("\n", i, raw_end)))
+            i = raw_end
+            continue
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if state == "code":
+            if c == "/" and nxt == "/":
+                state = "line_comment"
+                out.extend("  ")
+                i += 2
+                continue
+            if c == "/" and nxt == "*":
+                state = "block_comment"
+                block_depth = 1
+                out.extend("  ")
+                i += 2
+                continue
+            if c == '"':
+                state = "string"
+                out.extend('""')
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+            continue
+        if state == "line_comment":
+            if c == "\n":
+                state = "code"
+                out.append(c)
+            else:
+                out.append(" ")
+            i += 1
+            continue
+        if state == "block_comment":
+            if c == "/" and nxt == "*":
+                block_depth += 1
+                out.extend("  ")
+                i += 2
+                continue
+            if c == "*" and nxt == "/":
+                block_depth -= 1
+                out.extend("  ")
+                i += 2
+                if block_depth == 0:
+                    state = "code"
+                continue
+            out.append("\n" if c == "\n" else " ")
+            i += 1
+            continue
+        if state == "string":
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                state = "code"
+            i += 1
+            continue
+    return "".join(out)
 
 
 def verify_status(status: dict[str, Any], findings: list[str]) -> None:
@@ -130,22 +235,12 @@ def verify_status(status: dict[str, Any], findings: list[str]) -> None:
 
 
 def verify_code(catalog_projection_text: str, run_manifest_text: str, findings: list[str]) -> None:
-    for needle in (
-        "fn binary_option_bar_catalog_projection_round_trips_through_nt_catalog()",
-        "project_canonical_bars_to_catalog(",
-        "&binary_option_spec()",
-        "read_back_bars(dir.path(), \"YES.TESTVENUE\")",
-        "InstrumentAny::BinaryOption",
-        "NT_DATA_TYPE_BAR",
-        "SourceProofFidelityClass::TradeBarReplay",
-    ):
-        require_text(CATALOG_PROJECTION, catalog_projection_text, needle, findings)
-    for needle in (
-        "data_type: NautilusDataType::Bar",
-        "fidelity: SourceProofFidelityClass::TradeBarReplay",
-        "fn trade_bar_replay_accepts_bar_data_config()",
-    ):
-        require_text(RUN_MANIFEST, run_manifest_text, needle, findings)
+    catalog_projection_code = strip_rust_comments_and_literals(catalog_projection_text)
+    run_manifest_code = strip_rust_comments_and_literals(run_manifest_text)
+    for needle in CATALOG_PROJECTION_REQUIRED_SOURCE_SNIPPETS:
+        require_text(CATALOG_PROJECTION, catalog_projection_code, needle, findings)
+    for needle in RUN_MANIFEST_REQUIRED_SOURCE_SNIPPETS:
+        require_text(RUN_MANIFEST, run_manifest_code, needle, findings)
 
 
 def mapping_for_binding(evaluation: dict[str, Any], source_binding: str) -> dict[str, Any]:

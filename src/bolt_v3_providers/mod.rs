@@ -103,6 +103,14 @@ pub struct ProviderSsmPathReference {
     pub ssm_path: String,
 }
 
+pub struct ProviderSharedSignerOwnerContext<'a> {
+    pub region: &'a str,
+    pub existing_client_key: &'a str,
+    pub existing_client: &'a ClientBlock,
+    pub client_key: &'a str,
+    pub client: &'a ClientBlock,
+}
+
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
     pub client_key: &'a str,
@@ -527,6 +535,7 @@ pub struct ProviderBinding {
         for<'a> fn(
             ProviderSecretResolveContext<'a>,
         ) -> Result<Vec<ProviderSsmPathReference>, BoltV3SecretError>,
+    pub allow_shared_signer_owner: Option<for<'a> fn(ProviderSharedSignerOwnerContext<'a>) -> bool>,
     pub map_adapters: for<'a> fn(
         ProviderAdapterMapContext<'a>,
     )
@@ -609,6 +618,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: polymarket::FORBIDDEN_ENV_VARS,
         resolve_secrets: polymarket::resolve_secrets,
         configured_secret_paths: polymarket::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: polymarket::map_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -627,6 +637,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: binance::FORBIDDEN_ENV_VARS,
         resolve_secrets: binance::resolve_secrets,
         configured_secret_paths: binance::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: binance::map_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -645,6 +656,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: hyperliquid::FORBIDDEN_ENV_VARS,
         resolve_secrets: hyperliquid::resolve_secrets,
         configured_secret_paths: hyperliquid::configured_secret_paths,
+        allow_shared_signer_owner: Some(hyperliquid::allow_shared_signer_owner),
         map_adapters: hyperliquid::map_adapters,
         load_live_submit_approval: Some(hyperliquid::load_live_submit_approval),
         preflight_live_submit_arming: Some(hyperliquid::preflight_live_submit_arming),
@@ -665,6 +677,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: market_data::BITMEX_FORBIDDEN_ENV_VARS,
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: market_data::map_bitmex_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -683,6 +696,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: market_data::BYBIT_FORBIDDEN_ENV_VARS,
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: market_data::map_bybit_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -701,6 +715,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: market_data::COINBASE_FORBIDDEN_ENV_VARS,
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: market_data::map_coinbase_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -719,6 +734,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: market_data::DERIBIT_FORBIDDEN_ENV_VARS,
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: market_data::map_deribit_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -737,6 +753,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: market_data::OKX_FORBIDDEN_ENV_VARS,
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: market_data::map_okx_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -755,6 +772,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: market_data::KRAKEN_FORBIDDEN_ENV_VARS,
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: market_data::map_kraken_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -773,6 +791,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: chainlink::FORBIDDEN_ENV_VARS,
         resolve_secrets: chainlink::resolve_secrets,
         configured_secret_paths: chainlink::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: chainlink::map_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -791,6 +810,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: chainlink_reference::FORBIDDEN_ENV_VARS,
         resolve_secrets: chainlink_reference::resolve_secrets,
         configured_secret_paths: chainlink_reference::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: chainlink_reference::map_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -809,6 +829,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         forbidden_env_vars: polyresearch::FORBIDDEN_ENV_VARS,
         resolve_secrets: polyresearch::resolve_secrets,
         configured_secret_paths: polyresearch::configured_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: polyresearch::map_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,

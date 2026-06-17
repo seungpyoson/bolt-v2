@@ -8606,7 +8606,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             "hl-standard-perps-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json",
-            "/bolt/hyperliquid/master_api_wallet/standard_perps/private_key",
+            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
             0,
         ),
         (
@@ -8615,7 +8615,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             "hl-spot-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json",
-            "/bolt/hyperliquid/master_api_wallet/spot/private_key",
+            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
             0,
         ),
         (
@@ -8624,7 +8624,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             "hl-hip3-builder-perps-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json",
-            "/bolt/hyperliquid/master_api_wallet/hip3_builder_perps/private_key",
+            "/bolt/hyperliquid/master_api_wallet/hip3/private_key",
             0,
         ),
         (
@@ -8633,7 +8633,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
             "hl-hip4-outcomes-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json",
-            "/bolt/hyperliquid/master_api_wallet/hip4_outcomes/private_key",
+            "/bolt/hyperliquid/master_api_wallet/hip4/private_key",
             30,
         ),
     ] {
@@ -8751,9 +8751,7 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
 }
 
 #[test]
-fn root_config_resolves_hyperliquid_execution_surfaces_with_distinct_api_wallets() {
-    use std::collections::BTreeSet;
-
+fn root_config_resolves_hyperliquid_execution_surfaces_with_approved_spotperp_api_wallet_sharing() {
     use bolt_v2::{
         bolt_v3_config::load_bolt_v3_config, bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     };
@@ -8777,48 +8775,48 @@ fn root_config_resolves_hyperliquid_execution_surfaces_with_distinct_api_wallets
         "/bolt/hyperliquid/master_api_wallet/account_address" => {
             Ok("0x1111111111111111111111111111111111111111".to_string())
         }
-        "/bolt/hyperliquid/master_api_wallet/standard_perps/private_key" => {
+        "/bolt/hyperliquid/master_api_wallet/spotperp/private_key" => {
             Ok("0x1111111111111111111111111111111111111111111111111111111111111111".to_string())
         }
-        "/bolt/hyperliquid/master_api_wallet/spot/private_key" => {
-            Ok("0x2222222222222222222222222222222222222222222222222222222222222222".to_string())
-        }
-        "/bolt/hyperliquid/master_api_wallet/hip3_builder_perps/private_key" => {
+        "/bolt/hyperliquid/master_api_wallet/hip3/private_key" => {
             Ok("0x3333333333333333333333333333333333333333333333333333333333333333".to_string())
         }
-        "/bolt/hyperliquid/master_api_wallet/hip4_outcomes/private_key" => {
+        "/bolt/hyperliquid/master_api_wallet/hip4/private_key" => {
             Ok("0x4444444444444444444444444444444444444444444444444444444444444444".to_string())
         }
         _ => Err("unexpected root SSM path"),
     })
-    .expect("root Hyperliquid execution clients should resolve with distinct API wallets");
+    .expect("root Hyperliquid execution clients should resolve with approved spotperp sharing");
 
-    let mut private_key_paths = BTreeSet::new();
     for (client_key, private_key_ssm_path) in [
         (
             "hyperliquid_standard_perps_execution",
-            "/bolt/hyperliquid/master_api_wallet/standard_perps/private_key",
+            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
         ),
         (
             "hyperliquid_spot_execution",
-            "/bolt/hyperliquid/master_api_wallet/spot/private_key",
+            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
         ),
         (
             "hyperliquid_hip3_execution",
-            "/bolt/hyperliquid/master_api_wallet/hip3_builder_perps/private_key",
+            "/bolt/hyperliquid/master_api_wallet/hip3/private_key",
         ),
         (
             "hyperliquid_hip4_execution",
-            "/bolt/hyperliquid/master_api_wallet/hip4_outcomes/private_key",
+            "/bolt/hyperliquid/master_api_wallet/hip4/private_key",
         ),
     ] {
         assert!(
             resolved.clients.contains_key(client_key),
             "{client_key} should resolve through the root SSM resolver"
         );
-        assert!(
-            private_key_paths.insert(private_key_ssm_path),
-            "{private_key_ssm_path} must be unique per Hyperliquid execution surface"
+        let client = loaded.root.clients.get(client_key).unwrap();
+        let secrets = client.secrets.as_ref().unwrap().as_table().unwrap();
+        assert_eq!(
+            secrets
+                .get(stringify!(private_key_ssm_path))
+                .and_then(toml::Value::as_str),
+            Some(private_key_ssm_path)
         );
     }
 }

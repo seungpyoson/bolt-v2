@@ -54,7 +54,7 @@ use bolt_v2::{
         ProviderProductSubmitProofArtifactRequest, binance::ResolvedBoltV3BinanceSecrets,
         binding_for_provider_key, chainlink::ResolvedBoltV3ChainlinkSecrets,
         chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
-        hyperliquid::ResolvedBoltV3HyperliquidSecrets,
+        hyperliquid::{ResolvedBoltV3HyperliquidSecrets, load_live_submit_approval},
         hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
         polymarket::ResolvedBoltV3PolymarketSecrets,
         polyresearch::ResolvedBoltV3PolyResearchSecrets, validate_client_block,
@@ -1287,6 +1287,112 @@ fn provider_binding_rejects_operator_surface_without_matching_live_submit_block(
     assert!(
         !approval_path.exists(),
         "no approval artifact may be written when the selected surface has no live_submit block"
+    );
+}
+
+/// Differential guard for the deliberately removed "single-surface
+/// fallback" in `selected_live_submit_surface_for_plan`. A Hyperliquid
+/// execution client configured with exactly one `product_surfaces`
+/// entry and a matching `live_submit` block, but with no strategy
+/// target routing to it (`loaded.strategies` cleared), derives an empty
+/// market-identity plan. With `product_surface = None`, surface
+/// selection falls through to the plan-derived path, which must return
+/// `Ok(None)` (zero active surfaces ⇒ nothing armed). `load_live_submit_approval`
+/// therefore short-circuits at the `selected_live_submit_config_for_context`
+/// guard and returns `Ok(None)` BEFORE reading or consuming any approval
+/// artifact, leaving the (nonexistent) artifact path untouched.
+///
+/// If a single-surface fallback were reintroduced (e.g. selecting the
+/// lone configured surface when the active set is empty), this function
+/// would instead select `standard_perps`, then attempt to read the
+/// missing approval artifact and return `Err`. Asserting `Ok(None)` here
+/// is the load-bearing differential signal: it PASSES on the fail-closed
+/// code and FAILS (`Err`) on the buggy fallback variant.
+#[test]
+fn provider_binding_does_not_arm_single_surface_hyperliquid_client_without_routed_target() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    // Approval path intentionally points at a file that does NOT exist:
+    // the fail-closed contract must return Ok(None) before any read.
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    // Clearing strategies removes every target that could route to this
+    // client, so the derived market-identity plan has zero active
+    // surfaces for `hyperliquid_perps`.
+    loaded.strategies.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    // Exactly ONE configured product surface — this is the precondition
+    // the removed single-surface fallback would have keyed off of.
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "product_surfaces".to_string(),
+            toml::Value::Array(vec![toml::Value::String("standard_perps".to_string())]),
+        );
+    // Keep only the standard_perps live_submit block so the config is
+    // valid (every live_submit surface is in product_surfaces) and point
+    // its approval artifact at the nonexistent temp path.
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+
+    // `product_surface: None` is critical: passing `Some(..)` would
+    // short-circuit surface selection before plan derivation and would
+    // NOT exercise the removed fallback.
+    let approval = load_live_submit_approval(ProviderLiveSubmitApprovalContext {
+        loaded: &loaded,
+        client_key: "hyperliquid_perps",
+        client: loaded
+            .root
+            .clients
+            .get("hyperliquid_perps")
+            .expect("test client should exist"),
+        resolved: &resolved,
+        product_surface: None,
+        now_unix_seconds,
+        build_head_sha: &build_head_sha,
+    })
+    .expect("a single configured surface with no routed target must not error (fail-closed Ok(None))");
+
+    assert!(
+        approval.is_none(),
+        "no surface may be armed when no strategy target routes to the client, even if exactly one product surface is configured; a reintroduced single-surface fallback would select `standard_perps` here"
+    );
+    assert!(
+        !approval_path.exists(),
+        "the fail-closed path must not read or write the approval artifact: selection returns Ok(None) before the artifact is ever touched"
     );
 }
 

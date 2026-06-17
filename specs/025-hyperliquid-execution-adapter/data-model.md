@@ -50,7 +50,6 @@ Validation:
 - `private_key_ssm_path`
 - `account_address_ssm_path`
 - `vault_address_ssm_path`
-- `api_wallet_label`
 
 Validation:
 - Every secret value resolves from SSM via Rust AWS SDK.
@@ -94,6 +93,9 @@ Validation:
 
 ## HyperliquidLiveSubmitApprovalArtifact
 
+- `schema_version`
+- `record_kind`
+- `provider_key`
 - `approval_id`
 - `base_sha`
 - `provider_id`
@@ -101,6 +103,7 @@ Validation:
 - `toml_checksum`
 - `signer_fingerprint`
 - `order_limits`
+- `product_submit_proof`
 - `expires_at`
 - `used_at`
 

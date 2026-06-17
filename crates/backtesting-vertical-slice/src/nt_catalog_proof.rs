@@ -321,6 +321,7 @@ fn build_instrument(spec: &NtCatalogProofInstrumentSpec) -> Result<CurrencyPair>
         None,
         None,
         None,
+        None, // tick_scheme (NT bump): not persisted by the catalog proof
         UnixNanos::default(),
         UnixNanos::default(),
     ))

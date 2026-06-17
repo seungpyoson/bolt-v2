@@ -51,7 +51,9 @@ use nautilus_polymarket::{
     common::consts::{HTTP_RATE_LIMIT, LOT_SIZE_SCALE},
     common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
     common::enums::SignatureType as NtPolymarketSignatureType,
-    config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
+    config::{
+        PolymarketDataClientConfig, PolymarketExecClientConfig, PolymarketInstrumentProviderConfig,
+    },
     factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
     filters::{
         EventQueryFilter, EventSlugFilter, GammaQueryFilter, InstrumentFilter, MarketSlugFilter,
@@ -829,7 +831,20 @@ fn map_data(
         })?;
     let filters = build_instrument_filters_for_client(root, plan, client_key, clock)?;
     Ok(PolymarketDataClientConfig {
-        instrument_config: None,
+        // Restore the OLD-NT connect-time filtered bootstrap. In the pinned NT
+        // rev the provider only loads instruments when `instrument_config`
+        // triggers `should_load_all()`/`has_load_ids()`; `None` loaded nothing,
+        // so with `auto_load_missing_instruments = false` every subscribe bailed
+        // and the strategy received zero Polymarket data. `load_all = true` with
+        // no slug scope routes `initialize()` -> `load_scoped_all()` ->
+        // `load_all()` -> `load_filtered()`, applying the runtime `filters` below
+        // exactly as OLD `provider.load_all(None)` did, and re-enables the
+        // `update_instruments` refresh task (which early-returns when None).
+        instrument_config: Some(
+            PolymarketInstrumentProviderConfig::builder()
+                .load_all(true)
+                .build(),
+        ),
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
         base_url_rtds: Some(cfg.base_url_rtds),
@@ -1278,6 +1293,72 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(slugs, vec!["will-sample-alpha-resolve-yes".to_string()]);
+    }
+
+    #[test]
+    fn map_data_enables_filtered_instrument_bootstrap_for_targeted_polymarket_client() {
+        // Regression for the NT-bump bug where `instrument_config: None` disabled
+        // the connect-time instrument bootstrap. In the pinned NT rev the provider
+        // only loads instruments when `instrument_config` triggers
+        // `should_load_all()`/`has_load_ids()`; with `auto_load_missing_instruments
+        // = false` (prod/fixture default) every subscribe then bailed and the
+        // strategy received zero Polymarket data.
+        let mut plan = MarketIdentityPlan::empty();
+        plan.push_target(StaticBinaryEventTargetPlan {
+            strategy_instance_id: "sample-static-alpha".to_string(),
+            configured_target_id: "sample-static-alpha-target".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            event_key: "sample_event_2026".to_string(),
+            market_slug: "will-sample-alpha-resolve-yes".to_string(),
+            condition_id: Some("condition-sample-alpha".to_string()),
+            yes_outcome: "Yes".to_string(),
+            no_outcome: "No".to_string(),
+        });
+        let root: BoltV3RootConfig =
+            toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture root config should parse");
+        let data = root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture must define polymarket_main client")
+            .data
+            .clone()
+            .expect("polymarket_main must carry a [data] block");
+
+        let cfg = map_data(
+            &root,
+            "polymarket_main",
+            &data,
+            &plan,
+            Arc::new(|| 1_746_000_000),
+        )
+        .expect("polymarket data mapping should succeed");
+
+        // Bootstrap must be enabled (the bug shipped `None`) and must stay scoped
+        // through the runtime `filters` rather than explicit slug/id scope, which
+        // would bypass the filters' `accept()` intersection in NT.
+        let ic = cfg
+            .instrument_config
+            .expect("instrument_config must be Some so initialize() performs a bootstrap");
+        assert!(
+            ic.should_load_all(),
+            "instrument_config must trigger a connect-time bootstrap"
+        );
+        assert!(
+            ic.load_all,
+            "bootstrap must run via load_all + runtime filters"
+        );
+        assert!(
+            ic.event_slugs.is_none()
+                && ic.market_slugs.is_none()
+                && ic.event_slug_builder.is_none()
+                && ic.load_ids.is_none(),
+            "must not set explicit slug/id scope, or NT bypasses the runtime filters"
+        );
+        assert!(
+            !cfg.filters.is_empty(),
+            "runtime fetch-only filters must remain populated to scope the bootstrap"
+        );
     }
 }
 

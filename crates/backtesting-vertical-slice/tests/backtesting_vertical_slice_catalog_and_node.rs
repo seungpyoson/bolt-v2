@@ -79,6 +79,7 @@ fn proof_instrument() -> CurrencyPair {
         None,
         None,
         None,
+        None, // tick_scheme (NT bump)
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -133,6 +134,7 @@ fn proof_binary_option() -> BinaryOption {
         None,
         Some(Decimal::ZERO),
         Some(Decimal::ZERO),
+        None, // tick_scheme (NT bump)
         None,
         ts_init,
         ts_init,

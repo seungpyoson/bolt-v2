@@ -1634,6 +1634,7 @@ fn normalize_binary_option_for_catalog(instrument: InstrumentAny) -> Result<Inst
         None, // margin_maint: not encoded by the NT catalog Arrow schema
         Some(bo.maker_fee),
         Some(bo.taker_fee),
+        None, // tick_scheme: not encoded by the NT catalog Arrow schema
         bo.info,
         bo.ts_event,
         bo.ts_init,

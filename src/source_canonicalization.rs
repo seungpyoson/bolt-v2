@@ -4,15 +4,13 @@
 //! everywhere a source digest is needed.
 //!
 //! This file is the SINGLE TRANSCRIPTION of the walk + framing + hash logic. It
-//! is compiled twice from one source: once by `build.rs` via a `#[path]` module
-//! include (so the build script can re-emit the canonical bytes into `OUT_DIR`),
-//! and once by the crate as a normal module re-exported through
-//! [`crate::bolt_v3_source_integrity`]. Because both sides share this exact
-//! source text, the build-time emission and the runtime digest can never drift.
+//! is compiled as a normal crate module re-exported through
+//! [`crate::bolt_v3_source_integrity`], which owns the registry-keyed text
+//! accessors layered on top of it.
 //!
-//! It depends ONLY on `std`, `sha2`, and `hex` so `build.rs` can compile it
-//! standalone with `[build-dependencies] sha2 + hex` pinned to the same versions
-//! as `[dependencies]`. It must NOT import anything from the rest of the crate.
+//! It depends ONLY on `std`, `sha2`, and `hex` and must NOT import anything from
+//! the rest of the crate, so the canonicalization stays self-contained and
+//! dependency-light.
 
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -158,119 +156,6 @@ fn source_root_file_type(root: &Path) -> io::Result<std::fs::FileType> {
     Ok(file_type)
 }
 
-/// Canonical byte stream for a source `root`.
-///
-/// - **IDENTITY case** (`root` is a regular file): the file's raw bytes verbatim
-///   — no framing, no path prefix, no separator, no newline/BOM/trailing-newline
-///   normalization. This is byte-identical to `include_str!(path).as_bytes()`
-///   today, so the SHA-256 equals the currently-recorded digest (value-stable).
-/// - **DIRECTORY case** (`root` is a directory): every `*.rs` file under it,
-///   ordered lexicographically by relative-path raw UTF-8 bytes, each emitted as
-///   a frame `relative_path_bytes + 0x00 + u64-LE(file_len) + file_raw_bytes`.
-///   The path+NUL+length framing is collision-free and rename-sensitive. Per-file
-///   reads obey `max_bytes`, and a running total-bytes ceiling (also `max_bytes`)
-///   bounds the whole directory so it can never silently exceed today's cap.
-pub fn canonical_source_bytes(root: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
-    let file_type = source_root_file_type(root)?;
-    if file_type.is_file() {
-        // IDENTITY: verbatim raw bytes.
-        return read_file_bounded(root, max_bytes);
-    }
-    if !file_type.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "source root is neither a regular file nor a directory: {}",
-                root.display()
-            ),
-        ));
-    }
-
-    // DIRECTORY: framed concatenation in canonical order, with a running total
-    // ceiling equal to the per-file cap.
-    let files = collect_rs_files_sorted(root)?;
-    let mut out: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
-    for (relative, path) in files {
-        let file_bytes = read_file_bounded(&path, max_bytes)?;
-        let file_len = file_bytes.len() as u64;
-        total = total.saturating_add(relative.len() as u64);
-        total = total.saturating_add(1); // NUL separator
-        total = total.saturating_add(8); // u64-LE length frame
-        total = total.saturating_add(file_len);
-        if total > max_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"
-                ),
-            ));
-        }
-        out.extend_from_slice(&relative);
-        out.push(0x00);
-        out.extend_from_slice(&file_len.to_le_bytes());
-        out.extend_from_slice(&file_bytes);
-    }
-    Ok(out)
-}
-
-/// Lowercase-hex SHA-256 of [`canonical_source_bytes`] for `root`.
-pub fn canonical_source_digest(root: &Path, max_bytes: u64) -> io::Result<String> {
-    Ok(sha256_hex_lower(&canonical_source_bytes(root, max_bytes)?))
-}
-
-/// Canonical byte stream for a registry-owned source set.
-///
-/// A one-root set preserves the historical single-root bytes exactly. A
-/// multi-root set frames every discovered file by its full repo-relative path,
-/// sorted by those path bytes, so shared strategy dependencies can be covered by
-/// the same digest without losing rename/path tamper evidence.
-pub fn canonical_source_set_bytes(
-    manifest_dir: &Path,
-    relative_roots: &[&str],
-    max_bytes: u64,
-) -> io::Result<Vec<u8>> {
-    if let Some(root) = single_source_set_root(manifest_dir, relative_roots)? {
-        return canonical_source_bytes(&root, max_bytes);
-    }
-
-    let files = collect_source_set_files_sorted(manifest_dir, relative_roots)?;
-    let mut out: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
-    for (relative, path) in files {
-        let file_bytes = read_file_bounded(&path, max_bytes)?;
-        let file_len = file_bytes.len() as u64;
-        total = total.saturating_add(relative.len() as u64);
-        total = total.saturating_add(1); // NUL separator
-        total = total.saturating_add(8); // u64-LE length frame
-        total = total.saturating_add(file_len);
-        if total > max_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("source set canonical stream exceeds max_source_bytes={max_bytes} bytes"),
-            ));
-        }
-        out.extend_from_slice(&relative);
-        out.push(0x00);
-        out.extend_from_slice(&file_len.to_le_bytes());
-        out.extend_from_slice(&file_bytes);
-    }
-    Ok(out)
-}
-
-/// Lowercase-hex SHA-256 of [`canonical_source_set_bytes`].
-pub fn canonical_source_set_digest(
-    manifest_dir: &Path,
-    relative_roots: &[&str],
-    max_bytes: u64,
-) -> io::Result<String> {
-    Ok(sha256_hex_lower(&canonical_source_set_bytes(
-        manifest_dir,
-        relative_roots,
-        max_bytes,
-    )?))
-}
-
 /// Whole-module source text for a `root`, in the SAME canonicalization order as
 /// the digest. IDENTITY case: the file's verbatim text. DIRECTORY case: the
 /// framed-order concatenation of every file's UTF-8 text WITHOUT the binary
@@ -301,8 +186,8 @@ pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
     Ok(text)
 }
 
-/// Whole-module source text for a registry-owned source set, in the same file
-/// order as [`canonical_source_set_bytes`].
+/// Whole-module source text for a registry-owned source set, in the canonical
+/// repo-relative-path file order shared by every source-set accessor.
 pub fn module_source_set_text(
     manifest_dir: &Path,
     relative_roots: &[&str],
@@ -373,8 +258,8 @@ pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<
     Ok(text)
 }
 
-/// Production-only source text for a registry-owned source set, in the same
-/// file order as [`canonical_source_set_bytes`].
+/// Production-only source text for a registry-owned source set, in the canonical
+/// repo-relative-path file order shared by every source-set accessor.
 pub fn production_source_set_text(
     manifest_dir: &Path,
     relative_roots: &[&str],
@@ -553,11 +438,9 @@ pub struct GatedSourceRoot {
     pub relative_roots: &'static [&'static str],
 }
 
-/// THE registry — the ONLY place gated source roots are named. Lives in
-/// this `#[path]`-shared pure file so `build.rs` (which embeds the canonical
-/// bytes) and the runtime integrity owner reference the SAME list with no
-/// duplicated file list. `build.rs`, the verifier, the producer, and tests all
-/// resolve roots through this registry.
+/// THE registry — the ONLY place gated source roots are named. The runtime
+/// integrity owner, the producer, and tests all resolve roots through this one
+/// list, so there is no duplicated file list anywhere in the crate.
 pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
     GatedSourceRoot {
         key: STRATEGY_KEY,
@@ -636,133 +519,6 @@ mod tests {
     }
 
     #[test]
-    fn identity_branch_is_verbatim_raw_bytes() {
-        let dir = temp_dir("identity");
-        let file = dir.join("only.rs");
-        let raw = b"fn a() {}\r\n\xEF\xBB\xBFno_trailing_newline".to_vec();
-        fs::write(&file, &raw).unwrap();
-        let canonical = canonical_source_bytes(&file, 1_000_000).unwrap();
-        assert_eq!(canonical, raw, "identity branch must be verbatim raw bytes");
-        assert_eq!(
-            canonical_source_digest(&file, 1_000_000).unwrap(),
-            sha256_hex_lower(&raw)
-        );
-    }
-
-    #[test]
-    fn directory_branch_is_deterministic_and_order_independent() {
-        let dir = temp_dir("det");
-        fs::write(dir.join("b.rs"), b"second").unwrap();
-        fs::write(dir.join("a.rs"), b"first").unwrap();
-        let d1 = canonical_source_digest(&dir, 1_000_000).unwrap();
-        let d2 = canonical_source_digest(&dir, 1_000_000).unwrap();
-        assert_eq!(d1, d2, "directory digest must be deterministic");
-
-        // Order-independence: a second dir with the files created in the
-        // opposite filesystem order must hash identically.
-        let dir2 = temp_dir("det2");
-        fs::write(dir2.join("a.rs"), b"first").unwrap();
-        fs::write(dir2.join("b.rs"), b"second").unwrap();
-        assert_eq!(
-            d1,
-            canonical_source_digest(&dir2, 1_000_000).unwrap(),
-            "directory digest must be input-order-independent"
-        );
-    }
-
-    #[test]
-    fn directory_branch_detects_one_byte_change() {
-        let dir = temp_dir("bytechange");
-        fs::write(dir.join("a.rs"), b"first").unwrap();
-        fs::write(dir.join("b.rs"), b"second").unwrap();
-        let before = canonical_source_digest(&dir, 1_000_000).unwrap();
-        fs::write(dir.join("b.rs"), b"sec0nd").unwrap();
-        let after = canonical_source_digest(&dir, 1_000_000).unwrap();
-        assert_ne!(before, after, "a 1-byte change must change the digest");
-    }
-
-    #[test]
-    fn directory_branch_detects_file_rename() {
-        let dir = temp_dir("rename");
-        fs::write(dir.join("a.rs"), b"first").unwrap();
-        fs::write(dir.join("b.rs"), b"second").unwrap();
-        let before = canonical_source_digest(&dir, 1_000_000).unwrap();
-
-        let dir2 = temp_dir("rename2");
-        fs::write(dir2.join("a.rs"), b"first").unwrap();
-        fs::write(dir2.join("c.rs"), b"second").unwrap(); // b.rs -> c.rs, same content
-        let after = canonical_source_digest(&dir2, 1_000_000).unwrap();
-        assert_ne!(
-            before, after,
-            "a file rename must change the digest (path is framed)"
-        );
-    }
-
-    #[test]
-    fn directory_branch_recurses_into_subdirs() {
-        let dir = temp_dir("recurse");
-        fs::write(dir.join("a.rs"), b"top").unwrap();
-        let sub = dir.join("nested");
-        fs::create_dir_all(&sub).unwrap();
-        fs::write(sub.join("z.rs"), b"deep").unwrap();
-        // Non-.rs files are ignored.
-        fs::write(dir.join("ignore.txt"), b"nope").unwrap();
-        let digest = canonical_source_digest(&dir, 1_000_000).unwrap();
-
-        // Build the expected stream by hand in canonical order:
-        // "a.rs" then "nested/z.rs".
-        let mut expected: Vec<u8> = Vec::new();
-        for (rel, content) in [("a.rs", &b"top"[..]), ("nested/z.rs", &b"deep"[..])] {
-            expected.extend_from_slice(rel.as_bytes());
-            expected.push(0x00);
-            expected.extend_from_slice(&(content.len() as u64).to_le_bytes());
-            expected.extend_from_slice(content);
-        }
-        assert_eq!(digest, sha256_hex_lower(&expected));
-    }
-
-    fn append_frame(out: &mut Vec<u8>, relative: &str, content: &[u8]) {
-        out.extend_from_slice(relative.as_bytes());
-        out.push(0x00);
-        out.extend_from_slice(&(content.len() as u64).to_le_bytes());
-        out.extend_from_slice(content);
-    }
-
-    #[test]
-    fn source_set_branch_frames_multi_root_files_by_repo_relative_path() {
-        let manifest = temp_dir("source_set_multi");
-        let strategy = manifest.join("src/strategy");
-        fs::create_dir_all(&strategy).unwrap();
-        fs::write(strategy.join("b.rs"), b"strategy-b").unwrap();
-        fs::write(strategy.join("a.rs"), b"strategy-a").unwrap();
-        fs::write(manifest.join("src/shared.rs"), b"shared").unwrap();
-
-        let canonical =
-            canonical_source_set_bytes(&manifest, &["src/strategy", "src/shared.rs"], 1_000_000)
-                .unwrap();
-
-        let mut expected = Vec::new();
-        append_frame(&mut expected, "src/shared.rs", b"shared");
-        append_frame(&mut expected, "src/strategy/a.rs", b"strategy-a");
-        append_frame(&mut expected, "src/strategy/b.rs", b"strategy-b");
-        assert_eq!(canonical, expected);
-    }
-
-    #[test]
-    fn source_set_single_root_preserves_legacy_root_bytes() {
-        let manifest = temp_dir("source_set_single");
-        let root = manifest.join("src/only");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("b.rs"), b"second").unwrap();
-        fs::write(root.join("a.rs"), b"first").unwrap();
-
-        assert_eq!(
-            canonical_source_set_bytes(&manifest, &["src/only"], 1_000_000).unwrap(),
-            canonical_source_bytes(&root, 1_000_000).unwrap()
-        );
-    }
-
-    #[test]
     fn production_text_excludes_inner_cfg_test_only_split_files() {
         let root = temp_dir("test_only_split_file");
         fs::write(root.join("mod.rs"), "pub fn production() {}\n").unwrap();
@@ -800,7 +556,7 @@ mod tests {
             vec!["src\\strategy"],
         ] {
             assert!(
-                canonical_source_set_bytes(&manifest, &roots, 1_000_000).is_err(),
+                module_source_set_text(&manifest, &roots, 1_000_000).is_err(),
                 "invalid source set roots should fail: {roots:?}"
             );
         }
@@ -812,7 +568,7 @@ mod tests {
         let dir = temp_dir("backslash");
         fs::write(dir.join("a\\b.rs"), b"same").unwrap();
 
-        let error = canonical_source_bytes(&dir, 1_000_000).unwrap_err();
+        let error = module_source_text(&dir, 1_000_000).unwrap_err();
 
         assert!(
             error.to_string().contains("backslash"),
@@ -831,7 +587,6 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         for error in [
-            canonical_source_bytes(&link, 1_000_000).unwrap_err(),
             module_source_text(&link, 1_000_000).unwrap_err(),
             production_module_source_text(&link, 1_000_000).unwrap_err(),
         ] {
@@ -871,6 +626,6 @@ mod tests {
         let dir = temp_dir("cap");
         let file = dir.join("big.rs");
         fs::write(&file, vec![b'x'; 100]).unwrap();
-        assert!(canonical_source_bytes(&file, 50).is_err());
+        assert!(module_source_text(&file, 50).is_err());
     }
 }

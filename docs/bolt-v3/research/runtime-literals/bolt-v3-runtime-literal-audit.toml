@@ -7960,14 +7960,6 @@ reason = '''Compile-time Cargo env var naming the crate manifest dir; passed to 
 path = "src/source_canonicalization.rs"
 kind = "number"
 literal = '''0'''
-context = '''let mut total: u64 = 0;'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''0'''
 context = '''out.sort_by(|a, b| a.0.cmp(&b.0));'''
 classification = "source_canonicalization_framing_constant"
 reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
@@ -7989,34 +7981,10 @@ classification = '''source_canonicalization_single_root_index'''
 reason = '''Fixed first-element index used only after a registry source set is proven to contain exactly one root, preserving historical single-root bytes/text by returning the one validated root; not an operator runtime value.'''
 
 [[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''number'''
-literal = '''0x00'''
-context = '''out.push(0x00);'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "number"
 literal = '''1'''
 context = '''file.take(max_bytes.saturating_add(1))'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''1'''
-context = '''total = total.saturating_add(1);'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''8'''
-context = '''total = total.saturating_add(8);'''
 classification = "source_canonicalization_framing_constant"
 reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
 
@@ -8075,14 +8043,6 @@ literal = '''"rs"'''
 context = '''} else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs")'''
 classification = "source_canonicalization_rs_extension"
 reason = "Rust source file extension selecting which files the canonical source walk includes; a fixed language constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"'''
-context = '''"source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"'''
-classification = "source_canonicalization_diagnostic_template"
-reason = "Fail-closed diagnostic when the framed directory stream exceeds the caller-supplied byte cap; the interpolated value is that cap, not an operator runtime value."
 
 [[allowed]]
 path = "src/source_canonicalization.rs"

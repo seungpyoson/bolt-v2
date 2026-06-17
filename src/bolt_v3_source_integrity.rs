@@ -1,5 +1,5 @@
 //! Single owner of source-integrity canonicalization, hashing, and text access
-//! for the compile-time-embedded abort-plan gate sources.
+//! for the abort-plan gate sources.
 //!
 //! This module owns three things and is the ONLY place the gated source
 //! roots are named (the registry):
@@ -7,24 +7,21 @@
 //! 1. **The registry** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] /
 //!    [`OUTCOME_GROUP_KEY`] mapped to their repo-relative source root sets.
 //! 2. The canonicalization + hash primitives, re-exported from the
-//!    `#[path]`-shared [`crate::source_canonicalization`] walk module so the
-//!    build-time emission (`build.rs`) and the runtime digest share exactly one
-//!    transcription.
+//!    [`crate::source_canonicalization`] walk module so there is exactly one
+//!    transcription of the walk/framing/hash logic.
 //! 3. The text accessors [`module_source_text`] (whole-module text) and
 //!    [`production_module_source_text`] (test-submodule-free text), both in the
-//!    SAME canonicalization order as the digest.
+//!    SAME canonical file order.
 //!
-//! `build.rs` emits compile-time canonical bytes (`$OUT_DIR/<key>.canonical`)
-//! from the SAME walk. Tests and provider artifact helpers call the
-//! registry-keyed digest / text accessors here.
+//! Tests and provider artifact helpers call the registry-keyed text accessors
+//! here.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 pub use crate::source_canonicalization::{
     GATED_SOURCE_ROOTS, GatedSourceRoot, OUTCOME_GROUP_KEY, STRATEGY_KEY, SUBMIT_ADMISSION_KEY,
-    TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER, canonical_source_bytes,
-    canonical_source_digest, canonical_source_set_bytes, canonical_source_set_digest,
+    TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER,
     module_source_set_text as canonical_module_source_set_text,
     module_source_text as canonical_module_text,
     production_module_source_text as canonical_production_module_text,
@@ -59,25 +56,6 @@ pub fn registry_root_paths(key: &str) -> Vec<PathBuf> {
         .iter()
         .map(|relative| Path::new(env!("CARGO_MANIFEST_DIR")).join(relative))
         .collect()
-}
-
-/// Lowercase-hex SHA-256 of the canonical bytes of a registry source set,
-/// bounded by `max_bytes`.
-pub fn registry_source_digest(key: &str, max_bytes: u64) -> io::Result<String> {
-    canonical_source_set_digest(
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-        registry_relative_roots(key),
-        max_bytes,
-    )
-}
-
-/// Canonical bytes of a registry source set, bounded by `max_bytes`.
-pub fn registry_source_bytes(key: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
-    canonical_source_set_bytes(
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-        registry_relative_roots(key),
-        max_bytes,
-    )
 }
 
 /// Whole-module source text for a registry source set, bounded by `max_bytes`.
@@ -140,48 +118,6 @@ pub fn production_module_source_text(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Golden digests for the compile-time abort-plan source-integrity gate.
-    // Update them only when an accepted source change intentionally changes a
-    // registry-owned canonical source stream. The full re-derivation trail
-    // belongs in git history, not in this invariant comment.
-    const GOLDEN_STRATEGY_DIGEST: &str =
-        "a7ec35237d0f5e47638ea996ca94b7c0a65fa4cc19fb7acbdda554adf3ad9387";
-    const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "5cfefe7da1e4d9fb405543e861bb0f0f3a8a82836d7370504a9305a364f2121c";
-    const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "bafe2f9f5c3030524b8887f1aae76557be3ccb413c3d62f860466c46e06b184f";
-
-    // Bound comfortably above the strategy source-set canonical stream and the
-    // submit_admission single file.
-    const TEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
-
-    #[test]
-    fn value_stability_strategy_digest_equals_golden_constant() {
-        let digest = registry_source_digest(STRATEGY_KEY, TEST_MAX_BYTES).unwrap();
-        assert_eq!(
-            digest, GOLDEN_STRATEGY_DIGEST,
-            "strategy canonical digest must equal the recorded golden constant (no regeneration)"
-        );
-    }
-
-    #[test]
-    fn value_stability_submit_admission_digest_equals_golden_constant() {
-        let digest = registry_source_digest(SUBMIT_ADMISSION_KEY, TEST_MAX_BYTES).unwrap();
-        assert_eq!(
-            digest, GOLDEN_SUBMIT_ADMISSION_DIGEST,
-            "submit_admission canonical digest must equal the recorded golden constant"
-        );
-    }
-
-    #[test]
-    fn value_stability_outcome_group_digest_equals_golden_constant() {
-        let digest = registry_source_digest(OUTCOME_GROUP_KEY, TEST_MAX_BYTES).unwrap();
-        assert_eq!(
-            digest, GOLDEN_OUTCOME_GROUP_DIGEST,
-            "outcome_group canonical digest must equal the recorded golden constant"
-        );
-    }
 
     /// The strategy source-set files, in strict repo-relative-path-byte order.
     /// Enumerated dynamically with the same fail-closed symlink/backslash policy
@@ -367,122 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn source_set_digest_equals_hand_framed_canonical_over_strategy_files() {
-        // Source-set invariant: the strategy digest must equal a SHA-256 over the
-        // hand-built framed stream `repo_rel_path + 0x00 + u64-LE(len) + raw_bytes`
-        // for every file in the strategy source set, in canonical order. This
-        // pins the exact framing the gate hashes — not a tautology against the
-        // accessor itself.
-        let mut expected: Vec<u8> = Vec::new();
-        for (relative, path) in strategy_source_files_in_canonical_order() {
-            let raw = std::fs::read(&path).unwrap();
-            expected.extend_from_slice(relative.as_bytes());
-            expected.push(0x00);
-            expected.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-            expected.extend_from_slice(&raw);
-        }
-        assert_eq!(
-            registry_source_digest(STRATEGY_KEY, TEST_MAX_BYTES).unwrap(),
-            sha256_hex_lower(&expected),
-            "strategy source-set digest must equal the hand-framed canonical stream"
-        );
-    }
-
-    #[test]
-    fn outcome_group_source_set_digest_equals_hand_framed_canonical_over_files() {
-        let mut expected: Vec<u8> = Vec::new();
-        for (relative, path) in outcome_group_source_files_in_canonical_order() {
-            let raw = std::fs::read(&path).unwrap();
-            expected.extend_from_slice(relative.as_bytes());
-            expected.push(0x00);
-            expected.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-            expected.extend_from_slice(&raw);
-        }
-        assert_eq!(
-            registry_source_digest(OUTCOME_GROUP_KEY, TEST_MAX_BYTES).unwrap(),
-            sha256_hex_lower(&expected),
-            "outcome_group source-set digest must equal the hand-framed canonical stream"
-        );
-    }
-
-    #[test]
-    fn one_byte_change_anywhere_in_source_set_changes_strategy_digest() {
-        // Tamper-detection control for the directory case: flipping a single byte
-        // in the hand-framed canonical stream of EACH file in turn must change the
-        // digest away from the golden — proving every file in the source set is
-        // covered, not just the first. (Operates on a copy of the framed bytes;
-        // it never writes to the real source tree.)
-        let files = strategy_source_files_in_canonical_order();
-        assert!(
-            files.len() >= 4,
-            "expected current strategy directory plus shared execution source files"
-        );
-
-        // Build the framed stream and record each file's raw-byte span within it.
-        let mut framed: Vec<u8> = Vec::new();
-        let mut spans: Vec<(usize, usize)> = Vec::new();
-        for (relative, path) in &files {
-            let raw = std::fs::read(path).unwrap();
-            framed.extend_from_slice(relative.as_bytes());
-            framed.push(0x00);
-            framed.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-            let start = framed.len();
-            framed.extend_from_slice(&raw);
-            spans.push((start, framed.len()));
-        }
-        // Sanity: the unmodified framed stream reproduces the golden.
-        assert_eq!(sha256_hex_lower(&framed), GOLDEN_STRATEGY_DIGEST);
-
-        for (start, end) in spans {
-            if start == end {
-                continue;
-            }
-            let mut tampered = framed.clone();
-            tampered[start] ^= 0x01; // flip first byte of this file's content
-            assert_ne!(
-                sha256_hex_lower(&tampered),
-                GOLDEN_STRATEGY_DIGEST,
-                "a 1-byte change in the file spanning [{start}, {end}) must change the digest"
-            );
-        }
-    }
-
-    #[test]
-    fn one_byte_change_anywhere_in_outcome_group_source_set_changes_digest() {
-        let files = outcome_group_source_files_in_canonical_order();
-        assert!(
-            files.len() >= registry_relative_roots(OUTCOME_GROUP_KEY).len(),
-            "expected every first-slice outcome-group source root to contribute"
-        );
-
-        let mut framed: Vec<u8> = Vec::new();
-        let mut spans: Vec<(usize, usize)> = Vec::new();
-        for (relative, path) in &files {
-            let raw = std::fs::read(path).unwrap();
-            framed.extend_from_slice(relative.as_bytes());
-            framed.push(0x00);
-            framed.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-            let start = framed.len();
-            framed.extend_from_slice(&raw);
-            spans.push((start, framed.len()));
-        }
-        assert_eq!(sha256_hex_lower(&framed), GOLDEN_OUTCOME_GROUP_DIGEST);
-
-        for (start, end) in spans {
-            if start == end {
-                continue;
-            }
-            let mut tampered = framed.clone();
-            tampered[start] ^= 0x01;
-            assert_ne!(
-                sha256_hex_lower(&tampered),
-                GOLDEN_OUTCOME_GROUP_DIGEST,
-                "a 1-byte change in the file spanning [{start}, {end}) must change the digest"
-            );
-        }
-    }
-
-    #[test]
     fn production_text_for_strategy_directory_excludes_test_module_and_includes_selection() {
         // Source-set production-text boundary: the production text must equal the
         // per-file concatenation of every strategy source-set file's production
@@ -540,30 +360,6 @@ mod tests {
             .map(|(_relative, path)| std::fs::read_to_string(path).unwrap())
             .collect();
         assert_eq!(module_source_text(STRATEGY_KEY), expected);
-    }
-
-    #[test]
-    fn registry_admits_current_strategy_directory_canonical_size() {
-        // The producer cap must admit the current strategy source set. Compute
-        // its exact length and assert the digest succeeds with a cap set to
-        // exactly that size (and fails one byte below), proving the bound is
-        // tight and meaningful.
-        let canonical_len = registry_source_bytes(STRATEGY_KEY, TEST_MAX_BYTES)
-            .unwrap()
-            .len() as u64;
-        let raw_len: u64 = strategy_source_files_in_canonical_order()
-            .iter()
-            .map(|(_relative, path)| std::fs::metadata(path).unwrap().len())
-            .sum();
-        assert!(
-            canonical_len > raw_len,
-            "source-set framing adds path/length frames over raw content"
-        );
-        assert!(registry_source_digest(STRATEGY_KEY, canonical_len).is_ok());
-        assert!(
-            registry_source_digest(STRATEGY_KEY, canonical_len - 1).is_err(),
-            "cap one byte below the canonical length must reject"
-        );
     }
 
     #[test]

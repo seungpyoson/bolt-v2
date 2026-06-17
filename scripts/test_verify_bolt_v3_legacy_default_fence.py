@@ -296,6 +296,39 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             source_roots._parse_manifest_text(body.replace("\n", "\r"))
 
+    def test_manifest_parser_matches_rust_trim_whitespace(self) -> None:
+        # build.rs trims each line/key with Rust ``str::trim()`` (the Unicode
+        # ``White_Space`` set). Python's bare ``str.strip()`` strips a SUPERSET —
+        # it also removes U+001C–U+001F (the information separators) — so the
+        # parser strips the exact Rust set instead. A section header with a
+        # trailing U+001C is a malformed header to Rust (the control char stays,
+        # so it no longer ends with ``]``) and must be rejected on the Python
+        # side too; bare ``str.strip()`` would silently accept it. This guards
+        # against the parser regressing back to ``.strip()``.
+        info_separator = "\x1c"
+        body = (
+            f"[strategy]{info_separator}\nsrc/a.rs\n"
+            "[submit_admission]\nsrc/b.rs\n"
+            "[outcome_group]\nsrc/c.rs\n"
+        )
+        with self.assertRaises(ValueError):
+            source_roots._parse_manifest_text(body)
+        # Ordinary trailing whitespace (space + tab) is still trimmed on both
+        # sides, so the same manifest with real whitespace parses cleanly.
+        spaced = (
+            "[strategy] \t\nsrc/a.rs\n"
+            "[submit_admission]\nsrc/b.rs\n"
+            "[outcome_group]\nsrc/c.rs\n"
+        )
+        self.assertEqual(
+            source_roots._parse_manifest_text(spaced),
+            {
+                source_roots.STRATEGY_KEY: ("src/a.rs",),
+                source_roots.SUBMIT_ADMISSION_KEY: ("src/b.rs",),
+                source_roots.OUTCOME_GROUP_KEY: ("src/c.rs",),
+            },
+        )
+
     def test_python_source_root_file_cap_matches_rust_text_accessor_cap(self) -> None:
         source = (
             source_roots.REPO_ROOT / "src/bolt_v3_source_integrity.rs"

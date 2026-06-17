@@ -36,6 +36,22 @@ SUBMIT_ADMISSION_KEY = "submit_admission"
 OUTCOME_GROUP_KEY = "outcome_group"
 
 
+# The exact set of characters Rust ``str::trim()`` strips — the Unicode
+# ``White_Space`` property (``char::is_whitespace()``). Python's bare
+# ``str.strip()`` strips a SUPERSET: it additionally removes U+001C–U+001F (the
+# information separators FS/GS/RS/US), which Rust keeps. Stripping this explicit
+# set instead of calling ``.strip()`` keeps the Python parser byte-for-byte
+# equivalent to build.rs's ``raw_line.trim()`` / key ``.trim()``.
+_RUST_TRIM_WHITESPACE = (
+    "\t\n\x0b\x0c\r "  # U+0009-U+000D, U+0020 space
+    "\x85\xa0"  # U+0085 NEL, U+00A0 NBSP
+    "\u1680"  # Ogham space mark
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"  # U+2000-U+200A
+    "\u2028\u2029"  # line / paragraph separator
+    "\u202f\u205f\u3000"  # narrow & medium math space, ideographic space
+)
+
+
 def _load_gated_source_roots() -> dict[str, tuple[str, ...]]:
     """Parse ``gated_source_roots.manifest`` into ``{key: (roots...)}``."""
     return _parse_manifest_text(
@@ -56,26 +72,38 @@ def _parse_manifest_text(
     with a ``file:line`` location, so a malformed manifest fails loudly on both
     the Rust and Python sides.
 
-    Lines are split with ``str.split("\\n")`` — NOT ``str.splitlines()`` — so the
-    recognized line terminators are exactly Rust ``str::lines()`` (``\\n`` and
-    ``\\r\\n`` only). ``str.splitlines()`` additionally breaks on a bare ``\\r``
-    and Unicode separators (U+2028/U+2029/…); using it would let a manifest the
-    Rust build rejects parse cleanly in Python, so the two parsers would not be
-    equivalent. Each line is ``.strip()``-ed (removing the trailing ``\\r`` of a
-    ``\\r\\n`` terminator), and a final empty line is skipped as blank.
+    The two Unicode-sensitive primitives are kept exactly in lock-step with
+    build.rs so the parsers are equivalent for ALL inputs, not just ASCII:
+
+    * Line splitting uses ``str.split("\\n")`` — NOT ``str.splitlines()`` — so the
+      recognized terminators are exactly Rust ``str::lines()`` (``\\n`` and
+      ``\\r\\n`` only). ``str.splitlines()`` additionally breaks on a bare ``\\r``
+      and Unicode separators (U+2028/U+2029/…); using it would let a manifest the
+      Rust build rejects parse cleanly in Python. A final empty line (from a
+      trailing ``\\n``) is skipped as blank.
+    * Whitespace trimming strips ``_RUST_TRIM_WHITESPACE`` — the Unicode
+      ``White_Space`` set Rust ``str::trim()`` uses — NOT bare ``str.strip()``,
+      which would also strip U+001C–U+001F (the information separators Rust
+      keeps). This removes the trailing ``\\r`` of a ``\\r\\n`` terminator while
+      matching ``raw_line.trim()`` / key ``.trim()`` on the Rust side.
+
+    Every other operation (the ``[``/``]``/``#``/``/`` checks and the ``/`` and
+    ``\\`` scans) is an ASCII-literal comparison identical in both languages, so
+    with these two primitives aligned the parsers are exhaustively equivalent.
+    Invalid input raises ``ValueError`` here and fails the build on the Rust side.
     """
     sections: dict[str, list[str]] = {}
     order: list[str] = []
     current: str | None = None
     for index, raw_line in enumerate(text.split("\n"), start=1):
-        line = raw_line.strip()
+        line = raw_line.strip(_RUST_TRIM_WHITESPACE)
         if not line or line.startswith("#"):
             continue
         location = f"{source_label}:{index}"
         if line.startswith("["):
             if not line.endswith("]"):
                 raise ValueError(f"{location}: malformed section header {line!r}")
-            key = line[1:-1].strip()
+            key = line[1:-1].strip(_RUST_TRIM_WHITESPACE)
             if not key:
                 raise ValueError(f"{location}: empty section key")
             if key in sections:

@@ -217,13 +217,19 @@ def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
     `git rev-parse --git-common-dir` returns `<main>/.git`, then took `.parent`
     to get `<main>`. That's wrong inside a SUBMODULE, where --git-common-dir
     returns `<super>/.git/modules/<name>` (its parent is INSIDE the superproject
-    git dir, not a working tree). The compounded `_main_worktree_root(_main_worktree_root(...))`
-    call path made this worse.
+    git dir, not a working tree).
 
     Hardened approach: parse `git worktree list --porcelain` and return the
-    FIRST worktree's path (which is always the main worktree per git's output
-    ordering). Idempotent and submodule-safe. Falls back to common-dir.parent
-    for non-submodule cases with a working-tree sanity check.
+    FIRST worktree's path. Idempotent and correct for normal repos, linked
+    worktrees, and submodules-in-their-own-working-tree.
+
+    Limitation (round-5.5 Claude F-C1, documented): for a SUBMODULE, this
+    returns the submodule's main worktree (correct), but `load_config` then
+    looks for `config/clean-merged.toml` there. Most submodules don't have
+    one → ConfigError → safe no-op (main returns 0; hook's || true handles it).
+    The tool does NOT pick up the superproject's config and does NOT operate
+    on superproject refs from inside a submodule. Documented as a known limit;
+    full submodule support deferred behind an explicit future slice.
     """
     try:
         out = subprocess.run(
@@ -595,11 +601,22 @@ def _atomic_write_text(path: pathlib.Path, text: str) -> None:
     leaves the file empty or partial JSON. For manifests whose integrity gates
     purge decisions, that's a data-loss vector. Atomic rename guarantees the
     file is either the previous content or the new content, never partial.
+
+    Round-5.5 (Kimi/Grok P2): try/finally unlinks the tmp file if we crash
+    between write_text and os.replace, so orphan .tmp.<pid> files don't
+    accumulate across many crashes.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(str(tmp), str(path))
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(str(tmp), str(path))
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def write_heartbeat(repo_root: pathlib.Path, config: Config) -> None:
@@ -642,15 +659,22 @@ def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> Non
       - entries whose fetched_at is older than TTL (no point keeping them)
       - entries without '@' in the key (pre-round-4.5 migration cruft, keyed
         by branch alone — never read by the new code)
+      - entries with malformed fetched_at (round-5.5 GPT/Claude P2: float()
+        would otherwise raise on a corrupted/tampered cache and crash Lane R)
     This bounds cache growth under sustained rebase/force-push churn.
     """
     now = time.time()
-    pruned = {
-        k: v for k, v in cache.items()
-        if isinstance(v, dict)
-        and "@" in k  # new schema
-        and (now - float(v.get("fetched_at", 0))) < ttl
-    }
+
+    def _is_live(k: str, v: Any) -> bool:
+        if not isinstance(v, dict) or "@" not in k:
+            return False
+        try:
+            age = now - float(v.get("fetched_at", 0))
+        except (TypeError, ValueError, OverflowError):
+            return False  # malformed — drop
+        return age < ttl
+
+    pruned = {k: v for k, v in cache.items() if _is_live(k, v)}
     try:
         tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
         tmp.write_text(json.dumps(pruned), encoding="utf-8")
@@ -1104,7 +1128,10 @@ def run_lane_w(
                 # round-5 Grok P1: also skip the invoker's worktree path
                 # explicitly (in case invoke_root's branch resolution missed it
                 # — e.g. detached HEAD in the invoker).
-                if (wt.path == main_root or (wt.branch is not None and wt.branch == cur)
+                # round-5.5 Grok P2: use .resolve() consistently so macOS
+                # /tmp ↔ /private/tmp symlinks can't defeat the check.
+                if (wt.path.resolve() == main_root.resolve()
+                        or wt.branch == cur
                         or wt.path.resolve() == invoke_root.resolve()):
                     continue
                 if wt.branch in skip_branches:
@@ -1397,6 +1424,12 @@ def cmd_purge_quarantine(
                                                 capture_output=True, text=True, timeout=30)
                         if verify.returncode == 0:
                             # Verified archive present — refuse to delete; surface.
+                            # Round-5.5 Claude F3: touch mtime on skip so we
+                            # don't re-spawn tar -tzf for this dir on every run.
+                            try:
+                                os.utime(child, None)
+                            except OSError:
+                                pass
                             write_audit(repo_root, config, {
                                 "lane": "W", "branch": manifest.get("branch"),
                                 "action": "quarantine-cruft-skipped-verified-archive",
@@ -1508,6 +1541,14 @@ def _is_disabled(env_value: str | None) -> bool:
 
     Shared rule: empty/0/false/no/off (case-insensitive) = enabled;
     anything else = disabled.
+
+    Round-5.5 (Kimi/Claude/Grok/GPT P2): documented contract is ASCII
+    whitespace only. Python's `.strip()` would also strip Unicode whitespace
+    (NBSP, em space, etc.); bash's `[[:space:]]` is locale-dependent and in
+    a C/POSIX locale matches ASCII only. The realistic env-var values never
+    contain Unicode whitespace; we deliberately accept the residual split
+    for the rare NBSP-padded value rather than complicate the bash helper.
+    Operators should set CLEAN_MERGED_DISABLED to a bare ASCII value.
     """
     if env_value is None:
         return False
@@ -1637,18 +1678,39 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     else:
         print("  heartbeat                = (none yet)")
 
-    # quarantine disk usage (round-4 P2: doctor reported count, not bytes)
+    # quarantine disk usage (round-4 P2: doctor reported count, not bytes;
+    # round-5.5 Claude F2: also surface pinned verified-archive cruft dirs that
+    # are intentionally never auto-purged — operator needs visibility to clean
+    # them up manually when they're no longer wanted.)
     q = _resolve_path(repo_root, config.lane_w.quarantine_dir)
     if q.is_dir():
         entries = [c for c in q.iterdir() if c.is_dir()]
         total_bytes = 0
+        pinned = 0
+        pinned_bytes = 0
         for c in entries:
             try:
-                total_bytes += sum(f.stat().st_size for f in c.rglob("*") if f.is_file())
+                size = sum(f.stat().st_size for f in c.rglob("*") if f.is_file())
             except OSError:
-                pass
+                size = 0
+            total_bytes += size
+            mf = c / "clean-merged.manifest.json"
+            if mf.is_file():
+                try:
+                    m = json.loads(mf.read_text(encoding="utf-8"))
+                    if (not m.get("worktree_remove_ok")
+                            and (c / "worktree.tar.gz").is_file()):
+                        pinned += 1
+                        pinned_bytes += size
+                except (OSError, json.JSONDecodeError):
+                    pass
         print(f"  quarantine               = {len(entries)} entries, "
               f"{total_bytes / (1024 * 1024):.1f} MiB at {q}")
+        if pinned:
+            print(f"  quarantine pinned        = {pinned} verified-archive dirs "
+                  f"({pinned_bytes / (1024 * 1024):.1f} MiB) — not auto-purged; "
+                  "remove manually if unwanted")
+            problems.append(f"{pinned} pinned quarantine dir(s) require manual cleanup")
     else:
         print(f"  quarantine               = (absent)")
 

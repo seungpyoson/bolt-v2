@@ -760,6 +760,26 @@ chunk_size = 200
 chunk_observation_window_seconds = 45
 min_observed_targets = 10
 
+[clients.hyperliquid_data]
+venue = "HYPERLIQUID"
+
+[clients.hyperliquid_data.data]
+environment = "mainnet"
+base_url_ws = "wss://api.hyperliquid.xyz/ws"
+base_url_http = "https://api.hyperliquid.xyz/info"
+http_timeout_secs = 60
+ws_timeout_secs = 30
+update_instruments_interval_mins = 60
+transport_backend = "sockudo"
+
+[clients.hyperliquid_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+min_observed_targets = 10
+
 # Live Chainlink Data Streams resolution-strike (price-to-beat) source. One
 # point-in-time strike per window-open timestamp, delivered as an NT
 # IndexPriceUpdate on the bound resolution instrument. Routes to the

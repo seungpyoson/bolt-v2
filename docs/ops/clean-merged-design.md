@@ -55,11 +55,20 @@ branches.
 - Any gh non-zero / timeout / malformed JSON → keep + log "gh unavailable,
   Lane R skipped." Validate `headRefOid` is SHA-shaped before compare.
 
-### Lane W — Worktree (explicit; move-then-purge)
+### Lane W — Worktree (explicit; archive-then-remove)
 
-**Primitive:** `git worktree move <wt> <quarantine>/<branch>-<ts>` — atomic
-rename, eliminates TOCTOU on ignored files AND archive-integrity races. Tree
-preserved through grace; purge is plain `rm -rf`.
+**Primitive:** `tar -czf <quarantine>/worktree.tar.gz <wt>` followed by
+`git worktree remove <wt>` — the worktree directory is archived (with `tar -tzf`
+integrity check) before removal. With the fail-closed guards below, the only
+files in the worktree at archive time are tracked (committed) files, so the
+archive captures everything; the TOCTOU window is microseconds under flock.
+
+Why not `git worktree move`: a moved worktree keeps its administrative entry
+and the branch stays bound, so `git branch -D` still refuses (branch used by
+worktree at the new path). Move-then-keep-dir-through-grace would leave the
+branch ref alive for the grace period, blocking branch-name reuse. Archive +
+remove lets us delete the branch immediately while preserving the tree in the
+archive through the grace period.
 
 Candidates: worktrees whose bound branch is **eligible for deletion by Lane
 H/R rules** (ancestor of trunk OR gh-confirmed), OR detached-HEAD worktrees
@@ -71,21 +80,24 @@ Per candidate, atomic sequence under `fcntl.flock` on
 
 1. Verify eligibility while the branch ref still exists.
 2. Refuse if `git -C <wt> ls-files -v` shows assume-unchanged or skip-worktree
-   entries, unless `--discard-hidden-index-bits`.
+   entries (any lowercase letter), unless `--discard-hidden-index-bits`.
 3. Refuse if ANY ignored content (default fail-closed). Enumerate via
    `git -C <wt> -c status.showUntrackedFiles=all ls-files --others --ignored
    --exclude-standard -z`. `--discard-ignored` overrides. Walk into ignored
    dirs for nested `.git` detection; refuse unless `--remove-nested-repos`.
 4. Revalidate clean: `git -C <wt> -c status.showUntrackedFiles=all status
-   --porcelain -z` empty, immediately before the move (TOCTOU).
-5. `git worktree move <wt> <quarantine>/<branch>-<ts>`.
-6. NOW delete the branch ref: timestamped backup ref, then `git branch -D <B>`
+   --porcelain -z` empty, immediately before the archive (TOCTOU).
+5. `tar -czf <quarantine>/worktree.tar.gz -C <wt-parent> <wt-name>` + verify
+   with `tar -tzf`. Abort removal if archive fails integrity.
+6. `git worktree remove <wt>` (plain; refuses if dirty — final TOCTOU safety
+   net). On failure, archive is preserved; operator can intervene.
+7. NOW delete the branch ref: timestamped backup ref, then `git branch -D <B>`
    (safe because eligibility was just verified and the worktree is gone).
-7. Write manifest at `<quarantine>/<branch>-<ts>.manifest.json`.
+8. Write `<quarantine>/clean-merged.manifest.json`.
 
 Purge: `just clean-merged --purge-quarantine` removes quarantine dirs older
 than `<cfg grace_days>` (default 30). Pre-purge warning for items within 7
-days of purge. **Purge only dirs whose manifest records successful move.**
+days of purge. **Purge only dirs whose manifest records `worktree_remove_ok`.**
 
 ## Config — `config/clean-merged.toml` (single source of truth)
 
@@ -140,3 +152,9 @@ Three external adversarial review rounds (GPT, Kimi, Claude 44-subagent).
 Round 3 converged on the lane-ordering inversion (the structural P0: Lane R's
 `update-ref -d` bypasses git's worktree guard, bricking worktrees, so Lane W
 cannot clean them without `--force`). v4 fixes via Lane-W-owns-the-sequence.
+
+Implementation later revised Lane W's primitive from `git worktree move` to
+`tar` + `git worktree remove`: a moved worktree keeps its admin entry, leaving
+the branch bound and blocking immediate deletion. Archive-then-remove (under
+fail-closed guards + flock + integrity check) preserves the tree while
+allowing the branch to be deleted immediately.

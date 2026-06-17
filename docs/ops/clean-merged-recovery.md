@@ -34,18 +34,19 @@ git fsck --unreachable | grep commit
 
 Then restore with `git branch <branch> <sha>`.
 
-### 2. Worktrees (Lane W) — quarantine
+### 2. Worktrees (Lane W) — quarantine archive
 
-Lane W never deletes a worktree directory directly. It runs
-`git worktree move <wt> <quarantine>/<branch>-<ts>`, preserving the entire
-tree through the grace period.
+Lane W never deletes a worktree directory directly. It archives the directory
+to `<quarantine>/worktree.tar.gz` (verified with `tar -tzf`) and only then
+runs `git worktree remove`. The archive + manifest live together in one
+quarantine dir per worktree, preserved through the grace period.
 
 Locate quarantined worktrees:
 
 ```sh
 quarantine="$(git rev-parse --git-common-dir)/clean-merged-quarantine"
 ls -la "$quarantine"
-cat "$quarantine"/<dir>/*.manifest.json   # branch, tip-sha, moved-from, file count
+cat "$quarantine"/<dir>/clean-merged.manifest.json   # branch, tip-sha, moved-from, archive
 ```
 
 Restore a worktree from quarantine (before purge):
@@ -53,9 +54,10 @@ Restore a worktree from quarantine (before purge):
 ```sh
 # Re-create the branch from the manifest tip-sha
 git branch <branch> <tip-sha>
-# Move the worktree back into active use
-git worktree add <dest-path> <branch>
-# Or simply inspect the quarantine dir in place — it is a full working tree
+# Extract the archived working tree to inspect or reuse
+mkdir -p /tmp/recovered-<branch>
+tar -xzf "$quarantine/<dir>/worktree.tar.gz" -C /tmp/recovered-<branch>
+# Then `git worktree add <dest> <branch>` for an active worktree
 ```
 
 Purge: `just clean-merged --purge-quarantine` removes quarantine dirs older

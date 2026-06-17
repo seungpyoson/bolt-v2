@@ -24,8 +24,10 @@ name: Backtester CI
 # and `backtester-gate` concludes success as an explicit no-op on non-crate PRs.
 #
 # DRAFT COST GOVERNANCE: draft pull_request opened/synchronize/reopened/converted_to_draft/edited
-# events keep the always-reported gate but defer the managed-heavy proof lanes. Marking the PR
-# ready, dispatching the workflow manually, or pushing to main still runs full backtester proof.
+# events publish `backtester-gate-deferred` and defer the managed-heavy proof lanes. Only
+# `backtester-gate` is required-capable; `backtester-gate-deferred` is draft-only feedback and
+# must not be marked required. Marking the PR ready, dispatching the workflow manually, or pushing
+# to main still runs full backtester proof.
 
 on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
@@ -49,6 +51,8 @@ on:
     branches: [main]
 
 concurrency:
+  # Deferred and full PR runs intentionally use separate groups. Moving a ready PR back to draft
+  # records an explicit deferred verdict without cancelling a full proof already in progress.
   group: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true

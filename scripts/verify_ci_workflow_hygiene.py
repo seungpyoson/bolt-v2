@@ -8682,8 +8682,13 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
 
 BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}"
 BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)"""
 BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
+BACKTESTER_REQUIRED_GATE_COMMENT = (
+    "`backtester-gate` is required-capable; `backtester-gate-deferred` is draft-only feedback and\n"
+    "# must not be marked required"
+)
 BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION = """    name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
@@ -8707,6 +8712,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         return []
     jobs = parse_jobs(text)
     errors: list[str] = []
+    if BACKTESTER_REQUIRED_GATE_COMMENT not in text:
+        errors.append("backtester draft deferral must document that only backtester-gate should be required")
     policy = jobs.get("ci-policy")
     if policy is None:
         errors.append("backtester draft deferral must define ci-policy job")
@@ -8772,6 +8779,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
     group_text = backtester_concurrency_group_text(text)
     if "format('bvs-pr-{0}-deferred', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:
         errors.append("backtester draft deferral concurrency must split deferred PR runs from full proof runs")
+    if BACKTESTER_DEFER_ACTION_FILTER not in group_text:
+        errors.append("backtester draft deferral concurrency must use the deferred draft action filter")
     return errors
 
 

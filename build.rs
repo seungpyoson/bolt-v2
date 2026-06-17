@@ -129,12 +129,7 @@ fn parse_gated_source_roots(text: &str, manifest_path: &Path) -> Vec<(String, Ve
     // same set. Rejecting both missing AND unexpected sections means a typo'd
     // header (e.g. `[strategies]`) fails the build instead of silently dropping
     // roots from the gated set or panicking later at `registry_entry`.
-    const REQUIRED_KEYS: [&str; 4] = [
-        "strategy",
-        "submit_admission",
-        "outcome_group",
-        "maker",
-    ];
+    const REQUIRED_KEYS: [&str; 4] = ["strategy", "submit_admission", "outcome_group", "maker"];
     let keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
     for required in REQUIRED_KEYS {
         assert!(

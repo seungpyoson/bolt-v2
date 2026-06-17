@@ -1164,13 +1164,24 @@ class LaneWOptInInvariantTests(unittest.TestCase):
         """Soundness-fix review (gemini P2 / learnings #9 degraded-state): invoked
         from a directory that is NOT a git repo, the tool must exit 0 (hook-safe —
         never break the git op) for the normal lanes and exit non-zero with a clean
-        diagnostic, NOT a Python traceback, for --doctor. Guards the
-        CleanMergedError-catch + resolve-inside-try fix against regression; the
-        pre-fix code raised an uncaught CleanMergedError (traceback, rc!=0)."""
+        diagnostic, NOT a Python traceback, for --doctor. Guards the non-git-dir
+        (_resolve_repo_root) arm of the widened `except CleanMergedError`; the
+        pre-fix code raised an uncaught CleanMergedError (traceback, rc!=0). The
+        config-missing arm is guarded by
+        test_git_repo_without_config_exits_gracefully."""
         nongit = pathlib.Path(tempfile.mkdtemp(prefix="cm-nongit-"))
         self.addCleanup(shutil.rmtree, nongit, ignore_errors=True)
         env = os.environ.copy()
         env.update(GIT_ENV)
+        # Precondition (self-review P2): `git rev-parse` walks UP the tree, so if
+        # $TMPDIR is nested inside a git checkout, mkdtemp() lands in a repo and the
+        # tool would resolve the PARENT repo — the test would pass for the wrong
+        # reason and --apply could mutate that repo. Require a genuinely repo-less
+        # dir; skip (don't silently pass) otherwise.
+        if subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=nongit,
+                          env=env, capture_output=True, text=True).returncode == 0:
+            self.skipTest(f"{nongit} is inside a git repo (set TMPDIR outside any "
+                          "checkout); cannot exercise the non-git-dir path here")
         script = str(REPO_ROOT / "scripts" / "clean_merged_artifacts.py")
 
         def run_in_nongit(*args: str) -> subprocess.CompletedProcess[str]:
@@ -1190,6 +1201,39 @@ class LaneWOptInInvariantTests(unittest.TestCase):
                          f"--doctor from a non-git dir should report a problem (rc=1); stderr={doc.stderr!r}")
         self.assertNotIn("Traceback", doc.stdout + doc.stderr,
                          "--doctor from a non-git dir must not crash with a traceback")
+
+    def test_git_repo_without_config_exits_gracefully(self) -> None:
+        """Self-review P2 (the config-missing arm of the gemini fix): a real git
+        repo with NO config/clean-merged.toml makes load_config raise ConfigError
+        (a subclass of CleanMergedError). The tool must exit 0 for the normal
+        lanes and rc=1 with a clean diagnostic (no traceback) for --doctor — the
+        same contract as the non-git arm. Pins the second behavior of the widened
+        `except CleanMergedError` so re-narrowing/re-raising it can't silently
+        regress."""
+        nocfg_root = pathlib.Path(tempfile.mkdtemp(prefix="cm-nocfg-"))
+        self.addCleanup(shutil.rmtree, nocfg_root, ignore_errors=True)
+        repo = make_repo(nocfg_root)  # real git repo, but deliberately NO make_config()
+        env = os.environ.copy()
+        env.update(GIT_ENV)
+        script = str(REPO_ROOT / "scripts" / "clean_merged_artifacts.py")
+
+        def run_in_repo(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run([sys.executable, script, *args], cwd=repo,
+                                  env=env, capture_output=True, text=True, timeout=60)
+
+        # Normal hook invocations must never break the git op -> exit 0, no crash.
+        for args in (("--quiet",), ("--lane", "h", "--apply", "--quiet")):
+            proc = run_in_repo(*args)
+            self.assertEqual(proc.returncode, 0,
+                             f"{args} in a config-less repo must exit 0; stderr={proc.stderr!r}")
+            self.assertNotIn("Traceback", proc.stdout + proc.stderr,
+                             f"{args} in a config-less repo must not crash with a traceback")
+        # --doctor surfaces the config diagnostic (rc=1) but still must not crash.
+        doc = run_in_repo("--doctor")
+        self.assertEqual(doc.returncode, 1,
+                         f"--doctor in a config-less repo should report a problem (rc=1); stderr={doc.stderr!r}")
+        self.assertNotIn("Traceback", doc.stdout + doc.stderr,
+                         "--doctor in a config-less repo must not crash with a traceback")
 
     def test_detached_refusal_uses_distinct_action_and_no_sentinel_leak(self) -> None:
         """Soundness-fix review (Kimi P2 #1 / Claude): a refused detached-HEAD

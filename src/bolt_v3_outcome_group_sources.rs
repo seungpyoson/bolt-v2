@@ -388,8 +388,11 @@ pub fn validate_outcome_group_strategy_links(
             ));
         }
 
-        let runtime =
-            validate_complete_set_runtime_parameters(&context, &strategy.parameters, &mut errors);
+        let runtime = if strategy.strategy_archetype.as_str() == COMPLETE_SET_ARBITRAGE_KEY {
+            validate_complete_set_runtime_parameters(&context, &strategy.parameters, &mut errors)
+        } else {
+            None
+        };
         for source_id in &target.group_sources {
             let Some(source) = sources_by_id.get(source_id.as_str()) else {
                 errors.push(format!(
@@ -584,7 +587,7 @@ fn validate_source_selectors(context: &str, source: &OutcomeGroupSourceConfig) -
                 errors.push(format!("{context}.gamma_query is required"));
                 return errors;
             };
-            let has_selector = [
+            let has_scoping_selector = [
                 query.search.as_deref(),
                 query.event_query.as_deref(),
                 query.market_query.as_deref(),
@@ -592,14 +595,27 @@ fn validate_source_selectors(context: &str, source: &OutcomeGroupSourceConfig) -
             ]
             .into_iter()
             .flatten()
-            .any(|value| !value.trim().is_empty())
-                || query
-                    .sports_market_types
-                    .as_ref()
-                    .is_some_and(|values| !values.is_empty());
-            if !has_selector {
+            .any(|value| !value.trim().is_empty());
+            if !has_scoping_selector {
                 errors.push(format!(
                     "{context}.gamma_query must include at least one bounded selector"
+                ));
+            }
+            if (query
+                .search
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+                || query
+                    .market_query
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()))
+                && query
+                    .sports_market_types
+                    .as_ref()
+                    .is_some_and(|values| !values.is_empty())
+            {
+                errors.push(format!(
+                    "{context}.gamma_query.sports_market_types cannot be combined with search or market_query"
                 ));
             }
             if query.max_markets == 0 {

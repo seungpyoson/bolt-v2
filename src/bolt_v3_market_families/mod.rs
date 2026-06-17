@@ -9,6 +9,8 @@ pub mod outcome_group;
 pub mod static_binary_event;
 pub mod updown;
 
+pub use updown::TargetGateSubscription;
+
 use std::{any::Any, collections::BTreeMap, fmt, sync::Arc};
 
 use serde::{Deserialize, Serialize};

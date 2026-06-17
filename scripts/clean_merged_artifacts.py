@@ -1191,6 +1191,18 @@ def run_lane_w(
                 if wt.branch in skip_branches:
                     continue
                 label = wt.branch or f"detached-{wt.head[:8]}"
+                # gemini-code-assist P2: if the worktree dir was manually deleted
+                # from disk (rm -rf without `git worktree remove`), git commands
+                # on the missing path would raise CalledProcessError. Check
+                # existence first so the operator gets a clean diagnostic and a
+                # hint to run `git worktree prune` to clean up the stale admin
+                # entry.
+                if not wt.path.is_dir():
+                    records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
+                                    "worktree": str(wt.path), "action": "skipped-missing-dir",
+                                    "reason": "worktree directory does not exist on disk; "
+                                              "run `git worktree prune` to clean up the stale admin entry"})
+                    continue
                 eligible, reason, match = _lane_w_eligible(
                     repo_root, config, branch=wt.branch, head=wt.head, trunk_sha=trunk_sha,
                     allow_detached_removal=allow_detached_removal,
@@ -1904,22 +1916,27 @@ def main(argv: list[str] | None = None) -> int:
     # mid-sweep and subsequent _git calls raise FileNotFoundError. Pin to the
     # main worktree root, which is never removed.)
     #
-    # round-5 (Grok P1): keep the INVOKER's root too so Lane W's active-worktree
+    # round-5 Grok P1: keep the INVOKER's root too so Lane W's active-worktree
     # skip can detect "the worktree I'm standing in" — without this, `cur` would
     # be the MAIN worktree's branch, and a Lane W run from inside a feature
     # worktree would happily archive that very worktree.
-    invoke_root = _resolve_repo_root(pathlib.Path.cwd())
-    repo_root = _main_worktree_root(invoke_root)
+    #
+    # gemini-code-assist P2: _resolve_repo_root and (transitively) load_config
+    # can raise CleanMergedError (the parent of ConfigError). Catching only
+    # ConfigError left a crash path if invoked outside a git repo or if the
+    # git common dir couldn't be resolved. Catch the parent for graceful exit.
     try:
+        invoke_root = _resolve_repo_root(pathlib.Path.cwd())
+        repo_root = _main_worktree_root(invoke_root)
         config = load_config(repo_root)
-    except ConfigError as exc:
-        # Don't crash the hook chain on config errors; just warn.
+    except CleanMergedError as exc:
+        # Don't crash the hook chain on config or git-resolution errors.
         # Round-4 P1-6: BUT if the operator explicitly asked for --doctor,
         # surface the diagnostic and exit non-zero.
         if not args.quiet:
-            print(f"[{SCRIPT_NAME}] config error: {exc}", file=sys.stderr)
+            print(f"[{SCRIPT_NAME}] error: {exc}", file=sys.stderr)
         if args.doctor:
-            return cmd_doctor_on_error(repo_root, exc)
+            return cmd_doctor_on_error(repo_root=pathlib.Path.cwd(), exc=exc)
         return 0
 
     if _is_disabled(os.environ.get("CLEAN_MERGED_DISABLED")) or not config.enabled:

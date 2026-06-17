@@ -1,6 +1,6 @@
 # clean-merged — design
 
-Issue: https://github.com/seungpyoson/bolt-v2/issues/802
+Issue: #802
 
 Auto-cleanup of merged branches and worktrees. Always-on, agent-agnostic
 (works for Claude Code, Codex, Aider, raw `git`), no per-session instruction.

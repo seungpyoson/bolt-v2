@@ -16,7 +16,7 @@ use backtesting_vertical_slice::{
         CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
         StoredArtifactIndexPointer, persist_catalog_projection_for_source_binding,
     },
-    conversion_boundary::ConversionCatalogMetadata,
+    conversion_boundary::{CONVERSION_MANIFEST_FILE, ConversionCatalogMetadata},
     nt_catalog_capability::{
         NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION, NtCatalogCapabilityControls,
         NtCatalogCapabilityEvidence, NtCatalogCapabilityProof, NtCatalogCapabilityProofDocument,
@@ -1232,6 +1232,78 @@ fn rejects_manifest_fixture_mismatch() {
 }
 
 #[tokio::test]
+async fn operator_artifact_store_path_rejects_artifact_store_region_mismatch_before_local_work() {
+    let gz = gzip(SAMPLE_CSV);
+    let mut spec = committed_run_spec_for(&gz);
+    spec.manifest
+        .artifact_store
+        .rust_storage_options
+        .insert("region".to_string(), "us-west-2".to_string());
+    let output_dir = tempfile::TempDir::new().expect("temp dir");
+    let store = InMemory::new();
+
+    let err = match run_from_run_spec_with_artifact_store(
+        &spec,
+        &gz,
+        output_dir.path(),
+        &store,
+        |_, _, _| panic!("artifact-store region mismatch must fail before runtime evidence"),
+    )
+    .await
+    {
+        Ok(_) => panic!("artifact-store region mismatch must fail"),
+        Err(err) => err,
+    };
+
+    assert!(
+        err.to_string().contains("artifact-store region mismatch"),
+        "{err}"
+    );
+    assert!(
+        !output_dir.path().join(CONVERSION_MANIFEST_FILE).exists(),
+        "artifact-store config mismatch must fail before local conversion work"
+    );
+}
+
+#[tokio::test]
+async fn operator_artifact_store_path_rejects_artifact_store_ssm_region_mismatch_before_local_work()
+{
+    let gz = gzip(SAMPLE_CSV);
+    let mut spec = committed_run_spec_for(&gz);
+    spec.manifest
+        .artifact_store
+        .ssm_parameters
+        .as_mut()
+        .expect("run spec carries artifact-store SSM parameters")
+        .region = "us-west-2".to_string();
+    let output_dir = tempfile::TempDir::new().expect("temp dir");
+    let store = InMemory::new();
+
+    let err = match run_from_run_spec_with_artifact_store(
+        &spec,
+        &gz,
+        output_dir.path(),
+        &store,
+        |_, _, _| panic!("artifact-store SSM region mismatch must fail before runtime evidence"),
+    )
+    .await
+    {
+        Ok(_) => panic!("artifact-store SSM region mismatch must fail"),
+        Err(err) => err,
+    };
+
+    assert!(
+        err.to_string()
+            .contains("artifact-store SSM region mismatch"),
+        "{err}"
+    );
+    assert!(
+        !output_dir.path().join(CONVERSION_MANIFEST_FILE).exists(),
+        "artifact-store SSM config mismatch must fail before local conversion work"
+    );
+}
+
+#[tokio::test]
 async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let gz = gzip(SAMPLE_CSV);
     let spec = committed_run_spec_for(&gz);
@@ -1492,6 +1564,66 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .expect("objects array")
             .len()
             == persisted_projection.objects.len()
+    );
+
+    let second = run_from_run_spec_with_artifact_store(
+        &spec,
+        &gz,
+        output_dir.path(),
+        &store,
+        |artifact_root, plan, create_only_probe| {
+            let mut evidence =
+                successful_capability_evidence(artifact_root, nt_catalog_capability_proof);
+            evidence.read_back.catalog_uri = plan.synthetic_catalog_root_uri.clone();
+            evidence.nt_catalog_storage_option_keys = plan.storage_options_keys.clone();
+            evidence.create_only_probe = create_only_probe;
+            Ok(evidence)
+        },
+    )
+    .await
+    .expect("operator artifact-store rerun replays idempotently");
+    assert_eq!(
+        second.canonical_catalog_uri.as_deref(),
+        Some(expected_catalog_root.as_str())
+    );
+    assert!(
+        !second.catalog_root.exists(),
+        "artifact-store rerun should still remove the transient local NT catalog after durable persistence"
+    );
+    assert_eq!(
+        second
+            .persisted_catalog_projection
+            .as_ref()
+            .expect("second persisted projection")
+            .manifest_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+    assert!(
+        second
+            .persisted_catalog_objects
+            .iter()
+            .all(|object| object.create_only_write
+                == CreateOnlyWriteDisposition::AlreadyExistedSamePayload),
+        "artifact-store rerun must idempotently reuse durable catalog objects"
+    );
+    assert_eq!(
+        second
+            .nt_catalog_capability_proof_artifact
+            .as_ref()
+            .expect("second proof artifact")
+            .proof_artifact_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+    let second_contract: BacktestResultContract = serde_json::from_str(
+        &fs::read_to_string(&second.contract_path).expect("second durable contract json"),
+    )
+    .expect("second durable contract parses");
+    assert_eq!(
+        second_contract
+            .artifact_uris
+            .nt_catalog_manifest_uri
+            .as_deref(),
+        Some(persisted_projection.manifest_uri.as_str())
     );
 }
 

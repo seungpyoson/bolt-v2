@@ -33,7 +33,7 @@ use crate::{
     artifact_store::{
         ArtifactStoreConfig, CatalogDispatchConfig, CreateOnlyArtifactWriter,
         CreateOnlyProbeTranscript, PersistedCatalogProjection, PersistedCatalogProjectionObject,
-        ResolvedArtifactRoot, persist_catalog_projection_for_source_binding,
+        ResolvedArtifactRoot, S3ConditionalPutMode, persist_catalog_projection_for_source_binding,
     },
     canonical_market_data::{
         CanonicalBarsTable, CanonicalIndexPricesTable, CanonicalMarkPricesTable,
@@ -152,6 +152,73 @@ impl RunSpec {
 
     /// # Errors
     ///
+    /// Returns an error when the manifest publish store and durable artifact
+    /// store disagree on the physical S3 store they both describe.
+    pub fn validate_artifact_store_publish_config(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+    ) -> Result<()> {
+        let manifest_root = self.manifest.artifact_root.trim_end_matches('/');
+        let artifact_root = artifact_store.artifact_root.trim_end_matches('/');
+        ensure!(
+            manifest_root == artifact_root,
+            "run spec artifact-store root mismatch: manifest.artifact_root {:?} != artifact_store.artifact_root {:?}",
+            self.manifest.artifact_root,
+            artifact_store.artifact_root
+        );
+
+        let output_prefix = format!("{}/", self.manifest.output_prefix.trim_end_matches('/'));
+        let backtests_prefix = format!(
+            "{}/{}/",
+            artifact_root,
+            artifact_store.subpaths.backtests.trim_matches('/')
+        );
+        ensure!(
+            output_prefix.starts_with(&backtests_prefix),
+            "run spec artifact-store output_prefix mismatch: manifest.output_prefix {:?} must be under {:?}",
+            self.manifest.output_prefix,
+            backtests_prefix
+        );
+
+        manifest_artifact_store_option(&self.manifest, "region").context(
+            "run spec manifest.artifact_store missing region for durable artifact store",
+        )?;
+        for (field, value) in manifest_artifact_store_options(&self.manifest, "region") {
+            ensure!(
+                value == artifact_store.s3.region,
+                "run spec artifact-store region mismatch: {field} {:?} != artifact_store.s3.region {:?}",
+                value,
+                artifact_store.s3.region
+            );
+        }
+        if let Some(ssm_parameters) = &self.manifest.artifact_store.ssm_parameters {
+            ensure!(
+                ssm_parameters.region == artifact_store.s3.region,
+                "run spec artifact-store SSM region mismatch: manifest.artifact_store.ssm_parameters.region {:?} != artifact_store.s3.region {:?}",
+                ssm_parameters.region,
+                artifact_store.s3.region
+            );
+        }
+
+        let expected_conditional_put = match artifact_store.s3.conditional_put {
+            S3ConditionalPutMode::Etag => "etag",
+        };
+        manifest_artifact_store_option(&self.manifest, "conditional_put").context(
+            "run spec manifest.artifact_store missing conditional_put for durable artifact store",
+        )?;
+        for (field, value) in manifest_artifact_store_options(&self.manifest, "conditional_put") {
+            ensure!(
+                value == expected_conditional_put,
+                "run spec artifact-store conditional_put mismatch: {field} {:?} != artifact_store.s3.conditional_put {:?}",
+                value,
+                expected_conditional_put
+            );
+        }
+        Ok(())
+    }
+
+    /// # Errors
+    ///
     /// Returns an error when the run-spec omits source-binding catalog dispatch
     /// configuration required by the publish/proof path.
     pub fn required_catalog_dispatch(&self) -> Result<&CatalogDispatchConfig> {
@@ -179,6 +246,35 @@ impl RunSpec {
             "run spec missing [nt_catalog_capability_proof] required for artifact-store publish path",
         )
     }
+}
+
+fn manifest_artifact_store_option<'a>(
+    manifest: &'a BacktestingRunManifest,
+    key: &str,
+) -> Option<&'a str> {
+    manifest
+        .artifact_store
+        .rust_storage_options
+        .get(key)
+        .or_else(|| manifest.artifact_store.storage_options.get(key))
+        .map(String::as_str)
+}
+
+fn manifest_artifact_store_options<'a>(
+    manifest: &'a BacktestingRunManifest,
+    key: &'static str,
+) -> Vec<(&'static str, &'a str)> {
+    let mut values = Vec::new();
+    if let Some(value) = manifest.artifact_store.storage_options.get(key) {
+        values.push(("manifest.artifact_store.storage_options", value.as_str()));
+    }
+    if let Some(value) = manifest.artifact_store.rust_storage_options.get(key) {
+        values.push((
+            "manifest.artifact_store.rust_storage_options",
+            value.as_str(),
+        ));
+    }
+    values
 }
 
 /// Instrument specs for the run-spec's projected tables.
@@ -972,6 +1068,15 @@ pub fn run_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<RunArtifacts> {
+    run_from_run_spec_inner(spec, object_bytes, output_dir, true)
+}
+
+fn run_from_run_spec_inner(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    reuse_completed_output: bool,
+) -> Result<RunArtifacts> {
     validate_converter_config(&spec.converter)?;
     let adapter =
         require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
@@ -1029,35 +1134,38 @@ pub fn run_from_run_spec(
     validate_local_run_manifest(&manifest, &accepted)?;
     let artifact_uris = portable_artifact_uris(&manifest);
 
-    match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
-        ConversionOutputState::Complete {
-            manifest_hash,
-            checkpoint_hash,
-            catalog_hash,
-        } => {
-            return run_from_completed_output(CompletedOutputInputs {
-                verified_sha256,
-                accepted_source_proof: accepted_proof,
-                accepted: &accepted,
-                canonical_artifact_path: canonical_path,
-                catalog_root,
-                proof_path,
-                contract_path,
-                run_manifest_path,
-                conversion_manifest_path,
-                conversion_checkpoint_path,
-                catalog_metadata_path,
-                manifest,
-                contract_manifest_hash,
-                conversion_manifest_hash: manifest_hash,
-                conversion_checkpoint_hash: checkpoint_hash,
-                expected_catalog_hash: catalog_hash,
-                artifact_uris,
-                created_at: &spec.created_at_utc,
-                spec_manifest: &spec.manifest,
-            });
+    if reuse_completed_output {
+        match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
+            ConversionOutputState::Complete {
+                manifest_hash,
+                checkpoint_hash,
+                catalog_hash,
+            } => {
+                return run_from_completed_output(CompletedOutputInputs {
+                    verified_sha256,
+                    accepted_source_proof: accepted_proof,
+                    accepted: &accepted,
+                    canonical_artifact_path: canonical_path,
+                    catalog_root,
+                    proof_path,
+                    contract_path,
+                    run_manifest_path,
+                    conversion_manifest_path,
+                    conversion_checkpoint_path,
+                    catalog_metadata_path,
+                    manifest,
+                    contract_manifest_hash,
+                    conversion_manifest_hash: manifest_hash,
+                    conversion_checkpoint_hash: checkpoint_hash,
+                    expected_catalog_hash: catalog_hash,
+                    artifact_uris,
+                    created_at: &spec.created_at_utc,
+                    spec_manifest: &spec.manifest,
+                });
+            }
+            ConversionOutputState::CleanNew
+            | ConversionOutputState::ResumeFromCheckpoint { .. } => {}
         }
-        ConversionOutputState::CleanNew | ConversionOutputState::ResumeFromCheckpoint { .. } => {}
     }
 
     fs::create_dir_all(output_dir)
@@ -1186,18 +1294,19 @@ where
         CreateOnlyProbeTranscript,
     ) -> Result<NtCatalogCapabilityEvidence>,
 {
+    let artifact_store = spec.required_artifact_store()?;
+    spec.validate_artifact_store_publish_config(artifact_store)?;
+    let catalog_dispatch = spec.required_catalog_dispatch()?;
+    let create_only_probe_id = spec.required_create_only_probe_id()?;
+    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
     let base_spec = spec.clone();
     let base_gz_bytes = gz_bytes.to_vec();
     let base_output_dir = output_dir.to_path_buf();
     let mut artifacts = tokio::task::spawn_blocking(move || {
-        run_from_run_spec(&base_spec, &base_gz_bytes, &base_output_dir)
+        run_from_run_spec_inner(&base_spec, &base_gz_bytes, &base_output_dir, false)
     })
     .await
     .context("join base run for artifact-store path")??;
-    let artifact_store = spec.required_artifact_store()?;
-    let catalog_dispatch = spec.required_catalog_dispatch()?;
-    let create_only_probe_id = spec.required_create_only_probe_id()?;
-    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
     let artifact_root = artifact_store.resolve()?;
     let nt_catalog_capability_plan = nt_catalog_capability_proof.proof_plan(artifact_store)?;
     let writer = CreateOnlyArtifactWriter::new(store);

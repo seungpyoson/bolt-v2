@@ -189,6 +189,43 @@ in two specific ways. Stated precisely:)
   (merged branches linger; committed work stays reachable via reflog); prior
   deletions are backup-ref protected. Run `just clean-merged-doctor`
   periodically.
+- **Lane R gh cost under slowdown** (round-soundness GPT/Kimi). Lane R is
+  spawned detached on every `post-merge`; each non-ancestor branch triggers a
+  per-branch gh query (5s timeout each). On a repo with ~40 branches during a
+  gh slowdown, background work could reach ~200s per merge. The git op returns
+  instantly (detached); the cost is background CPU + potential gh rate-limit
+  pressure. Mitigated by per-branch TTL cache (5-min default) + the fail-safe
+  "gh trouble → keep branch" contract. If gh is persistently slow, squash-merged
+  branches accumulate until an online manual reconcile. No data loss.
+- **Future-dated `fetched_at` in cache** (round-5.5 polish-2 Claude). A
+  cache entry with `fetched_at` set to a future timestamp (clock skew, manual
+  tampering) computes `age = now - future = negative`, which is finite and
+  `< ttl` → treated as permanently live. Pre-existing behavior (not introduced
+  by any fix round). Only reachable via direct cache-file editing; the tool
+  itself always writes `fetched_at = time.time()`. Accepted: the cache is
+  fail-open (corrupt/tampered → bypass → fresh gh call); a permanently-live
+  stale entry at worst delays cleanup for one branch, never causes a wrong
+  delete (headRefOid is always recomputed against the live tip).
+- **No `fsync` before `os.replace`** (round-5.5 Grok P2). Atomic manifest/cache
+  writes use `tmp.write_text()` + `os.replace()` without an intervening
+  `fsync`. A power-loss between write and replace could lose the tmp file's
+  content on some filesystems. Standard tradeoff for this class of tool; the
+  target file is either the previous content or the new content (atomic rename
+  guarantee), never partial. The worst case is a lost manifest update, not
+  corruption. Accepted.
+- **`has_nested_git` not re-checked at Lane W TOCTOU point** (round-5
+  self-review). The hidden-bits, ignored-content, and dirty guards are all
+  re-run inside the `if apply:` block; `has_nested_git` is not (it walks the
+  full worktree and doubling the walk cost wasn't justified for the implausible
+  race — someone cloning a repo into the worktree mid-sweep). The upfront check
+  covers the common case. Accepted.
+- **TOCTOU under `--discard-ignored`** (round-3 disproved for default; accepted
+  for explicit override). In default mode, the tool refuses ANY ignored content
+  upfront (fail-closed). Under `--discard-ignored` (explicit operator opt-in),
+  a microsecond window exists between tar-finish and `git worktree remove` where
+  a new ignored file could appear and be deleted without being captured in the
+  archive. The operator explicitly accepted destructive treatment of ignored
+  content by passing the flag. Accepted.
 
 ## Design provenance
 

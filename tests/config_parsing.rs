@@ -1090,6 +1090,275 @@ fn bolt_v3_archetype_accepts_configured_forced_exit_order_template() {
 }
 
 #[test]
+fn bolt_v3_archetype_rejects_polymarket_unsupported_market_exit_shape() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include exit_order");
+    exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.exit_order order_type=market has time_in_force=gtc")
+                && message.contains("must use time_in_force=ioc or fok")
+                && message.contains("configured execution provider")
+        }),
+        "market exit GTC should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.exit_order.is_reduce_only must be false")
+                && message.contains("configured execution provider")
+        }),
+        "market exit reduce-only should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_polymarket_unsupported_market_forced_exit_shape() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let forced_exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("forced_exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include forced_exit_order");
+    forced_exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    forced_exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.forced_exit_order order_type=market has time_in_force=gtc")
+                && message.contains("must use time_in_force=ioc or fok")
+                && message.contains("configured execution provider")
+        }),
+        "market forced-exit GTC should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.forced_exit_order.is_reduce_only must be false")
+                && message.contains("configured execution provider")
+        }),
+        "market forced-exit reduce-only should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_polymarket_limit_exit_reduce_only_shape() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include exit_order");
+    exit_table.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
+    );
+    exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    exit_table.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+    exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.exit_order.is_reduce_only must be false")
+                && message.contains("configured execution provider")
+        }),
+        "limit exit reduce-only should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_polymarket_limit_forced_exit_reduce_only_shape() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let forced_exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("forced_exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include forced_exit_order");
+    forced_exit_table.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
+    );
+    forced_exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    forced_exit_table.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+    forced_exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.forced_exit_order.is_reduce_only must be false")
+                && message.contains("configured execution provider")
+        }),
+        "limit forced-exit reduce-only should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_keeps_default_provider_market_exit_shape_permissive() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+    use nautilus_model::identifiers::Venue;
+
+    let mut stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    stable_root
+        .clients
+        .get_mut("polymarket_main")
+        .expect("fixture should include execution client")
+        .venue = Venue::from("HYPERLIQUID");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include exit_order");
+    exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.is_empty(),
+        "default provider constraints should remain permissive for market exit shapes: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_rejects_manage_stop_with_non_market_forced_exit_order() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},

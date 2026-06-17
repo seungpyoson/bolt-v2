@@ -65,6 +65,10 @@ evidence_state = "owner_archive_backfillable"
 table_families = ["bars"]
 "#;
 
+const COMMITTED_RUN_SPEC: &str = include_str!(
+    "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
+);
+
 fn registry() -> SourceBindingRegistry {
     SourceBindingRegistry::from_toml_str(REGISTRY_TOML)
         .expect("synthetic source binding registry parses")
@@ -289,8 +293,8 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
             ]),
             typed_config_uri: None,
             typed_config_hash: None,
-            promotion_package_uri: None,
-            promotion_package_hash: None,
+            experiment_result_uri: None,
+            experiment_result_hash: None,
         },
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
@@ -306,6 +310,7 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
             rust_storage_options: BTreeMap::new(),
             ssm_parameters: None,
         },
+        domain_metrics: Vec::new(),
         start_time: None,
         end_time: None,
     }
@@ -386,6 +391,7 @@ fn run_spec(
     converter: ConverterConfig,
     manifest: BacktestingRunManifest,
 ) -> RunSpec {
+    let committed: RunSpec = toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses");
     RunSpec {
         capture_time_utc: ACCEPTED_AT.to_string(),
         created_at_utc: ACCEPTED_AT.to_string(),
@@ -398,6 +404,10 @@ fn run_spec(
         identity: RunSpecInstrumentIdentities::Single(identity()),
         converter,
         manifest,
+        artifact_store: committed.artifact_store,
+        catalog_dispatch: committed.catalog_dispatch,
+        create_only_probe_id: committed.create_only_probe_id,
+        nt_catalog_capability_proof: committed.nt_catalog_capability_proof,
         selector_provenance: None,
     }
 }

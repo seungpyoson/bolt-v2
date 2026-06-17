@@ -45,8 +45,8 @@
       "status": "source_proof_id_version_and_data_class_evidence_bound",
       "decision": "Source-catalog mapping readiness now carries and checks source_proof_id/source_proof_version plus per-required-NT-data-class evidence refs, so broad backfill execution readiness cannot reuse a stale or status-only mapping report for the same source binding/table family.",
       "binance_ready_report_hash": "3d7e1a378377c1c0a2cba355a1f0a7f73b2e6018746a7a287ecb0ca0a62bbd9d",
-      "pmxt_blocked_report_hash": "71723a851a61abce3d01b6c544daaf6601af3b5ee43695ac27b622781a777c45",
-      "catalog_mapping_evaluation_hash": "af68803e6c87c124b75a8442bd9493b7fe60de42cac73304bf1d44dee92d1d56"
+      "pmxt_blocked_report_hash": "2ff85429bfe00dfa7a680b16f726e0221afe7ddf96cd4eb9b10b2598e2ef9c6b",
+      "catalog_mapping_evaluation_hash": "b316ae3e76d26a50dbdc0f73f321b9799c24816f704a38560db6f577d7e36881"
     }
   },
   "nt_capability_evidence": [
@@ -105,11 +105,11 @@
       "evidence": "nt://crates/adapters/polymarket/src/http/data_api.rs:55"
     },
     {
-      "limitation": "The manifest/data-config path now maps TradeTick, OrderBookDelta, InstrumentStatus, and InstrumentClose plus configured instrument_ids. InstrumentStatus and InstrumentClose are auxiliary catalog streams and do not prove timed InstrumentAny instrument-definition replay, PMXT source-row projection, or BacktestNode consumption of a verified broad PMXT L2 catalog.",
+      "limitation": "The manifest/data-config path now maps TradeTick, OrderBookDelta, Bar, QuoteTick, IndexPriceUpdate, MarkPriceUpdate, InstrumentStatus, and InstrumentClose plus configured instrument_ids. InstrumentStatus and InstrumentClose are auxiliary catalog streams and do not prove timed InstrumentAny instrument-definition replay, PMXT source-row projection, or BacktestNode consumption of a verified broad PMXT L2 catalog.",
       "evidence": "repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1448, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1524, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1762, repo://crates/backtesting-vertical-slice/src/run_manifest.rs:1991"
     },
     {
-      "limitation": "The catalog hash/read-back path covers an NT-native BinaryOption, OrderBookDelta, and TradeTick fixture. PMXT has one-off selected-source OrderBookDelta and TradeTick projection/read-back paths plus a refreshed concrete artifact-root/result-contract run for bounded evidence only; this is not a reusable broad backfill adapter. The older /private/tmp mixed artifact remains stale under the current [[catalog_inputs]] manifest schema.",
+      "limitation": "The catalog hash/read-back path covers NT-native BinaryOption TradeTick, OrderBookDelta, and Bar fixture coverage. PMXT has one-off selected-source OrderBookDelta and TradeTick projection/read-back paths plus a refreshed concrete artifact-root/result-contract run for bounded evidence only; this is not a reusable broad backfill adapter. The older /private/tmp mixed artifact remains stale under the current [[catalog_inputs]] manifest schema.",
       "evidence": "repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:313, repo://crates/backtesting-vertical-slice/src/catalog_projection.rs:777"
     }
   ],
@@ -144,7 +144,8 @@
         "Bar",
         "TradeTick"
       ],
-      "status": "lower_fidelity_candidate_only_no_catalog_proof"
+      "status": "staged_binary_option_bar_catalog_mapping_source_fenced",
+      "required_path": "Keep Kalshi official historical API as a pending lower-fidelity candidate until accepted source proof, raw candlestick-to-canonical-Bar normalization, license/coverage/completeness/cost checks, and any claimed historical L2 evidence are committed."
     },
     {
       "source_binding": "hyperliquid-hip4-outcome-meta",
@@ -360,6 +361,45 @@
       "This does not authorize broad PMXT backfill."
     ]
   },
+  "durable_source_selection_source_only_guardrail_status": {
+    "status": "code_guardrail_added_actual_pmxt_accepted_source_proof_unproven",
+    "evidence": [
+      "RED-GATED crates/backtesting-vertical-slice/src/venue_scale_conversion_acceptance.rs unit regression source_only_status_rejects_unaccepted_source_proof_set documents that a source-only universe with a referenced source proof set but zero accepted proofs must fail validation.",
+      "GREEN-GATED venue-scale conversion acceptance validation now receives source_proof_count and source_accepted_proof_count and rejects SourceOnly when source_proof_count > 0 and source_accepted_proof_count == 0.",
+      "REGRESSION crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_venue_scale_conversion_acceptance.rs source_proof_set_rejects_accepted_count_above_total_count documents that source proof sets with accepted_proof_count > proof_count must fail before status accounting.",
+      "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml explicitly lists missing_accepted_source_proof on pmxt-polymarket-full-current-data while source_accepted_proof_count remains 0.",
+      "repo://specs/023-nt-research-analytics-platform/reference/venue-scale-conversion-acceptance-ledgers/binance-bybit-pmxt-current/venue-scale-conversion-acceptance-ledger.toml keeps pmxt-polymarket-full-current-data blocked while repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json pins source_accepted_proof_count=0.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json records the source-controlled PMXT durable-source guard: one pending proof in the committed TOML spec, zero accepted proofs, generated bulk JSON evicted by policy, and source-fence static coverage via scripts/verify_bte_022_pmxt_durable_source.py.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json source-fences the PMXT pending fixture against crates/backtesting-vertical-slice/src/source_proof_admissibility.rs and crates/backtesting-vertical-slice/src/source_proof.rs as current_contract_rejected with current contract fields present, acceptance_failed because raw_sample_uri must be staged to s3:// before canonical acceptance, and explicit one_off_backfill_data usage that cannot be promoted to canonical source proof input.",
+      "STATIC-GATED scripts/verify_bte_022_pmxt_durable_source.py rejects drift from pending/one_off_backfill_data PMXT source proof state, missing pmxt-polymarket-full-current-data blocking issues, BTE-022 close claims, and source-fence wiring gaps."
+    ],
+    "claim_limits": [
+      "This proves a venue-scale source-only status cannot be backed by an explicitly unaccepted source proof set.",
+      "This proves source proof set summary counts fail closed when accepted_proof_count exceeds proof_count.",
+      "This proves the PMXT durable-source state has a compact source-fenced guard even though generated PMXT bulk JSON artifacts remain evicted.",
+      "This does not accept any PMXT source proof.",
+      "This does not prove expanded PMXT coverage, cost, object gates, conversion run plans, or dynamic tick-size replay.",
+      "This does not authorize broad PMXT backfill."
+    ]
+  },
+  "dynamic_tick_size_replay_guardrail_status": {
+    "status": "source_fenced_blocked_standard_backtestnode_no_timed_instrument_any",
+    "evidence": [
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json records that standard BacktestNode catalog replay cannot schedule timed InstrumentAny instrument-definition epochs.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-timed-instrument-replay-nt-audit.2026-06-09.json records the pinned NT audit: InstrumentAny storage exists, but BacktestDataConfig/Data replay has no timed InstrumentAny stream.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json permits only the bounded no-tick-size-change first proof and keeps full PMXT L2 acceptance open.",
+      "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-source-slice.2026-06-08.json and the committed selected-source selector/report artifacts are source-fenced as one-off no-tick selected-source evidence, not dynamic tick-size replay evidence.",
+      "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml keeps the PMXT source proof pending and blocks dynamic tick-size replay acceptance through claim_limit pmxt-source-proof-claim-limit-002.",
+      "STATIC-GATED scripts/verify_bte_022_pmxt_dynamic_tick_size.py rejects drift from the blocked dynamic tick-size replay decision, missing BTE-022 blocker text, source-proof overclaiming, and source-fence wiring gaps."
+    ],
+    "claim_limits": [
+      "This proves the current repo state records dynamic tick-size replay as blocked for standard BacktestNode catalog replay.",
+      "This proves the bounded PMXT first proof is limited to source-proof-selected assets/windows with tick_size_change_rows == 0.",
+      "This proves the pending PMXT source proof has not accepted timed InstrumentAny replay or full PMXT L2 with tick_size_change rows.",
+      "This does not implement timed InstrumentAny replay.",
+      "This does not close BTE-022 or authorize broad PMXT backfill."
+    ]
+  },
   "non_hardcoding_decision": "Bybit, Binance, Polymarket, Kalshi, and Hyperliquid remain source-binding examples. The next mapping work must be data-family driven: source schema plus registry binding plus NT data class, with no runtime venue or instrument constants in production code.",
   "old_artifact_recommendation": {
     "recommendation": "keep_as_historical_reference_only",
@@ -406,30 +446,27 @@
   "remaining_blockers": [
     {
       "blocker": "expanded_tranche_coverage_and_cost_unproven",
-      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json records the manifest-only PMXT coverage ledger as rejected evidence: coverage_axis=timestamp_received and table_family=order_book_snapshot_deltas were derived from SourceProofReport metadata without payload download, raw manifest mutation, or venue-specific code, but accepted expanded coverage/cost remains unproven because both records are rejected under pending source proof."
+      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json records the manifest-only PMXT coverage ledger as rejected evidence: coverage_axis=timestamp_received and table_family=order_book_snapshot_deltas were derived from SourceProofReport metadata without payload download, raw manifest mutation, or venue-specific code. It now also source-fences the indexed PMXT manifest/index snapshot: 1,351 objects, 1,351 verified HEADs, 557,815,904,970 compressed bytes, and the 2026-04-13T19:00:00Z to 2026-06-10T15:00:00Z archive window. Accepted expanded coverage/cost remains unproven because both coverage-ledger records are rejected under pending source proof. STATIC-GATED scripts/verify_bte_022_pmxt_coverage_ledger.py rejects drift from the pending source fixture, rejected coverage-ledger records, indexed-manifest snapshot drift, accepted/canonical-ready coverage claims, BTE-022 close claims, and source-fence wiring gaps."
     },
     {
       "blocker": "dynamic_tick_size_replay_unproven",
-      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. InstrumentStatus/InstrumentClose replay support is not InstrumentAny replay; current guards only prove auxiliary status/close data-config mapping and that the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
+      "required_evidence": "A separate NT BacktestNode/catalog proof that tick_size_change epochs can be represented without custom simulation behavior before full PMXT Polymarket L2 acceptance. The pending bounded one-off PMXT source proof must not attach a no-tick-change universe or timed instrument epoch replay reference while status remains pending; the selected first-proof universe policy does not prove dynamic tick-size replay, and the committed selected-source selector/report/slice artifacts only support selected unaffected assets/windows. InstrumentStatus/InstrumentClose replay support is not InstrumentAny replay; current guards only prove auxiliary status/close data-config mapping and that the one-off selected-source projection cannot silently ignore configured non-ignorable tick_size_change rows."
     },
     {
       "blocker": "durable_source_selection_unproven",
-      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. The bounded PMXT sample remains one-off evidence only."
+      "required_evidence": "A source-proof acceptance record for any durable Polymarket source. Venue-scale acceptance rejects source-only status when an explicit source proof set has zero accepted proofs; repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json now source-fences the current PMXT full-current state as one pending proof, zero accepted proofs, generated bulk JSON evicted by policy, missing_accepted_source_proof still blocking, and current_contract_rejected with current contract fields present plus acceptance_failed under the typed source-proof admissibility path because the PMXT fixture has not staged raw_sample_uri to s3:// and remains one_off_backfill_data. repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-storage-proof-status.2026-06-17.json records the prior manifest-planned raw sample S3 URI HeadObject 404. repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-storage-staging-status.2026-06-17.json records that raw sample S3 staging now HeadObject-present along with schema and manifest artifacts, while source-proof fixture staging remains blocked and the committed fixture still uses HTTPS raw_sample_uri and repo:// schema_sample_uri; STATIC-GATED scripts/verify_bte_022_pmxt_storage_proof.py rejects drift from both storage states. The bounded PMXT sample remains one-off evidence only."
     },
     {
       "blocker": "broad_backfill_efficiency_unproven",
-      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json records the systematic slow-backfill root cause and current guardrail: code now carries source_row_groups/predicate_ref through source-proof scope, accepted tranche, and execution plan, and can block plans that require this metadata before payload fetch. Broad payload work still must not start until source acceptance, manifest/index-only coverage and cost, accepted object hashes, actual PMXT row-group/predicate metadata, byte/row/time budgets, and tick-size replay or bounded-exclusion policy are proven."
-    },
-    {
-      "blocker": "source_agnostic_adapter_contract_gap",
-      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-agnostic-backfill-boundary-status.2026-06-09.json records the boundary audit: generic gates are source_binding/table_family/NT-data-type driven, source-proof cross-market roles are registry-owned, registered adapters declare table_family/NT data type, and the durable operator now rejects registered adapter kinds without explicit runner dispatch before artifact writes. The remaining gap is real adapter coverage: only the native trade CSV adapter is durable while PMXT remains an explicit one-off adapter. Adding a new raw format or data family still requires a registered adapter implementation/runner and proof, not just TOML."
+      "required_evidence": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-broad-backfill-efficiency-status.2026-06-09.json records the systematic slow-backfill root cause and current guardrail: code now carries source_row_groups/predicate_ref through source-proof scope, accepted tranche, and execution plan, and can block plans that require this metadata before payload fetch. Broad payload work still must not start until source acceptance, manifest/index-only coverage and cost, accepted object hashes, actual PMXT row-group/predicate metadata, byte/row/time budgets, and tick-size replay or bounded-exclusion policy are proven. STATIC-GATED scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py rejects drift from blocked broad-backfill status, dependency status hashes, accepted-source/coverage/dynamic overclaims, BTE-022 close claims, and source-fence wiring gaps."
     }
   ],
   "next_required_evidence": [
     "Archive or promote only the refreshed one-off PMXT L2+TradeTick artifact if needed; do not generalize PMXT from this bounded sample.",
+    "Use the committed canonical PMXT source-catalog mapping readiness gate as the broad-source guardrail: the gate remains blocked by missing dynamic tick-size replay claim evidence, one-off usage scope, non-accepted BTE status, and non-proven catalog status.",
     "Use the committed PMXT coverage-ledger status only as rejected/current evidence; do not treat it as accepted PMXT coverage.",
     "Use the committed PMXT broad-backfill efficiency status as a guardrail: no broad payload download, full-object hash, conversion, catalog projection, or BacktestNode run before manifest/index-only acceptance and bounded execution budgets are proven.",
-    "Use the committed source-agnostic boundary status as the adapter-rule guardrail: new sources that match the existing native-trade CSV adapter can be registry/source-proof/run-spec additions; new raw formats or NT data families require a registered adapter implementation/runner and proof, not venue branches in generic gates.",
+    "Use the committed source-agnostic boundary status as the adapter-rule guardrail: new sources that match an existing registered adapter can be registry/source-proof/run-spec additions; new raw formats or NT data families require a registered adapter implementation/runner and proof, not venue branches in generic gates.",
     "Use the committed PMXT NT surface-usage boundary status as the NT ownership guardrail: one-off PMXT uses public NautilusTrader Polymarket parser/model surfaces, ParquetDataCatalog, and BacktestNode; Bolt-owned code remains limited to raw PMXT archive decoding, selected-source provenance, duplicate historical trade observation policy, and claim-limit enforcement.",
     "Record accepted expanded-tranche coverage and cost evidence before any PMXT broad backfill discussion.",
     "Accept a durable Polymarket source proof before any PMXT coverage ledger can authorize canonical-ready backfill.",

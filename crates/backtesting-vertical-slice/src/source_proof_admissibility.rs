@@ -24,7 +24,7 @@ use crate::source_proof::{
 pub const SOURCE_PROOF_ADMISSIBILITY_SCHEMA_VERSION: &str = "source-proof-admissibility-report.v1";
 pub const SOURCE_PROOF_ADMISSIBILITY_REPORT_FILE: &str = "source-proof-admissibility-report.json";
 
-const CURRENT_CONTRACT_TOP_LEVEL_FIELDS: [&str; 30] = [
+const CURRENT_CONTRACT_TOP_LEVEL_FIELDS: &[&str] = &[
     "source_proof_id",
     "source_proof_version",
     "contract_version",
@@ -36,6 +36,9 @@ const CURRENT_CONTRACT_TOP_LEVEL_FIELDS: [&str; 30] = [
     "product_category",
     "table_family",
     "evidence_state",
+    "source_candidate_class",
+    "source_selection_status",
+    "usage_scope",
     "fixture_type",
     "requested_time_range",
     "coverage_time_range",
@@ -50,6 +53,7 @@ const CURRENT_CONTRACT_TOP_LEVEL_FIELDS: [&str; 30] = [
     "cost_ref",
     "nt_mapping_status",
     "fidelity_class",
+    "l2_replay_evidence",
     "forbidden_claims",
     "claim_limits",
     "acceptance_scope",
@@ -331,12 +335,16 @@ impl SourceProofAdmissibilityReport {
     }
 
     pub fn content_hash(&self) -> Result<String, SourceProofAdmissibilityReportError> {
-        let bytes = serde_json::to_vec(self)
+        let bytes = serde_json::to_vec_pretty(self)
             .map_err(|error| SourceProofAdmissibilityReportError::Serialize(error.to_string()))?;
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        Ok(hex::encode(hasher.finalize()))
+        Ok(content_hash_for_bytes(&bytes))
     }
+}
+
+fn content_hash_for_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 impl SourceProofAdmissibilitySummary {
@@ -405,9 +413,7 @@ pub fn write_source_proof_admissibility_report(
         })?;
     }
 
-    let content_hash = report
-        .content_hash()
-        .map_err(|error| SourceProofAdmissibilityWriteError::Serialize(error.to_string()))?;
+    let content_hash = content_hash_for_bytes(&bytes);
     Ok(SourceProofAdmissibilityArtifact {
         path,
         content_hash,
@@ -515,20 +521,17 @@ fn classify_source_proof_json(
                     blocking_issues,
                     acceptance_error: None,
                 },
-                Ok(()) => {
-                    blocking_issues.push(SourceProofAdmissibilityIssue::AcceptanceFailed);
-                    SourceProofAdmissibilityRecord {
-                        proof_uri,
-                        status: SourceProofAdmissibilityStatus::CurrentContractRejected,
-                        source_proof_id: Some(report.source_proof_id),
-                        source_proof_version: Some(report.source_proof_version),
-                        source_binding: Some(report.source_binding),
-                        current_contract_deserializes: true,
-                        missing_current_contract_fields,
-                        blocking_issues,
-                        acceptance_error: Some("missing current-contract field".to_string()),
-                    }
-                }
+                Ok(()) => SourceProofAdmissibilityRecord {
+                    proof_uri,
+                    status: SourceProofAdmissibilityStatus::CurrentContractRejected,
+                    source_proof_id: Some(report.source_proof_id),
+                    source_proof_version: Some(report.source_proof_version),
+                    source_binding: Some(report.source_binding),
+                    current_contract_deserializes: true,
+                    missing_current_contract_fields,
+                    blocking_issues,
+                    acceptance_error: None,
+                },
                 Err(error) => {
                     blocking_issues.push(SourceProofAdmissibilityIssue::AcceptanceFailed);
                     SourceProofAdmissibilityRecord {
@@ -571,7 +574,8 @@ fn classify_source_proof_json(
 
 fn missing_current_contract_fields(proof: &Value) -> Vec<String> {
     CURRENT_CONTRACT_TOP_LEVEL_FIELDS
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|field| proof.get(field).is_none_or(Value::is_null))
         .map(str::to_string)
         .collect()

@@ -1,0 +1,100 @@
+{
+  "schema_version": "source-proof-pmxt-dynamic-tick-size-replay-status.v1",
+  "task_id": "BACKTESTING_ENGINE-022",
+  "source_binding": "polymarket-parquet-archive-index",
+  "observed_at_utc": "2026-06-16T08:05:49Z",
+  "dynamic_tick_size_replay_status": "blocked_standard_backtestnode_no_timed_instrument_any",
+  "standard_backtestnode_catalog_replay_supports_dynamic_instrument_any": false,
+  "timed_instrument_epoch_replay_accepted": false,
+  "bounded_no_tick_size_change_first_proof_allowed": true,
+  "pmxt_full_l2_with_tick_size_change_can_be_accepted_now": false,
+  "bte_022_can_close": false,
+  "bounded_selected_source_artifact_status": {
+    "status": "source_fenced_one_off_no_tick_selected_artifact",
+    "selector_report": {
+      "path": "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selector-gamma-candidates/first-proof-selector-report.json",
+      "sha256": "8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27"
+    },
+    "selected_source_report": {
+      "path": "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
+      "sha256": "cc5110c9f97f167bc243ac542fda8cbac252f57d847436cc2a3e7dee5b426a73"
+    },
+    "selected_source_slice_status": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-source-slice.2026-06-08.json",
+      "sha256": "d33be3113a12a772370cb719df589a9f6d6c773efeeae7b14db007c6ba53baff"
+    },
+    "usage_scope": "one_off_backfill_data",
+    "selected_asset_count": 1,
+    "selected_rows": 5,
+    "source_row_groups": 62,
+    "projected_row_groups": 1,
+    "selected_asset_id": "73895424095742155573626958367283533358717984717096075221396743226794070701077",
+    "selected_asset_ids_hash": "1e6a537007d5fb693057a9e7a51704411366c5add19d59e586d098516ff5a110",
+    "selected_asset_source_row_groups": [
+      35
+    ],
+    "event_types": [
+      "book",
+      "last_trade_price",
+      "price_change"
+    ],
+    "excluded_event_families": [
+      "tick_size_change"
+    ],
+    "dynamic_tick_size_replay_proven": false,
+    "broad_backfill_allowed": false,
+    "bte_022_can_close": false
+  },
+  "committed_input_hashes": {
+    "tick_size_change_status": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-tick-size-change-status.2026-06-08.json",
+      "sha256": "144561e2f97631c7dd40e1f2c93ed201efaf306093f494bbf027927bcf39160e"
+    },
+    "timed_instrument_replay_audit": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-timed-instrument-replay-nt-audit.2026-06-09.json",
+      "sha256": "087e045034001fa1573ffc8d01daeffc21ceb6b797c593fd541f494d24707120"
+    },
+    "first_universe_policy": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-polymarket-first-proof-universe-policy.2026-06-08.json",
+      "sha256": "36e2af98cae120d3b1320d2a99ee6bbfda326ca3f9c3154cf1c52e45824a84a4"
+    },
+    "bounded_one_off_pending_fixture": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+      "sha256": "0ce36fc546f7da91a8b174e54bce7ec81dbc94e6f8459d49cf20483dd2732ce0"
+    },
+    "selected_source_slice_status": {
+      "path": "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-selected-source-slice.2026-06-08.json",
+      "sha256": "d33be3113a12a772370cb719df589a9f6d6c773efeeae7b14db007c6ba53baff"
+    },
+    "selected_source_selector_report": {
+      "path": "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selector-gamma-candidates/first-proof-selector-report.json",
+      "sha256": "8bbf34e5f743ec9fdf3cbf05c23c71c75ca310eb4278ffa1c9d29403386dba27"
+    },
+    "selected_source_report": {
+      "path": "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json",
+      "sha256": "cc5110c9f97f167bc243ac542fda8cbac252f57d847436cc2a3e7dee5b426a73"
+    },
+    "pmxt_source_proof_spec": {
+      "path": "specs/023-nt-research-analytics-platform/reference/backfill-source-proofs/pmxt-polymarket-v2-current/source-universe-source-proofs.toml",
+      "sha256": "2b0ece5774eea20a610a326e1a3819b2c6816229b687b6966a8d0985e0750ad6"
+    }
+  },
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_pmxt_dynamic_tick_size.py",
+    "self_test": "repo://scripts/test_verify_bte_022_pmxt_dynamic_tick_size.py",
+    "source_fence_static": true
+  },
+  "claim_limits": [
+    "Standard BacktestNode catalog replay must not be used to claim PMXT dynamic tick-size replay.",
+    "InstrumentStatus and InstrumentClose auxiliary streams do not substitute for timed InstrumentAny instrument-definition epochs.",
+    "The bounded PMXT first proof may use only a source-proof-bound no-tick-size-change universe and cannot prove full PMXT L2 acceptance.",
+    "The pending PMXT source proof must remain blocked until either timed InstrumentAny replay is accepted or an accepted no-tick-size-change universe scope closes the claim.",
+    "This does not authorize broad PMXT backfill."
+  ],
+  "remaining_blockers": [
+    "dynamic_tick_size_replay_unproven",
+    "expanded_tranche_coverage_and_cost_unproven",
+    "durable_source_selection_unproven",
+    "broad_backfill_efficiency_unproven"
+  ]
+}

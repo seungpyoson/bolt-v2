@@ -5843,10 +5843,7 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
     }
 
     fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(BinaryOracleEdgeTaker::new(
-            Self::parse_config(raw)?,
-            context.clone(),
-        )))
+        Ok(Box::new(Self::build_strategy(raw, context)?))
     }
 
     fn register(

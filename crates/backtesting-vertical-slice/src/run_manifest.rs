@@ -9,37 +9,57 @@
 //! Strategy execution is restricted to existing compiled Rust strategies selected
 //! by a registry key (see [`registered_strategies`]). The manifest records
 //! whether the typed config was selected directly, human-authored, or generated
-//! by an approved-for-config Research Analytics promotion package; it never
+//! from a Research Analytics experiment result; it never
 //! carries executable strategy code or a runtime path.
 
 use std::{collections::BTreeMap, fmt::Debug, str::FromStr};
 
 use anyhow::{Result, bail};
+use bolt_v2::{
+    bolt_v3_order_execution::BoltV3OrderExecutionMode,
+    strategies::{
+        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder, production_strategy_registry,
+        registry::StrategyBuilder,
+    },
+};
 use nautilus_backtest::config::{
     BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType,
 };
 use nautilus_core::UnixNanos;
+use nautilus_execution::models::{
+    fee::{FeeModelAny, MakerTakerFeeModel},
+    fill::{FillModelAny, ProbabilisticFillModel},
+    latency::{LatencyModelAny, StaticLatencyModel},
+};
 use nautilus_model::{
     data::BarType,
     enums::{AccountType, BookType, OmsType, OtoTriggerMode},
     identifiers::InstrumentId,
     types::{Currency, Money, Quantity},
 };
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use ustr::Ustr;
 
-use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
+use super::source_proof::{AcceptedDataset, FixtureType, SourceProofFidelityClass};
 
 /// Registry key for the compiled Rust trade-driven example strategy.
 pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = "hurst_vpin_directional";
+/// Registry key for Bolt's compiled Rust binary-oracle taker strategy.
+pub const STRATEGY_BINARY_ORACLE_EDGE_TAKER: &str = "binary_oracle_edge_taker";
 /// Registry key for the bolt-owned mechanical trade-replay order-producing probe.
 pub const STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE: &str = "mechanical_trade_replay_probe";
 /// Strategy parameter key for the bar type.
 pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
+/// Strategy parameter key for the normalized binary-oracle builder TOML.
+pub const STRATEGY_PARAM_CONFIG_TOML: &str = "config_toml";
+/// Strategy parameter key for the backtest fee-provider assumption.
+pub const STRATEGY_PARAM_FEE_BPS: &str = "fee_bps";
+/// Strategy parameter key for the Bolt-v3 order execution policy mode.
+pub const STRATEGY_PARAM_ORDER_EXECUTION_MODE: &str = "order_execution_mode";
 /// Strategy parameter key for the number of delivered trades before the entry order.
 pub const STRATEGY_PARAM_ENTRY_AFTER_TRADES: &str = "entry_after_trades";
 /// Strategy parameter key for the number of further delivered trades before the close.
@@ -48,16 +68,20 @@ pub const STRATEGY_PARAM_EXIT_AFTER_TRADES: &str = "exit_after_trades";
 pub const STRATEGY_PARAM_SIDE: &str = "side";
 /// Explicit manifest value for no catalog filesystem protocol.
 pub const CATALOG_FS_PROTOCOL_NONE: &str = "NONE";
+/// TOML selector for prediction-market fees resolved from instrument maker/taker rates.
+pub const FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER: &str = "prediction_market_maker_taker";
+/// TOML selector for prediction-market fill realism backed by NT's probabilistic fill model.
+pub const FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC: &str = "prediction_market_probabilistic";
+/// TOML selector for prediction-market venue latency backed by NT's static latency model.
+pub const LATENCY_MODEL_PREDICTION_MARKET_STATIC: &str = "prediction_market_static";
+/// TOML selector for the closed-position share domain metric.
+pub const DOMAIN_METRIC_CLOSED_POSITION_RATIO: &str = "closed_position_ratio";
+/// Artifact subpath for RA experiment-results artifacts that may carry GO-gated typed config refs.
+const RESEARCH_ANALYTICS_EXPERIMENT_RESULT_PREFIX: &str =
+    "research-analytics/v1/experiment-results";
 /// NT venue-model surfaces declared in TOML but rejected until typed mappings exist.
-pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] = &[
-    "leverages",
-    "margin_model",
-    "modules",
-    "fill_model",
-    "latency_model",
-    "fee_model",
-    "settlement_prices",
-];
+pub const UNSUPPORTED_NT_VENUE_SURFACES: &[&str] =
+    &["leverages", "margin_model", "modules", "settlement_prices"];
 /// NT data-query surfaces declared in TOML but rejected until typed mappings are proven.
 pub const UNSUPPORTED_NT_CATALOG_QUERY_SURFACES: &[(&str, &str, &str)] = &[
     (
@@ -100,6 +124,7 @@ const S3_CONDITIONAL_PUT_DISABLED: &str = "disabled";
 pub fn registered_strategies() -> &'static [&'static str] {
     &[
         STRATEGY_HURST_VPIN_DIRECTIONAL,
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER,
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
     ]
 }
@@ -110,6 +135,11 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
         STRATEGY_HURST_VPIN_DIRECTIONAL => {
             Some(&[STRATEGY_PARAM_BAR_TYPE, STRATEGY_PARAM_TRADE_SIZE])
         }
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => Some(&[
+            STRATEGY_PARAM_CONFIG_TOML,
+            STRATEGY_PARAM_FEE_BPS,
+            STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+        ]),
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => Some(&[
             STRATEGY_PARAM_TRADE_SIZE,
             STRATEGY_PARAM_ENTRY_AFTER_TRADES,
@@ -118,6 +148,11 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
         ]),
         _ => None,
     }
+}
+
+#[must_use]
+pub fn registered_domain_metrics() -> &'static [&'static str] {
+    &[DOMAIN_METRIC_CLOSED_POSITION_RATIO]
 }
 
 /// Market-structure fixture family.
@@ -273,8 +308,8 @@ pub enum StrategySourceKind {
     CompiledRustRegistry,
     /// Human-authored typed config with immutable artifact provenance.
     HumanTypedConfig,
-    /// Typed config generated by a Research Analytics promotion package.
-    ResearchAnalyticsPromotionPackage,
+    /// Typed config generated by a Research Analytics experiment result.
+    ResearchAnalyticsExperimentResult,
 }
 
 /// Admissible strategy execution target plus typed-config provenance.
@@ -297,12 +332,12 @@ pub struct StrategySource {
     /// SHA-256 of the typed config artifact, required for human/RA config sources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typed_config_hash: Option<String>,
-    /// Promotion package artifact URI for RA-generated configs.
+    /// Experiment-results artifact URI for RA-generated configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub promotion_package_uri: Option<String>,
-    /// SHA-256 of the promotion package artifact for RA-generated configs.
+    pub experiment_result_uri: Option<String>,
+    /// SHA-256 of the experiment-results artifact for RA-generated configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub promotion_package_hash: Option<String>,
+    pub experiment_result_hash: Option<String>,
 }
 
 /// Simulated venue settings mapped into [`BacktestVenueConfig`].
@@ -366,18 +401,53 @@ pub struct ManifestVenueConfig {
     /// NT simulation module selectors. Declared but unsupported until mapped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modules: Option<Vec<String>>,
-    /// NT fill model selector. Declared but unsupported until mapped.
+    /// Prediction-market fill-cost model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fill_model: Option<String>,
-    /// NT latency model selector. Declared but unsupported until mapped.
+    pub fill_model: Option<ManifestFillModelConfig>,
+    /// Prediction-market latency model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub latency_model: Option<String>,
-    /// NT fee model selector. Declared but unsupported until mapped.
+    pub latency_model: Option<ManifestLatencyModelConfig>,
+    /// Prediction-market fee model registered with the NT simulated venue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fee_model: Option<String>,
+    pub fee_model: Option<ManifestFeeModelConfig>,
     /// NT settlement prices keyed by instrument id. Unsupported until mapped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settlement_prices: Option<BTreeMap<String, String>>,
+}
+
+/// TOML-selected fill realism settings for a prediction-market backtest venue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestFillModelConfig {
+    pub kind: String,
+    pub prob_fill_on_limit: String,
+    pub prob_slippage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub random_seed: Option<u64>,
+}
+
+/// TOML-selected latency realism settings for a prediction-market backtest venue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestLatencyModelConfig {
+    pub kind: String,
+    pub base_latency_nanos: u64,
+    pub insert_latency_nanos: u64,
+    pub update_latency_nanos: u64,
+    pub delete_latency_nanos: u64,
+}
+
+/// TOML-selected fee realism settings for a prediction-market backtest venue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestFeeModelConfig {
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestDomainMetricConfig {
+    pub kind: String,
 }
 
 /// Catalog input mapped into [`BacktestDataConfig`].
@@ -515,6 +585,9 @@ pub struct BacktestingRunManifest {
     pub output_prefix: String,
     /// Artifact-store options for output publication and direct catalog proof.
     pub artifact_store: ManifestArtifactStore,
+    /// Domain statistics registered with NT PortfolioAnalyzer for this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain_metrics: Vec<ManifestDomainMetricConfig>,
     /// Optional inclusive start time (Unix nanos).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub start_time: Option<i64>,
@@ -571,6 +644,10 @@ pub enum ManifestError {
     InvalidDefaultLeverage {
         leverage: String,
     },
+    InvalidVenueModelParameter {
+        field: &'static str,
+        value: String,
+    },
     InvalidInstrumentId {
         instrument_id: String,
     },
@@ -584,6 +661,10 @@ pub enum ManifestError {
     BindingMismatch {
         manifest_binding: String,
         accepted_binding: String,
+    },
+    FixtureMismatch {
+        manifest_fixture: MarketStructureFixture,
+        accepted_fixture: FixtureType,
     },
     DataTypeFidelityMismatch {
         data_type: String,
@@ -697,6 +778,9 @@ impl std::fmt::Display for ManifestError {
             Self::InvalidDefaultLeverage { leverage } => {
                 write!(f, "invalid default leverage: {leverage:?}")
             }
+            Self::InvalidVenueModelParameter { field, value } => {
+                write!(f, "invalid venue model parameter {field}: {value:?}")
+            }
             Self::InvalidInstrumentId { instrument_id } => {
                 write!(f, "invalid instrument id: {instrument_id:?}")
             }
@@ -722,6 +806,13 @@ impl std::fmt::Display for ManifestError {
             } => write!(
                 f,
                 "manifest venue_binding_key {manifest_binding:?} does not match accepted source binding {accepted_binding:?}"
+            ),
+            Self::FixtureMismatch {
+                manifest_fixture,
+                accepted_fixture,
+            } => write!(
+                f,
+                "manifest market_structure_fixture {manifest_fixture:?} does not match accepted.fixture_type {accepted_fixture:?}"
             ),
             Self::DataTypeFidelityMismatch {
                 data_type,
@@ -860,6 +951,65 @@ fn validate_strategy_source(
                 .parse::<BarType>()
                 .map_err(|_| ManifestError::MissingField("strategy.parameters.bar_type"))?;
         }
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
+            for parameter in [
+                STRATEGY_PARAM_CONFIG_TOML,
+                STRATEGY_PARAM_FEE_BPS,
+                STRATEGY_PARAM_ORDER_EXECUTION_MODE,
+            ] {
+                if !strategy.parameters.contains_key(parameter) {
+                    return Err(ManifestError::MissingField(match parameter {
+                        STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
+                        STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
+                        STRATEGY_PARAM_ORDER_EXECUTION_MODE => {
+                            "strategy.parameters.order_execution_mode"
+                        }
+                        _ => unreachable!(),
+                    }));
+                }
+            }
+            let order_execution_mode = strategy
+                .parameters
+                .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
+                .expect("presence checked above");
+            let _order_execution_mode: BoltV3OrderExecutionMode =
+                toml::Value::String(order_execution_mode.clone())
+                    .try_into()
+                    .map_err(|_| {
+                        ManifestError::MissingField("strategy.parameters.order_execution_mode")
+                    })?;
+            let fee_bps = strategy
+                .parameters
+                .get(STRATEGY_PARAM_FEE_BPS)
+                .expect("presence checked above");
+            let fee_bps = rust_decimal::Decimal::from_str(fee_bps)
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.fee_bps"))?;
+            if fee_bps < rust_decimal::Decimal::ZERO {
+                return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
+            }
+            let raw_config = strategy
+                .parameters
+                .get(STRATEGY_PARAM_CONFIG_TOML)
+                .expect("presence checked above");
+            let raw_config = toml::from_str::<toml::Value>(raw_config)
+                .map_err(|_| ManifestError::MissingField("strategy.parameters.config_toml"))?;
+            let registry =
+                production_strategy_registry().map_err(|_| ManifestError::UnknownStrategy {
+                    registry_key: BinaryOracleEdgeTakerBuilder::kind().to_string(),
+                })?;
+            let mut errors = Vec::new();
+            registry.validate(
+                BinaryOracleEdgeTakerBuilder::kind(),
+                &raw_config,
+                "strategy.parameters.config_toml",
+                &mut errors,
+            );
+            if !errors.is_empty() {
+                return Err(ManifestError::MissingField(
+                    "strategy.parameters.config_toml",
+                ));
+            }
+        }
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
             for parameter in [
                 STRATEGY_PARAM_TRADE_SIZE,
@@ -953,14 +1103,14 @@ fn validate_strategy_source_provenance(
                 "strategy.typed_config_hash",
             )?;
             reject_strategy_source_field(
-                strategy.promotion_package_uri.as_ref(),
+                strategy.experiment_result_uri.as_ref(),
                 strategy.source_kind,
-                "strategy.promotion_package_uri",
+                "strategy.experiment_result_uri",
             )?;
             reject_strategy_source_field(
-                strategy.promotion_package_hash.as_ref(),
+                strategy.experiment_result_hash.as_ref(),
                 strategy.source_kind,
-                "strategy.promotion_package_hash",
+                "strategy.experiment_result_hash",
             )
         }
         StrategySourceKind::HumanTypedConfig => {
@@ -972,31 +1122,32 @@ fn validate_strategy_source_provenance(
                 &format!("{}/", artifact_root.trim_end_matches('/')),
             )?;
             reject_strategy_source_field(
-                strategy.promotion_package_uri.as_ref(),
+                strategy.experiment_result_uri.as_ref(),
                 strategy.source_kind,
-                "strategy.promotion_package_uri",
+                "strategy.experiment_result_uri",
             )?;
             reject_strategy_source_field(
-                strategy.promotion_package_hash.as_ref(),
+                strategy.experiment_result_hash.as_ref(),
                 strategy.source_kind,
-                "strategy.promotion_package_hash",
+                "strategy.experiment_result_hash",
             )
         }
-        StrategySourceKind::ResearchAnalyticsPromotionPackage => {
-            let promotion_prefix = research_analytics_promotion_package_prefix(artifact_root);
+        StrategySourceKind::ResearchAnalyticsExperimentResult => {
+            let experiment_result_prefix =
+                research_analytics_experiment_result_prefix(artifact_root);
             validate_strategy_artifact_ref(
                 "strategy.typed_config_uri",
                 "strategy.typed_config_hash",
                 strategy.typed_config_uri.as_deref(),
                 strategy.typed_config_hash.as_deref(),
-                &promotion_prefix,
+                &experiment_result_prefix,
             )?;
             validate_strategy_artifact_ref(
-                "strategy.promotion_package_uri",
-                "strategy.promotion_package_hash",
-                strategy.promotion_package_uri.as_deref(),
-                strategy.promotion_package_hash.as_deref(),
-                &promotion_prefix,
+                "strategy.experiment_result_uri",
+                "strategy.experiment_result_hash",
+                strategy.experiment_result_uri.as_deref(),
+                strategy.experiment_result_hash.as_deref(),
+                &experiment_result_prefix,
             )
         }
     }
@@ -1058,10 +1209,11 @@ fn validate_strategy_source_hash(field: &'static str, value: &str) -> Result<(),
     }
 }
 
-fn research_analytics_promotion_package_prefix(artifact_root: &str) -> String {
+fn research_analytics_experiment_result_prefix(artifact_root: &str) -> String {
     format!(
-        "{}/research-analytics/v1/promotion-packages/",
-        artifact_root.trim_end_matches('/')
+        "{}/{}/",
+        artifact_root.trim_end_matches('/'),
+        RESEARCH_ANALYTICS_EXPERIMENT_RESULT_PREFIX
     )
 }
 
@@ -1350,7 +1502,33 @@ impl BacktestingRunManifest {
                 "BacktestVenueConfig.price_protection_points",
                 venue.price_protection_points().to_string(),
             ),
+            resolved_surface(
+                "venue.fill_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.fill_model",
+                option_value(venue.fill_model()),
+            ),
+            resolved_surface(
+                "venue.latency_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.latency_model",
+                option_value(venue.latency_model()),
+            ),
+            resolved_surface(
+                "venue.fee_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.fee_model",
+                option_value(venue.fee_model()),
+            ),
         ];
+        for (index, metric) in self.domain_metrics.iter().enumerate() {
+            surfaces.push(resolved_surface(
+                &format!("domain_metrics[{index}].kind"),
+                NtSurfaceClassification::CustomOwned,
+                "PortfolioAnalyzer::register_statistic",
+                metric.kind.clone(),
+            ));
+        }
         let data_configs = run_config.data();
         for (index, data) in data_configs.iter().enumerate() {
             let prefix = if data_configs.len() == 1 {
@@ -1530,6 +1708,7 @@ impl BacktestingRunManifest {
             }
         }
         ensure_supported_enums(self)?;
+        ensure_supported_domain_metrics(self)?;
         ensure_unsupported_nt_venue_surfaces_absent(&self.venue)?;
         for input in &self.catalog_inputs {
             ensure_unsupported_nt_catalog_query_surfaces_absent(input)?;
@@ -1587,6 +1766,15 @@ impl BacktestingRunManifest {
             return Err(ManifestError::BindingMismatch {
                 manifest_binding: self.venue_binding_key.clone(),
                 accepted_binding: accepted.source_binding.clone(),
+            });
+        }
+        if !market_structure_fixture_matches_source_fixture(
+            self.market_structure_fixture,
+            accepted.fixture_type,
+        ) {
+            return Err(ManifestError::FixtureMismatch {
+                manifest_fixture: self.market_structure_fixture,
+                accepted_fixture: accepted.fixture_type,
             });
         }
         if self.run_purpose == RunPurpose::Normal && self.pins_non_latest_proof {
@@ -1669,6 +1857,9 @@ impl BacktestingRunManifest {
             .oto_trigger_mode(parse_oto_trigger_mode(&self.venue.oto_trigger_mode)?)
             .maybe_base_currency(parse_base_currency(&self.venue.base_currency)?)
             .default_leverage(parse_default_leverage(&self.venue.default_leverage)?)
+            .maybe_fill_model(resolve_fill_model(self.venue.fill_model.as_ref())?)
+            .maybe_latency_model(resolve_latency_model(self.venue.latency_model.as_ref())?)
+            .maybe_fee_model(resolve_fee_model(self.venue.fee_model.as_ref())?)
             .price_protection_points(self.venue.price_protection_points)
             .build())
     }
@@ -2080,6 +2271,24 @@ fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), Manif
     parse_oto_trigger_mode(&manifest.venue.oto_trigger_mode)?;
     parse_base_currency(&manifest.venue.base_currency)?;
     parse_default_leverage(&manifest.venue.default_leverage)?;
+    resolve_fill_model(manifest.venue.fill_model.as_ref())?;
+    resolve_latency_model(manifest.venue.latency_model.as_ref())?;
+    resolve_fee_model(manifest.venue.fee_model.as_ref())?;
+    Ok(())
+}
+
+fn ensure_supported_domain_metrics(manifest: &BacktestingRunManifest) -> Result<(), ManifestError> {
+    for metric in &manifest.domain_metrics {
+        if metric.kind.trim().is_empty() {
+            return Err(ManifestError::MissingField("domain_metrics.kind"));
+        }
+        if !registered_domain_metrics().contains(&metric.kind.as_str()) {
+            return Err(ManifestError::UnsupportedEnum {
+                field: "domain_metrics.kind",
+                value: metric.kind.clone(),
+            });
+        }
+    }
     Ok(())
 }
 
@@ -2093,14 +2302,8 @@ fn ensure_unsupported_nt_venue_surfaces_absent(
             venue.margin_model.is_some(),
         ),
         (UNSUPPORTED_NT_VENUE_SURFACES[2], venue.modules.is_some()),
-        (UNSUPPORTED_NT_VENUE_SURFACES[3], venue.fill_model.is_some()),
         (
-            UNSUPPORTED_NT_VENUE_SURFACES[4],
-            venue.latency_model.is_some(),
-        ),
-        (UNSUPPORTED_NT_VENUE_SURFACES[5], venue.fee_model.is_some()),
-        (
-            UNSUPPORTED_NT_VENUE_SURFACES[6],
+            UNSUPPORTED_NT_VENUE_SURFACES[3],
             venue.settlement_prices.is_some(),
         ),
     ] {
@@ -2538,8 +2741,16 @@ fn resolve_artifact_store_secret<F>(
 where
     F: FnMut(&str, &str) -> Result<String, String>,
 {
-    resolver(region, path)
-        .map_err(|source| ManifestError::ArtifactStoreSecretResolution { field, source })
+    let value = resolver(region, path)
+        .map_err(|source| ManifestError::ArtifactStoreSecretResolution { field, source })?;
+    if value.trim().is_empty() || value.trim() != value {
+        return Err(ManifestError::ArtifactStoreSecretResolution {
+            field,
+            source: "resolved value must be non-empty and must not contain leading or trailing whitespace"
+                .to_string(),
+        });
+    }
+    Ok(value)
 }
 
 /// The single per-input admittance predicate: a data-type string is admissible
@@ -2642,6 +2853,19 @@ fn ensure_order_book_delta_inputs_require_l2_mbp(
     }
 }
 
+fn market_structure_fixture_matches_source_fixture(
+    manifest_fixture: MarketStructureFixture,
+    accepted_fixture: FixtureType,
+) -> bool {
+    matches!(
+        (manifest_fixture, accepted_fixture),
+        (
+            MarketStructureFixture::BinaryOption,
+            FixtureType::BinaryOption | FixtureType::PredictionMarket
+        ) | (MarketStructureFixture::PerpsSpot, FixtureType::PerpsSpot)
+    )
+}
+
 fn parse_oms_type(value: &str) -> Result<OmsType, ManifestError> {
     match value {
         "NETTING" => Ok(OmsType::Netting),
@@ -2710,6 +2934,125 @@ fn parse_default_leverage(value: &str) -> Result<Decimal, ManifestError> {
     Ok(leverage)
 }
 
+fn parse_probability(value: &str, field: &'static str) -> Result<f64, ManifestError> {
+    let decimal =
+        Decimal::from_str(value).map_err(|_| ManifestError::InvalidVenueModelParameter {
+            field,
+            value: value.to_string(),
+        })?;
+    if !(Decimal::ZERO..=Decimal::ONE).contains(&decimal) {
+        return Err(ManifestError::InvalidVenueModelParameter {
+            field,
+            value: value.to_string(),
+        });
+    }
+    decimal
+        .to_f64()
+        .ok_or_else(|| ManifestError::InvalidVenueModelParameter {
+            field,
+            value: value.to_string(),
+        })
+}
+
+fn ensure_latency_component_sum(
+    base: u64,
+    component: u64,
+    field: &'static str,
+) -> Result<(), ManifestError> {
+    base.checked_add(component).map(|_| ()).ok_or_else(|| {
+        ManifestError::InvalidVenueModelParameter {
+            field,
+            value: component.to_string(),
+        }
+    })
+}
+
+fn resolve_fill_model(
+    config: Option<&ManifestFillModelConfig>,
+) -> Result<Option<FillModelAny>, ManifestError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    match config.kind.as_str() {
+        FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC => {
+            let prob_fill_on_limit = parse_probability(
+                &config.prob_fill_on_limit,
+                "venue.fill_model.prob_fill_on_limit",
+            )?;
+            let prob_slippage =
+                parse_probability(&config.prob_slippage, "venue.fill_model.prob_slippage")?;
+            let random_seed = config
+                .random_seed
+                .ok_or(ManifestError::MissingField("venue.fill_model.random_seed"))?;
+            let model =
+                ProbabilisticFillModel::new(prob_fill_on_limit, prob_slippage, Some(random_seed))
+                    .map_err(|_| ManifestError::InvalidVenueModelParameter {
+                    field: "venue.fill_model",
+                    value: config.kind.clone(),
+                })?;
+            Ok(Some(FillModelAny::Probabilistic(model)))
+        }
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "venue.fill_model.kind",
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn resolve_latency_model(
+    config: Option<&ManifestLatencyModelConfig>,
+) -> Result<Option<LatencyModelAny>, ManifestError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    match config.kind.as_str() {
+        LATENCY_MODEL_PREDICTION_MARKET_STATIC => {
+            ensure_latency_component_sum(
+                config.base_latency_nanos,
+                config.insert_latency_nanos,
+                "venue.latency_model.insert_latency_nanos",
+            )?;
+            ensure_latency_component_sum(
+                config.base_latency_nanos,
+                config.update_latency_nanos,
+                "venue.latency_model.update_latency_nanos",
+            )?;
+            ensure_latency_component_sum(
+                config.base_latency_nanos,
+                config.delete_latency_nanos,
+                "venue.latency_model.delete_latency_nanos",
+            )?;
+            Ok(Some(LatencyModelAny::Static(StaticLatencyModel::new(
+                UnixNanos::from(config.base_latency_nanos),
+                UnixNanos::from(config.insert_latency_nanos),
+                UnixNanos::from(config.update_latency_nanos),
+                UnixNanos::from(config.delete_latency_nanos),
+            ))))
+        }
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "venue.latency_model.kind",
+            value: other.to_string(),
+        }),
+    }
+}
+
+fn resolve_fee_model(
+    config: Option<&ManifestFeeModelConfig>,
+) -> Result<Option<FeeModelAny>, ManifestError> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    match config.kind.as_str() {
+        FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER => {
+            Ok(Some(FeeModelAny::MakerTaker(MakerTakerFeeModel)))
+        }
+        other => Err(ManifestError::UnsupportedEnum {
+            field: "venue.fee_model.kind",
+            value: other.to_string(),
+        }),
+    }
+}
+
 /// Build the typed manifest from TOML text.
 ///
 /// # Errors
@@ -2728,6 +3071,7 @@ pub fn parse_manifest_toml(text: &str) -> Result<BacktestingRunManifest> {
 mod tests {
     use super::*;
     use crate::source_proof::{SourceProofFidelityClass, synthetic_accepted_dataset_for_tests};
+    use nautilus_execution::models::latency::LatencyModel;
 
     const TEST_INSTRUMENT_ID: &str = "TESTPAIR.TESTVENUE";
     const TEST_BAR_TYPE: &str = "TESTPAIR.TESTVENUE-1-MINUTE-LAST-EXTERNAL";
@@ -2768,8 +3112,8 @@ mod tests {
                 ]),
                 typed_config_uri: None,
                 typed_config_hash: None,
-                promotion_package_uri: None,
-                promotion_package_hash: None,
+                experiment_result_uri: None,
+                experiment_result_hash: None,
             },
             strategy_config_hash: TEST_SHA256_ZERO.to_string(),
             venue: ManifestVenueConfig {
@@ -2831,6 +3175,7 @@ mod tests {
                 rust_storage_options: BTreeMap::new(),
                 ssm_parameters: None,
             },
+            domain_metrics: Vec::new(),
             start_time: None,
             end_time: None,
         }
@@ -3015,6 +3360,58 @@ mod tests {
         );
         assert_eq!(venue.default_leverage(), rust_decimal::Decimal::from(2));
         assert_eq!(venue.price_protection_points(), 7);
+    }
+
+    #[test]
+    fn venue_config_registers_polymarket_cost_realism_models_with_nt() {
+        let mut manifest = valid_manifest();
+        manifest.venue.fill_model = Some(ManifestFillModelConfig {
+            kind: FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC.to_string(),
+            prob_fill_on_limit: "0.75".to_string(),
+            prob_slippage: "0.04".to_string(),
+            random_seed: Some(42),
+        });
+        manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
+            kind: LATENCY_MODEL_PREDICTION_MARKET_STATIC.to_string(),
+            base_latency_nanos: 100,
+            insert_latency_nanos: 500,
+            update_latency_nanos: 700,
+            delete_latency_nanos: 900,
+        });
+        manifest.venue.fee_model = Some(ManifestFeeModelConfig {
+            kind: FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER.to_string(),
+        });
+
+        manifest
+            .validate(&accepted_dataset())
+            .expect("cost realism manifest should validate");
+        let venue = manifest.to_nt_venue_config().expect("venue config");
+
+        assert!(matches!(
+            venue.fill_model(),
+            Some(FillModelAny::Probabilistic(_))
+        ));
+        assert!(matches!(
+            venue.fee_model(),
+            Some(FeeModelAny::MakerTaker(_))
+        ));
+        match venue.latency_model() {
+            Some(LatencyModelAny::Static(model)) => {
+                assert_eq!(model.get_base_latency(), UnixNanos::from(100));
+                assert_eq!(model.get_insert_latency(), UnixNanos::from(600));
+                assert_eq!(model.get_update_latency(), UnixNanos::from(800));
+                assert_eq!(model.get_delete_latency(), UnixNanos::from(1000));
+            }
+            other => panic!("expected static latency model, got {other:?}"),
+        }
+
+        let surfaces = manifest.resolved_nt_surfaces().expect("surfaces");
+        for surface in ["venue.fill_model", "venue.latency_model", "venue.fee_model"] {
+            assert!(
+                surfaces.iter().any(|resolved| resolved.surface == surface),
+                "{surface} must be durably reported"
+            );
+        }
     }
 
     #[test]
@@ -3303,6 +3700,49 @@ mod tests {
     }
 
     #[test]
+    fn artifact_store_rejects_empty_or_whitespace_resolved_ssm_credentials() {
+        let mut manifest = valid_manifest();
+        manifest.artifact_store.rust_storage_options =
+            BTreeMap::from([("region".to_string(), "us-east-1".to_string())]);
+        manifest.artifact_store.ssm_parameters = Some(ManifestArtifactStoreSsmParameters {
+            region: "us-east-1".to_string(),
+            access_key_id: "/bolt/artifacts/access-key-id".to_string(),
+            secret_access_key: "/bolt/artifacts/secret-access-key".to_string(),
+            session_token: Some("/bolt/artifacts/session-token".to_string()),
+        });
+
+        let empty_access_key_err = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, path| match path {
+                "/bolt/artifacts/access-key-id" => Ok(String::new()),
+                "/bolt/artifacts/secret-access-key" => Ok("secret-value".to_string()),
+                "/bolt/artifacts/session-token" => Ok("session-value".to_string()),
+                other => Err(format!("unexpected path {other}")),
+            })
+            .expect_err("empty resolved access key must fail closed");
+        assert!(
+            empty_access_key_err
+                .to_string()
+                .contains("artifact_store.ssm_parameters.access_key_id"),
+            "{empty_access_key_err}"
+        );
+
+        let whitespace_secret_err = manifest
+            .artifact_store_storage_options_resolved(&mut |_region, path| match path {
+                "/bolt/artifacts/access-key-id" => Ok("AKIATEST".to_string()),
+                "/bolt/artifacts/secret-access-key" => Ok(" secret-value ".to_string()),
+                "/bolt/artifacts/session-token" => Ok("session-value".to_string()),
+                other => Err(format!("unexpected path {other}")),
+            })
+            .expect_err("whitespace-padded resolved secret must fail closed");
+        assert!(
+            whitespace_secret_err
+                .to_string()
+                .contains("artifact_store.ssm_parameters.secret_access_key"),
+            "{whitespace_secret_err}"
+        );
+    }
+
+    #[test]
     fn artifact_store_rejects_raw_s3_credentials_in_toml() {
         let mut manifest = valid_manifest();
         manifest.artifact_store.rust_storage_options = BTreeMap::from([
@@ -3376,6 +3816,33 @@ mod tests {
         });
         assert_hash_changes("venue.price_protection_points", |manifest| {
             manifest.venue.price_protection_points = 7;
+        });
+        assert_hash_changes("venue.fill_model", |manifest| {
+            manifest.venue.fill_model = Some(ManifestFillModelConfig {
+                kind: FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC.to_string(),
+                prob_fill_on_limit: "0.75".to_string(),
+                prob_slippage: "0.04".to_string(),
+                random_seed: Some(42),
+            });
+        });
+        assert_hash_changes("venue.latency_model", |manifest| {
+            manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
+                kind: LATENCY_MODEL_PREDICTION_MARKET_STATIC.to_string(),
+                base_latency_nanos: 100,
+                insert_latency_nanos: 500,
+                update_latency_nanos: 700,
+                delete_latency_nanos: 900,
+            });
+        });
+        assert_hash_changes("venue.fee_model", |manifest| {
+            manifest.venue.fee_model = Some(ManifestFeeModelConfig {
+                kind: FEE_MODEL_PREDICTION_MARKET_MAKER_TAKER.to_string(),
+            });
+        });
+        assert_hash_changes("domain_metrics", |manifest| {
+            manifest.domain_metrics.push(ManifestDomainMetricConfig {
+                kind: DOMAIN_METRIC_CLOSED_POSITION_RATIO.to_string(),
+            });
         });
         assert_hash_changes("catalog_inputs.catalog_fs_protocol", |manifest| {
             manifest.catalog_inputs[0].catalog_path =
@@ -3707,6 +4174,21 @@ mod tests {
                 "BacktestVenueConfig.price_protection_points",
             ),
             (
+                "venue.fill_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.fill_model",
+            ),
+            (
+                "venue.latency_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.latency_model",
+            ),
+            (
+                "venue.fee_model",
+                NtSurfaceClassification::PassThrough,
+                "BacktestVenueConfig.fee_model",
+            ),
+            (
                 "catalog.data_type",
                 NtSurfaceClassification::PassThrough,
                 "BacktestDataConfig.data_type",
@@ -3766,6 +4248,39 @@ mod tests {
                 "missing resolved NT surface {surface}"
             );
         }
+    }
+
+    #[test]
+    fn resolved_nt_surfaces_record_domain_metric_registration() {
+        let mut manifest = valid_manifest();
+        manifest.domain_metrics.push(ManifestDomainMetricConfig {
+            kind: DOMAIN_METRIC_CLOSED_POSITION_RATIO.to_string(),
+        });
+
+        let surfaces = manifest.resolved_nt_surfaces().expect("resolved surfaces");
+
+        assert!(surfaces.iter().any(|resolved| {
+            resolved.surface == "domain_metrics[0].kind"
+                && resolved.classification == NtSurfaceClassification::CustomOwned
+                && resolved.nt_field == "PortfolioAnalyzer::register_statistic"
+                && resolved.resolved_value == DOMAIN_METRIC_CLOSED_POSITION_RATIO
+        }));
+    }
+
+    #[test]
+    fn rejects_unknown_domain_metric_selector() {
+        let mut manifest = valid_manifest();
+        manifest.domain_metrics.push(ManifestDomainMetricConfig {
+            kind: "unknown_domain_metric".to_string(),
+        });
+
+        assert!(matches!(
+            manifest.validate(&accepted_dataset()),
+            Err(ManifestError::UnsupportedEnum {
+                field: "domain_metrics.kind",
+                value
+            }) if value == "unknown_domain_metric"
+        ));
     }
 
     #[test]
@@ -3858,33 +4373,33 @@ mod tests {
     }
 
     #[test]
-    fn accepts_research_analytics_promotion_package_strategy_config() {
+    fn accepts_research_analytics_experiment_result_strategy_config() {
         let mut manifest = valid_manifest();
-        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsPromotionPackage;
+        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsExperimentResult;
         manifest.strategy.typed_config_uri = Some(
-            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/runtime-config.toml"
+            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/experiment-results/experiment-123/runtime-config.toml"
                 .to_string(),
         );
         manifest.strategy.typed_config_hash =
             Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string());
-        manifest.strategy.promotion_package_uri = Some(
-            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/promotion-package.toml"
+        manifest.strategy.experiment_result_uri = Some(
+            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/experiment-results/experiment-123/experiment-result.json"
                 .to_string(),
         );
-        manifest.strategy.promotion_package_hash =
+        manifest.strategy.experiment_result_hash =
             Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string());
 
         manifest
             .validate(&accepted_dataset())
-            .expect("RA promotion package strategy config should validate");
+            .expect("RA experiment-result strategy config should validate");
     }
 
     #[test]
-    fn rejects_research_analytics_strategy_config_without_package_ref() {
+    fn rejects_research_analytics_strategy_config_without_experiment_result_ref() {
         let mut manifest = valid_manifest();
-        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsPromotionPackage;
+        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsExperimentResult;
         manifest.strategy.typed_config_uri = Some(
-            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/runtime-config.toml"
+            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/experiment-results/experiment-123/runtime-config.toml"
                 .to_string(),
         );
         manifest.strategy.typed_config_hash =
@@ -3892,25 +4407,25 @@ mod tests {
 
         assert!(matches!(
             manifest.validate(&accepted_dataset()).unwrap_err(),
-            ManifestError::MissingField("strategy.promotion_package_uri")
+            ManifestError::MissingField("strategy.experiment_result_uri")
         ));
     }
 
     #[test]
-    fn rejects_research_analytics_strategy_config_outside_promotion_family() {
+    fn rejects_research_analytics_strategy_config_outside_experiment_results_family() {
         let mut manifest = valid_manifest();
-        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsPromotionPackage;
+        manifest.strategy.source_kind = StrategySourceKind::ResearchAnalyticsExperimentResult;
         manifest.strategy.typed_config_uri = Some(
             "s3://bolt-parquet/nt-research-analytics/backtests/package-123/runtime-config.toml"
                 .to_string(),
         );
         manifest.strategy.typed_config_hash =
             Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string());
-        manifest.strategy.promotion_package_uri = Some(
-            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/promotion-package.toml"
+        manifest.strategy.experiment_result_uri = Some(
+            "s3://bolt-parquet/nt-research-analytics/research-analytics/v1/experiment-results/experiment-123/experiment-result.json"
                 .to_string(),
         );
-        manifest.strategy.promotion_package_hash =
+        manifest.strategy.experiment_result_hash =
             Some("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string());
 
         assert!(matches!(
@@ -4143,6 +4658,31 @@ mod tests {
         manifest.venue_binding_key = "some-other-binding".to_string();
         let err = manifest.validate(&accepted_dataset()).unwrap_err();
         assert!(err.to_string().contains("binding"), "{err}");
+    }
+
+    #[test]
+    fn rejects_fixture_mismatch() {
+        let mut manifest = valid_manifest();
+        manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::FixtureMismatch {
+                manifest_fixture: MarketStructureFixture::BinaryOption,
+                accepted_fixture: FixtureType::PerpsSpot,
+            }
+        );
+    }
+
+    #[test]
+    fn binary_option_fixture_accepts_current_source_proof_fixture_type() {
+        let mut manifest = valid_manifest();
+        manifest.market_structure_fixture = MarketStructureFixture::BinaryOption;
+        let mut accepted = accepted_dataset();
+        accepted.fixture_type = FixtureType::BinaryOption;
+
+        manifest
+            .validate(&accepted)
+            .expect("binary-option manifest accepts binary-option proof");
     }
 
     #[test]
@@ -4884,9 +5424,6 @@ mod tests {
             ("leverages", "{}"),
             ("margin_model", "\"standard\""),
             ("modules", "[]"),
-            ("fill_model", "\"probabilistic\""),
-            ("latency_model", "\"static\""),
-            ("fee_model", "\"maker_taker\""),
             ("settlement_prices", "{}"),
         ] {
             let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
@@ -4911,9 +5448,6 @@ mod tests {
             ("leverages", leverages.as_str()),
             ("margin_model", "\"standard\""),
             ("modules", "[\"latency-probe\"]"),
-            ("fill_model", "\"probabilistic\""),
-            ("latency_model", "\"static\""),
-            ("fee_model", "\"maker_taker\""),
             ("settlement_prices", settlement_prices.as_str()),
         ] {
             let text = serialized.replace("[venue]\n", &format!("[venue]\n{field} = {value}\n"));
@@ -4927,6 +5461,102 @@ mod tests {
                 "unsupported venue surface {field:?} should fail with a structured error, got {err}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_unknown_polymarket_cost_realism_model_selectors() {
+        let mut manifest = valid_manifest();
+        manifest.venue.fill_model = Some(ManifestFillModelConfig {
+            kind: "unknown-fill".to_string(),
+            prob_fill_on_limit: "0.5".to_string(),
+            prob_slippage: "0.0".to_string(),
+            random_seed: None,
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.fill_model.kind",
+                value: "unknown-fill".to_string(),
+            }
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
+            kind: "unknown-latency".to_string(),
+            base_latency_nanos: 0,
+            insert_latency_nanos: 0,
+            update_latency_nanos: 0,
+            delete_latency_nanos: 0,
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.latency_model.kind",
+                value: "unknown-latency".to_string(),
+            }
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.venue.fee_model = Some(ManifestFeeModelConfig {
+            kind: "unknown-fee".to_string(),
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.fee_model.kind",
+                value: "unknown-fee".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_polymarket_cost_realism_parameters() {
+        let mut manifest = valid_manifest();
+        manifest.venue.fill_model = Some(ManifestFillModelConfig {
+            kind: FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC.to_string(),
+            prob_fill_on_limit: "1.01".to_string(),
+            prob_slippage: "0".to_string(),
+            random_seed: None,
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidVenueModelParameter {
+                field: "venue.fill_model.prob_fill_on_limit",
+                value: "1.01".to_string(),
+            }
+        );
+
+        let mut manifest = valid_manifest();
+        manifest.venue.latency_model = Some(ManifestLatencyModelConfig {
+            kind: LATENCY_MODEL_PREDICTION_MARKET_STATIC.to_string(),
+            base_latency_nanos: u64::MAX,
+            insert_latency_nanos: 1,
+            update_latency_nanos: 0,
+            delete_latency_nanos: 0,
+        });
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvalidVenueModelParameter {
+                field: "venue.latency_model.insert_latency_nanos",
+                value: "1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_probabilistic_fill_model_without_random_seed() {
+        let mut manifest = valid_manifest();
+        manifest.venue.fill_model = Some(ManifestFillModelConfig {
+            kind: FILL_MODEL_PREDICTION_MARKET_PROBABILISTIC.to_string(),
+            prob_fill_on_limit: "0.5".to_string(),
+            prob_slippage: "0".to_string(),
+            random_seed: None,
+        });
+
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::MissingField("venue.fill_model.random_seed")
+        );
     }
 
     #[test]

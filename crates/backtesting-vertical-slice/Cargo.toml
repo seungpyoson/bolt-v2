@@ -16,36 +16,43 @@ rust-version = "1.95.0"
 publish = false
 
 [dependencies]
+ahash = "=0.8.12"
 anyhow = "1"
 arrow = "58.3.0"
-aws-config = "1.8.17"
-aws-sdk-ssm = { version = "1.111.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-config = "=1.8.18"
+aws-sdk-ssm = { version = "=1.113.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 bytes = "=1.11.1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
 flate2 = "1.1.9"
 futures = "=0.3.32"
+futures-util = "=0.3.32"
 hex = "0.4"
-object_store = "=0.13.2"
 parquet = "58.3.0"
-reqwest = { version = "=0.13.4", default-features = false, features = ["rustls"] }
+reqwest = { version = "=0.13.3", default-features = false, features = ["rustls"] }
 rust_decimal = "1.42.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
-tokio = { version = "=1.52.3", features = ["rt"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt"] }
 toml = "1.1"
 ustr = "1.1.0"
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
 
+nautilus-analysis = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["streaming", "examples"] }
 nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
+nautilus-execution = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["cloud"] }
+nautilus-serialization = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-polymarket = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
+object_store = { version = "=0.13.2", default-features = false, features = ["aws"] }
+bolt-v2 = { path = "../.." }
 
 [dev-dependencies]
+async-trait = "0.1"
 tempfile = "3"

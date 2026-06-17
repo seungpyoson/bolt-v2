@@ -51,13 +51,16 @@ use bolt_v2::{
     },
     bolt_v3_providers::{
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
-        ProviderProductSubmitProofArtifactRequest, binance::ResolvedBoltV3BinanceSecrets,
-        binding_for_provider_key, chainlink::ResolvedBoltV3ChainlinkSecrets,
+        ProviderProductSubmitProofArtifactRequest,
+        binance::ResolvedBoltV3BinanceSecrets,
+        binding_for_provider_key,
+        chainlink::ResolvedBoltV3ChainlinkSecrets,
         chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
         hyperliquid::{ResolvedBoltV3HyperliquidSecrets, load_live_submit_approval},
         hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
         polymarket::ResolvedBoltV3PolymarketSecrets,
-        polyresearch::ResolvedBoltV3PolyResearchSecrets, validate_client_block,
+        polyresearch::ResolvedBoltV3PolyResearchSecrets,
+        validate_client_block,
     },
     bolt_v3_secrets::{
         ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
@@ -1384,7 +1387,9 @@ fn provider_binding_does_not_arm_single_surface_hyperliquid_client_without_route
         now_unix_seconds,
         build_head_sha: &build_head_sha,
     })
-    .expect("a single configured surface with no routed target must not error (fail-closed Ok(None))");
+    .expect(
+        "a single configured surface with no routed target must not error (fail-closed Ok(None))",
+    );
 
     assert!(
         approval.is_none(),

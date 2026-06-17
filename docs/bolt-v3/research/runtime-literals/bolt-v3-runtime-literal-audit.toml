@@ -16495,3 +16495,307 @@ literal = '''".bolt-v2-prestart-write-probe-{}"'''
 context = '''".bolt-v2-prestart-write-probe-{}",'''
 classification = "ops_prestart_probe_filename"
 reason = "Temporary prestart write-probe filename prefix under the TOML-owned catalog directory; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_outcome_group_sources.rs"
+kind = "string"
+literal = '''"{context}.gamma_query.sports_market_types cannot be combined with search or market_query"'''
+context = '''"{context}.gamma_query.sports_market_types cannot be combined with search or market_query"'''
+classification = "validation_diagnostic_template"
+reason = "Fail-closed validation diagnostic for a Gamma-query selector combination the NT search endpoint cannot represent; no runtime value is configured here."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "number"
+literal = '''1'''
+context = '''assert_eq!(shell.forwarded_event_count(), 1);'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test assertion for a single forwarded executor event; not a runtime configuration value."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "number"
+literal = '''1_750'''
+context = '''const SUBMIT_OBSERVED_UNIX_MS: u64 = 1_750;'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test timestamp fixture for submit-intent freshness checks."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "number"
+literal = '''2'''
+context = '''max_retries: 2,'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test repair/unwind retry fixture; production limits remain TOML-owned."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "number"
+literal = '''250'''
+context = '''max_book_age_ms: 250,'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test book-age fixture; production limits remain TOML-owned."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "number"
+literal = '''2_000'''
+context = '''const SUBMIT_NOW_UNIX_MS: u64 = 2_000;'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test current-time fixture for submit-intent freshness checks."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "number"
+literal = '''4'''
+context = '''max_depth_levels: 4,'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test depth fixture; production limits remain TOML-owned."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "number"
+literal = '''50'''
+context = '''max_slippage_bps: 50,'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test slippage fixture; production limits remain TOML-owned."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "number"
+literal = '''500'''
+context = '''const SUBMIT_MAX_OBSERVATION_AGE_MS: u64 = 500;'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test observation-age fixture for submit-intent freshness checks."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"0.0"'''
+context = '''vec![vec![dec("1.0"), dec("0.0")], vec![dec("0.0"), dec("1.0")]],'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test payout-matrix fixture for a two-leg complete-set basket."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"0.10"'''
+context = '''dec("0.10"),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test edge-floor fixture for shared basket execution."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"0.44"'''
+context = '''cost: dec("0.44"),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test fill-cost fixture for forwarding into shared basket execution."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"0.44"'''
+context = '''notional: dec("0.44"),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test leg-notional fixture for submit-command construction."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"0.46"'''
+context = '''notional: dec("0.46"),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test leg-notional fixture for submit-command construction."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"1.0"'''
+context = '''("NO", "NO.POLYMARKET", dec("1.0")),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test target-quantity fixture for a complete-set leg."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"1.0"'''
+context = '''("YES", "YES.POLYMARKET", dec("1.0")),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test target-quantity fixture for a complete-set leg."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"1.0"'''
+context = '''quantity: dec("1.0"),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test fill/submit quantity fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"1.0"'''
+context = '''vec![vec![dec("1.0"), dec("0.0")], vec![dec("0.0"), dec("1.0")]],'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test payout-matrix fixture for a two-leg complete-set basket."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"1000"'''
+context = '''dec("1000"),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test edge-bps fixture for shared basket execution."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"COID-NO"'''
+context = '''client_order_id: "COID-NO".to_string(),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test client-order-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"COID-YES"'''
+context = '''client_order_id: "COID-YES".to_string(),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test client-order-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"NO"'''
+context = '''("NO", "NO.POLYMARKET", dec("1.0")),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test complete-set leg-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"NO"'''
+context = '''leg_id: "NO".to_string(),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test complete-set leg-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"NO.POLYMARKET"'''
+context = '''("NO", "NO.POLYMARKET", dec("1.0")),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test instrument-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"NO.POLYMARKET"'''
+context = '''instrument_id: "NO.POLYMARKET".to_string(),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test instrument-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"OL-SHELL"'''
+context = '''"OL-SHELL",'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test NT order-list id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"POLYMARKET"'''
+context = '''venue: "POLYMARKET".to_string(),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test venue fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"VOID-YES"'''
+context = '''venue_order_id: "VOID-YES".to_string(),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test venue-order-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"VOID-YES"'''
+context = '''venue_order_id: Some("VOID-YES".to_string()),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test venue-order-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"YES"'''
+context = '''("YES", "YES.POLYMARKET", dec("1.0")),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test complete-set leg-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"YES"'''
+context = '''leg_id: "YES".to_string(),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test complete-set leg-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"YES.POLYMARKET"'''
+context = '''("YES", "YES.POLYMARKET", dec("1.0")),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test instrument-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"YES.POLYMARKET"'''
+context = '''instrument_id: "YES.POLYMARKET".to_string(),'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test instrument-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"basket-1"'''
+context = '''"basket-1",'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test basket-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"complete-set-main"'''
+context = '''"complete-set-main",'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test strategy-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"complete-set-main"'''
+context = '''let mut shell = CompleteSetArbitrageShell::new("complete-set-main");'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test strategy-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"polymarket-main"'''
+context = '''"polymarket-main",'''
+classification = "strategy_test_fixture"
+reason = "Strategy-local shell unit-test execution-client-id fixture."
+
+[[allowed]]
+path = "src/strategies/complete_set_arbitrage/tests/shell.rs"
+kind = "string"
+literal = '''"settlement signal remains gated by Task 0 disposition"'''
+context = '''.expect_err("settlement signal remains gated by Task 0 disposition");'''
+classification = "strategy_test_diagnostic"
+reason = "Strategy-local shell unit-test assertion message; not runtime behavior."

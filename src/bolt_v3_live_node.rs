@@ -4374,17 +4374,9 @@ fn insert_gate_provider_client_keys(
         let Some(subscriptions) = target.gate_subscriptions.as_ref() else {
             continue;
         };
-        let Some(providers) = loaded.root.gate_providers.as_ref() else {
-            return Err(BoltV3LiveNodeError::LiveTransportScope {
-                reason: format!(
-                    "strategy `{}` target.gate_subscriptions references gate providers but [gate_providers] is not configured",
-                    strategy.relative_path
-                ),
-            });
-        };
         insert_gate_subscription_client_keys(
             client_keys,
-            providers,
+            loaded.root.gate_providers.as_ref(),
             subscriptions,
             strategy.relative_path.as_str(),
         )?;
@@ -4414,8 +4406,8 @@ fn target_gate_references(
 
 fn insert_gate_subscription_client_keys(
     client_keys: &mut BTreeSet<String>,
-    providers: &BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>,
-    subscriptions: &BTreeMap<String, TargetGateSubscriptionReferences>,
+    providers: Option<&BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>>,
+    subscriptions: &BTreeMap<String, crate::bolt_v3_market_families::TargetGateSubscription>,
     strategy_path: &str,
 ) -> Result<(), BoltV3LiveNodeError> {
     for subscription in subscriptions.values() {
@@ -4470,36 +4462,23 @@ fn insert_gate_subscription_client_keys(
 
 #[derive(Debug, Deserialize)]
 struct TargetGateReferences {
-    gate_subscriptions: Option<BTreeMap<String, TargetGateSubscriptionReferences>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TargetGateSubscriptionReferences {
-    required: Option<bool>,
-    allowed_provider_ids: Option<Vec<String>>,
-    allowed_provider_kinds: Option<Vec<String>>,
-    allowed_value_kinds: Option<Vec<String>>,
-    provider_preference: Option<Vec<String>>,
-    allow_no_resolution: Option<bool>,
-    market_mappings: Option<Vec<TargetGateMarketMappingReference>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TargetGateMarketMappingReference {
-    family_key: Option<String>,
-    market_class: Option<String>,
-    resolution_kind: Option<String>,
-    resolution_identity: Option<String>,
-    value_kind: Option<String>,
-    provider_id: Option<String>,
+    gate_subscriptions:
+        Option<BTreeMap<String, crate::bolt_v3_market_families::TargetGateSubscription>>,
 }
 
 fn insert_gate_provider_client_key(
     client_keys: &mut BTreeSet<String>,
-    providers: &BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>,
+    providers: Option<&BTreeMap<String, crate::bolt_v3_config::GateProviderBlock>>,
     provider_id: &str,
     strategy_path: &str,
 ) -> Result<(), BoltV3LiveNodeError> {
+    let Some(providers) = providers else {
+        return Err(BoltV3LiveNodeError::LiveTransportScope {
+            reason: format!(
+                "strategy `{strategy_path}` target.gate_subscriptions references provider_id `{provider_id}` but [gate_providers] is not configured"
+            ),
+        });
+    };
     let Some(provider) = providers.get(provider_id) else {
         return Err(BoltV3LiveNodeError::LiveTransportScope {
             reason: format!(
@@ -9066,6 +9045,43 @@ configured_source_param = "configured-value"
             reason.contains("missing_gate_provider")
                 && reason.contains("[gate_providers.missing_gate_provider]"),
             "missing provider error should identify the unresolved provider: {reason}"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_allows_no_provider_gate_subscription_without_gate_providers() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded.root.gate_providers = None;
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        let subscriptions = strategy
+            .config
+            .target
+            .as_table_mut()
+            .and_then(|target| target.get_mut("gate_subscriptions"))
+            .and_then(toml::Value::as_table_mut)
+            .expect("fixture strategy should include gate subscriptions");
+        subscriptions.clear();
+        subscriptions.insert(
+            "resolution".to_string(),
+            toml::toml! {
+                required = false
+                allow_no_resolution = true
+            }
+            .into(),
+        );
+
+        let scoped =
+            trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
+                .expect("provider-free gate subscription should not require [gate_providers]");
+        assert!(
+            !scoped.root.clients.contains_key("gate_data"),
+            "provider-free gate subscription must not retain a gate provider data client"
         );
     }
 

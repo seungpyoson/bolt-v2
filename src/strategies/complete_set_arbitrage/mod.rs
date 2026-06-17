@@ -198,10 +198,6 @@ impl CompleteSetArbitrageShell {
         self.forwarded_event_count
     }
 
-    pub fn nt_submit_contract(&self) -> CompleteSetNtSubmitContract {
-        nt_submit_contract()
-    }
-
     pub fn forward_executor_event(
         &mut self,
         basket: &mut BoltV3BasketExecutionState,
@@ -395,3 +391,6 @@ fn binding_message(
         message,
     }
 }
+
+#[cfg(test)]
+mod tests;

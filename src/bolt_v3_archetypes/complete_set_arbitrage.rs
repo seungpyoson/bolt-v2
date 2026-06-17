@@ -42,10 +42,6 @@ pub struct CompleteSetSubmitModeContract {
     pub nt_template_errors: Vec<String>,
 }
 
-pub fn requires_realized_volatility_surface() -> bool {
-    false
-}
-
 pub fn gate_requirements() -> Vec<ArchetypeGateRequirement> {
     Vec::new()
 }
@@ -112,6 +108,14 @@ pub fn validate_strategy(
             &strategy.target,
         ),
     );
+    let mut nt_strategy_id = strategy.strategy_archetype.as_str().to_string();
+    nt_strategy_id.push('-');
+    nt_strategy_id.push_str(&strategy.order_id_tag);
+    if let Err(error) = StrategyId::new_checked(&nt_strategy_id) {
+        errors.push(format!(
+            "{context}: strategy_id `{nt_strategy_id}` derived from order_id_tag is not a valid NT StrategyId ({error})"
+        ));
+    }
 
     for field in [
         "min_edge_bps",

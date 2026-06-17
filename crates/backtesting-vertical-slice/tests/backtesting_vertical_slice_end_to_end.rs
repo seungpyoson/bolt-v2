@@ -406,6 +406,19 @@ fn accepted_data_flows_through_to_objective_result_contract() {
     );
     // The zero-orders warning is emitted with the honest TRADE_REPLAY rationale,
     // and the claim limits carry the full reference set forward.
+    assert_eq!(contract.execution_model, manifest.execution_model);
+    assert_eq!(
+        contract.venue_queue_position,
+        Some(manifest.venue.queue_position)
+    );
+    assert_eq!(
+        contract.catalog_data_types,
+        manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(contract.warnings.len(), 1);
     assert!(
         contract.warnings[0].contains("TRADE_REPLAY"),

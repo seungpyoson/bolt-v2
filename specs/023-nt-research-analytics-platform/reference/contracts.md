@@ -212,7 +212,10 @@ Rules:
 `BacktestResultContract` is an objective evidence and lookup contract. It may
 carry NT result/report pointers, metrics artifact pointers, source proof ids,
 catalog/source hashes, strategy config hash, run purpose, fidelity class, claim
-limits, warnings, and mechanical blockers.
+limits, warnings, and mechanical blockers. Version 2 contracts also carry the
+manifest-derived execution model, venue queue-position setting, and catalog data
+types as structured fields so downstream gates can verify replay realism without
+parsing claim-limit text.
 
 It must not carry a subjective promotion recommendation such as "use this
 strategy" or "escalate this strategy." Strategy review status belongs to a

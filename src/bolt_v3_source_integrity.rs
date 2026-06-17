@@ -28,8 +28,7 @@ use std::path::{Path, PathBuf};
 
 pub use crate::source_canonicalization::{
     GATED_SOURCE_ROOTS, GatedSourceRoot, MAKER_KEY, OUTCOME_GROUP_KEY, STRATEGY_KEY,
-    SUBMIT_ADMISSION_KEY,
-    TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER,
+    SUBMIT_ADMISSION_KEY, TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER,
     module_source_set_text as canonical_module_source_set_text,
     module_source_text as canonical_module_text,
     production_module_source_text as canonical_production_module_text,

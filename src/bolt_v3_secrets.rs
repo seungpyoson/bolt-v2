@@ -234,7 +234,8 @@ where
 {
     let region = loaded.root.aws.region.as_str();
     let mut clients = BTreeMap::new();
-    let mut exclusive_signer_owners: BTreeMap<(&'static str, String), String> = BTreeMap::new();
+    let mut exclusive_signer_owners: BTreeMap<(&'static str, String), Vec<String>> =
+        BTreeMap::new();
 
     for (client_key, client) in &loaded.root.clients {
         let Some(resolved) =
@@ -244,7 +245,10 @@ where
         };
         if let Some(owner) = resolved.exclusive_signer_owner() {
             let owner_key = (owner.provider_key, owner.fingerprint.clone());
-            if let Some(existing_client_key) = exclusive_signer_owners.get(&owner_key) {
+            if let Some(existing_client_keys) = exclusive_signer_owners.get(&owner_key) {
+                let existing_client_key = existing_client_keys
+                    .first()
+                    .expect("signer owner group must not be empty");
                 let allowed = bolt_v3_providers::binding_for_provider_key(owner.provider_key)
                     .and_then(|binding| binding.allow_shared_signer_owner)
                     .is_some_and(|allow_shared| {
@@ -254,6 +258,7 @@ where
                         };
                         allow_shared(ProviderSharedSignerOwnerContext {
                             region,
+                            existing_client_keys,
                             existing_client_key,
                             existing_client,
                             client_key,
@@ -271,7 +276,10 @@ where
                     });
                 }
             }
-            exclusive_signer_owners.insert(owner_key, client_key.clone());
+            exclusive_signer_owners
+                .entry(owner_key)
+                .or_default()
+                .push(client_key.clone());
         }
         clients.insert(client_key.clone(), resolved);
     }

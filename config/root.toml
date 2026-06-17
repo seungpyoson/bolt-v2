@@ -810,6 +810,8 @@ ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
 [clients.hyperliquid_standard_perps_execution.secrets]
+# Shared Hyperliquid spot/perp API wallet: keep this private-key path identical
+# to hyperliquid_spot_execution and do not reuse it for HIP-3/HIP-4.
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/spotperp/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
@@ -843,6 +845,8 @@ ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
 
 [clients.hyperliquid_spot_execution.secrets]
+# Shared Hyperliquid spot/perp API wallet: keep this private-key path identical
+# to hyperliquid_standard_perps_execution and do not reuse it for HIP-3/HIP-4.
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/spotperp/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 

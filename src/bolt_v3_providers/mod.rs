@@ -105,6 +105,7 @@ pub struct ProviderSsmPathReference {
 
 pub struct ProviderSharedSignerOwnerContext<'a> {
     pub region: &'a str,
+    pub existing_client_keys: &'a [String],
     pub existing_client_key: &'a str,
     pub existing_client: &'a ClientBlock,
     pub client_key: &'a str,

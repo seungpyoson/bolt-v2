@@ -829,19 +829,22 @@ pub fn configured_secret_paths(
 }
 
 pub fn allow_shared_signer_owner(context: ProviderSharedSignerOwnerContext<'_>) -> bool {
-    let Some(existing_path) = configured_private_key_ssm_path(
+    if context.existing_client_keys.len() != 1 {
+        return false;
+    }
+    let Some(existing_paths) = configured_signer_ssm_paths(
         context.region,
         context.existing_client_key,
         context.existing_client,
     ) else {
         return false;
     };
-    let Some(path) =
-        configured_private_key_ssm_path(context.region, context.client_key, context.client)
+    let Some(paths) =
+        configured_signer_ssm_paths(context.region, context.client_key, context.client)
     else {
         return false;
     };
-    if existing_path != path {
+    if existing_paths != paths {
         return false;
     }
     let Some(existing_surface) = single_product_surface(context.existing_client) else {
@@ -862,19 +865,22 @@ pub fn allow_shared_signer_owner(context: ProviderSharedSignerOwnerContext<'_>) 
     )
 }
 
-fn configured_private_key_ssm_path(
+fn configured_signer_ssm_paths(
     region: &str,
     client_key: &str,
     client: &ClientBlock,
-) -> Option<String> {
+) -> Option<(String, String)> {
     let context = ProviderSecretResolveContext {
         client_key,
         region,
         client,
     };
-    parse_secrets_config(&context)
-        .ok()
-        .map(|secrets| secrets.private_key_ssm_path)
+    parse_secrets_config(&context).ok().map(|secrets| {
+        (
+            secrets.private_key_ssm_path,
+            secrets.account_address_ssm_path,
+        )
+    })
 }
 
 fn single_product_surface(client: &ClientBlock) -> Option<HyperliquidProductSurface> {

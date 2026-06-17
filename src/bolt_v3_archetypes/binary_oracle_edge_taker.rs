@@ -56,7 +56,7 @@ use crate::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
-    bolt_v3_providers::resolve_fee_provider,
+    bolt_v3_providers::{polymarket, resolve_fee_provider},
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
     },
@@ -286,9 +286,12 @@ pub fn validate_strategy(
         }
     };
 
+    let enforce_polymarket_market_exit_shape =
+        strategy_execution_client_venue_is(root, strategy, polymarket::KEY);
     errors.extend(validate_order_parameters(
         context,
         strategy.manage_stop,
+        enforce_polymarket_market_exit_shape,
         &parameters.entry_order,
         &parameters.exit_order,
         &parameters.forced_exit_order,
@@ -1549,6 +1552,7 @@ fn validate_reference_current_price_forced_flat_grace(
 fn validate_order_parameters(
     context: &str,
     manage_stop: bool,
+    enforce_polymarket_market_exit_shape: bool,
     entry: &OrderParams,
     exit: &OrderParams,
     forced_exit: &OrderParams,
@@ -1556,10 +1560,15 @@ fn validate_order_parameters(
     let mut errors = Vec::new();
     errors.extend(check_strategy_position_contract(context, entry, exit));
     errors.extend(check_entry_order_combination(context, entry));
-    errors.extend(check_exit_order_combination(context, exit));
+    errors.extend(check_exit_order_combination(
+        context,
+        enforce_polymarket_market_exit_shape,
+        exit,
+    ));
     errors.extend(check_forced_exit_order_combination(
         context,
         manage_stop,
+        enforce_polymarket_market_exit_shape,
         exit,
         forced_exit,
     ));
@@ -1740,8 +1749,19 @@ fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
         && entry.trailing_offset_type.is_none()
 }
 
-fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
+fn check_exit_order_combination(
+    context: &str,
+    enforce_polymarket_market_exit_shape: bool,
+    exit: &OrderParams,
+) -> Vec<String> {
     let mut errors = check_enabled_order_template(context, "exit_order", exit);
+    if enforce_polymarket_market_exit_shape {
+        errors.extend(check_polymarket_market_exit_shape(
+            context,
+            "exit_order",
+            exit,
+        ));
+    }
     if exit.is_quote_quantity {
         errors.push(format!(
             "{context}: parameters.exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` exits are sized from base position quantity"
@@ -1753,10 +1773,18 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
 fn check_forced_exit_order_combination(
     context: &str,
     manage_stop: bool,
+    enforce_polymarket_market_exit_shape: bool,
     exit: &OrderParams,
     forced_exit: &OrderParams,
 ) -> Vec<String> {
     let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);
+    if enforce_polymarket_market_exit_shape {
+        errors.extend(check_polymarket_market_exit_shape(
+            context,
+            "forced_exit_order",
+            forced_exit,
+        ));
+    }
     if forced_exit.is_quote_quantity {
         errors.push(format!(
             "{context}: parameters.forced_exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` forced exits are sized from base position quantity"
@@ -1770,6 +1798,39 @@ fn check_forced_exit_order_combination(
     if manage_stop && forced_exit.order_type != OrderType::Market {
         errors.push(format!(
             "{context}: manage_stop=true uses NautilusTrader Strategy::close_all_positions market orders, so parameters.forced_exit_order.order_type must be `market`; set manage_stop=false to use a non-market forced_exit_order through the strategy forced-flat path"
+        ));
+    }
+    errors
+}
+
+fn strategy_execution_client_venue_is(
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+    provider_key: &str,
+) -> bool {
+    root.clients
+        .get(strategy.execution_client_id.as_str())
+        .is_some_and(|client| client.venue.as_str() == provider_key)
+}
+
+fn check_polymarket_market_exit_shape(
+    context: &str,
+    field: &str,
+    order: &OrderParams,
+) -> Vec<String> {
+    if order.order_type != OrderType::Market {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    if !matches!(order.time_in_force, TimeInForce::Ioc | TimeInForce::Fok) {
+        errors.push(format!(
+            "{context}: parameters.{field} order_type=market must use time_in_force=ioc or fok because the configured execution provider rejects market gtc/gtd orders before submit"
+        ));
+    }
+    if order.is_reduce_only {
+        errors.push(format!(
+            "{context}: parameters.{field}.is_reduce_only must be false for market exits because the configured execution provider rejects reduce-only orders before submit"
         ));
     }
     errors

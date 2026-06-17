@@ -1060,6 +1060,14 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         event_count_ledger_hash: None,
         selected_asset_ids_hash: None,
         strategy: &inputs.manifest.strategy,
+        execution_model: &inputs.manifest.execution_model,
+        venue_queue_position: inputs.manifest.venue.queue_position,
+        catalog_data_types: inputs
+            .manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(&inputs.manifest),
         market_structure_fixture: market_structure_label(&inputs.manifest),
         fidelity_class: canonical_table.fidelity_class,
@@ -2702,6 +2710,13 @@ pub fn run_multi_table_from_run_spec(
         event_count_ledger_hash,
         selected_asset_ids_hash,
         strategy: &local_manifest.strategy,
+        execution_model: &local_manifest.execution_model,
+        venue_queue_position: local_manifest.venue.queue_position,
+        catalog_data_types: local_manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(&local_manifest),
         market_structure_fixture: market_structure_label(&local_manifest),
         fidelity_class: primary_fidelity,
@@ -2958,6 +2973,13 @@ fn run_multi_from_completed_output(
         event_count_ledger_hash,
         selected_asset_ids_hash,
         strategy: &local_manifest.strategy,
+        execution_model: &local_manifest.execution_model,
+        venue_queue_position: local_manifest.venue.queue_position,
+        catalog_data_types: local_manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(&local_manifest),
         market_structure_fixture: market_structure_label(&local_manifest),
         fidelity_class: primary.table.fidelity_class(),
@@ -3801,6 +3823,19 @@ mod tests {
         let contract_json = fs::read_to_string(&artifacts.contract_path).unwrap();
         let parsed: BacktestResultContract = serde_json::from_str(&contract_json).unwrap();
         assert_eq!(parsed, artifacts.output.contract);
+        assert_eq!(parsed.execution_model, spec.manifest.execution_model);
+        assert_eq!(
+            parsed.venue_queue_position,
+            Some(spec.manifest.venue.queue_position)
+        );
+        assert_eq!(
+            parsed.catalog_data_types,
+            spec.manifest
+                .catalog_inputs
+                .iter()
+                .map(|input| input.data_type.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! that owns its typed `[target]` fields, cadence checks, slug
 //! construction, and instrument-filter errors.
 
+mod binary_outcome;
 pub mod hyperliquid_instrument;
 pub mod outcome_group;
 pub mod static_binary_event;
@@ -19,6 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_instrument_filters::InstrumentFilterError,
+    bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
 };
@@ -88,7 +90,9 @@ pub struct MarketFamilyValidationBinding {
     /// `None` as "pricing unavailable").
     pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<f64>,
     pub maker_quote_targets: fn(FamilyQuoteInputs) -> Option<QuoteTargets>,
-    pub maker_settlement_payout: fn(OutcomeSide, Leg) -> Option<f64>,
+    pub maker_settlement_payout: fn(BinarySettlementPayout, Leg) -> Option<f64>,
+    pub maker_settlement_payout_from_reference_prices:
+        fn(f64, f64) -> Option<BinarySettlementPayout>,
     pub maker_binary_fee_curve: fn(f64, f64) -> Option<f64>,
 }
 
@@ -296,6 +300,8 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         fair_probability_up: updown::fair_probability_up,
         maker_quote_targets: updown::maker_quote_targets,
         maker_settlement_payout: updown::maker_settlement_payout,
+        maker_settlement_payout_from_reference_prices:
+            updown::maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: updown::maker_binary_fee_curve,
     },
     MarketFamilyValidationBinding {
@@ -309,6 +315,8 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         fair_probability_up: outcome_group::fair_probability_up,
         maker_quote_targets: unsupported_maker_quote_targets,
         maker_settlement_payout: unsupported_maker_settlement_payout,
+        maker_settlement_payout_from_reference_prices:
+            unsupported_maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
     },
     MarketFamilyValidationBinding {
@@ -322,6 +330,8 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         fair_probability_up: static_binary_event::fair_probability_up,
         maker_quote_targets: static_binary_event::maker_quote_targets,
         maker_settlement_payout: static_binary_event::maker_settlement_payout,
+        maker_settlement_payout_from_reference_prices:
+            unsupported_maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: static_binary_event::maker_binary_fee_curve,
     },
     MarketFamilyValidationBinding {
@@ -336,6 +346,8 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         fair_probability_up: hyperliquid_instrument::fair_probability_up,
         maker_quote_targets: unsupported_maker_quote_targets,
         maker_settlement_payout: unsupported_maker_settlement_payout,
+        maker_settlement_payout_from_reference_prices:
+            unsupported_maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
     },
 ];
@@ -356,7 +368,14 @@ fn unsupported_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTa
     None
 }
 
-fn unsupported_maker_settlement_payout(_outcome: OutcomeSide, _leg: Leg) -> Option<f64> {
+fn unsupported_maker_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
+    None
+}
+
+fn unsupported_maker_settlement_payout_from_reference_prices(
+    _close_price: f64,
+    _strike_price: f64,
+) -> Option<BinarySettlementPayout> {
     None
 }
 
@@ -512,27 +531,49 @@ pub fn maker_quote_targets_for_family_with_bindings(
 
 pub fn maker_settlement_payout_for_family(
     family_key: &str,
-    outcome: OutcomeSide,
+    payout: BinarySettlementPayout,
     leg: Leg,
 ) -> Option<f64> {
-    maker_settlement_payout_for_family_with_bindings(
-        family_key,
-        outcome,
-        leg,
-        validation_bindings(),
-    )
+    maker_settlement_payout_for_family_with_bindings(family_key, payout, leg, validation_bindings())
 }
 
 pub fn maker_settlement_payout_for_family_with_bindings(
     family_key: &str,
-    outcome: OutcomeSide,
+    payout: BinarySettlementPayout,
     leg: Leg,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Option<f64> {
     bindings
         .iter()
         .find(|binding| binding.key == family_key)
-        .and_then(|binding| (binding.maker_settlement_payout)(outcome, leg))
+        .and_then(|binding| (binding.maker_settlement_payout)(payout, leg))
+}
+
+pub fn maker_settlement_payout_from_reference_prices_for_family(
+    family_key: &str,
+    close_price: f64,
+    strike_price: f64,
+) -> Option<BinarySettlementPayout> {
+    maker_settlement_payout_from_reference_prices_for_family_with_bindings(
+        family_key,
+        close_price,
+        strike_price,
+        validation_bindings(),
+    )
+}
+
+pub fn maker_settlement_payout_from_reference_prices_for_family_with_bindings(
+    family_key: &str,
+    close_price: f64,
+    strike_price: f64,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Option<BinarySettlementPayout> {
+    bindings
+        .iter()
+        .find(|binding| binding.key == family_key)
+        .and_then(|binding| {
+            (binding.maker_settlement_payout_from_reference_prices)(close_price, strike_price)
+        })
 }
 
 pub fn maker_binary_fee_curve_for_family(
@@ -893,6 +934,8 @@ mod tests {
             fair_probability_up: fake_fair_probability_up,
             maker_quote_targets: fake_maker_quote_targets,
             maker_settlement_payout: fake_maker_settlement_payout,
+            maker_settlement_payout_from_reference_prices:
+                fake_maker_settlement_payout_from_reference_prices,
             maker_binary_fee_curve: fake_maker_binary_fee_curve,
         }];
 
@@ -1017,7 +1060,14 @@ mod tests {
         None
     }
 
-    fn fake_maker_settlement_payout(_outcome: OutcomeSide, _leg: Leg) -> Option<f64> {
+    fn fake_maker_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
+        None
+    }
+
+    fn fake_maker_settlement_payout_from_reference_prices(
+        _close_price: f64,
+        _strike_price: f64,
+    ) -> Option<BinarySettlementPayout> {
         None
     }
 
@@ -1302,9 +1352,11 @@ mod tests {
 
     fn fixture_quote_inputs() -> FamilyQuoteInputs {
         FamilyQuoteInputs {
-            fair: 0.60,
-            reservation_bid: 0.58,
-            reservation_ask: 0.62,
+            // The reservation band is mintable only through gm_binary_quote, so the
+            // fixture builds an interior band (fair 0.60, mu 0.10) the same way
+            // production does — there is no bare-literal band.
+            band: crate::bolt_v3_maker_model::gm_binary_quote(0.60, 0.10)
+                .expect("interior fair, valid mu"),
             inventory_skew: 0.0,
             half_spread_floor: 0.0,
             max_half_spread: 1.0,
@@ -1312,6 +1364,8 @@ mod tests {
             tau: 3_600.0,
             reference_tau: 3_600.0,
             time_widen_cap: 10.0,
+            order_notional_target: 5.0,
+            maximum_position_notional: 10.0,
         }
     }
 
@@ -1324,25 +1378,63 @@ mod tests {
         assert_eq!(targets.leg_b.side, QuoteSide::Buy);
         assert!(targets.leg_a.price < 0.60);
         assert!(targets.leg_b.price < 0.40);
+        // Pin the routed VALUE, not just its sign. The size must be the
+        // half-spread-scaled target (5.0 * band.half_spread() ~= $0.2401 for this
+        // fixture: reference max_half_spread 1.0 makes edge_scale == half_spread,
+        // well below the $5 cap), NOT the raw cap. This is the ONLY test that
+        // exercises the registered-family call site, so it must catch both an
+        // edge-ignoring constant-cap sizer ($5.0) and a call-site edge/reference
+        // arg transpose (also $5.0); the primitive's own unit tests call it with a
+        // fixed arg order and structurally cannot detect a transposed call.
+        let expected_size = 5.0
+            * crate::bolt_v3_maker_model::gm_binary_quote(0.60, 0.10)
+                .expect("interior band")
+                .half_spread();
+        assert!((targets.leg_a.size_notional - expected_size).abs() < 1e-12);
+        assert!(
+            targets.leg_a.size_notional < 1.0,
+            "must be the edge-scaled size, not the $5 cap"
+        );
+        assert_eq!(targets.leg_a.size_notional, targets.leg_b.size_notional);
     }
 
     #[test]
     fn maker_settlement_and_fee_curve_route_through_canonical_updown_family_binding() {
+        let up_payout = BinarySettlementPayout::new(1.0, 0.0).expect("terminal up payout");
+        let down_payout = BinarySettlementPayout::new(0.0, 1.0).expect("terminal down payout");
+
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Up, Leg::Yes),
+            maker_settlement_payout_for_family(updown::KEY, up_payout, Leg::Yes),
             Some(1.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Up, Leg::No),
+            maker_settlement_payout_for_family(updown::KEY, up_payout, Leg::No),
             Some(0.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Down, Leg::No),
+            maker_settlement_payout_for_family(updown::KEY, down_payout, Leg::No),
             Some(1.0)
         );
         assert_eq!(
-            maker_settlement_payout_for_family(updown::KEY, OutcomeSide::Down, Leg::Yes),
+            maker_settlement_payout_for_family(updown::KEY, down_payout, Leg::Yes),
             Some(0.0)
+        );
+        assert_eq!(
+            maker_settlement_payout_from_reference_prices_for_family(updown::KEY, 100.0, 100.0)
+                .map(|payout| payout.leg_payout(Leg::Yes)),
+            Some(1.0),
+            "tie-at-strike resolves to the up/YES payout"
+        );
+        assert_eq!(
+            maker_settlement_payout_from_reference_prices_for_family(updown::KEY, 99.0, 100.0)
+                .map(|payout| payout.leg_payout(Leg::No)),
+            Some(1.0),
+            "close below strike resolves to the down/NO payout"
+        );
+        assert!(
+            maker_settlement_payout_from_reference_prices_for_family(updown::KEY, f64::NAN, 100.0)
+                .is_none(),
+            "invalid reference prices fail closed"
         );
 
         let fee = maker_binary_fee_curve_for_family(updown::KEY, 0.02, 0.5)
@@ -1354,9 +1446,12 @@ mod tests {
 
     #[test]
     fn unknown_family_maker_write_side_dispatch_fails_closed() {
+        let payout = BinarySettlementPayout::new(1.0, 0.0).expect("terminal payout");
+
         assert!(maker_quote_targets_for_family("missing_family", fixture_quote_inputs()).is_none());
+        assert!(maker_settlement_payout_for_family("missing_family", payout, Leg::Yes).is_none());
         assert!(
-            maker_settlement_payout_for_family("missing_family", OutcomeSide::Up, Leg::Yes)
+            maker_settlement_payout_from_reference_prices_for_family("missing_family", 100.0, 99.0)
                 .is_none()
         );
         assert!(maker_binary_fee_curve_for_family("missing_family", 0.02, 0.5).is_none());

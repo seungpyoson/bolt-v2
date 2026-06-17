@@ -1,18 +1,19 @@
 //! Chainlink Data Streams strike (price-to-beat) source for bolt-v3.
 //!
 //! This is a point-in-time NT [`DataClient`] — NOT a continuous stream. Its
-//! only job is to deliver the price-to-beat (strike) for a binary up/down
-//! window: the Chainlink Data Streams report benchmark price AT the
-//! window-open Unix timestamp, fetched ONCE per window via the timestamped
-//! REST endpoint and delivered as a single NT [`IndexPriceUpdate`] on the
-//! resolution instrument.
+//! only job is to deliver the Chainlink Data Streams benchmark price for a
+//! binary up/down window: the strike at the window-open Unix timestamp and the
+//! settlement reference at the window-close Unix timestamp, each fetched ONCE
+//! per window via the timestamped REST endpoint and delivered as a single NT
+//! [`IndexPriceUpdate`] on the resolution instrument.
 //!
-//! The window-open timestamp is an INPUT supplied by the strategy via the
-//! standard NT subscribe-command `params` map (`window_open_unix_seconds`);
-//! it is never a string literal in this code. The feed-id <-> instrument-id
-//! mapping comes from TOML (`feed_bindings`). Credentials are resolved from
-//! SSM by the provider binding and embedded into [`ChainlinkStrikeSourceConfig`]
-//! as zeroizing material; this module never logs or prints secret values.
+//! The window timestamp is an INPUT supplied by the strategy via the standard
+//! NT subscribe-command `params` map (`window_open_unix_seconds` for strike,
+//! `window_close_unix_seconds` for settlement); it is never a string literal in
+//! this code. The feed-id <-> instrument-id mapping comes from TOML
+//! (`feed_bindings`). Credentials are resolved from SSM by the provider binding
+//! and embedded into [`ChainlinkStrikeSourceConfig`] as zeroizing material; this
+//! module never logs or prints secret values.
 //!
 //! Protocol logic (HMAC auth, signed request URL, V3 `fullReport` decode) is
 //! reused from the sibling [`super::auth`] / [`super::report`] modules.
@@ -39,7 +40,7 @@ use nautilus_common::{
         data::{SubscribeIndexPrices, UnsubscribeIndexPrices},
     },
 };
-use nautilus_core::{UnixNanos, consts::NAUTILUS_USER_AGENT};
+use nautilus_core::{Params, UnixNanos, consts::NAUTILUS_USER_AGENT};
 use nautilus_model::{
     data::{Data, IndexPriceUpdate},
     identifiers::{ClientId, InstrumentId},
@@ -56,9 +57,52 @@ use super::{
 };
 
 /// NT subscribe-command `params` key carrying the window-open Unix timestamp
-/// (seconds) for the point-in-time strike lookup. The strategy supplies this
-/// per window; it is the only dynamic input to the fetch.
+/// (seconds) for the point-in-time strike lookup.
 pub const STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM: &str = "window_open_unix_seconds";
+/// NT subscribe-command `params` key carrying the window-close Unix timestamp
+/// (seconds) for the point-in-time settlement reference lookup.
+pub const SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM: &str = "window_close_unix_seconds";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChainlinkReportBoundaryKind {
+    WindowOpenStrike,
+    WindowCloseSettlement,
+}
+
+impl ChainlinkReportBoundaryKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::WindowOpenStrike => "window-open strike",
+            Self::WindowCloseSettlement => "window-close settlement",
+        }
+    }
+
+    fn boundary_label(self) -> &'static str {
+        match self {
+            Self::WindowOpenStrike => "window-open boundary",
+            Self::WindowCloseSettlement => "window-close boundary",
+        }
+    }
+
+    fn param_key(self) -> &'static str {
+        match self {
+            Self::WindowOpenStrike => STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+            Self::WindowCloseSettlement => SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChainlinkReportBoundary {
+    kind: ChainlinkReportBoundaryKind,
+    unix_seconds: u64,
+}
+
+impl ChainlinkReportBoundary {
+    fn new(kind: ChainlinkReportBoundaryKind, unix_seconds: u64) -> Self {
+        Self { kind, unix_seconds }
+    }
+}
 
 const CHAINLINK_STRIKE_SOURCE_FACTORY_NAME: &str = "CHAINLINK_DATA_STREAMS";
 const CHAINLINK_STRIKE_SOURCE_CONFIG_TYPE: &str = "ChainlinkStrikeSourceConfig";
@@ -272,18 +316,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
                 cmd.instrument_id
             )
         })?;
-        let window_open_unix_seconds = cmd
-            .params
-            .as_ref()
-            .and_then(|params| params.get_u64(STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM))
-            .filter(|seconds| *seconds != 0)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Chainlink strike subscribe for {} is missing a positive `{}` param",
-                    cmd.instrument_id,
-                    STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM
-                )
-            })?;
+        let report_boundary = requested_report_boundary(cmd.params.as_ref(), cmd.instrument_id)?;
 
         let request = StrikeFetchRequest {
             rest_base_url: self.config.rest_base_url.clone(),
@@ -296,7 +329,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
             report_schema_version: binding.report_schema_version,
             report_decimal_scale: binding.report_decimal_scale,
             price_precision: binding.price_precision,
-            window_open_unix_seconds,
+            report_boundary,
         };
         // Admit at most one in-flight fetch per resolution instrument: the
         // strategy re-issues this subscribe on every retry tick while the strike
@@ -315,23 +348,26 @@ impl DataClient for ChainlinkStrikeSourceClient {
         let fetch_instrument_id = binding.instrument_id;
 
         get_runtime().spawn(async move {
-            match fetch_strike_index_price(&request).await {
+            match fetch_chainlink_report_index_price(&request).await {
                 Ok(index_price) => {
                     if sender
                         .send(DataEvent::Data(Data::IndexPriceUpdate(index_price)))
                         .is_err()
                     {
                         log::error!(
-                            "Chainlink strike source {client_id} could not deliver strike for {}: data channel closed",
+                            "Chainlink strike source {client_id} could not deliver {} for {}: data channel closed",
+                            request.report_boundary.kind.label(),
                             request.instrument_id
                         );
                     }
                 }
                 Err(error) => {
                     log::error!(
-                        "Chainlink strike source {client_id} strike fetch failed for {} at window_open_unix_seconds={}: {error:#}",
+                        "Chainlink strike source {client_id} {} fetch failed for {} at {}={}: {error:#}",
+                        request.report_boundary.kind.label(),
                         request.instrument_id,
-                        request.window_open_unix_seconds
+                        request.report_boundary.kind.param_key(),
+                        request.report_boundary.unix_seconds
                     );
                 }
             }
@@ -365,14 +401,48 @@ struct StrikeFetchRequest {
     report_schema_version: u64,
     report_decimal_scale: u64,
     price_precision: u8,
-    window_open_unix_seconds: u64,
+    report_boundary: ChainlinkReportBoundary,
 }
 
-/// Fetches the Chainlink Data Streams report AT the window-open timestamp and
-/// returns the strike as an NT [`IndexPriceUpdate`] on the resolution
-/// instrument. Reuses the extracted auth/url/decode core and mirrors the
-/// offline timestamped fetch pattern (signed GET, byte-bounded decode).
-async fn fetch_strike_index_price(
+fn requested_report_boundary(
+    params: Option<&Params>,
+    instrument_id: InstrumentId,
+) -> anyhow::Result<ChainlinkReportBoundary> {
+    let window_open = params
+        .and_then(|params| params.get_u64(STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM))
+        .filter(|seconds| *seconds != 0);
+    let window_close = params
+        .and_then(|params| params.get_u64(SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM))
+        .filter(|seconds| *seconds != 0);
+    match (window_open, window_close) {
+        (Some(unix_seconds), None) => Ok(ChainlinkReportBoundary::new(
+            ChainlinkReportBoundaryKind::WindowOpenStrike,
+            unix_seconds,
+        )),
+        (None, Some(unix_seconds)) => Ok(ChainlinkReportBoundary::new(
+            ChainlinkReportBoundaryKind::WindowCloseSettlement,
+            unix_seconds,
+        )),
+        (Some(_), Some(_)) => anyhow::bail!(
+            "Chainlink strike subscribe for {} must provide exactly one positive timestamp param: `{}` or `{}`, but both were set",
+            instrument_id,
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+            SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM
+        ),
+        (None, None) => anyhow::bail!(
+            "Chainlink strike subscribe for {} is missing a positive timestamp param: `{}` or `{}`",
+            instrument_id,
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+            SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM
+        ),
+    }
+}
+
+/// Fetches the Chainlink Data Streams report AT a requested boundary timestamp
+/// and returns the benchmark price as an NT [`IndexPriceUpdate`] on the
+/// resolution instrument. Reuses the extracted auth/url/decode core and mirrors
+/// the offline timestamped fetch pattern (signed GET, byte-bounded decode).
+async fn fetch_chainlink_report_index_price(
     request: &StrikeFetchRequest,
 ) -> anyhow::Result<IndexPriceUpdate> {
     let credentials = chainlink_data_streams_credentials(&request.api_key, &request.api_secret)
@@ -381,7 +451,7 @@ async fn fetch_strike_index_price(
         &request.rest_base_url,
         &request.report_endpoint_path,
         &request.feed_id,
-        request.window_open_unix_seconds,
+        request.report_boundary.unix_seconds,
     )
     .map_err(|error| anyhow::anyhow!("Chainlink strike request URL invalid: {error}"))?;
     let authorization_timestamp_ms = current_unix_timestamp_ms()?;
@@ -433,20 +503,30 @@ async fn fetch_strike_index_price(
         .map_err(|error| anyhow::anyhow!("Chainlink strike report decode failed: {error}"))?;
 
     let ts_init = UnixNanos::from(current_unix_timestamp_ms()? * 1_000_000);
-    build_strike_index_price(
-        request.instrument_id,
-        &decoded,
-        request.price_precision,
-        request.window_open_unix_seconds,
-        ts_init,
-    )
+    match request.report_boundary.kind {
+        ChainlinkReportBoundaryKind::WindowOpenStrike => build_strike_index_price(
+            request.instrument_id,
+            &decoded,
+            request.price_precision,
+            request.report_boundary.unix_seconds,
+            ts_init,
+        ),
+        ChainlinkReportBoundaryKind::WindowCloseSettlement => build_settlement_close_index_price(
+            request.instrument_id,
+            &decoded,
+            request.price_precision,
+            request.report_boundary.unix_seconds,
+            ts_init,
+        ),
+    }
 }
 
 /// Maps a decoded strike report to the NT [`IndexPriceUpdate`] on the
 /// resolution instrument, with `ts_event` pinned to the window-open boundary
 /// (the strike instant). Pure (no network, no clock read): the caller supplies
-/// `ts_init`. Split out of [`fetch_strike_index_price`] so the value/timestamp
-/// mapping is unit-testable from a decoded fixture without an HTTP round-trip.
+/// `ts_init`. Split out of [`fetch_chainlink_report_index_price`] so the
+/// value/timestamp mapping is unit-testable from a decoded fixture without an
+/// HTTP round-trip.
 ///
 /// Fail-closed interval-open binding (F2): the Chainlink "report at T" REST
 /// endpoint returns the report *active at* T (i.e. `validFrom <= T`), not
@@ -462,24 +542,71 @@ pub(crate) fn build_strike_index_price(
     window_open_unix_seconds: u64,
     ts_init: UnixNanos,
 ) -> anyhow::Result<IndexPriceUpdate> {
-    let window_open_unix_millis = window_open_unix_seconds
+    build_bound_report_index_price(
+        instrument_id,
+        decoded,
+        price_precision,
+        ChainlinkReportBoundary::new(
+            ChainlinkReportBoundaryKind::WindowOpenStrike,
+            window_open_unix_seconds,
+        ),
+        ts_init,
+    )
+}
+
+pub(crate) fn build_settlement_close_index_price(
+    instrument_id: InstrumentId,
+    decoded: &DecodedPriceToBeatReport,
+    price_precision: u8,
+    window_close_unix_seconds: u64,
+    ts_init: UnixNanos,
+) -> anyhow::Result<IndexPriceUpdate> {
+    build_bound_report_index_price(
+        instrument_id,
+        decoded,
+        price_precision,
+        ChainlinkReportBoundary::new(
+            ChainlinkReportBoundaryKind::WindowCloseSettlement,
+            window_close_unix_seconds,
+        ),
+        ts_init,
+    )
+}
+
+fn build_bound_report_index_price(
+    instrument_id: InstrumentId,
+    decoded: &DecodedPriceToBeatReport,
+    price_precision: u8,
+    report_boundary: ChainlinkReportBoundary,
+    ts_init: UnixNanos,
+) -> anyhow::Result<IndexPriceUpdate> {
+    let boundary_unix_millis = report_boundary
+        .unix_seconds
         .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
         .ok_or_else(|| {
-            anyhow::anyhow!("Chainlink strike window-open timestamp exceeds milliseconds range")
+            anyhow::anyhow!(
+                "Chainlink {} timestamp exceeds milliseconds range",
+                report_boundary.kind.label()
+            )
         })?;
-    if decoded.valid_from_timestamp_ms != window_open_unix_millis {
+    if decoded.valid_from_timestamp_ms != boundary_unix_millis {
         anyhow::bail!(
-            "Chainlink strike report is not the interval-open report: report validFrom is {} ms but the window-open boundary is {} ms",
+            "Chainlink {} report is not bound to the {}: report validFrom is {} ms but the boundary is {} ms",
+            report_boundary.kind.label(),
+            report_boundary.kind.boundary_label(),
             decoded.valid_from_timestamp_ms,
-            window_open_unix_millis
+            boundary_unix_millis
         );
     }
     let value = Price::new_checked(decoded.benchmark_price, price_precision).map_err(|error| {
-        anyhow::anyhow!("Chainlink strike benchmark price is not a valid NT Price: {error}")
+        anyhow::anyhow!(
+            "Chainlink {} benchmark price is not a valid NT Price: {error}",
+            report_boundary.kind.label()
+        )
     })?;
-    // ts_event = window-open boundary (the strike instant). The strike is
-    // published in seconds; convert to nanos for the NT IndexPriceUpdate.
-    let ts_event = window_open_unix_nanos(window_open_unix_seconds)?;
+    // ts_event = requested boundary. The report timestamp is published in
+    // seconds; convert to nanos for the NT IndexPriceUpdate.
+    let ts_event = boundary_unix_nanos(report_boundary)?;
     Ok(IndexPriceUpdate::new(
         instrument_id,
         value,
@@ -488,12 +615,16 @@ pub(crate) fn build_strike_index_price(
     ))
 }
 
-fn window_open_unix_nanos(window_open_unix_seconds: u64) -> anyhow::Result<UnixNanos> {
-    window_open_unix_seconds
+fn boundary_unix_nanos(report_boundary: ChainlinkReportBoundary) -> anyhow::Result<UnixNanos> {
+    report_boundary
+        .unix_seconds
         .checked_mul(1_000_000_000)
         .map(UnixNanos::from)
         .ok_or_else(|| {
-            anyhow::anyhow!("Chainlink strike window-open timestamp exceeds nanos range")
+            anyhow::anyhow!(
+                "Chainlink {} timestamp exceeds nanos range",
+                report_boundary.kind.label()
+            )
         })
 }
 
@@ -598,12 +729,13 @@ fn required_u8(
 
 #[cfg(test)]
 mod tests {
-    //! Strike-mapping unit test (NO network): a decoded V3 report fixture for a
-    //! (feed_id, window-open ts) is mapped to the configured resolution
-    //! instrument and delivered as an NT [`IndexPriceUpdate`] whose value equals
-    //! the decoded benchmark price and whose `ts_event` is the window-open
-    //! boundary (in nanos). The report-blob fixture mirrors the ABI layout used
-    //! by `super::report`'s decode tests and the offline materializer tests.
+    //! Strike/settlement-mapping unit tests (NO network): a decoded V3 report
+    //! fixture for a (feed_id, boundary timestamp) is mapped to the configured
+    //! resolution instrument and delivered as an NT [`IndexPriceUpdate`] whose
+    //! value equals the decoded benchmark price and whose `ts_event` is the
+    //! requested boundary in nanos. The report-blob fixture mirrors the ABI
+    //! layout used by `super::report`'s decode tests and the offline
+    //! materializer tests.
 
     use rust_decimal::{Decimal, prelude::ToPrimitive};
 
@@ -615,7 +747,7 @@ mod tests {
     const TEST_PRICE_PRECISION: u8 = 2;
     const TEST_BENCHMARK_PRICE: f64 = 3300.5;
     const TEST_WINDOW_OPEN_UNIX_SECONDS: u64 = 1_700_000_000;
-    const TEST_OBSERVATIONS_SECONDS: u32 = 1_700_000_001;
+    const TEST_WINDOW_CLOSE_UNIX_SECONDS: u64 = 1_700_000_900;
     const TEST_TS_INIT_NANOS: u64 = 1_700_000_500_000_000_000;
     const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
@@ -697,6 +829,12 @@ mod tests {
         .expect("report source JSON should serialize")
     }
 
+    fn observations_after(valid_from_seconds: u32) -> u32 {
+        valid_from_seconds
+            .checked_add(1)
+            .expect("test observation timestamp should fit u32")
+    }
+
     #[test]
     fn decoded_report_maps_to_index_price_on_resolution_instrument_at_window_open() {
         let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
@@ -707,7 +845,7 @@ mod tests {
         let report_bytes = report_source_json(
             TEST_FEED_ID,
             valid_from_seconds,
-            TEST_OBSERVATIONS_SECONDS,
+            observations_after(valid_from_seconds),
             TEST_BENCHMARK_PRICE,
             TEST_DECIMAL_SCALE,
         );
@@ -741,6 +879,57 @@ mod tests {
             index_price.ts_event.as_u64(),
             TEST_WINDOW_OPEN_UNIX_SECONDS * NANOS_PER_SECOND,
             "ts_event must be the window-open boundary in nanos"
+        );
+        assert_eq!(
+            index_price.ts_init.as_u64(),
+            TEST_TS_INIT_NANOS,
+            "ts_init must carry the supplied initialization timestamp"
+        );
+    }
+
+    #[test]
+    fn decoded_report_maps_to_index_price_on_resolution_instrument_at_window_close() {
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
+            .expect("test resolution instrument id should parse");
+        let valid_from_seconds =
+            u32::try_from(TEST_WINDOW_CLOSE_UNIX_SECONDS).expect("window-close ts should fit u32");
+        let report_bytes = report_source_json(
+            TEST_FEED_ID,
+            valid_from_seconds,
+            observations_after(valid_from_seconds),
+            TEST_BENCHMARK_PRICE,
+            TEST_DECIMAL_SCALE,
+        );
+        let binding = PriceToBeatReportBinding {
+            feed_id: TEST_FEED_ID.to_string(),
+            schema_version: 3,
+            decimal_scale: TEST_DECIMAL_SCALE,
+        };
+        let decoded = decode_price_to_beat_report(&report_bytes, &binding)
+            .expect("the fixture V3 report should decode");
+
+        let index_price = build_settlement_close_index_price(
+            instrument_id,
+            &decoded,
+            TEST_PRICE_PRECISION,
+            TEST_WINDOW_CLOSE_UNIX_SECONDS,
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+        )
+        .expect("decoded close report should map to an IndexPriceUpdate");
+
+        assert_eq!(
+            index_price.instrument_id, instrument_id,
+            "settlement close must publish on the configured resolution instrument"
+        );
+        assert!(
+            (index_price.value.as_f64() - TEST_BENCHMARK_PRICE).abs() < 1e-6,
+            "settlement close value must equal the decoded benchmark price, got {}",
+            index_price.value
+        );
+        assert_eq!(
+            index_price.ts_event.as_u64(),
+            TEST_WINDOW_CLOSE_UNIX_SECONDS * NANOS_PER_SECOND,
+            "ts_event must be the window-close boundary in nanos"
         );
         assert_eq!(
             index_price.ts_init.as_u64(),
@@ -786,7 +975,7 @@ mod tests {
         let report_bytes = report_source_json(
             TEST_FEED_ID,
             stale_valid_from_seconds,
-            TEST_OBSERVATIONS_SECONDS,
+            observations_after(stale_valid_from_seconds),
             TEST_BENCHMARK_PRICE,
             TEST_DECIMAL_SCALE,
         );
@@ -806,6 +995,102 @@ mod tests {
             UnixNanos::from(TEST_TS_INIT_NANOS),
         )
         .expect_err("a report whose validFrom is not the window-open boundary must fail closed");
+    }
+
+    #[test]
+    fn settlement_close_mapping_rejects_report_not_bound_to_window_close() {
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
+            .expect("test resolution instrument id should parse");
+        let stale_valid_from_seconds = u32::try_from(TEST_WINDOW_CLOSE_UNIX_SECONDS)
+            .expect("window-close ts should fit u32")
+            - 60;
+        let report_bytes = report_source_json(
+            TEST_FEED_ID,
+            stale_valid_from_seconds,
+            observations_after(stale_valid_from_seconds),
+            TEST_BENCHMARK_PRICE,
+            TEST_DECIMAL_SCALE,
+        );
+        let binding = PriceToBeatReportBinding {
+            feed_id: TEST_FEED_ID.to_string(),
+            schema_version: 3,
+            decimal_scale: TEST_DECIMAL_SCALE,
+        };
+        let decoded = decode_price_to_beat_report(&report_bytes, &binding)
+            .expect("the fixture V3 report should decode");
+
+        build_settlement_close_index_price(
+            instrument_id,
+            &decoded,
+            TEST_PRICE_PRECISION,
+            TEST_WINDOW_CLOSE_UNIX_SECONDS,
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+        )
+        .expect_err("a report whose validFrom is not the window-close boundary must fail closed");
+    }
+
+    #[test]
+    fn report_boundary_params_accept_one_close_timestamp() {
+        let instrument_id =
+            InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("resolution instrument id parses");
+        let mut params = Params::new();
+        params.insert(
+            SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM.to_string(),
+            serde_json::json!(TEST_WINDOW_CLOSE_UNIX_SECONDS),
+        );
+
+        let boundary = requested_report_boundary(Some(&params), instrument_id)
+            .expect("one close timestamp should select settlement close");
+
+        assert_eq!(
+            boundary,
+            ChainlinkReportBoundary::new(
+                ChainlinkReportBoundaryKind::WindowCloseSettlement,
+                TEST_WINDOW_CLOSE_UNIX_SECONDS
+            )
+        );
+    }
+
+    #[test]
+    fn report_boundary_params_reject_both_open_and_close_timestamps() {
+        let instrument_id =
+            InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("resolution instrument id parses");
+        let mut params = Params::new();
+        params.insert(
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
+            serde_json::json!(TEST_WINDOW_OPEN_UNIX_SECONDS),
+        );
+        params.insert(
+            SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM.to_string(),
+            serde_json::json!(TEST_WINDOW_CLOSE_UNIX_SECONDS),
+        );
+
+        let error = requested_report_boundary(Some(&params), instrument_id)
+            .expect_err("ambiguous timestamp params must fail closed");
+
+        assert!(
+            error.to_string().contains("exactly one positive timestamp"),
+            "error should explain the single-timestamp contract, got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn report_boundary_params_reject_missing_timestamps() {
+        let instrument_id =
+            InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("resolution instrument id parses");
+
+        let error = requested_report_boundary(None, instrument_id)
+            .expect_err("missing timestamp params must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains(STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM)
+                && error
+                    .to_string()
+                    .contains(SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM),
+            "error should name both accepted params, got: {error:#}"
+        );
     }
 
     #[test]

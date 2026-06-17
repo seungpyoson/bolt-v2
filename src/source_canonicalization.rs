@@ -430,6 +430,8 @@ pub const STRATEGY_KEY: &str = "strategy";
 pub const SUBMIT_ADMISSION_KEY: &str = "submit_admission";
 /// Stable registry key for the shared outcome-group substrate source set.
 pub const OUTCOME_GROUP_KEY: &str = "outcome_group";
+/// Stable registry key for the binary-oracle maker strategy source root.
+pub const MAKER_KEY: &str = "maker";
 
 /// One registry entry: a stable key + its repo-relative source roots. A
 /// one-element set preserves the old single-root semantics; a multi-root set is

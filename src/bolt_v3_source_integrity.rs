@@ -4,10 +4,11 @@
 //! This module owns two things:
 //!
 //! 1. **The registry surface** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] /
-//!    [`OUTCOME_GROUP_KEY`] and the [`GATED_SOURCE_ROOTS`] table mapping each key
-//!    to its repo-relative source roots. The roots are named in exactly one place
-//!    — the repo-root `gated_source_roots.manifest`, which `build.rs` compiles
-//!    into [`GATED_SOURCE_ROOTS`]; this module re-exports that generated table.
+//!    [`OUTCOME_GROUP_KEY`] / [`MAKER_KEY`] and the [`GATED_SOURCE_ROOTS`] table
+//!    mapping each key to its repo-relative source roots. The roots are named in
+//!    exactly one place — the repo-root `gated_source_roots.manifest`, which
+//!    `build.rs` compiles into [`GATED_SOURCE_ROOTS`]; this module re-exports
+//!    that generated table.
 //! 2. The text accessors [`module_source_text`] (whole-module text) and
 //!    [`production_module_source_text`] (test-submodule-free text), both in the
 //!    SAME canonical file order. These are thin wrappers over the
@@ -26,8 +27,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub use crate::source_canonicalization::{
-    GATED_SOURCE_ROOTS, GatedSourceRoot, OUTCOME_GROUP_KEY, STRATEGY_KEY, SUBMIT_ADMISSION_KEY,
-    TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER,
+    GATED_SOURCE_ROOTS, GatedSourceRoot, MAKER_KEY, OUTCOME_GROUP_KEY, STRATEGY_KEY,
+    SUBMIT_ADMISSION_KEY, TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER,
     module_source_set_text as canonical_module_source_set_text,
     module_source_text as canonical_module_text,
     production_module_source_text as canonical_production_module_text,
@@ -233,13 +234,25 @@ mod tests {
 
     #[test]
     fn submit_admission_source_set_is_the_single_admission_module() {
-        // Pins the generated constant for the third registry key, so a manifest
-        // change to `[submit_admission]` fails this test the same way the strategy
-        // and outcome-group sets are pinned (rather than only surfacing later as a
-        // `registry_entry` panic).
+        // Pins the generated constant for the submit-admission registry key, so
+        // a manifest change to `[submit_admission]` fails this test the same way
+        // the strategy and outcome-group sets are pinned (rather than only
+        // surfacing later as a `registry_entry` panic).
         assert_eq!(
             registry_relative_roots(SUBMIT_ADMISSION_KEY),
             &["src/bolt_v3_submit_admission.rs"]
+        );
+    }
+
+    #[test]
+    fn maker_source_set_includes_go_live_gate_market_selection_and_maker_directory() {
+        assert_eq!(
+            registry_relative_roots(MAKER_KEY),
+            &[
+                "src/bolt_v3_maker_go_live_gate.rs",
+                "src/bolt_v3_maker_market_selection.rs",
+                "src/strategies/binary_oracle_maker",
+            ]
         );
     }
 
@@ -259,7 +272,7 @@ mod tests {
                 "src/bolt_v3_basket_store.rs",
                 "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
                 "src/bolt_v3_market_families/outcome_group.rs",
-                "src/strategy_runtime_bindings.rs",
+                "src/strategy_bindings.rs",
                 "src/strategies/complete_set_arbitrage",
             ]
         );
@@ -310,7 +323,7 @@ mod tests {
                 "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/tests/mod.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/tests/shell.rs".to_string(),
-                "src/strategy_runtime_bindings.rs".to_string(),
+                "src/strategy_bindings.rs".to_string(),
             ],
             "Task 11 covers the HIP-4 normalizer root alongside shared outcome-group roots"
         );

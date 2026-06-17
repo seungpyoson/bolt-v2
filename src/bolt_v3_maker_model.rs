@@ -37,20 +37,48 @@ use crate::bolt_v3_numeric::{
     TWO_F64, UNIT_F64, ZERO_F64, is_non_negative_finite, is_positive_finite, sanitize_probability,
 };
 
-/// The Glosten-Milgrom break-even bid and ask for the YES outcome token, both in
+/// The Glosten-Milgrom reservation band for the YES outcome token: the fair
+/// probability `p_up` the band was computed from, together with the break-even
+/// `bid = E[V|sell]` and `ask = E[V|buy]` posteriors that straddle it, all in
 /// `(0, 1)` probability units. The maker rests its YES quote at `bid` and (when
 /// laid out as a two-sided binary quote) its NO quote at `1 − ask`.
+///
+/// The fields are private and the sole constructor is [`gm_binary_quote`] — a
+/// band cannot be assembled from a bare struct literal, so the fair value used to
+/// lay out the quote (`p_up`) is definitionally the value its edges were derived
+/// from. This is the canonical pricing chain: the quote layout
+/// (`compose_binary_legs`) consumes only a band, never three loose scalars that
+/// nothing forces to agree.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BinaryGmQuote {
-    /// `E[V | sell]` — the price at which the maker is willing to buy YES.
-    pub bid: f64,
-    /// `E[V | buy]` — the price at which the maker is willing to sell YES.
-    pub ask: f64,
+pub struct GmReservationBand {
+    p_up: f64,
+    bid: f64,
+    ask: f64,
 }
 
-/// The exact Glosten-Milgrom bid/ask for a binary outcome token, given the fair
-/// probability `fair_p_up` that the YES outcome resolves true and the fraction
-/// `informed_fraction` (`μ`) of incoming flow that is informed.
+impl GmReservationBand {
+    /// The fair probability the YES outcome resolves true (the prior `p`).
+    pub fn p_up(&self) -> f64 {
+        self.p_up
+    }
+    /// `E[V | sell]` — the price at which the maker is willing to buy YES.
+    pub fn bid(&self) -> f64 {
+        self.bid
+    }
+    /// `E[V | buy]` — the price at which the maker is willing to sell YES.
+    pub fn ask(&self) -> f64 {
+        self.ask
+    }
+    /// The adverse-selection half-spread `(ask − bid)/2`, in probability units.
+    pub fn half_spread(&self) -> f64 {
+        (self.ask - self.bid) / TWO_F64
+    }
+}
+
+/// The exact Glosten-Milgrom reservation band for a binary outcome token, given
+/// the fair probability `fair_p_up` that the YES outcome resolves true and the
+/// fraction `informed_fraction` (`μ`) of incoming flow that is informed. This is
+/// the **sole** constructor of [`GmReservationBand`].
 ///
 /// Fail-closed (returns `None`, which the engine treats as "no quotable target
 /// this tick") when:
@@ -58,7 +86,7 @@ pub struct BinaryGmQuote {
 ///   boundaries the outcome is already decided and there is no two-sided quote;
 /// - `informed_fraction` is not finite or lies outside `[0, 1]`;
 /// - either posterior denominator is non-positive (degenerate mix).
-pub fn gm_binary_quote(fair_p_up: f64, informed_fraction: f64) -> Option<BinaryGmQuote> {
+pub fn gm_binary_quote(fair_p_up: f64, informed_fraction: f64) -> Option<GmReservationBand> {
     let p = sanitize_probability(fair_p_up)?;
     // A two-sided quote only exists for an undecided outcome.
     if !(p > ZERO_F64 && p < UNIT_F64) {
@@ -80,7 +108,8 @@ pub fn gm_binary_quote(fair_p_up: f64, informed_fraction: f64) -> Option<BinaryG
         return None;
     }
 
-    Some(BinaryGmQuote {
+    Some(GmReservationBand {
+        p_up: p,
         bid: sell_up / sell_denom,
         ask: buy_up / buy_denom,
     })
@@ -89,8 +118,7 @@ pub fn gm_binary_quote(fair_p_up: f64, informed_fraction: f64) -> Option<BinaryG
 /// The Glosten-Milgrom adverse-selection half-spread `(ask − bid)/2` for the
 /// binary, in probability units. `None` whenever [`gm_binary_quote`] is `None`.
 pub fn gm_half_spread(fair_p_up: f64, informed_fraction: f64) -> Option<f64> {
-    let quote = gm_binary_quote(fair_p_up, informed_fraction)?;
-    Some((quote.ask - quote.bid) / TWO_F64)
+    Some(gm_binary_quote(fair_p_up, informed_fraction)?.half_spread())
 }
 
 /// The secondary inventory skew the maker applies on top of the
@@ -136,8 +164,8 @@ mod tests {
         // μ = 0: every trade is uninformed noise, so a buy and a sell are equally
         // (un)informative and the posterior never moves off the prior.
         let quote = gm_binary_quote(0.6, 0.0).expect("interior fair, valid mu");
-        assert!((quote.bid - 0.6).abs() < EPSILON);
-        assert!((quote.ask - 0.6).abs() < EPSILON);
+        assert!((quote.bid() - 0.6).abs() < EPSILON);
+        assert!((quote.ask() - 0.6).abs() < EPSILON);
         assert!(gm_half_spread(0.6, 0.0).unwrap() < EPSILON);
     }
 
@@ -146,8 +174,8 @@ mod tests {
         // μ = 1: every trade reveals the outcome, so the maker can only quote the
         // extremes — bid 0, ask 1 — and the half-spread is 1/2.
         let quote = gm_binary_quote(0.6, 1.0).expect("interior fair, valid mu");
-        assert!(quote.bid < EPSILON);
-        assert!((quote.ask - UNIT_F64).abs() < EPSILON);
+        assert!(quote.bid() < EPSILON);
+        assert!((quote.ask() - UNIT_F64).abs() < EPSILON);
         assert!((gm_half_spread(0.6, 1.0).unwrap() - 0.5).abs() < EPSILON);
     }
 
@@ -155,18 +183,18 @@ mod tests {
     fn ask_sits_above_fair_and_bid_below_for_interior_informed_flow() {
         let p = 0.6;
         let quote = gm_binary_quote(p, 0.2).expect("interior fair, valid mu");
-        assert!(quote.bid < p, "bid must sit below fair");
-        assert!(quote.ask > p, "ask must sit above fair");
+        assert!(quote.bid() < p, "bid must sit below fair");
+        assert!(quote.ask() > p, "ask must sit above fair");
         // Both legs stay inside the (0, 1) probability range.
-        assert!(quote.bid > ZERO_F64 && quote.ask < UNIT_F64);
+        assert!(quote.bid() > ZERO_F64 && quote.ask() < UNIT_F64);
     }
 
     #[test]
     fn even_odds_quote_is_symmetric_about_one_half() {
         // At p = 0.5 the posteriors are mirror images: bid + ask = 1.
         let quote = gm_binary_quote(EVEN_ODDS, 0.3).expect("interior fair, valid mu");
-        assert!((quote.bid + quote.ask - UNIT_F64).abs() < EPSILON);
-        assert!((EVEN_ODDS - quote.bid - (quote.ask - EVEN_ODDS)).abs() < EPSILON);
+        assert!((quote.bid() + quote.ask() - UNIT_F64).abs() < EPSILON);
+        assert!((EVEN_ODDS - quote.bid() - (quote.ask() - EVEN_ODDS)).abs() < EPSILON);
     }
 
     #[test]
@@ -185,8 +213,22 @@ mod tests {
         // ask = 0.4*1.5 / (0.4*1.5 + 0.6*0.5) = 0.60 / 0.90 = 2/3
         // bid = 0.4*0.5 / (0.4*0.5 + 0.6*1.5) = 0.20 / 1.10 = 2/11
         let quote = gm_binary_quote(0.4, 0.5).expect("interior fair, valid mu");
-        assert!((quote.ask - 2.0 / 3.0).abs() < EPSILON);
-        assert!((quote.bid - 2.0 / 11.0).abs() < EPSILON);
+        assert!((quote.ask() - 2.0 / 3.0).abs() < EPSILON);
+        assert!((quote.bid() - 2.0 / 11.0).abs() < EPSILON);
+    }
+
+    #[test]
+    fn band_carries_its_fair_and_straddles_it() {
+        // The band carries the exact fair it was computed from, and its edges
+        // straddle it: bid <= p_up <= ask. This is the canonical-chain invariant
+        // the newtype enforces by construction — a bare struct literal cannot
+        // assemble a band whose p_up disagrees with its posteriors, so the value
+        // used to lay out the quote is definitionally the value its edges came from.
+        let band = gm_binary_quote(0.6, 0.2).expect("interior fair, valid mu");
+        assert!((band.p_up() - 0.6).abs() < EPSILON);
+        assert!(band.bid() <= band.p_up() && band.p_up() <= band.ask());
+        // The half_spread accessor agrees with the raw edge difference.
+        assert!((band.half_spread() - (band.ask() - band.bid()) / TWO_F64).abs() < EPSILON);
     }
 
     #[test]

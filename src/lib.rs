@@ -23,6 +23,7 @@ pub mod bolt_v3_loss_governor;
 pub mod bolt_v3_loss_halt_actions;
 pub mod bolt_v3_loss_runtime_feed;
 pub mod bolt_v3_maker_event_fence;
+pub mod bolt_v3_maker_go_live_gate;
 pub mod bolt_v3_maker_inventory;
 pub mod bolt_v3_maker_microprice;
 pub mod bolt_v3_maker_model;

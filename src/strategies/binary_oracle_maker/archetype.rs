@@ -30,6 +30,9 @@ use toml::{Value, map::Map};
 use nautilus_model::identifiers::StrategyId;
 
 use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
+use crate::bolt_v3_maker_go_live_gate::{
+    MakerBacktestGateEvidence, MakerBacktestVerdict, maker_backtest_gate_blockers,
+};
 use crate::bolt_v3_providers::resolve_fee_provider;
 use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
@@ -56,6 +59,7 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
 #[serde(deny_unknown_fields)]
 struct ParametersBlock {
     runtime: RuntimeParametersBlock,
+    backtest: BacktestParametersBlock,
 }
 
 /// Runtime-tuning knobs for the maker's μ (informed-fraction) estimator and its
@@ -72,6 +76,87 @@ struct RuntimeParametersBlock {
     mu_stale_window_ms: u64,
     mu_min_floor: f64,
     requote_min_interval_ms: u64,
+}
+
+/// Operator-supplied go-live evidence for the maker backtest. These are not
+/// strategy runtime knobs; they are explicit startup evidence that the built
+/// maker cleared Slice 10 before it can be registered for live quoting.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct BacktestParametersBlock {
+    verdict: BacktestVerdictParameter,
+    run_artifact: String,
+    threshold_artifact: String,
+    execution_model_artifact: String,
+    built_maker_replayed: bool,
+    full_net_scoring: bool,
+    thresholds_registered_before_run: bool,
+    balanced_gate_evaluated: bool,
+    strict_gate_evaluated: bool,
+    balanced_gate_passed: bool,
+    historical_full_depth_l2: bool,
+    full_population_corpus: bool,
+    entry_gated_corpus_used: bool,
+    trade_ticks_present: bool,
+    order_book_deltas_present: bool,
+    queue_position_enabled: bool,
+    nt_execution_model_used: bool,
+    custom_fill_model_used: bool,
+    custom_fill_model_source_proven: bool,
+    underlying_spot_causal_join: bool,
+    net_edge_positive: bool,
+    statistical_significance: bool,
+    passive_fill_power_floor: bool,
+    resolved_market_corpus_floor: bool,
+    shared_fair_value_pricing: bool,
+    shared_settlement_primitive: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum BacktestVerdictParameter {
+    Pass,
+    Fail,
+}
+
+impl BacktestParametersBlock {
+    fn evidence(&self) -> MakerBacktestGateEvidence {
+        MakerBacktestGateEvidence {
+            verdict: match self.verdict {
+                BacktestVerdictParameter::Pass => MakerBacktestVerdict::Pass,
+                BacktestVerdictParameter::Fail => MakerBacktestVerdict::Fail,
+            },
+            run_artifact_present: artifact_present(&self.run_artifact),
+            threshold_artifact_present: artifact_present(&self.threshold_artifact),
+            execution_model_artifact_present: artifact_present(&self.execution_model_artifact),
+            built_maker_replayed: self.built_maker_replayed,
+            full_net_scoring: self.full_net_scoring,
+            thresholds_registered_before_run: self.thresholds_registered_before_run,
+            balanced_gate_evaluated: self.balanced_gate_evaluated,
+            strict_gate_evaluated: self.strict_gate_evaluated,
+            balanced_gate_passed: self.balanced_gate_passed,
+            historical_full_depth_l2: self.historical_full_depth_l2,
+            full_population_corpus: self.full_population_corpus,
+            entry_gated_corpus_used: self.entry_gated_corpus_used,
+            trade_ticks_present: self.trade_ticks_present,
+            order_book_deltas_present: self.order_book_deltas_present,
+            queue_position_enabled: self.queue_position_enabled,
+            nt_execution_model_used: self.nt_execution_model_used,
+            custom_fill_model_used: self.custom_fill_model_used,
+            custom_fill_model_source_proven: self.custom_fill_model_source_proven,
+            underlying_spot_causal_join: self.underlying_spot_causal_join,
+            net_edge_positive: self.net_edge_positive,
+            statistical_significance: self.statistical_significance,
+            passive_fill_power_floor: self.passive_fill_power_floor,
+            resolved_market_corpus_floor: self.resolved_market_corpus_floor,
+            shared_fair_value_pricing: self.shared_fair_value_pricing,
+            shared_settlement_primitive: self.shared_settlement_primitive,
+        }
+    }
+}
+
+fn artifact_present(value: &str) -> bool {
+    !value.trim().is_empty()
 }
 
 /// Bolt-v3 startup validation and **go-live gate** for the maker.
@@ -173,6 +258,13 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
     if runtime.requote_min_interval_ms == 0 {
         errors.push(format!(
             "{context}: parameters.runtime.requote_min_interval_ms must be > 0 (a zero requote interval disables the same-tick throttle the requote budget relies on, so the budget rejects construction)"
+        ));
+    }
+    for blocker in maker_backtest_gate_blockers(&parameters.backtest.evidence()) {
+        errors.push(format!(
+            "{context}: parameters.backtest.{} {}",
+            blocker.parameter_path(),
+            blocker.required_state()
         ));
     }
     errors
@@ -365,8 +457,85 @@ mod tests {
         }
     }
 
+    fn valid_backtest() -> BacktestParametersBlock {
+        BacktestParametersBlock {
+            verdict: BacktestVerdictParameter::Pass,
+            run_artifact: "artifact://maker/backtest/run".to_string(),
+            threshold_artifact: "artifact://maker/backtest/thresholds".to_string(),
+            execution_model_artifact: "artifact://maker/backtest/execution-model".to_string(),
+            built_maker_replayed: true,
+            full_net_scoring: true,
+            thresholds_registered_before_run: true,
+            balanced_gate_evaluated: true,
+            strict_gate_evaluated: true,
+            balanced_gate_passed: true,
+            historical_full_depth_l2: true,
+            full_population_corpus: true,
+            entry_gated_corpus_used: false,
+            trade_ticks_present: true,
+            order_book_deltas_present: true,
+            queue_position_enabled: true,
+            nt_execution_model_used: true,
+            custom_fill_model_used: false,
+            custom_fill_model_source_proven: false,
+            underlying_spot_causal_join: true,
+            net_edge_positive: true,
+            statistical_significance: true,
+            passive_fill_power_floor: true,
+            resolved_market_corpus_floor: true,
+            shared_fair_value_pricing: true,
+            shared_settlement_primitive: true,
+        }
+    }
+
+    const VALID_BACKTEST_TOML: &str = r#"
+            [backtest]
+            verdict = "pass"
+            run_artifact = "artifact://maker/backtest/run"
+            threshold_artifact = "artifact://maker/backtest/thresholds"
+            execution_model_artifact = "artifact://maker/backtest/execution-model"
+            built_maker_replayed = true
+            full_net_scoring = true
+            thresholds_registered_before_run = true
+            balanced_gate_evaluated = true
+            strict_gate_evaluated = true
+            balanced_gate_passed = true
+            historical_full_depth_l2 = true
+            full_population_corpus = true
+            entry_gated_corpus_used = false
+            trade_ticks_present = true
+            order_book_deltas_present = true
+            queue_position_enabled = true
+            nt_execution_model_used = true
+            custom_fill_model_used = false
+            custom_fill_model_source_proven = false
+            underlying_spot_causal_join = true
+            net_edge_positive = true
+            statistical_significance = true
+            passive_fill_power_floor = true
+            resolved_market_corpus_floor = true
+            shared_fair_value_pricing = true
+            shared_settlement_primitive = true
+            "#;
+
     fn bounds_errors(runtime: RuntimeParametersBlock) -> Vec<String> {
-        validate_parameter_bounds(CONTEXT, &ParametersBlock { runtime })
+        validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime,
+                backtest: valid_backtest(),
+            },
+        )
+    }
+
+    fn backtest_errors(backtest: BacktestParametersBlock) -> Vec<String> {
+        validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                backtest,
+            },
+        )
     }
 
     #[test]
@@ -548,13 +717,120 @@ mod tests {
         );
     }
 
+    #[test]
+    fn validate_parameter_bounds_rejects_failed_backtest_verdict() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            verdict: BacktestVerdictParameter::Fail,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.verdict")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_missing_backtest_artifacts() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            run_artifact: "   ".to_string(),
+            threshold_artifact: String::new(),
+            execution_model_artifact: String::new(),
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.run_artifact")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.threshold_artifact")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.execution_model_artifact")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_missing_trade_and_book_corpus() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            trade_ticks_present: false,
+            order_book_deltas_present: false,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.trade_ticks_present")),
+            "{errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.order_book_deltas_present")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_disabled_queue_position() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            queue_position_enabled: false,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.queue_position_enabled")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_entry_gated_corpus() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            entry_gated_corpus_used: true,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.entry_gated_corpus_used")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_custom_fill_without_source_proof() {
+        let errors = backtest_errors(BacktestParametersBlock {
+            custom_fill_model_used: true,
+            custom_fill_model_source_proven: false,
+            ..valid_backtest()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.backtest.custom_fill_model_source_proven")),
+            "{errors:?}"
+        );
+    }
+
     fn parameters_from_str(toml: &str) -> Result<ParametersBlock, toml::de::Error> {
         toml::from_str(toml)
     }
 
     #[test]
     fn parameters_block_deserializes_nested_runtime() {
-        let parsed = parameters_from_str(
+        let toml = format!(
+            "{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -564,28 +840,82 @@ mod tests {
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
             "#,
-        )
-        .expect("valid block deserializes");
+            VALID_BACKTEST_TOML
+        );
+        let parsed = parameters_from_str(&toml).expect("valid block deserializes");
         assert_eq!(parsed.runtime, valid_runtime());
+        assert_eq!(parsed.backtest, valid_backtest());
     }
 
     #[test]
     fn parameters_block_rejects_unknown_runtime_key() {
+        let toml = format!(
+            "{}{}",
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
+            surprise = 1
+            "#,
+            VALID_BACKTEST_TOML
+        );
         assert!(
-            parameters_from_str(
-                r#"
-                [runtime]
-                trade_flow_window_secs = 600
-                trade_flow_max_samples = 1000
-                mu_min_classified_samples = 4
-                mu_stale_window_ms = 60000
-                mu_min_floor = 0.05
-                requote_min_interval_ms = 500
-                surprise = 1
-                "#,
-            )
-            .is_err(),
+            parameters_from_str(&toml).is_err(),
             "an unknown [parameters.runtime] key must fail loud"
+        );
+    }
+
+    #[test]
+    fn parameters_block_rejects_unknown_backtest_key() {
+        let toml = format!(
+            "{}{}",
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            mu_min_floor = 0.05
+            requote_min_interval_ms = 500
+            "#,
+            r#"
+            [backtest]
+            verdict = "pass"
+            run_artifact = "artifact://maker/backtest/run"
+            threshold_artifact = "artifact://maker/backtest/thresholds"
+            execution_model_artifact = "artifact://maker/backtest/execution-model"
+            built_maker_replayed = true
+            full_net_scoring = true
+            thresholds_registered_before_run = true
+            balanced_gate_evaluated = true
+            strict_gate_evaluated = true
+            balanced_gate_passed = true
+            historical_full_depth_l2 = true
+            full_population_corpus = true
+            entry_gated_corpus_used = false
+            trade_ticks_present = true
+            order_book_deltas_present = true
+            queue_position_enabled = true
+            nt_execution_model_used = true
+            custom_fill_model_used = false
+            custom_fill_model_source_proven = false
+            underlying_spot_causal_join = true
+            net_edge_positive = true
+            statistical_significance = true
+            passive_fill_power_floor = true
+            resolved_market_corpus_floor = true
+            shared_fair_value_pricing = true
+            shared_settlement_primitive = true
+            surprise = true
+            "#
+        );
+        assert!(
+            parameters_from_str(&toml).is_err(),
+            "an unknown [parameters.backtest] key must fail loud"
         );
     }
 
@@ -598,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn parameters_block_rejects_missing_runtime_knob() {
+    fn parameters_block_rejects_missing_backtest_table() {
         assert!(
             parameters_from_str(
                 r#"
@@ -607,9 +937,30 @@ mod tests {
                 trade_flow_max_samples = 1000
                 mu_min_classified_samples = 4
                 mu_stale_window_ms = 60000
+                mu_min_floor = 0.05
+                requote_min_interval_ms = 500
                 "#,
             )
             .is_err(),
+            "an absent [parameters.backtest] table must fail loud"
+        );
+    }
+
+    #[test]
+    fn parameters_block_rejects_missing_runtime_knob() {
+        let toml = format!(
+            "{}{}",
+            r#"
+            [runtime]
+            trade_flow_window_secs = 600
+            trade_flow_max_samples = 1000
+            mu_min_classified_samples = 4
+            mu_stale_window_ms = 60000
+            "#,
+            VALID_BACKTEST_TOML
+        );
+        assert!(
+            parameters_from_str(&toml).is_err(),
             "a missing μ knob must fail loud"
         );
     }

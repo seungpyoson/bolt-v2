@@ -1041,9 +1041,9 @@ is_quote_quantity = false
 side = "sell"
 position_side = "long"
 order_type = "market"
-time_in_force = "gtc"
+time_in_force = "ioc"
 is_post_only = false
-is_reduce_only = true
+is_reduce_only = false
 is_quote_quantity = false
 
 [parameters]
@@ -1281,6 +1281,7 @@ Entry orders use the configured `entry_order` template.
 Normal exits use the configured `exit_order` template.
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders; config validation therefore requires `parameters.forced_exit_order.order_type = "market"` for that mode.
+For Polymarket-routed market `exit_order` and `forced_exit_order` templates, use `time_in_force = "ioc"` or `"fok"`; shipped configs use `"ioc"`. Polymarket also rejects reduce-only exit templates before submit, so set `is_reduce_only = false`.
 Set `manage_stop = false` to use a non-market `forced_exit_order` through the strategy forced-flat path.
 
 #### `side`
@@ -1761,9 +1762,9 @@ is_quote_quantity = false
 side = "sell"
 position_side = "long"
 order_type = "market"
-time_in_force = "gtc"
+time_in_force = "ioc"
 is_post_only = false
-is_reduce_only = true
+is_reduce_only = false
 is_quote_quantity = false
 
 [parameters]

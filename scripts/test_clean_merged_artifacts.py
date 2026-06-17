@@ -228,7 +228,7 @@ class LaneRTests(unittest.TestCase):
 
     def _gh_mock_returning(self, payload: list[dict[str, Any]] | None,
                             error: str | None = None) -> Callable[..., Any]:
-        def fake(repo_root: pathlib.Path, branch: str, timeout: float) -> tuple[Any, Any]:
+        def fake(repo_root: pathlib.Path, config: Any, branch: str) -> tuple[Any, Any]:
             return payload, error
         return fake
 
@@ -241,7 +241,7 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "commit", "--allow-empty", "-m", "new-unmerged"], cwd=self.work)
         _run(["git", "checkout", "main"], cwd=self.work)
         # set the origin owner so the same-repo filter is exercised
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 1, "headRefOid": old_sha,
                                     "baseRefName": "main",
@@ -259,7 +259,7 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
         tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
         _run(["git", "checkout", "main"], cwd=self.work)
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 2, "headRefOid": tip,
                                     "baseRefName": "release/1.0",  # not trunk
@@ -276,7 +276,7 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
         tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
         _run(["git", "checkout", "main"], cwd=self.work)
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 3, "headRefOid": tip,
                                     "baseRefName": "main",
@@ -294,7 +294,7 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
         tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
         _run(["git", "checkout", "main"], cwd=self.work)
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 4, "headRefOid": tip,
                                     "baseRefName": "main",
@@ -314,7 +314,7 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "checkout", "-b", "feat/err"], cwd=self.work)
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
         _run(["git", "checkout", "main"], cwd=self.work)
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning(None, error="gh exit 1: auth")):
             with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
                 rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
@@ -326,7 +326,7 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "checkout", "-b", "feat/timeout"], cwd=self.work)
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
         _run(["git", "checkout", "main"], cwd=self.work)
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning(None, error="gh timeout")):
             with mock.patch.object(cm, "_resolve_origin_owner", return_value="t"):
                 rc = run_clean_inproc(self.work, "--lane", "r", "--apply", "--quiet")
@@ -340,7 +340,7 @@ class LaneRTests(unittest.TestCase):
         tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
         _run(["git", "checkout", "main"], cwd=self.work)
         add_worktree(self.work, "feat/wt", self.tmp / "wt-r")
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 5, "headRefOid": tip,
                                     "baseRefName": "main",
@@ -365,7 +365,7 @@ class LaneRTests(unittest.TestCase):
         _run(["git", "commit", "--allow-empty", "-m", "v2-unmerged"], cwd=self.work)
         _run(["git", "checkout", "main"], cwd=self.work)
         # gh returns the merged PR for v1; current tip is v2 -> must mismatch -> kept
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
                                 self._gh_mock_returning([{
                                     "number": 6, "headRefOid": v1,
                                     "baseRefName": "main",
@@ -574,8 +574,8 @@ class InfraTests(unittest.TestCase):
         _run(["git", "commit", "--allow-empty", "-m", "x"], cwd=self.work)
         tip = _run(["git", "rev-parse", "HEAD"], cwd=self.work).stdout.strip()
         _run(["git", "checkout", "main"], cwd=self.work)
-        with mock.patch.object(cm, "gh_merged_pr_for_branch",
-                                lambda r, b, t: ([{
+        with mock.patch.object(cm, "gh_merged_pr_for_branch_cached",
+                                lambda r, c, b: ([{
                                     "number": 9, "headRefOid": tip, "baseRefName": "main",
                                     "headRepositoryOwner": {"login": "t"},
                                     "isCrossRepository": False,
@@ -593,6 +593,164 @@ class InfraTests(unittest.TestCase):
         # returns 1 if problems found (hooks not installed in test env), 0 if all green;
         # both are acceptable; we only assert it runs to completion
         self.assertIn(rc, (0, 1))
+
+
+# ---------------------------------------------------------------------------
+# Fallback TOML parser (A1)
+
+
+class FallbackTomlParserTests(unittest.TestCase):
+    def test_parses_clean_merged_schema(self) -> None:
+        from textwrap import dedent
+        text = dedent("""
+        schema_version = 1
+        [clean-merged]
+        enabled = true
+        trunk_branch = "main"
+        remote_name = "origin"
+        hook_detach = false
+
+        [clean-merged.lane_r]
+        gh_timeout_s = 5
+        cache_ttl_s = 300
+        hook_spawn_detached = true
+
+        [clean-merged.lane_w]
+        quarantine_dir = "<git-common-dir>/clean-merged-quarantine"
+        quarantine_grace_days = 30
+        discard_ignored = false
+        """)
+        data = cm._parse_toml_flat(text)
+        self.assertEqual(data["schema_version"], 1)
+        self.assertIs(data["clean-merged"]["enabled"], True)
+        self.assertEqual(data["clean-merged"]["trunk_branch"], "main")
+        self.assertEqual(data["clean-merged"]["lane_r"]["gh_timeout_s"], 5)
+        self.assertIs(data["clean-merged"]["lane_r"]["hook_spawn_detached"], True)
+        self.assertEqual(data["clean-merged"]["lane_w"]["quarantine_grace_days"], 30)
+        self.assertEqual(data["clean-merged"]["lane_w"]["discard_ignored"], False)
+
+    def test_rejects_invalid_value(self) -> None:
+        with self.assertRaises(ValueError):
+            cm._parse_toml_flat("key = [1, 2, 3]\n")
+
+
+# ---------------------------------------------------------------------------
+# gh cache (A3)
+
+
+class GhCacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-test-"))
+        self.work = make_repo(self.tmp)
+        make_config(self.work)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_cache_avoids_repeat_call_within_ttl(self) -> None:
+        config = cm.load_config(self.work)
+        call_count = {"n": 0}
+
+        def counting_fake(repo_root: pathlib.Path, branch: str, timeout: float):
+            call_count["n"] += 1
+            return [], None
+
+        with mock.patch.object(cm, "gh_merged_pr_for_branch", counting_fake):
+            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x")
+            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x")
+            cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x")
+        self.assertEqual(call_count["n"], 1,
+                          "TTL cache must collapse repeated calls into one gh query")
+
+    def test_cache_survives_corrupt_cache_file(self) -> None:
+        config = cm.load_config(self.work)
+        cache_path = cm._gh_cache_path(self.work)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("not json at all", encoding="utf-8")
+        with mock.patch.object(cm, "gh_merged_pr_for_branch",
+                                lambda r, b, t: ([], None)):
+            prs, err = cm.gh_merged_pr_for_branch_cached(self.work, config, "feat/x")
+        self.assertEqual(prs, [])
+        self.assertIsNone(err)
+
+
+# ---------------------------------------------------------------------------
+# Hook end-to-end tests (A4)
+
+
+class HookEndToEndTests(unittest.TestCase):
+    """Install the actual .githooks/* into a temp repo and verify each hook fires."""
+
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-hook-"))
+        self.remote = self.tmp / "remote.git"
+        _run(["git", "init", "--bare", "-b", "main", str(self.remote)], cwd=self.tmp)
+        self.work = self.tmp / "work"
+        _run(["git", "init", "-b", "main", str(self.work)], cwd=self.tmp)
+        _run(["git", "remote", "add", "origin", str(self.remote)], cwd=self.work)
+        # Drop config + script + hooks
+        (self.work / "config").mkdir()
+        (self.work / "config" / "clean-merged.toml").write_text(
+            'schema_version = 1\n[clean-merged]\nenabled = true\n'
+            'trunk_branch = "main"\n[clean-merged.lane_w]\n'
+            'quarantine_dir = "<git-common-dir>/clean-merged-quarantine"\n',
+            encoding="utf-8")
+        scripts_dir = self.work / "scripts"
+        scripts_dir.mkdir()
+        shutil.copy(REPO_ROOT / "scripts" / "clean_merged_artifacts.py", scripts_dir)
+        hooks_dir = self.work / ".githooks"
+        hooks_dir.mkdir()
+        for h in ("post-merge", "post-checkout", "post-rewrite"):
+            shutil.copy(REPO_ROOT / ".githooks" / h, hooks_dir)
+            (hooks_dir / h).chmod(0o755)
+        _run(["git", "config", "core.hooksPath", ".githooks"], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "init"], cwd=self.work)
+        _run(["git", "push", "-u", "origin", "main"], cwd=self.work)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _heartbeat(self) -> pathlib.Path | None:
+        common = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       cwd=self.work).stdout.strip()
+        hb = pathlib.Path(common) / "clean-merged.heartbeat"
+        return hb if hb.is_file() else None
+
+    def _advance_remote(self) -> None:
+        other = self.tmp / "other"
+        _run(["git", "clone", "-q", "-b", "main", str(self.remote), str(other)], cwd=self.tmp)
+        _run(["git", "commit", "--allow-empty", "-m", "remote-advance"], cwd=other)
+        _run(["git", "push", "-q", "origin", "main"], cwd=other)
+
+    def test_post_merge_fires_on_ff_pull(self) -> None:
+        # eligible branch on main; advance remote; pull -> post-merge fires Lane H.
+        _run(["git", "branch", "feat/eligible"], cwd=self.work)
+        self._advance_remote()
+        self.assertIsNone(self._heartbeat(), "precondition: no heartbeat yet")
+        _run(["git", "pull", "--ff-only", "origin", "main"], cwd=self.work)
+        # detached Lane R may take a moment; heartbeat is written synchronously by Lane H
+        hb = self._heartbeat()
+        self.assertIsNotNone(hb, "post-merge must fire Lane H which writes the heartbeat")
+        # Lane H should also have deleted the eligible branch
+        branches = git(self.work, "branch", "--list")
+        self.assertNotIn("feat/eligible", branches,
+                          "post-merge Lane H must delete ancestor-eligible branches")
+
+    def test_post_checkout_fires_on_branch_switch(self) -> None:
+        # Switching to a feature branch and back to main fires post-checkout.
+        _run(["git", "checkout", "-b", "feat/x"], cwd=self.work)
+        _run(["git", "checkout", "main"], cwd=self.work)
+        hb = self._heartbeat()
+        # post-checkout runs Lane H only when landing on trunk; verify heartbeat present.
+        self.assertIsNotNone(hb, "post-checkout Lane H dispatch must write heartbeat")
+
+    def test_post_rewrite_fires_on_rebase_pull(self) -> None:
+        # Divergent local + remote forces an actual rebase on pull -> post-rewrite fires.
+        _run(["git", "commit", "--allow-empty", "-m", "local-divergent"], cwd=self.work)
+        self._advance_remote()
+        _run(["git", "pull", "--rebase", "origin", "main"], cwd=self.work)
+        hb = self._heartbeat()
+        self.assertIsNotNone(hb, "post-rewrite must fire Lane H which writes the heartbeat")
 
 
 if __name__ == "__main__":

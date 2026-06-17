@@ -75,6 +75,35 @@ fn data_client_probe_builds_node_before_entering_tokio_runtime() {
 }
 
 #[test]
+fn data_client_census_builds_node_before_entering_tokio_runtime() {
+    let source = include_str!("../src/main.rs");
+    let census_fn = source
+        .split("fn run_data_client_census")
+        .nth(1)
+        .expect("production binary must expose ops data-client-census runner");
+
+    let build_census = census_fn
+        .find("build_bolt_v3_strategy_free_data_client_probe_live_node(&loaded, client_key)?")
+        .expect("data-client census must build the scoped LiveNode");
+    let build_runtime = census_fn
+        .find("tokio::runtime::Builder::new_multi_thread()")
+        .expect("data-client census must build the Tokio runtime");
+    assert!(
+        build_census < build_runtime,
+        "data-client census must resolve SSM and build the LiveNode before entering Tokio runtime"
+    );
+    assert!(
+        census_fn
+            .contains("run_bolt_v3_data_client_census(node_runtime, &census_loaded, client_key)"),
+        "data-client census async runner must receive an already-built node runtime"
+    );
+    assert!(
+        !census_fn.contains("run_bolt_v3_data_client_census(&loaded"),
+        "data-client census must not build SSM-backed runtime state from inside LocalSet::run_until"
+    );
+}
+
+#[test]
 fn bolt_v3_production_path_cannot_load_legacy_config_defaults() {
     let production_sources = [
         ("src/main.rs", include_str!("../src/main.rs")),

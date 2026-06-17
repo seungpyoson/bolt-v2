@@ -15770,6 +15770,30 @@ classification = "ops_probe_json_stdout_template"
 reason = "CLI output format template for printing the structured readiness probe report; report values come from runtime observation and TOML."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"instrument census"'''
+context = '''"instrument census",'''
+classification = "ops_census_registration_diagnostic_label"
+reason = "Diagnostic label used when validating that the selected strategy-free data client is registered for the census command; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"data-client census observed zero cached instruments"'''
+context = '''reason: "data-client census observed zero cached instruments".to_string(),'''
+classification = "ops_census_fail_closed_diagnostic"
+reason = "Fail-closed diagnostic emitted when the strategy-free data-client census reaches NT Running without any cached instruments; it does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''b"\0"'''
+context = '''hasher.update(b"\0");'''
+classification = "ops_census_hash_delimiter"
+reason = "NUL byte delimiter for the deterministic SHA-256 framing of sorted instrument IDs in the ops census report; it is not a runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_providers/chainlink/report.rs"
 kind = "number"
 literal = '''7'''

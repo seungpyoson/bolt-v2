@@ -93,6 +93,7 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -240,6 +241,13 @@ struct BoltV3LiveNodeAdapterBundle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3StrategyFreeReferenceCacheEvidence {
     cached_instrument_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3DataClientCensusReport {
+    pub client_key: String,
+    pub cached_instrument_count: usize,
+    pub cached_instrument_ids_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2821,6 +2829,60 @@ impl BoltV3LiveNodeRuntime {
         }
     }
 
+    pub async fn run_strategy_free_until_running_then_stop(
+        &mut self,
+        start_timeout: Duration,
+        stop_timeout: Duration,
+        poll_interval: Duration,
+    ) -> Result<(), BoltV3LiveNodeError> {
+        let handle = self.node.handle();
+        let run_future = self.node.run();
+        tokio::pin!(run_future);
+        let deadline = tokio::time::sleep(start_timeout);
+        tokio::pin!(deadline);
+
+        loop {
+            match handle.state() {
+                NodeState::Running => break,
+                NodeState::ShuttingDown | NodeState::Stopped => {
+                    return Err(BoltV3LiveNodeError::StrategyFreeStartIncomplete);
+                }
+                NodeState::Idle | NodeState::Starting => {}
+            }
+
+            let sleep = tokio::time::sleep(poll_interval);
+            tokio::pin!(sleep);
+            tokio::select! {
+                result = &mut run_future => {
+                    result.map_err(BoltV3LiveNodeError::StrategyFreeStartFailed)?;
+                    return Err(BoltV3LiveNodeError::StrategyFreeStartIncomplete);
+                }
+                _ = &mut deadline => {
+                    handle.stop();
+                    tokio::time::timeout(stop_timeout, run_future)
+                        .await
+                        .map_err(|_| BoltV3LiveNodeError::StrategyFreeStopTimeout {
+                            timeout_secs: stop_timeout.as_secs(),
+                        })?
+                        .map_err(BoltV3LiveNodeError::StrategyFreeStopFailed)?;
+                    return Err(BoltV3LiveNodeError::StrategyFreeStartTimeout {
+                        timeout_secs: start_timeout.as_secs(),
+                    });
+                }
+                _ = &mut sleep => {}
+            }
+        }
+
+        handle.stop();
+        tokio::time::timeout(stop_timeout, run_future)
+            .await
+            .map_err(|_| BoltV3LiveNodeError::StrategyFreeStopTimeout {
+                timeout_secs: stop_timeout.as_secs(),
+            })?
+            .map_err(BoltV3LiveNodeError::StrategyFreeStopFailed)?;
+        Ok(())
+    }
+
     pub fn instance_id(&self) -> String {
         self.node.instance_id().to_string()
     }
@@ -3827,6 +3889,67 @@ pub async fn run_bolt_v3_data_client_probe(
         }
     });
     Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { reason })
+}
+
+pub async fn run_bolt_v3_data_client_census(
+    mut runtime: BoltV3LiveNodeRuntime,
+    census_loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3DataClientCensusReport, BoltV3LiveNodeError> {
+    let client = census_loaded.root.clients.get(client_key).ok_or_else(|| {
+        BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
+            reason: "data-client census client_key is not configured".to_string(),
+        }
+    })?;
+    if client.data.is_none() {
+        return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
+            reason: "data-client census requires the selected client to declare [data]".to_string(),
+        });
+    }
+    runtime.ensure_strategy_free_data_client_registered(
+        ClientId::from(client_key),
+        "instrument census",
+    )?;
+
+    let start_timeout = Duration::from_secs(strategy_free_start_timeout_secs(census_loaded)?);
+    let stop_timeout = Duration::from_secs(strategy_free_stop_timeout_secs(census_loaded)?);
+    let poll_interval = Duration::from_millis(
+        census_loaded
+            .root
+            .persistence
+            .runtime_capture_start_poll_interval_ms,
+    );
+    runtime
+        .run_strategy_free_until_running_then_stop(start_timeout, stop_timeout, poll_interval)
+        .await?;
+    data_client_census_report(client_key, runtime.cached_instrument_ids())
+}
+
+fn data_client_census_report(
+    client_key: &str,
+    mut instrument_ids: Vec<String>,
+) -> Result<BoltV3DataClientCensusReport, BoltV3LiveNodeError> {
+    instrument_ids.sort();
+    instrument_ids.dedup();
+    if instrument_ids.is_empty() {
+        return Err(BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed {
+            reason: "data-client census observed zero cached instruments".to_string(),
+        });
+    }
+    Ok(BoltV3DataClientCensusReport {
+        client_key: client_key.to_string(),
+        cached_instrument_count: instrument_ids.len(),
+        cached_instrument_ids_sha256: instrument_ids_sha256(&instrument_ids),
+    })
+}
+
+fn instrument_ids_sha256(instrument_ids: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for instrument_id in instrument_ids {
+        hasher.update(instrument_id.as_bytes());
+        hasher.update(b"\0");
+    }
+    hex::encode(hasher.finalize())
 }
 
 enum StrategyFreeDataClientProbeHandler {
@@ -9444,6 +9567,42 @@ configured_source_param = "configured-value"
             loaded.root.clients.contains_key("polymarket_main"),
             "helper must not mutate the caller's full client bundle"
         );
+    }
+
+    #[test]
+    fn data_client_census_report_sorts_and_dedupes_instrument_ids() {
+        let unsorted = data_client_census_report(
+            "bybit_data",
+            vec![
+                "ETH/USDT.BYBIT".to_string(),
+                "BTC/USDT.BYBIT".to_string(),
+                "ETH/USDT.BYBIT".to_string(),
+            ],
+        )
+        .expect("non-empty census should build");
+        let sorted = data_client_census_report(
+            "bybit_data",
+            vec!["BTC/USDT.BYBIT".to_string(), "ETH/USDT.BYBIT".to_string()],
+        )
+        .expect("deduped census should build");
+
+        assert_eq!(unsorted.cached_instrument_count, 2);
+        assert_eq!(
+            unsorted.cached_instrument_ids_sha256,
+            sorted.cached_instrument_ids_sha256
+        );
+    }
+
+    #[test]
+    fn data_client_census_report_rejects_empty_cache() {
+        let error = data_client_census_report("bybit_data", Vec::new())
+            .expect_err("empty instrument cache must fail closed");
+
+        assert!(matches!(
+            error,
+            BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { reason }
+                if reason.contains("zero cached instruments")
+        ));
     }
 
     #[test]

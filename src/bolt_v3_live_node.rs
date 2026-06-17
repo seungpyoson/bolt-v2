@@ -8939,6 +8939,40 @@ configured_source_param = "configured-value"
     }
 
     #[test]
+    fn trade_transport_config_prunes_unreferenced_hyperliquid_execution_clients_from_root() {
+        let loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("production root config should load");
+        for client_key in [
+            "hyperliquid_standard_perps_execution",
+            "hyperliquid_spot_execution",
+            "hyperliquid_hip3_execution",
+            "hyperliquid_hip4_execution",
+        ] {
+            assert!(
+                loaded.root.clients.contains_key(client_key),
+                "{client_key} should be configured in root.toml before transport pruning"
+            );
+        }
+
+        let scoped =
+            trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
+                .expect("production trade transport scope should derive cleanly");
+
+        for client_key in [
+            "hyperliquid_standard_perps_execution",
+            "hyperliquid_spot_execution",
+            "hyperliquid_hip3_execution",
+            "hyperliquid_hip4_execution",
+        ] {
+            assert!(
+                !scoped.root.clients.contains_key(client_key),
+                "{client_key} is not strategy-referenced and must not reach live-node registration"
+            );
+        }
+    }
+
+    #[test]
     fn trade_transport_config_keeps_strategy_and_root_substrate_clients() {
         let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
             "tests/fixtures/bolt_v3/root.toml",

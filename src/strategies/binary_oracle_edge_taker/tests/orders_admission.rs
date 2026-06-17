@@ -1582,7 +1582,7 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
     strategy.config.forced_exit_order.order_type = OrderType::Market;
     strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
     strategy.config.forced_exit_order.is_post_only = false;
-    strategy.config.forced_exit_order.is_reduce_only = true;
+    strategy.config.forced_exit_order.is_reduce_only = false;
     set_active_books_best_prices(&mut strategy, 0.44, 0.45);
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
@@ -1604,12 +1604,12 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
     assert_eq!(decision.order_type, Some(OrderType::Market));
     assert_eq!(decision.time_in_force, Some(TimeInForce::Ioc));
     assert_eq!(decision.is_post_only, Some(false));
-    assert_eq!(decision.is_reduce_only, Some(true));
+    assert_eq!(decision.is_reduce_only, Some(false));
     assert_eq!(decision.price, Some(0.44));
 }
 
 #[test]
-fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
+fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.active.phase = SelectionPhase::Freeze;
@@ -1620,7 +1620,7 @@ fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
     strategy.config.forced_exit_order.order_type = OrderType::Market;
     strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
     strategy.config.forced_exit_order.is_post_only = false;
-    strategy.config.forced_exit_order.is_reduce_only = true;
+    strategy.config.forced_exit_order.is_reduce_only = false;
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
         &mut strategy,
@@ -1666,7 +1666,7 @@ fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
     assert_eq!(order.order_type(), OrderType::Market);
     assert_eq!(order.time_in_force(), TimeInForce::Ioc);
     assert_eq!(order.price(), None);
-    assert!(order.is_reduce_only());
+    assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
 }
 

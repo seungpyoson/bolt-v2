@@ -25,6 +25,7 @@ pub mod bolt_v3_loss_runtime_feed;
 pub mod bolt_v3_maker_event_fence;
 pub mod bolt_v3_maker_go_live_gate;
 pub mod bolt_v3_maker_inventory;
+pub mod bolt_v3_maker_market_selection;
 pub mod bolt_v3_maker_microprice;
 pub mod bolt_v3_maker_model;
 pub mod bolt_v3_maker_mu_estimator;

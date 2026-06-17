@@ -54,4 +54,5 @@ src/strategies/complete_set_arbitrage
 
 [maker]
 src/bolt_v3_maker_go_live_gate.rs
+src/bolt_v3_maker_market_selection.rs
 src/strategies/binary_oracle_maker

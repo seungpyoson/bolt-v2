@@ -246,11 +246,12 @@ mod tests {
     }
 
     #[test]
-    fn maker_source_set_includes_go_live_gate_and_binary_oracle_maker_directory() {
+    fn maker_source_set_includes_go_live_gate_market_selection_and_maker_directory() {
         assert_eq!(
             registry_relative_roots(MAKER_KEY),
             &[
                 "src/bolt_v3_maker_go_live_gate.rs",
+                "src/bolt_v3_maker_market_selection.rs",
                 "src/strategies/binary_oracle_maker",
             ]
         );

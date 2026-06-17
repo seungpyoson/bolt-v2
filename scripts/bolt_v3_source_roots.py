@@ -37,23 +37,41 @@ OUTCOME_GROUP_KEY = "outcome_group"
 
 
 def _load_gated_source_roots() -> dict[str, tuple[str, ...]]:
-    """Parse ``gated_source_roots.manifest`` into ``{key: (roots...)}``.
+    """Parse ``gated_source_roots.manifest`` into ``{key: (roots...)}``."""
+    return _parse_manifest_text(
+        GATED_SOURCE_ROOTS_MANIFEST.read_text(encoding="utf-8"),
+        source_label=str(GATED_SOURCE_ROOTS_MANIFEST),
+    )
 
-    Mirrors the build.rs parser: ``#`` comments and blank lines are ignored;
-    ``[key]`` starts a section; every other line is a repo-relative root.
-    Invalid roots (absolute, backslash, or ``.``/``..``/empty components) and
-    structural errors raise ``ValueError`` with a file:line location, so a
-    malformed manifest fails loudly on both the Rust and Python sides.
+
+def _parse_manifest_text(
+    text: str, *, source_label: str = str(GATED_SOURCE_ROOTS_MANIFEST)
+) -> dict[str, tuple[str, ...]]:
+    """Parse manifest ``text`` into ``{key: (roots...)}``.
+
+    Mirrors the build.rs ``parse_gated_source_roots`` function: ``#`` comments
+    and blank lines are ignored; ``[key]`` starts a section; every other line is
+    a repo-relative root. Invalid roots (absolute, backslash, or
+    ``.``/``..``/empty components) and structural errors raise ``ValueError``
+    with a ``file:line`` location, so a malformed manifest fails loudly on both
+    the Rust and Python sides.
+
+    Lines are split with ``str.split("\\n")`` — NOT ``str.splitlines()`` — so the
+    recognized line terminators are exactly Rust ``str::lines()`` (``\\n`` and
+    ``\\r\\n`` only). ``str.splitlines()`` additionally breaks on a bare ``\\r``
+    and Unicode separators (U+2028/U+2029/…); using it would let a manifest the
+    Rust build rejects parse cleanly in Python, so the two parsers would not be
+    equivalent. Each line is ``.strip()``-ed (removing the trailing ``\\r`` of a
+    ``\\r\\n`` terminator), and a final empty line is skipped as blank.
     """
-    text = GATED_SOURCE_ROOTS_MANIFEST.read_text(encoding="utf-8")
     sections: dict[str, list[str]] = {}
     order: list[str] = []
     current: str | None = None
-    for index, raw_line in enumerate(text.splitlines(), start=1):
+    for index, raw_line in enumerate(text.split("\n"), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        location = f"{GATED_SOURCE_ROOTS_MANIFEST}:{index}"
+        location = f"{source_label}:{index}"
         if line.startswith("["):
             if not line.endswith("]"):
                 raise ValueError(f"{location}: malformed section header {line!r}")
@@ -78,10 +96,10 @@ def _load_gated_source_roots() -> dict[str, tuple[str, ...]]:
         sections[current].append(line)
 
     if not order:
-        raise ValueError(f"{GATED_SOURCE_ROOTS_MANIFEST}: no gated source roots defined")
+        raise ValueError(f"{source_label}: no gated source roots defined")
     for key in order:
         if not sections[key]:
-            raise ValueError(f"{GATED_SOURCE_ROOTS_MANIFEST}: section [{key}] has no roots")
+            raise ValueError(f"{source_label}: section [{key}] has no roots")
     # The manifest must declare EXACTLY these three registry keys (mirrors the
     # build.rs parser): reject both missing and unexpected sections so a typo'd
     # header fails loudly here and on the Rust side instead of silently dropping
@@ -89,13 +107,11 @@ def _load_gated_source_roots() -> dict[str, tuple[str, ...]]:
     required_keys = (STRATEGY_KEY, SUBMIT_ADMISSION_KEY, OUTCOME_GROUP_KEY)
     for required in required_keys:
         if required not in sections:
-            raise ValueError(
-                f"{GATED_SOURCE_ROOTS_MANIFEST}: required section [{required}] is missing"
-            )
+            raise ValueError(f"{source_label}: required section [{required}] is missing")
     for key in order:
         if key not in required_keys:
             raise ValueError(
-                f"{GATED_SOURCE_ROOTS_MANIFEST}: unexpected section [{key}] "
+                f"{source_label}: unexpected section [{key}] "
                 f"(expected exactly {list(required_keys)})"
             )
     return {key: tuple(sections[key]) for key in order}

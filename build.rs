@@ -67,8 +67,11 @@ fn emit_gated_source_roots(manifest_dir: &Path) {
 /// components) and structural errors fail the build with a file:line message.
 /// The manifest must declare exactly the three registry sections (`[strategy]`,
 /// `[submit_admission]`, `[outcome_group]`): a missing or unexpected section
-/// fails the build. `scripts/bolt_v3_source_roots.py` enforces the same set, so
-/// the two parsers are equivalent and a malformed manifest fails loudly on both.
+/// fails the build. `scripts/bolt_v3_source_roots.py` enforces the same set and
+/// mirrors this `str::lines()` line-terminator behavior (it splits on `\n`, not
+/// via Python `splitlines()`, which would also break on bare `\r`/Unicode
+/// separators), so the two parsers are equivalent and a malformed manifest fails
+/// loudly on both.
 fn parse_gated_source_roots(text: &str, manifest_path: &Path) -> Vec<(String, Vec<String>)> {
     let mut entries: Vec<(String, Vec<String>)> = Vec::new();
     for (index, raw_line) in text.lines().enumerate() {

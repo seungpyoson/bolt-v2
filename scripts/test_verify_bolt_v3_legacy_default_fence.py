@@ -243,7 +243,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         sections: dict[str, list[str]] = {}
         current: str | None = None
-        for raw_line in manifest.splitlines():
+        for raw_line in manifest.split("\n"):
             line = raw_line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -267,6 +267,34 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 ),
             },
         )
+
+    def test_manifest_parser_matches_rust_line_semantics(self) -> None:
+        # build.rs parses the manifest with Rust ``str::lines()`` (splits on
+        # ``\n`` and ``\r\n`` only). The Python parser must use the same line
+        # semantics, else a manifest the Rust build rejects could parse cleanly
+        # in Python and the two source-of-truth parsers would disagree. A
+        # manifest whose lines are joined by a bare ``\r`` is ONE Rust line (a
+        # malformed section header) and must be rejected on both sides; Python's
+        # ``str.splitlines()`` would wrongly break it into valid lines and accept
+        # it. This guards the parser against regressing back to ``splitlines()``.
+        body = (
+            "[strategy]\nsrc/a.rs\n"
+            "[submit_admission]\nsrc/b.rs\n"
+            "[outcome_group]\nsrc/c.rs\n"
+        )
+        self.assertEqual(
+            source_roots._parse_manifest_text(body),
+            {
+                source_roots.STRATEGY_KEY: ("src/a.rs",),
+                source_roots.SUBMIT_ADMISSION_KEY: ("src/b.rs",),
+                source_roots.OUTCOME_GROUP_KEY: ("src/c.rs",),
+            },
+        )
+        # Same bytes, bare-CR separators: Rust ``str::lines()`` sees one line, so
+        # the Python parser must reject it too (matching the loud Rust build
+        # failure) rather than silently accept the ``splitlines()`` split.
+        with self.assertRaises(ValueError):
+            source_roots._parse_manifest_text(body.replace("\n", "\r"))
 
     def test_python_source_root_file_cap_matches_rust_text_accessor_cap(self) -> None:
         source = (

@@ -11,9 +11,12 @@
 //! this file used to own were removed with the golden-digest gate; only
 //! [`sha256_hex_lower`] remains of the hashing surface.)
 //!
-//! It depends ONLY on `std`, `sha2`, and `hex` and must NOT import anything from
-//! the rest of the crate, so the canonicalization stays self-contained and
-//! dependency-light.
+//! It depends only on `std`, `sha2`, and `hex` and keeps its dependency surface
+//! minimal so the canonicalization transcription stays isolated and easy to
+//! audit. (It formerly avoided every `crate::` import because `build.rs`
+//! compiled this file standalone via `#[path]`; build.rs now parses
+//! `gated_source_roots.manifest` directly and no longer includes this module, so
+//! that isolation is a design choice rather than a hard build constraint.)
 
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -33,8 +36,9 @@ pub fn sha256_hex_lower(bytes: &[u8]) -> String {
 /// Mirrors the bound semantics of the producer's `read_file_bounded`: read at
 /// most `max_bytes + 1` and fail if the length exceeds the cap, so an
 /// oversized file is rejected rather than silently truncated. This bounded
-/// reader lives here (not borrowed from `bolt_v3_operator_artifacts`) because
-/// the canonicalizer must be self-contained for `build.rs`.
+/// reader is a small local helper rather than a shared import from
+/// `bolt_v3_operator_artifacts`, keeping this module's dependency surface
+/// minimal.
 fn read_file_bounded(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
     let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();

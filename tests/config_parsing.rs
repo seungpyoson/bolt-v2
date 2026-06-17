@@ -8495,6 +8495,7 @@ fn root_config_declares_requested_nt_data_clients_for_registration() {
         "kraken_spot_data",
         "kraken_futures_data",
         "okx_data",
+        "hyperliquid_data",
         "polymarket_main",
     ] {
         let client = loaded
@@ -8528,4 +8529,56 @@ fn root_config_declares_requested_nt_data_clients_for_registration() {
             );
         }
     }
+}
+
+#[test]
+fn root_config_wires_hyperliquid_data_only_client_without_execution_or_secrets() {
+    let loaded =
+        bolt_v2::bolt_v3_config::load_bolt_v3_config(&support::repo_path("config/root.toml"))
+            .expect("root.toml should load with Hyperliquid data client");
+    let client = loaded
+        .root
+        .clients
+        .get("hyperliquid_data")
+        .expect("hyperliquid_data must be configured in root.toml");
+
+    assert_eq!(client.venue.as_str(), "HYPERLIQUID");
+    assert!(
+        client.execution.is_none(),
+        "issue #784 must not arm Hyperliquid execution"
+    );
+    assert!(
+        client.secrets.is_none(),
+        "data-only Hyperliquid client must not require signer material"
+    );
+
+    let data = client
+        .data
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_data must declare a [data] table");
+    assert_eq!(
+        data.get(stringify!(environment))
+            .and_then(toml::Value::as_str),
+        Some("mainnet")
+    );
+    assert_eq!(
+        data.get(stringify!(base_url_ws))
+            .and_then(toml::Value::as_str),
+        Some("wss://api.hyperliquid.xyz/ws")
+    );
+    assert_eq!(
+        data.get(stringify!(base_url_http))
+            .and_then(toml::Value::as_str),
+        Some("https://api.hyperliquid.xyz/info")
+    );
+    assert_eq!(
+        data.get(stringify!(transport_backend))
+            .and_then(toml::Value::as_str),
+        Some("sockudo")
+    );
+    assert!(
+        client.readiness_probe.is_some(),
+        "production data clients must include strategy-free readiness coverage"
+    );
 }

@@ -931,6 +931,28 @@ class HookEndToEndTests(unittest.TestCase):
         self.assertTrue((q / "worktree.tar.gz").is_file(),
                         "verified archive must NOT be cruft-purged — it's the recovery surface")
 
+    def test_purge_quarantine_removes_dir_when_verified_archive_gone(self) -> None:
+        """round-5.5 polish-2 (GPT P2, Claude P3-1): verified_archive_at flag
+        must NOT pin a dir forever if the archive was deleted externally.
+        The flag records 'was valid once', not 'is valid now'. Without the
+        archive_file.is_file() gate, an empty stuck dir survives indefinitely."""
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        q = common / "clean-merged-quarantine" / "stuck-flagged-empty"
+        q.mkdir(parents=True)
+        # Manifest claims a verified archive, but NO archive file is present
+        # (simulating external deletion/corruption that removed it).
+        (q / "clean-merged.manifest.json").write_text(json.dumps({
+            "branch": "feat/flag-only", "worktree_remove_ok": False,
+            "verified_archive_at": "2026-01-01T00:00:00+00:00",
+        }), encoding="utf-8")
+        old_ts = time.time() - 31 * 86400
+        os.utime(q, (old_ts, old_ts))
+        rc = run_clean(self.work, "--purge-quarantine", "30")
+        self.assertEqual(rc, 0)
+        self.assertFalse(q.exists(),
+                         "empty stuck dir must be purged even with stale verified_archive_at flag")
+
 
 # ---------------------------------------------------------------------------
 # Round-5: active-worktree skip (Grok P1)

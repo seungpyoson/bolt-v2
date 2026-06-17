@@ -1453,7 +1453,13 @@ def cmd_purge_quarantine(
                 # this archive AND recorded verified_archive_at, skip the tar
                 # call entirely. The mtime-bump handles positive grace; this
                 # handles --purge-quarantine 0 too.
-                already_verified = bool(manifest.get("verified_archive_at"))
+                # Round-5.5 polish-2 (GPT P2, Claude P3-1): gate on
+                # archive_file.is_file() too — if the archive was deleted/
+                # corrupted externally, the flag alone must NOT pin an empty
+                # dir forever. Cheap stat; preserves the no-re-tar optimization
+                # for intact archives.
+                already_verified = (bool(manifest.get("verified_archive_at"))
+                                    and archive_file.is_file())
                 if already_verified:
                     write_audit(repo_root, config, {
                         "lane": "W", "branch": manifest.get("branch"),
@@ -1738,10 +1744,15 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
     # round-5.5 Claude F2: also surface pinned verified-archive cruft dirs that
     # are intentionally never auto-purged — operator needs visibility to clean
     # them up manually when they're no longer wanted.
-    # round-5.5 polish (GPT P2 #3): verify via tar -tzf instead of is_file()
-    # so a corrupt archive isn't reported as "verified".
     # round-5.5 polish (Kimi P2/P3, Claude P3-7): pinned state is intentional
     # safety behavior, not a malfunction — report as info, NOT a problem.
+    # round-5.5 polish-2 (GPT P2 #2, Claude P3-2): predicate on actual archive
+    # PRESENCE (worktree.tar.gz exists), not on the internal verified_archive_at
+    # field. Old pinned dirs created before that field existed are still visible,
+    # and a flag-only check would mis-report a dir whose archive was deleted
+    # externally. Doctor does NOT re-run tar -tzf (expensive on every doctor
+    # invocation); "pinned" here means "stuck dir with an archive file present,"
+    # not "archive verified intact."
     q = _resolve_path(repo_root, config.lane_w.quarantine_dir)
     if q.is_dir():
         entries = [c for c in q.iterdir() if c.is_dir()]
@@ -1759,8 +1770,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
                 try:
                     m = json.loads(mf.read_text(encoding="utf-8"))
                     archive_file = c / "worktree.tar.gz"
-                    if (not m.get("worktree_remove_ok") and archive_file.is_file()
-                            and m.get("verified_archive_at")):
+                    if not m.get("worktree_remove_ok") and archive_file.is_file():
                         pinned += 1
                         pinned_bytes += size
                 except (OSError, json.JSONDecodeError):
@@ -1771,7 +1781,7 @@ def cmd_doctor(repo_root: pathlib.Path, config: Config) -> int:
             # INFO only — pinned state is intentional safety behavior, not a
             # problem. Don't make doctor return non-zero just because the
             # operator is keeping recovery archives.
-            print(f"  quarantine pinned (info) = {pinned} verified-archive dirs "
+            print(f"  quarantine pinned (info) = {pinned} archive-present dirs "
                   f"({pinned_bytes / (1024 * 1024):.1f} MiB) — kept intentionally; "
                   "remove manually when no longer needed")
     else:

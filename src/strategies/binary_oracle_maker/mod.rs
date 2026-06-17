@@ -24,11 +24,16 @@ use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::{
+    bolt_v3_loss_governor::LossAdmissionDecision,
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
     bolt_v3_maker_order_plan::{MakerMarketActionOrderInput, maker_order_plan_from_market_action},
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
+    bolt_v3_maker_risk::{
+        MakerLossRiskPolicy, MakerRiskDecision, apply_maker_risk_mode,
+        maker_risk_mode_for_loss_decision,
+    },
     bolt_v3_maker_runtime_order::{
         MakerRuntimeLegOrderDispatchOutcome, MakerRuntimeOrderDispatchInput,
         MakerRuntimeOrderDispatchOutcome, dispatch_maker_runtime_order_plan_with_command_router,
@@ -46,6 +51,7 @@ use crate::{
     },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, MarketAction, MarketQuote},
+    bolt_v3_quoting::QuoteTargets,
     bolt_v3_reference_price::ReferencePriceSelector,
     bolt_v3_requote_budget::RequoteBudgetPair,
     bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy,
@@ -139,6 +145,29 @@ pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
 pub struct BinaryOracleMakerMarketActionRouteOutcome {
     pub order: MakerRuntimeLegOrderDispatchOutcome,
     pub orders: MakerRuntimeOrderDispatchOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerRiskRouteInput<'a> {
+    pub loss_decision: &'a LossAdmissionDecision,
+    pub policy: MakerLossRiskPolicy,
+    pub targets: QuoteTargets,
+    pub yes_quantity: f64,
+    pub no_quantity: f64,
+    pub yes: MakerLegBinding,
+    pub no: MakerLegBinding,
+    pub submit_template: &'a NtOrderTemplate,
+    pub price_precision: u8,
+    pub quantity_precision: u8,
+    pub submit_order_prefix: &'a str,
+    pub max_fee_bps: Decimal,
+    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerRiskRouteOutcome {
+    pub risk: MakerRiskDecision,
+    pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
 }
 
 impl std::fmt::Debug for BinaryOracleMaker {
@@ -367,6 +396,55 @@ impl BinaryOracleMaker {
         };
 
         Ok(BinaryOracleMakerMarketActionRouteOutcome { order, orders })
+    }
+
+    pub fn route_maker_loss_risk(
+        &mut self,
+        market: &mut MarketQuote,
+        input: BinaryOracleMakerRiskRouteInput<'_>,
+    ) -> Result<BinaryOracleMakerRiskRouteOutcome> {
+        let BinaryOracleMakerRiskRouteInput {
+            loss_decision,
+            policy,
+            targets,
+            yes_quantity,
+            no_quantity,
+            yes,
+            no,
+            submit_template,
+            price_precision,
+            quantity_precision,
+            submit_order_prefix,
+            max_fee_bps,
+            submit_lifecycle_policy,
+        } = input;
+        let mode = maker_risk_mode_for_loss_decision(&policy, loss_decision);
+        let risk = apply_maker_risk_mode(market, mode);
+        let orders = if let Some(action) = risk.action {
+            Some(
+                self.route_maker_market_action(BinaryOracleMakerMarketActionRouteInput {
+                    action: MakerMarketActionOrderInput {
+                        action,
+                        targets,
+                        yes_quantity,
+                        no_quantity,
+                        yes,
+                        no,
+                    },
+                    submit_template,
+                    price_precision,
+                    quantity_precision,
+                    submit_order_prefix,
+                    max_fee_bps,
+                    submit_lifecycle_policy,
+                })?
+                .orders,
+            )
+        } else {
+            None
+        };
+
+        Ok(BinaryOracleMakerRiskRouteOutcome { risk, orders })
     }
 }
 

@@ -1,12 +1,15 @@
 //! Pure, dependency-light canonicalization of a *source root* (a single `.rs`
-//! file OR a directory of `.rs` files) into a deterministic, layout-independent
-//! byte stream, plus the ONE consolidated lowercase-hex SHA-256 primitive used
-//! everywhere a source digest is needed.
+//! file OR a directory of `.rs` files) into deterministic, layout-independent
+//! source *text* (whole-module and production-only/test-stripped variants), plus
+//! the ONE consolidated lowercase-hex SHA-256 primitive ([`sha256_hex_lower`])
+//! still used by provider artifact code.
 //!
-//! This file is the SINGLE TRANSCRIPTION of the walk + framing + hash logic. It
+//! This file is the SINGLE TRANSCRIPTION of the walk + text-extraction logic. It
 //! is compiled as a normal crate module re-exported through
 //! [`crate::bolt_v3_source_integrity`], which owns the registry-keyed text
-//! accessors layered on top of it.
+//! accessors layered on top of it. (The binary framing + source-digest functions
+//! this file used to own were removed with the golden-digest gate; only
+//! [`sha256_hex_lower`] remains of the hashing surface.)
 //!
 //! It depends ONLY on `std`, `sha2`, and `hex` and must NOT import anything from
 //! the rest of the crate, so the canonicalization stays self-contained and

@@ -1,17 +1,22 @@
-//! Single owner of source-integrity canonicalization, hashing, and text access
+//! Single owner of source-text canonicalization and registry-keyed text access
 //! for the abort-plan gate sources.
 //!
-//! This module owns three things and is the ONLY place the gated source
-//! roots are named (the registry):
+//! This module owns two things:
 //!
-//! 1. **The registry** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] /
-//!    [`OUTCOME_GROUP_KEY`] mapped to their repo-relative source root sets.
-//! 2. The canonicalization + hash primitives, re-exported from the
-//!    [`crate::source_canonicalization`] walk module so there is exactly one
-//!    transcription of the walk/framing/hash logic.
-//! 3. The text accessors [`module_source_text`] (whole-module text) and
+//! 1. **The registry surface** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] /
+//!    [`OUTCOME_GROUP_KEY`] and the [`GATED_SOURCE_ROOTS`] table mapping each key
+//!    to its repo-relative source roots. The roots are named in exactly one place
+//!    — the repo-root `gated_source_roots.manifest`, which `build.rs` compiles
+//!    into [`GATED_SOURCE_ROOTS`]; this module re-exports that generated table.
+//! 2. The text accessors [`module_source_text`] (whole-module text) and
 //!    [`production_module_source_text`] (test-submodule-free text), both in the
-//!    SAME canonical file order.
+//!    SAME canonical file order, re-exported from the
+//!    [`crate::source_canonicalization`] walk module so there is exactly one
+//!    transcription of the walk + text-extraction logic.
+//!
+//! The lowercase-hex SHA-256 helper [`sha256_hex_lower`] is re-exported here for
+//! provider artifact code. The binary source-digest/framing primitives this
+//! module used to own were removed with the golden-digest gate.
 //!
 //! Tests and provider artifact helpers call the registry-keyed text accessors
 //! here.

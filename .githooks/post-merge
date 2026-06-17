@@ -13,9 +13,16 @@
 
 # Shared kill-switch truthiness (round-4.5 self-review: round-4 fix updated Python
 # but left bash on `[ -n ]`, so CLEAN_MERGED_DISABLED=0 disabled hooks but enabled
-# Python. Bash now matches Python: empty/0/false/no/off = enabled; else disabled.)
+# Python. Bash now matches Python: empty/0/false/no/off = enabled; else disabled.
+# Round-5 P2: trim leading/trailing whitespace before the case so values like
+# "0 " or " false" (common in dotenv/heredoc) match Python's .strip().lower().)
 _cm_disabled() {
-    case "${CLEAN_MERGED_DISABLED:-}" in
+    local v="${CLEAN_MERGED_DISABLED:-}"
+    # trim leading whitespace
+    v="${v#"${v%%[![:space:]]*}"}"
+    # trim trailing whitespace
+    v="${v%"${v##*[![:space:]]}"}"
+    case "$v" in
         ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) return 1 ;;
         *) return 0 ;;
     esac

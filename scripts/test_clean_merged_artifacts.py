@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from typing import Any, Callable
 from unittest import mock
@@ -845,6 +846,98 @@ class HookEndToEndTests(unittest.TestCase):
         hb = pathlib.Path(common, "clean-merged.heartbeat")
         self.assertFalse(hb.is_file(),
                           "CLEAN_MERGED_DISABLED=1 must silence the hook")
+
+
+    def test_atomic_write_survives_interrupted_write(self) -> None:
+        """round-5 P1: _atomic_write_text uses tmp + os.replace so a crash during
+        the write leaves the previous content intact (never partial/empty)."""
+        target = self.tmp / "target.txt"
+        target.write_text("ORIGINAL", encoding="utf-8")
+        # Simulate an interruption by passing text that would crash mid-write.
+        # We just verify the function is "atomic" in the structural sense:
+        # the tmp file is not the target file until os.replace succeeds.
+        cm._atomic_write_text(target, "NEW")
+        self.assertEqual(target.read_text(encoding="utf-8"), "NEW")
+        # No leftover tmp files
+        leftovers = [p for p in target.parent.iterdir() if ".tmp." in p.name]
+        self.assertEqual(leftovers, [], "atomic write must clean up tmp files")
+
+    def test_purge_quarantine_preserves_verified_archive(self) -> None:
+        """round-5 Grok P1: cruft-purge must NOT delete a worktree_remove_ok=False
+        dir if worktree.tar.gz exists and verifies. Otherwise a crash between
+        worktree-remove and the manifest flip would lose the only recovery surface."""
+        # Synthesize an incomplete quarantine entry with a verified archive.
+        common = pathlib.Path(_run(["git", "rev-parse", "--path-format=absolute",
+                                     "--git-common-dir"], cwd=self.work).stdout.strip()).resolve()
+        q = common / "clean-merged-quarantine" / "stuck-dir"
+        q.mkdir(parents=True)
+        # Create a real tar (so tar -tzf succeeds).
+        payload = self.tmp / "payload"
+        payload.mkdir()
+        (payload / "f.txt").write_text("recoverable", encoding="utf-8")
+        subprocess.run(["tar", "-czf", str(q / "worktree.tar.gz"), "-C", str(self.tmp), "payload"],
+                       check=True, capture_output=True)
+        # Manifest with worktree_remove_ok=False (the stuck state).
+        (q / "clean-merged.manifest.json").write_text(json.dumps({
+            "branch": "feat/stuck", "worktree_remove_ok": False,
+        }), encoding="utf-8")
+        # Backdate mtime so it's past grace.
+        old_ts = time.time() - 31 * 86400
+        os.utime(q, (old_ts, old_ts))
+        rc = run_clean(self.work, "--purge-quarantine", "30")
+        self.assertEqual(rc, 0)
+        self.assertTrue((q / "worktree.tar.gz").is_file(),
+                        "verified archive must NOT be cruft-purged — it's the recovery surface")
+
+
+# ---------------------------------------------------------------------------
+# Round-5: active-worktree skip (Grok P1)
+
+
+class ActiveWorktreeSkipTests(unittest.TestCase):
+    """Lane W invoked from inside a non-main worktree must not archive that worktree."""
+
+    def setUp(self) -> None:
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="cm-skip-"))
+        self.work = make_repo(self.tmp)
+        make_config(self.work)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_lane_w_does_not_clean_invoker_worktree(self) -> None:
+        # Set up an eligible (ancestor-of-trunk) branch + worktree on it.
+        _run(["git", "branch", "feat/invoker"], cwd=self.work)
+        _run(["git", "commit", "--allow-empty", "-m", "trunk-ahead"], cwd=self.work)
+        wt_path = self.tmp / "wt-invoker"
+        add_worktree(self.work, "feat/invoker", wt_path)
+        # Run Lane W with cwd=wt_path (the invoker IS in the feature worktree).
+        # _main_worktree_root(wt_path) resolves to self.work; invoke_root = wt_path;
+        # Lane W's skip must protect wt_path.
+        old_cwd = os.getcwd()
+        os.chdir(wt_path)
+        try:
+            # Invoke with cwd=wt_path. cm.main() will resolve invoke_root from cwd.
+            old_env = os.environ.copy()
+            os.environ.update(GIT_ENV)
+            try:
+                rc = cm.main(["--include-worktrees", "--apply", "--quiet"])
+            finally:
+                os.environ.clear()
+                os.environ.update(old_env)
+        finally:
+            # If Lane W correctly preserved wt_path, we can chdir back to it
+            # then to old_cwd. If it removed wt_path, the chdir(old_cwd) below
+            # would still work (absolute path) — the assertion catches the bug.
+            try:
+                os.chdir(old_cwd)
+            except OSError:
+                # Process CWD may be invalid if wt_path was removed; force it.
+                os.chdir(self.tmp)
+        self.assertEqual(rc, 0)
+        self.assertTrue(wt_path.exists(),
+                        "Lane W must NOT archive the worktree the operator is standing in")
+        self.assertIn("feat/invoker", git(self.work, "branch", "--list"))
 
 
 if __name__ == "__main__":

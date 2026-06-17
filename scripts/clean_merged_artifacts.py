@@ -211,17 +211,46 @@ def _resolve_repo_root(start: pathlib.Path) -> pathlib.Path:
 
 
 def _main_worktree_root(repo_root: pathlib.Path) -> pathlib.Path:
-    """Resolve the MAIN worktree root (where config/docs live), not a feature worktree."""
+    """Resolve the MAIN worktree root (where config/docs live), not a feature worktree.
+
+    Round-5 (GPT/Claude/Gemini/Kimi P1): the prior implementation assumed
+    `git rev-parse --git-common-dir` returns `<main>/.git`, then took `.parent`
+    to get `<main>`. That's wrong inside a SUBMODULE, where --git-common-dir
+    returns `<super>/.git/modules/<name>` (its parent is INSIDE the superproject
+    git dir, not a working tree). The compounded `_main_worktree_root(_main_worktree_root(...))`
+    call path made this worse.
+
+    Hardened approach: parse `git worktree list --porcelain` and return the
+    FIRST worktree's path (which is always the main worktree per git's output
+    ordering). Idempotent and submodule-safe. Falls back to common-dir.parent
+    for non-submodule cases with a working-tree sanity check.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=repo_root, check=True, capture_output=True, text=True,
+        )
+        for line in out.stdout.splitlines():
+            if line.startswith("worktree "):
+                candidate = pathlib.Path(line[len("worktree "):].strip())
+                if candidate.is_dir():
+                    return candidate
+    except subprocess.CalledProcessError:
+        pass
+    # Fallback for normal repos / linked worktrees (not submodules).
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
             cwd=repo_root, check=True, capture_output=True, text=True,
         )
-    except subprocess.CalledProcessError as exc:
-        raise CleanMergedError(f"cannot resolve git-common-dir: {exc.stderr.strip()}") from exc
-    common_dir = pathlib.Path(out.stdout.strip())
-    # common-dir's parent is the main worktree root
-    return common_dir.parent
+        common_dir = pathlib.Path(out.stdout.strip())
+        candidate = common_dir.parent
+        # Sanity check: parent should be a working tree, not inside .git/.
+        if (candidate / ".git").exists() or (candidate.is_dir() and (candidate / "config").exists()):
+            return candidate
+    except subprocess.CalledProcessError:
+        pass
+    return repo_root
 
 
 def _resolve_origin_owner(repo_root: pathlib.Path, remote_name: str) -> str | None:
@@ -547,6 +576,20 @@ def write_audit(repo_root: pathlib.Path, config: Config, record: dict[str, Any])
         _release_lock(fd)
 
 
+def _atomic_write_text(path: pathlib.Path, text: str) -> None:
+    """Atomic write via tmp + os.replace (round-5 P1 by GPT/Kimi/Grok).
+
+    Plain pathlib.Path.write_text() truncates-then-writes; an interruption
+    leaves the file empty or partial JSON. For manifests whose integrity gates
+    purge decisions, that's a data-loss vector. Atomic rename guarantees the
+    file is either the previous content or the new content, never partial.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
 def write_heartbeat(repo_root: pathlib.Path, config: Config) -> None:
     path = _resolve_path(repo_root, config.logging.heartbeat_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -575,16 +618,30 @@ def _load_gh_cache(path: pathlib.Path) -> dict[str, Any]:
         return {}
 
 
-def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any]) -> None:
-    """Atomic write via tmp + os.replace (round-4 P2 by Kimi/Grok/GPT).
+def _save_gh_cache(path: pathlib.Path, cache: dict[str, Any], ttl: float) -> None:
+    """Atomic write via tmp + os.replace (round-4 P2 by Kimi/Grok/GPT) +
+    TTL-based eviction (round-5 P2 by GPT/Claude/Gemini/Kimi/Grok).
 
     Concurrent detached Lane R processes RMW the cache; non-atomic
     path.write_text() can interleave/truncate. Atomic rename makes the worst
     case a lost update (one writer wins), never corruption.
+
+    Additionally, every save prunes:
+      - entries whose fetched_at is older than TTL (no point keeping them)
+      - entries without '@' in the key (pre-round-4.5 migration cruft, keyed
+        by branch alone — never read by the new code)
+    This bounds cache growth under sustained rebase/force-push churn.
     """
+    now = time.time()
+    pruned = {
+        k: v for k, v in cache.items()
+        if isinstance(v, dict)
+        and "@" in k  # new schema
+        and (now - float(v.get("fetched_at", 0))) < ttl
+    }
     try:
         tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-        tmp.write_text(json.dumps(cache), encoding="utf-8")
+        tmp.write_text(json.dumps(pruned), encoding="utf-8")
         os.replace(str(tmp), str(path))
     except OSError:
         pass
@@ -643,7 +700,7 @@ def gh_merged_pr_for_branch_cached(
         return entry.get("prs"), entry.get("error")
     prs, err = gh_merged_pr_for_branch(repo_root, branch, config.lane_r.gh_timeout_s)
     cache[cache_key] = {"fetched_at": now, "prs": prs, "error": err}
-    _save_gh_cache(cache_path, cache)
+    _save_gh_cache(cache_path, cache, config.lane_r.cache_ttl_s)
     return prs, err
 
 
@@ -990,6 +1047,7 @@ def run_lane_w(
     repo_root: pathlib.Path, config: Config, *,
     apply: bool, keep: set[str], quiet: bool,
     discard_ignored: bool, remove_nested: bool, discard_hidden: bool,
+    invoke_root: pathlib.Path | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if not config.enabled:
@@ -997,7 +1055,12 @@ def run_lane_w(
     trunk_sha = resolve_trunk_sha(repo_root, config.trunk_branch, config.remote_name)
     if not trunk_sha:
         return records
-    cur = current_branch(repo_root)
+    # `cur` must reflect the INVOKER's branch, not repo_root's (round-5 Grok P1):
+    # if the operator runs Lane W from inside a feature worktree while repo_root
+    # resolves to the main worktree, the active-worktree skip would not protect
+    # the invoker's worktree.
+    invoke_root = invoke_root or repo_root
+    cur = current_branch(invoke_root)
     skip_branches = {config.trunk_branch, "master", cur} | keep
 
     worktrees = list_worktrees(repo_root)
@@ -1016,7 +1079,11 @@ def run_lane_w(
         for wt in worktrees:
             try:
                 # skip main checkout and currently active worktree
-                if wt.path == main_root or wt.branch == cur:
+                # round-5 Grok P1: also skip the invoker's worktree path
+                # explicitly (in case invoke_root's branch resolution missed it
+                # — e.g. detached HEAD in the invoker).
+                if (wt.path == main_root or wt.branch == cur
+                        or wt.path.resolve() == invoke_root.resolve()):
                     continue
                 if wt.branch in skip_branches:
                     continue
@@ -1098,8 +1165,8 @@ def run_lane_w(
                         "backup_ref": None,                 # set after backup write
                         "final_tip_sha": None,              # set after re-read
                     }
-                    (quarantine / "clean-merged.manifest.json").write_text(
-                        json.dumps(minimal_manifest, indent=2, sort_keys=True), encoding="utf-8")
+                    _atomic_write_text(quarantine / "clean-merged.manifest.json",
+                        json.dumps(minimal_manifest, indent=2, sort_keys=True))
                     # tar the worktree to quarantine + verify integrity
                     ok, err = _archive_worktree(wt.path, archive_path)
                     if not ok:
@@ -1110,6 +1177,19 @@ def run_lane_w(
                         write_audit(repo_root, config, rec)
                         continue
                     # remove the worktree (plain; refuses if dirty — final TOCTOU safety net)
+                    # Round-5 (Claude/Grok P2): audit the recovery_hint BEFORE the
+                    # remove call. Previously the worktree-removed-branch-pending
+                    # audit was written AFTER the flip, so a crash between remove
+                    # and flip left no recovery_hint pointing at the quarantine.
+                    write_audit(repo_root, config, {
+                        "lane": "W", "branch": label, "tip_sha": wt.head,
+                        "worktree": str(wt.path), "quarantine_path": str(quarantine),
+                        "archive_path": str(archive_path),
+                        "action": "worktree-removal-attempted",
+                        "reason": "worktree archive written; removal attempt imminent",
+                        "recovery_hint": {"type": "quarantine", "path": str(quarantine),
+                                          "archive": str(archive_path)},
+                    })
                     rm = _git(repo_root, ["worktree", "remove", str(wt.path)], check=False)
                     if rm.returncode != 0:
                         rec = {"lane": "W", "branch": label, "tip_sha": wt.head,
@@ -1129,9 +1209,8 @@ def run_lane_w(
                     minimal_manifest["worktree_remove_ok"] = True
                     minimal_manifest["worktree_removed_at"] = (
                         dt.datetime.now(dt.timezone.utc).isoformat())
-                    (quarantine / "clean-merged.manifest.json").write_text(
-                        json.dumps(minimal_manifest, indent=2, sort_keys=True),
-                        encoding="utf-8")
+                    _atomic_write_text(quarantine / "clean-merged.manifest.json",
+                        json.dumps(minimal_manifest, indent=2, sort_keys=True))
                     # Worktree gone. Re-read the branch tip now (round-4 P0 by Kimi/GPT):
                     # a commit may have landed in the worktree between list_worktrees()
                     # and now. If it moved, we must NOT delete with the stale SHA —
@@ -1173,8 +1252,8 @@ def run_lane_w(
                         "final_tip_sha": fresh_tip,
                         "tip_drifted": fresh_tip != wt.head,
                     }
-                    (quarantine / "clean-merged.manifest.json").write_text(
-                        json.dumps(final_manifest, indent=2, sort_keys=True), encoding="utf-8")
+                    _atomic_write_text(quarantine / "clean-merged.manifest.json",
+                        json.dumps(final_manifest, indent=2, sort_keys=True))
                     rec = {
                         "lane": "W", "branch": label, "tip_sha": fresh_tip,
                         "worktree": str(wt.path), "quarantine_path": str(quarantine),
@@ -1186,14 +1265,14 @@ def run_lane_w(
                     records.append(rec)
                     write_audit(repo_root, config, rec)
                 else:
-                    records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
-                                    "worktree": str(wt.path),
-                                    "action": "would-archive-and-remove",
-                                    "reason": reason,
-                                    "quarantine_path": str(quarantine),
-                                    "ignored_count": len(ignored),
-                                    "hidden_index_count": len(hidden),
-                                    "nested_git_count": len(nested)})
+                        records.append({"lane": "W", "branch": label, "tip_sha": wt.head,
+                                        "worktree": str(wt.path),
+                                        "action": "would-archive-and-remove",
+                                        "reason": reason,
+                                        "quarantine_path": str(quarantine),
+                                        "ignored_count": len(ignored),
+                                        "hidden_index_count": len(hidden),
+                                        "nested_git_count": len(nested)})
             except Exception as exc:  # noqa: BLE001 — never let one worktree kill the sweep
                 # Log + continue; never break the lane over a single failure.
                 rec = {"lane": "W", "branch": getattr(wt, "branch", None) or "<unknown>",
@@ -1276,9 +1355,12 @@ def cmd_purge_quarantine(
                 # worktree_remove_ok=False is a stuck half-state (archive-failed,
                 # remove-failed-after-archive, or a crash between worktree-remove
                 # and the manifest flip). Hold for grace, then purge as cruft.
-                # The failure is already in the audit log; the cruft dir adds
-                # no recovery value (no successful archive in many cases, and
-                # when there IS an archive the operator was already notified).
+                #
+                # Round-5 (Grok P1): do NOT rmtree if worktree.tar.gz exists and
+                # verifies with tar -tzf — that archive is the only recovery
+                # surface for the (already-removed) worktree's tracked content
+                # when the branch ref has been deleted by a later sweep. Log it
+                # loudly and skip; operator must delete explicitly.
                 try:
                     mtime = child.stat().st_mtime
                 except OSError:
@@ -1286,6 +1368,22 @@ def cmd_purge_quarantine(
                     continue
                 if mtime > cutoff:
                     continue
+                archive_file = child / "worktree.tar.gz"
+                if archive_file.is_file():
+                    verify = subprocess.run(["tar", "-tzf", str(archive_file)],
+                                            capture_output=True, text=True, timeout=30)
+                    if verify.returncode == 0:
+                        # Verified archive present — refuse to delete; surface.
+                        write_audit(repo_root, config, {
+                            "lane": "W", "branch": manifest.get("branch"),
+                            "action": "quarantine-cruft-skipped-verified-archive",
+                            "quarantine_path": str(child),
+                            "reason": "worktree_remove_ok=False but verified archive present; "
+                                      "operator must remove explicitly if unwanted",
+                        })
+                        skipped += 1
+                        continue
+                # No archive (archive-failed) or corrupt archive — safe to purge.
                 try:
                     size = sum(f.stat().st_size for f in child.rglob("*") if f.is_file())
                 except OSError:
@@ -1296,7 +1394,8 @@ def cmd_purge_quarantine(
                     "lane": "W", "branch": manifest.get("branch"),
                     "action": "quarantine-purged-incomplete",
                     "quarantine_path": str(child), "bytes_freed": size,
-                    "reason": "worktree_remove_ok was False; purged as cruft after grace",
+                    "reason": "worktree_remove_ok was False, no usable archive; "
+                              "purged as cruft after grace",
                 })
                 purged += 1
                 continue
@@ -1598,7 +1697,13 @@ def main(argv: list[str] | None = None) -> int:
     # a worktree that Lane W removes, the cwd-based repo_root becomes invalid
     # mid-sweep and subsequent _git calls raise FileNotFoundError. Pin to the
     # main worktree root, which is never removed.)
-    repo_root = _main_worktree_root(_resolve_repo_root(pathlib.Path.cwd()))
+    #
+    # round-5 (Grok P1): keep the INVOKER's root too so Lane W's active-worktree
+    # skip can detect "the worktree I'm standing in" — without this, `cur` would
+    # be the MAIN worktree's branch, and a Lane W run from inside a feature
+    # worktree would happily archive that very worktree.
+    invoke_root = _resolve_repo_root(pathlib.Path.cwd())
+    repo_root = _main_worktree_root(invoke_root)
     try:
         config = load_config(repo_root)
     except ConfigError as exc:
@@ -1645,6 +1750,7 @@ def main(argv: list[str] | None = None) -> int:
             discard_ignored=args.discard_ignored,
             remove_nested=args.remove_nested_repos,
             discard_hidden=args.discard_hidden_index_bits,
+            invoke_root=invoke_root,
         )
     else:
         # default mode: lane H + (lane R if --reconcile)
@@ -1657,6 +1763,7 @@ def main(argv: list[str] | None = None) -> int:
                 discard_ignored=args.discard_ignored,
                 remove_nested=args.remove_nested_repos,
                 discard_hidden=args.discard_hidden_index_bits,
+                invoke_root=invoke_root,
             )
 
     # audit successful mutations.

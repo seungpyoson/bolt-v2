@@ -12,7 +12,10 @@
 # Never breaks the git op: every path exits 0.
 
 _cm_disabled() {
-    case "${CLEAN_MERGED_DISABLED:-}" in
+    local v="${CLEAN_MERGED_DISABLED:-}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    case "$v" in
         ''|0|[Ff][Aa][Ll][Ss][Ee]|[Nn][Oo]|[Oo][Ff][Ff]) return 1 ;;
         *) return 0 ;;
     esac

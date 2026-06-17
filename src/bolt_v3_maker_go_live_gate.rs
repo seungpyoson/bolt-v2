@@ -106,10 +106,10 @@ impl MakerBacktestGateBlocker {
             Self::MissingHistoricalFullDepthL2 => "historical_full_depth_l2",
             Self::MissingFullPopulationCorpus => "full_population_corpus",
             Self::EntryGatedCorpusUsed => "entry_gated_corpus_used",
-            Self::MissingTradeTicks => "trade_ticks_present",
-            Self::MissingOrderBookDeltas => "order_book_deltas_present",
-            Self::QueuePositionDisabled => "queue_position_enabled",
-            Self::MissingNtExecutionModel => "nt_execution_model_used",
+            Self::MissingTradeTicks => "result_contract_replay.catalog_data_types",
+            Self::MissingOrderBookDeltas => "result_contract_replay.catalog_data_types",
+            Self::QueuePositionDisabled => "result_contract_replay.venue_queue_position",
+            Self::MissingNtExecutionModel => "result_contract_replay.execution_model",
             Self::CustomFillModelWithoutSourceProof => "custom_fill_model_source_proven",
             Self::MissingUnderlyingSpotCausalJoin => "underlying_spot_causal_join",
             Self::NetEdgeNotPositive => "net_score_micros",
@@ -167,10 +167,18 @@ impl MakerBacktestGateBlocker {
             }
             Self::MissingFullPopulationCorpus => "must confirm the full population corpus was used",
             Self::EntryGatedCorpusUsed => "must be false; entry-gated evidence is selection-biased",
-            Self::MissingTradeTicks => "must confirm TradeTick events are present",
-            Self::MissingOrderBookDeltas => "must confirm OrderBookDelta events are present",
-            Self::QueuePositionDisabled => "must confirm queue position is enabled",
-            Self::MissingNtExecutionModel => "must confirm NT ExecutionModel was used",
+            Self::MissingTradeTicks => {
+                "must include TradeTick in the BTE result-contract catalog_data_types"
+            }
+            Self::MissingOrderBookDeltas => {
+                "must include OrderBookDelta in the BTE result-contract catalog_data_types"
+            }
+            Self::QueuePositionDisabled => {
+                "must confirm BTE result-contract venue_queue_position is enabled"
+            }
+            Self::MissingNtExecutionModel => {
+                "must confirm the BTE result-contract execution_model is NT BacktestNode"
+            }
             Self::CustomFillModelWithoutSourceProof => {
                 "must be true when a custom fill model is used"
             }

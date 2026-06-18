@@ -71,8 +71,9 @@ PnL/account truth.
   artifacts, it may write only those RA-owned artifact records.
 - RA-owned derived artifacts use the single top-level `research-analytics`
   Artifact Index kind. Subfamilies are `datasets`, `feature-tables`,
-  `experiment-results`, and `promotion-packages`; they do not get separate
-  latest pointers.
+  and `experiment-results`; they do not get separate latest pointers. Promotion
+  config is a typed field/URI on an `experiment-results` artifact when a real
+  GO finding exists, not a separate artifact family.
 - Research datasets must preserve artifact lifecycle metadata and must not
   propose default deletion of canonical artifacts.
 
@@ -99,13 +100,13 @@ PnL/account truth.
 | E-038 | SOURCE_PROVEN + DECISION_NEEDED | Analytics bulk discovery must consume the committed Artifact Index snapshot and must not scan S3 prefixes as its normal discovery path. |
 | E-039 | USER_ASSUMPTION + DECISION_NEEDED | Analytics is read-only for upstream raw/catalog/source-proof/backtest Artifact Index records; it may write only explicitly RA-owned derived artifact records. |
 | E-040 | USER_ASSUMPTION + DECISION_NEEDED | Analytics consumes `SourceProofReport` ids, fidelity classes, and claim limits as upstream proof metadata; it must not accept upstream proof, weaken forbidden claims, or reclassify weaker sources as stronger evidence. |
-| E-041 | SOURCE_PROVEN + DECISION_NEEDED | Backtesting Engine emits objective result contracts only; Analytics owns strategy promotion/review status through `PromotionPackage` or later RA-owned review artifacts. |
+| E-041 | SOURCE_PROVEN + DECISION_NEEDED | Backtesting Engine emits objective result contracts only; Analytics owns strategy review verdicts and any generated typed promotion config on `experiment-results`, or later RA-owned review artifacts. |
 
 ## Fidelity Class Reference
 
 Research Analytics consumes fidelity labels from Backtesting Engine and data
 source contracts. It must preserve them in datasets, experiments, metrics, and
-promotion packages.
+verdict-bearing experiment results.
 
 | Class | Meaning for analytics |
 |---|---|
@@ -145,45 +146,41 @@ promotion packages.
 - `FeatureDefinition`: source fields, join keys, event time, availability time,
   leakage checks, cross-market component source refs when applicable, and
   allowed consumers.
-- `PromotionPackage`: promoted strategy candidate, typed config diff, runtime
-  contract, required Backtesting Engine evidence, selected Dashboard source
-  fields if any, source proof ids, claim limits, evidence rows,
-  strategy-review status, reviewer/policy references, and rejection/approval
-  state. It consumes BTE result contracts as evidence; it does not mutate or
-  rewrite them.
 - `ResearchAnalyticsArtifact`: RA-owned artifact under
-  `research-analytics/v1/{datasets,feature-tables,experiment-results,promotion-packages}/`
+  `research-analytics/v1/{datasets,feature-tables,experiment-results}/`
   with schema version, source refs, source hashes, `sha256` content hash,
   lifecycle state, Artifact Index event, and owner `research-analytics`.
 
-## Promotion Status
+## Findings And Promotion Config
 
-`PromotionPackage` status is a controlled enum:
+Strategy review status is recorded on `experiment-results` as a verdict field
+set:
 
-- `draft`: package is incomplete.
 - `blocked`: required evidence or validation is missing or failed.
-- `ready_for_review`: package is complete enough for formal review.
-- `changes_requested`: reviewed and not rejected, but requires more research,
-  tuning, data proof, reruns, or feature work before review can proceed.
+- `changes_requested`: more research, tuning, data proof, reruns, or feature
+  work is required before review can proceed.
 - `rejected`: reviewed and not accepted.
-- `approved_for_config`: approved only to generate typed TOML/NT-compatible
-  runtime config; this is not live-trading approval.
+- `go`: a real finding may carry typed TOML/NT-compatible promotion-config
+  fields on the same `experiment-results` artifact; this is not live-trading
+  approval.
 
-`approved_for_config` requires accepted `SourceProofReport` refs, objective
+Any `go` promotion config requires accepted `SourceProofReport` refs, objective
 backtest result refs, preserved claim limits, fidelity-compatible claims, no
 notebook runtime code, typed TOML/NT-compatible config output, reviewer/policy
 refs, and an explicit non-live boundary.
 
-After `approved_for_config`, the only allowed output is a typed config artifact
-for later implementation/review. The status must not auto-merge, auto-enable a
-strategy, schedule live trading, touch SSM credentials, or mutate production
-runtime config.
+The only allowed output is a typed config field/URI on the
+`experiment-results` artifact for later implementation/review. It must not
+auto-merge, auto-enable a strategy, schedule live trading, touch SSM
+credentials, mutate production runtime config, or create a separate promotion
+artifact family/path.
 
-Generated promotion/config artifacts live under the configured S3 `artifact_root`
-as RA-owned derived artifacts, e.g.
-`research-analytics/v1/promotion-packages/`.
-They must not be written directly into repo runtime config; importing them into
-production config is a separate future implementation/review step.
+## Known prerequisite
+
+The BTE runner currently registers only the NT example strategy
+`HurstVpinDirectional` over `bybit-spot`. Wiring bolt's
+`binary_oracle_edge_taker` plus venue normalization into the BTE is required
+before Phase-3 sweeps are real.
 
 ## Issue Dependencies
 
@@ -206,4 +203,5 @@ fully cover research analytics, alpha exploration, or promotion gates.
 - Reviewer can identify which claims are execution-quality, lower-fidelity, or
   exploratory.
 - Reviewer can prove notebooks have no production mutation path.
-- Reviewer can see a typed promotion package before any production runtime work.
+- Reviewer can see typed promotion-config fields on the `experiment-results`
+  artifact before any production runtime work.

@@ -12,11 +12,12 @@ use backtesting_vertical_slice::{
         ConversionFingerprint, ConversionOutputState, inspect_conversion_output,
     },
     pmxt_one_off_backfill_projection::{
-        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_TRADE_TICK, PMXT_ONE_OFF_RESULT_CONTRACT_FILE,
-        PmxtBookLevel, PmxtOneOffArtifactRootRunSpec, PmxtOneOffBacktestContractSpec,
-        PmxtOneOffConversionProjectionSpec, PmxtOneOffNtProjection, PmxtOneOffProjectionRequest,
-        PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow, PmxtOneOffTickSide, PmxtOneOffTradeRow,
-        PmxtPriceChangeRow, PmxtSelectedSourceProjectionSpec, PmxtSelectedSourceSchema,
+        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK, NT_DATA_TYPE_TRADE_TICK,
+        PMXT_ONE_OFF_RESULT_CONTRACT_FILE, PmxtBookLevel, PmxtOneOffArtifactRootRunSpec,
+        PmxtOneOffBacktestContractSpec, PmxtOneOffConversionProjectionSpec, PmxtOneOffNtProjection,
+        PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
+        PmxtOneOffTickSide, PmxtOneOffTradeRow, PmxtPriceChangeRow,
+        PmxtSelectedSourceProjectionSpec, PmxtSelectedSourceSchema,
         project_pmxt_one_off_rows_to_nt, project_pmxt_selected_source_parquet_to_nt,
         run_pmxt_one_off_l2_backtest_contract, write_pmxt_one_off_conversion_projection,
         write_pmxt_one_off_l2_artifact_root_run, write_pmxt_one_off_projection_to_catalog,
@@ -38,7 +39,7 @@ use nautilus_backtest::{
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{OrderBookDelta, TradeTick},
+    data::{OrderBookDelta, QuoteTick, TradeTick},
     enums::{AccountType, BookAction, BookType, OmsType, OrderSide},
     identifiers::InstrumentId,
     instruments::{Instrument, InstrumentAny},
@@ -49,6 +50,11 @@ use parquet::arrow::ArrowWriter;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs::File, process::Command, sync::Arc};
 use ustr::Ustr;
+
+const PMXT_TEST_EVENT_COUNT_LEDGER_HASH: &str =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+const PMXT_TEST_SELECTED_ASSET_IDS_HASH: &str =
+    "2222222222222222222222222222222222222222222222222222222222222222";
 
 #[test]
 fn pmxt_one_off_projection_uses_nt_polymarket_metadata_and_l2_parsers() {
@@ -99,6 +105,7 @@ fn pmxt_one_off_projection_uses_nt_polymarket_metadata_and_l2_parsers() {
     );
     assert_eq!(projection.source_binding, "synthetic-pmxt-one-off-source");
     assert_eq!(projection.order_book_deltas.len(), 4);
+    assert_eq!(projection.quote_ticks.len(), 1);
     assert!(projection.trade_ticks.is_empty());
     assert!(
         projection
@@ -115,6 +122,9 @@ fn pmxt_one_off_projection_uses_nt_polymarket_metadata_and_l2_parsers() {
             .nt_surfaces_used
             .contains(&"nautilus_polymarket::websocket::parse::parse_book_deltas".to_string())
     );
+    assert!(projection.nt_surfaces_used.contains(
+        &"nautilus_polymarket::websocket::parse::parse_quote_from_price_change".to_string()
+    ));
 
     assert_eq!(projection.order_book_deltas[0].instrument_id, instrument_id);
     assert_eq!(projection.order_book_deltas[0].action, BookAction::Clear);
@@ -132,6 +142,31 @@ fn pmxt_one_off_projection_uses_nt_polymarket_metadata_and_l2_parsers() {
         projection.order_book_deltas[3].ts_init,
         UnixNanos::from(1_772_023_200_556_000_000)
     );
+    assert_eq!(projection.quote_ticks[0].instrument_id, instrument_id);
+    assert_eq!(
+        projection.quote_ticks[0].bid_price.as_decimal().to_string(),
+        "0.49"
+    );
+    assert_eq!(
+        projection.quote_ticks[0].ask_price.as_decimal().to_string(),
+        "0.50"
+    );
+    assert_eq!(
+        projection.quote_ticks[0].bid_size.as_decimal().to_string(),
+        "12.000000"
+    );
+    assert_eq!(
+        projection.quote_ticks[0].ask_size.as_decimal().to_string(),
+        "0.000000"
+    );
+    assert_eq!(
+        projection.quote_ticks[0].ts_event,
+        UnixNanos::from(1_772_023_200_456_000_000)
+    );
+    assert_eq!(
+        projection.quote_ticks[0].ts_init,
+        UnixNanos::from(1_772_023_200_556_000_000)
+    );
 }
 
 #[test]
@@ -139,6 +174,7 @@ fn pmxt_one_off_projection_projects_trade_ticks_with_transaction_hash_dedupe_and
     let projection = pmxt_trade_projection_fixture();
 
     assert!(projection.order_book_deltas.is_empty());
+    assert!(projection.quote_ticks.is_empty());
     assert_eq!(projection.trade_ticks.len(), 2);
     assert_eq!(
         projection.trade_ticks[0].trade_id.to_string(),
@@ -212,6 +248,10 @@ fn pmxt_one_off_projection_writes_nt_catalog_and_backtest_node_consumes_l2() {
         catalog_report.order_book_delta_count,
         projection.order_book_deltas.len() as u64
     );
+    assert_eq!(
+        catalog_report.quote_tick_count,
+        projection.quote_ticks.len() as u64
+    );
     assert_eq!(catalog_report.trade_tick_count, 0);
     assert!(!catalog_report.catalog_hash.is_empty());
 
@@ -227,6 +267,21 @@ fn pmxt_one_off_projection_writes_nt_catalog_and_backtest_node_consumes_l2() {
         )
         .expect("read back PMXT L2 deltas");
     assert_eq!(loaded.len(), projection.order_book_deltas.len());
+    let loaded_quotes: Vec<QuoteTick> = catalog
+        .query_typed_data::<QuoteTick>(
+            Some(vec![instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            false,
+        )
+        .expect("read back PMXT quote ticks");
+    assert_eq!(loaded_quotes.len(), projection.quote_ticks.len());
+    assert_eq!(
+        loaded_quotes[0].bid_price.as_decimal(),
+        projection.quote_ticks[0].bid_price.as_decimal()
+    );
 
     let data_config = BacktestDataConfig::builder()
         .data_type(NautilusDataType::OrderBookDelta)
@@ -267,6 +322,7 @@ fn pmxt_one_off_projection_writes_nt_catalog_and_reads_back_trade_ticks() {
         .expect("write PMXT one-off TradeTick projection to catalog");
 
     assert_eq!(catalog_report.order_book_delta_count, 0);
+    assert_eq!(catalog_report.quote_tick_count, 0);
     assert_eq!(catalog_report.trade_tick_count, 2);
     assert!(!catalog_report.catalog_hash.is_empty());
 
@@ -322,13 +378,20 @@ fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
     assert_eq!(selected.selected_rows, 3);
     assert_eq!(selected.projected_l2_rows, 2);
     assert_eq!(selected.skipped_non_l2_rows, 1);
-    assert_eq!(selected.event_count_ledger_hash, "event-count-ledger-hash");
-    assert_eq!(selected.selected_asset_ids_hash, "selected-assets-hash");
+    assert_eq!(
+        selected.event_count_ledger_hash,
+        PMXT_TEST_EVENT_COUNT_LEDGER_HASH
+    );
+    assert_eq!(
+        selected.selected_asset_ids_hash,
+        PMXT_TEST_SELECTED_ASSET_IDS_HASH
+    );
     assert_eq!(
         selected.projection.usage_scope,
         SourceProofUsageScope::OneOffBackfillData
     );
     assert_eq!(selected.projection.order_book_deltas.len(), 4);
+    assert_eq!(selected.projection.quote_ticks.len(), 1);
     assert!(selected.projection.trade_ticks.is_empty());
     assert_eq!(
         selected.projection.order_book_deltas[3].ts_event,
@@ -545,6 +608,10 @@ fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_met
         completed.catalog_projection.order_book_delta_count,
         projection.order_book_deltas.len() as u64
     );
+    assert_eq!(
+        completed.catalog_projection.quote_tick_count,
+        projection.quote_ticks.len() as u64
+    );
     assert_eq!(completed.conversion_manifest.nt_data_type, "OrderBookDelta");
     assert_eq!(
         completed.conversion_manifest.canonical_rows,
@@ -553,6 +620,19 @@ fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_met
     assert_eq!(
         completed.conversion_manifest.catalog_hash,
         completed.catalog_projection.catalog_hash
+    );
+    assert_eq!(
+        completed
+            .conversion_manifest
+            .catalog_rows_by_nt_data_type
+            .get(NT_DATA_TYPE_QUOTE_TICK),
+        Some(&projection.quote_ticks.len())
+    );
+    assert!(
+        completed
+            .conversion_catalog_metadata
+            .catalog_nt_data_types
+            .contains(&NT_DATA_TYPE_QUOTE_TICK.to_string())
     );
     assert_eq!(
         inspect_conversion_output(output_dir.path(), &fingerprint).expect("inspect conversion"),
@@ -634,8 +714,8 @@ fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_proven
         acceptance_mode: AcceptanceMode::Manual,
         accepted_by: "source-proof-reviewer",
         accepted_at: "2026-06-08T00:00:00Z",
-        event_count_ledger_hash: "event-count-ledger-hash",
-        selected_asset_ids_hash: "selected-assets-hash",
+        event_count_ledger_hash: PMXT_TEST_EVENT_COUNT_LEDGER_HASH,
+        selected_asset_ids_hash: PMXT_TEST_SELECTED_ASSET_IDS_HASH,
         artifact_uris,
         created_at: "2026-06-08T00:00:00Z",
         claim_limits: vec![
@@ -685,15 +765,77 @@ fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_proven
     );
     assert_eq!(
         output.contract.event_count_ledger_hash.as_deref(),
-        Some("event-count-ledger-hash")
+        Some(PMXT_TEST_EVENT_COUNT_LEDGER_HASH)
     );
     assert_eq!(
         output.contract.selected_asset_ids_hash.as_deref(),
-        Some("selected-assets-hash")
+        Some(PMXT_TEST_SELECTED_ASSET_IDS_HASH)
+    );
+    assert_eq!(output.contract.execution_model, manifest.execution_model);
+    assert_eq!(
+        output.contract.venue_queue_position,
+        Some(manifest.venue.queue_position)
+    );
+    assert_eq!(
+        output.contract.catalog_data_types,
+        manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         output.contract.nt_result.run_config_id.as_deref(),
         Some("pmxt-one-off-l2-contract-proof")
+    );
+}
+
+#[test]
+fn pmxt_one_off_l2_backtest_result_contract_rejects_duplicate_manifest_data_types() {
+    let projection = pmxt_projection_fixture();
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_root = output_dir.path().join("nt-catalog");
+    let fingerprint = pmxt_conversion_fingerprint();
+    let completed = write_pmxt_one_off_conversion_projection(PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection: projection.clone(),
+        fingerprint,
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    })
+    .expect("write PMXT one-off conversion projection");
+    let mut manifest = pmxt_l2_manifest(&projection, &catalog_root, output_dir.path());
+    manifest
+        .catalog_inputs
+        .push(manifest.catalog_inputs[0].clone());
+    let manifest_hash = manifest.manifest_hash();
+
+    let error = run_pmxt_one_off_l2_backtest_contract(PmxtOneOffBacktestContractSpec {
+        completed: &completed,
+        manifest: &manifest,
+        manifest_hash: &manifest_hash,
+        acceptance_mode: AcceptanceMode::Manual,
+        accepted_by: "source-proof-reviewer",
+        accepted_at: "2026-06-08T00:00:00Z",
+        event_count_ledger_hash: PMXT_TEST_EVENT_COUNT_LEDGER_HASH,
+        selected_asset_ids_hash: PMXT_TEST_SELECTED_ASSET_IDS_HASH,
+        artifact_uris: pmxt_result_artifact_uris(output_dir.path()),
+        created_at: "2026-06-08T00:00:00Z",
+        claim_limits: vec![
+            "one-off PMXT L2 sample only".to_string(),
+            "no dynamic tick-size replay claim".to_string(),
+            "no expanded coverage claim".to_string(),
+        ],
+    })
+    .expect_err("duplicate PMXT manifest data types must be rejected");
+
+    assert!(
+        error.to_string().contains("duplicates data_type"),
+        "{error:#}"
     );
 }
 
@@ -787,14 +929,14 @@ fn pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source
             .contract
             .event_count_ledger_hash
             .as_deref(),
-        Some("event-count-ledger-hash")
+        Some(PMXT_TEST_EVENT_COUNT_LEDGER_HASH)
     );
     assert_eq!(
         run.contract_output
             .contract
             .selected_asset_ids_hash
             .as_deref(),
-        Some("selected-assets-hash")
+        Some(PMXT_TEST_SELECTED_ASSET_IDS_HASH)
     );
     assert_eq!(
         run.contract_output.contract.accepted_object_sha256,
@@ -851,10 +993,14 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
         })
         .expect("expected mixed selected-source projection");
     assert_eq!(expected_projection.projection.order_book_deltas.len(), 4);
+    assert_eq!(expected_projection.projection.quote_ticks.len(), 1);
     assert_eq!(expected_projection.projection.trade_ticks.len(), 2);
 
     let mut manifest =
         pmxt_l2_manifest(&expected_projection.projection, &catalog_root, &output_dir);
+    let mut quote_input = manifest.catalog_inputs[0].clone();
+    quote_input.data_type = NT_DATA_TYPE_QUOTE_TICK.to_string();
+    manifest.catalog_inputs.push(quote_input);
     let mut trade_input = manifest.catalog_inputs[0].clone();
     trade_input.data_type = NT_DATA_TYPE_TRADE_TICK.to_string();
     manifest.catalog_inputs.push(trade_input);
@@ -893,12 +1039,28 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
         loaded_trades.len(),
         expected_projection.projection.trade_ticks.len()
     );
+    let loaded_quotes: Vec<QuoteTick> = catalog_probe
+        .query_typed_data::<QuoteTick>(
+            Some(vec![
+                binary_option_instrument_id(&expected_projection.projection.instrument).to_string(),
+            ]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .expect("read back PMXT mixed QuoteTicks");
+    assert_eq!(
+        loaded_quotes.len(),
+        expected_projection.projection.quote_ticks.len()
+    );
     let mut probe_manifest = manifest.clone();
     for catalog_input in &mut probe_manifest.catalog_inputs {
         catalog_input.catalog_path = catalog_probe_dir.path().display().to_string();
     }
     let run_config = probe_manifest.to_nt_run_config().expect("PMXT run config");
-    assert_eq!(run_config.data().len(), 2);
+    assert_eq!(run_config.data().len(), 3);
     let loaded_data_counts = run_config
         .data()
         .iter()
@@ -912,6 +1074,7 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
         loaded_data_counts,
         vec![
             expected_projection.projection.order_book_deltas.len(),
+            expected_projection.projection.quote_ticks.len(),
             expected_projection.projection.trade_ticks.len()
         ]
     );
@@ -941,7 +1104,7 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
         artifact_uris: pmxt_result_artifact_uris(&output_dir),
         created_at: "2026-06-08T00:00:00Z".to_string(),
         claim_limits: vec![
-            "one-off PMXT L2+TradeTick sample only".to_string(),
+            "one-off PMXT L2+QuoteTick+TradeTick sample only".to_string(),
             "no dynamic tick-size replay claim".to_string(),
             "no expanded coverage claim".to_string(),
         ],
@@ -955,6 +1118,10 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
         expected_projection.projection.order_book_deltas.len() as u64
     );
     assert_eq!(
+        run.completed.catalog_projection.quote_tick_count,
+        expected_projection.projection.quote_ticks.len() as u64
+    );
+    assert_eq!(
         run.completed.catalog_projection.trade_tick_count,
         expected_projection.projection.trade_ticks.len() as u64
     );
@@ -962,6 +1129,7 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
         run.completed.conversion_manifest.catalog_nt_data_types,
         vec![
             NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+            NT_DATA_TYPE_QUOTE_TICK.to_string(),
             NT_DATA_TYPE_TRADE_TICK.to_string()
         ]
     );
@@ -971,6 +1139,13 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
             .catalog_rows_by_nt_data_type
             .get(NT_DATA_TYPE_ORDER_BOOK_DELTA),
         Some(&expected_projection.projection.order_book_deltas.len())
+    );
+    assert_eq!(
+        run.completed
+            .conversion_manifest
+            .catalog_rows_by_nt_data_type
+            .get(NT_DATA_TYPE_QUOTE_TICK),
+        Some(&expected_projection.projection.quote_ticks.len())
     );
     assert_eq!(
         run.completed
@@ -996,6 +1171,7 @@ fn pmxt_one_off_artifact_root_run_binds_mixed_l2_and_trade_tick_catalog() {
     assert_eq!(
         run.contract_output.nt_result.iterations,
         expected_projection.projection.order_book_deltas.len()
+            + expected_projection.projection.quote_ticks.len()
             + expected_projection.projection.trade_ticks.len()
     );
     assert_eq!(
@@ -1156,11 +1332,11 @@ result_contract_uri = "file://{output_dir}/backtest-result-contract.json"
     assert_eq!(contract.accepted_object_sha256, selected_source_sha256);
     assert_eq!(
         contract.event_count_ledger_hash.as_deref(),
-        Some("event-count-ledger-hash")
+        Some(PMXT_TEST_EVENT_COUNT_LEDGER_HASH)
     );
     assert_eq!(
         contract.selected_asset_ids_hash.as_deref(),
-        Some("selected-assets-hash")
+        Some(PMXT_TEST_SELECTED_ASSET_IDS_HASH)
     );
 }
 
@@ -1354,8 +1530,8 @@ fn pmxt_l2_manifest(
             ]),
             typed_config_uri: None,
             typed_config_hash: None,
-            promotion_package_uri: None,
-            promotion_package_hash: None,
+            experiment_result_uri: None,
+            experiment_result_hash: None,
         },
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
@@ -1419,6 +1595,7 @@ fn pmxt_l2_manifest(
             rust_storage_options: BTreeMap::new(),
             ssm_parameters: None,
         },
+        domain_metrics: Vec::new(),
         start_time: None,
         end_time: None,
     }
@@ -1430,6 +1607,7 @@ fn pmxt_result_artifact_uris(output_dir: &std::path::Path) -> ResultArtifactUris
         source_proof_uri: uri("accepted-source-proof.json"),
         canonical_table_uri: uri("selected-source.parquet"),
         nt_catalog_uri: format!("file://{}", output_dir.join("nt-catalog").display()),
+        nt_catalog_manifest_uri: None,
         catalog_metadata_uri: uri(CATALOG_METADATA_FILE),
         result_contract_uri: uri("backtest-result-contract.json"),
     }
@@ -1973,14 +2151,14 @@ fn write_selector_report_with_excluded_events_fixture(
             "row_budget": 10,
             "max_selected_assets": 1
         },
-        "event_count_ledger_hash": "event-count-ledger-hash",
+        "event_count_ledger_hash": PMXT_TEST_EVENT_COUNT_LEDGER_HASH,
         "total_assets": 1,
         "eligible_assets": 1,
         "selected_assets": [{
             "asset_id": "token-a",
             "replay_rows": 3
         }],
-        "selected_asset_ids_hash": "selected-assets-hash",
+        "selected_asset_ids_hash": PMXT_TEST_SELECTED_ASSET_IDS_HASH,
         "excluded_event_asset_count": 0,
         "excluded_event_row_count": 0,
         "blocking_issues": []
@@ -2026,7 +2204,7 @@ fn write_selected_source_report_with_selector(
         projected_row_groups: 1,
         selected_rows: rows,
         selected_asset_count: 1,
-        selected_asset_ids_hash: "selected-assets-hash".to_string(),
+        selected_asset_ids_hash: PMXT_TEST_SELECTED_ASSET_IDS_HASH.to_string(),
         output_parquet_sha256: sha256_file(parquet_path),
     };
     let bytes = serde_json::to_vec_pretty(&report).expect("report json");

@@ -41,6 +41,63 @@ Rules:
   for internal-tool workflows, and Plotly/Dash for custom visual apps. Product
   choice cannot change source truth.
 
+## Cross-Project Status And Legend Registry
+
+This is the canonical status, label, and legend registry for the 023 package.
+Project specs, tests, read models, dashboards, and notebooks may reference
+these keys, but must not redefine their meaning or setter authority.
+
+| Registry key | Concept | Display label | Legend meaning | Owner/source of truth | May set | May display |
+|---|---|---|---|---|---|---|
+| `L2_REPLAY` | fidelity_class | L2 replay | Historical L2/L3 order-book replay supports proven execution-quality claims for the accepted source scope. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `TRADE_BAR_REPLAY` | fidelity_class | Trade/bar replay | Trades, fills, candles, or bars support price or alpha research with explicit execution-quality limits. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `SIGNAL_ONLY` | fidelity_class | Signal only | Data may inform signals, features, provenance, exploratory research, or dashboards, but not execution-quality backtests. | `reference/contracts.md` | Backtesting Engine, Research Analytics | Research Analytics, Dashboard |
+| `FORWARD_CAPTURE_PENDING` | fidelity_class | Forward capture pending | No sufficient history exists yet; future replay waits for accumulated source capture. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `SOURCE_PROVEN` | proof_status | Source proven | Evidence is accepted as source-proven for the scoped claim. | `reference/data-model.md` | Owning evidence producer | Backtesting Engine, Research Analytics, Dashboard |
+| `USER_ASSUMPTION` | proof_status | User assumption | User-supplied assumption can drive planning but is not implementation proof. | `reference/data-model.md` | Owning evidence producer | Backtesting Engine, Research Analytics, Dashboard |
+| `GAP` | proof_status | Gap | Required proof or implementation surface is missing for the scoped claim. | `reference/data-model.md` | Owning evidence producer | Backtesting Engine, Research Analytics, Dashboard |
+| `DECISION_NEEDED` | proof_status | Decision needed | Owner decision is required before the scoped claim can close. | `reference/data-model.md` | Owning evidence producer | Backtesting Engine, Research Analytics, Dashboard |
+| `pending` | proof_status | Pending | Source proof or review artifact exists but is not accepted. | `reference/contracts.md` | Owning vertical | Research Analytics, Dashboard |
+| `accepted` | proof_status | Accepted | Source proof or review artifact has owner acceptance. | `reference/contracts.md` | Owning vertical | Research Analytics, Dashboard |
+| `rejected` | proof_status | Rejected | Source proof or review artifact was reviewed and rejected by its owner. | `reference/contracts.md` | Owning vertical | Research Analytics, Dashboard |
+| `superseded` | proof_status | Superseded | A newer immutable proof version replaces this record without mutating it. | `reference/contracts.md` | Owning vertical | Research Analytics, Dashboard |
+| `blocked` | proof_status | Blocked | Required proof or upstream dependency blocks the scoped claim. | `reference/contracts.md` | Owning vertical | Research Analytics, Dashboard |
+| `authoritative` | source_role | Authoritative | Field comes from NT reports/events/snapshots, `PortfolioSnapshot`, or another accepted owner source. | `reference/contracts.md` | Backtesting Engine, Research Analytics | Dashboard |
+| `derived` | source_role | Derived | Field is computed from an accepted authoritative source and carries lineage/freshness. | `reference/contracts.md` | Research Analytics | Dashboard |
+| `exploratory` | source_role | Exploratory | Field is non-trading-truth research or outlook context. | `reference/contracts.md` | Research Analytics | Dashboard |
+| `current` | data_status | Current | Source is within the configured freshness threshold. | `reference/contracts.md` | Producing vertical | Research Analytics, Dashboard |
+| `stale` | data_status | Stale | Source exists but exceeds the configured freshness threshold. | `reference/contracts.md` | Producing vertical | Research Analytics, Dashboard |
+| `partial` | data_status | Partial | Source exists but coverage is incomplete for the displayed field. | `reference/contracts.md` | Producing vertical | Research Analytics, Dashboard |
+| `unavailable` | data_status | Unavailable | Required source is missing or blocked. | `reference/contracts.md` | Producing vertical | Research Analytics, Dashboard |
+| `excluded` | data_status | Excluded | Field or claim is intentionally outside accepted scope. | `reference/contracts.md` | Producing vertical | Research Analytics, Dashboard |
+| `missing_source` | gap_reason | Missing source | Required upstream source is absent. | `reference/contracts.md` | Producing vertical | Research Analytics, Dashboard |
+| `upstream_blocked` | gap_reason | Upstream blocked | Upstream issue, dependency, or proof gate blocks the field. | `reference/contracts.md` | Producing vertical | Research Analytics, Dashboard |
+| `scope_excluded` | gap_reason | Scope excluded | Owner intentionally excluded the field or claim from accepted scope. | `reference/contracts.md` | Producing vertical | Research Analytics, Dashboard |
+| `active` | lifecycle_state | Active | Artifact remains in the hot/queryable lifecycle profile. | `reference/contracts.md` | Artifact producer | Research Analytics, Dashboard |
+| `inactive` | lifecycle_state | Inactive | Artifact is retained but no longer in the active profile. | `reference/contracts.md` | Artifact producer | Research Analytics, Dashboard |
+| `normal` | run_purpose | Normal | Latest accepted proof is required for normal runs. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `reproduction` | run_purpose | Reproduction | Historical rerun may pin older proof with an allowed reason. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `audit` | run_purpose | Audit | Investigation run may pin older proof with required detail. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `regression` | run_purpose | Regression | Mechanical regression run may pin older proof. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `migration` | run_purpose | Migration | Migration comparison run may pin older proof. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `raw` | artifact_kind | Raw | Canonical raw evidence payload kind. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `nt-catalog` | artifact_kind | NT catalog | Canonical NT `ParquetDataCatalog` projection kind. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `source-proofs` | artifact_kind | Source proof | `SourceProofReport` artifact kind. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `backtests` | artifact_kind | Backtest | Backtest output artifact kind. | `reference/contracts.md` | Backtesting Engine | Research Analytics, Dashboard |
+| `artifact-index` | artifact_kind | Artifact index | Artifact Index event, snapshot, or pointer kind. | `reference/contracts.md` | Artifact producer | Research Analytics, Dashboard |
+| `research-analytics` | artifact_kind | Research analytics | Research Analytics-owned derived artifact kind. | `reference/contracts.md` | Research Analytics | Dashboard |
+| `mechanical_blocker` | warning_label | Mechanical blocker | Mechanical condition blocks execution-quality interpretation or promotion. | `reference/contracts.md` | Backtesting Engine, Research Analytics | Dashboard |
+| `claim_limit` | warning_label | Claim limit | Explicit limit on how a result or source may be interpreted. | `reference/contracts.md` | Backtesting Engine, Research Analytics | Dashboard |
+| `selected_existing_product` | product_gate_outcome | Existing product selected | Existing product passed the dashboard product-fit gate. | `reference/contracts.md` | Dashboard | Dashboard |
+| `custom_ui_requires_exception` | product_gate_outcome | Custom UI exception | Custom UI is allowed only after all product candidates are rejected with evidence. | `reference/contracts.md` | Dashboard | Dashboard |
+
+## Raw-Archive Latency Carve-Out
+
+Latency / lead-lag receive-offset research may read raw archives because the
+current converter drops capture/receipt time. This is a **temporary** fallback.
+Sunset is tied to issue #677 (fix converter to write `ts_init=capture_time`).
+It is not a permanent dual path.
+
 ## Artifact Storage Contract
 
 Canonical raw provider/API/archive payloads, NT `ParquetDataCatalog` data,
@@ -90,7 +147,7 @@ nt-catalog/v1/projection=<catalog_projection_id>/
 source-proofs/v1/source_binding=<key>/fixture=<binary-option|perps-spot>/proof=<source_proof_id>/version=<version>/
 backtests/v1/fixture=<binary-option|perps-spot>/run=<run_id>/
 artifact-index/v1/<events|snapshots|pointers>/...
-research-analytics/v1/<datasets|feature-tables|experiment-results|promotion-packages>/...
+research-analytics/v1/<datasets|feature-tables|experiment-results>/...
 ```
 
 The `nt-catalog/` path is special: Bolt stops at the catalog projection root and
@@ -116,9 +173,11 @@ pointers. The required logical pieces are:
 
 The top-level artifact kinds are `raw`, `nt-catalog`, `source-proofs`,
 `backtests`, `artifact-index`, and `research-analytics`. Research Analytics
-subfamilies (`datasets`, `feature-tables`, `experiment-results`, and
-`promotion-packages`) commit into the single `research-analytics` kind snapshot;
-they do not get separate latest pointers.
+subfamilies (`datasets`, `feature-tables`, and `experiment-results`) commit
+into the single `research-analytics` kind snapshot; they do not get separate
+latest pointers. Typed promotion config, when allowed by a real GO finding,
+rides on the `experiment-results` artifact rather than a separate artifact
+family/path.
 
 The pointer path is:
 
@@ -212,12 +271,16 @@ Rules:
 `BacktestResultContract` is an objective evidence and lookup contract. It may
 carry NT result/report pointers, metrics artifact pointers, source proof ids,
 catalog/source hashes, strategy config hash, run purpose, fidelity class, claim
-limits, warnings, and mechanical blockers.
+limits, warnings, and mechanical blockers. Version 2 contracts also carry the
+manifest-derived execution model, venue queue-position setting, and catalog data
+types as structured fields so downstream gates can verify replay realism without
+parsing claim-limit text.
 
 It must not carry a subjective promotion recommendation such as "use this
 strategy" or "escalate this strategy." Strategy review status belongs to a
-Research Analytics `PromotionPackage` or a later explicitly owned review
-artifact that consumes one or more backtest result contracts as evidence.
+Research Analytics experiment-result verdict, optional typed promotion-config
+fields on that experiment-result, or a later explicitly owned review artifact
+that consumes one or more backtest result contracts as evidence.
 
 Reproduction, audit, regression, or migration results are historical/mechanical
 artifacts. They must not be presented as normal current performance.
@@ -474,7 +537,7 @@ Each future project must have its own spec/plan/tasks/issues. This package may
 stage them but must not merge them into one implementation project.
 
 | Future project | Project directory | Must prove before implementation |
-|---|---|
+|---|---|---|
 | Backtesting Engine | `1-backtesting-engine/` | NT crate/feature availability, manifest-to-NT config mapping, extension-surface classification, resolved default recording, catalog data classes, fill/fee model ownership, result truth, fidelity labels, and two market-structure fixtures with TOML/registry venue/provider bindings. |
 | Research Analytics | `2-research-analytics/` | Raw evidence schema, deterministic projection lineage, point-in-time correctness, experiment metadata, notebook boundary, claim gates, and promotion to typed TOML/NT-compatible runtime contract. |
 | Dashboard | `3-dashboard/` | Field-by-field source matrix, freshness/staleness rules, no-mutation controls, product selection gate, #409/#77/#36 disposition, and #369 non-closure context. |

@@ -2,8 +2,8 @@
   "schema_version": "artifact-index-producer-iam-closeout-plan.v1",
   "created_at_utc": "2026-06-08T22:41:14Z",
   "task_id": "BACKTESTING_ENGINE-006",
-  "status": "open_security_mutation_required_for_per_kind_iam_or_coordinator_selection",
-  "decision": "Do not rely on Artifact Index producer commits for broad backfill with the current broad artifact-store credential. Direct S3 create-only and conditional pointer mechanics are proven, but producer ownership is not enforced until per-kind Artifact Index credentials reject denied-kind writes or an approved coordinator/table format replaces the direct pointer-commit path.",
+  "status": "closed_per_kind_iam_scope_proven_for_all_current_artifact_kinds",
+  "decision": "Per-kind Artifact Index producer credentials are now provisioned and proven for every current ArtifactKind. Direct S3 create-only and conditional pointer mechanics are proven, and scoped producer credentials reject cross-kind event, snapshot, and latest-pointer writes.",
   "current_state_probe_2026_06_08": {
     "credential_values_read": false,
     "aws_mutation_performed": false,
@@ -43,6 +43,26 @@
     "artifact_index_parameter_names": [],
     "conclusion": "The per-kind /bolt/artifact-index producer namespace remains absent in current SSM parameter metadata."
   },
+  "current_state_probe_2026_06_15": {
+    "observed_at_utc": "2026-06-15T07:00:12Z",
+    "credential_values_read": false,
+    "aws_mutation_performed": true,
+    "artifact_index_parameter_names": [
+      "/bolt/artifact-index/producers/artifact_index/access-key-id",
+      "/bolt/artifact-index/producers/artifact_index/secret-access-key",
+      "/bolt/artifact-index/producers/backtests/access-key-id",
+      "/bolt/artifact-index/producers/backtests/secret-access-key",
+      "/bolt/artifact-index/producers/nt_catalog/access-key-id",
+      "/bolt/artifact-index/producers/nt_catalog/secret-access-key",
+      "/bolt/artifact-index/producers/raw/access-key-id",
+      "/bolt/artifact-index/producers/raw/secret-access-key",
+      "/bolt/artifact-index/producers/research_analytics/access-key-id",
+      "/bolt/artifact-index/producers/research_analytics/secret-access-key",
+      "/bolt/artifact-index/producers/source_proofs/access-key-id",
+      "/bolt/artifact-index/producers/source_proofs/secret-access-key"
+    ],
+    "conclusion": "The per-kind /bolt/artifact-index producer namespace now exists for every current ArtifactKind. Credential values are not recorded."
+  },
   "already_proven": {
     "direct_s3_commit_mechanics_report": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json",
     "direct_s3_commit_proven": true,
@@ -76,17 +96,34 @@
         "RED python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_iam_policy -- --nocapture failed because /example/artifact-store/s3 generated /example/artifact-store/s3/backtests/access-key-id and secret-access-key paths.",
         "GREEN python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- test --locked --test backtesting_vertical_slice_artifact_index_iam_policy -- --nocapture passed after validate_ssm_parameter_prefix required prefixes ending with /artifact-index/producers."
       ],
-      "claim_limit": "This only prevents newly generated producer IAM plans from using the broad artifact-store SSM namespace; it does not create AWS IAM users, write SSM parameters, prove denied-kind S3 rejections, or close BTE-006."
+      "claim_limit": "This guardrail prevented broad artifact-store SSM namespace reuse before the approved 2026-06-15 AWS mutation created and proved per-kind Artifact Index producer identities."
     }
   },
   "preferred_close_path": {
     "path": "per_kind_artifact_index_producer_credentials",
     "requires_explicit_aws_security_mutation_approval": true,
-    "artifact_kind_to_close_first": "backtests",
+    "artifact_kinds_closed": [
+      "raw",
+      "nt_catalog",
+      "source_proofs",
+      "backtests",
+      "artifact_index",
+      "research_analytics"
+    ],
     "ssm_parameter_prefix": "/bolt/artifact-index/producers",
     "required_ssm_parameter_names": [
+      "/bolt/artifact-index/producers/raw/access-key-id",
+      "/bolt/artifact-index/producers/raw/secret-access-key",
+      "/bolt/artifact-index/producers/nt_catalog/access-key-id",
+      "/bolt/artifact-index/producers/nt_catalog/secret-access-key",
+      "/bolt/artifact-index/producers/source_proofs/access-key-id",
+      "/bolt/artifact-index/producers/source_proofs/secret-access-key",
       "/bolt/artifact-index/producers/backtests/access-key-id",
-      "/bolt/artifact-index/producers/backtests/secret-access-key"
+      "/bolt/artifact-index/producers/backtests/secret-access-key",
+      "/bolt/artifact-index/producers/artifact_index/access-key-id",
+      "/bolt/artifact-index/producers/artifact_index/secret-access-key",
+      "/bolt/artifact-index/producers/research_analytics/access-key-id",
+      "/bolt/artifact-index/producers/research_analytics/secret-access-key"
     ],
     "policy_generator": "repo://crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_policy",
     "provisioning_plan_generator": "repo://crates/backtesting-vertical-slice/src/artifact_index_iam_policy.rs::artifact_index_producer_iam_provisioning_plan",
@@ -113,15 +150,36 @@
     },
     "required_proof_after_provisioning": {
       "proof_runner": "artifact_index_commit_proof",
-      "artifact_kind": "backtests",
+      "artifact_kind": "all_current_artifact_kinds",
       "denied_artifact_kinds": [
+        "raw",
+        "nt_catalog",
+        "source_proofs",
+        "backtests",
+        "artifact_index",
         "research_analytics"
       ],
-      "expected_denied_write_attempts": 3,
-      "expected_denied_write_rejections": 3,
+      "expected_denied_write_attempts": 90,
+      "expected_denied_write_rejections": 90,
       "expected_violation_count": 0,
       "expected_report_field": "producer_iam_scope_proven = true"
     }
+  },
+  "closeout_result_2026_06_15": {
+    "all_producer_scope_proof": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-all-producer-iam-scope-proof.backtesting-engine-006.2026-06-15.json",
+    "all_producer_scope_proof_file_sha256": "cc762ae15550340b1f13ca56cc7302dbaa279b6bdc087311fb8464d8dcbf4474",
+    "backtests_producer_scope_proof": "repo://specs/023-nt-research-analytics-platform/reference/artifact-index-producer-iam-scope-proof.backtesting-engine-006.backtests-complete.2026-06-15.json",
+    "additional_producer_identities_proven": [
+      "raw",
+      "nt_catalog",
+      "source_proofs",
+      "artifact_index",
+      "research_analytics"
+    ],
+    "combined_denied_write_attempts": 90,
+    "combined_denied_write_rejections": 90,
+    "combined_violation_count": 0,
+    "bte_006_can_close": true
   },
   "alternate_close_path": {
     "path": "approved_commit_coordinator_or_table_format",
@@ -156,6 +214,6 @@
       "reason": "Broad backfill would depend on committed artifact discovery and latest-pointer semantics under an unscoped producer credential."
     }
   ],
-  "bte_006_can_close": false,
-  "blocks_broad_backfill": true
+  "bte_006_can_close": true,
+  "blocks_broad_backfill": false
 }

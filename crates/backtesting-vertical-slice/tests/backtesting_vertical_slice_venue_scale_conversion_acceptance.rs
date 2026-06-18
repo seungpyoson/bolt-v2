@@ -232,7 +232,7 @@ selected_source_report_path = "{pmxt_selected_source_report}"
 [[venue.universe]]
 universe_id = "pmxt-polymarket-full-current-data"
 scope_label = "Polymarket full current local/archive data"
-status = "source_only"
+status = "blocked"
 source_archive_discovery_seed_path = "{pmxt_archive_seed}"
 source_archive_index_manifest_path = "{pmxt_archive_index_manifest}"
 source_universe_manifest_path = "{pmxt_source_manifest}"
@@ -240,6 +240,7 @@ source_universe_conversion_queue_path = "{pmxt_conversion_queue}"
 source_universe_source_proof_set_path = "{pmxt_source_proof_set}"
 selected_source_report_path = "{pmxt_selected_source_report}"
 blocking_issues = [
+  "missing_accepted_source_proof",
   "missing_source_universe_object_gates",
   "missing_source_universe_conversion_run_plan",
   "missing_pmxt_l2_tick_size_epoch_policy",
@@ -304,13 +305,13 @@ blocking_issues = [
     assert_eq!(ledger.venue_count, 3);
     assert_eq!(ledger.universe_count, 7);
     assert_eq!(ledger.converted_universes, 3);
-    assert_eq!(ledger.source_only_universes, 3);
-    assert_eq!(ledger.blocked_universes, 1);
+    assert_eq!(ledger.source_only_universes, 2);
+    assert_eq!(ledger.blocked_universes, 2);
     assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
     assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
-    assert_eq!(ledger.total_source_only_objects, 9_259);
+    assert_eq!(ledger.total_source_only_objects, 7_908);
     assert_eq!(ledger.total_source_only_object_gates, 7_908);
-    assert_eq!(ledger.total_source_only_accepted_bytes, 579_873_706_038);
+    assert_eq!(ledger.total_source_only_accepted_bytes, 22_057_801_068);
 
     let binance = ledger
         .venues
@@ -528,24 +529,26 @@ blocking_issues = [
         .iter()
         .find(|venue| venue.venue == "pmxt")
         .expect("pmxt venue");
-    assert_eq!(
-        pmxt.status,
-        VenueScaleConversionAcceptanceStatus::PartiallyConverted
-    );
+    assert_eq!(pmxt.status, VenueScaleConversionAcceptanceStatus::Blocked);
     assert_eq!(pmxt.converted_universes, 1);
-    assert_eq!(pmxt.source_only_universes, 1);
-    assert_eq!(pmxt.blocked_universes, 0);
-    assert_eq!(pmxt.total_source_only_objects, 1_351);
+    assert_eq!(pmxt.source_only_universes, 0);
+    assert_eq!(pmxt.blocked_universes, 1);
+    assert_eq!(pmxt.total_source_only_objects, 0);
     assert_eq!(pmxt.total_source_only_object_gates, 0);
-    assert_eq!(pmxt.total_source_only_accepted_bytes, 557_815_904_970);
+    assert_eq!(pmxt.total_source_only_accepted_bytes, 0);
     let pmxt_full = pmxt
         .universes
         .iter()
         .find(|universe| universe.universe_id == "pmxt-polymarket-full-current-data")
         .expect("pmxt full current universe");
     assert_eq!(
+        pmxt_full.status,
+        VenueScaleConversionAcceptanceStatus::Blocked
+    );
+    assert_eq!(
         pmxt_full.blocking_issues,
         vec![
+            "missing_accepted_source_proof",
             "missing_source_universe_object_gates",
             "missing_source_universe_conversion_run_plan",
             "missing_pmxt_l2_tick_size_epoch_policy",
@@ -718,5 +721,66 @@ selected_conversion_manifest_path = "{manifest_path}"
     assert!(
         format!("{error:#}").contains("catalog hash"),
         "expected missing-catalog-hash rejection, got: {error:#}"
+    );
+}
+
+#[test]
+fn source_proof_set_rejects_accepted_count_above_total_count() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("acceptance-ledger");
+    let source_manifest = temp_dir.path().join("source-manifest.json");
+    let source_proof_set = temp_dir.path().join("source-proof-set.json");
+    fs::write(
+        &source_manifest,
+        r#"{
+  "schema_version": "backfill-source-universe-object-manifest.v1",
+  "manifest_id": "backfill-source-universe-object-manifest-test",
+  "universe_id": "backfill-source-universe-test",
+  "object_count": 1,
+  "accepted_bytes": 10
+}"#,
+    )
+    .expect("write source manifest");
+    fs::write(
+        &source_proof_set,
+        r#"{
+  "schema_version": "source-universe-source-proof-set.v1",
+  "proof_set_id": "source-universe-source-proofs-test",
+  "proof_count": 1,
+  "accepted_proof_count": 2,
+  "total_completed_objects": 1,
+  "total_accepted_bytes": 10
+}"#,
+    )
+    .expect("write source proof set");
+    let spec = temp_dir.path().join("source-proof-set-spec.toml");
+    fs::write(
+        &spec,
+        format!(
+            r#"ledger_id = "venue-scale-conversion-acceptance-ledger-inconsistent-proof-set"
+output_dir = "{}"
+
+[[venue]]
+venue_id = "test-current-reference"
+venue = "test"
+
+[[venue.universe]]
+universe_id = "test-source-only"
+scope_label = "test source-only universe"
+status = "source_only"
+source_universe_manifest_path = "{}"
+source_universe_source_proof_set_path = "{}"
+"#,
+            output_dir.display(),
+            source_manifest.display(),
+            source_proof_set.display(),
+        ),
+    )
+    .expect("write spec");
+    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec)
+        .expect_err("accepted proof count above total proof count must be rejected");
+    assert!(
+        format!("{error:#}").contains("accepted proof count exceeds proof count"),
+        "expected proof-count consistency rejection, got: {error:#}"
     );
 }

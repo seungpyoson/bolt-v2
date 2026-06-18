@@ -29,6 +29,18 @@ pub struct SignedTradeFlowConfig {
     pub max_samples: u64,
 }
 
+impl SignedTradeFlowConfig {
+    /// The retention window in milliseconds, or `None` when `window_secs × 1000`
+    /// overflows `u64`. The single home of the seconds→milliseconds conversion:
+    /// [`SignedTradeFlow::from_config`] builds the buffer window from it, and a
+    /// strategy's go-live gate calls it to reject (fail loud) a `window_secs` so
+    /// large the window would silently saturate instead of meaning the configured
+    /// value.
+    pub fn window_ms(&self) -> Option<u64> {
+        self.window_secs.checked_mul(MILLIS_PER_SECOND_U64)
+    }
+}
+
 /// Bounded rolling buffer of signed trades for a single quoted instrument.
 ///
 /// Mirrors the config-driven rolling-window shape used by other shared V3
@@ -47,7 +59,11 @@ pub struct SignedTradeFlow {
 impl SignedTradeFlow {
     pub(crate) fn from_config(config: &SignedTradeFlowConfig) -> Self {
         Self {
-            window_ms: config.window_secs.saturating_mul(MILLIS_PER_SECOND_U64),
+            // Overflow is rejected loud upstream at the strategy go-live gate via
+            // `SignedTradeFlowConfig::window_ms`, so for any validated config this
+            // is the exact configured window; the `u64::MAX` floor only guards a
+            // direct, unvalidated construction and never silently truncates one.
+            window_ms: config.window_ms().unwrap_or(u64::MAX),
             max_samples: config.max_samples as usize,
             last_observed_ns: None,
             samples: VecDeque::new(),
@@ -627,6 +643,24 @@ mod tests {
         assert!(
             zero_cap.is_empty(),
             "zero max-samples disables retention after observe-time eviction",
+        );
+    }
+
+    #[test]
+    fn signed_trade_flow_config_window_ms_is_checked() {
+        assert_eq!(
+            signed_trade_flow_config(
+                TEST_NARROW_TRADE_FLOW_WINDOW_SECS,
+                TEST_TRADE_FLOW_MAX_SAMPLES
+            )
+            .window_ms(),
+            Some(TEST_NARROW_TRADE_FLOW_WINDOW_SECS * MILLIS_PER_SECOND_U64)
+        );
+        assert_eq!(
+            signed_trade_flow_config(u64::MAX, TEST_TRADE_FLOW_MAX_SAMPLES).window_ms(),
+            None,
+            "a window_secs whose millisecond conversion overflows must report None, \
+             not silently saturate",
         );
     }
 }

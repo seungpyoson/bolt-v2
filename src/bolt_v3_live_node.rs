@@ -185,14 +185,7 @@ use crate::{
 };
 
 pub fn current_build_head_sha() -> Option<&'static str> {
-    option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))
-}
-
-fn is_git_head_sha(value: &str) -> bool {
-    value.len() == 40
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    crate::bolt_v3_operator_artifacts::current_build_head_sha()
 }
 
 pub struct BoltV3LiveNodeRuntime {
@@ -5027,7 +5020,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             &mut node,
             loaded,
             resolved,
-            crate::strategy_runtime_bindings::runtime_bindings(),
+            crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             decision_evidence.clone(),
             iv_runtime,
@@ -5037,7 +5030,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             &mut node,
             loaded,
             resolved,
-            crate::strategy_runtime_bindings::runtime_bindings(),
+            crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             decision_evidence.clone(),
         )

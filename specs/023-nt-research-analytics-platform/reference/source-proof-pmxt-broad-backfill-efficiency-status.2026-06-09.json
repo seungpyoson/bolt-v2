@@ -1,11 +1,30 @@
 {
   "schema_version": "source-proof-pmxt-broad-backfill-efficiency-status.v1",
   "created_date": "2026-06-09",
-  "verified_at_utc": "2026-06-09T12:13:04Z",
+  "verified_at_utc": "2026-06-16T08:05:49Z",
   "source_binding": "polymarket-parquet-archive-index",
   "table_family": "order_book_snapshot_deltas",
   "status": "open_broad_backfill_efficiency_unproven_bounded_one_off_guardrails_present",
   "decision": "Do not start broad PMXT/Polymarket L2 backfill. The current code proves a bounded one-off selected-source path and records several fail-fast guardrails, but broad backfill still lacks accepted source proof, accepted expanded coverage/cost/storage evidence, and an L2 source-proof tick-size policy: either dynamic timed instrument-epoch replay or a source-proof-bound no-tick-size-change universe.",
+  "committed_input_hashes": {
+    "coverage_ledger_status": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json",
+      "sha256": "9341276468e652fa0aa35e8492764a6df81c59d13184671d9a7ac8a03391b4f9"
+    },
+    "durable_source_selection_status": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
+      "sha256": "95da7272a5655ca9835210d597c016d867874b2ec2bb14663616a73bb7566e9d"
+    },
+    "dynamic_tick_size_replay_status": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-dynamic-tick-size-replay-status.2026-06-16.json",
+      "sha256": "bf4658e0fea6b5678e1dad0f2d24c8751cb2920375f1f305cfdea3e557efe229"
+    }
+  },
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py",
+    "self_test": "repo://scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py",
+    "source_fence_static": true
+  },
   "root_cause": {
     "previous_slow_backfill_failure_mode": "Large hourly PMXT Parquet objects were treated as payloads to scan, hash, or stage before the acceptance gates proved a bounded source/window/instrument scope.",
     "why_repeating_it_is_unsafe": [
@@ -116,7 +135,7 @@
     "no_download_coverage_gate": [
       {
         "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-coverage-ledger-status.2026-06-09.json",
-        "evidence": "The committed coverage ledger status proves source-proof metadata and coverage_axis can be derived without payload download, but both PMXT records remain rejected because source_proof_status is pending."
+        "evidence": "The committed coverage ledger status proves source-proof metadata and coverage_axis can be derived without payload download, and now source-fences the indexed PMXT manifest/index snapshot: 1,351 order_book_snapshot_deltas objects, 1,351 verified HEADs, 557,815,904,970 compressed bytes, and the 2026-04-13T19:00:00Z to 2026-06-10T15:00:00Z archive window. Both PMXT ledger records remain rejected because source_proof_status is pending."
       }
     ],
     "accepted_tranche_budget_gate": [
@@ -200,6 +219,7 @@
     "Replace broad full-object hashing in planning/projection with accepted object hashes from staging or Artifact Index records; full payload reads belong only inside bounded accepted tranches.",
     "Carry object-level row-group or predicate metadata from the accepted source proof into the execution plan so selected-source projection does not rediscover it by rescanning payloads; current code carries source_row_groups/predicate_ref and can require them, but accepted PMXT source-proof manifests with that metadata remain unproven.",
     "Carry source_usage_scope from accepted source proof through source-proof scope, accepted tranche, materialized run-spec, and execution plan; current code does this and blocks run-spec mismatches, but PMXT still lacks accepted canonical source proof.",
+    "Reject source-only venue-scale acceptance when an explicit source proof set has zero accepted proofs; current code enforces this guardrail, but PMXT full-current still has source_accepted_proof_count=0 and remains blocked.",
     "Set explicit object byte, row count, projected row-group count, and wall-time budgets in the accepted tranche plan; backfill_execution_plan now carries row, projected-row-group, and wall-time budgets, while first_proof_event_count_ledger and selected_source_slice enforce source parquet byte budgets before payload-scale work.",
     "Prove dynamic tick-size replay through NT BacktestNode/catalog, or accept a source-proof-bound no-tick-size-change exclusion policy before full L2 replay claims; generic SourceProofReport L2Replay acceptance now requires l2_replay_evidence.no_tick_size_change_universe_ref or l2_replay_evidence.timed_instrument_epoch_replay_ref.",
     "Use GitHub CI as the broad verification gate for committed changes; avoid broad local cargo test runs as the default verification path."

@@ -412,10 +412,10 @@ fn research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer() {
     let root = "s3://example-bucket/nt-research-analytics";
     let record = ArtifactIndexRecord::new_research_analytics_staged(
         root,
-        ResearchAnalyticsSubfamily::PromotionPackages,
-        "promotion-package-123",
+        ResearchAnalyticsSubfamily::ExperimentResults,
+        "experiment-result-123",
         "research-analytics",
-        "s3://example-bucket/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/manifest.json",
+        "s3://example-bucket/nt-research-analytics/research-analytics/v1/experiment-results/experiment-123/manifest.json",
         &sha256_a(),
         vec![ArtifactIndexLineageRef::new(
             "backtest-run-123",
@@ -428,12 +428,12 @@ fn research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer() {
     assert_eq!(record.artifact_kind, ArtifactKind::ResearchAnalytics);
     assert_eq!(
         record.artifact_subfamily.as_deref(),
-        Some("promotion-packages")
+        Some("experiment-results")
     );
     assert_eq!(
         record.event_uri,
         format!(
-            "{root}/artifact-index/v1/events/kind=research_analytics/artifact_id=promotion-package-123/hash={}.json",
+            "{root}/artifact-index/v1/events/kind=research_analytics/artifact_id=experiment-result-123/hash={}.json",
             sha256_a()
         )
     );
@@ -442,7 +442,7 @@ fn research_analytics_artifacts_use_typed_subfamilies_and_one_kind_pointer() {
         format!("{root}/artifact-index/v1/pointers/kind=research_analytics/latest.json")
     );
     assert!(
-        !record.latest_pointer_uri.contains("promotion-packages"),
+        !record.latest_pointer_uri.contains("experiment-results"),
         "RA subfamilies must not get separate latest pointers"
     );
 }
@@ -453,9 +453,9 @@ fn research_analytics_records_require_matching_subfamily_prefix() {
     let err = ArtifactIndexRecord::new_staged(
         root,
         ArtifactKind::ResearchAnalytics,
-        "promotion-package-123",
+        "experiment-result-123",
         "research-analytics",
-        "s3://example-bucket/nt-research-analytics/research-analytics/v1/promotion-packages/package-123/manifest.json",
+        "s3://example-bucket/nt-research-analytics/research-analytics/v1/experiment-results/experiment-123/manifest.json",
         &sha256_a(),
         vec![ArtifactIndexLineageRef::new(
             "backtest-run-123",
@@ -468,10 +468,10 @@ fn research_analytics_records_require_matching_subfamily_prefix() {
 
     let err = ArtifactIndexRecord::new_research_analytics_staged(
         root,
-        ResearchAnalyticsSubfamily::PromotionPackages,
-        "promotion-package-123",
+        ResearchAnalyticsSubfamily::ExperimentResults,
+        "experiment-result-123",
         "research-analytics",
-        "s3://example-bucket/nt-research-analytics/research-analytics/v1/datasets/package-123/manifest.json",
+        "s3://example-bucket/nt-research-analytics/research-analytics/v1/datasets/experiment-123/manifest.json",
         &sha256_a(),
         vec![ArtifactIndexLineageRef::new(
             "backtest-run-123",
@@ -480,5 +480,5 @@ fn research_analytics_records_require_matching_subfamily_prefix() {
         )],
     )
     .unwrap_err();
-    assert!(err.to_string().contains("promotion-packages"), "{err}");
+    assert!(err.to_string().contains("experiment-results"), "{err}");
 }

@@ -242,8 +242,8 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             ]),
             typed_config_uri: None,
             typed_config_hash: None,
-            promotion_package_uri: None,
-            promotion_package_hash: None,
+            experiment_result_uri: None,
+            experiment_result_hash: None,
         },
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
@@ -309,6 +309,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             rust_storage_options: BTreeMap::new(),
             ssm_parameters: None,
         },
+        domain_metrics: Vec::new(),
         start_time: None,
         end_time: None,
     }
@@ -347,6 +348,7 @@ fn accepted_data_flows_through_to_objective_result_contract() {
                 .to_string(),
             canonical_table_uri: canonical_path.to_string_lossy().to_string(),
             nt_catalog_uri: catalog_path.clone(),
+            nt_catalog_manifest_uri: None,
             catalog_metadata_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/end-to-end/catalog-metadata.json"
                     .to_string(),
@@ -406,6 +408,19 @@ fn accepted_data_flows_through_to_objective_result_contract() {
     );
     // The zero-orders warning is emitted with the honest TRADE_REPLAY rationale,
     // and the claim limits carry the full reference set forward.
+    assert_eq!(contract.execution_model, manifest.execution_model);
+    assert_eq!(
+        contract.venue_queue_position,
+        Some(manifest.venue.queue_position)
+    );
+    assert_eq!(
+        contract.catalog_data_types,
+        manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(contract.warnings.len(), 1);
     assert!(
         contract.warnings[0].contains("TRADE_REPLAY"),
@@ -442,10 +457,9 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         contract.claim_limits
     );
     assert!(
-        contract
-            .claim_limits
-            .iter()
-            .any(|limit| { limit.contains("NT unsupported_for_now surface venue.fill_model") }),
+        contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT unsupported_for_now surface venue.settlement_prices")
+        }),
         "contract must record unsupported NT surfaces: {:?}",
         contract.claim_limits
     );
@@ -508,6 +522,7 @@ fn time_window_gate_admits_by_ts_init_receipt_clock() {
                 .to_string(),
             canonical_table_uri: admit_canonical.to_string_lossy().to_string(),
             nt_catalog_uri: admit_catalog_path.clone(),
+            nt_catalog_manifest_uri: None,
             catalog_metadata_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/win/catalog-metadata.json"
                     .to_string(),
@@ -565,6 +580,7 @@ fn time_window_gate_admits_by_ts_init_receipt_clock() {
                 .to_string(),
             canonical_table_uri: reject_canonical.to_string_lossy().to_string(),
             nt_catalog_uri: reject_catalog_path.clone(),
+            nt_catalog_manifest_uri: None,
             catalog_metadata_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/win/catalog-metadata-2.json"
                     .to_string(),

@@ -71,6 +71,18 @@ pub struct MarketFamilyValidationBinding {
         fn(&toml::Value) -> Result<TargetRuntimeFields, InstrumentFilterError>,
     pub select_binary_option_market:
         fn(MarketSelectionTarget<'_>, &[InstrumentAny], u64) -> Option<SelectedBinaryOptionMarket>,
+    /// Family-owned LOAD-TIME validation of a maker's operator-declared market
+    /// target. Returns the validation errors (empty = valid). This is the
+    /// fail-closed counterpart to `select_binary_option_market`: a family whose
+    /// `select_binary_option_market` cannot resolve a binary up/down market (it
+    /// returns `None`/errors unconditionally) MUST report
+    /// "binary maker selection unsupported" here so the maker rejects such a
+    /// declaration at load instead of admitting a market that can only ever
+    /// resolve to nothing at runtime. A binary-capable family validates the
+    /// maker-relevant target-shape fields (underlying, cadence, slug, and the
+    /// static-outcome fields) by REUSING its own target validators, so there is
+    /// one home per family for "what is a valid target for me".
+    pub validate_maker_market_target: fn(&str, MarketSelectionTarget<'_>) -> Vec<String>,
     pub market_selection_candidate_windows:
         fn(
             MarketSelectionTarget<'_>,
@@ -295,6 +307,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         plan_strategy_target: updown::plan_strategy_target,
         target_runtime_fields: updown::target_runtime_fields,
         select_binary_option_market: updown::select_binary_option_market,
+        validate_maker_market_target: updown::validate_maker_market_target,
         market_selection_candidate_windows: updown::market_selection_candidate_windows,
         selected_market_requirement: updown::selected_market_requirement,
         fair_probability_up: updown::fair_probability_up,
@@ -310,6 +323,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         plan_strategy_target: outcome_group::plan_strategy_target,
         target_runtime_fields: outcome_group::target_runtime_fields,
         select_binary_option_market: outcome_group::select_binary_option_market,
+        validate_maker_market_target: unsupported_maker_market_target,
         market_selection_candidate_windows: outcome_group::market_selection_candidate_windows,
         selected_market_requirement: outcome_group::selected_market_requirement,
         fair_probability_up: outcome_group::fair_probability_up,
@@ -325,6 +339,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         plan_strategy_target: static_binary_event::plan_strategy_target,
         target_runtime_fields: static_binary_event::target_runtime_fields,
         select_binary_option_market: static_binary_event::select_binary_option_market,
+        validate_maker_market_target: static_binary_event::validate_maker_market_target,
         market_selection_candidate_windows: static_binary_event::market_selection_candidate_windows,
         selected_market_requirement: static_binary_event::selected_market_requirement,
         fair_probability_up: static_binary_event::fair_probability_up,
@@ -340,6 +355,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         plan_strategy_target: hyperliquid_instrument::plan_strategy_target,
         target_runtime_fields: hyperliquid_instrument::target_runtime_fields,
         select_binary_option_market: hyperliquid_instrument::select_binary_option_market,
+        validate_maker_market_target: unsupported_maker_market_target,
         market_selection_candidate_windows:
             hyperliquid_instrument::market_selection_candidate_windows,
         selected_market_requirement: hyperliquid_instrument::selected_market_requirement,
@@ -366,6 +382,57 @@ pub fn static_binary_event_reference_current_price_fair_probability_source() -> 
 
 fn unsupported_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
     None
+}
+
+/// Maker-target validator for families whose `select_binary_option_market`
+/// cannot resolve a binary up/down market (it returns `None`/errors
+/// unconditionally). Such a family is registered for other selection modes but is
+/// NOT a valid maker target, so a maker declaration naming it must fail closed at
+/// load — otherwise the go-live gate would admit a market that can only ever
+/// resolve to "no current market" at runtime.
+/// Maximum length of an underlying-asset symbol (e.g. `ETH`, `BTC`). Bounds the
+/// shared `validate_underlying_asset` rule.
+const UNDERLYING_ASSET_MAX_CHARS: usize = 32;
+
+fn unsupported_maker_market_target(
+    context: &str,
+    target: MarketSelectionTarget<'_>,
+) -> Vec<String> {
+    vec![format!(
+        "{context}: family `{}` does not support binary maker market selection",
+        target.family_key
+    )]
+}
+
+/// Validate an underlying-asset symbol: non-empty, 1-32 chars, uppercase ASCII /
+/// digits / underscore only. `field` names the field in the error so the SAME
+/// rule serves multiple families' validators without a sibling-family dependency
+/// — it lives at the family-registry parent (this module), not inside any one
+/// family, so the per-family coupling fence stays green. Reused by `updown`'s
+/// envelope and maker-target validators and by `static_binary_event`'s
+/// maker-target validator.
+pub(crate) fn validate_underlying_asset(
+    context: &str,
+    field: &str,
+    underlying: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if underlying.is_empty() {
+        errors.push(format!("{context}: {field} must not be empty"));
+    } else if underlying.chars().count() > UNDERLYING_ASSET_MAX_CHARS {
+        errors.push(format!(
+            "{context}: {field} must be 1-{UNDERLYING_ASSET_MAX_CHARS} characters (got {})",
+            underlying.chars().count()
+        ));
+    } else if !underlying
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    {
+        errors.push(format!(
+            "{context}: {field} must use only uppercase ASCII letters, digits, and underscores (got `{underlying}`)"
+        ));
+    }
+    errors
 }
 
 fn unsupported_maker_settlement_payout(_payout: BinarySettlementPayout, _leg: Leg) -> Option<f64> {
@@ -491,6 +558,38 @@ pub fn select_binary_option_market_from_target_with_bindings(
         return None;
     };
     (binding.select_binary_option_market)(target, instruments, now_milliseconds)
+}
+
+/// Validate a maker's operator-declared market target through the owning
+/// family's registry binding, at config load. Returns the family's validation
+/// errors (empty = valid). An unknown `family_key` fails CLOSED with an explicit
+/// error (unlike `select_binary_option_market_from_target`, which returns
+/// `Option`, this is a load-time gate so an unregistered family must surface as a
+/// validation error, never as "valid"). Binary-unsupported families return their
+/// `unsupported_maker_market_target` error so a maker cannot declare a market the
+/// family can never resolve.
+pub fn validate_maker_market_target_from_target(
+    context: &str,
+    target: MarketSelectionTarget<'_>,
+) -> Vec<String> {
+    validate_maker_market_target_from_target_with_bindings(context, target, validation_bindings())
+}
+
+pub fn validate_maker_market_target_from_target_with_bindings(
+    context: &str,
+    target: MarketSelectionTarget<'_>,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Vec<String> {
+    let Some(binding) = bindings
+        .iter()
+        .find(|binding| binding.key == target.family_key)
+    else {
+        return vec![format!(
+            "{context}: family `{}` is not a registered market family",
+            target.family_key
+        )];
+    };
+    (binding.validate_maker_market_target)(context, target)
 }
 
 pub fn fair_probability_up_for_family(
@@ -929,6 +1028,7 @@ mod tests {
             plan_strategy_target: fake_plan_strategy_target,
             target_runtime_fields: fake_target_runtime_fields,
             select_binary_option_market: fake_select_binary_option_market,
+            validate_maker_market_target: fake_validate_maker_market_target,
             market_selection_candidate_windows: fake_market_selection_candidate_windows,
             selected_market_requirement: fake_selected_market_requirement,
             fair_probability_up: fake_fair_probability_up,
@@ -956,6 +1056,13 @@ mod tests {
         Err(InstrumentFilterError::Other {
             message: "fixture_family target runtime binding invoked".to_string(),
         })
+    }
+
+    fn fake_validate_maker_market_target(
+        _context: &str,
+        _target: MarketSelectionTarget<'_>,
+    ) -> Vec<String> {
+        Vec::new()
     }
 
     fn fake_select_binary_option_market(
@@ -1323,6 +1430,51 @@ mod tests {
         .expect("injected family binding should own market selection dispatch");
 
         assert_eq!(selected.market_id, "fixture-market");
+    }
+
+    #[test]
+    fn maker_market_target_validation_rejects_binary_unsupported_registered_families() {
+        // FINDING A at the registry seam: families that are registered but whose
+        // select_binary_option_market cannot resolve a binary up/down market
+        // (outcome_group, hyperliquid_instrument) must report
+        // "binary maker market selection unsupported" so a maker rejects them at
+        // load. An unknown family fails closed as "not a registered market family"
+        // (a load-time gate, not the Option-returning selection path).
+        for family_key in ["outcome_group", "hyperliquid_instrument"] {
+            let target = MarketSelectionTarget {
+                family_key,
+                underlying_asset: "ETH",
+                cadence_seconds: 3_600,
+                cadence_slug_token: "hourly",
+                static_condition_id: None,
+                static_yes_outcome: None,
+                static_no_outcome: None,
+            };
+            let errors = validate_maker_market_target_from_target("strategy `m`", target);
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("does not support binary maker market selection")),
+                "{family_key}: {errors:?}"
+            );
+        }
+
+        let unknown = MarketSelectionTarget {
+            family_key: "no_such_family",
+            underlying_asset: "ETH",
+            cadence_seconds: 3_600,
+            cadence_slug_token: "hourly",
+            static_condition_id: None,
+            static_yes_outcome: None,
+            static_no_outcome: None,
+        };
+        let errors = validate_maker_market_target_from_target("strategy `m`", unknown);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("is not a registered market family")),
+            "{errors:?}"
+        );
     }
 
     #[test]

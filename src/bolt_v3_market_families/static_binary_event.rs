@@ -462,6 +462,42 @@ fn validate_market_slug(context: &str, market_slug: &str, errors: &mut Vec<Strin
     }
 }
 
+/// LOAD-TIME validation of a maker's operator-declared static-binary-event market
+/// target. `select_binary_option_market` for this family reads
+/// `static_yes_outcome` / `static_no_outcome` (required) and uses
+/// `cadence_slug_token` as the market_slug, so the maker gate enforces exactly
+/// those: both outcome labels present, non-empty, and distinct; a valid
+/// market_slug; a valid underlying; and a non-empty `static_condition_id` when
+/// supplied. Reuses the family's own slug validator and the shared underlying
+/// validator (one home per rule). A market that would resolve to `None` at
+/// runtime for want of the static outcome labels is rejected here at load.
+pub fn validate_maker_market_target(
+    context: &str,
+    target: MarketSelectionTarget<'_>,
+) -> Vec<String> {
+    let mut errors =
+        super::validate_underlying_asset(context, "underlying_asset", target.underlying_asset);
+    validate_market_slug(context, target.cadence_slug_token, &mut errors);
+    match (target.static_yes_outcome, target.static_no_outcome) {
+        (Some(yes), Some(no)) => {
+            validate_non_empty(context, "static_yes_outcome", yes, &mut errors);
+            validate_non_empty(context, "static_no_outcome", no, &mut errors);
+            if !yes.is_empty() && !no.is_empty() && yes == no {
+                errors.push(format!(
+                    "{context}: static_yes_outcome and static_no_outcome must be distinct"
+                ));
+            }
+        }
+        _ => errors.push(format!(
+            "{context}: the `static_binary_event` family requires both static_yes_outcome and static_no_outcome"
+        )),
+    }
+    if let Some(condition_id) = target.static_condition_id {
+        validate_non_empty(context, "static_condition_id", condition_id, &mut errors);
+    }
+    errors
+}
+
 fn target_runtime_string<T>(value: T) -> Result<String, InstrumentFilterError>
 where
     T: serde::Serialize,

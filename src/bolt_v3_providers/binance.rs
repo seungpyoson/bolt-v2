@@ -34,7 +34,7 @@ use nautilus_binance::{
             BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
         },
     },
-    config::BinanceDataClientConfig,
+    config::{BinanceDataClientConfig, BinanceSpotMarketDataMode as NtBinanceSpotMarketDataMode},
     factories::BinanceDataClientFactory,
 };
 use nautilus_core::string::secret::REDACTED;
@@ -117,7 +117,7 @@ pub const FORBIDDEN_ENV_VARS: &[&str] = &[
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BinanceDataConfig {
-    pub product_types: Vec<BinanceProductType>,
+    pub product_type: BinanceProductType,
     pub environment: BinanceEnvironment,
     /// Required HTTP base URL passed through to
     /// `nautilus_binance::config::BinanceDataClientConfig.base_url_http`
@@ -129,6 +129,7 @@ pub struct BinanceDataConfig {
     /// as `Some(...)` so NT does not silently fall back to the
     /// compiled-in default endpoint.
     pub base_url_ws: String,
+    pub spot_market_data_mode: BinanceSpotMarketDataMode,
     pub instrument_status_poll_secs: u64,
     pub transport_backend: TransportBackend,
 }
@@ -143,6 +144,13 @@ pub enum BinanceProductType {
     #[serde(rename = "coin_m")]
     CoinM,
     Options,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BinanceSpotMarketDataMode {
+    Sbe,
+    Json,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -224,22 +232,11 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
 
 fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     let mut errors = Vec::new();
-    if data.product_types.is_empty() {
+    if !is_nt_binance_data_factory_supported(data.product_type) {
         errors.push(format!(
-            "clients.{key}.data.product_types must select exactly one NT Binance data-client product type"
+            "clients.{key}.data.product_type contains {:?}, but the pinned NT BinanceDataClientFactory only supports spot, usd_m, and coin_m data clients",
+            data.product_type
         ));
-    }
-    if data.product_types.len() > 1 {
-        errors.push(format!(
-            "clients.{key}.data.product_types must contain exactly one product type because the pinned NT BinanceDataClientFactory constructs one client from the first configured product type"
-        ));
-    }
-    for product_type in &data.product_types {
-        if !is_nt_binance_data_factory_supported(*product_type) {
-            errors.push(format!(
-                "clients.{key}.data.product_types contains {product_type:?}, but the pinned NT BinanceDataClientFactory only supports spot, usd_m, and coin_m data clients"
-            ));
-        }
     }
     let url_fields: &[(&str, &str)] = &[
         ("base_url_http", data.base_url_http.as_str()),
@@ -255,7 +252,7 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     if !data.base_url_ws.trim().is_empty() {
         errors.extend(validate_binance_websocket_endpoint(
             key,
-            data.product_types.first().copied(),
+            data.product_type,
             data.base_url_ws.as_str(),
         ));
     }
@@ -274,11 +271,11 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
 
 fn validate_binance_websocket_endpoint(
     key: &str,
-    product_type: Option<BinanceProductType>,
+    product_type: BinanceProductType,
     value: &str,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let is_spot = product_type == Some(BinanceProductType::Spot);
+    let is_spot = product_type == BinanceProductType::Spot;
     let url_description = if is_spot {
         "Binance Spot WebSocket URL for NT subscribe_quotes"
     } else {
@@ -456,14 +453,14 @@ fn map_data(
             message,
         });
     }
-    let product_types = cfg.product_types.into_iter().map(nt_product_type).collect();
     Ok(BinanceDataClientConfig {
-        product_types,
+        product_type: nt_product_type(cfg.product_type),
         environment: nt_environment(cfg.environment),
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
         api_key: Some(secrets.api_key.as_str().to_owned()),
         api_secret: Some(secrets.api_secret.as_str().to_owned()),
+        spot_market_data_mode: nt_spot_market_data_mode(cfg.spot_market_data_mode),
         instrument_status_poll_secs: cfg.instrument_status_poll_secs,
         transport_backend: cfg.transport_backend,
     })
@@ -494,6 +491,13 @@ fn nt_product_type(value: BinanceProductType) -> NtBinanceProductType {
         BinanceProductType::UsdM => NtBinanceProductType::UsdM,
         BinanceProductType::CoinM => NtBinanceProductType::CoinM,
         BinanceProductType::Options => NtBinanceProductType::Options,
+    }
+}
+
+fn nt_spot_market_data_mode(value: BinanceSpotMarketDataMode) -> NtBinanceSpotMarketDataMode {
+    match value {
+        BinanceSpotMarketDataMode::Sbe => NtBinanceSpotMarketDataMode::Sbe,
+        BinanceSpotMarketDataMode::Json => NtBinanceSpotMarketDataMode::Json,
     }
 }
 

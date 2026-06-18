@@ -335,7 +335,7 @@ fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
             .as_table()
             .expect("chainlink reference data should be a table");
         let data_config: ChainlinkReferencePriceDataConfig =
-            data_value.try_into().unwrap_or_else(|error| {
+            data_value.clone().try_into().unwrap_or_else(|error| {
                 panic!("{relative_path} chainlink reference data should deserialize: {error}")
             });
 

@@ -23,7 +23,7 @@ fn issue_789_branch_b_override() -> BacktestConfigOverride {
             },
             RealizedVolatilitySourceSelector {
                 data_client_id: ClientId::from("bybit_data"),
-                instrument_id: InstrumentId::from("BTC-USDT.BYBIT"),
+                instrument_id: InstrumentId::from("BTCUSDT-SPOT.BYBIT"),
             },
         ],
     }
@@ -51,7 +51,7 @@ fn branch_b_override_keeps_production_toml_as_source_of_truth() {
     );
     assert_eq!(
         live_signal.instrument_id,
-        InstrumentId::from("BTC-USDT.BINANCE")
+        InstrumentId::from("BTCUSDT.BINANCE")
     );
 
     let (overridden, report) =
@@ -65,7 +65,7 @@ fn branch_b_override_keeps_production_toml_as_source_of_truth() {
         production_checksum
     );
     assert_eq!(report.signal_before.data_client_id, "binance_spot_data");
-    assert_eq!(report.signal_before.instrument_id, "BTC-USDT.BINANCE");
+    assert_eq!(report.signal_before.instrument_id, "BTCUSDT.BINANCE");
     assert_eq!(report.signal_after.data_client_id, "okx_data");
     assert_eq!(report.signal_after.instrument_id, "BTC-USDT.OKX");
 
@@ -106,7 +106,7 @@ fn branch_b_override_keeps_production_toml_as_source_of_truth() {
         rv_sources,
         vec![
             ("okx_data".to_string(), "BTC-USDT.OKX".to_string()),
-            ("bybit_data".to_string(), "BTC-USDT.BYBIT".to_string()),
+            ("bybit_data".to_string(), "BTCUSDT-SPOT.BYBIT".to_string()),
         ]
     );
     assert_eq!(surface.policy.min_ready_sources, 1);
@@ -121,7 +121,7 @@ fn branch_b_override_keeps_production_toml_as_source_of_truth() {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(removed, vec![("binance_spot_data", "BTC-USDT.BINANCE")]);
+    assert_eq!(removed, vec![("binance_spot_data", "BTCUSDT.BINANCE")]);
 
     let reloaded = load_bolt_v3_config(Path::new("config/root.toml"))
         .expect("production root config should still load");
@@ -141,7 +141,7 @@ fn branch_b_override_keeps_production_toml_as_source_of_truth() {
     );
     assert_eq!(
         reloaded_signal.instrument_id,
-        InstrumentId::from("BTC-USDT.BINANCE")
+        InstrumentId::from("BTCUSDT.BINANCE")
     );
 }
 

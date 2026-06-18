@@ -2203,7 +2203,7 @@ mod tests {
                 venue: "BYBIT",
                 instrument_id: "BTCUSDT",
                 venue_symbol: "BTCUSDT",
-                nt_instrument_id: "BTC-USDT.BYBIT",
+                nt_instrument_id: "BTCUSDT-SPOT.BYBIT",
                 payload_id: "https://quote-saver.bycsi.com/orderbook/spot/BTCUSDT/2026-04-22_BTCUSDT_ob200.data.zip",
             },
         )?;
@@ -2226,7 +2226,7 @@ mod tests {
         let bybit_projection = project_canonical_quotes_to_catalog(
             &bybit_quotes,
             &spot_spec(
-                "BTC-USDT.BYBIT",
+                "BTCUSDT-SPOT.BYBIT",
                 "BTCUSDT",
                 "BTC",
                 "USDT",
@@ -3034,7 +3034,7 @@ mod tests {
                             },
                             ManifestRealizedVolatilitySourceSelector {
                                 data_client_id: "bybit_data".to_string(),
-                                instrument_id: "BTC-USDT.BYBIT".to_string(),
+                                instrument_id: "BTCUSDT-SPOT.BYBIT".to_string(),
                             },
                         ],
                     },
@@ -3065,7 +3065,7 @@ mod tests {
                 catalog_input(
                     &catalogs.bybit_catalog,
                     "QuoteTick",
-                    "BTC-USDT.BYBIT",
+                    "BTCUSDT-SPOT.BYBIT",
                     Some("bybit_data"),
                 ),
                 catalog_input(

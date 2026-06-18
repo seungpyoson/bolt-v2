@@ -471,7 +471,10 @@ fn parse_seeded_l2_json_value(
         .event_time_unit
         .parse_to_nanos(&event_time_raw)
         .with_context(|| format!("line {line_number}: invalid event time {event_time_raw:?}"))?;
-    ensure!(event_time > 0, "line {line_number}: non-positive event time");
+    ensure!(
+        event_time > 0,
+        "line {line_number}: non-positive event time"
+    );
     let source_sequence = match &mapping.source_sequence_path {
         Some(path) => optional_scalar_at_path(value, path)
             .with_context(|| format!("line {line_number}: read source sequence"))?,

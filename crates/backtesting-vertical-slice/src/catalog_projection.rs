@@ -2151,15 +2151,14 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             )
             .context("query funding rates from catalog for logical hash")?
     };
-    funding_rates.sort_by_key(|p| {
-        (
-            p.ts_event.as_u64(),
-            p.instrument_id.to_string(),
-            p.rate.to_string(),
-            p.interval,
-            p.next_funding_ns.map(|ts| ts.as_u64()),
-            p.ts_init.as_u64(),
-        )
+    funding_rates.sort_by(|a, b| {
+        a.ts_event
+            .cmp(&b.ts_event)
+            .then_with(|| a.instrument_id.cmp(&b.instrument_id))
+            .then_with(|| a.rate.cmp(&b.rate))
+            .then_with(|| a.interval.cmp(&b.interval))
+            .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
+            .then_with(|| a.ts_init.cmp(&b.ts_init))
     });
 
     let mut hasher = Sha256::new();
@@ -2280,29 +2279,27 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     // Empty funding catalogs emit nothing, preserving existing reference hashes.
     for funding_rate in funding_rates {
         hasher.update([42u8]);
-        hasher.update(funding_rate.instrument_id.to_string().as_bytes());
+        hasher.update(funding_rate.instrument_id.symbol.as_str().as_bytes());
+        hasher.update([0xff]);
+        hasher.update(funding_rate.instrument_id.venue.as_str().as_bytes());
         hasher.update([43u8]);
         hasher.update(funding_rate.rate.to_string().as_bytes());
         hasher.update([44u8]);
-        hasher.update(
-            funding_rate
-                .interval
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "<none>".to_string())
-                .as_bytes(),
-        );
+        if let Some(value) = funding_rate.interval {
+            hasher.update(value.to_be_bytes());
+        } else {
+            hasher.update(b"<none>");
+        }
         hasher.update([45u8]);
-        hasher.update(
-            funding_rate
-                .next_funding_ns
-                .map(|value| value.as_u64().to_string())
-                .unwrap_or_else(|| "<none>".to_string())
-                .as_bytes(),
-        );
+        if let Some(value) = funding_rate.next_funding_ns {
+            hasher.update(value.as_u64().to_be_bytes());
+        } else {
+            hasher.update(b"<none>");
+        }
         hasher.update([46u8]);
-        hasher.update(funding_rate.ts_event.as_u64().to_string().as_bytes());
+        hasher.update(funding_rate.ts_event.as_u64().to_be_bytes());
         hasher.update([47u8]);
-        hasher.update(funding_rate.ts_init.as_u64().to_string().as_bytes());
+        hasher.update(funding_rate.ts_init.as_u64().to_be_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
 }

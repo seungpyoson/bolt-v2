@@ -402,15 +402,19 @@ fn verify_rejects_divergent_deployed_strategy_file() {
 
 #[test]
 fn deploy_readme_documents_the_full_pre_arm_gate() {
-    // #768 step 3 pre-arm duties beyond config identity — live secret resolution and the
-    // no-submit/readiness check — are the documented `secrets resolve` + `prestart-check`
-    // steps that chain after generate -> verify. The runbook must spell out the full gate.
+    // #768 step 3 pre-arm duties: config identity (generate/verify), live secret
+    // resolution (3c), and no-submit/readiness (3d). `prestart-check` does config-load +
+    // storage only — (3d) is structural (the bot starts disarmed behind the arming gate;
+    // data-client readiness is probed separately). The runbook must name all of them so an
+    // operator is not told prestart-check verified readiness when it did not.
     let readme = support::repo_text("deploy/README.md");
     for needle in [
         "generate-live-config",
         "verify-live-config",
         "secrets resolve",
         "prestart-check",
+        "arming",
+        "data-client-probe",
     ] {
         assert!(
             readme.contains(needle),

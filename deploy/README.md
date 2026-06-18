@@ -31,11 +31,18 @@ The full pre-arm verification runs in order; the service must not start until al
    — byte parity vs the regenerated config + independent schema load + strategy-file content match.
 3. `bolt-v2 secrets resolve --config /opt/bolt-v2/config/live.toml` — confirm every SSM credential
    resolves without printing values (#768 step 3c).
-4. `bolt-v2 ops prestart-check --config /opt/bolt-v2/config/live.toml` — storage + no-submit/readiness
-   gate (#768 step 3d; the systemd unit also runs this as `ExecStartPre`).
+4. `bolt-v2 ops prestart-check --config /opt/bolt-v2/config/live.toml` — loads the config through the
+   exact deployed binary and checks storage/catalog readiness (catalog-prefix containment, non-symlink
+   catalog dir, write probe, free space ≥ `min_free_bytes`). The systemd unit also runs this as
+   `ExecStartPre`.
+
+No-submit/readiness (#768 step 3d) is structural, not a `prestart-check` duty: the bot starts disarmed
+and will not submit orders until explicitly armed via the operator arming gate
+(`bolt-v2 provider-artifacts preflight-live-submit-arming` / `generate-live-submit-approval`). Data-client
+readiness is exercised at live-node startup and can be probed with `bolt-v2 ops data-client-probe`.
 
 Steps 1–2 are config identity (covered by `ops verify-live-config` and CI); steps 3–4 are the live
-secret-resolution and readiness checks that cannot run offline, so they stay as explicit commands here.
+secret-resolution and exact-binary config-load/storage checks that cannot run offline.
 
 If `/opt/bolt-v2/config/live.toml` already exists, `deploy/install.sh` repairs it to `root:bolt`
 with mode `0640`.

@@ -57,8 +57,9 @@ use crate::{
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
-        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, clamp_probability,
-        is_non_negative_finite, is_positive_finite, notional_float_tolerance,
+        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, SECONDS_PER_YEAR_F64,
+        UNIT_F64, clamp_probability, is_non_negative_finite, is_positive_finite,
+        notional_float_tolerance,
     },
     bolt_v3_order_execution::{
         BoltV3SubmitContext, BoltV3SubmitRoutingOutcome, BoltV3SubmitRoutingRequest,
@@ -88,7 +89,8 @@ use crate::{
     },
     bolt_v3_taker_updown_signal::{
         SideSelectionInputs, UncertaintyBandInputs, WorstCaseEvInputs, choose_entry_side,
-        compute_worst_case_ev_bps, outcome_side_evidence_label, uncertainty_band_probability,
+        compute_worst_case_ev_bps, outcome_side_evidence_label, time_uncertainty_probability,
+        uncertainty_band_probability,
     },
     bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig},
     strategies::registry::{
@@ -2482,22 +2484,24 @@ impl BinaryOracleEdgeTaker {
         down_fee_bps: f64,
     ) -> Option<f64> {
         let seconds_to_expiry = self.current_seconds_to_expiry_at(now_ms)?;
-        self.uncertainty_band_probability_for_seconds(seconds_to_expiry, up_fee_bps, down_fee_bps)
+        let realized_vol = self.current_realized_vol_at(now_ms)?;
+        self.uncertainty_band_probability_for_seconds(
+            seconds_to_expiry,
+            realized_vol,
+            up_fee_bps,
+            down_fee_bps,
+        )
     }
 
     fn uncertainty_band_probability_for_seconds(
         &self,
         seconds_to_expiry: u64,
+        realized_vol: f64,
         up_fee_bps: f64,
         down_fee_bps: f64,
     ) -> Option<f64> {
-        let time_uncertainty_probability = if self.config.cadence_seconds == 0 {
-            return None;
-        } else {
-            clamp_probability(
-                UNIT_F64 - seconds_to_expiry as f64 / self.config.cadence_seconds as f64,
-            )
-        };
+        let time_uncertainty_probability =
+            time_uncertainty_probability(realized_vol, seconds_to_expiry, SECONDS_PER_YEAR_F64)?;
         let fee_uncertainty_probability =
             clamp_probability(up_fee_bps.max(down_fee_bps) / BPS_DENOMINATOR);
         let lead_gap_probability = self.pricing.last_lead_gap_probability?;
@@ -3521,9 +3525,15 @@ impl BinaryOracleEdgeTaker {
 
     fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<f64> {
         let seconds_to_expiry = self.current_position_seconds_to_expiry_at(now_ms)?;
+        let realized_vol = self.current_realized_vol_at(now_ms)?;
         let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
         let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
-        self.uncertainty_band_probability_for_seconds(seconds_to_expiry, up_fee_bps, down_fee_bps)
+        self.uncertainty_band_probability_for_seconds(
+            seconds_to_expiry,
+            realized_vol,
+            up_fee_bps,
+            down_fee_bps,
+        )
     }
 
     fn current_hold_ev_bps_at(&self, now_ms: u64, side: OutcomeSide) -> Option<f64> {
@@ -3552,6 +3562,7 @@ impl BinaryOracleEdgeTaker {
         let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
         let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
             seconds_to_expiry,
+            realized_vol,
             up_fee_bps,
             down_fee_bps,
         )?;

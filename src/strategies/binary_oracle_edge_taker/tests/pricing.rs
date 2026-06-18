@@ -935,11 +935,23 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
         )],
         "sized selected-side threshold failure should surface as a pricing block"
     );
+    // lead_gap and jitter are 0 and the recomputed sized fee contributes a 0.5
+    // fee-uncertainty term, so the band is 0.5 plus the #789 diffusion-grounded
+    // time term (realized_vol 1.5 * sqrt(T)) at seconds_to_expiry = 300 (snapshot
+    // start 1_000ms, eval 1_200ms => 0 elapsed seconds). The prior inverted term
+    // was exactly 0 at market open, which is why this used to assert band == 0.5.
+    let expected_band = 0.5
+        + crate::bolt_v3_taker_updown_signal::time_uncertainty_probability(
+            1.5,
+            300,
+            crate::bolt_v3_numeric::SECONDS_PER_YEAR_F64,
+        )
+        .expect("finite realized vol yields a time-uncertainty band");
     assert!(
         evaluation
             .uncertainty_band_probability
-            .is_some_and(|band| (band - 0.5).abs() < 1e-9),
-        "final selected-side band should be recomputed from the sized fee: {evaluation:#?}"
+            .is_some_and(|band| (band - expected_band).abs() < 1e-9),
+        "final selected-side band should be the recomputed sized fee plus the diffusion time term: {evaluation:#?}"
     );
 }
 

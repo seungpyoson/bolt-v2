@@ -50,6 +50,31 @@ pub(crate) fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Op
     )
 }
 
+/// Time component of the taker uncertainty band: one standard deviation of the
+/// underlying's log-price diffusion over the remaining horizon
+/// (`realized_vol * sqrt(time_to_expiry_years)`), using the same annualized
+/// realized vol the fair value is built on. It SHRINKS to 0 at expiry — the
+/// underlying has less time to drift across the strike, so the fair estimate is
+/// MORE reliable near resolution, not less.
+///
+/// Regression note (#789): this replaces an inverted `1 - seconds_to_expiry /
+/// cadence_seconds` term that GREW toward expiry to ~1.0 (0.067 at 280s, 0.967
+/// at 10s of a 300s market). That term saturated the band — blocking pricing
+/// (`UncertaintyBandUnavailable`) and crushing the worst-case success
+/// probability to ~0 — exactly in the high-information final seconds, erasing
+/// real late-window taker edge.
+pub(crate) fn time_uncertainty_probability(
+    realized_vol: f64,
+    seconds_to_expiry: u64,
+    seconds_per_year: f64,
+) -> Option<f64> {
+    if !is_non_negative_finite(realized_vol) || !is_positive_finite(seconds_per_year) {
+        return None;
+    }
+    let horizon_years = seconds_to_expiry as f64 / seconds_per_year;
+    Some(clamp_probability(realized_vol * horizon_years.sqrt()))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ThetaScalerInputs {
     pub(crate) seconds_to_market_end: u64,
@@ -213,6 +238,38 @@ mod tests {
 
         assert!(wider_from_jitter > narrow);
         assert!(wider_from_time > narrow);
+    }
+
+    #[test]
+    fn time_uncertainty_band_shrinks_toward_expiry() {
+        // #789 regression guard. The band's time component is the diffusion std
+        // over the remaining horizon (realized_vol * sqrt(T)) and must SHRINK to
+        // 0 at expiry. The prior inverted `1 - seconds_to_expiry/cadence` term
+        // GREW toward expiry (0.067 at 280s, 0.967 at 10s of a 300s market);
+        // every assertion below fails under that inverted shape.
+        let year = 31_557_600.0;
+        let far = time_uncertainty_probability(0.48, 280, year).expect("finite vol");
+        let near = time_uncertainty_probability(0.48, 10, year).expect("finite vol");
+        let at_expiry = time_uncertainty_probability(0.48, 0, year).expect("finite vol");
+
+        assert!(
+            far > near,
+            "more time remaining must widen the band (far={far}, near={near})"
+        );
+        assert_eq!(at_expiry, 0.0, "band must vanish at expiry");
+        assert!(
+            near < 0.05,
+            "near-expiry band must stay a small margin, got {near}"
+        );
+        assert!(far < 0.05, "band must stay a small margin, got {far}");
+    }
+
+    #[test]
+    fn time_uncertainty_band_fails_closed_on_invalid_inputs() {
+        let year = 31_557_600.0;
+        assert_eq!(time_uncertainty_probability(f64::NAN, 60, year), None);
+        assert_eq!(time_uncertainty_probability(-0.1, 60, year), None);
+        assert_eq!(time_uncertainty_probability(0.48, 60, 0.0), None);
     }
 
     #[test]

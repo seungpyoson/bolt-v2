@@ -24,7 +24,7 @@
 //!    (`crate::strategy_bindings`) lists alongside the taker binding.
 
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use toml::{Value, map::Map};
 
 use nautilus_model::{
@@ -90,7 +90,7 @@ struct ParametersBlock {
 /// planner keys slots and rotation by. `deny_unknown_fields` fails loud on stray
 /// keys. The per-market reference/resolution feed wiring is PR-B's runtime
 /// concern; PR-A declares only the discovery-target identity.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct MarketBindingParametersBlock {
     market_key: String,
@@ -493,23 +493,54 @@ fn validate_market_declarations(
                 market.market_key
             ));
         }
-        if !is_registered_market_family(&market.family_key) {
-            errors.push(format!(
-                "{context}: parameters.markets entry `{}` family_key `{}` is not a registered market family (a market for an unregistered family can never resolve)",
-                market.market_key, market.family_key
-            ));
-        }
+        validate_market_target(context, market, errors);
     }
 }
 
-/// True when `family_key` matches a binding registered in the shared
-/// market-family registry. Reuses the single registry source of truth
-/// (`validation_bindings`) rather than reimplementing the supported-family set,
-/// so a family added to the registry is automatically accepted here.
-fn is_registered_market_family(family_key: &str) -> bool {
-    validation_bindings()
-        .iter()
-        .any(|binding| binding.key == family_key)
+/// Validate one declared market's discovery target through its OWNING family's
+/// registry binding, at LOAD. This closes two fail-closed gaps a bare
+/// registered-family membership check left open: (1) families that are registered
+/// but cannot resolve a binary up/down market (`outcome_group`,
+/// `hyperliquid_instrument`) are rejected via their
+/// `unsupported_maker_market_target` error rather than admitted to fail only at
+/// runtime; and (2) target-shape errors (zero/invalid cadence, malformed slug,
+/// empty/malformed underlying, missing or identical static outcomes, static
+/// fields on a rotating family) are caught at load instead of becoming silent
+/// runtime resolution-misses. Reuses the shared family registry — no per-family
+/// validation is reimplemented here. The operator-facing `cadence_seconds` is
+/// `u64`; a value that cannot be represented as the engine's signed `i64` cadence
+/// fails closed here rather than wrapping to a negative cadence.
+fn validate_market_target(
+    context: &str,
+    market: &MarketBindingParametersBlock,
+    errors: &mut Vec<String>,
+) {
+    let Ok(cadence_seconds) = i64::try_from(market.cadence_seconds) else {
+        errors.push(format!(
+            "{context}: parameters.markets entry `{}` cadence_seconds ({}) exceeds the supported signed-integer cadence range",
+            market.market_key, market.cadence_seconds
+        ));
+        return;
+    };
+    let target = crate::bolt_v3_market_families::MarketSelectionTarget {
+        family_key: market.family_key.as_str(),
+        underlying_asset: market.underlying_asset.as_str(),
+        cadence_seconds,
+        cadence_slug_token: market.cadence_slug_token.as_str(),
+        static_condition_id: market.static_condition_id.as_deref(),
+        static_yes_outcome: market.static_yes_outcome.as_deref(),
+        static_no_outcome: market.static_no_outcome.as_deref(),
+    };
+    let market_context = format!(
+        "{context}: parameters.markets entry `{}`",
+        market.market_key
+    );
+    errors.extend(
+        crate::bolt_v3_market_families::validate_maker_market_target_from_target(
+            &market_context,
+            target,
+        ),
+    );
 }
 
 fn validate_strategy_config_hash_binding(
@@ -721,7 +752,31 @@ fn raw_maker_config_from_parts(
     );
     insert_runtime_knobs(&mut table, runtime)?;
     insert_market_portfolio_knobs(&mut table, market_portfolio)?;
+    table.insert(
+        super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
+        Value::String(markets_config_digest(&parameters.markets)?),
+    );
     Ok(Value::Table(table))
+}
+
+/// Compute a deterministic digest of the operator-declared market set so the
+/// strategy-config hash (computed over the flat table this digest is inserted
+/// into) covers `parameters.markets`. Closes the evidence-integrity gap where
+/// changing a declared market's family/underlying/cadence/slug/static field or
+/// the market count did NOT change `strategy_config_hash`, so the go-live gate
+/// would accept a backtest run captured for a DIFFERENT market set. The
+/// representation is CANONICAL: entries are sorted by `market_key` and every
+/// field is serialized in a fixed order, so the digest depends only on the
+/// declared set's content, not on operator TOML ordering.
+fn markets_config_digest(markets: &[MarketBindingParametersBlock]) -> Result<String, String> {
+    // Sort by `market_key` so the digest depends only on the declared set's
+    // content, not on operator TOML ordering. Each entry is serialized through
+    // `MarketBindingParametersBlock`'s own derived `Serialize`, so EVERY declared
+    // field (family/underlying/cadence/slug/static_*) is covered with no
+    // hand-maintained field list that could silently drift from the struct.
+    let mut canonical: Vec<&MarketBindingParametersBlock> = markets.iter().collect();
+    canonical.sort_by(|a, b| a.market_key.cmp(&b.market_key));
+    json_artifact_sha256(&canonical).map_err(|error| error.to_string())
 }
 
 /// Thread the μ runtime knobs from the operator `[parameters.runtime]` block into
@@ -867,6 +922,19 @@ mod tests {
 
     fn valid_markets() -> Vec<MarketBindingParametersBlock> {
         vec![market_declaration("eth-hourly")]
+    }
+
+    fn static_market_declaration(market_key: &str) -> MarketBindingParametersBlock {
+        MarketBindingParametersBlock {
+            market_key: market_key.to_string(),
+            family_key: "static_binary_event".to_string(),
+            underlying_asset: "ETH".to_string(),
+            cadence_seconds: 3_600,
+            cadence_slug_token: "eth-event-market".to_string(),
+            static_condition_id: Some("condition-1".to_string()),
+            static_yes_outcome: Some("Yes".to_string()),
+            static_no_outcome: Some("No".to_string()),
+        }
     }
 
     fn market_declaration_errors(markets: Vec<MarketBindingParametersBlock>) -> Vec<String> {
@@ -1443,24 +1511,143 @@ mod tests {
     }
 
     #[test]
-    fn validate_parameter_bounds_accepts_every_registered_family_key() {
-        // Pins that the validator's accepted set IS the registry, not a hardcoded
-        // list: every family the production registry knows must pass the family-key
-        // check (no false rejection of a registered family).
-        for binding in validation_bindings() {
+    fn validate_parameter_bounds_rejects_registered_but_binary_unsupported_family() {
+        // FINDING A: a family can be REGISTERED yet unable to resolve a binary
+        // up/down market (`outcome_group`, `hyperliquid_instrument` return
+        // None/error unconditionally). A bare registry-membership check admitted
+        // such a declaration at load and let it resolve to nothing at runtime. The
+        // per-family maker-target validator must reject it at LOAD with the
+        // binary-unsupported error. Pre-fix (membership-only check): these passed
+        // the gate. Asserts the validation-error channel.
+        for family_key in ["outcome_group", "hyperliquid_instrument"] {
+            assert!(
+                validation_bindings()
+                    .iter()
+                    .any(|binding| binding.key == family_key),
+                "{family_key} must be a registered family for this test to be meaningful"
+            );
             let markets = vec![MarketBindingParametersBlock {
-                family_key: binding.key.to_string(),
+                family_key: family_key.to_string(),
                 ..market_declaration("eth-hourly")
             }];
             let errors = market_declaration_errors(markets);
             assert!(
-                !errors
+                errors
                     .iter()
-                    .any(|error| error.contains("not a registered market family")),
-                "registered family `{}` must not be flagged unregistered: {errors:?}",
-                binding.key
+                    .any(|error| error.contains("does not support binary maker market selection")),
+                "registered-but-binary-unsupported family `{family_key}` must fail the maker gate at load: {errors:?}"
             );
         }
+    }
+
+    #[test]
+    fn validate_parameter_bounds_accepts_valid_binary_capable_family_declaration() {
+        // The valid updown declaration (a binary-capable family with a well-formed
+        // target) must still pass the per-family maker-target validator — no false
+        // rejection of a correct binary maker market.
+        assert!(
+            market_declaration_errors(valid_markets()).is_empty(),
+            "a valid binary-capable updown declaration must pass the maker target gate"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_updown_with_zero_cadence() {
+        // FINDING B: target-shape fields were unvalidated at load — an updown
+        // declaration with cadence_seconds=0 passed the gate and became a runtime
+        // resolution-miss. The per-family validator (reusing updown's
+        // validate_target_cadence) must reject it at LOAD. Asserts the cadence
+        // error channel.
+        let markets = vec![MarketBindingParametersBlock {
+            cadence_seconds: 0,
+            ..market_declaration("eth-hourly")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("cadence_secs must be a positive integer")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_updown_with_malformed_slug() {
+        // FINDING B: a malformed cadence_slug_token (uppercase) passed the gate.
+        let markets = vec![MarketBindingParametersBlock {
+            cadence_slug_token: "BadSlug".to_string(),
+            ..market_declaration("eth-hourly")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("cadence_slug_token must use only lowercase")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_updown_with_static_fields() {
+        // FINDING B: static-market override fields on a rotating-cadence family are
+        // a misconfiguration; the validator must reject them at load.
+        let markets = vec![MarketBindingParametersBlock {
+            static_yes_outcome: Some("Up".to_string()),
+            ..market_declaration("eth-hourly")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("not valid for the rotating-cadence `updown` family")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_accepts_valid_static_binary_event_declaration() {
+        // static_binary_event is binary-capable: a well-formed static declaration
+        // (both outcomes present + distinct, valid slug/underlying) must pass.
+        let errors = market_declaration_errors(vec![static_market_declaration("eth-event")]);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_static_binary_event_missing_outcomes() {
+        // FINDING B: static_binary_event::select_binary_option_market returns None
+        // when the static yes/no outcome labels are absent, so a declaration
+        // lacking them was a runtime resolution-miss. The per-family validator must
+        // reject it at LOAD.
+        let markets = vec![MarketBindingParametersBlock {
+            static_yes_outcome: None,
+            static_no_outcome: None,
+            ..static_market_declaration("eth-event")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error
+                    .contains("requires both static_yes_outcome and static_no_outcome")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_static_binary_event_identical_outcomes() {
+        // FINDING B: identical yes/no outcome labels cannot form a binary market.
+        let markets = vec![MarketBindingParametersBlock {
+            static_yes_outcome: Some("Same".to_string()),
+            static_no_outcome: Some("Same".to_string()),
+            ..static_market_declaration("eth-event")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("must be distinct")),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -1612,6 +1799,82 @@ mod tests {
         assert!(
             errors.is_empty(),
             "matching strategy config hash must pass: {errors:?}"
+        );
+    }
+
+    fn parameters_with_markets(markets: Vec<MarketBindingParametersBlock>) -> ParametersBlock {
+        ParametersBlock {
+            runtime: valid_runtime(),
+            market_portfolio: valid_market_portfolio(),
+            markets,
+            backtest: valid_backtest(),
+        }
+    }
+
+    #[test]
+    fn strategy_config_hash_covers_declared_market_set() {
+        // FINDING C: parameters.markets was NOT part of the hashed raw config, so
+        // changing a declared market did NOT change strategy_config_hash and the
+        // go-live gate would accept a backtest captured for a DIFFERENT market set.
+        // The canonical markets digest is now in the hashed table, so changing ANY
+        // declared-market field — or the market count — must change the hash.
+        // Pre-fix: every variant below produced the SAME hash. Asserts the
+        // hash-changed channel directly.
+        let strategy = valid_strategy_config();
+        let baseline =
+            maker_strategy_config_hash(&strategy, &parameters_with_markets(valid_markets()))
+                .expect("baseline hash computes");
+
+        let mutated_sets = [
+            vec![MarketBindingParametersBlock {
+                family_key: "static_binary_event".to_string(),
+                ..market_declaration("eth-hourly")
+            }],
+            vec![MarketBindingParametersBlock {
+                underlying_asset: "BTC".to_string(),
+                ..market_declaration("eth-hourly")
+            }],
+            vec![MarketBindingParametersBlock {
+                cadence_seconds: 7_200,
+                ..market_declaration("eth-hourly")
+            }],
+            vec![MarketBindingParametersBlock {
+                cadence_slug_token: "daily".to_string(),
+                ..market_declaration("eth-hourly")
+            }],
+            vec![MarketBindingParametersBlock {
+                static_yes_outcome: Some("Up".to_string()),
+                ..market_declaration("eth-hourly")
+            }],
+            vec![
+                market_declaration("eth-hourly"),
+                market_declaration("eth-2"),
+            ],
+        ];
+        for mutated in mutated_sets {
+            let mutated_hash =
+                maker_strategy_config_hash(&strategy, &parameters_with_markets(mutated.clone()))
+                    .expect("mutated hash computes");
+            assert_ne!(
+                baseline, mutated_hash,
+                "changing a declared market must invalidate the strategy_config_hash: {mutated:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strategy_config_hash_is_independent_of_declared_market_order() {
+        // The digest is CANONICAL (sorted by market_key), so the same declared set
+        // in a different order hashes identically — only content changes the hash,
+        // not operator TOML ordering.
+        let strategy = valid_strategy_config();
+        let a = vec![market_declaration("eth-a"), market_declaration("eth-b")];
+        let b = vec![market_declaration("eth-b"), market_declaration("eth-a")];
+        assert_eq!(
+            maker_strategy_config_hash(&strategy, &parameters_with_markets(a))
+                .expect("hash a computes"),
+            maker_strategy_config_hash(&strategy, &parameters_with_markets(b))
+                .expect("hash b computes"),
         );
     }
 

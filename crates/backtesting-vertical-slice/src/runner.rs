@@ -1200,7 +1200,7 @@ pub(crate) fn assert_funding_read_back_matches(
         );
         let expected_next = row
             .next_funding_time
-            .map(|value| u64::try_from(value))
+            .map(u64::try_from)
             .transpose()
             .with_context(|| format!("canonical next_funding_time {:?}", row.next_funding_time))?;
         ensure!(

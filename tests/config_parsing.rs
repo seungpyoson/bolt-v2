@@ -250,7 +250,7 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
         .expect("polymarket data block should exist")
         .try_into()
         .expect("polymarket data block should parse with NT names");
-    assert_eq!(data.update_instruments_interval_mins, 60);
+    assert_eq!(data.update_instruments_interval_mins, 1);
     assert_eq!(data.ws_max_subscriptions, 200);
     assert_eq!(data.base_url_rtds, "wss://ws-live-data.polymarket.com");
     assert_eq!(data.new_market_fetch_max_concurrency, 8);
@@ -312,6 +312,47 @@ fn retired_gate_config_block_is_rejected() {
         .expect_err("retired gate config block should be rejected");
     let rendered = error.to_string();
     assert!(rendered.contains("unknown field"));
+}
+
+#[test]
+fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
+    use bolt_v2::bolt_v3_providers::chainlink_reference::ChainlinkReferencePriceDataConfig;
+
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let parsed = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let data_value = parsed
+            .get("clients")
+            .and_then(|value| value.get("chainlink_reference"))
+            .and_then(|value| value.get("data"))
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("{relative_path} should declare clients.chainlink_reference.data")
+            });
+        let data = data_value
+            .as_table()
+            .expect("chainlink reference data should be a table");
+        let data_config: ChainlinkReferencePriceDataConfig =
+            data_value.clone().try_into().unwrap_or_else(|error| {
+                panic!("{relative_path} chainlink reference data should deserialize: {error}")
+            });
+
+        assert_eq!(
+            data.get("heartbeat_secs").and_then(toml::Value::as_integer),
+            Some(5),
+            "{relative_path} should keep a configured heartbeat interval"
+        );
+        assert!(
+            !data.contains_key("heartbeat_message"),
+            "{relative_path} Chainlink reference WS must omit heartbeat_message so NT sends protocol Ping frames instead of text"
+        );
+        assert_eq!(
+            data_config.heartbeat_message, None,
+            "{relative_path} parsed Chainlink reference config must use protocol Ping frames"
+        );
+    }
 }
 
 #[test]
@@ -613,8 +654,8 @@ fn bolt_v3_polymarket_client_rejects_execution_without_data_block_with_client_vo
     // provider-neutral per the source-fence.
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
-    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
+    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let split_fixture = format!(
         "{}{}",
         replace_in_fixture_root(polymarket_main_data_block, ""),
@@ -7294,7 +7335,7 @@ auto_load_debounce_ms = 250
 auto_load_max_retries = 12
 auto_load_retry_delay_initial_secs = 5
 auto_load_retry_delay_max_secs = 15
-update_instruments_interval_mins = 60
+update_instruments_interval_mins = 1
 ws_max_subscriptions = 200
 transport_backend = "sockudo"
 "#
@@ -8289,7 +8330,7 @@ fn rejects_polymarket_data_auto_load_retry_initial_after_max() {
 fn allows_multiple_configured_client_ids_for_same_nt_venue() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_client}");

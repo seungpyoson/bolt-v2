@@ -248,6 +248,34 @@ fn realized_volatility_validation_rejects_source_asset_mismatch() {
 }
 
 #[test]
+fn realized_volatility_validation_rejects_empty_source_base_asset() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].canonical_base_asset = String::new();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "canonical_base_asset must be non-empty",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_blank_source_quote_asset() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].canonical_quote_asset = "   ".to_string();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "canonical_quote_asset must be non-empty",
+    );
+}
+
+#[test]
 fn realized_volatility_validation_accepts_nt_native_spot_symbols() {
     let errors = realized_volatility_validation_errors(|loaded| {
         let mut surface = valid_realized_volatility_surface();

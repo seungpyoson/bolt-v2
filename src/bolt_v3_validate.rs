@@ -492,6 +492,12 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                 ));
             }
 
+            if source.canonical_base_asset.trim().is_empty() {
+                errors.push(format!(
+                    "{source_context}.{} must be non-empty",
+                    stringify!(canonical_base_asset),
+                ));
+            }
             if source.canonical_base_asset != surface.canonical_base_asset {
                 errors.push(format!(
                     "{source_context}.{} `{}` must match {context}.{} `{}`",
@@ -519,6 +525,12 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                 }
             }
 
+            if source.canonical_quote_asset.trim().is_empty() {
+                errors.push(format!(
+                    "{source_context}.{} must be non-empty",
+                    stringify!(canonical_quote_asset),
+                ));
+            }
             if source.canonical_quote_asset != surface.canonical_quote_asset {
                 errors.push(format!(
                     "{source_context}.{} `{}` must match {context}.{} `{}`",

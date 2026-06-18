@@ -199,7 +199,7 @@ impl BoltV3OrderExecutionPolicy {
 
     fn route_modify_with_sink<S>(
         self,
-        sink: &mut S,
+        _sink: &mut S,
         client_order_id: ClientOrderId,
         quantity: Quantity,
         price: Price,
@@ -209,14 +209,27 @@ impl BoltV3OrderExecutionPolicy {
     where
         S: BoltV3NtVenueMutationSink + ?Sized,
     {
-        // Mirrors `route_cancel_with_sink`: a venue mutation fires only in Live;
-        // in Shadow the amend is suppressed (logged, no NT call) so shadow mode can
-        // never leak an in-place modify to the venue. Same fail-closed boundary the
-        // submit/cancel/cancel-all routes already enforce.
+        // FAIL-CLOSED in Live (see #835). Unlike submit — which builds a
+        // `BoltV3SubmitAdmissionRequest`, records intent evidence, and consumes
+        // admission capacity before mutating the venue — an in-place modify carries
+        // NONE of those admission/reservation/fee/intent checks. Routing one to the
+        // venue in Live would bypass the risk gate: a live amend could lift a resting
+        // order's notional past the `max_order_notional`/`max_fee_bps` limits a submit
+        // would block, with no capital-reservation delta recorded. Until the
+        // admission-gated in-place modify lands (#835), the Live arm REFUSES the venue
+        // mutation; the maker requotes through the already-admitted cancel+resubmit
+        // path (the deployed venue contract has `supports_modify=false`, so the maker
+        // FSM never emits a Modify and this arm is unreachable from it — this is the
+        // structural guard if that capability is ever turned on). Shadow stays
+        // suppressed (logged, no NT call), as before.
         match self.mode {
             BoltV3OrderExecutionMode::Live => {
-                sink.modify_order_via_nt(client_order_id, quantity, price, client_id, params)?;
-                Ok(BoltV3ModifyRoutingOutcome::Modified)
+                // The amend params are intentionally NOT applied (the modify is
+                // refused); consume them so the fail-closed arm is warning-clean.
+                let _ = (quantity, price, client_id, params);
+                Err(anyhow::anyhow!(
+                    "bolt-v3 in-place modify is fail-closed in Live (not admission-gated; see #835): refusing un-admitted venue mutation for client_order_id={client_order_id}"
+                ))
             }
             BoltV3OrderExecutionMode::Shadow => {
                 log::info!(
@@ -663,11 +676,14 @@ where
         price: Price,
         quantity: Quantity,
     ) -> Result<()> {
-        // Routes the in-place amend through the same execution-policy boundary as
-        // submit/cancel (Live → NT modify, Shadow → suppressed). The FSM only emits
-        // a Modify for a modify-capable venue (the `supports_modify` capability is
-        // threaded into the leg state machine), so a no-modify venue produces a
-        // Cancel instead and never reaches this path.
+        // Routes the in-place amend through the execution-policy boundary. Under
+        // Option A (#835) the Live arm is FAIL-CLOSED: an in-place modify does not
+        // pass submit admission, so `route_modify_with_sink` returns `Err`, the `?`
+        // below propagates it, and the venue is never reached; Shadow stays
+        // suppressed. The FSM only emits a Modify for a modify-capable venue (the
+        // `supports_modify` capability is threaded into the leg state machine), and
+        // the deployed venue contract has `supports_modify=false`, so the maker
+        // requotes via cancel+resubmit and a no-modify venue never reaches this path.
         self.policy.route_modify_with_sink(
             self.runtime,
             client_order_id,
@@ -1227,27 +1243,25 @@ mod tests {
     }
 
     #[test]
-    fn live_and_shadow_modify_route_through_the_same_policy_boundary() {
-        // DISPATCH-1 core: the in-place modify route obeys the SAME Live/Shadow
-        // boundary as cancel. Live calls NT modify exactly once and returns
-        // `Modified`; Shadow is suppressed (no NT call, `SkippedByPolicy`). Pre-fix
-        // there was no modify route at all (the dispatch sink unconditionally
-        // bailed), so neither arm could exist — this asserts through the recording
-        // sink's `modify_calls` side-effect channel, not just the return value.
+    fn live_modify_is_fail_closed_and_shadow_is_suppressed() {
+        // Option A (#835): an in-place modify does NOT pass submit admission, so a
+        // Live amend would bypass the risk gate. The Live arm is FAIL-CLOSED — it
+        // returns `Err` and never reaches the venue; Shadow stays suppressed
+        // (`SkippedByPolicy`, no NT call). Asserts through the recording sink's
+        // `modify_calls` side-effect channel (stays 0 for BOTH arms), not just the
+        // return value — forcing the Live arm back to a venue call turns this red.
         let mut sink = RecordingVenueMutationSink::default();
         let live_policy = BoltV3OrderExecutionPolicy::from_mode(BoltV3OrderExecutionMode::Live);
         let shadow_policy = BoltV3OrderExecutionPolicy::from_mode(BoltV3OrderExecutionMode::Shadow);
 
-        let live_outcome = live_policy
-            .route_modify_with_sink(
-                &mut sink,
-                ClientOrderId::from("O-19700101-000000-001-MODIFY-1"),
-                Quantity::new(2.0, 2),
-                Price::new(0.41, 2),
-                Some(ClientId::from("execution_client")),
-                None,
-            )
-            .expect("live modify should call NT");
+        let live_result = live_policy.route_modify_with_sink(
+            &mut sink,
+            ClientOrderId::from("O-19700101-000000-001-MODIFY-1"),
+            Quantity::new(2.0, 2),
+            Price::new(0.41, 2),
+            Some(ClientId::from("execution_client")),
+            None,
+        );
         let shadow_outcome = shadow_policy
             .route_modify_with_sink(
                 &mut sink,
@@ -1259,28 +1273,26 @@ mod tests {
             )
             .expect("shadow modify should be suppressed by policy");
 
-        assert_eq!(live_outcome, BoltV3ModifyRoutingOutcome::Modified);
-        assert_eq!(shadow_outcome, BoltV3ModifyRoutingOutcome::SkippedByPolicy);
-        // Exactly the live arm reached the venue; the shadow arm left it untouched.
-        assert_eq!(sink.modify_calls, 1);
-        assert_eq!(
-            sink.modify_requests,
-            vec![(
-                ClientOrderId::from("O-19700101-000000-001-MODIFY-1"),
-                Quantity::new(2.0, 2),
-                Price::new(0.41, 2),
-                Some(ClientId::from("execution_client")),
-            )]
+        assert!(
+            live_result.is_err(),
+            "live in-place modify must be fail-closed (not admission-gated; #835)"
         );
+        assert_eq!(shadow_outcome, BoltV3ModifyRoutingOutcome::SkippedByPolicy);
+        // Neither arm reached the venue: Live refused (fail-closed), Shadow suppressed.
+        assert_eq!(sink.modify_calls, 0);
+        assert!(sink.modify_requests.is_empty());
     }
 
     #[test]
-    fn maker_modify_dispatch_calls_nt_modify_once_and_no_longer_bails() {
-        // The regression guard for the removed bail: a compiled `Modify` command
-        // routed Live now flows through the dispatcher to the NT modify call instead
-        // of erroring. Pre-fix `modify_maker_order` unconditionally bailed, so
-        // `route_maker_order_command_with_runtime` returned `Err` and `modify_calls`
-        // stayed 0 — both assertions below fail on that variant.
+    fn maker_modify_dispatch_is_fail_closed_in_live_not_admission_gated() {
+        // Option A (#835): a compiled `Modify` routed Live is FAIL-CLOSED at the
+        // execution seam — the dispatch returns `Err` and the venue modify is never
+        // called (`modify_calls` stays 0), because an in-place modify does not pass
+        // the submit admission/reservation/fee checks. The maker requotes via the
+        // already-admitted cancel+resubmit path (the deployed venue contract has
+        // `supports_modify=false`, so the FSM never emits a Modify). No venue mutation
+        // occurs, so no intent/admission is recorded. Forcing the Live arm back to a
+        // venue call turns this red.
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
         let mut runtime = RecordingMakerRuntime::new();
@@ -1292,7 +1304,7 @@ mod tests {
             quantity: Quantity::new(2.0, 2),
         };
 
-        let outcome = route_maker_order_command_with_runtime(
+        let result = route_maker_order_command_with_runtime(
             BoltV3OrderExecutionPolicy::live(),
             &mut runtime,
             writer.as_ref(),
@@ -1302,21 +1314,14 @@ mod tests {
                 command: &command,
                 submit_order_prefix: "maker_submit",
             },
-        )
-        .expect("maker modify should route through shared execution policy, not bail");
-
-        assert_eq!(
-            outcome,
-            MakerOrderDispatchOutcome::Modified {
-                leg: Leg::Yes,
-                instrument_id: InstrumentId::from("YES.INSTRUMENT"),
-                client_order_id: ClientOrderId::from("MAKER-YES-1"),
-                price: Price::new(0.41, 2),
-                quantity: Quantity::new(2.0, 2),
-            }
         );
-        assert_eq!(runtime.venue_sink.modify_calls, 1);
-        // A modify is not a submit, so it records no order intent / admission.
+
+        assert!(
+            result.is_err(),
+            "live maker modify dispatch must be fail-closed (not admission-gated; #835)"
+        );
+        assert_eq!(runtime.venue_sink.modify_calls, 0);
+        // No venue mutation → no order intent / admission recorded.
         assert!(writer.records().is_empty());
         assert!(writer.admission_decisions().is_empty());
     }

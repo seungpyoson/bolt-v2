@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use nautilus_model::{data::TradeTick, identifiers::InstrumentId};
 
 use crate::bolt_v3_maker_mu_estimator::{
-    MuEstimatorConfig, MuHealthConfig, MuHealthReason, estimate_informed_fraction,
+    MuEstimatorConfig, MuHealthConfig, MuHealthReason, UsableMu, estimate_informed_fraction,
     evaluate_mu_health,
 };
 use crate::bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig};
@@ -86,16 +86,19 @@ impl MakerMuState {
     }
 
     /// The single gate-checked μ read for consumers (quoting, go-live). Returns
-    /// `Ok(mu)` only when the health gate passes, and `Err(reason)` carrying the
-    /// fail-closed block reason otherwise — so a consumer cannot obtain a μ
-    /// without first clearing the gate. This is the only public μ accessor; the
-    /// raw [`mu_for`](Self::mu_for) / [`health_for`](Self::health_for) building
-    /// blocks are private so no quoting path can bypass the gate.
+    /// `Ok(UsableMu)` only when the health gate passes, and `Err(reason)` carrying
+    /// the fail-closed block reason otherwise — so a consumer cannot obtain a μ
+    /// without first clearing the gate. The `Ok` value is the [`UsableMu`]
+    /// newtype, not a bare `f64`, so the gate-cleared μ is the only μ the quote
+    /// planner can be constructed with (the bypass becomes a compile error). This
+    /// is the only public μ accessor; the raw [`mu_for`](Self::mu_for) /
+    /// [`health_for`](Self::health_for) building blocks are private so no quoting
+    /// path can bypass the gate.
     pub fn usable_mu_for(
         &self,
         instrument_id: &InstrumentId,
         now_ms: u64,
-    ) -> Result<f64, MuHealthReason> {
+    ) -> Result<UsableMu, MuHealthReason> {
         match self.health_for(instrument_id, now_ms) {
             Some(reason) => Err(reason),
             // A healthy verdict guarantees the estimator produced a finite,
@@ -103,6 +106,7 @@ impl MakerMuState {
             // read stays fail-closed even if the two views ever diverge.
             None => self
                 .mu_for(instrument_id, now_ms)
+                .map(UsableMu::new)
                 .ok_or(MuHealthReason::Absent),
         }
     }
@@ -204,9 +208,11 @@ mod tests {
             state.health_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
             None
         );
-        // The only public read returns the μ once the gate passes.
+        // The only public read returns the gate-cleared μ once the gate passes.
         assert_eq!(
-            state.usable_mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
+            state
+                .usable_mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS)
+                .map(UsableMu::get),
             Ok(1.0)
         );
     }
@@ -318,6 +324,21 @@ mod tests {
             ));
         }
         assert_eq!(state.health_for(&id, now_ms), None);
-        assert_eq!(state.usable_mu_for(&id, now_ms), Ok(1.0));
+        assert_eq!(state.usable_mu_for(&id, now_ms).map(UsableMu::get), Ok(1.0));
+    }
+
+    #[test]
+    fn usable_mu_is_constructed_only_from_the_gate_cleared_value() {
+        // MU-3 seam: the gate-cleared μ surfaces through the `UsableMu` newtype and
+        // `get()` returns exactly the μ the estimator produced (here a one-sided
+        // buy flow → 1.0). A consumer can only obtain this `UsableMu` from the gate
+        // (the field is private and has no public constructor), which is what makes
+        // routing a raw, ungated `f64` into the quote planner a compile error.
+        let mut state = state();
+        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
+        let usable = state
+            .usable_mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS)
+            .expect("one-sided warmup flow clears the μ gate");
+        assert_eq!(usable.get(), 1.0);
     }
 }

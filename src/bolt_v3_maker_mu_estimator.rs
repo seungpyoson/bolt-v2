@@ -45,6 +45,40 @@ pub struct MuHealthConfig {
     pub mu_min_floor: f64,
 }
 
+/// A μ (informed-fraction) value that has already cleared the fail-closed health
+/// gate. The inner `f64` is **private**: the only way to obtain a `UsableMu` is
+/// from the per-instrument gate read
+/// (`crate::strategies::binary_oracle_maker::mu::MakerMuState::usable_mu_for`),
+/// which returns it solely when the gate passes. The consuming quote planner
+/// ([`crate::bolt_v3_maker_quote_plan::MakerQuotePlanInputs`]) takes a `UsableMu`
+/// — not a bare `f64` — for its informed-fraction input and reads the value with
+/// [`get`](Self::get) only at the single `gm_binary_quote` call, so "a raw,
+/// ungated μ reached `gm_binary_quote`" is a compile error: a bare `f64` cannot
+/// be coerced into this type and the field cannot be constructed outside this
+/// module.
+///
+/// It lives in this shared estimator module (not the strategy `mu` module) so the
+/// shared `bolt_v3_*` quote planner can name it without referencing
+/// `crate::strategies::*`, keeping the dependency-direction fence green.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UsableMu(f64);
+
+impl UsableMu {
+    /// Wrap a gate-cleared μ. `pub(crate)` so only in-crate gate code (the
+    /// `MakerMuState::usable_mu_for` read) can mint a `UsableMu`; no public
+    /// constructor exists, so a consumer cannot fabricate one from a raw `f64`.
+    pub(crate) fn new(value: f64) -> Self {
+        Self(value)
+    }
+
+    /// The gate-cleared μ value, read at the single point that needs the raw
+    /// number (`gm_binary_quote`). Kept deliberately minimal so no path can pull
+    /// the value out earlier and route it around the gate.
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
 /// Why a μ reading blocks quoting / go-live. `None` from
 /// [`evaluate_mu_health`] means healthy; `Some(reason)` blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

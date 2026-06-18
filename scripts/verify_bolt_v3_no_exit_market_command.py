@@ -52,9 +52,20 @@ FORBIDDEN_RULES = (
     ),
 )
 
-ALLOWED_CANCEL_ALL_POLICY_PATHS = frozenset(
+# The shared execution-policy module IS Bolt's venue-mutation chokepoint: every
+# call here is routed through the shadow-mode `BoltV3OrderExecutionPolicy` gate
+# (Live -> NT, Shadow -> suppressed), so a venue-mutating lifecycle API used here
+# is enforced BY shadow mode, not a bypass of it. Only the specific APIs Bolt
+# routes through that gate are exempt, and only in this one file; every other
+# forbidden API (close_position, market_exit, ...) still fails even here, and any
+# of these APIs anywhere else still fails. Keyed by the routed-API name so adding
+# a new routed mutation (e.g. modify_order alongside cancel_all_orders) is an
+# explicit one-line allowlist entry, never a blanket file exemption.
+CHOKEPOINT_POLICY_PATH = "src/bolt_v3_order_execution.rs"
+ALLOWED_CHOKEPOINT_APIS = frozenset(
     {
-        "src/bolt_v3_order_execution.rs",
+        "cancel_all_orders",
+        "modify_order",
     }
 )
 
@@ -70,8 +81,8 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
         for match in rule.pattern.finditer(scan_text):
             if (
                 rule.label == "NT venue-mutating lifecycle API"
-                and path in ALLOWED_CANCEL_ALL_POLICY_PATHS
-                and "cancel_all_orders" in match.group(0)
+                and path == CHOKEPOINT_POLICY_PATH
+                and any(api in match.group(0) for api in ALLOWED_CHOKEPOINT_APIS)
             ):
                 continue
             line_start = text.rfind("\n", 0, match.start()) + 1

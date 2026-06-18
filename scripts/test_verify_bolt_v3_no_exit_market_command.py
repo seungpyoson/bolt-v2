@@ -111,17 +111,37 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
 
         self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
 
-    def test_policy_module_allows_only_cancel_all_chokepoint(self) -> None:
+    def test_policy_module_allows_only_routed_chokepoint_apis(self) -> None:
+        # The chokepoint file exempts ONLY the APIs Bolt routes through the
+        # shadow-mode execution-policy gate (cancel_all_orders and the newly-added
+        # modify_order). Every other venue-mutating API (close_position, ...) still
+        # fails even here, so the exemption is per-API, never a blanket file pass.
         violations = VERIFIER.find_violations_in_text(
             "src/bolt_v3_order_execution.rs",
             """
             self.cancel_all_orders(instrument_id, None, Some(client_id), None)?;
+            self.modify_order(client_order_id, qty, price, None, client_id, None)?;
             self.close_position(position_id, Some(client_id), None)?;
             """,
         )
 
         self.assertEqual(len(violations), 1)
-        self.assertEqual(violations[0].line, 3)
+        self.assertEqual(violations[0].line, 4)
+        self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
+        self.assertIn("close_position", violations[0].excerpt)
+
+    def test_policy_module_modify_order_exemption_is_scoped_to_chokepoint(self) -> None:
+        # modify_order is exempt ONLY in the chokepoint file; the same call in any
+        # other module is still a bypass and must fail.
+        violations = VERIFIER.find_violations_in_text(
+            "src/strategies/binary_oracle_maker/mod.rs",
+            """
+            self.modify_order(client_order_id, qty, price, None, client_id, None)?;
+            """,
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].line, 2)
         self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
 
     def test_identifier_rules_do_not_match_substrings_or_comments(self) -> None:

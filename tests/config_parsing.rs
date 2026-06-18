@@ -316,24 +316,43 @@ fn retired_gate_config_block_is_rejected() {
 
 #[test]
 fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
-    let source = fs::read_to_string(support::repo_path("config/root.toml"))
-        .expect("root config should be readable");
-    let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
-    let data = parsed
-        .get("clients")
-        .and_then(|value| value.get("chainlink_reference"))
-        .and_then(|value| value.get("data"))
-        .and_then(toml::Value::as_table)
-        .expect("root config should declare clients.chainlink_reference.data");
+    use bolt_v2::bolt_v3_providers::chainlink_reference::ChainlinkReferencePriceDataConfig;
 
-    assert_eq!(
-        data.get("heartbeat_secs").and_then(toml::Value::as_integer),
-        Some(5)
-    );
-    assert!(
-        !data.contains_key("heartbeat_message"),
-        "Chainlink reference WS must omit heartbeat_message so NT sends protocol Ping frames instead of text"
-    );
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let parsed = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let data_value = parsed
+            .get("clients")
+            .and_then(|value| value.get("chainlink_reference"))
+            .and_then(|value| value.get("data"))
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("{relative_path} should declare clients.chainlink_reference.data")
+            });
+        let data = data_value
+            .as_table()
+            .expect("chainlink reference data should be a table");
+        let data_config: ChainlinkReferencePriceDataConfig =
+            data_value.try_into().unwrap_or_else(|error| {
+                panic!("{relative_path} chainlink reference data should deserialize: {error}")
+            });
+
+        assert_eq!(
+            data.get("heartbeat_secs").and_then(toml::Value::as_integer),
+            Some(5),
+            "{relative_path} should keep a configured heartbeat interval"
+        );
+        assert!(
+            !data.contains_key("heartbeat_message"),
+            "{relative_path} Chainlink reference WS must omit heartbeat_message so NT sends protocol Ping frames instead of text"
+        );
+        assert_eq!(
+            data_config.heartbeat_message, None,
+            "{relative_path} parsed Chainlink reference config must use protocol Ping frames"
+        );
+    }
 }
 
 #[test]

@@ -209,8 +209,8 @@ pub fn parse_seeded_l2_jsonl(
             continue;
         }
         let value: Value = serde_json::from_str(trimmed)
-            .with_context(|| format!("line {line_index}: invalid JSON"))?;
-        events.push(parse_seeded_l2_json_value(mapping, &value, line_index)?);
+            .with_context(|| format!("line {}: invalid JSON", line_index + 1))?;
+        events.push(parse_seeded_l2_json_value(mapping, &value, line_index + 1)?);
     }
     ensure!(!events.is_empty(), "seeded L2 quote JSONL is empty");
     Ok(events)
@@ -459,28 +459,28 @@ fn validate_mapping(mapping: &SeededL2QuoteMappingConfig) -> Result<()> {
 fn parse_seeded_l2_json_value(
     mapping: &SeededL2QuoteMappingConfig,
     value: &Value,
-    line_index: usize,
+    line_number: usize,
 ) -> Result<SeededL2QuoteEvent> {
     let action_raw = required_scalar_at_path(value, &mapping.action_path)
-        .with_context(|| format!("line {line_index}: read action"))?;
+        .with_context(|| format!("line {line_number}: read action"))?;
     let action = parse_action(mapping, &action_raw)
-        .with_context(|| format!("line {line_index}: unknown action {action_raw:?}"))?;
+        .with_context(|| format!("line {line_number}: unknown action {action_raw:?}"))?;
     let event_time_raw = required_scalar_at_path(value, &mapping.event_time_path)
-        .with_context(|| format!("line {line_index}: read event time"))?;
+        .with_context(|| format!("line {line_number}: read event time"))?;
     let event_time = mapping
         .event_time_unit
         .parse_to_nanos(&event_time_raw)
-        .with_context(|| format!("line {line_index}: invalid event time {event_time_raw:?}"))?;
-    ensure!(event_time > 0, "line {line_index}: non-positive event time");
+        .with_context(|| format!("line {line_number}: invalid event time {event_time_raw:?}"))?;
+    ensure!(event_time > 0, "line {line_number}: non-positive event time");
     let source_sequence = match &mapping.source_sequence_path {
         Some(path) => optional_scalar_at_path(value, path)
-            .with_context(|| format!("line {line_index}: read source sequence"))?,
+            .with_context(|| format!("line {line_number}: read source sequence"))?,
         None => None,
     };
-    let bids = levels_at_path(value, &mapping.bids_path, mapping, line_index, "bids")
-        .with_context(|| format!("line {line_index}: read bids"))?;
-    let asks = levels_at_path(value, &mapping.asks_path, mapping, line_index, "asks")
-        .with_context(|| format!("line {line_index}: read asks"))?;
+    let bids = levels_at_path(value, &mapping.bids_path, mapping, line_number, "bids")
+        .with_context(|| format!("line {line_number}: read bids"))?;
+    let asks = levels_at_path(value, &mapping.asks_path, mapping, line_number, "asks")
+        .with_context(|| format!("line {line_number}: read asks"))?;
     Ok(SeededL2QuoteEvent {
         action,
         event_time,
@@ -514,7 +514,7 @@ fn levels_at_path(
     value: &Value,
     path: &[String],
     mapping: &SeededL2QuoteMappingConfig,
-    line_index: usize,
+    line_number: usize,
     side_label: &str,
 ) -> Result<Vec<SeededL2QuoteLevel>> {
     let levels = value_at_path(value, path)
@@ -525,13 +525,13 @@ fn levels_at_path(
     let mut parsed = Vec::with_capacity(levels.len());
     for (level_index, level) in levels.iter().enumerate() {
         let fields = level.as_array().with_context(|| {
-            format!("line {line_index} {side_label} level {level_index} is not an array")
+            format!("line {line_number} {side_label} level {level_index} is not an array")
         })?;
         let price = scalar_from_index(fields, mapping.level_price_index).with_context(|| {
-            format!("line {line_index} {side_label} level {level_index}: missing price")
+            format!("line {line_number} {side_label} level {level_index}: missing price")
         })?;
         let size = scalar_from_index(fields, mapping.level_size_index).with_context(|| {
-            format!("line {line_index} {side_label} level {level_index}: missing size")
+            format!("line {line_number} {side_label} level {level_index}: missing size")
         })?;
         parsed.push(SeededL2QuoteLevel { price, size });
     }

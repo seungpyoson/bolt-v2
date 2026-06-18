@@ -877,7 +877,11 @@ fn instrument_settlement_data(manifest: &BacktestingRunManifest) -> Result<Vec<D
                 row.close_price
             )
         })?;
-        let close_price = Price::new(close_value, row.price_precision);
+        let close_price = Price::new_checked(close_value, row.price_precision)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+            .with_context(|| {
+                format!("invalid close_price for instrument_settlements[{index}]: {close_value}")
+            })?;
         closes.push(Data::InstrumentClose(InstrumentClose::new(
             instrument_id,
             close_price,

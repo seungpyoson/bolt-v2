@@ -22,6 +22,7 @@ fn source(source_id: &str) -> RealizedVolSourceConfig {
         sample_kind: RealizedVolSampleKind::Midpoint,
         enabled: true,
         counts_toward_quorum: true,
+        canonical_base_asset: "<BASE_ASSET>".to_string(),
         canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
     }
 }

@@ -2083,9 +2083,9 @@ mod tests {
     }
 
     const ISSUE_789_START_MS: u64 = 1_776_816_000_000;
-    const ISSUE_789_END_MS: u64 = 1_776_816_060_000;
+    const ISSUE_789_END_MS: u64 = 1_776_816_300_000;
     const ISSUE_789_START_NS: i64 = 1_776_816_000_000_000_000;
-    const ISSUE_789_END_NS: i64 = 1_776_816_060_000_000_000;
+    const ISSUE_789_END_NS: i64 = 1_776_816_300_000_000_000;
     const ISSUE_789_CONDITION_ID: &str =
         "0xb98f764c4d5dd36580c8c9903bc75ddcb631428d84e9c1e532f0da236f77054c";
     const ISSUE_789_UP_TOKEN: &str =
@@ -2098,9 +2098,9 @@ mod tests {
     fn issue_789_first_real_free_data_taker_pl() -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create issue #789 temp catalog root")?;
         let okx_quotes = seeded_quote_table(
-            include_str!(
-                "../tests/fixtures/issue_789_first_pl/okx_btc_usdt_l2_20260422_000000_000060.jsonl"
-            ),
+            &gunzip_fixture(include_bytes!(
+                "../tests/fixtures/issue_789_first_pl/okx_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
+            ))?,
             okx_seeded_l2_mapping(),
             QuoteTableSpec {
                 source_binding: "okx-official-historical-l2-400lv",
@@ -2112,9 +2112,9 @@ mod tests {
             },
         )?;
         let bybit_quotes = seeded_quote_table(
-            include_str!(
-                "../tests/fixtures/issue_789_first_pl/bybit_btc_usdt_l2_20260422_000000_000060.jsonl"
-            ),
+            &gunzip_fixture(include_bytes!(
+                "../tests/fixtures/issue_789_first_pl/bybit_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
+            ))?,
             bybit_seeded_l2_mapping(),
             QuoteTableSpec {
                 source_binding: "bybit-quote-saver-ob200",
@@ -2340,6 +2340,19 @@ mod tests {
         payload_id: &'a str,
     }
 
+    /// Decompress a gzip-embedded issue #789 fixture into its plaintext form.
+    /// The real OKX/Bybit L2 and PMXT R2 windows are large, so they are committed
+    /// gzip-compressed and embedded via `include_bytes!`; this keeps the test
+    /// hermetic without bloating the source tree with tens of MB of plaintext.
+    fn gunzip_fixture(bytes: &[u8]) -> Result<String> {
+        use std::io::Read as _;
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(bytes)
+            .read_to_string(&mut text)
+            .context("gunzip issue #789 fixture")?;
+        Ok(text)
+    }
+
     fn seeded_quote_table(
         jsonl: &str,
         mapping: SeededL2QuoteMappingConfig,
@@ -2450,9 +2463,9 @@ mod tests {
     }
 
     fn issue_789_pmxt_rows() -> Result<Vec<Issue789PmxtCsvRow>> {
-        let csv_text = include_str!(
-            "../tests/fixtures/issue_789_first_pl/pmxt_btc_updown_5m_1776816000_rows.csv"
-        );
+        let csv_text = gunzip_fixture(include_bytes!(
+            "../tests/fixtures/issue_789_first_pl/pmxt_btc_updown_5m_1776816000_rows.csv.gz"
+        ))?;
         csv::Reader::from_reader(csv_text.as_bytes())
             .deserialize()
             .collect::<std::result::Result<Vec<Issue789PmxtCsvRow>, csv::Error>>()
@@ -2701,7 +2714,11 @@ mod tests {
         let price_to_beat = ((open_bid + open_ask) / Decimal::from(2))
             .normalize()
             .to_string();
-        let rows = (0..20)
+        // Emit one strike row per second across the whole replay window so the
+        // price-to-beat feed never ages out before the market resolves. The value
+        // is constant (the interval-open strike); only the timestamps advance.
+        let window_seconds = ((ISSUE_789_END_MS - ISSUE_789_START_MS) / 1_000) as i32;
+        let rows = (0..window_seconds)
             .map(|second| {
                 let ts = ISSUE_789_START_NS + i64::from(second) * 1_000_000_000;
                 CanonicalIndexPriceRow {

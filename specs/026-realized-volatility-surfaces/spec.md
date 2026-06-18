@@ -69,6 +69,7 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "<BASE_ASSET>"
 canonical_quote_asset = "<QUOTE_ASSET>"
 ```
 

@@ -290,6 +290,12 @@ fn realized_volatility_validation_accepts_nt_native_spot_symbols() {
                 "underlying_asset".to_string(),
                 toml::Value::String("BTC".to_string()),
             );
+        loaded.strategies[0]
+            .config
+            .reference_current_price
+            .as_mut()
+            .expect("fixture should include reference_current_price")
+            .asset = "BTC".to_string();
         loaded.strategies[0].config.realized_volatility_surface_id =
             Some("<surface_id>".to_string());
     });

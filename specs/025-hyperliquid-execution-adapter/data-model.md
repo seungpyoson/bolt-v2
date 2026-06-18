@@ -2,11 +2,13 @@
 
 ## HyperliquidClientBlock
 
-- `provider_id`: existing Bolt provider identifier.
+Fields of the generic `ClientBlock` (`src/bolt_v3_config.rs`), declared as `[clients.<id>]`:
+
+- `venue`: `Venue` enum value (`HYPERLIQUID` for this adapter; identifies the provider binding).
 - `data`: optional `HyperliquidDataConfig`.
 - `execution`: optional `HyperliquidExecutionConfig`.
-- `secret_set`: `HyperliquidSecretSet` only when execution is configured.
-- `latency_profile`: optional `HyperliquidLatencyProfile`.
+- `secrets`: deserialized as `HyperliquidSecretSet`, required only when execution is configured.
+- `readiness_probe`: optional data-client readiness-probe block.
 
 Validation:
 - Must be declared in TOML.
@@ -36,6 +38,8 @@ Validation:
 - `product_surfaces`: enabled discovery surfaces.
 - `account_id`
 - execution endpoints and retry policy.
+- `outcome_settlement_poll_secs`: settlement polling interval; must be positive for HIP-4 outcomes execution (FR-014).
+- `latency_profile`: optional `HyperliquidLatencyProfileConfig`; ops metadata only and cannot bypass submit gates.
 - `live_submit`: optional per-surface map keyed by product surface (`standard_perps`, `spot`, `hip3_builder_perps`, `hip4_outcomes`), declared as `[clients.<id>.execution.live_submit.<surface>]`. Each surface entry requires `approval_id`, `approval_artifact_path`, `approval_artifact_max_bytes`, `max_order_count`, `max_order_notional`, `product_proof_artifact_path`, `product_proof_artifact_sha256`, and `product_proof_artifact_max_bytes`. Every configured `live_submit` surface must also appear in `product_surfaces`.
 
 Validation:

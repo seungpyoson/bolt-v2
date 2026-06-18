@@ -157,11 +157,11 @@
 
 **Goal**: Operators can generate the exact Hyperliquid live-submit approval artifact that production live-node construction later consumes, without raw secret CLI inputs or a second artifact path.
 
-**Independent Test**: A provider-binding writer derives the approval artifact from loaded TOML plus resolved SSM secrets and writes the configured artifact path, while the CLI exposes `operator-artifacts generate-live-submit-approval` with config/client/product-surface/expiry inputs and no raw private-key or account-address arguments.
+**Independent Test**: A provider-binding writer derives the approval artifact from loaded TOML plus resolved SSM secrets and writes the configured artifact path, while the CLI exposes `provider-artifacts generate-live-submit-approval` with config/client/product-surface/expiry inputs and no raw private-key or account-address arguments.
 
 - [x] T049R Add failing provider-binding test for configured Hyperliquid approval artifact materialization.
 - [x] T049S Add provider-neutral live-submit approval artifact writer hook and Hyperliquid implementation.
-- [x] T049T Add `operator-artifacts generate-live-submit-approval` CLI entry point using Rust SSM secret resolution.
+- [x] T049T Add `provider-artifacts generate-live-submit-approval` CLI entry point using Rust SSM secret resolution.
 
 ## Phase 8G - Static Hyperliquid Instrument Route Identity
 
@@ -225,7 +225,7 @@
 - [x] T049AM Verify the bound product proof artifact sha256 before consuming Hyperliquid live-submit approvals.
 - [x] T049AMa Add a separate TOML-owned product proof artifact byte cap so proof evidence and approval artifacts do not share one read limit.
 - [x] T049AMb Add provider-owned product-submit proof artifact writer tests for proof-reference schema validation and HIP-4 settlement proof requirements.
-- [x] T049AMc Register provider-neutral `operator-artifacts generate-product-submit-proof` through `ProviderBinding`.
+- [x] T049AMc Register provider-neutral `provider-artifacts generate-product-submit-proof` through `ProviderBinding`.
 
 ## Phase 8M - Hyperliquid Product Matrix Approval-Gated Status
 

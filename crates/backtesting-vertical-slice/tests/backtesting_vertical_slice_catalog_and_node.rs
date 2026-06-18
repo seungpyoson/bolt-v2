@@ -78,8 +78,8 @@ fn proof_instrument() -> CurrencyPair {
         None,
         None,
         None,
-        None,
         None, // tick_scheme (NT bump)
+        None,
         UnixNanos::default(),
         UnixNanos::default(),
     )

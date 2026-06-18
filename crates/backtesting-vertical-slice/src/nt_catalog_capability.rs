@@ -777,8 +777,8 @@ impl NtCatalogSyntheticBinaryOptionSpec {
             None,
             None,
             None,
-            None,
             None, // tick_scheme (NT bump)
+            None,
             UnixNanos::default(),
             UnixNanos::default(),
         )
@@ -831,8 +831,8 @@ impl NtCatalogSyntheticPerpsSpotSpec {
             None,
             None,
             None,
-            None,
             None, // tick_scheme (NT bump)
+            None,
             UnixNanos::default(),
             UnixNanos::default(),
         )

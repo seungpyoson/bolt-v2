@@ -362,8 +362,8 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
         None,
         None,
         None,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
-        None, // tick_scheme (NT bump): not encoded by the NT catalog Arrow schema
         UnixNanos::default(),
         UnixNanos::default(),
     )
@@ -540,7 +540,7 @@ pub fn build_crypto_perpetual(spec: &CryptoPerpetualInstrumentSpec) -> Result<Cr
         parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
-        None, // tick_scheme: not encoded by the NT catalog Arrow schema
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -604,7 +604,7 @@ pub fn build_crypto_future(spec: &CryptoFutureInstrumentSpec) -> Result<CryptoFu
         parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
-        None, // tick_scheme: not encoded by the NT catalog Arrow schema
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -686,7 +686,7 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
         None,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
-        None, // tick_scheme: not encoded by the NT catalog Arrow schema
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),

@@ -382,7 +382,13 @@ fn make_quote_row(
         capture_time: event
             .capture_time
             .unwrap_or(provenance.default_capture_time),
-        availability_time: None,
+        // Seeded L2 BBO is a per-event stream, not one batch snapshot: each row's
+        // source-availability instant is its own event_time. ts_init prefers
+        // availability_time over capture_time, so carrying it per row spreads the
+        // quotes across the window instead of collapsing them onto the single batch
+        // capture instant — which had frozen the seeded signal/RV feed and aged it
+        // out so the strategy never priced (issue #789). capture_time is unchanged.
+        availability_time: Some(event.event_time),
         source_sequence: event.source_sequence.clone(),
         raw_payload_id: provenance.raw_payload_id.clone(),
         source_proof_id: provenance.source_proof_id.clone(),
@@ -663,6 +669,60 @@ mod tests {
         assert_eq!(table.rows[2].bid, "100.5");
         assert_eq!(table.rows[2].ask, "101");
         assert_eq!(table.fidelity_class, SourceProofFidelityClass::QuoteReplay);
+    }
+
+    #[test]
+    fn seeded_l2_quote_rows_carry_per_event_availability_time() {
+        // Differential guard for the issue #789 signal-feed freeze: each seeded-L2
+        // BBO row must carry its OWN event_time as availability_time so ts_init
+        // advances per row. With availability_time = None the rows collapse onto the
+        // single batch capture instant, the backtest delivers every quote at t0, and
+        // the strategy's spot observation ages out and never prices.
+        let base = 1_776_816_000_000_000_000;
+        let events = vec![
+            SeededL2QuoteEvent {
+                action: SeededL2QuoteAction::Snapshot,
+                event_time: base,
+                capture_time: None,
+                source_sequence: Some("1".to_string()),
+                bids: vec![level("100", "1")],
+                asks: vec![level("101", "3")],
+            },
+            SeededL2QuoteEvent {
+                action: SeededL2QuoteAction::Update,
+                event_time: base + 1_000,
+                capture_time: None,
+                source_sequence: Some("2".to_string()),
+                bids: vec![level("100.5", "2")],
+                asks: vec![level("101", "4")],
+            },
+            SeededL2QuoteEvent {
+                action: SeededL2QuoteAction::Update,
+                event_time: base + 2_000,
+                capture_time: None,
+                source_sequence: Some("3".to_string()),
+                bids: vec![level("100.75", "2")],
+                asks: vec![level("101.5", "4")],
+            },
+        ];
+
+        let table =
+            normalize_seeded_l2_events(&provenance(), &events).expect("seeded replay emits quotes");
+        assert_eq!(table.rows.len(), 3);
+        for row in &table.rows {
+            assert_eq!(
+                row.availability_time,
+                Some(row.event_time),
+                "each seeded-L2 quote row's availability_time must equal its own event_time"
+            );
+        }
+        let distinct: std::collections::BTreeSet<_> =
+            table.rows.iter().map(|row| row.availability_time).collect();
+        assert_eq!(
+            distinct.len(),
+            3,
+            "availability_time must advance per event, not collapse onto one batch instant"
+        );
     }
 
     #[test]

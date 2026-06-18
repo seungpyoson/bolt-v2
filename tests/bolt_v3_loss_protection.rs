@@ -1295,6 +1295,8 @@ impl HaltIdForTest for KillSwitchState {
         match self {
             KillSwitchState::Halting { halt_id, .. }
             | KillSwitchState::Halted { halt_id, .. }
+            | KillSwitchState::Cancelling { halt_id }
+            | KillSwitchState::Flattening { halt_id }
             | KillSwitchState::Flat { halt_id }
             | KillSwitchState::FailedManualIntervention { halt_id, .. } => halt_id,
             KillSwitchState::Armed => "",

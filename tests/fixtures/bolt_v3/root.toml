@@ -227,7 +227,7 @@ resolve_poll_enabled = false
 resolve_poll_interval_secs = 30
 resolve_poll_grace_secs = 10
 resolve_poll_max_wait_secs = 1800
-update_instruments_interval_mins = 60
+update_instruments_interval_mins = 1
 ws_max_subscriptions = 200
 transport_backend = "sockudo"
 

@@ -40,6 +40,18 @@ fn signal_quote_subscription_uses_configured_signal_client() {
     );
 }
 
+#[test]
+fn signal_quote_subscription_without_signal_client_preserves_default_routing() {
+    let mut strategy = test_strategy();
+    strategy.config.signal_venue = None;
+
+    assert_eq!(
+        strategy.signal_instrument_id(),
+        Some(InstrumentId::from("SIGNAL.SOURCE"))
+    );
+    assert_eq!(strategy.signal_client_id(), None);
+}
+
 fn reference_provider(key: &str) -> ReferencePriceProvider {
     ReferencePriceProvider::new(key).expect("test provider key should be valid")
 }

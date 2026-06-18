@@ -4733,8 +4733,7 @@ max_notional = "200000"
 
     #[test]
     fn funding_catalog_hash_matches_golden_v1() {
-        const EXPECTED: &str =
-            "1193d55c1d22b2c3fc95398904d7ebeed6a5c939eacdebe7427f279df5967dfa";
+        const EXPECTED: &str = "1193d55c1d22b2c3fc95398904d7ebeed6a5c939eacdebe7427f279df5967dfa";
 
         let table = canonical_funding_rates_table();
         let dir = tempfile::TempDir::new().unwrap();

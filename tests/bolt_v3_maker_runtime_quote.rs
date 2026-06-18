@@ -20,7 +20,6 @@ use bolt_v2::{
         maker_reference_current_price_fair_value_decision, plan_maker_runtime_quote,
     },
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
-    bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
     bolt_v3_realized_volatility::{
@@ -786,6 +785,9 @@ fn gate_cleared_informed_fraction() -> UsableMu {
     const BUYS: u64 = 11;
     const SELLS: u64 = 9;
     const STEP_MS: u64 = 1_000;
+    // The SI millisecond → nanosecond factor (the crate's NANOS_PER_MILLI_U64 is
+    // pub(crate) and unreachable from this integration-test crate).
+    const NANOS_PER_MILLI: u64 = 1_000_000;
     let mut state = MakerMuState::new(
         MuEstimatorConfig {
             min_classified_samples: 4,
@@ -802,7 +804,7 @@ fn gate_cleared_informed_fraction() -> UsableMu {
     let instrument = InstrumentId::from("MUFIXTURE.SIM");
     let mut ts_ms = STEP_MS;
     let mut observe = |state: &mut MakerMuState, aggressor: AggressorSide, ts_ms: u64| {
-        let ts_ns = ts_ms * NANOS_PER_MILLI_U64;
+        let ts_ns = ts_ms * NANOS_PER_MILLI;
         let trade = TradeTick::new_checked(
             instrument,
             Price::new(0.50, 2),

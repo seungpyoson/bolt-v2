@@ -63,6 +63,7 @@ use crate::{
 };
 
 pub mod archetype;
+pub mod binding;
 mod config;
 pub mod mu;
 

@@ -39,6 +39,7 @@ use crate::bolt_v3_maker_go_live_gate::{
 use crate::bolt_v3_maker_market_selection::{
     MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy, maker_market_portfolio_policy_blockers,
 };
+use crate::bolt_v3_market_families::validation_bindings;
 use crate::bolt_v3_operator_artifacts::{
     build_head_sha_matches_current, is_lowercase_sha256, json_artifact_sha256,
 };
@@ -47,6 +48,7 @@ use crate::bolt_v3_strategy_registration::{
     BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
 };
 use crate::bolt_v3_trade_flow::SignedTradeFlowConfig;
+use crate::strategies::binary_oracle_maker::binding::MakerMarketDeclaration;
 use crate::strategies::binary_oracle_maker::{BinaryOracleMakerBuilder, KEY};
 use crate::strategies::production_strategy_registry;
 use crate::strategies::registry::StrategyBuilder;
@@ -71,7 +73,49 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
 struct ParametersBlock {
     runtime: RuntimeParametersBlock,
     market_portfolio: MarketPortfolioParametersBlock,
+    /// Operator-declared markets the maker should quote. Each entry is an
+    /// array-of-tables row (`[[parameters.markets]]`) mirroring the taker's
+    /// `MarketSelectionTarget` config fields plus a stable `market_key`. The set
+    /// is bounds-checked in [`validate_market_declarations`] (non-empty, within
+    /// the concurrency cap, registered family, unique keys) so a misdeclared
+    /// portfolio fails closed at load instead of silently idling.
+    markets: Vec<MarketBindingParametersBlock>,
     backtest: BacktestParametersBlock,
+}
+
+/// One operator-declared market in `[[parameters.markets]]`. Mirrors the taker's
+/// `MarketSelectionTarget`-building config fields exactly (`family_key`,
+/// `underlying_asset`, `cadence_seconds`, `cadence_slug_token`, and the optional
+/// static-market overrides), plus an operator-supplied `market_key` the portfolio
+/// planner keys slots and rotation by. `deny_unknown_fields` fails loud on stray
+/// keys. The per-market reference/resolution feed wiring is PR-B's runtime
+/// concern; PR-A declares only the discovery-target identity.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct MarketBindingParametersBlock {
+    market_key: String,
+    family_key: String,
+    underlying_asset: String,
+    cadence_seconds: u64,
+    cadence_slug_token: String,
+    static_condition_id: Option<String>,
+    static_yes_outcome: Option<String>,
+    static_no_outcome: Option<String>,
+}
+
+impl MarketBindingParametersBlock {
+    fn declaration(&self) -> MakerMarketDeclaration {
+        MakerMarketDeclaration {
+            market_key: self.market_key.clone(),
+            family_key: self.family_key.clone(),
+            underlying_asset: self.underlying_asset.clone(),
+            cadence_seconds: self.cadence_seconds,
+            cadence_slug_token: self.cadence_slug_token.clone(),
+            static_condition_id: self.static_condition_id.clone(),
+            static_yes_outcome: self.static_yes_outcome.clone(),
+            static_no_outcome: self.static_no_outcome.clone(),
+        }
+    }
 }
 
 /// Runtime-tuning knobs for the maker's μ (informed-fraction) estimator and its
@@ -365,6 +409,12 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
         ));
     }
     validate_market_portfolio_policy(context, market_portfolio, &mut errors);
+    validate_market_declarations(
+        context,
+        &parameters.markets,
+        market_portfolio.max_active_markets,
+        &mut errors,
+    );
     for blocker in maker_backtest_gate_blockers(&parameters.backtest.evidence()) {
         errors.push(format!(
             "{context}: parameters.backtest.{} {}",
@@ -396,6 +446,70 @@ fn validate_market_portfolio_policy(
             "{context}: parameters.market_portfolio.total_bankroll_notional must be >= parameters.market_portfolio.min_slot_notional (otherwise no market slot can receive the configured minimum allocation)"
         ));
     }
+}
+
+/// Fail-closed bounds for the operator-declared `[[parameters.markets]]` set (the
+/// PR-A binding go-live gate). Each rejected shape would otherwise produce a maker
+/// that silently does nothing or selects an unbuildable market:
+///
+/// - an empty `markets` array means the maker has nothing to quote, which must
+///   fail loud at load rather than start a live strategy that idles silently;
+/// - declaring more markets than `market_portfolio.max_active_markets` is a
+///   configuration contradiction (the planner could never admit them all), so it
+///   is rejected rather than silently truncated;
+/// - an `family_key` not registered in the shared market-family registry can
+///   never resolve a market, so it is rejected at load — the same registered-family
+///   policy the runtime selection engine fails loud on;
+/// - an empty or duplicated `market_key` breaks the portfolio planner's per-market
+///   slot/rotation keying (it requires non-empty unique keys), so it is rejected
+///   at load.
+fn validate_market_declarations(
+    context: &str,
+    markets: &[MarketBindingParametersBlock],
+    max_active_markets: usize,
+    errors: &mut Vec<String>,
+) {
+    if markets.is_empty() {
+        errors.push(format!(
+            "{context}: parameters.markets must declare at least one market (an empty market set would silently idle the maker instead of failing closed at load)"
+        ));
+        return;
+    }
+    if markets.len() > max_active_markets {
+        errors.push(format!(
+            "{context}: parameters.markets declares {} markets but parameters.market_portfolio.max_active_markets is {max_active_markets} (the portfolio can never admit more declared markets than the concurrency cap)",
+            markets.len()
+        ));
+    }
+    let mut seen_keys = std::collections::BTreeSet::new();
+    for market in markets {
+        if market.market_key.trim().is_empty() {
+            errors.push(format!(
+                "{context}: parameters.markets entry market_key must be a non-empty string (the portfolio planner requires a non-empty market_key to key slots and rotation)"
+            ));
+        } else if !seen_keys.insert(market.market_key.as_str()) {
+            errors.push(format!(
+                "{context}: parameters.markets market_key `{}` is declared more than once (each declared market must have a unique key)",
+                market.market_key
+            ));
+        }
+        if !is_registered_market_family(&market.family_key) {
+            errors.push(format!(
+                "{context}: parameters.markets entry `{}` family_key `{}` is not a registered market family (a market for an unregistered family can never resolve)",
+                market.market_key, market.family_key
+            ));
+        }
+    }
+}
+
+/// True when `family_key` matches a binding registered in the shared
+/// market-family registry. Reuses the single registry source of truth
+/// (`validation_bindings`) rather than reimplementing the supported-family set,
+/// so a family added to the registry is automatically accepted here.
+fn is_registered_market_family(family_key: &str) -> bool {
+    validation_bindings()
+        .iter()
+        .any(|binding| binding.key == family_key)
 }
 
 fn validate_strategy_config_hash_binding(
@@ -464,6 +578,35 @@ fn market_portfolio_blocker_required_state(
             "must be valid when candidate markets are discovered"
         }
     }
+}
+
+/// Extract the operator-declared markets from a loaded maker strategy as the
+/// resolver's input type ([`MakerMarketDeclaration`]). This is the PR-A → PR-B
+/// seam: PR-A validates and surfaces the declared market set from
+/// `[[parameters.markets]]`; PR-B's runtime loop feeds these declarations into the
+/// shared discovery engine via [`crate::strategies::binary_oracle_maker::binding`].
+/// Fails with the same fail-closed message shape as `raw_maker_config` when the
+/// `[parameters]` block is malformed (the bounds gate in [`validate_strategy`]
+/// already rejects a malformed block at load, so this is the defensive runtime
+/// re-parse).
+pub fn declared_markets(strategy: &LoadedStrategy) -> Result<Vec<MakerMarketDeclaration>, String> {
+    if strategy.config.strategy_archetype.as_str() != KEY {
+        return Err(format!(
+            "strategy_archetype `{}` is not `{KEY}`",
+            strategy.config.strategy_archetype.as_str()
+        ));
+    }
+    let parameters: ParametersBlock = strategy
+        .config
+        .parameters
+        .clone()
+        .try_into()
+        .map_err(|error| format!("invalid [parameters] block: {error}"))?;
+    Ok(parameters
+        .markets
+        .iter()
+        .map(MarketBindingParametersBlock::declaration)
+        .collect())
 }
 
 /// Register the maker on the live node.
@@ -709,6 +852,35 @@ mod tests {
         }
     }
 
+    fn market_declaration(market_key: &str) -> MarketBindingParametersBlock {
+        MarketBindingParametersBlock {
+            market_key: market_key.to_string(),
+            family_key: "updown".to_string(),
+            underlying_asset: "ETH".to_string(),
+            cadence_seconds: 3_600,
+            cadence_slug_token: "hourly".to_string(),
+            static_condition_id: None,
+            static_yes_outcome: None,
+            static_no_outcome: None,
+        }
+    }
+
+    fn valid_markets() -> Vec<MarketBindingParametersBlock> {
+        vec![market_declaration("eth-hourly")]
+    }
+
+    fn market_declaration_errors(markets: Vec<MarketBindingParametersBlock>) -> Vec<String> {
+        validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                market_portfolio: valid_market_portfolio(),
+                markets,
+                backtest: valid_backtest(),
+            },
+        )
+    }
+
     fn valid_result_contract_replay() -> BacktestResultContractReplayBlock {
         BacktestResultContractReplayBlock {
             execution_model: NT_BACKTEST_NODE_EXECUTION_MODEL.to_string(),
@@ -839,6 +1011,15 @@ mod tests {
             min_slot_notional = 100.0
             "#;
 
+    const VALID_MARKETS_TOML: &str = r#"
+            [[markets]]
+            market_key = "eth-hourly"
+            family_key = "updown"
+            underlying_asset = "ETH"
+            cadence_seconds = 3600
+            cadence_slug_token = "hourly"
+            "#;
+
     fn valid_strategy_toml(strategy_config_hash: &str) -> String {
         format!(
             r#"
@@ -880,6 +1061,13 @@ mod tests {
             total_bankroll_notional = 1500.0
             min_slot_notional = 100.0
 
+            [[parameters.markets]]
+            market_key = "eth-hourly"
+            family_key = "updown"
+            underlying_asset = "ETH"
+            cadence_seconds = 3600
+            cadence_slug_token = "hourly"
+
             {}
             "#,
             prefixed_valid_backtest_toml(strategy_config_hash)
@@ -917,6 +1105,7 @@ mod tests {
             &ParametersBlock {
                 runtime,
                 market_portfolio: valid_market_portfolio(),
+                markets: valid_markets(),
                 backtest: valid_backtest(),
             },
         )
@@ -928,6 +1117,7 @@ mod tests {
             &ParametersBlock {
                 runtime: valid_runtime(),
                 market_portfolio,
+                markets: valid_markets(),
                 backtest: valid_backtest(),
             },
         )
@@ -939,6 +1129,7 @@ mod tests {
             &ParametersBlock {
                 runtime: valid_runtime(),
                 market_portfolio: valid_market_portfolio(),
+                markets: valid_markets(),
                 backtest,
             },
         )
@@ -1190,6 +1381,144 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("total_bankroll_notional must be >=")),
             "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_accepts_valid_market_declarations() {
+        assert!(
+            market_declaration_errors(valid_markets()).is_empty(),
+            "a single registered-family market within the cap must pass the go-live gate"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_empty_markets() {
+        // Fail-closed: an empty declared set would silently idle the maker; the
+        // go-live gate must reject it at load rather than start a no-op strategy.
+        let errors = market_declaration_errors(Vec::new());
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.markets must declare at least one market")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_more_markets_than_concurrency_cap() {
+        // The portfolio can never admit more declared markets than
+        // market_portfolio.max_active_markets (here 3), so declaring 4 is a
+        // configuration contradiction that must fail loud, not be silently truncated.
+        let markets = vec![
+            market_declaration("eth-1"),
+            market_declaration("eth-2"),
+            market_declaration("eth-3"),
+            market_declaration("eth-4"),
+        ];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors.iter().any(|error| error.contains(
+                "declares 4 markets but parameters.market_portfolio.max_active_markets is 3"
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_unregistered_family_key() {
+        // A family_key absent from the shared market-family registry can never
+        // resolve a market, so it is rejected at load — reusing the registry as the
+        // single source of truth for the supported-family set.
+        let markets = vec![MarketBindingParametersBlock {
+            family_key: "not_a_registered_family".to_string(),
+            ..market_declaration("eth-hourly")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors.iter().any(|error| error.contains("family_key")
+                && error.contains("not a registered market family")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_accepts_every_registered_family_key() {
+        // Pins that the validator's accepted set IS the registry, not a hardcoded
+        // list: every family the production registry knows must pass the family-key
+        // check (no false rejection of a registered family).
+        for binding in validation_bindings() {
+            let markets = vec![MarketBindingParametersBlock {
+                family_key: binding.key.to_string(),
+                ..market_declaration("eth-hourly")
+            }];
+            let errors = market_declaration_errors(markets);
+            assert!(
+                !errors
+                    .iter()
+                    .any(|error| error.contains("not a registered market family")),
+                "registered family `{}` must not be flagged unregistered: {errors:?}",
+                binding.key
+            );
+        }
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_duplicate_market_key() {
+        let markets = vec![market_declaration("eth-dup"), market_declaration("eth-dup")];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("market_key `eth-dup` is declared more than once")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_empty_market_key() {
+        let markets = vec![MarketBindingParametersBlock {
+            market_key: "   ".to_string(),
+            ..market_declaration("placeholder")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("market_key must be a non-empty string")),
+            "{errors:?}"
+        );
+    }
+
+    fn loaded_strategy_from(config: BoltV3StrategyConfig) -> LoadedStrategy {
+        LoadedStrategy {
+            config_path: std::path::PathBuf::from("tests/maker.toml"),
+            relative_path: "maker.toml".to_string(),
+            config,
+        }
+    }
+
+    #[test]
+    fn declared_markets_projects_operator_markets_into_resolver_inputs() {
+        // The PR-A → PR-B seam: the operator `[[parameters.markets]]` block must
+        // surface as the resolver's `MakerMarketDeclaration` input type with every
+        // field carried through (a field drop here would silently lose a declared
+        // market's discovery identity). Asserts the projected declaration channel.
+        let strategy = loaded_strategy_from(valid_strategy_config());
+        let declarations =
+            declared_markets(&strategy).expect("valid maker strategy yields declarations");
+        assert_eq!(
+            declarations,
+            vec![MakerMarketDeclaration {
+                market_key: "eth-hourly".to_string(),
+                family_key: "updown".to_string(),
+                underlying_asset: "ETH".to_string(),
+                cadence_seconds: 3_600,
+                cadence_slug_token: "hourly".to_string(),
+                static_condition_id: None,
+                static_yes_outcome: None,
+                static_no_outcome: None,
+            }]
         );
     }
 
@@ -1527,7 +1856,7 @@ mod tests {
     #[test]
     fn parameters_block_deserializes_nested_runtime() {
         let toml = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -1538,11 +1867,13 @@ mod tests {
             requote_min_interval_ms = 500
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
+            VALID_MARKETS_TOML,
             valid_backtest_toml()
         );
         let parsed = parameters_from_str(&toml).expect("valid block deserializes");
         assert_eq!(parsed.runtime, valid_runtime());
         assert_eq!(parsed.market_portfolio, valid_market_portfolio());
+        assert_eq!(parsed.markets, valid_markets());
         assert_eq!(parsed.backtest, valid_backtest());
     }
 

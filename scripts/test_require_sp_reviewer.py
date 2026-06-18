@@ -10,6 +10,7 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "require_sp_reviewer.py"
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "require-reviewer-node.yml"
 
 
 def load_script():
@@ -172,6 +173,14 @@ def assert_current_head_approval_passes() -> None:
     assert result.latest_decisive_state == "APPROVED"
 
 
+def assert_workflow_bootstraps_script_only_when_base_lacks_it() -> None:
+    workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "Run the reviewer gate from the protected base branch" in workflow
+    assert "Bootstrap reviewer gate script" in workflow
+    assert "test -f scripts/require_sp_reviewer.py" in workflow
+    assert "github.event.pull_request.head.sha" in workflow
+
+
 def main() -> int:
     assert_requested_reviewer_passes()
     assert_approved_reviewer_passes_after_request_is_consumed()
@@ -184,6 +193,7 @@ def main() -> int:
     assert_configured_node_id_ignores_login_collision()
     assert_stale_approval_does_not_pass_for_new_head_sha()
     assert_current_head_approval_passes()
+    assert_workflow_bootstraps_script_only_when_base_lacks_it()
     print("OK: required reviewer gate self-tests passed.")
     return 0
 

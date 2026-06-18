@@ -290,12 +290,22 @@ fn realized_volatility_validation_accepts_nt_native_spot_symbols() {
                 "underlying_asset".to_string(),
                 toml::Value::String("BTC".to_string()),
             );
-        loaded.strategies[0]
+        let reference_current_price = loaded.strategies[0]
             .config
             .reference_current_price
             .as_mut()
-            .expect("fixture should include reference_current_price")
-            .asset = "BTC".to_string();
+            .expect("fixture should include reference_current_price");
+        reference_current_price.asset = "BTC".to_string();
+        reference_current_price
+            .sources
+            .get_mut("chainlink_primary")
+            .expect("fixture should include chainlink_primary reference source")
+            .instrument_id = Some("BTC-USD.CHAINLINK".to_string());
+        reference_current_price
+            .sources
+            .get_mut("polyresearch_backup")
+            .expect("fixture should include polyresearch_backup reference source")
+            .symbol = Some("BTC/USD".to_string());
         loaded.strategies[0].config.realized_volatility_surface_id =
             Some("<surface_id>".to_string());
     });

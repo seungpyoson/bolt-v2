@@ -62,7 +62,9 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchOutstandingOrderRiskSurface;
 use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
-use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
+use crate::bolt_v3_numeric::{
+    HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite, is_sha256_hex_digest,
+};
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionMode;
 use crate::bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config};
 use crate::bolt_v3_providers::{
@@ -1661,12 +1663,7 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
         errors
             .push("risk.kill_switch.manual_reset_evidence_max_age_ms must be positive".to_string());
     }
-    if block.forced_reduction_policy_sha256.len() != 64
-        || !block
-            .forced_reduction_policy_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
+    if !is_sha256_hex_digest(&block.forced_reduction_policy_sha256) {
         errors.push(
             "risk.kill_switch.forced_reduction_policy_sha256 must be a 64-character SHA-256 hex digest"
                 .to_string(),

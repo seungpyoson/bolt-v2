@@ -1,7 +1,18 @@
 use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
+fn fixture_without_kill_switch() -> String {
+    let mut fixture: toml::Value =
+        toml::from_str(include_str!("fixtures/bolt_v3/root.toml")).unwrap();
+    fixture
+        .get_mut("risk")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture should have a risk table")
+        .remove("kill_switch");
+    toml::to_string(&fixture).expect("fixture without kill switch should serialize")
+}
+
 fn root_with_kill_switch(block: &str) -> String {
-    format!("{}\n{block}", include_str!("fixtures/bolt_v3/root.toml"))
+    format!("{}\n{block}", fixture_without_kill_switch())
 }
 
 fn valid_kill_switch_block_without_cancel() -> &'static str {
@@ -67,9 +78,18 @@ is_quote_quantity = false
 
 #[test]
 fn kill_switch_config_is_optional_and_parses_when_present() {
-    let root_without: BoltV3RootConfig =
-        toml::from_str(include_str!("fixtures/bolt_v3/root.toml")).unwrap();
+    let root_without: BoltV3RootConfig = toml::from_str(&fixture_without_kill_switch()).unwrap();
     assert!(root_without.risk.kill_switch.is_none());
+
+    let shipped_root: BoltV3RootConfig =
+        toml::from_str(include_str!("fixtures/bolt_v3/root.toml")).unwrap();
+    let shipped_kill_switch = shipped_root
+        .risk
+        .kill_switch
+        .as_ref()
+        .expect("fixture should carry the disabled operator kill-switch block");
+    assert!(!shipped_kill_switch.enabled);
+    assert!(validate_root_only(&shipped_root).is_empty());
 
     let root_with: BoltV3RootConfig =
         toml::from_str(&root_with_kill_switch(&valid_kill_switch_block())).unwrap();

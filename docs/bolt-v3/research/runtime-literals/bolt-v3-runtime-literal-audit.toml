@@ -7030,14 +7030,6 @@ reason = "Internal invariant diagnostic for a typed submit-admission branch that
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
-kind = "number"
-literal = '''64'''
-context = '''if block.forced_reduction_policy_sha256.len() != 64'''
-classification = "sha256_hex_digest_length_guard"
-reason = "Fixed SHA-256 hex digest length used to validate the TOML-owned forced-reduction policy hash; not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
 kind = "string"
 literal = '''"rest_base_url"'''
 context = '''pub(crate) const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";'''

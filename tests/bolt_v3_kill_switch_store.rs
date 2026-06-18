@@ -155,3 +155,22 @@ fn failed_manual_intervention_evidence_recovers_fail_closed() {
         }
     );
 }
+
+#[test]
+fn oversized_evidence_recovers_fail_closed_without_unbounded_read() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    let store = KillSwitchStore::new(path.clone(), 8);
+
+    fs::write(&path, br#"{"oversized":true}"#).expect("oversized state should write");
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("oversized load should classify"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::OversizedEvidence,
+            state: None,
+        }
+    );
+}

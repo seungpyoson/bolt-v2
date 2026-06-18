@@ -1183,6 +1183,14 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         event_count_ledger_hash,
         selected_asset_ids_hash,
         strategy: &inputs.manifest.strategy,
+        execution_model: &inputs.manifest.execution_model,
+        venue_queue_position: inputs.manifest.venue.queue_position,
+        catalog_data_types: inputs
+            .manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(inputs.manifest),
         market_structure_fixture: market_structure_label(inputs.manifest),
         fidelity_class: canonical_table.fidelity_class,
@@ -2008,12 +2016,20 @@ mod tests {
         let hashes = selector_provenance_hashes(
             SourceProofFidelityClass::L2Replay,
             Some(BacktestSelectorProvenance {
-                event_count_ledger_hash: "eventledgerabc",
-                selected_asset_ids_hash: "selectedassetsabc",
+                event_count_ledger_hash:
+                    "7777777777777777777777777777777777777777777777777777777777777777",
+                selected_asset_ids_hash:
+                    "8888888888888888888888888888888888888888888888888888888888888888",
             }),
         )
         .expect("selector provenance");
-        assert_eq!(hashes, (Some("eventledgerabc"), Some("selectedassetsabc")));
+        assert_eq!(
+            hashes,
+            (
+                Some("7777777777777777777777777777777777777777777777777777777777777777"),
+                Some("8888888888888888888888888888888888888888888888888888888888888888")
+            )
+        );
 
         assert_eq!(
             selector_provenance_hashes(SourceProofFidelityClass::TradeReplay, None)

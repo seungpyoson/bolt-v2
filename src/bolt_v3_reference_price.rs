@@ -111,13 +111,13 @@ pub struct ReferencePriceUpdate {
     provider: String,
     provider_instrument: String,
     price: f64,
-    #[custom_data_field(json)]
+    #[custom_data_field(serde)]
     bid: Option<f64>,
-    #[custom_data_field(json)]
+    #[custom_data_field(serde)]
     ask: Option<f64>,
     observed_ts_ms: u64,
     received_ts_ms: u64,
-    #[custom_data_field(json)]
+    #[custom_data_field(serde)]
     provenance: ReferenceQuoteProvenance,
     ts_event: UnixNanos,
     ts_init: UnixNanos,

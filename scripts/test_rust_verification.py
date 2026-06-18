@@ -170,8 +170,11 @@ printf 'args=%s\\n' "$*" >> {just_log}
         if result.returncode != 2:
             raise AssertionError((result.returncode, result.stdout, result.stderr))
         refusal = json.loads(result.stderr)
-        if refusal.get("refusal_code") != "local_compile_disabled" or "verify-remote" not in "\n".join(
-            refusal.get("next_steps", [])
+        next_steps = "\n".join(refusal.get("next_steps", []))
+        if (
+            refusal.get("refusal_code") != "local_compile_disabled"
+            or "just rust-probe suggest" not in next_steps
+            or "for merge proof: run: just verify-remote" not in next_steps
         ):
             raise AssertionError(refusal)
 
@@ -520,6 +523,8 @@ def assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped() -> None
         dispatch_text = " ".join(harness.dispatches[0])
         if ".github/workflows/ci.yml" not in dispatch_text or "full_ci=true" not in dispatch_text:
             raise AssertionError(dispatch_text)
+        if "final-proof full CI" not in stdout or "just rust-probe suggest" not in stdout:
+            raise AssertionError(stdout)
         if harness.pr_checks_calls:
             raise AssertionError("draft dispatch wait must not use aggregate gh pr checks")
 

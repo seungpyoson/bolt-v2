@@ -273,7 +273,7 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
         run_id: run_id.to_string(),
         target_bolt_v2_branch: "main".to_string(),
         target_bolt_v2_ref: "refs/heads/main".to_string(),
-        resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+        resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
         market_structure_fixture: MarketStructureFixture::BinaryOption,
         venue_binding_key: SOURCE_BINDING.to_string(),
         run_purpose: RunPurpose::Normal,
@@ -534,8 +534,10 @@ fn dual_emission_run_spec(
 
 fn l2_provenance() -> Option<RunSpecSelectorProvenance> {
     Some(RunSpecSelectorProvenance {
-        event_count_ledger_hash: "eventledgerabc".to_string(),
-        selected_asset_ids_hash: "selectedassetsabc".to_string(),
+        event_count_ledger_hash: "7777777777777777777777777777777777777777777777777777777777777777"
+            .to_string(),
+        selected_asset_ids_hash: "8888888888888888888888888888888888888888888888888888888888888888"
+            .to_string(),
     })
 }
 

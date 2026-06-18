@@ -23,8 +23,8 @@
 //!
 //! Core startup validation in `crate::bolt_v3_validate` keeps target and
 //! market-data structural checks and dispatches archetype-specific rules through
-//! `crate::bolt_v3_archetypes::validate_strategy_archetype` based on
-//! `strategy.strategy_archetype`. Archetype-specific error-message
+//! `crate::bolt_v3_archetypes::validate_strategy_archetype_with_bindings`
+//! based on `strategy.strategy_archetype`. Archetype-specific error-message
 //! policy (the headline "is not allowed for `binary_oracle_edge_taker`"
 //! phrase, the per-field rule listing, and the
 //! market-data structural wording) lives here so that a future archetype can
@@ -56,7 +56,9 @@ use crate::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
-    bolt_v3_providers::resolve_fee_provider,
+    bolt_v3_providers::{
+        ProviderMarketExitOrderConstraints, binding_for_provider_key, resolve_fee_provider,
+    },
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, StrategyRegistrationContext, StrategyRuntimeBinding,
     },
@@ -286,9 +288,12 @@ pub fn validate_strategy(
         }
     };
 
+    let market_exit_order_constraints =
+        strategy_execution_client_market_exit_order_constraints(root, strategy);
     errors.extend(validate_order_parameters(
         context,
         strategy.manage_stop,
+        market_exit_order_constraints,
         &parameters.entry_order,
         &parameters.exit_order,
         &parameters.forced_exit_order,
@@ -1549,6 +1554,7 @@ fn validate_reference_current_price_forced_flat_grace(
 fn validate_order_parameters(
     context: &str,
     manage_stop: bool,
+    market_exit_order_constraints: Option<ProviderMarketExitOrderConstraints>,
     entry: &OrderParams,
     exit: &OrderParams,
     forced_exit: &OrderParams,
@@ -1556,10 +1562,15 @@ fn validate_order_parameters(
     let mut errors = Vec::new();
     errors.extend(check_strategy_position_contract(context, entry, exit));
     errors.extend(check_entry_order_combination(context, entry));
-    errors.extend(check_exit_order_combination(context, exit));
+    errors.extend(check_exit_order_combination(
+        context,
+        market_exit_order_constraints,
+        exit,
+    ));
     errors.extend(check_forced_exit_order_combination(
         context,
         manage_stop,
+        market_exit_order_constraints,
         exit,
         forced_exit,
     ));
@@ -1673,7 +1684,7 @@ fn validate_parameter_bounds(
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {
-    let mut errors = check_enabled_order_template(context, "entry_order", entry);
+    let mut errors = check_enabled_order_template(context, stringify!(entry_order), entry);
     if !executable_entry_order_shape_supported(entry) {
         errors.push(archetype_validation_error(
             context,
@@ -1740,8 +1751,18 @@ fn executable_entry_order_shape_supported(entry: &OrderParams) -> bool {
         && entry.trailing_offset_type.is_none()
 }
 
-fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String> {
-    let mut errors = check_enabled_order_template(context, "exit_order", exit);
+fn check_exit_order_combination(
+    context: &str,
+    market_exit_order_constraints: Option<ProviderMarketExitOrderConstraints>,
+    exit: &OrderParams,
+) -> Vec<String> {
+    let mut errors = check_enabled_order_template(context, stringify!(exit_order), exit);
+    errors.extend(check_provider_market_exit_shape(
+        context,
+        stringify!(exit_order),
+        exit,
+        market_exit_order_constraints,
+    ));
     if exit.is_quote_quantity {
         errors.push(format!(
             "{context}: parameters.exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` exits are sized from base position quantity"
@@ -1753,10 +1774,18 @@ fn check_exit_order_combination(context: &str, exit: &OrderParams) -> Vec<String
 fn check_forced_exit_order_combination(
     context: &str,
     manage_stop: bool,
+    market_exit_order_constraints: Option<ProviderMarketExitOrderConstraints>,
     exit: &OrderParams,
     forced_exit: &OrderParams,
 ) -> Vec<String> {
-    let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);
+    let mut errors =
+        check_enabled_order_template(context, stringify!(forced_exit_order), forced_exit);
+    errors.extend(check_provider_market_exit_shape(
+        context,
+        stringify!(forced_exit_order),
+        forced_exit,
+        market_exit_order_constraints,
+    ));
     if forced_exit.is_quote_quantity {
         errors.push(format!(
             "{context}: parameters.forced_exit_order.is_quote_quantity=true is not supported because `binary_oracle_edge_taker` forced exits are sized from base position quantity"
@@ -1773,6 +1802,59 @@ fn check_forced_exit_order_combination(
         ));
     }
     errors
+}
+
+fn strategy_execution_client_market_exit_order_constraints(
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Option<ProviderMarketExitOrderConstraints> {
+    let client = root.clients.get(strategy.execution_client_id.as_str())?;
+    let binding = binding_for_provider_key(client.venue.as_str())?;
+    Some(binding.market_exit_order_constraints)
+}
+
+fn check_provider_market_exit_shape(
+    context: &str,
+    field: &str,
+    order: &OrderParams,
+    constraints: Option<ProviderMarketExitOrderConstraints>,
+) -> Vec<String> {
+    let Some(constraints) = constraints else {
+        return Vec::new();
+    };
+
+    let mut errors = Vec::new();
+    if order.is_reduce_only && !constraints.reduce_only_supported {
+        errors.push(format!(
+            "{context}: parameters.{field}.is_reduce_only must be false because the configured execution provider rejects reduce-only exits before submit"
+        ));
+    }
+    if order.order_type != OrderType::Market {
+        return errors;
+    }
+    if let Some(allowed_time_in_forces) = constraints.allowed_market_time_in_forces
+        && !allowed_time_in_forces.contains(&order.time_in_force)
+    {
+        let configured = time_in_force_config_label(order.time_in_force);
+        let allowed = allowed_time_in_forces_config_label(allowed_time_in_forces);
+        errors.push(format!(
+            "{context}: parameters.{field} order_type=market has time_in_force={configured}; must use time_in_force={allowed} because the configured execution provider rejects unsupported market time-in-force values before submit"
+        ));
+    }
+    errors
+}
+
+fn time_in_force_config_label(time_in_force: TimeInForce) -> String {
+    time_in_force.to_string().to_ascii_lowercase()
+}
+
+fn allowed_time_in_forces_config_label(time_in_forces: &[TimeInForce]) -> String {
+    time_in_forces
+        .iter()
+        .copied()
+        .map(time_in_force_config_label)
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 fn check_enabled_order_template(context: &str, field: &str, order: &OrderParams) -> Vec<String> {

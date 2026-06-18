@@ -1,30 +1,34 @@
-//! Single owner of source-integrity canonicalization, hashing, and text access
-//! for the compile-time-embedded abort-plan gate sources.
+//! Single owner of source-text canonicalization and registry-keyed text access
+//! for the abort-plan gate sources.
 //!
-//! This module owns three things and is the ONLY place the gated source
-//! roots are named (the registry):
+//! This module owns two things:
 //!
-//! 1. **The registry** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] /
-//!    [`OUTCOME_GROUP_KEY`] mapped to their repo-relative source root sets.
-//! 2. The canonicalization + hash primitives, re-exported from the
-//!    `#[path]`-shared [`crate::source_canonicalization`] walk module so the
-//!    build-time emission (`build.rs`) and the runtime digest share exactly one
-//!    transcription.
-//! 3. The text accessors [`module_source_text`] (whole-module text) and
+//! 1. **The registry surface** — [`STRATEGY_KEY`] / [`SUBMIT_ADMISSION_KEY`] /
+//!    [`OUTCOME_GROUP_KEY`] / [`MAKER_KEY`] and the [`GATED_SOURCE_ROOTS`] table
+//!    mapping each key to its repo-relative source roots. The roots are named in
+//!    exactly one place — the repo-root `gated_source_roots.manifest`, which
+//!    `build.rs` compiles into [`GATED_SOURCE_ROOTS`]; this module re-exports
+//!    that generated table.
+//! 2. The text accessors [`module_source_text`] (whole-module text) and
 //!    [`production_module_source_text`] (test-submodule-free text), both in the
-//!    SAME canonicalization order as the digest.
+//!    SAME canonical file order. These are thin wrappers over the
+//!    [`crate::source_canonicalization`] walk module's text functions
+//!    (delegating with a fixed byte cap), so there is exactly one transcription
+//!    of the walk + text-extraction logic.
 //!
-//! `build.rs` emits compile-time canonical bytes (`$OUT_DIR/<key>.canonical`)
-//! from the SAME walk. Tests and provider artifact helpers call the
-//! registry-keyed digest / text accessors here.
+//! The lowercase-hex SHA-256 helper [`sha256_hex_lower`] is re-exported here for
+//! provider artifact code. The binary source-digest/framing primitives this
+//! module used to own were removed with the golden-digest gate.
+//!
+//! Tests and provider artifact helpers call the registry-keyed text accessors
+//! here.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 pub use crate::source_canonicalization::{
-    GATED_SOURCE_ROOTS, GatedSourceRoot, OUTCOME_GROUP_KEY, STRATEGY_KEY, SUBMIT_ADMISSION_KEY,
-    TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER, canonical_source_bytes,
-    canonical_source_digest, canonical_source_set_bytes, canonical_source_set_digest,
+    GATED_SOURCE_ROOTS, GatedSourceRoot, MAKER_KEY, OUTCOME_GROUP_KEY, STRATEGY_KEY,
+    SUBMIT_ADMISSION_KEY, TEST_MODULE_SPLIT_MARKER, TEST_ONLY_INNER_CFG_MARKER,
     module_source_set_text as canonical_module_source_set_text,
     module_source_text as canonical_module_text,
     production_module_source_text as canonical_production_module_text,
@@ -39,7 +43,7 @@ pub fn registry_relative_roots(key: &str) -> &'static [&'static str] {
 
 /// Primary repo-relative root path for a registry key. For source-set entries,
 /// this remains the strategy directory used by older path-based collector tests;
-/// registry-keyed hashing/text helpers use every root in the set.
+/// registry-keyed text helpers use every root in the set.
 pub fn registry_relative_root(key: &str) -> &'static str {
     registry_relative_roots(key)
         .first()
@@ -61,25 +65,6 @@ pub fn registry_root_paths(key: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Lowercase-hex SHA-256 of the canonical bytes of a registry source set,
-/// bounded by `max_bytes`.
-pub fn registry_source_digest(key: &str, max_bytes: u64) -> io::Result<String> {
-    canonical_source_set_digest(
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-        registry_relative_roots(key),
-        max_bytes,
-    )
-}
-
-/// Canonical bytes of a registry source set, bounded by `max_bytes`.
-pub fn registry_source_bytes(key: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
-    canonical_source_set_bytes(
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-        registry_relative_roots(key),
-        max_bytes,
-    )
-}
-
 /// Whole-module source text for a registry source set, bounded by `max_bytes`.
 pub fn registry_module_source_text(key: &str, max_bytes: u64) -> io::Result<String> {
     canonical_module_source_set_text(
@@ -90,17 +75,13 @@ pub fn registry_module_source_text(key: &str, max_bytes: u64) -> io::Result<Stri
 }
 
 /// A bound large enough to admit either gated root: the submit_admission single
-/// file and the strategy source set (strategy directory plus shared execution
-/// sources, whose framed canonical stream is the raw content plus per-file
-/// path/length frames). Used by the text accessors (whole module / production
-/// text), where there is no operator-supplied cap.
-///
-/// Single source for the in-process text-accessor bound; the digest path uses
-/// the operator-configured `max_source_bytes` instead.
+/// file and the strategy source set (the strategy directory plus the shared
+/// execution sources). Used by the text accessors (whole module / production
+/// text), where there is no operator-supplied cap; it is the single source for
+/// that in-process text-accessor bound.
 const TEXT_ACCESSOR_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Whole-module source text for a registry key, in the same canonical order as
-/// the digest.
+/// Whole-module source text for a registry key, in canonical file order.
 pub fn module_source_text(key: &str) -> String {
     canonical_module_source_set_text(
         Path::new(env!("CARGO_MANIFEST_DIR")),
@@ -140,48 +121,6 @@ pub fn production_module_source_text(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Golden digests for the compile-time abort-plan source-integrity gate.
-    // Update them only when an accepted source change intentionally changes a
-    // registry-owned canonical source stream. The full re-derivation trail
-    // belongs in git history, not in this invariant comment.
-    const GOLDEN_STRATEGY_DIGEST: &str =
-        "1d9fdccee5c838b28aa9d91af27222c407ac1201cb26ffcc5a219df50ac0a367";
-    const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
-        "5cfefe7da1e4d9fb405543e861bb0f0f3a8a82836d7370504a9305a364f2121c";
-    const GOLDEN_OUTCOME_GROUP_DIGEST: &str =
-        "bafe2f9f5c3030524b8887f1aae76557be3ccb413c3d62f860466c46e06b184f";
-
-    // Bound comfortably above the strategy source-set canonical stream and the
-    // submit_admission single file.
-    const TEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
-
-    #[test]
-    fn value_stability_strategy_digest_equals_golden_constant() {
-        let digest = registry_source_digest(STRATEGY_KEY, TEST_MAX_BYTES).unwrap();
-        assert_eq!(
-            digest, GOLDEN_STRATEGY_DIGEST,
-            "strategy canonical digest must equal the recorded golden constant (no regeneration)"
-        );
-    }
-
-    #[test]
-    fn value_stability_submit_admission_digest_equals_golden_constant() {
-        let digest = registry_source_digest(SUBMIT_ADMISSION_KEY, TEST_MAX_BYTES).unwrap();
-        assert_eq!(
-            digest, GOLDEN_SUBMIT_ADMISSION_DIGEST,
-            "submit_admission canonical digest must equal the recorded golden constant"
-        );
-    }
-
-    #[test]
-    fn value_stability_outcome_group_digest_equals_golden_constant() {
-        let digest = registry_source_digest(OUTCOME_GROUP_KEY, TEST_MAX_BYTES).unwrap();
-        assert_eq!(
-            digest, GOLDEN_OUTCOME_GROUP_DIGEST,
-            "outcome_group canonical digest must equal the recorded golden constant"
-        );
-    }
 
     /// The strategy source-set files, in strict repo-relative-path-byte order.
     /// Enumerated dynamically with the same fail-closed symlink/backslash policy
@@ -294,6 +233,30 @@ mod tests {
     }
 
     #[test]
+    fn submit_admission_source_set_is_the_single_admission_module() {
+        // Pins the generated constant for the submit-admission registry key, so
+        // a manifest change to `[submit_admission]` fails this test the same way
+        // the strategy and outcome-group sets are pinned (rather than only
+        // surfacing later as a `registry_entry` panic).
+        assert_eq!(
+            registry_relative_roots(SUBMIT_ADMISSION_KEY),
+            &["src/bolt_v3_submit_admission.rs"]
+        );
+    }
+
+    #[test]
+    fn maker_source_set_includes_go_live_gate_market_selection_and_maker_directory() {
+        assert_eq!(
+            registry_relative_roots(MAKER_KEY),
+            &[
+                "src/bolt_v3_maker_go_live_gate.rs",
+                "src/bolt_v3_maker_market_selection.rs",
+                "src/strategies/binary_oracle_maker",
+            ]
+        );
+    }
+
+    #[test]
     fn outcome_group_source_set_includes_registered_outcome_group_roots() {
         assert_eq!(
             registry_relative_roots(OUTCOME_GROUP_KEY),
@@ -309,7 +272,7 @@ mod tests {
                 "src/bolt_v3_basket_store.rs",
                 "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
                 "src/bolt_v3_market_families/outcome_group.rs",
-                "src/strategy_runtime_bindings.rs",
+                "src/strategy_bindings.rs",
                 "src/strategies/complete_set_arbitrage",
             ]
         );
@@ -360,126 +323,10 @@ mod tests {
                 "src/strategies/complete_set_arbitrage/mod.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/tests/mod.rs".to_string(),
                 "src/strategies/complete_set_arbitrage/tests/shell.rs".to_string(),
-                "src/strategy_runtime_bindings.rs".to_string(),
+                "src/strategy_bindings.rs".to_string(),
             ],
             "Task 11 covers the HIP-4 normalizer root alongside shared outcome-group roots"
         );
-    }
-
-    #[test]
-    fn source_set_digest_equals_hand_framed_canonical_over_strategy_files() {
-        // Source-set invariant: the strategy digest must equal a SHA-256 over the
-        // hand-built framed stream `repo_rel_path + 0x00 + u64-LE(len) + raw_bytes`
-        // for every file in the strategy source set, in canonical order. This
-        // pins the exact framing the gate hashes — not a tautology against the
-        // accessor itself.
-        let mut expected: Vec<u8> = Vec::new();
-        for (relative, path) in strategy_source_files_in_canonical_order() {
-            let raw = std::fs::read(&path).unwrap();
-            expected.extend_from_slice(relative.as_bytes());
-            expected.push(0x00);
-            expected.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-            expected.extend_from_slice(&raw);
-        }
-        assert_eq!(
-            registry_source_digest(STRATEGY_KEY, TEST_MAX_BYTES).unwrap(),
-            sha256_hex_lower(&expected),
-            "strategy source-set digest must equal the hand-framed canonical stream"
-        );
-    }
-
-    #[test]
-    fn outcome_group_source_set_digest_equals_hand_framed_canonical_over_files() {
-        let mut expected: Vec<u8> = Vec::new();
-        for (relative, path) in outcome_group_source_files_in_canonical_order() {
-            let raw = std::fs::read(&path).unwrap();
-            expected.extend_from_slice(relative.as_bytes());
-            expected.push(0x00);
-            expected.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-            expected.extend_from_slice(&raw);
-        }
-        assert_eq!(
-            registry_source_digest(OUTCOME_GROUP_KEY, TEST_MAX_BYTES).unwrap(),
-            sha256_hex_lower(&expected),
-            "outcome_group source-set digest must equal the hand-framed canonical stream"
-        );
-    }
-
-    #[test]
-    fn one_byte_change_anywhere_in_source_set_changes_strategy_digest() {
-        // Tamper-detection control for the directory case: flipping a single byte
-        // in the hand-framed canonical stream of EACH file in turn must change the
-        // digest away from the golden — proving every file in the source set is
-        // covered, not just the first. (Operates on a copy of the framed bytes;
-        // it never writes to the real source tree.)
-        let files = strategy_source_files_in_canonical_order();
-        assert!(
-            files.len() >= 4,
-            "expected current strategy directory plus shared execution source files"
-        );
-
-        // Build the framed stream and record each file's raw-byte span within it.
-        let mut framed: Vec<u8> = Vec::new();
-        let mut spans: Vec<(usize, usize)> = Vec::new();
-        for (relative, path) in &files {
-            let raw = std::fs::read(path).unwrap();
-            framed.extend_from_slice(relative.as_bytes());
-            framed.push(0x00);
-            framed.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-            let start = framed.len();
-            framed.extend_from_slice(&raw);
-            spans.push((start, framed.len()));
-        }
-        // Sanity: the unmodified framed stream reproduces the golden.
-        assert_eq!(sha256_hex_lower(&framed), GOLDEN_STRATEGY_DIGEST);
-
-        for (start, end) in spans {
-            if start == end {
-                continue;
-            }
-            let mut tampered = framed.clone();
-            tampered[start] ^= 0x01; // flip first byte of this file's content
-            assert_ne!(
-                sha256_hex_lower(&tampered),
-                GOLDEN_STRATEGY_DIGEST,
-                "a 1-byte change in the file spanning [{start}, {end}) must change the digest"
-            );
-        }
-    }
-
-    #[test]
-    fn one_byte_change_anywhere_in_outcome_group_source_set_changes_digest() {
-        let files = outcome_group_source_files_in_canonical_order();
-        assert!(
-            files.len() >= registry_relative_roots(OUTCOME_GROUP_KEY).len(),
-            "expected every first-slice outcome-group source root to contribute"
-        );
-
-        let mut framed: Vec<u8> = Vec::new();
-        let mut spans: Vec<(usize, usize)> = Vec::new();
-        for (relative, path) in &files {
-            let raw = std::fs::read(path).unwrap();
-            framed.extend_from_slice(relative.as_bytes());
-            framed.push(0x00);
-            framed.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-            let start = framed.len();
-            framed.extend_from_slice(&raw);
-            spans.push((start, framed.len()));
-        }
-        assert_eq!(sha256_hex_lower(&framed), GOLDEN_OUTCOME_GROUP_DIGEST);
-
-        for (start, end) in spans {
-            if start == end {
-                continue;
-            }
-            let mut tampered = framed.clone();
-            tampered[start] ^= 0x01;
-            assert_ne!(
-                sha256_hex_lower(&tampered),
-                GOLDEN_OUTCOME_GROUP_DIGEST,
-                "a 1-byte change in the file spanning [{start}, {end}) must change the digest"
-            );
-        }
     }
 
     #[test]
@@ -540,30 +387,6 @@ mod tests {
             .map(|(_relative, path)| std::fs::read_to_string(path).unwrap())
             .collect();
         assert_eq!(module_source_text(STRATEGY_KEY), expected);
-    }
-
-    #[test]
-    fn registry_admits_current_strategy_directory_canonical_size() {
-        // The producer cap must admit the current strategy source set. Compute
-        // its exact length and assert the digest succeeds with a cap set to
-        // exactly that size (and fails one byte below), proving the bound is
-        // tight and meaningful.
-        let canonical_len = registry_source_bytes(STRATEGY_KEY, TEST_MAX_BYTES)
-            .unwrap()
-            .len() as u64;
-        let raw_len: u64 = strategy_source_files_in_canonical_order()
-            .iter()
-            .map(|(_relative, path)| std::fs::metadata(path).unwrap().len())
-            .sum();
-        assert!(
-            canonical_len > raw_len,
-            "source-set framing adds path/length frames over raw content"
-        );
-        assert!(registry_source_digest(STRATEGY_KEY, canonical_len).is_ok());
-        assert!(
-            registry_source_digest(STRATEGY_KEY, canonical_len - 1).is_err(),
-            "cap one byte below the canonical length must reject"
-        );
     }
 
     #[test]

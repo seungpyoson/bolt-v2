@@ -1,29 +1,32 @@
 //! Pure, dependency-light canonicalization of a *source root* (a single `.rs`
-//! file OR a directory of `.rs` files) into a deterministic, layout-independent
-//! byte stream, plus the ONE consolidated lowercase-hex SHA-256 primitive used
-//! everywhere a source digest is needed.
+//! file OR a directory of `.rs` files) into deterministic, layout-independent
+//! source *text* (whole-module and production-only/test-stripped variants), plus
+//! the ONE consolidated lowercase-hex SHA-256 primitive ([`sha256_hex_lower`])
+//! still used by provider artifact code.
 //!
-//! This file is the SINGLE TRANSCRIPTION of the walk + framing + hash logic. It
-//! is compiled twice from one source: once by `build.rs` via a `#[path]` module
-//! include (so the build script can re-emit the canonical bytes into `OUT_DIR`),
-//! and once by the crate as a normal module re-exported through
-//! [`crate::bolt_v3_source_integrity`]. Because both sides share this exact
-//! source text, the build-time emission and the runtime digest can never drift.
+//! This file is the SINGLE TRANSCRIPTION of the walk + text-extraction logic. It
+//! is compiled as a normal crate module re-exported through
+//! [`crate::bolt_v3_source_integrity`], which owns the registry-keyed text
+//! accessors layered on top of it. (The binary framing + source-digest functions
+//! this file used to own were removed with the golden-digest gate; only
+//! [`sha256_hex_lower`] remains of the hashing surface.)
 //!
-//! It depends ONLY on `std`, `sha2`, and `hex` so `build.rs` can compile it
-//! standalone with `[build-dependencies] sha2 + hex` pinned to the same versions
-//! as `[dependencies]`. It must NOT import anything from the rest of the crate.
+//! It depends only on `std`, `sha2`, and `hex` and keeps its dependency surface
+//! minimal so the canonicalization transcription stays isolated and easy to
+//! audit. (It formerly avoided every `crate::` import because `build.rs`
+//! compiled this file standalone via `#[path]`; build.rs now parses
+//! `gated_source_roots.manifest` directly and no longer includes this module, so
+//! that isolation is a design choice rather than a hard build constraint.)
 
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-/// The ONE consolidated lowercase-hex SHA-256 primitive. Every source-integrity
-/// digest in the crate (verifier, producer, providers, tests) routes through
-/// this. `hex::encode` and `format!("{digest:x}")` are byte-identical for a
-/// 32-byte SHA-256 digest (both lowercase hex), so this is behavior-identical to
-/// every helper it replaces.
+/// The ONE consolidated lowercase-hex SHA-256 primitive, used by the provider
+/// artifact hashes (and tests). `hex::encode` and `format!("{digest:x}")` are
+/// byte-identical for a 32-byte SHA-256 digest (both lowercase hex), so this is
+/// behavior-identical to every helper it replaces.
 pub fn sha256_hex_lower(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -33,8 +36,9 @@ pub fn sha256_hex_lower(bytes: &[u8]) -> String {
 /// Mirrors the bound semantics of the producer's `read_file_bounded`: read at
 /// most `max_bytes + 1` and fail if the length exceeds the cap, so an
 /// oversized file is rejected rather than silently truncated. This bounded
-/// reader lives here (not borrowed from `bolt_v3_operator_artifacts`) because
-/// the canonicalizer must be self-contained for `build.rs`.
+/// reader is a small local helper rather than a shared import from
+/// `bolt_v3_operator_artifacts`, keeping this module's dependency surface
+/// minimal.
 fn read_file_bounded(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
     let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
@@ -52,7 +56,7 @@ fn read_file_bounded(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
 
 /// Recursively collect every `*.rs` file under `dir`, sorted lexicographically
 /// by relative-path raw UTF-8 bytes (locale/OS-independent), with path
-/// components joined by `/` in the relative path used for ordering and framing.
+/// components joined by `/` in the relative path used for ordering.
 /// Backslash bytes inside a component are rejected so Unix filenames like
 /// `a\b.rs` cannot collide with `a/b.rs`. Returns
 /// `(relative_path_bytes, absolute_path)` pairs in canonical order.
@@ -158,125 +162,9 @@ fn source_root_file_type(root: &Path) -> io::Result<std::fs::FileType> {
     Ok(file_type)
 }
 
-/// Canonical byte stream for a source `root`.
-///
-/// - **IDENTITY case** (`root` is a regular file): the file's raw bytes verbatim
-///   — no framing, no path prefix, no separator, no newline/BOM/trailing-newline
-///   normalization. This is byte-identical to `include_str!(path).as_bytes()`
-///   today, so the SHA-256 equals the currently-recorded digest (value-stable).
-/// - **DIRECTORY case** (`root` is a directory): every `*.rs` file under it,
-///   ordered lexicographically by relative-path raw UTF-8 bytes, each emitted as
-///   a frame `relative_path_bytes + 0x00 + u64-LE(file_len) + file_raw_bytes`.
-///   The path+NUL+length framing is collision-free and rename-sensitive. Per-file
-///   reads obey `max_bytes`, and a running total-bytes ceiling (also `max_bytes`)
-///   bounds the whole directory so it can never silently exceed today's cap.
-pub fn canonical_source_bytes(root: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
-    let file_type = source_root_file_type(root)?;
-    if file_type.is_file() {
-        // IDENTITY: verbatim raw bytes.
-        return read_file_bounded(root, max_bytes);
-    }
-    if !file_type.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "source root is neither a regular file nor a directory: {}",
-                root.display()
-            ),
-        ));
-    }
-
-    // DIRECTORY: framed concatenation in canonical order, with a running total
-    // ceiling equal to the per-file cap.
-    let files = collect_rs_files_sorted(root)?;
-    let mut out: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
-    for (relative, path) in files {
-        let file_bytes = read_file_bounded(&path, max_bytes)?;
-        let file_len = file_bytes.len() as u64;
-        total = total.saturating_add(relative.len() as u64);
-        total = total.saturating_add(1); // NUL separator
-        total = total.saturating_add(8); // u64-LE length frame
-        total = total.saturating_add(file_len);
-        if total > max_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"
-                ),
-            ));
-        }
-        out.extend_from_slice(&relative);
-        out.push(0x00);
-        out.extend_from_slice(&file_len.to_le_bytes());
-        out.extend_from_slice(&file_bytes);
-    }
-    Ok(out)
-}
-
-/// Lowercase-hex SHA-256 of [`canonical_source_bytes`] for `root`.
-pub fn canonical_source_digest(root: &Path, max_bytes: u64) -> io::Result<String> {
-    Ok(sha256_hex_lower(&canonical_source_bytes(root, max_bytes)?))
-}
-
-/// Canonical byte stream for a registry-owned source set.
-///
-/// A one-root set preserves the historical single-root bytes exactly. A
-/// multi-root set frames every discovered file by its full repo-relative path,
-/// sorted by those path bytes, so shared strategy dependencies can be covered by
-/// the same digest without losing rename/path tamper evidence.
-pub fn canonical_source_set_bytes(
-    manifest_dir: &Path,
-    relative_roots: &[&str],
-    max_bytes: u64,
-) -> io::Result<Vec<u8>> {
-    if let Some(root) = single_source_set_root(manifest_dir, relative_roots)? {
-        return canonical_source_bytes(&root, max_bytes);
-    }
-
-    let files = collect_source_set_files_sorted(manifest_dir, relative_roots)?;
-    let mut out: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
-    for (relative, path) in files {
-        let file_bytes = read_file_bounded(&path, max_bytes)?;
-        let file_len = file_bytes.len() as u64;
-        total = total.saturating_add(relative.len() as u64);
-        total = total.saturating_add(1); // NUL separator
-        total = total.saturating_add(8); // u64-LE length frame
-        total = total.saturating_add(file_len);
-        if total > max_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("source set canonical stream exceeds max_source_bytes={max_bytes} bytes"),
-            ));
-        }
-        out.extend_from_slice(&relative);
-        out.push(0x00);
-        out.extend_from_slice(&file_len.to_le_bytes());
-        out.extend_from_slice(&file_bytes);
-    }
-    Ok(out)
-}
-
-/// Lowercase-hex SHA-256 of [`canonical_source_set_bytes`].
-pub fn canonical_source_set_digest(
-    manifest_dir: &Path,
-    relative_roots: &[&str],
-    max_bytes: u64,
-) -> io::Result<String> {
-    Ok(sha256_hex_lower(&canonical_source_set_bytes(
-        manifest_dir,
-        relative_roots,
-        max_bytes,
-    )?))
-}
-
-/// Whole-module source text for a `root`, in the SAME canonicalization order as
-/// the digest. IDENTITY case: the file's verbatim text. DIRECTORY case: the
-/// framed-order concatenation of every file's UTF-8 text WITHOUT the binary
-/// frame bytes (path/NUL/length) — i.e. just the file contents joined in
-/// canonical order. There is exactly ONE order across the digest and the text
-/// accessors.
+/// Whole-module source text for a `root`, in canonical file order. IDENTITY
+/// case: the file's verbatim text. DIRECTORY case: every file's UTF-8 text
+/// concatenated in canonical order (raw file contents, no separators).
 pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
     let file_type = source_root_file_type(root)?;
     if file_type.is_file() {
@@ -301,8 +189,8 @@ pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
     Ok(text)
 }
 
-/// Whole-module source text for a registry-owned source set, in the same file
-/// order as [`canonical_source_set_bytes`].
+/// Whole-module source text for a registry-owned source set, in the canonical
+/// repo-relative-path file order shared by every source-set accessor.
 pub fn module_source_set_text(
     manifest_dir: &Path,
     relative_roots: &[&str],
@@ -321,9 +209,8 @@ pub fn module_source_set_text(
     Ok(text)
 }
 
-/// Production-only module source text for a `root`, in the SAME canonicalization
-/// order as the digest, with the bottom `#[cfg(test)] mod tests` submodule
-/// excluded.
+/// Production-only module source text for a `root`, in canonical file order,
+/// with the bottom `#[cfg(test)] mod tests` submodule excluded.
 ///
 /// This is the SINGLE definition of the production/test boundary for both the
 /// IDENTITY and DIRECTORY cases.
@@ -373,8 +260,8 @@ pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<
     Ok(text)
 }
 
-/// Production-only source text for a registry-owned source set, in the same
-/// file order as [`canonical_source_set_bytes`].
+/// Production-only source text for a registry-owned source set, in the canonical
+/// repo-relative-path file order shared by every source-set accessor.
 pub fn production_source_set_text(
     manifest_dir: &Path,
     relative_roots: &[&str],
@@ -543,69 +430,26 @@ pub const STRATEGY_KEY: &str = "strategy";
 pub const SUBMIT_ADMISSION_KEY: &str = "submit_admission";
 /// Stable registry key for the shared outcome-group substrate source set.
 pub const OUTCOME_GROUP_KEY: &str = "outcome_group";
+/// Stable registry key for the binary-oracle maker strategy source root.
+pub const MAKER_KEY: &str = "maker";
 
 /// One registry entry: a stable key + its repo-relative source roots. A
 /// one-element set preserves the old single-root semantics; a multi-root set is
-/// framed by full repo-relative file path.
+/// ordered by full repo-relative file path.
 pub struct GatedSourceRoot {
     pub key: &'static str,
     /// Repo-relative paths from the crate manifest dir.
     pub relative_roots: &'static [&'static str],
 }
 
-/// THE registry — the ONLY place gated source roots are named. Lives in
-/// this `#[path]`-shared pure file so `build.rs` (which embeds the canonical
-/// bytes) and the runtime integrity owner reference the SAME list with no
-/// duplicated file list. `build.rs`, the verifier, the producer, and tests all
-/// resolve roots through this registry.
-pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
-    GatedSourceRoot {
-        key: STRATEGY_KEY,
-        relative_roots: &[
-            "src/strategies/binary_oracle_edge_taker",
-            // The first outcome-group strategy shell is production-registered,
-            // so it is also covered by the strategy policy fence even though
-            // its shared outcome-group mechanics stay in OUTCOME_GROUP roots.
-            "src/strategies/complete_set_arbitrage",
-            // The archetype translates operator TOML into the runtime config
-            // table that carries the NautilusTrader-managed venue-action knobs.
-            // It is the sole producer of that table, so it belongs under the same
-            // tamper-evidence as the consumer (`config.rs`) that validates them.
-            "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
-            "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
-            // The shared policy is the only approved Bolt-v3 strategy-originated
-            // NT submit/cancel mutation boundary.
-            "src/bolt_v3_order_execution.rs",
-            "src/bolt_v3_book_sizing.rs",
-            "src/bolt_v3_binary_outcome_edge.rs",
-            "src/bolt_v3_executable_cost.rs",
-            "src/bolt_v3_sizing.rs",
-            "src/bolt_v3_taker_updown_signal.rs",
-        ],
-    },
-    GatedSourceRoot {
-        key: SUBMIT_ADMISSION_KEY,
-        relative_roots: &["src/bolt_v3_submit_admission.rs"],
-    },
-    GatedSourceRoot {
-        key: OUTCOME_GROUP_KEY,
-        relative_roots: &[
-            "src/bolt_v3_atomic_io.rs",
-            "src/bolt_v3_outcome_groups.rs",
-            "src/bolt_v3_outcome_group_sources.rs",
-            "src/bolt_v3_outcome_group_polymarket.rs",
-            "src/bolt_v3_outcome_group_hyperliquid.rs",
-            "src/bolt_v3_outcome_group_scanner.rs",
-            "src/bolt_v3_basket_admission.rs",
-            "src/bolt_v3_basket_execution.rs",
-            "src/bolt_v3_basket_store.rs",
-            "src/bolt_v3_archetypes/complete_set_arbitrage.rs",
-            "src/bolt_v3_market_families/outcome_group.rs",
-            "src/strategy_runtime_bindings.rs",
-            "src/strategies/complete_set_arbitrage",
-        ],
-    },
-];
+// THE registry — generated at build time from the repo-root
+// `gated_source_roots.manifest` (the ONLY place gated source roots are named).
+// `build.rs` parses that manifest and emits this `GATED_SOURCE_ROOTS` constant;
+// `scripts/bolt_v3_source_roots.py` reads the same manifest, so the gated file
+// list lives in exactly one place shared across both languages. The runtime
+// integrity owner, the producer, and tests all resolve roots through this list.
+// (Plain `//` comments: rustdoc cannot attach `///` docs to a macro invocation.)
+include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));
 
 /// Look up a registry entry by key, panicking on an unknown key.
 pub fn registry_entry(key: &str) -> &'static GatedSourceRoot {
@@ -633,133 +477,6 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    #[test]
-    fn identity_branch_is_verbatim_raw_bytes() {
-        let dir = temp_dir("identity");
-        let file = dir.join("only.rs");
-        let raw = b"fn a() {}\r\n\xEF\xBB\xBFno_trailing_newline".to_vec();
-        fs::write(&file, &raw).unwrap();
-        let canonical = canonical_source_bytes(&file, 1_000_000).unwrap();
-        assert_eq!(canonical, raw, "identity branch must be verbatim raw bytes");
-        assert_eq!(
-            canonical_source_digest(&file, 1_000_000).unwrap(),
-            sha256_hex_lower(&raw)
-        );
-    }
-
-    #[test]
-    fn directory_branch_is_deterministic_and_order_independent() {
-        let dir = temp_dir("det");
-        fs::write(dir.join("b.rs"), b"second").unwrap();
-        fs::write(dir.join("a.rs"), b"first").unwrap();
-        let d1 = canonical_source_digest(&dir, 1_000_000).unwrap();
-        let d2 = canonical_source_digest(&dir, 1_000_000).unwrap();
-        assert_eq!(d1, d2, "directory digest must be deterministic");
-
-        // Order-independence: a second dir with the files created in the
-        // opposite filesystem order must hash identically.
-        let dir2 = temp_dir("det2");
-        fs::write(dir2.join("a.rs"), b"first").unwrap();
-        fs::write(dir2.join("b.rs"), b"second").unwrap();
-        assert_eq!(
-            d1,
-            canonical_source_digest(&dir2, 1_000_000).unwrap(),
-            "directory digest must be input-order-independent"
-        );
-    }
-
-    #[test]
-    fn directory_branch_detects_one_byte_change() {
-        let dir = temp_dir("bytechange");
-        fs::write(dir.join("a.rs"), b"first").unwrap();
-        fs::write(dir.join("b.rs"), b"second").unwrap();
-        let before = canonical_source_digest(&dir, 1_000_000).unwrap();
-        fs::write(dir.join("b.rs"), b"sec0nd").unwrap();
-        let after = canonical_source_digest(&dir, 1_000_000).unwrap();
-        assert_ne!(before, after, "a 1-byte change must change the digest");
-    }
-
-    #[test]
-    fn directory_branch_detects_file_rename() {
-        let dir = temp_dir("rename");
-        fs::write(dir.join("a.rs"), b"first").unwrap();
-        fs::write(dir.join("b.rs"), b"second").unwrap();
-        let before = canonical_source_digest(&dir, 1_000_000).unwrap();
-
-        let dir2 = temp_dir("rename2");
-        fs::write(dir2.join("a.rs"), b"first").unwrap();
-        fs::write(dir2.join("c.rs"), b"second").unwrap(); // b.rs -> c.rs, same content
-        let after = canonical_source_digest(&dir2, 1_000_000).unwrap();
-        assert_ne!(
-            before, after,
-            "a file rename must change the digest (path is framed)"
-        );
-    }
-
-    #[test]
-    fn directory_branch_recurses_into_subdirs() {
-        let dir = temp_dir("recurse");
-        fs::write(dir.join("a.rs"), b"top").unwrap();
-        let sub = dir.join("nested");
-        fs::create_dir_all(&sub).unwrap();
-        fs::write(sub.join("z.rs"), b"deep").unwrap();
-        // Non-.rs files are ignored.
-        fs::write(dir.join("ignore.txt"), b"nope").unwrap();
-        let digest = canonical_source_digest(&dir, 1_000_000).unwrap();
-
-        // Build the expected stream by hand in canonical order:
-        // "a.rs" then "nested/z.rs".
-        let mut expected: Vec<u8> = Vec::new();
-        for (rel, content) in [("a.rs", &b"top"[..]), ("nested/z.rs", &b"deep"[..])] {
-            expected.extend_from_slice(rel.as_bytes());
-            expected.push(0x00);
-            expected.extend_from_slice(&(content.len() as u64).to_le_bytes());
-            expected.extend_from_slice(content);
-        }
-        assert_eq!(digest, sha256_hex_lower(&expected));
-    }
-
-    fn append_frame(out: &mut Vec<u8>, relative: &str, content: &[u8]) {
-        out.extend_from_slice(relative.as_bytes());
-        out.push(0x00);
-        out.extend_from_slice(&(content.len() as u64).to_le_bytes());
-        out.extend_from_slice(content);
-    }
-
-    #[test]
-    fn source_set_branch_frames_multi_root_files_by_repo_relative_path() {
-        let manifest = temp_dir("source_set_multi");
-        let strategy = manifest.join("src/strategy");
-        fs::create_dir_all(&strategy).unwrap();
-        fs::write(strategy.join("b.rs"), b"strategy-b").unwrap();
-        fs::write(strategy.join("a.rs"), b"strategy-a").unwrap();
-        fs::write(manifest.join("src/shared.rs"), b"shared").unwrap();
-
-        let canonical =
-            canonical_source_set_bytes(&manifest, &["src/strategy", "src/shared.rs"], 1_000_000)
-                .unwrap();
-
-        let mut expected = Vec::new();
-        append_frame(&mut expected, "src/shared.rs", b"shared");
-        append_frame(&mut expected, "src/strategy/a.rs", b"strategy-a");
-        append_frame(&mut expected, "src/strategy/b.rs", b"strategy-b");
-        assert_eq!(canonical, expected);
-    }
-
-    #[test]
-    fn source_set_single_root_preserves_legacy_root_bytes() {
-        let manifest = temp_dir("source_set_single");
-        let root = manifest.join("src/only");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("b.rs"), b"second").unwrap();
-        fs::write(root.join("a.rs"), b"first").unwrap();
-
-        assert_eq!(
-            canonical_source_set_bytes(&manifest, &["src/only"], 1_000_000).unwrap(),
-            canonical_source_bytes(&root, 1_000_000).unwrap()
-        );
     }
 
     #[test]
@@ -800,7 +517,7 @@ mod tests {
             vec!["src\\strategy"],
         ] {
             assert!(
-                canonical_source_set_bytes(&manifest, &roots, 1_000_000).is_err(),
+                module_source_set_text(&manifest, &roots, 1_000_000).is_err(),
                 "invalid source set roots should fail: {roots:?}"
             );
         }
@@ -812,7 +529,7 @@ mod tests {
         let dir = temp_dir("backslash");
         fs::write(dir.join("a\\b.rs"), b"same").unwrap();
 
-        let error = canonical_source_bytes(&dir, 1_000_000).unwrap_err();
+        let error = module_source_text(&dir, 1_000_000).unwrap_err();
 
         assert!(
             error.to_string().contains("backslash"),
@@ -831,7 +548,6 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
         for error in [
-            canonical_source_bytes(&link, 1_000_000).unwrap_err(),
             module_source_text(&link, 1_000_000).unwrap_err(),
             production_module_source_text(&link, 1_000_000).unwrap_err(),
         ] {
@@ -871,6 +587,6 @@ mod tests {
         let dir = temp_dir("cap");
         let file = dir.join("big.rs");
         fs::write(&file, vec![b'x'; 100]).unwrap();
-        assert!(canonical_source_bytes(&file, 50).is_err());
+        assert!(module_source_text(&file, 50).is_err());
     }
 }

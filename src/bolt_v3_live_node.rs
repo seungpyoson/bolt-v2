@@ -185,14 +185,7 @@ use crate::{
 };
 
 pub fn current_build_head_sha() -> Option<&'static str> {
-    option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))
-}
-
-fn is_git_head_sha(value: &str) -> bool {
-    value.len() == 40
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    crate::bolt_v3_operator_artifacts::current_build_head_sha()
 }
 
 pub struct BoltV3LiveNodeRuntime {
@@ -3649,6 +3642,7 @@ fn load_provider_live_submit_approvals_for_live_node(
             client_key,
             client,
             resolved,
+            product_surface: None,
             now_unix_seconds,
             build_head_sha,
         })
@@ -4352,17 +4346,6 @@ fn readiness_probe_market_data_kind_label(
     }
 }
 
-pub fn build_bolt_v3_all_configured_client_mapping_live_node(
-    loaded: &LoadedBoltV3Config,
-) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
-    let adapters =
-        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let mapping_loaded = strategy_free_transport_loaded_config(loaded);
-    let (runtime, _summary) = build_live_node_with_clients(&mapping_loaded, &resolved, adapters)?;
-    Ok(runtime)
-}
-
 fn strategy_free_transport_adapter_configs(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
@@ -4406,7 +4389,36 @@ fn trade_transport_loaded_config(
         .root
         .clients
         .retain(|client_key, _| required_clients.contains(client_key));
+    validate_trade_transport_execution_venue_cardinality(&transport_loaded)?;
     Ok(transport_loaded)
+}
+
+fn validate_trade_transport_execution_venue_cardinality(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3LiveNodeError> {
+    let mut execution_clients_by_venue: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (client_key, client) in &loaded.root.clients {
+        if client.execution.is_some() {
+            if let Some(client_keys) = execution_clients_by_venue.get_mut(client.venue.as_str()) {
+                client_keys.push(client_key.clone());
+            } else {
+                execution_clients_by_venue
+                    .insert(client.venue.as_str().to_string(), vec![client_key.clone()]);
+            }
+        }
+    }
+    for (venue, client_keys) in execution_clients_by_venue {
+        if client_keys.len() > 1 {
+            return Err(BoltV3LiveNodeError::LiveTransportScope {
+                reason: format!(
+                    "multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue",
+                    venue,
+                    client_keys.join(", ")
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Whether this transport build path will register strategies whose shared RV
@@ -4868,11 +4880,12 @@ where
 {
     check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let mapping_loaded = strategy_free_transport_loaded_config(loaded);
+    validate_trade_transport_execution_venue_cardinality(&mapping_loaded)?;
     let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let mapping_loaded = strategy_free_transport_loaded_config(loaded);
     build_live_node_with_clients(&mapping_loaded, &resolved, adapters)
 }
 
@@ -5027,7 +5040,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             &mut node,
             loaded,
             resolved,
-            crate::strategy_runtime_bindings::runtime_bindings(),
+            crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             decision_evidence.clone(),
             iv_runtime,
@@ -5037,7 +5050,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             &mut node,
             loaded,
             resolved,
-            crate::strategy_runtime_bindings::runtime_bindings(),
+            crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             decision_evidence.clone(),
         )
@@ -5465,6 +5478,8 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         bypass_logging: false,
         file_config: None,
         clear_log_file: false,
+        fileout_sync_on_flush: true,
+        buffered_stdout: false,
     };
     let nautilus = &loaded.root.nautilus;
     let data = &nautilus.data_engine;
@@ -5483,7 +5498,6 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         emit_quotes_from_book_depths: data.emit_quotes_from_book_depths,
         external_clients: configured_external_clients(&data.external_clients),
         debug: data.debug,
-        graceful_shutdown_on_error: data.graceful_shutdown_on_error,
         qsize: data.qsize,
     };
     let exec = &nautilus.exec_engine;
@@ -5536,7 +5550,6 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         ),
         purge_from_database: exec.purge_from_database,
         own_books_audit_interval_secs: u64_zero_as_none_f64(exec.own_books_audit_interval_secs),
-        graceful_shutdown_on_error: exec.graceful_shutdown_on_error,
         qsize: exec.qsize,
         allow_overfills: exec.allow_overfills,
         manage_own_order_books: exec.manage_own_order_books,
@@ -5559,7 +5572,6 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
             .into_iter()
             .collect(),
         debug: loaded.root.risk.nautilus.debug,
-        graceful_shutdown_on_error: loaded.root.risk.nautilus.graceful_shutdown_on_error,
         qsize: loaded.root.risk.nautilus.qsize,
     };
 
@@ -5570,6 +5582,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         trader_id,
         load_state: nautilus.load_state,
         save_state: nautilus.save_state,
+        shutdown_on_error: nautilus.shutdown_on_error,
         logging,
         instance_id: None,
         timeout_connection: Duration::from_secs(nautilus.timeout_connection_secs),
@@ -5784,7 +5797,9 @@ mod tests {
         AccountType, BookAction, CurrencyType, OrderSide, TimeInForce, TradingState,
     };
     use nautilus_model::events::{AccountState, OrderAccepted, OrderEventAny, OrderSubmitted};
-    use nautilus_model::identifiers::{AccountId, ClientOrderId, TraderId, Venue, VenueOrderId};
+    use nautilus_model::identifiers::{
+        AccountId, ClientId, ClientOrderId, TraderId, Venue, VenueOrderId,
+    };
     use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
     use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
     use rust_decimal::Decimal;
@@ -6383,7 +6398,7 @@ mod tests {
         let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
         let product_proof_sha256 = write_hyperliquid_test_product_submit_proof(&product_proof_path);
         let private_key = format!("0x{}", "1".repeat(64));
-        let mut loaded = fixture_loaded_config();
+        let mut loaded = fixture_loaded_config_with_hyperliquid_standard_perps_route();
         loaded.config_bundle_checksum = "b".repeat(64);
         loaded.root.clients.clear();
         loaded.root.clients.insert(
@@ -6397,14 +6412,14 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
-live_submit_approval_artifact_path = "{}"
-live_submit_approval_artifact_max_bytes = 16384
-live_submit_max_order_count = 2
-live_submit_max_order_notional = "25.00"
-live_submit_product_proof_artifact_path = "{}"
-live_submit_product_proof_artifact_sha256 = "{}"
-live_submit_product_proof_artifact_max_bytes = 16384
+live_submit.standard_perps.approval_id = "hl-standard-perps-approval-001"
+live_submit.standard_perps.approval_artifact_path = "{}"
+live_submit.standard_perps.approval_artifact_max_bytes = 16384
+live_submit.standard_perps.max_order_count = 2
+live_submit.standard_perps.max_order_notional = "25.00"
+live_submit.standard_perps.product_proof_artifact_path = "{}"
+live_submit.standard_perps.product_proof_artifact_sha256 = "{}"
+live_submit.standard_perps.product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -6415,6 +6430,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -6510,6 +6526,250 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         );
     }
 
+    #[test]
+    fn live_node_without_hyperliquid_execution_target_does_not_select_or_consume_approval() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let product_proof_sha256 = write_hyperliquid_test_product_submit_proof(&product_proof_path);
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit.standard_perps.approval_id = "hl-standard-perps-approval-001"
+live_submit.standard_perps.approval_artifact_path = "{}"
+live_submit.standard_perps.approval_artifact_max_bytes = 16384
+live_submit.standard_perps.max_order_count = 2
+live_submit.standard_perps.max_order_notional = "25.00"
+live_submit.standard_perps.product_proof_artifact_path = "{}"
+live_submit.standard_perps.product_proof_artifact_sha256 = "{}"
+live_submit.standard_perps.product_proof_artifact_max_bytes = 16384
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+include_builder_attribution = false
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                product_proof_path.display(),
+                product_proof_sha256
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: product_proof_sha256,
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let approvals = load_provider_live_submit_approvals_for_live_node(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect("no active Hyperliquid execution target should leave approvals unselected");
+
+        assert!(
+            approvals.is_empty(),
+            "a configured single-surface client must not auto-select live-submit without an active execution target"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "absence of a Hyperliquid execution target must not spend one-time approval artifacts"
+        );
+    }
+
+    #[test]
+    fn live_node_with_only_non_hyperliquid_routes_does_not_select_or_consume_hyperliquid_approval()
+    {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let product_proof_sha256 = write_hyperliquid_test_product_submit_proof(&product_proof_path);
+        let private_key = format!("0x{}", "1".repeat(64));
+        // Load the fixture with its real strategies, which route execution to a
+        // non-Hyperliquid client (polymarket_main), then add an unreferenced
+        // Hyperliquid execution client. This exercises the
+        // active_target_surfaces_for_client filter on the realistic path where a
+        // strategy is active but targets a different venue.
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded.config_bundle_checksum = "b".repeat(64);
+        assert!(
+            !loaded.strategies.is_empty(),
+            "fixture must route at least one strategy so this exercises the routes-elsewhere path"
+        );
+        assert!(
+            loaded.strategies.iter().all(|strategy| {
+                strategy.config.execution_client_id != ClientId::from("hyperliquid_perps")
+            }),
+            "fixture strategies must route to a non-Hyperliquid execution client for this test"
+        );
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit.standard_perps.approval_id = "hl-standard-perps-approval-001"
+live_submit.standard_perps.approval_artifact_path = "{}"
+live_submit.standard_perps.approval_artifact_max_bytes = 16384
+live_submit.standard_perps.max_order_count = 2
+live_submit.standard_perps.max_order_notional = "25.00"
+live_submit.standard_perps.product_proof_artifact_path = "{}"
+live_submit.standard_perps.product_proof_artifact_sha256 = "{}"
+live_submit.standard_perps.product_proof_artifact_max_bytes = 16384
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+include_builder_attribution = false
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                product_proof_path.display(),
+                product_proof_sha256
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: product_proof_sha256,
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let approvals = load_provider_live_submit_approvals_for_live_node(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect("an unreferenced Hyperliquid execution client should leave approvals unselected");
+
+        assert!(
+            approvals.is_empty(),
+            "a Hyperliquid client no strategy routes to must not auto-select live-submit"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "a non-Hyperliquid route must not spend the Hyperliquid one-time approval artifact"
+        );
+    }
+
     fn hyperliquid_test_product_submit_proof_bytes(order_proof_path: String) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": 1,
@@ -6564,7 +6824,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let product_proof_sha256 =
             write_hyperliquid_semantically_invalid_product_submit_proof(&product_proof_path);
         let private_key = format!("0x{}", "1".repeat(64));
-        let mut loaded = fixture_loaded_config();
+        let mut loaded = fixture_loaded_config_with_hyperliquid_standard_perps_route();
         loaded.config_bundle_checksum = "b".repeat(64);
         loaded.root.clients.clear();
         loaded.root.clients.insert(
@@ -6578,14 +6838,14 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
-live_submit_approval_artifact_path = "{}"
-live_submit_approval_artifact_max_bytes = 16384
-live_submit_max_order_count = 2
-live_submit_max_order_notional = "25.00"
-live_submit_product_proof_artifact_path = "{}"
-live_submit_product_proof_artifact_sha256 = "{}"
-live_submit_product_proof_artifact_max_bytes = 16384
+live_submit.standard_perps.approval_id = "hl-standard-perps-approval-001"
+live_submit.standard_perps.approval_artifact_path = "{}"
+live_submit.standard_perps.approval_artifact_max_bytes = 16384
+live_submit.standard_perps.max_order_count = 2
+live_submit.standard_perps.max_order_notional = "25.00"
+live_submit.standard_perps.product_proof_artifact_path = "{}"
+live_submit.standard_perps.product_proof_artifact_sha256 = "{}"
+live_submit.standard_perps.product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -6596,6 +6856,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -6689,7 +6950,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let product_proof_sha256 =
             write_hyperliquid_test_product_submit_proof_with_padding(&product_proof_path, 6000);
         let private_key = format!("0x{}", "1".repeat(64));
-        let mut loaded = fixture_loaded_config();
+        let mut loaded = fixture_loaded_config_with_hyperliquid_standard_perps_route();
         loaded.config_bundle_checksum = "b".repeat(64);
         loaded.root.clients.clear();
         loaded.root.clients.insert(
@@ -6703,14 +6964,14 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
-live_submit_approval_artifact_path = "{}"
-live_submit_approval_artifact_max_bytes = 4096
-live_submit_max_order_count = 2
-live_submit_max_order_notional = "25.00"
-live_submit_product_proof_artifact_path = "{}"
-live_submit_product_proof_artifact_sha256 = "{}"
-live_submit_product_proof_artifact_max_bytes = 8192
+live_submit.standard_perps.approval_id = "hl-standard-perps-approval-001"
+live_submit.standard_perps.approval_artifact_path = "{}"
+live_submit.standard_perps.approval_artifact_max_bytes = 4096
+live_submit.standard_perps.max_order_count = 2
+live_submit.standard_perps.max_order_notional = "25.00"
+live_submit.standard_perps.product_proof_artifact_path = "{}"
+live_submit.standard_perps.product_proof_artifact_sha256 = "{}"
+live_submit.standard_perps.product_proof_artifact_max_bytes = 8192
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -6721,6 +6982,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -6823,14 +7085,14 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
-live_submit_approval_artifact_path = "{}"
-live_submit_approval_artifact_max_bytes = 16384
-live_submit_max_order_count = 2
-live_submit_max_order_notional = "25.00"
-live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-live_submit_product_proof_artifact_max_bytes = 16384
+live_submit.standard_perps.approval_id = "hl-standard-perps-approval-001"
+live_submit.standard_perps.approval_artifact_path = "{}"
+live_submit.standard_perps.approval_artifact_max_bytes = 16384
+live_submit.standard_perps.max_order_count = 2
+live_submit.standard_perps.max_order_notional = "25.00"
+live_submit.standard_perps.product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+live_submit.standard_perps.product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+live_submit.standard_perps.product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -6841,6 +7103,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -6898,10 +7161,12 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         .expect_err("static target surface mismatch must fail before approval consumption");
 
         assert!(
-            error
-                .to_string()
-                .contains("strategy.target.product_surface"),
-            "failure should identify the target surface mismatch: {error}"
+            error.to_string().contains("execution.product_surfaces"),
+            "failure should identify the missing execution product surface: {error}"
+        );
+        assert!(
+            error.to_string().contains("spot"),
+            "failure should identify the active target surface: {error}"
         );
         let persisted: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
@@ -6920,7 +7185,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
         let missing_product_proof_path = temp.path().join("missing-product-submit-proof.json");
         let private_key = format!("0x{}", "1".repeat(64));
-        let mut loaded = fixture_loaded_config();
+        let mut loaded = fixture_loaded_config_with_hyperliquid_standard_perps_route();
         loaded.config_bundle_checksum = "b".repeat(64);
         loaded.root.clients.clear();
         loaded.root.clients.insert(
@@ -6934,14 +7199,14 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
-live_submit_approval_artifact_path = "{}"
-live_submit_approval_artifact_max_bytes = 16384
-live_submit_max_order_count = 2
-live_submit_max_order_notional = "25.00"
-live_submit_product_proof_artifact_path = "{}"
-live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-live_submit_product_proof_artifact_max_bytes = 16384
+live_submit.standard_perps.approval_id = "hl-standard-perps-approval-001"
+live_submit.standard_perps.approval_artifact_path = "{}"
+live_submit.standard_perps.approval_artifact_max_bytes = 16384
+live_submit.standard_perps.max_order_count = 2
+live_submit.standard_perps.max_order_notional = "25.00"
+live_submit.standard_perps.product_proof_artifact_path = "{}"
+live_submit.standard_perps.product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+live_submit.standard_perps.product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -6952,6 +7217,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -7033,7 +7299,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             write_hyperliquid_test_product_submit_proof(&product_proof_path);
         let mismatched_product_proof_sha256 = "d".repeat(64);
         let private_key = format!("0x{}", "1".repeat(64));
-        let mut loaded = fixture_loaded_config();
+        let mut loaded = fixture_loaded_config_with_hyperliquid_standard_perps_route();
         loaded.config_bundle_checksum = "b".repeat(64);
         loaded.root.clients.clear();
         loaded.root.clients.insert(
@@ -7047,14 +7313,14 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
-live_submit_approval_artifact_path = "{}"
-live_submit_approval_artifact_max_bytes = 16384
-live_submit_max_order_count = 2
-live_submit_max_order_notional = "25.00"
-live_submit_product_proof_artifact_path = "{}"
-live_submit_product_proof_artifact_sha256 = "{}"
-live_submit_product_proof_artifact_max_bytes = 16384
+live_submit.standard_perps.approval_id = "hl-standard-perps-approval-001"
+live_submit.standard_perps.approval_artifact_path = "{}"
+live_submit.standard_perps.approval_artifact_max_bytes = 16384
+live_submit.standard_perps.max_order_count = 2
+live_submit.standard_perps.max_order_notional = "25.00"
+live_submit.standard_perps.product_proof_artifact_path = "{}"
+live_submit.standard_perps.product_proof_artifact_sha256 = "{}"
+live_submit.standard_perps.product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -7065,6 +7331,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -7334,6 +7601,29 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         }
     }
 
+    fn fixture_loaded_config_with_hyperliquid_standard_perps_route() -> LoadedBoltV3Config {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded.strategies.truncate(1);
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        strategy.config.execution_client_id = ClientId::from("hyperliquid_perps");
+        strategy.config.target = toml::toml! {
+            configured_target_id = "hl-standard-perps-btc"
+            kind = "static_instrument"
+            rotating_market_family = "hyperliquid_instrument"
+            product_surface = "standard_perps"
+            instrument_id = "BTC-PERP.HYPERLIQUID"
+            quantity_step = "0.001"
+        }
+        .into();
+        loaded
+    }
+
     fn write_venue_spendability_source(
         loaded: &mut LoadedBoltV3Config,
         temp_path: &std::path::Path,
@@ -7395,6 +7685,16 @@ configured_data_param = "configured-value"
             venue: Venue::from(venue),
             data: Some(toml::Value::Table(toml::map::Map::new())),
             execution: None,
+            secrets: None,
+            readiness_probe: None,
+        }
+    }
+
+    fn test_execution_client(venue: &str) -> ClientBlock {
+        ClientBlock {
+            venue: Venue::from(venue),
+            data: None,
+            execution: Some(toml::Value::Table(toml::map::Map::new())),
             secrets: None,
             readiness_probe: None,
         }
@@ -8939,6 +9239,100 @@ configured_source_param = "configured-value"
     }
 
     #[test]
+    fn trade_transport_config_prunes_unreferenced_hyperliquid_execution_clients_from_root() {
+        let loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("production root config should load");
+        assert!(
+            loaded.root.clients.contains_key("hyperliquid_execution"),
+            "hyperliquid_execution should be configured in root.toml before transport pruning"
+        );
+
+        let scoped =
+            trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
+                .expect("production trade transport scope should derive cleanly");
+
+        assert!(
+            !scoped.root.clients.contains_key("hyperliquid_execution"),
+            "hyperliquid_execution is not strategy-referenced and must not reach live-node registration"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_rejects_multiple_referenced_execution_clients_for_same_venue() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        assert!(
+            !loaded.strategies.is_empty(),
+            "fixture config should include a strategy for venue-cardinality coverage"
+        );
+        let cloned_strategy = loaded.strategies[0].clone();
+        loaded.strategies.truncate(1);
+        loaded.strategies.push(cloned_strategy);
+        loaded.strategies[0].config.execution_client_id = ClientId::from("hyperliquid_a");
+        loaded.strategies[1].config.execution_client_id = ClientId::from("hyperliquid_b");
+        loaded.root.clients.insert(
+            "hyperliquid_a".to_string(),
+            test_execution_client("HYPERLIQUID"),
+        );
+        loaded.root.clients.insert(
+            "hyperliquid_b".to_string(),
+            test_execution_client("HYPERLIQUID"),
+        );
+
+        let error =
+            trade_transport_loaded_config(&loaded, RealizedVolatilityTransportScope::Subscribed)
+                .expect_err("multiple active execution clients for one venue must fail closed");
+        let BoltV3LiveNodeError::LiveTransportScope { reason } = error else {
+            panic!("expected LiveTransportScope error for duplicate execution venue");
+        };
+        assert!(
+            reason.contains("multiple execution clients share venue `HYPERLIQUID`")
+                && reason.contains("hyperliquid_a")
+                && reason.contains("hyperliquid_b"),
+            "duplicate execution venue error should identify venue and clients: {reason}"
+        );
+    }
+
+    #[test]
+    fn all_configured_mapping_rejects_multiple_execution_clients_for_same_venue_before_resolution()
+    {
+        let mut loaded = fixture_loaded_config();
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_a".to_string(),
+            test_execution_client("HYPERLIQUID"),
+        );
+        loaded.root.clients.insert(
+            "hyperliquid_b".to_string(),
+            test_execution_client("HYPERLIQUID"),
+        );
+
+        let error = match build_bolt_v3_all_configured_client_mapping_live_node_with_summary(
+            &loaded,
+            |_| false,
+            |_, _| -> Result<String, String> {
+                panic!("duplicate execution venue should fail before secret resolution")
+            },
+        ) {
+            Ok(_) => panic!("all-configured mapping should reject duplicate execution venues"),
+            Err(error) => error,
+        };
+
+        let BoltV3LiveNodeError::LiveTransportScope { reason } = error else {
+            panic!("expected LiveTransportScope error for duplicate execution venue");
+        };
+        assert!(
+            reason.contains("multiple execution clients share venue `HYPERLIQUID`")
+                && reason.contains("hyperliquid_a")
+                && reason.contains("hyperliquid_b"),
+            "duplicate execution venue error should identify venue and clients: {reason}"
+        );
+    }
+
+    #[test]
     fn trade_transport_config_keeps_strategy_and_root_substrate_clients() {
         let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
             "tests/fixtures/bolt_v3/root.toml",
@@ -9896,7 +10290,7 @@ configured_source_param = "configured-value"
         assert!(!cfg.data_engine.emit_quotes_from_book_depths);
         assert_eq!(cfg.data_engine.external_clients, None);
         assert!(!cfg.data_engine.debug);
-        assert!(!cfg.data_engine.graceful_shutdown_on_error);
+        assert!(!cfg.shutdown_on_error);
         assert_eq!(cfg.data_engine.qsize, 100_000);
         assert!(cfg.exec_engine.load_cache);
         assert!(!cfg.exec_engine.snapshot_orders);
@@ -9934,7 +10328,6 @@ configured_source_param = "configured-value"
         assert_eq!(cfg.exec_engine.purge_account_events_lookback_mins, None);
         assert!(!cfg.exec_engine.purge_from_database);
         assert_eq!(cfg.exec_engine.own_books_audit_interval_secs, None);
-        assert!(!cfg.exec_engine.graceful_shutdown_on_error);
         assert_eq!(cfg.exec_engine.qsize, 100_000);
         assert!(!cfg.exec_engine.allow_overfills);
         assert!(!cfg.exec_engine.manage_own_order_books);
@@ -9943,7 +10336,6 @@ configured_source_param = "configured-value"
         assert_eq!(cfg.risk_engine.max_order_modify_rate, "40/00:01:00");
         assert!(cfg.risk_engine.max_notional_per_order.is_empty());
         assert!(!cfg.risk_engine.debug);
-        assert!(!cfg.risk_engine.graceful_shutdown_on_error);
         assert_eq!(cfg.risk_engine.qsize, 100_000);
     }
 
@@ -10077,6 +10469,8 @@ configured_source_param = "configured-value"
         assert!(!cfg.logging.bypass_logging);
         assert!(cfg.logging.file_config.is_none());
         assert!(!cfg.logging.clear_log_file);
+        assert!(cfg.logging.fileout_sync_on_flush);
+        assert!(!cfg.logging.buffered_stdout);
     }
 
     #[test]

@@ -222,7 +222,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
         run_id: "backtesting-vertical-slice-end-to-end".to_string(),
         target_bolt_v2_branch: "main".to_string(),
         target_bolt_v2_ref: "refs/heads/main".to_string(),
-        resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+        resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
         market_structure_fixture: MarketStructureFixture::PerpsSpot,
         venue_binding_key: "bybit-spot-tick-trades".to_string(),
         run_purpose: RunPurpose::Normal,
@@ -413,6 +413,19 @@ fn accepted_data_flows_through_to_objective_result_contract() {
     );
     // The zero-orders warning is emitted with the honest TRADE_REPLAY rationale,
     // and the claim limits carry the full reference set forward.
+    assert_eq!(contract.execution_model, manifest.execution_model);
+    assert_eq!(
+        contract.venue_queue_position,
+        Some(manifest.venue.queue_position)
+    );
+    assert_eq!(
+        contract.catalog_data_types,
+        manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(contract.warnings.len(), 1);
     assert!(
         contract.warnings[0].contains("TRADE_REPLAY"),

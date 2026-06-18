@@ -214,21 +214,6 @@ pub fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("repo text `{relative}` should read: {error}"))
 }
 
-/// Generous bound used by the test-side source-integrity forwarders. The
-/// strategy root is 732_776 bytes today; this is comfortably above it and
-/// matches the lib's text-accessor bound. Tests are separate compilation units
-/// and cannot read the lib's `$OUT_DIR`, so they consume the lib's pub fns — the
-/// ONE owner — rather than re-canonicalizing.
-pub const SOURCE_INTEGRITY_TEST_MAX_BYTES: u64 = 8 * 1024 * 1024;
-
-/// Lowercase-hex SHA-256 of a gated registry root's canonical bytes, via the lib
-/// integrity owner (`bolt_v2::bolt_v3_source_integrity`). This is exactly the
-/// digest the compile-time abort-plan gate enforces.
-pub fn registry_source_digest(key: &str) -> String {
-    bolt_v2::bolt_v3_source_integrity::registry_source_digest(key, SOURCE_INTEGRITY_TEST_MAX_BYTES)
-        .unwrap_or_else(|error| panic!("registry source digest `{key}` should compute: {error}"))
-}
-
 /// Repo-relative root path for a gated registry key (file or directory), via the
 /// lib integrity owner. Tests feed this straight into the producer write-side so
 /// the path can never diverge from the registry across a split.

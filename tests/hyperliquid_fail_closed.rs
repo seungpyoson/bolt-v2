@@ -5,8 +5,15 @@ mod support;
 use std::{collections::BTreeMap, sync::Arc};
 
 use bolt_v2::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_adapters::{
+        BoltV3AdapterMappingError, map_bolt_v3_adapters_with_market_identity_and_runtime_approvals,
+    },
     bolt_v3_config::{ClientBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_market_families::{
+        MarketIdentityPlan,
+        hyperliquid_instrument::{HyperliquidInstrumentTargetPlan, ProductSurface},
+    },
+    bolt_v3_providers::ProviderRuntimeApprovals,
     bolt_v3_providers::hyperliquid::{
         HyperliquidLatencyProfileConfig, HyperliquidUserFeesRequestWeightStatus,
         ResolvedBoltV3HyperliquidSecrets, hyperliquid_user_fees_request_weight_policy,
@@ -21,6 +28,8 @@ use bolt_v2::{
     },
 };
 use nautilus_hyperliquid::http::{query::InfoRequest, rate_limits::info_base_weight};
+use nautilus_model::identifiers::InstrumentId;
+use rust_decimal::Decimal;
 use zeroize::Zeroizing;
 
 fn hash(seed: char) -> String {
@@ -56,10 +65,6 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
-live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-live_submit_product_proof_artifact_max_bytes = 65536
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -69,9 +74,20 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
+
+[execution.live_submit.standard_perps]
+approval_id = "hl-standard-perps-approval-001"
+approval_artifact_path = "operator/hyperliquid-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+product_proof_artifact_max_bytes = 65536
 
 [execution.latency_profile]
 local_info_node_url = "http://127.0.0.1:3001/info"
@@ -113,6 +129,22 @@ fn resolved_hyperliquid_secrets() -> ResolvedBoltV3Secrets {
         }),
     );
     ResolvedBoltV3Secrets { clients }
+}
+
+fn hyperliquid_standard_perps_target_plan() -> MarketIdentityPlan {
+    let mut plan = MarketIdentityPlan::empty();
+    plan.push_target(HyperliquidInstrumentTargetPlan {
+        strategy_instance_id: "hyperliquid-latency-profile-strategy".to_string(),
+        configured_target_id: "hyperliquid-latency-profile-target".to_string(),
+        execution_client_id: "hyperliquid_perps".to_string(),
+        product_surface: ProductSurface::StandardPerps,
+        instrument_id: InstrumentId::from("BTC-PERP.HYPERLIQUID"),
+        quantity_step: Decimal::new(1, 3),
+        notional_step: None,
+        min_quantity: Some(Decimal::new(1, 3)),
+        min_notional: Some(Decimal::new(100, 2)),
+    });
+    plan
 }
 
 #[test]
@@ -175,8 +207,14 @@ fn latency_profile_cannot_bypass_live_submit_approval_gate() {
     let loaded = loaded_hyperliquid_latency_profile_config();
     let resolved = resolved_hyperliquid_secrets();
 
-    let error = map_bolt_v3_adapters(&loaded, &resolved)
-        .expect_err("latency profile must not satisfy live-submit approval");
+    let error = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+        &loaded,
+        &resolved,
+        &hyperliquid_standard_perps_target_plan(),
+        Arc::new(|| 1_800_000_000),
+        ProviderRuntimeApprovals::none(),
+    )
+    .expect_err("latency profile must not satisfy live-submit approval");
 
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
@@ -185,7 +223,7 @@ fn latency_profile_cannot_bypass_live_submit_approval_gate() {
             message,
         } => {
             assert_eq!(client_key, "hyperliquid_perps");
-            assert_eq!(field, "execution.live_submit_approval_id");
+            assert_eq!(field, "execution.live_submit.approval_id");
             assert!(
                 message.contains("consumed live-submit approval"),
                 "latency profile must not bypass submit gate: {message}"

@@ -39,6 +39,14 @@ reason = "This joins configured reference_data role names in a validation diagno
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''" or "'''
+context = '''.join(" or ")'''
+classification = "strategy_archetype_diagnostic_separator"
+reason = "This joins provider-owned allowed time-in-force labels in a validation diagnostic; it is not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"binary_oracle_entry_order_unsupported_shape"'''
 context = '''"binary_oracle_entry_order_unsupported_shape";'''
 classification = "strategy_archetype_validation_error_code"
@@ -163,22 +171,6 @@ literal = '''"activation_price"'''
 context = '''insert_float(&mut order_table, "activation_price", activation_price);'''
 classification = "strategy_runtime_schema_field"
 reason = "This is the NT trailing-stop activation price field projected from TOML into the runtime strategy config."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"entry_order"'''
-context = '''let mut errors = check_enabled_order_template(context, "entry_order", entry);'''
-classification = "strategy_runtime_validation_field"
-reason = "This labels the existing nested entry order table in enabled NT order-template validation diagnostics; the table values remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"exit_order"'''
-context = '''let mut errors = check_enabled_order_template(context, "exit_order", exit);'''
-classification = "strategy_runtime_validation_field"
-reason = "This labels the existing nested exit order table in enabled NT order-template validation diagnostics; the table values remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -355,14 +347,6 @@ literal = '''"forced_exit_order"'''
 context = '''"forced_exit_order",'''
 classification = "strategy_runtime_schema_field"
 reason = "This is the configured forced-exit NT order-template table projected from bolt-v3 TOML into the runtime strategy config."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"forced_exit_order"'''
-context = '''let mut errors = check_enabled_order_template(context, "forced_exit_order", forced_exit);'''
-classification = "strategy_runtime_validation_field"
-reason = "This field-name literal labels the TOML-owned forced-exit NT order-template during generic order-template validation."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -2823,6 +2807,14 @@ reason = "This is a named SI time-unit conversion constant, not an operator runt
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
+literal = '''60_000'''
+context = '''pub(crate) const MILLIS_PER_MINUTE_U64: u64 = 60_000;'''
+classification = "time_unit_conversion"
+reason = "This is a named SI time-unit conversion constant (milliseconds per minute, the per-minute REST-egress window unit), not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
 literal = '''2.0'''
 context = '''pub(crate) const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
 classification = "strategy_math_invariant"
@@ -5239,6 +5231,14 @@ reason = "This is a provider data-client TOML field-name allowlist entry; the ru
 [[allowed]]
 path = "src/bolt_v3_providers/market_data.rs"
 kind = "string"
+literal = '''"ws_idle_timeout_ms"'''
+context = '''"ws_idle_timeout_ms",'''
+classification = "provider_data_config_toml_field"
+reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/market_data.rs"
+kind = "string"
 literal = '''"timeout_secs"'''
 context = '''"timeout_secs",'''
 classification = "provider_data_config_toml_field"
@@ -5471,50 +5471,26 @@ reason = "This labels parsing for the TOML-owned Hyperliquid execution block bef
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"execution.live_submit_approval_id"'''
-context = '''"execution.live_submit_approval_id",'''
+literal = '''"execution.live_submit"'''
+context = '''"execution.live_submit",'''
 classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit approval id during approval artifact materialization; the approval id value itself remains TOML-owned."
+reason = "This labels validation for the TOML-owned Hyperliquid per-surface live-submit table; the approval/proof/order-limit values themselves remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"execution.live_submit_approval_artifact_max_bytes"'''
-context = '''"execution.live_submit_approval_artifact_max_bytes",'''
+literal = '''"execution.live_submit.approval_id"'''
+context = '''"execution.live_submit.approval_id",'''
 classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit approval artifact byte cap; the cap value itself remains TOML-owned."
+reason = "This labels validation for the TOML-owned Hyperliquid per-surface live-submit approval id during approval artifact materialization; the approval id value itself remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"execution.live_submit_approval_artifact_path"'''
-context = '''"execution.live_submit_approval_artifact_path",'''
+literal = '''"product_surface"'''
+context = '''"product_surface",'''
 classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit approval artifact path; the path value itself remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_product_proof_artifact_path"'''
-context = '''"execution.live_submit_product_proof_artifact_path",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact path; the path value itself remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_product_proof_artifact_sha256"'''
-context = '''"execution.live_submit_product_proof_artifact_sha256",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact checksum; the checksum value itself remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_product_proof_artifact_max_bytes"'''
-context = '''"execution.live_submit_product_proof_artifact_max_bytes",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact byte cap; the cap value itself remains TOML-owned."
+reason = "This labels the explicit operator-selected Hyperliquid product surface for live-submit artifact commands; the selected surface value remains CLI/config-owned and validated against provider surfaces."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
@@ -5531,22 +5507,6 @@ literal = '''"product_submit_proof.artifact_sha256"'''
 context = '''"product_submit_proof.artifact_sha256",'''
 classification = "hyperliquid_live_submit_approval_field_label"
 reason = "This labels runtime validation for the TOML/evidence-owned Hyperliquid product proof artifact checksum before one-time approval consumption; the checksum value itself remains TOML/evidence-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_max_order_count"'''
-context = '''"execution.live_submit_max_order_count",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit max order count bound; the bound value itself remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_max_order_notional"'''
-context = '''"execution.live_submit_max_order_notional",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit max order notional bound; the bound value itself remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
@@ -5727,8 +5687,8 @@ reason = "This label explains the provider-owned credential-consuming block cove
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit"'''
-context = '''"clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",'''
+literal = '''"clients.{key}.execution.live_submit cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit"'''
+context = '''"clients.{key}.execution.live_submit cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",'''
 classification = "hyperliquid_fail_closed_rate_limit_diagnostic"
 reason = "This is the provider validation diagnostic emitted when a TOML live-submit approval is configured while the pinned NT Hyperliquid userFees request weight undercounts the official protocol weight; the request weights themselves are fixed evidence values, not operator-tunable runtime inputs."
 
@@ -5743,18 +5703,34 @@ reason = "This names the strategy target block in the provider-owned pre-consump
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`"'''
-context = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",'''
-classification = "hyperliquid_static_target_surface_diagnostic"
-reason = "This is the provider fail-closed diagnostic when a static Hyperliquid target's TOML product_surface differs from the execution client's configured and approved product surface."
+literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}`"'''
+context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}`",'''
+classification = "hyperliquid_updown_surface_diagnostic"
+reason = "This is the provider fail-closed diagnostic when an updown target is routed to a Hyperliquid execution client that does not include the HIP-4 outcomes surface; the target and surface values remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`"'''
-context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`",'''
-classification = "hyperliquid_updown_surface_diagnostic"
-reason = "This is the provider fail-closed diagnostic when an updown target is routed to a Hyperliquid execution client whose TOML product surface is not HIP-4 outcomes; the target and surface values remain TOML-owned."
+literal = '''", "'''
+context = '''.join(", ");'''
+classification = "hyperliquid_surface_selection_diagnostic_separator"
+reason = "This joins TOML-owned active Hyperliquid product surface labels in a fail-closed diagnostic; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"Hyperliquid execution client has multiple active product surfaces ({names}); one live node may arm only one Hyperliquid product surface per execution client"'''
+context = '''"Hyperliquid execution client has multiple active product surfaces ({names}); one live node may arm only one Hyperliquid product surface per execution client"'''
+classification = "hyperliquid_surface_selection_diagnostic"
+reason = "This is the provider fail-closed diagnostic when strategy routing would require one Hyperliquid execution client to arm approvals for multiple active product surfaces."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"Hyperliquid live submit surface `{}` is selected but no matching execution.live_submit block is configured"'''
+context = '''"Hyperliquid live submit surface `{}` is selected but no matching execution.live_submit block is configured",'''
+classification = "hyperliquid_surface_selection_diagnostic"
+reason = "This is the provider fail-closed diagnostic when an explicit or inferred Hyperliquid product surface lacks its TOML-owned live-submit gate block."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
@@ -7344,7 +7320,7 @@ reason = "Chainlink Data Streams V3 report encoding/unit constant fixed by the v
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"
 kind = "number"
 literal = '''0'''
-context = '''.filter(|seconds| *seconds != 0)'''
+context = '''.filter(|seconds| *seconds != 0);'''
 classification = "chainlink_protocol_constant"
 reason = "Strike timestamp unit-conversion / zero-guard constant fixed by NT UnixNanos and the Chainlink report format, not operator-configurable."
 
@@ -7379,6 +7355,22 @@ literal = '''"CHAINLINK_DATA_STREAMS"'''
 context = '''const CHAINLINK_STRIKE_SOURCE_FACTORY_NAME: &str = "CHAINLINK_DATA_STREAMS";'''
 classification = "chainlink_provider_type_tag"
 reason = "Stable NT factory/config type tag for the Chainlink strike DataClient; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"Chainlink {} timestamp exceeds milliseconds range"'''
+context = '''"Chainlink {} timestamp exceeds milliseconds range",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Fail-closed timestamp overflow diagnostic for Chainlink open/close boundary report mapping; the boundary label is selected from provider-owned enum variants."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"Chainlink {} timestamp exceeds nanos range"'''
+context = '''"Chainlink {} timestamp exceeds nanos range",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Fail-closed timestamp overflow diagnostic for Chainlink open/close boundary report mapping; the boundary label is selected from provider-owned enum variants."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"
@@ -7435,6 +7427,46 @@ literal = '''"report_schema_version"'''
 context = '''required_positive_u64(client_key, index, table, "report_schema_version")?;'''
 classification = "chainlink_provider_config_field"
 reason = "Chainlink feed-binding config field name parsed from the configured bolt-v3 TOML; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window-close boundary"'''
+context = '''Self::WindowCloseSettlement => "window-close boundary",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Provider-owned diagnostic label for the Chainlink window-close settlement boundary; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window-close settlement"'''
+context = '''Self::WindowCloseSettlement => "window-close settlement",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Provider-owned diagnostic label for the Chainlink window-close settlement fetch; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window-open boundary"'''
+context = '''Self::WindowOpenStrike => "window-open boundary",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Provider-owned diagnostic label for the Chainlink window-open strike boundary; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window-open strike"'''
+context = '''Self::WindowOpenStrike => "window-open strike",'''
+classification = "chainlink_provider_diagnostic"
+reason = "Provider-owned diagnostic label for the Chainlink window-open strike fetch; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"window_close_unix_seconds"'''
+context = '''pub const SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM: &str = "window_close_unix_seconds";'''
+classification = "chainlink_subscribe_param_key"
+reason = "Stable NT subscribe-command params key carrying the window-close Unix seconds; a fixed contract between the maker settlement path and the Chainlink strike DataClient."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"
@@ -8024,17 +8056,9 @@ reason = '''Compile-time Cargo env var naming the crate manifest dir; passed to 
 path = "src/source_canonicalization.rs"
 kind = "number"
 literal = '''0'''
-context = '''let mut total: u64 = 0;'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''0'''
 context = '''out.sort_by(|a, b| a.0.cmp(&b.0));'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
+classification = "source_canonicalization_sort_tuple_index"
+reason = "Tuple-field index selecting the relative-path key when the canonical source walk sorts files into deterministic order; a structural constant, not an operator runtime value."
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -8053,36 +8077,12 @@ classification = '''source_canonicalization_single_root_index'''
 reason = '''Fixed first-element index used only after a registry source set is proven to contain exactly one root, preserving historical single-root bytes/text by returning the one validated root; not an operator runtime value.'''
 
 [[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''number'''
-literal = '''0x00'''
-context = '''out.push(0x00);'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "number"
 literal = '''1'''
 context = '''file.take(max_bytes.saturating_add(1))'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''1'''
-context = '''total = total.saturating_add(1);'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "number"
-literal = '''8'''
-context = '''total = total.saturating_add(8);'''
-classification = "source_canonicalization_framing_constant"
-reason = "Fixed framing/bound arithmetic constant in the canonical source walk (length-frame width, NUL separator, read-bound increment, sort/index origin); a structural constant, not an operator runtime value."
+classification = "source_canonicalization_read_bound_increment"
+reason = "Read-bound increment: the walk reads one byte past `max_bytes` so an over-cap source file is detected and rejected; a structural constant, not an operator runtime value."
 
 [[allowed]]
 path = "src/source_canonicalization.rs"
@@ -8090,7 +8090,7 @@ kind = "string"
 literal = '''"/"'''
 context = '''Ok(parts.join("/").into_bytes())'''
 classification = '''source_canonicalization_path_separator'''
-reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent ordering; a fixed structural constant, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -8098,7 +8098,7 @@ kind = '''string'''
 literal = '''"/"'''
 context = '''Ok(components.join("/").into_bytes())'''
 classification = '''source_canonicalization_path_separator'''
-reason = '''Canonical forward-slash path separator normalizing directory-root relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
+reason = '''Canonical forward-slash path separator normalizing directory-root relative paths for OS-independent ordering; a fixed structural constant, not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -8143,90 +8143,10 @@ reason = "Rust source file extension selecting which files the canonical source 
 [[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "string"
-literal = '''"source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"'''
-context = '''"source directory canonical stream exceeds max_source_bytes={max_bytes} bytes"'''
-classification = "source_canonicalization_diagnostic_template"
-reason = "Fail-closed diagnostic when the framed directory stream exceeds the caller-supplied byte cap; the interpolated value is that cap, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
 literal = '''"source root is neither a regular file nor a directory: {}"'''
 context = '''"source root is neither a regular file nor a directory: {}",'''
 classification = "source_canonicalization_diagnostic_template"
 reason = "Fail-closed diagnostic for a source root that is neither a file nor a directory; the interpolated value is the offending path, not an operator runtime value."
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_submit_admission.rs"'''
-context = '''relative_roots: &["src/bolt_v3_submit_admission.rs"],'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the submit-admission gated source file; the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/strategies/binary_oracle_edge_taker"'''
-context = '''"src/strategies/binary_oracle_edge_taker",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the binary-oracle strategy source module (a directory after the A3 split); the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"'''
-context = '''"src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the archetype config translator, brought into the binary-oracle strategy source set so the TOML->runtime-table mapping for NautilusTrader-managed venue-action knobs is tamper-evidenced alongside its validating consumer; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_order_execution.rs"'''
-context = '''"src/bolt_v3_order_execution.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared order-execution policy module, brought into the binary-oracle strategy source set so the live/shadow NT submit/cancel mutation boundary is tamper-evidenced alongside strategy code; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_book_sizing.rs"'''
-context = '''"src/bolt_v3_book_sizing.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared book-sizing source included in the binary-oracle strategy source set after A4; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_binary_outcome_edge.rs"'''
-context = '''"src/bolt_v3_binary_outcome_edge.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared binary outcome edge source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_executable_cost.rs"'''
-context = '''"src/bolt_v3_executable_cost.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared executable-cost source included in the binary-oracle strategy source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_sizing.rs"'''
-context = '''"src/bolt_v3_sizing.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared strategy-agnostic sizing source included in the binary-oracle strategy source set by the #623 review round; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = '''src/source_canonicalization.rs'''
-kind = '''string'''
-literal = '''"src/bolt_v3_taker_updown_signal.rs"'''
-context = '''"src/bolt_v3_taker_updown_signal.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the taker up/down signal source included in the binary-oracle strategy source set by the #623 review round; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
 
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
@@ -8255,98 +8175,10 @@ reason = "Stable registry key for the shared outcome-group substrate source set;
 [[allowed]]
 path = "src/source_canonicalization.rs"
 kind = "string"
-literal = '''"src/bolt_v3_outcome_groups.rs"'''
-context = '''"src/bolt_v3_outcome_groups.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared outcome-group model source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_atomic_io.rs"'''
-context = '''"src/bolt_v3_atomic_io.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared atomic-IO source included in the outcome-group source set because basket and kill-switch durable writes are part of the substrate safety boundary; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_group_sources.rs"'''
-context = '''"src/bolt_v3_outcome_group_sources.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared outcome-group source configuration and validation source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_group_polymarket.rs"'''
-context = '''"src/bolt_v3_outcome_group_polymarket.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the first-slice Polymarket outcome-group normalizer source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_group_scanner.rs"'''
-context = '''"src/bolt_v3_outcome_group_scanner.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared outcome-group scanner source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_basket_admission.rs"'''
-context = '''"src/bolt_v3_basket_admission.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared basket-admission source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_basket_execution.rs"'''
-context = '''"src/bolt_v3_basket_execution.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared basket-execution source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_basket_store.rs"'''
-context = '''"src/bolt_v3_basket_store.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the shared basket-store source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs"'''
-context = '''"src/bolt_v3_archetypes/complete_set_arbitrage.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the first-consumer complete-set archetype source included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_market_families/outcome_group.rs"'''
-context = '''"src/bolt_v3_market_families/outcome_group.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the outcome-group market-family registration source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/strategy_runtime_bindings.rs"'''
-context = '''"src/strategy_runtime_bindings.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the production strategy runtime binding aggregation source included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/strategies/complete_set_arbitrage"'''
-context = '''"src/strategies/complete_set_arbitrage",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the first-consumer complete-set strategy shell directory included in the outcome-group source set for runtime activation; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
+literal = '''"maker"'''
+context = '''pub const MAKER_KEY: &str = "maker";'''
+classification = "gated_source_registry_key"
+reason = "Stable registry key for the binary-oracle maker strategy source root; an internal registry identifier owned here, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker/config.rs"
@@ -8477,7 +8309,7 @@ classification = "strategy_runtime_schema_field"
 reason = "Signal-data binding schema field name parsed from configured bolt-v3 TOML target data, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''40'''
 context = '''value.len() == 40'''
@@ -8485,10 +8317,10 @@ classification = "git_head_sha_shape_bound"
 reason = "This validates lowercase git commit SHA shape for build/head binding."
 
 [[allowed]]
-path = "src/bolt_v3_live_node.rs"
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"BOLT_V3_BUILD_HEAD_SHA"'''
-context = '''option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))'''
+context = '''option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_lowercase_git_sha(value))'''
 classification = "build_head_env_name"
 reason = "This is a compile-time Cargo environment variable emitted by build.rs to bind the binary to the built source head."
 
@@ -13506,20 +13338,12 @@ classification = "strategy_loop_constant"
 reason = "Increment-by-one step in a saturating strategy event-forwarding counter; not an operator runtime value."
 
 [[allowed]]
-path = "src/source_canonicalization.rs"
-kind = "string"
-literal = '''"src/bolt_v3_outcome_group_hyperliquid.rs"'''
-context = '''"src/bolt_v3_outcome_group_hyperliquid.rs",'''
-classification = '''gated_source_registry_relative_root'''
-reason = '''Repo-relative root path of the Task 11 Hyperliquid HIP-4 outcome-group normalizer source included in the outcome-group source set; the registry remains the single owner of this path for build.rs, the verifier, the producer, and tests.'''
-
-[[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`"'''
-context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`",'''
+literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}`"'''
+context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}`",'''
 classification = "hyperliquid_outcome_group_surface_diagnostic"
-reason = "Provider fail-closed diagnostic when an outcome_group target is routed to a Hyperliquid execution client whose TOML product surface is not HIP-4 outcomes; target and surface values remain TOML-owned."
+reason = "Provider fail-closed diagnostic when an outcome_group target is routed to a Hyperliquid execution client that does not include the HIP-4 outcomes surface; target and surface values remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_outcome_group_hyperliquid.rs"
@@ -14536,6 +14360,22 @@ literal = '''"; "'''
 context = '''iv_client_errors.join("; ")'''
 classification = "live_node_fail_closed_diagnostic_template"
 reason = "The live-node IV client validator joins fail-closed config diagnostics; the referenced profile/source/client identifiers are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue"'''
+context = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue",'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "Fail-closed live transport diagnostic for multiple strategy-referenced execution clients on one NT venue; venue and client identifiers are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''", "'''
+context = '''client_keys.join(", ")'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "Diagnostic separator for listing TOML-owned execution client identifiers that share one NT venue in the live transport scope."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
@@ -15890,6 +15730,534 @@ classification = "reference_price_data_contract"
 reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"trade_flow_window_secs"'''
+context = '''const TRADE_FLOW_WINDOW_SECS_FIELD: &str = "trade_flow_window_secs";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the signed-trade-flow retention window (μ estimator input) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"trade_flow_max_samples"'''
+context = '''const TRADE_FLOW_MAX_SAMPLES_FIELD: &str = "trade_flow_max_samples";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the signed-trade-flow retention sample cap (μ estimator input) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"mu_min_classified_samples"'''
+context = '''const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the μ-estimator warmup threshold (minimum classified samples) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"mu_stale_window_ms"'''
+context = '''const MU_STALE_WINDOW_MS_FIELD: &str = "mu_stale_window_ms";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the μ-health-gate staleness window used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"mu_min_floor"'''
+context = '''const MU_MIN_FLOOR_FIELD: &str = "mu_min_floor";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the μ-health-gate degenerate-flow floor used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"trade_flow_window_secs"'''
+context = '''"trade_flow_window_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"trade_flow_max_samples"'''
+context = '''"trade_flow_max_samples",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"mu_min_classified_samples"'''
+context = '''"mu_min_classified_samples",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"mu_stale_window_ms"'''
+context = '''insert_u64_field(table, "mu_stale_window_ms", runtime.mu_stale_window_ms)?;'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"mu_min_floor"'''
+context = '''"mu_min_floor".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''table.insert("strategy_id".to_string(), Value::String(strategy_id));'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the maker strategy config schema field name, populated into the runtime config table from the bolt-v3 TOML-derived NT strategy id; mirrors the taker archetype's strategy_id table key."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"order_id_tag"'''
+context = '''"order_id_tag".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the maker strategy config schema field name, populated into the runtime config table from the bolt-v3 TOML order_id_tag; mirrors the taker archetype's order_id_tag table key."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"oms_type"'''
+context = '''"oms_type".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the maker strategy config schema field name, populated into the runtime config table from the bolt-v3 TOML oms_type; mirrors the taker archetype's oms_type table key."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''"client_id".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the maker strategy config schema field name populated from the configured bolt-v3 TOML execution_client_id; the client value remains TOML-owned and venue-generic."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"{context}: parameters.backtest.{} {}"'''
+context = '''"{context}: parameters.backtest.{} {}",'''
+classification = "strategy_runtime_validation_diagnostic_template"
+reason = "This formats maker backtest go-live validation diagnostics using schema-field labels supplied by bolt_v3_maker_go_live_gate; the evidence values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"nt_backtest_node"'''
+context = '''const NT_BACKTEST_NODE_EXECUTION_MODEL: &str = "nt_backtest_node";'''
+classification = "bte_result_contract_execution_model"
+reason = "BTE BacktestResultContract execution_model discriminant required to prove NT BacktestNode replay; the observed execution_model value remains TOML-owned in [parameters.backtest.result_contract_replay]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"verdict"'''
+context = '''Self::VerdictNotPass => "verdict",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"build_head_sha"'''
+context = '''Self::MissingBuildHeadSha => "build_head_sha",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence identity schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"strategy_config_hash"'''
+context = '''Self::MissingStrategyConfigHash => "strategy_config_hash",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence identity schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"run_artifact"'''
+context = '''Self::MissingRunArtifact => "run_artifact",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"run_artifact_sha256"'''
+context = '''Self::MissingRunArtifactDigest => "run_artifact_sha256",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence digest schema-field label used only to format startup-validation diagnostics; the digest value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"threshold_artifact"'''
+context = '''Self::MissingThresholdArtifact => "threshold_artifact",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"threshold_artifact_sha256"'''
+context = '''Self::MissingThresholdArtifactDigest => "threshold_artifact_sha256",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence digest schema-field label used only to format startup-validation diagnostics; the digest value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"execution_model_artifact"'''
+context = '''Self::MissingExecutionModelArtifact => "execution_model_artifact",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"execution_model_artifact_sha256"'''
+context = '''Self::MissingExecutionModelArtifactDigest => "execution_model_artifact_sha256",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence digest schema-field label used only to format startup-validation diagnostics; the digest value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"maker_order_count"'''
+context = '''Self::MissingMakerOrders => "maker_order_count",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence count schema-field label used only to format startup-validation diagnostics; the count value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''maker_orders_observed: self.maker_order_count > 0,'''
+classification = "maker_backtest_go_live_count_lower_bound"
+reason = "Fail-closed lower bound for operator-supplied maker backtest order count evidence; the actual count remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"passive_fill_count"'''
+context = '''Self::MissingPassiveFills => "passive_fill_count",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence count schema-field label used only to format startup-validation diagnostics; the count value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''passive_fills_observed: self.passive_fill_count > 0,'''
+classification = "maker_backtest_go_live_count_lower_bound"
+reason = "Fail-closed lower bound for operator-supplied maker backtest passive-fill count evidence; the actual count remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"built_maker_replayed"'''
+context = '''Self::BuiltMakerNotReplayed => "built_maker_replayed",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"net_score_micros"'''
+context = '''Self::MissingFullNetScoring => "net_score_micros",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live score schema-field label used only to format startup-validation diagnostics; score component values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"thresholds_registered_before_run"'''
+context = '''Self::ThresholdsNotPreRegistered => "thresholds_registered_before_run",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"balanced_gate_evaluated"'''
+context = '''Self::BalancedGateNotEvaluated => "balanced_gate_evaluated",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"strict_gate_evaluated"'''
+context = '''Self::StrictGateNotEvaluated => "strict_gate_evaluated",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"balanced_gate_passed"'''
+context = '''Self::BalancedGateNotPassed => "balanced_gate_passed",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"historical_full_depth_l2"'''
+context = '''Self::MissingHistoricalFullDepthL2 => "historical_full_depth_l2",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"full_population_corpus"'''
+context = '''Self::MissingFullPopulationCorpus => "full_population_corpus",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"entry_gated_corpus_used"'''
+context = '''Self::EntryGatedCorpusUsed => "entry_gated_corpus_used",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"result_contract_replay.catalog_data_types"'''
+context = '''Self::MissingTradeTicks => "result_contract_replay.catalog_data_types",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence schema-field label used only to format startup-validation diagnostics; the observed BTE catalog data types remain TOML-owned in [parameters.backtest.result_contract_replay]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"result_contract_replay.catalog_data_types"'''
+context = '''Self::MissingOrderBookDeltas => "result_contract_replay.catalog_data_types",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence schema-field label used only to format startup-validation diagnostics; the observed BTE catalog data types remain TOML-owned in [parameters.backtest.result_contract_replay]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"result_contract_replay.venue_queue_position"'''
+context = '''Self::QueuePositionDisabled => "result_contract_replay.venue_queue_position",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence schema-field label used only to format startup-validation diagnostics; the observed BTE queue-position flag remains TOML-owned in [parameters.backtest.result_contract_replay]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"result_contract_replay.execution_model"'''
+context = '''Self::MissingNtExecutionModel => "result_contract_replay.execution_model",'''
+classification = "maker_backtest_result_contract_schema_field"
+reason = "Stable maker backtest result-contract replay evidence schema-field label used only to format startup-validation diagnostics; the observed BTE execution_model remains TOML-owned in [parameters.backtest.result_contract_replay]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"custom_fill_model_source_proven"'''
+context = '''Self::CustomFillModelWithoutSourceProof => "custom_fill_model_source_proven",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"underlying_spot_causal_join"'''
+context = '''Self::MissingUnderlyingSpotCausalJoin => "underlying_spot_causal_join",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"net_score_micros"'''
+context = '''Self::NetEdgeNotPositive => "net_score_micros",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live score schema-field label used only to format startup-validation diagnostics; score component values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''net_edge_positive: self.net_score_micros > 0,'''
+classification = "maker_backtest_go_live_score_lower_bound"
+reason = "Fail-closed lower bound requiring a positive reconciled maker backtest net score; the actual score remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"statistical_significance"'''
+context = '''Self::MissingStatisticalSignificance => "statistical_significance",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"passive_fill_count"'''
+context = '''Self::MissingPassiveFillPowerFloor => "passive_fill_count",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live count schema-field label used only to format startup-validation diagnostics; count and floor values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.min_passive_fill_count > 0 && self.passive_fill_count >= self.min_passive_fill_count'''
+classification = "maker_backtest_go_live_count_floor_lower_bound"
+reason = "Fail-closed lower bound requiring a non-zero pre-registered passive-fill count floor; actual count and floor values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"resolved_market_count"'''
+context = '''Self::MissingResolvedMarketCorpusFloor => "resolved_market_count",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live count schema-field label used only to format startup-validation diagnostics; count and floor values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.min_resolved_market_count > 0'''
+classification = "maker_backtest_go_live_count_floor_lower_bound"
+reason = "Fail-closed lower bound requiring a non-zero pre-registered resolved-market count floor; actual count and floor values remain TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"shared_fair_value_pricing"'''
+context = '''Self::MissingSharedFairValuePricing => "shared_fair_value_pricing",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/bolt_v3_maker_go_live_gate.rs"
+kind = "string"
+literal = '''"shared_settlement_primitive"'''
+context = '''Self::MissingSharedSettlementPrimitive => "shared_settlement_primitive",'''
+classification = "maker_backtest_go_live_schema_field"
+reason = "Stable maker backtest go-live evidence schema-field label used only to format startup-validation diagnostics; the evidence value remains TOML-owned in [parameters.backtest]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"wrong_type"'''
+context = '''const WRONG_TYPE_CODE: &str = "wrong_type";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a maker config field with the wrong TOML type; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_strategy_id"'''
+context = '''const MISSING_STRATEGY_ID_CODE: &str = "missing_strategy_id";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing required maker strategy_id envelope field; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_order_id_tag"'''
+context = '''const MISSING_ORDER_ID_TAG_CODE: &str = "missing_order_id_tag";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing required maker order_id_tag envelope field; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_oms_type"'''
+context = '''const MISSING_OMS_TYPE_CODE: &str = "missing_oms_type";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing required maker oms_type envelope field; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_client_id"'''
+context = '''const MISSING_CLIENT_ID_CODE: &str = "missing_client_id";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing required maker execution client field; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"invalid_oms_type"'''
+context = '''const INVALID_OMS_TYPE_CODE: &str = "invalid_oms_type";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a maker oms_type envelope value that is a string but does not parse as a NautilusTrader OmsType (so the build-path .expect can never fire on operator input); it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_maker_runtime_order.rs"
+kind = "string"
+literal = '''"maker order compiler returned neither command nor block reason"'''
+context = '''.context("maker order compiler returned neither command nor block reason")?;'''
+classification = "maker_runtime_order_invariant_diagnostic"
+reason = "Fail-closed invariant diagnostic for an impossible maker order-compiler state where neither a command nor a typed block reason is returned; it carries no operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"unknown_field"'''
+context = '''const UNKNOWN_FIELD_CODE: &str = "unknown_field";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a stray unknown key in the maker config table; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''const STRATEGY_ID_FIELD: &str = "strategy_id";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable maker strategy_id config field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"order_id_tag"'''
+context = '''const ORDER_ID_TAG_FIELD: &str = "order_id_tag";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable maker order_id_tag config field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"oms_type"'''
+context = '''const OMS_TYPE_FIELD: &str = "oms_type";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable maker oms_type config field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"client_id"'''
+context = '''const CLIENT_ID_FIELD: &str = "client_id";'''
+classification = "strategy_config_field_name"
+reason = "This is the stable maker execution-client config field label used in validation diagnostics; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/mod.rs"
+kind = "string"
+literal = '''"binary_oracle_maker"'''
+context = '''pub const KEY: &str = "binary_oracle_maker";'''
+classification = "strategy_archetype_key"
+reason = "The single archetype key constant for the inert maker (its StrategyBuilder::kind, RUNTIME_BINDING.key, validation-binding key, and operator TOML strategy_archetype value); a stable internal archetype identifier owned here, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_reference_price.rs"
 kind = "string"
 literal = '''"asset"'''
@@ -15936,6 +16304,14 @@ literal = '''"provider_instrument"'''
 context = '''validate_reference_identity_field(&provider_instrument, "provider_instrument")?;'''
 classification = "reference_price_data_contract"
 reason = "Reference-price normalized data validation label; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"requote_min_interval_ms"'''
+context = '''const REQUOTE_MIN_INTERVAL_MS_FIELD: &str = "requote_min_interval_ms";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker config field label for the requote min-interval (the requote budget's same-tick throttle) used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"
@@ -16307,10 +16683,10 @@ reason = "Selected-market requirement provenance source-kind label identifying N
 [[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"
 kind = "string"
-literal = '''"polymarket_condition"'''
-context = '''const STATIC_RESOLUTION_KIND: &str = "polymarket_condition";'''
+literal = '''"static_binary_event_condition"'''
+context = '''const STATIC_RESOLUTION_KIND: &str = "static_binary_event_condition";'''
 classification = "selected_market_requirement_schema_value"
-reason = "Selected-market requirement resolution-kind label for a Polymarket condition ID selected from NT metadata."
+reason = "Selected-market requirement resolution-kind label for a configured static binary-event condition ID selected from NT metadata."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"
@@ -16991,3 +17367,154 @@ literal = '''"strategy_instance_id"'''
 context = '''"strategy_instance_id",'''
 classification = "backtest_config_override_validation_field"
 reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"OUT_DIR"'''
+context = '''include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));'''
+classification = "source_canonicalization_codegen_include"
+reason = "Build-time include path literal locating the build.rs-generated GATED_SOURCE_ROOTS under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
+
+[[allowed]]
+path = "src/source_canonicalization.rs"
+kind = "string"
+literal = '''"/gated_source_roots.rs"'''
+context = '''include!(concat!(env!("OUT_DIR"), "/gated_source_roots.rs"));'''
+classification = "source_canonicalization_codegen_include"
+reason = "Build-time include path literal: the build.rs-generated GATED_SOURCE_ROOTS file name under OUT_DIR; a compile-time codegen reference, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"requote_min_interval_ms"'''
+context = '''"requote_min_interval_ms",'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker runtime config schema field name written into the flat NT config table from the operator [parameters.runtime] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_requote_budget.rs"
+kind = "number"
+literal = '''1'''
+context = '''const SUBMIT_COMMAND_COST: u64 = 1;'''
+classification = "requote_budget_structural_unit_cost"
+reason = "One NT submit command costs exactly one token against the submit-governor budget. A structural protocol unit (a submit is one submit command), not an operator-tunable value; the tunable cap (max_order_submit_rate) is TOML-owned and passed into RequoteBudget::new by callers."
+
+[[allowed]]
+path = "src/bolt_v3_requote_budget.rs"
+kind = "number"
+literal = '''1'''
+context = '''const REST_CALL_COST: u64 = 1;'''
+classification = "requote_budget_structural_unit_cost"
+reason = "One venue CLOB REST call costs exactly one token against the REST budget. A structural protocol unit (a cancel or submit is one REST call), not an operator-tunable value; the tunable cap (venue clob_per_minute) is TOML/venue-contract-owned and passed into RequoteBudget::new by callers."
+
+[[allowed]]
+path = "src/bolt_v3_requote_budget.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.try_reserve(now_ms, 0, REST_CALL_COST)'''
+classification = "requote_budget_standalone_cancel_zero_submit_cost"
+reason = "A standalone cancel issues zero submit commands (a cancel is not a submit), so it charges the submit-governor budget nothing. A structural protocol fact, not a tunable value."
+
+[[allowed]]
+path = "src/bolt_v3_requote_budget.rs"
+kind = "number"
+literal = '''0'''
+context = '''let submit_ok = submit_cost == 0 || submit_trial.try_acquire(now_ms, submit_cost);'''
+classification = "requote_budget_zero_submit_cost_skip_guard"
+reason = "A zero submit cost (a standalone cancel) skips the submit-governor acquisition entirely, leaving the submit budget untouched. A structural sentinel guard, not a tunable value."
+
+[[allowed]]
+path = "src/bolt_v3_maker_market_selection.rs"
+kind = "number"
+literal = '''0.0'''
+context = '''value.is_finite() && value > 0.0'''
+classification = "maker_market_selection_positive_notional_guard"
+reason = "This is the zero lower-bound sentinel for caller/TOML-owned maker portfolio notional validation; the bankroll and slot-floor values remain runtime-owned by config."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"market_portfolio_max_active_markets"'''
+context = '''"market_portfolio_max_active_markets",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio config schema field name written into the flat NT config table from the operator [parameters.market_portfolio] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"market_portfolio_total_bankroll_notional"'''
+context = '''"market_portfolio_total_bankroll_notional".to_string(),'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio config schema field name written into the flat NT config table from the operator [parameters.market_portfolio] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"market_portfolio_min_slot_notional"'''
+context = '''"market_portfolio_min_slot_notional".to_string(),'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio config schema field name written into the flat NT config table from the operator [parameters.market_portfolio] block; must match the BinaryOracleMakerConfig field name. A stable schema key, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"max_active_markets"'''
+context = '''MakerMarketPortfolioBlocker::InvalidMaxActiveMarkets => "max_active_markets",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio validation diagnostic field label for the operator [parameters.market_portfolio] block; the actual concurrency cap remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"total_bankroll_notional"'''
+context = '''MakerMarketPortfolioBlocker::InvalidTotalBankroll => "total_bankroll_notional",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio validation diagnostic field label for the operator [parameters.market_portfolio] block; the actual bankroll remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"min_slot_notional"'''
+context = '''MakerMarketPortfolioBlocker::InvalidMinSlotNotional => "min_slot_notional",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio validation diagnostic field label for the operator [parameters.market_portfolio] block; the actual minimum slot notional remains TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"policy"'''
+context = '''| MakerMarketPortfolioBlocker::InsufficientSlotAllocation => "policy",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker market-portfolio validation diagnostic fallback label for candidate/runtime-only policy blockers; the runtime market inputs and policy values remain caller/TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"{context}: parameters.market_portfolio.{} {}"'''
+context = '''"{context}: parameters.market_portfolio.{} {}",'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Stable maker market-portfolio validation diagnostic prefix for the operator [parameters.market_portfolio] block; no runtime value is embedded beyond validated TOML-owned field names."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"market_portfolio_max_active_markets"'''
+context = '''const MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD: &str = "market_portfolio_max_active_markets";'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"market_portfolio_total_bankroll_notional"'''
+context = '''"market_portfolio_total_bankroll_notional";'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"market_portfolio_min_slot_notional"'''
+context = '''const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slot_notional";'''
+classification = "maker_market_portfolio_schema_field"
+reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."

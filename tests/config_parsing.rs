@@ -250,8 +250,14 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
         .expect("polymarket data block should exist")
         .try_into()
         .expect("polymarket data block should parse with NT names");
-    assert_eq!(data.update_instruments_interval_mins, 60);
+    assert_eq!(data.update_instruments_interval_mins, 1);
     assert_eq!(data.ws_max_subscriptions, 200);
+    assert_eq!(data.base_url_rtds, "wss://ws-live-data.polymarket.com");
+    assert_eq!(data.new_market_fetch_max_concurrency, 8);
+    assert!(!data.resolve_poll_enabled);
+    assert_eq!(data.resolve_poll_interval_secs, 30);
+    assert_eq!(data.resolve_poll_grace_secs, 10);
+    assert_eq!(data.resolve_poll_max_wait_secs, 1800);
     assert!(!data.auto_load_missing_instruments);
     assert_eq!(data.auto_load_debounce_ms, 250);
     assert_eq!(data.auto_load_max_retries, 12);
@@ -306,6 +312,47 @@ fn retired_gate_config_block_is_rejected() {
         .expect_err("retired gate config block should be rejected");
     let rendered = error.to_string();
     assert!(rendered.contains("unknown field"));
+}
+
+#[test]
+fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
+    use bolt_v2::bolt_v3_providers::chainlink_reference::ChainlinkReferencePriceDataConfig;
+
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let parsed = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let data_value = parsed
+            .get("clients")
+            .and_then(|value| value.get("chainlink_reference"))
+            .and_then(|value| value.get("data"))
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("{relative_path} should declare clients.chainlink_reference.data")
+            });
+        let data = data_value
+            .as_table()
+            .expect("chainlink reference data should be a table");
+        let data_config: ChainlinkReferencePriceDataConfig =
+            data_value.clone().try_into().unwrap_or_else(|error| {
+                panic!("{relative_path} chainlink reference data should deserialize: {error}")
+            });
+
+        assert_eq!(
+            data.get("heartbeat_secs").and_then(toml::Value::as_integer),
+            Some(5),
+            "{relative_path} should keep a configured heartbeat interval"
+        );
+        assert!(
+            !data.contains_key("heartbeat_message"),
+            "{relative_path} Chainlink reference WS must omit heartbeat_message so NT sends protocol Ping frames instead of text"
+        );
+        assert_eq!(
+            data_config.heartbeat_message, None,
+            "{relative_path} parsed Chainlink reference config must use protocol Ping frames"
+        );
+    }
 }
 
 #[test]
@@ -607,8 +654,8 @@ fn bolt_v3_polymarket_client_rejects_execution_without_data_block_with_client_vo
     // provider-neutral per the source-fence.
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
-    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
+    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let split_fixture = format!(
         "{}{}",
         replace_in_fixture_root(polymarket_main_data_block, ""),
@@ -1086,6 +1133,275 @@ fn bolt_v3_archetype_accepts_configured_forced_exit_order_template() {
     assert!(
         messages.is_empty(),
         "configured forced_exit_order should validate through the NT order template path: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_polymarket_unsupported_market_exit_shape() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include exit_order");
+    exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.exit_order order_type=market has time_in_force=gtc")
+                && message.contains("must use time_in_force=ioc or fok")
+                && message.contains("configured execution provider")
+        }),
+        "market exit GTC should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.exit_order.is_reduce_only must be false")
+                && message.contains("configured execution provider")
+        }),
+        "market exit reduce-only should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_polymarket_unsupported_market_forced_exit_shape() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let forced_exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("forced_exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include forced_exit_order");
+    forced_exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    forced_exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.forced_exit_order order_type=market has time_in_force=gtc")
+                && message.contains("must use time_in_force=ioc or fok")
+                && message.contains("configured execution provider")
+        }),
+        "market forced-exit GTC should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.forced_exit_order.is_reduce_only must be false")
+                && message.contains("configured execution provider")
+        }),
+        "market forced-exit reduce-only should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_polymarket_limit_exit_reduce_only_shape() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include exit_order");
+    exit_table.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
+    );
+    exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    exit_table.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+    exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.exit_order.is_reduce_only must be false")
+                && message.contains("configured execution provider")
+        }),
+        "limit exit reduce-only should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_polymarket_limit_forced_exit_reduce_only_shape() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let forced_exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("forced_exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include forced_exit_order");
+    forced_exit_table.insert(
+        "order_type".to_string(),
+        toml::Value::String("limit".to_string()),
+    );
+    forced_exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    forced_exit_table.insert("is_post_only".to_string(), toml::Value::Boolean(true));
+    forced_exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.forced_exit_order.is_reduce_only must be false")
+                && message.contains("configured execution provider")
+        }),
+        "limit forced-exit reduce-only should be rejected before it can reach the configured execution provider: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_keeps_default_provider_market_exit_shape_permissive() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+    use nautilus_model::identifiers::Venue;
+
+    let mut stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    stable_root
+        .clients
+        .get_mut("polymarket_main")
+        .expect("fixture should include execution client")
+        .venue = Venue::from("HYPERLIQUID");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let exit_table = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table")
+        .get_mut("exit_order")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture parameters should include exit_order");
+    exit_table.insert(
+        "time_in_force".to_string(),
+        toml::Value::String("gtc".to_string()),
+    );
+    exit_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.is_empty(),
+        "default provider constraints should remain permissive for market exit shapes: {messages:#?}"
     );
 }
 
@@ -4747,6 +5063,7 @@ order_execution_mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -4767,7 +5084,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -4807,7 +5123,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -4820,7 +5135,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]
@@ -5033,14 +5347,12 @@ fn rejects_invalid_binance_reference_websocket_urls_before_nt_mapping() {
 fn rejects_invalid_binance_futures_websocket_url_without_spot_sbe_guidance() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_binance_reference_fixture(
-        "product_types = [\"spot\"]",
-        "product_types = [\"usd_m\"]",
-    )
-    .replace(
-        "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
-        "base_url_ws = \"https://fstream.binance.com/market/ws\"",
-    );
+    let mutated =
+        replace_in_binance_reference_fixture("product_type = \"spot\"", "product_type = \"usd_m\"")
+            .replace(
+                "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+                "base_url_ws = \"https://fstream.binance.com/market/ws\"",
+            );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("invalid futures websocket fixture should parse");
     let messages = validate_root_only(&root);
@@ -5177,6 +5489,7 @@ order_execution_mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -5197,7 +5510,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -5237,7 +5549,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -5250,7 +5561,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]
@@ -5279,16 +5589,22 @@ venue = "POLYMARKET"
 [clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_rtds = "wss://ws-live-data.polymarket.com"
 base_url_gamma = "https://gamma-api.polymarket.com"
 base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_secs = 0
 ws_timeout_secs = 0
 subscribe_new_markets = false
+new_market_fetch_max_concurrency = 8
 auto_load_missing_instruments = false
 auto_load_debounce_ms = 250
 auto_load_max_retries = 12
 auto_load_retry_delay_initial_secs = 5
 auto_load_retry_delay_max_secs = 15
+resolve_poll_enabled = false
+resolve_poll_interval_secs = 30
+resolve_poll_grace_secs = 10
+resolve_poll_max_wait_secs = 1800
 update_instruments_interval_mins = 0
 ws_max_subscriptions = 0
 transport_backend = "sockudo"
@@ -6103,10 +6419,9 @@ fn fixture_strategy_with_submit_orders(value: &str) -> String {
 /// Replace one-line key assignments inside a single TOML table.
 ///
 /// `replace_in_fixture_root` does a global `str::replace`, so a key that also
-/// appears in another table (e.g. `graceful_shutdown_on_error` / `qsize` live in
-/// both `[nautilus.data_engine]` and `[risk.nautilus]`) cannot be flipped in one
-/// block alone without a multi-line anchor — and a multi-line `\n` anchor breaks
-/// on a CRLF checkout. This walks the fixture line-by-line via `str::lines()`
+/// appears in another table (for example `qsize`) cannot be flipped in one block
+/// alone without a multi-line anchor — and a multi-line `\n` anchor breaks on a
+/// CRLF checkout. This walks the fixture line-by-line via `str::lines()`
 /// (LF/CRLF agnostic) and rewrites only the lines whose trimmed text matches a
 /// needle while inside `section_header`. Each needle must match exactly one line
 /// in that table, so the mutation is both scoped and platform-independent.
@@ -7020,7 +7335,7 @@ auto_load_debounce_ms = 250
 auto_load_max_retries = 12
 auto_load_retry_delay_initial_secs = 5
 auto_load_retry_delay_max_secs = 15
-update_instruments_interval_mins = 60
+update_instruments_interval_mins = 1
 ws_max_subscriptions = 200
 transport_backend = "sockudo"
 "#
@@ -7243,15 +7558,17 @@ fn rejects_invalid_nt_data_engine_values() {
         "time_bars_interval_type = \"LEFT_OPEN\"",
         "time_bars_interval_type = \"SIDEWAYS\"",
     )
-    .replace("time_bars_origins = {}", "time_bars_origins = { INVALID = 1 }")
     .replace(
-        "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000\n\n[nautilus.exec_engine]",
-        "debug = false\ngraceful_shutdown_on_error = true\nqsize = 1000\n\n[nautilus.exec_engine]",
+        "time_bars_origins = {}",
+        "time_bars_origins = { INVALID = 1 }",
+    )
+    .replace(
+        "debug = false\nqsize = 100000",
+        "debug = false\nqsize = 1000",
     );
     assert!(
         mutated.contains("time_bars_interval_type = \"SIDEWAYS\"")
             && mutated.contains("time_bars_origins = { INVALID = 1 }")
-            && mutated.contains("graceful_shutdown_on_error = true")
             && mutated.contains("qsize = 1000"),
         "test fixture mutation must exercise every invalid data-engine branch"
     );
@@ -7261,7 +7578,6 @@ fn rejects_invalid_nt_data_engine_values() {
     for needle in [
         "nautilus.data_engine.time_bars_interval_type is not valid",
         "nautilus.data_engine.time_bars_origins key `INVALID` is not a valid Nautilus bar aggregation",
-        "nautilus.data_engine.graceful_shutdown_on_error must be false",
         "nautilus.data_engine.qsize must match NT default",
     ] {
         assert!(
@@ -7278,10 +7594,6 @@ fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
     let mutated = replace_in_fixture_root("snapshot_orders = false", "snapshot_orders = true")
         .replace("snapshot_positions = false", "snapshot_positions = true")
         .replace("purge_from_database = false", "purge_from_database = true")
-        .replace(
-            "graceful_shutdown_on_error = false",
-            "graceful_shutdown_on_error = true",
-        )
         .replace("qsize = 100000", "qsize = 1000");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("unsupported NT exec values fixture should parse");
@@ -7290,7 +7602,6 @@ fn rejects_nt_exec_values_unsupported_by_rust_live_runtime() {
         "nautilus.exec_engine.snapshot_orders must be false",
         "nautilus.exec_engine.snapshot_positions must be false",
         "nautilus.exec_engine.purge_from_database must be false",
-        "nautilus.exec_engine.graceful_shutdown_on_error must be false",
         "nautilus.exec_engine.qsize must match NT default",
     ] {
         assert!(
@@ -7402,33 +7713,38 @@ fn shipped_root_configs_do_not_expose_nt_risk_bypass() {
 fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    // `graceful_shutdown_on_error` / `qsize` appear in both `[nautilus.data_engine]`
-    // and `[risk.nautilus]`. Scope the flip to the risk table via a line-wise,
-    // section-aware replace so the mutation never touches the data-engine block and
-    // never relies on a multi-line `\n` anchor (which a CRLF checkout would fail to
-    // match).
-    let mutated = replace_in_fixture_section(
-        "[risk.nautilus]",
-        &[
-            (
-                "graceful_shutdown_on_error = false",
-                "graceful_shutdown_on_error = true",
-            ),
-            ("qsize = 100000", "qsize = 1000"),
-        ],
-    );
+    let mutated =
+        replace_in_fixture_section("[risk.nautilus]", &[("qsize = 100000", "qsize = 1000")]);
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("unsupported NT risk values fixture should parse");
     let messages = validate_root_only(&root);
-    for needle in [
-        "risk.nautilus.graceful_shutdown_on_error must be false",
-        "risk.nautilus.qsize must match NT default",
-    ] {
+    for needle in ["risk.nautilus.qsize must match NT default"] {
         assert!(
             messages.iter().any(|m| m.contains(needle)),
             "expected `{needle}` in validation messages, got: {messages:#?}"
         );
     }
+}
+
+#[test]
+fn maps_top_level_nt_shutdown_on_error() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
+        bolt_v3_live_node::make_live_node_config,
+    };
+
+    let mutated = replace_in_fixture_root("shutdown_on_error = false", "shutdown_on_error = true");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("top-level shutdown_on_error fixture should parse");
+    let loaded = LoadedBoltV3Config {
+        root_path: support::repo_path("tests/fixtures/bolt_v3/root.toml"),
+        config_bundle_checksum: "test-checksum".to_string(),
+        root,
+        strategies: Vec::new(),
+    };
+    let cfg = make_live_node_config(&loaded);
+
+    assert!(cfg.shutdown_on_error);
 }
 
 #[test]
@@ -8014,7 +8330,7 @@ fn rejects_polymarket_data_auto_load_retry_initial_after_max() {
 fn allows_multiple_configured_client_ids_for_same_nt_venue() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_client}");
@@ -8580,5 +8896,247 @@ fn root_config_wires_hyperliquid_data_only_client_without_execution_or_secrets()
     assert!(
         client.readiness_probe.is_some(),
         "production data clients must include strategy-free readiness coverage"
+    );
+}
+
+#[test]
+fn root_config_wires_single_hyperliquid_execution_client_for_all_surfaces() {
+    use nautilus_model::identifiers::ClientId;
+
+    let loaded =
+        bolt_v2::bolt_v3_config::load_bolt_v3_config(&support::repo_path("config/root.toml"))
+            .expect("root.toml should load with a Hyperliquid execution client");
+
+    for client_key in [
+        "hyperliquid_standard_perps_execution",
+        "hyperliquid_spot_execution",
+        "hyperliquid_hip3_execution",
+        "hyperliquid_hip4_execution",
+    ] {
+        assert!(
+            !loaded.root.clients.contains_key(client_key),
+            "{client_key} must stay collapsed into the single Hyperliquid execution client"
+        );
+    }
+
+    let client = loaded
+        .root
+        .clients
+        .get("hyperliquid_execution")
+        .expect("hyperliquid_execution must be configured in root.toml");
+
+    assert_eq!(client.venue.as_str(), "HYPERLIQUID");
+    assert!(
+        client.data.is_none(),
+        "issue #785 wires execution separately from the data-only #784 client"
+    );
+    let execution = client
+        .execution
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_execution must declare an [execution] table");
+    assert_eq!(
+        execution
+            .get(stringify!(environment))
+            .and_then(toml::Value::as_str),
+        Some("mainnet")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(execution_mode))
+            .and_then(toml::Value::as_str),
+        Some("master_account_api_wallet")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(product_surfaces))
+            .and_then(toml::Value::as_array)
+            .expect("hyperliquid_execution product_surfaces must be an array")
+            .iter()
+            .map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            Some("standard_perps"),
+            Some("spot"),
+            Some("hip3_builder_perps"),
+            Some("hip4_outcomes"),
+        ]
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(outcome_settlement_poll_secs))
+            .and_then(toml::Value::as_integer),
+        Some(30)
+    );
+    let live_submit = execution
+        .get(stringify!(live_submit))
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_execution must declare per-surface live-submit gates");
+    for (surface, approval_id, approval_artifact_path, product_proof_artifact_path) in [
+        (
+            "standard_perps",
+            "hl-standard-perps-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json",
+        ),
+        (
+            "spot",
+            "hl-spot-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json",
+        ),
+        (
+            "hip3_builder_perps",
+            "hl-hip3-builder-perps-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json",
+        ),
+        (
+            "hip4_outcomes",
+            "hl-hip4-outcomes-mainnet-001",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json",
+            "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json",
+        ),
+    ] {
+        let surface_config = live_submit
+            .get(surface)
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| panic!("live_submit.{surface} must be configured"));
+        assert_eq!(
+            surface_config
+                .get(stringify!(approval_id))
+                .and_then(toml::Value::as_str),
+            Some(approval_id)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(approval_artifact_path))
+                .and_then(toml::Value::as_str),
+            Some(approval_artifact_path)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(approval_artifact_max_bytes))
+                .and_then(toml::Value::as_integer),
+            Some(65536)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(max_order_count))
+                .and_then(toml::Value::as_integer),
+            Some(1)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(max_order_notional))
+                .and_then(toml::Value::as_str),
+            Some("10.00")
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(product_proof_artifact_path))
+                .and_then(toml::Value::as_str),
+            Some(product_proof_artifact_path)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(product_proof_artifact_sha256))
+                .and_then(toml::Value::as_str),
+            Some("0000000000000000000000000000000000000000000000000000000000000000")
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(product_proof_artifact_max_bytes))
+                .and_then(toml::Value::as_integer),
+            Some(65536)
+        );
+    }
+
+    let secrets = client
+        .secrets
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_execution must declare SSM-backed [secrets]");
+    assert_eq!(
+        secrets
+            .get(stringify!(private_key_ssm_path))
+            .and_then(toml::Value::as_str),
+        Some("/bolt/hyperliquid/master_api_wallet/private_key")
+    );
+    assert_eq!(
+        secrets
+            .get(stringify!(account_address_ssm_path))
+            .and_then(toml::Value::as_str),
+        Some("/bolt/hyperliquid/master_api_wallet/account_address")
+    );
+    for forbidden in [
+        stringify!(private_key),
+        stringify!(account_address),
+        stringify!(vault_address),
+    ] {
+        assert!(
+            !secrets.contains_key(forbidden),
+            "Hyperliquid execution secrets must stay SSM-only; found raw field {forbidden}"
+        );
+    }
+    assert_eq!(
+        secrets.len(),
+        2,
+        "hyperliquid_execution must not introduce another secret source"
+    );
+
+    for strategy in &loaded.strategies {
+        assert_eq!(
+            strategy.config.execution_client_id,
+            ClientId::from("polymarket_main"),
+            "{} must not route to Hyperliquid until the live-submit packet is operator-approved",
+            strategy.relative_path
+        );
+    }
+}
+
+#[test]
+fn root_config_resolves_single_hyperliquid_execution_client_from_master_api_wallet() {
+    use bolt_v2::{
+        bolt_v3_config::load_bolt_v3_config, bolt_v3_secrets::resolve_bolt_v3_secrets_with,
+    };
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("root.toml should load with the Hyperliquid execution client");
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/polymarket/private-key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/polymarket/api-key" => Ok("polymarket-api-key".to_string()),
+        "/bolt/polymarket/api-secret" => Ok("YWJj".to_string()),
+        "/bolt/polymarket/api-passphrase" => Ok("polymarket-passphrase".to_string()),
+        "/bolt/binance/api-key" => Ok("binance-api-key".to_string()),
+        "/bolt/binance/api-secret" => {
+            Ok("MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string())
+        }
+        "/bolt/testnet/chainlink/api-key" => Ok("chainlink-api-key".to_string()),
+        "/bolt/testnet/chainlink/api-secret" => Ok("chainlink-api-secret".to_string()),
+        "/bolt/polyresearch/api-key" => Ok("polyresearch-api-key".to_string()),
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x1111111111111111111111111111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected root SSM path"),
+    })
+    .expect("root Hyperliquid execution client should resolve through the master API wallet");
+
+    assert!(
+        resolved.clients.contains_key("hyperliquid_execution"),
+        "hyperliquid_execution should resolve through the root SSM resolver"
+    );
+    let client = loaded.root.clients.get("hyperliquid_execution").unwrap();
+    let secrets = client.secrets.as_ref().unwrap().as_table().unwrap();
+    assert_eq!(
+        secrets
+            .get(stringify!(private_key_ssm_path))
+            .and_then(toml::Value::as_str),
+        Some("/bolt/hyperliquid/master_api_wallet/private_key")
     );
 }

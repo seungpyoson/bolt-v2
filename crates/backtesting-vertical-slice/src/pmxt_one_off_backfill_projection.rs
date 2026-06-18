@@ -1738,6 +1738,14 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         event_count_ledger_hash: Some(spec.event_count_ledger_hash),
         selected_asset_ids_hash: Some(spec.selected_asset_ids_hash),
         strategy: &spec.manifest.strategy,
+        execution_model: &spec.manifest.execution_model,
+        venue_queue_position: spec.manifest.venue.queue_position,
+        catalog_data_types: spec
+            .manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(spec.manifest),
         market_structure_fixture: market_structure_label(spec.manifest),
         fidelity_class: SourceProofFidelityClass::L2Replay,
@@ -1892,6 +1900,7 @@ fn normalize_binary_option_for_catalog(instrument: InstrumentAny) -> Result<Inst
         None, // margin_maint: not encoded by the NT catalog Arrow schema
         Some(bo.maker_fee),
         Some(bo.taker_fee),
+        None, // tick_scheme (NT bump): not populated by bolt
         bo.info,
         bo.ts_event,
         bo.ts_init,
@@ -2270,6 +2279,7 @@ mod tests {
             None,
             Some(Price::from("0.999")), // max_price: NT sentinel, not persistable
             Some(Price::from("0.001")), // min_price: NT sentinel, not persistable
+            None,
             None,
             None,
             None,

@@ -24,8 +24,8 @@ use anyhow::{Context, Result, ensure};
 use nautilus_core::{Params, UnixNanos, string::urlencoding};
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, BarType, CatalogPathPrefix, IndexPriceUpdate, MarkPriceUpdate,
-        OrderBookDelta, QuoteTick, TradeTick, order::BookOrder,
+        Bar, BarSpecification, BarType, CatalogPathPrefix, FundingRateUpdate, IndexPriceUpdate,
+        MarkPriceUpdate, OrderBookDelta, QuoteTick, TradeTick, order::BookOrder,
     },
     enums::{AggregationSource, AggressorSide, AssetClass, BookAction, OrderSide, PriceType},
     identifiers::{InstrumentId, Symbol, TradeId},
@@ -42,10 +42,10 @@ use ustr::Ustr;
 
 use super::{
     canonical_market_data::{
-        CanonicalBarRow, CanonicalBarsTable, CanonicalIndexPriceRow, CanonicalIndexPricesTable,
-        CanonicalMarkPriceRow, CanonicalMarkPricesTable, CanonicalOrderBookDeltaRow,
-        CanonicalOrderBookDeltasTable, CanonicalQuoteRow, CanonicalQuotesTable, DeltaAction,
-        DeltaSide,
+        CanonicalBarRow, CanonicalBarsTable, CanonicalFundingRateRow, CanonicalFundingRatesTable,
+        CanonicalIndexPriceRow, CanonicalIndexPricesTable, CanonicalMarkPriceRow,
+        CanonicalMarkPricesTable, CanonicalOrderBookDeltaRow, CanonicalOrderBookDeltasTable,
+        CanonicalQuoteRow, CanonicalQuotesTable, DeltaAction, DeltaSide,
     },
     canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
     source_proof::SourceProofFidelityClass,
@@ -76,6 +76,13 @@ pub const NT_DATA_TYPE_INDEX_PRICE_UPDATE: &str = "IndexPriceUpdate";
 /// `mark_prices` via NT's own `impl_catalog_path_prefix!(MarkPriceUpdate,
 /// "mark_prices")` — never redefined here.
 pub const NT_DATA_TYPE_MARK_PRICE_UPDATE: &str = "MarkPriceUpdate";
+
+/// NautilusTrader data type written for the funding-rate projection.
+///
+/// The token MUST equal the NT struct name; the catalog directory is
+/// `funding_rate_update` via NT's own
+/// `impl_catalog_path_prefix!(FundingRateUpdate, "funding_rate_update")`.
+pub const NT_DATA_TYPE_FUNDING_RATE_UPDATE: &str = "FundingRateUpdate";
 
 /// Accepted spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
@@ -362,6 +369,7 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
         None,
         None,
         None,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -539,6 +547,7 @@ pub fn build_crypto_perpetual(spec: &CryptoPerpetualInstrumentSpec) -> Result<Cr
         parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -602,6 +611,7 @@ pub fn build_crypto_future(spec: &CryptoFutureInstrumentSpec) -> Result<CryptoFu
         parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -683,6 +693,7 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
         None,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -1724,6 +1735,134 @@ pub fn read_back_mark(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec
         .context("query mark prices from catalog")
 }
 
+/// Convert canonical funding-rate rows into NautilusTrader
+/// `FundingRateUpdate`s.
+///
+/// Funding rate `rate` is a `Decimal`, not a price, so this conversion does not
+/// use instrument price precision. Timestamps route through the shared S1
+/// receipt-clock owners ([`ts_event_nanos`]/[`ts_init_nanos`]).
+///
+/// # Errors
+///
+/// Returns an error if a rate cannot be parsed or a timestamp source is invalid.
+pub fn canonical_rows_to_funding_rate_updates<I: Instrument + ?Sized>(
+    table: &CanonicalFundingRatesTable,
+    instrument: &I,
+) -> Result<Vec<FundingRateUpdate>> {
+    let instrument_id = instrument.id();
+    table
+        .rows
+        .iter()
+        .map(|row| canonical_row_to_funding_rate_update(instrument_id, row))
+        .collect()
+}
+
+fn canonical_row_to_funding_rate_update(
+    instrument_id: InstrumentId,
+    row: &CanonicalFundingRateRow,
+) -> Result<FundingRateUpdate> {
+    let rate = Decimal::from_str(&row.rate)
+        .map_err(|error| anyhow::anyhow!("invalid funding rate {:?}: {error}", row.rate))?;
+    let label = format!("funding rate {}", row.event_time);
+    let ts_event = ts_event_nanos(row.event_time, &label)?;
+    let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?;
+    let next_funding_ns = row
+        .next_funding_time
+        .map(|value| {
+            let nanos = u64::try_from(value)
+                .with_context(|| format!("{label}: negative next_funding_time {value}"))?;
+            ensure!(nanos > 0, "{label}: non-positive next_funding_time {value}");
+            Ok(UnixNanos::from(nanos))
+        })
+        .transpose()?;
+    Ok(FundingRateUpdate::new(
+        instrument_id,
+        rate,
+        row.interval_minutes,
+        next_funding_ns,
+        ts_event,
+        ts_init,
+    ))
+}
+
+/// Project a canonical funding-rate table into a NautilusTrader
+/// `ParquetDataCatalog`.
+///
+/// Mirrors the point-update projections: validate, build the instrument, assert
+/// the instrument id matches the canonical rows, convert, refuse a dirty root,
+/// then write the instrument and the `FundingRateUpdate` projection.
+///
+/// # Errors
+///
+/// Returns an error if instrument construction, conversion, or catalog writes
+/// fail, or if `catalog_root` is a non-empty (dirty) directory.
+pub fn project_canonical_funding_rates_to_catalog<S: CatalogInstrumentSpecSource + ?Sized>(
+    table: &CanonicalFundingRatesTable,
+    spec: &S,
+    catalog_root: &Path,
+) -> Result<CatalogProjection> {
+    table.validate()?;
+    let instrument = spec.build_instrument_any()?;
+    let instrument_id = instrument.id();
+    let instrument_id_text = instrument_id.to_string();
+    for (index, row) in table.rows.iter().enumerate() {
+        let row_instrument_id = row
+            .nt_instrument_id
+            .as_deref()
+            .with_context(|| format!("row {index}: canonical row missing nt_instrument_id"))?;
+        ensure!(
+            instrument_id_text == row_instrument_id,
+            "row {index}: instrument id {instrument_id} does not match canonical rows {}",
+            row_instrument_id
+        );
+    }
+    let updates = canonical_rows_to_funding_rate_updates(table, &instrument)?;
+    let count = updates.len();
+
+    ensure_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![instrument])
+        .context("write instrument to catalog")?;
+    catalog
+        .write_to_parquet(updates, None, None, None)
+        .context("write funding rates to catalog")?;
+
+    Ok(CatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_instrument_id: instrument_id.to_string(),
+        data_type: NT_DATA_TYPE_FUNDING_RATE_UPDATE.to_string(),
+        trade_count: count,
+        catalog_hash: logical_catalog_hash(catalog_root)?,
+        fidelity_class: table.fidelity_class,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected
+/// `FundingRateUpdate` data back from `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_funding_rates(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+) -> Result<Vec<FundingRateUpdate>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    let instrument_ids = vec![nt_instrument_id.to_string()];
+    let files = catalog_files_for_instruments::<FundingRateUpdate>(
+        &catalog,
+        catalog_root,
+        &instrument_ids,
+    )?;
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    catalog
+        .query_typed_data::<FundingRateUpdate>(None, None, None, None, Some(files), false)
+        .context("query funding rates from catalog")
+}
+
 /// Convert canonical bar rows into NautilusTrader `Bar`s under the table's
 /// externally-aggregated bar type, at the instrument's price/size precision.
 ///
@@ -1996,6 +2135,31 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             p.ts_init.as_u64(),
         )
     });
+    let funding_files =
+        catalog_files_for_instruments::<FundingRateUpdate>(&catalog, root, &instrument_ids)?;
+    let mut funding_rates = if funding_files.is_empty() {
+        Vec::new()
+    } else {
+        catalog
+            .query_typed_data::<FundingRateUpdate>(
+                None,
+                None,
+                None,
+                None,
+                Some(funding_files),
+                false,
+            )
+            .context("query funding rates from catalog for logical hash")?
+    };
+    funding_rates.sort_by(|a, b| {
+        a.ts_event
+            .cmp(&b.ts_event)
+            .then_with(|| a.instrument_id.cmp(&b.instrument_id))
+            .then_with(|| a.rate.cmp(&b.rate))
+            .then_with(|| a.interval.cmp(&b.interval))
+            .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
+            .then_with(|| a.ts_init.cmp(&b.ts_init))
+    });
 
     let mut hasher = Sha256::new();
     hasher.update(b"nautilus-logical-catalog.v1");
@@ -2109,6 +2273,33 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(mark_price.ts_event.as_u64().to_string().as_bytes());
         hasher.update([41u8]);
         hasher.update(mark_price.ts_init.as_u64().to_string().as_bytes());
+    }
+    // Funding-rate loop appended AFTER the mark loop with NEW unique
+    // domain-separator tags 42..47 (existing tags end at 41 for mark prices).
+    // Empty funding catalogs emit nothing, preserving existing reference hashes.
+    for funding_rate in funding_rates {
+        hasher.update([42u8]);
+        hasher.update(funding_rate.instrument_id.symbol.as_str().as_bytes());
+        hasher.update([0xff]);
+        hasher.update(funding_rate.instrument_id.venue.as_str().as_bytes());
+        hasher.update([43u8]);
+        hasher.update(funding_rate.rate.to_string().as_bytes());
+        hasher.update([44u8]);
+        if let Some(value) = funding_rate.interval {
+            hasher.update(value.to_be_bytes());
+        } else {
+            hasher.update(b"<none>");
+        }
+        hasher.update([45u8]);
+        if let Some(value) = funding_rate.next_funding_ns {
+            hasher.update(value.as_u64().to_be_bytes());
+        } else {
+            hasher.update(b"<none>");
+        }
+        hasher.update([46u8]);
+        hasher.update(funding_rate.ts_event.as_u64().to_be_bytes());
+        hasher.update([47u8]);
+        hasher.update(funding_rate.ts_init.as_u64().to_be_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -4235,6 +4426,382 @@ max_notional = "200000"
         );
     }
 
+    fn funding_rate_row(
+        event_time: i64,
+        capture_time: i64,
+        availability_time: Option<i64>,
+        rate: &str,
+        interval_minutes: Option<u16>,
+        next_funding_time: Option<i64>,
+    ) -> CanonicalFundingRateRow {
+        CanonicalFundingRateRow {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "BYBIT".to_string(),
+            product_family: "perpetual".to_string(),
+            product_category: "linear-perp".to_string(),
+            instrument_id: "BTCUSDT".to_string(),
+            canonical_instrument_key: "bybit/perpetual/BTCUSDT".to_string(),
+            venue_symbol: "BTCUSDT".to_string(),
+            nt_instrument_id: Some("BTCUSDT.BYBIT".to_string()),
+            event_time,
+            capture_time,
+            availability_time,
+            source_sequence: Some(event_time.to_string()),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            rate: rate.to_string(),
+            interval_minutes,
+            next_funding_time,
+        }
+    }
+
+    fn canonical_funding_rates_table() -> CanonicalFundingRatesTable {
+        let event_time = 1_700_000_000_000_000_000;
+        let capture_time = 1_700_000_000_000_000_500;
+        let rows = vec![
+            funding_rate_row(
+                event_time,
+                capture_time,
+                None,
+                "-0.000100",
+                Some(480),
+                Some(event_time + 28_800_000_000_000),
+            ),
+            funding_rate_row(
+                event_time + 1,
+                capture_time + 1,
+                None,
+                "0.000250",
+                Some(480),
+                Some(event_time + 28_800_000_000_000),
+            ),
+        ];
+        CanonicalFundingRatesTable {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: crate::canonical_trades::TradesPartition {
+                venue: "BYBIT".to_string(),
+                product_family: "perpetual".to_string(),
+                product_category: "linear-perp".to_string(),
+                instrument_id: "BTCUSDT".to_string(),
+                dt: "2026-05-22".to_string(),
+            },
+            source_proof_id: "source-proof-synthetic".to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::FundingReplay,
+            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            transform_hash: "0badc0de".to_string(),
+            payload_hash: "feedface".to_string(),
+            rows,
+        }
+    }
+
+    #[test]
+    fn projects_and_reads_back_funding_rates() {
+        let table = canonical_funding_rates_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect("project");
+        assert_eq!(projection.trade_count, 2);
+        assert_eq!(projection.data_type, NT_DATA_TYPE_FUNDING_RATE_UPDATE);
+        assert_eq!(projection.nt_instrument_id, "BTCUSDT.BYBIT");
+        assert!(!projection.catalog_hash.is_empty());
+
+        let loaded = read_back_funding_rates(dir.path(), "BTCUSDT.BYBIT").expect("read back");
+        assert_eq!(loaded.len(), 2);
+        let mut loaded = loaded;
+        loaded.sort_by_key(|p| p.ts_event.as_u64());
+        for (update, row) in loaded.iter().zip(table.rows.iter()) {
+            assert_eq!(update.instrument_id.to_string(), "BTCUSDT.BYBIT");
+            assert_eq!(update.rate, Decimal::from_str(&row.rate).unwrap());
+            assert_eq!(update.interval, row.interval_minutes);
+            assert_eq!(
+                update.next_funding_ns.map(|ts| ts.as_u64()),
+                row.next_funding_time.map(|ts| u64::try_from(ts).unwrap())
+            );
+            let label = format!("funding rate {}", row.event_time);
+            assert_eq!(
+                update.ts_event.as_u64(),
+                ts_event_nanos(row.event_time, &label).unwrap().as_u64()
+            );
+            assert_eq!(row.availability_time, None);
+            assert_eq!(
+                update.ts_init.as_u64(),
+                ts_init_nanos(row.availability_time, row.capture_time, &label)
+                    .unwrap()
+                    .as_u64(),
+                "ts_init must equal capture_time (the receipt clock), not event_time"
+            );
+        }
+    }
+
+    #[test]
+    fn read_back_funding_rates_returns_empty_when_catalog_has_no_funding_files() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let loaded = read_back_funding_rates(dir.path(), "BTCUSDT.BYBIT").expect("read back");
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn funding_projection_requires_nt_instrument_id() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].nt_instrument_id = None;
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("missing nt_instrument_id rejected");
+
+        assert!(
+            err.to_string().contains("missing nt_instrument_id"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_projection_rejects_later_missing_nt_instrument_id() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[1].nt_instrument_id = None;
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("later missing nt_instrument_id rejected");
+
+        assert!(err.to_string().contains("row 1"), "{err}");
+        assert!(
+            err.to_string().contains("missing nt_instrument_id"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_projection_rejects_nt_instrument_id_mismatch() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].nt_instrument_id = Some("ETHUSDT.BYBIT".to_string());
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("nt_instrument_id mismatch rejected");
+
+        assert!(
+            err.to_string().contains("does not match canonical rows"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_projection_rejects_later_nt_instrument_id_mismatch() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[1].nt_instrument_id = Some("ETHUSDT.BYBIT".to_string());
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("later nt_instrument_id mismatch rejected");
+
+        assert!(err.to_string().contains("row 1"), "{err}");
+        assert!(
+            err.to_string().contains("does not match canonical rows"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_fail_loud_when_rate_is_malformed() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].rate = "not-a-decimal".to_string();
+        let instrument = linear_perpetual_spec()
+            .build_instrument_any()
+            .expect("instrument");
+        let err = canonical_rows_to_funding_rate_updates(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("invalid funding rate"), "{err}");
+    }
+
+    #[test]
+    fn funding_rates_fail_loud_when_next_funding_time_is_negative() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].next_funding_time = Some(-1);
+        let instrument = linear_perpetual_spec()
+            .build_instrument_any()
+            .expect("instrument");
+        let err = canonical_rows_to_funding_rate_updates(&table, &instrument).unwrap_err();
+        assert!(
+            err.to_string().contains("negative next_funding_time"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_fail_loud_when_next_funding_time_is_zero() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].next_funding_time = Some(0);
+        let instrument = linear_perpetual_spec()
+            .build_instrument_any()
+            .expect("instrument");
+        let err = canonical_rows_to_funding_rate_updates(&table, &instrument).unwrap_err();
+        assert!(
+            err.to_string().contains("non-positive next_funding_time"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_fail_loud_when_capture_invalid_and_no_availability() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].availability_time = None;
+        table.rows[0].capture_time = 0;
+        let instrument = linear_perpetual_spec()
+            .build_instrument_any()
+            .expect("instrument");
+        let err = canonical_rows_to_funding_rate_updates(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("capture_time"), "{err}");
+    }
+
+    #[test]
+    fn funding_rates_fail_loud_when_availability_some_but_invalid() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].availability_time = Some(0);
+        table.rows[0].capture_time = 42;
+        let instrument = linear_perpetual_spec()
+            .build_instrument_any()
+            .expect("instrument");
+        let err = canonical_rows_to_funding_rate_updates(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("availability_time"), "{err}");
+    }
+
+    #[test]
+    fn funding_projection_refuses_dirty_catalog_root() {
+        let table = canonical_funding_rates_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("dirty catalog root must be refused");
+        assert!(err.to_string().contains("not empty"), "{err}");
+    }
+
+    #[test]
+    fn funding_catalog_hash_is_deterministic_across_roots() {
+        let table = canonical_funding_rates_table();
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir_a.path(),
+        )
+        .unwrap();
+        let b = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir_b.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            a.catalog_hash, b.catalog_hash,
+            "same funding data must hash identically regardless of root"
+        );
+    }
+
+    #[test]
+    fn funding_catalog_hash_changes_with_data_content() {
+        let table_a = canonical_funding_rates_table();
+        let mut table_b = canonical_funding_rates_table();
+        table_b.rows[0].rate = "-0.000200".to_string();
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_funding_rates_to_catalog(
+            &table_a,
+            &linear_perpetual_spec(),
+            dir_a.path(),
+        )
+        .unwrap();
+        let b = project_canonical_funding_rates_to_catalog(
+            &table_b,
+            &linear_perpetual_spec(),
+            dir_b.path(),
+        )
+        .unwrap();
+        assert_ne!(
+            a.catalog_hash, b.catalog_hash,
+            "different funding rate must change the catalog hash"
+        );
+    }
+
+    #[test]
+    fn funding_catalog_hash_changes_with_interval_content() {
+        let table_a = canonical_funding_rates_table();
+        let mut table_b = canonical_funding_rates_table();
+        table_b.rows[0].interval_minutes = Some(240);
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_funding_rates_to_catalog(
+            &table_a,
+            &linear_perpetual_spec(),
+            dir_a.path(),
+        )
+        .unwrap();
+        let b = project_canonical_funding_rates_to_catalog(
+            &table_b,
+            &linear_perpetual_spec(),
+            dir_b.path(),
+        )
+        .unwrap();
+        assert_ne!(
+            a.catalog_hash, b.catalog_hash,
+            "different funding interval must change the catalog hash"
+        );
+    }
+
+    #[test]
+    fn funding_catalog_hash_changes_with_next_funding_time_content() {
+        let table_a = canonical_funding_rates_table();
+        let mut table_b = canonical_funding_rates_table();
+        table_b.rows[0].next_funding_time = Some(table_b.rows[0].event_time + 57_600_000_000_000);
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_funding_rates_to_catalog(
+            &table_a,
+            &linear_perpetual_spec(),
+            dir_a.path(),
+        )
+        .unwrap();
+        let b = project_canonical_funding_rates_to_catalog(
+            &table_b,
+            &linear_perpetual_spec(),
+            dir_b.path(),
+        )
+        .unwrap();
+        assert_ne!(
+            a.catalog_hash, b.catalog_hash,
+            "different next funding time must change the catalog hash"
+        );
+    }
+
     #[test]
     fn mark_section_does_not_change_trade_only_catalog_hash() {
         // The mark loop is appended AFTER the index loop with fresh tags 38..41
@@ -4672,6 +5239,7 @@ max_notional = "200000"
                 None,
                 Some(Decimal::ZERO),
                 Some(Decimal::ZERO),
+                None, // tick_scheme (NT bump)
                 None,
                 ts_init,
                 ts_init,

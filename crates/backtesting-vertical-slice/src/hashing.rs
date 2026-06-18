@@ -12,9 +12,18 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// Whether `value` is a lowercase-hex SHA-256 digest.
+#[must_use]
+pub fn is_lowercase_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::sha256_hex;
+    use super::{is_lowercase_sha256_hex, sha256_hex};
 
     #[test]
     fn empty_input_digest_matches_sha256_test_vector() {
@@ -22,5 +31,20 @@ mod tests {
             sha256_hex(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn lowercase_sha256_validator_rejects_non_digest_strings() {
+        assert!(is_lowercase_sha256_hex(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        ));
+        assert!(!is_lowercase_sha256_hex(""));
+        assert!(!is_lowercase_sha256_hex("abc123"));
+        assert!(!is_lowercase_sha256_hex(
+            "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+        ));
+        assert!(!is_lowercase_sha256_hex(
+            "g3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        ));
     }
 }

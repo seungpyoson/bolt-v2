@@ -1,40 +1,22 @@
 use std::{
-    env, fs, io,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
-// SINGLE TRANSCRIPTION of the canonicalization walk + framing + hash. This is
-// the exact same source file the crate compiles as
-// `crate::source_canonicalization`; including it here via `#[path]` guarantees
-// the build-time canonical bytes and the runtime digest can never drift. It
-// depends only on `std` + `sha2` + `hex` (declared in `[build-dependencies]`
-// pinned to the same versions as `[dependencies]`).
-// The build script only consumes `GATED_SOURCE_ROOTS` + canonical source-set
-// bytes
-// from this shared module; the digest/text accessors are used by the lib, not
-// here, so `dead_code` is expected in the build-script compilation view.
-#[allow(dead_code)]
-#[path = "src/source_canonicalization.rs"]
-mod source_canonicalization;
-
-// Generous in-build cap. The strategy source set is now the strategy directory
-// plus shared execution sources, whose framed canonical stream is well under this
-// cap; the runtime digest path applies the operator-configured
-// `max_source_bytes` instead. This only bounds the bytes embedded into the
-// binary at build time.
-const BUILD_CANONICAL_MAX_BYTES: u64 = 8 * 1024 * 1024;
+/// Repo-root manifest that is the single owner of the gated source-root list,
+/// shared with `scripts/bolt_v3_source_roots.py`.
+const GATED_SOURCE_ROOTS_MANIFEST: &str = "gated_source_roots.manifest";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/source_canonicalization.rs");
     for env_var in build_script_rerun_env_vars() {
         println!("cargo:rerun-if-env-changed={env_var}");
     }
 
     let manifest_dir = build_script_manifest_dir();
     emit_git_head_rerun_paths(&manifest_dir);
-    emit_canonical_source_artifacts(&manifest_dir);
+    emit_gated_source_roots(&manifest_dir);
 
     match Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -59,42 +41,136 @@ fn main() {
     }
 }
 
+/// Generate the `GATED_SOURCE_ROOTS` constant from the repo-root manifest into
+/// `$OUT_DIR/gated_source_roots.rs`, which `src/source_canonicalization.rs`
+/// includes. The manifest is the single source of the gated root list; Python
+/// reads the same file. Build fails loud if the manifest is missing or malformed.
+fn emit_gated_source_roots(manifest_dir: &Path) {
+    let manifest_path = manifest_dir.join(GATED_SOURCE_ROOTS_MANIFEST);
+    println!("cargo:rerun-if-changed={}", manifest_path.display());
+    let text = fs::read_to_string(&manifest_path).unwrap_or_else(|error| {
+        panic!(
+            "reading {} should succeed: {error}",
+            manifest_path.display()
+        )
+    });
+    let entries = parse_gated_source_roots(&text, &manifest_path);
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
+    let out_path = out_dir.join("gated_source_roots.rs");
+    fs::write(&out_path, render_gated_source_roots(&entries))
+        .unwrap_or_else(|error| panic!("writing {} should succeed: {error}", out_path.display()));
+}
+
+/// Parse the manifest into `(key, roots)` entries in declaration order. Comments
+/// (`#`) and blank lines are ignored; `[key]` starts a section; every other line
+/// is a repo-relative root. Invalid roots (absolute, backslash, `.`/`..`/empty
+/// components) and structural errors fail the build with a file:line message.
+/// The manifest must declare exactly the four registry sections (`[strategy]`,
+/// `[submit_admission]`, `[outcome_group]`, `[maker]`): a missing or unexpected
+/// section fails the build. `scripts/bolt_v3_source_roots.py` enforces the same
+/// set and mirrors the two Unicode-sensitive primitives used here: line
+/// splitting on
+/// `str::lines()` terminators (`\n`/`\r\n`, via Python `split("\n")` not
+/// `splitlines()`) and whitespace trimming on the `str::trim()` `White_Space`
+/// set (not bare `str.strip()`, which also strips U+001C–U+001F). Every other
+/// step is an ASCII-literal check, so the two parsers are equivalent for all
+/// inputs and a malformed manifest fails loudly on both.
+fn parse_gated_source_roots(text: &str, manifest_path: &Path) -> Vec<(String, Vec<String>)> {
+    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+    for (index, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let location = format!("{}:{}", manifest_path.display(), index + 1);
+        if let Some(rest) = line.strip_prefix('[') {
+            let key = rest
+                .strip_suffix(']')
+                .unwrap_or_else(|| panic!("{location}: malformed section header `{line}`"))
+                .trim();
+            assert!(!key.is_empty(), "{location}: empty section key");
+            assert!(
+                !entries.iter().any(|(existing, _)| existing == key),
+                "{location}: duplicate section `[{key}]`"
+            );
+            entries.push((key.to_string(), Vec::new()));
+            continue;
+        }
+        let valid_root = !line.starts_with('/')
+            && !line.contains('\\')
+            && line
+                .split('/')
+                .all(|component| !component.is_empty() && component != "." && component != "..");
+        assert!(
+            valid_root,
+            "{location}: invalid repo-relative root `{line}`"
+        );
+        let current = entries
+            .last_mut()
+            .unwrap_or_else(|| panic!("{location}: root `{line}` precedes any [section] header"));
+        current.1.push(line.to_string());
+    }
+    assert!(
+        !entries.is_empty(),
+        "{}: no gated source roots defined",
+        manifest_path.display()
+    );
+    for (key, roots) in &entries {
+        assert!(
+            !roots.is_empty(),
+            "{}: section `[{key}]` has no roots",
+            manifest_path.display()
+        );
+    }
+    // The manifest must declare EXACTLY the four registry keys the crate consumes
+    // (STRATEGY_KEY / SUBMIT_ADMISSION_KEY / OUTCOME_GROUP_KEY / MAKER_KEY in
+    // `src/source_canonicalization.rs`). build.rs cannot import those crate consts,
+    // so they are mirrored here; `scripts/bolt_v3_source_roots.py` enforces the
+    // same set. Rejecting both missing AND unexpected sections means a typo'd
+    // header (e.g. `[strategies]`) fails the build instead of silently dropping
+    // roots from the gated set or panicking later at `registry_entry`.
+    const REQUIRED_KEYS: [&str; 4] = ["strategy", "submit_admission", "outcome_group", "maker"];
+    let keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+    for required in REQUIRED_KEYS {
+        assert!(
+            keys.contains(&required),
+            "{}: required section `[{required}]` is missing",
+            manifest_path.display()
+        );
+    }
+    for key in &keys {
+        assert!(
+            REQUIRED_KEYS.contains(key),
+            "{}: unexpected section `[{key}]` (expected exactly {REQUIRED_KEYS:?})",
+            manifest_path.display()
+        );
+    }
+    entries
+}
+
+/// Render the parsed entries as a `GATED_SOURCE_ROOTS` constant. Keys and roots
+/// are emitted with `{:?}` so they are valid, escaped Rust string literals.
+fn render_gated_source_roots(entries: &[(String, Vec<String>)]) -> String {
+    let mut out = String::new();
+    out.push_str("// @generated by build.rs from gated_source_roots.manifest — do not edit.\n");
+    out.push_str("pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[\n");
+    for (key, roots) in entries {
+        out.push_str("    GatedSourceRoot {\n");
+        out.push_str(&format!("        key: {key:?},\n"));
+        out.push_str("        relative_roots: &[\n");
+        for root in roots {
+            out.push_str(&format!("            {root:?},\n"));
+        }
+        out.push_str("        ],\n");
+        out.push_str("    },\n");
+    }
+    out.push_str("];\n");
+    out
+}
+
 fn emit_git_head_rerun_paths(manifest_dir: &Path) {
     for path in git_head_rerun_paths(manifest_dir) {
         println!("cargo:rerun-if-changed={}", path.display());
-    }
-}
-
-/// Re-emit the canonical bytes of every gated source set into
-/// `$OUT_DIR/<key>.canonical`, using the SAME walk/framing the runtime digest
-/// uses. The verifier embeds these via `include_bytes!(concat!(env!("OUT_DIR"),
-/// "/<key>.canonical"))` and hashes them at runtime — compile-time
-/// tamper-evidence preserved, layout-independent. Emits `rerun-if-changed` for
-/// every root so a modify/add/remove (including nested subdirs after a split)
-/// re-triggers the build.
-fn emit_canonical_source_artifacts(manifest_dir: &Path) {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR should be set by Cargo"));
-    let rerun_paths = canonical_source_rerun_paths(manifest_dir)
-        .unwrap_or_else(|error| panic!("canonical source rerun paths should collect: {error}"));
-    for path in rerun_paths {
-        println!("cargo:rerun-if-changed={}", path.display());
-    }
-    for entry in source_canonicalization::GATED_SOURCE_ROOTS {
-        let canonical = source_canonicalization::canonical_source_set_bytes(
-            manifest_dir,
-            entry.relative_roots,
-            BUILD_CANONICAL_MAX_BYTES,
-        )
-        .unwrap_or_else(|error| {
-            panic!(
-                "canonical source bytes for `{}` ({:?}) should emit: {error}",
-                entry.key, entry.relative_roots
-            )
-        });
-        let out_path = out_dir.join(format!("{}.canonical", entry.key));
-        fs::write(&out_path, &canonical).unwrap_or_else(|error| {
-            panic!("writing {} should succeed: {error}", out_path.display())
-        });
     }
 }
 
@@ -106,63 +182,6 @@ pub fn build_script_manifest_dir() -> PathBuf {
     PathBuf::from(
         env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set by Cargo"),
     )
-}
-
-pub fn canonical_source_rerun_paths(manifest_dir: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut paths = vec![manifest_dir.join("src/source_canonicalization.rs")];
-    for entry in source_canonicalization::GATED_SOURCE_ROOTS {
-        for relative_root in entry.relative_roots {
-            collect_canonical_source_rerun_paths(&manifest_dir.join(relative_root), &mut paths)?;
-        }
-    }
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
-}
-
-fn collect_canonical_source_rerun_paths(path: &Path, paths: &mut Vec<PathBuf>) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "canonical source rerun path metadata {}: {error}",
-                path.display()
-            ),
-        )
-    })?;
-    let file_type = metadata.file_type();
-    if file_type.is_dir() {
-        paths.push(path.to_path_buf());
-        let mut entries = fs::read_dir(path)
-            .map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "canonical source rerun path directory {}: {error}",
-                        path.display()
-                    ),
-                )
-            })?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<io::Result<Vec<_>>>()?;
-        entries.sort();
-        for entry in entries {
-            collect_canonical_source_rerun_paths(&entry, paths)?;
-        }
-    } else if file_type.is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "canonical source rerun path rejects symlink: {}",
-                path.display()
-            ),
-        ));
-    } else if file_type.is_file()
-        && path.extension().and_then(|extension| extension.to_str()) == Some("rs")
-    {
-        paths.push(path.to_path_buf());
-    }
-    Ok(())
 }
 
 pub fn git_head_rerun_paths(manifest_dir: &Path) -> Vec<PathBuf> {

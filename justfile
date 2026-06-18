@@ -188,6 +188,18 @@ verify-bolt-v3-no-exit-market-command: check-workspace
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
 
+verify-bolt-v3-no-venue-name-branch: check-workspace
+    python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
+    python3 scripts/verify_bolt_v3_no_venue_name_branch.py
+
+verify-bolt-v3-requote-construction: check-workspace
+    python3 scripts/test_verify_bolt_v3_requote_construction.py
+    python3 scripts/verify_bolt_v3_requote_construction.py
+
+verify-bolt-v3-market-family-coupling: check-workspace
+    python3 scripts/test_verify_bolt_v3_market_family_coupling.py
+    python3 scripts/verify_bolt_v3_market_family_coupling.py
+
 verify-bolt-v3-dependency-direction: check-workspace
     python3 scripts/test_verify_bolt_v3_dependency_direction.py
     python3 scripts/verify_bolt_v3_dependency_direction.py
@@ -361,6 +373,12 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_outcome_group_nt_reuse.py
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
+    python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
+    python3 scripts/verify_bolt_v3_no_venue_name_branch.py
+    python3 scripts/test_verify_bolt_v3_requote_construction.py
+    python3 scripts/verify_bolt_v3_requote_construction.py
+    python3 scripts/test_verify_bolt_v3_market_family_coupling.py
+    python3 scripts/verify_bolt_v3_market_family_coupling.py
     python3 scripts/test_verify_runtime_capture_yaml.py
     python3 scripts/test_local_verification_gate.py
     python3 scripts/test_lane_governor.py
@@ -544,11 +562,35 @@ worktree-remove branch:
     git worktree prune
     echo "Removed worktree at $dest"
 
+# clean-merged: auto-cleanup of merged branches and worktrees.
+# See docs/ops/clean-merged-design.md. Default = dry-run; pass --apply to execute.
+clean-merged *args:
+    python3 scripts/clean_merged_artifacts.py {{args}}
+
+# clean-merged: print install/heartbeat/quarantine/gh health.
+clean-merged-doctor:
+    python3 scripts/clean_merged_artifacts.py --doctor
+
+# clean-merged: one-time bulk reclaim of the worktree backlog.
+# Prints a dry-run first; pass --apply to actually archive+remove.
+clean-merged-backlog *args:
+    python3 scripts/clean_merged_artifacts.py --include-worktrees {{args}}
+
+# clean-merged: prune quarantine archives and backup refs older than DAYS (default 30).
+clean-merged-purge days='30':
+    python3 scripts/clean_merged_artifacts.py --purge-quarantine {{days}}
+    python3 scripts/clean_merged_artifacts.py --prune-backups {{days}}
+
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "Setting git hooks path..."
     git config core.hooksPath .githooks
+    # Ensure managed hooks are executable (git warns + skips otherwise).
+    chmod +x .githooks/post-merge .githooks/post-checkout .githooks/post-rewrite 2>/dev/null || true
+
+    echo "Enabling remote.origin.prune (auto-prune deleted upstreams on fetch)..."
+    git config remote.origin.prune true
 
     echo "Adding {{target}} target..."
     rustup target add {{target}}

@@ -4,7 +4,7 @@ use object_store::{
     ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult,
     Result as ObjectStoreResult, memory::InMemory, path::Path as ObjectPath,
 };
-use std::{fmt, fs, io::Write};
+use std::{fmt, fs, io::Write, path::Path};
 
 use backtesting_vertical_slice::{
     artifact_store::{
@@ -16,15 +16,16 @@ use backtesting_vertical_slice::{
         CreateOnlyWriteDisposition, ResolvedArtifactRoot, S3ArtifactStoreCredentials,
         StoredArtifactIndexPointer, persist_catalog_projection_for_source_binding,
     },
+    conversion_boundary::{CONVERSION_MANIFEST_FILE, ConversionCatalogMetadata},
     nt_catalog_capability::{
         NT_CATALOG_CAPABILITY_PROOF_SCHEMA_VERSION, NtCatalogCapabilityControls,
         NtCatalogCapabilityEvidence, NtCatalogCapabilityProof, NtCatalogCapabilityProofDocument,
         NtCatalogCapabilityRunSpec, NtCatalogCredentialSource, NtCatalogReadBackEvidence,
         SYNTHETIC_SOURCE_PROOF_ID,
     },
-    operator::{RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
+    operator::{CATALOG_DIR, RunSpec, run_from_run_spec, run_from_run_spec_with_artifact_store},
     result_contract::BacktestResultContract,
-    run_manifest::MarketStructureFixture,
+    run_manifest::{ManifestArtifactStoreSsmParameters, MarketStructureFixture},
 };
 use flate2::{Compression, write::GzEncoder};
 use serde::Deserialize;
@@ -42,6 +43,31 @@ fn gzip(text: &str) -> Vec<u8> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(text.as_bytes()).expect("gzip write");
     encoder.finish().expect("gzip finish")
+}
+
+async fn assert_store_uri_matches_file(
+    store: &dyn ObjectStore,
+    artifact_root: &ResolvedArtifactRoot,
+    uri: &str,
+    local_path: &Path,
+) {
+    let expected = fs::read(local_path).expect("local artifact bytes");
+    let object_path = artifact_root
+        .object_path_for_uri(uri)
+        .expect("artifact URI under root");
+    let stored = store
+        .get(&object_path)
+        .await
+        .expect("durable contract artifact exists")
+        .bytes()
+        .await
+        .expect("durable contract artifact bytes");
+    assert_eq!(
+        stored.as_ref(),
+        expected.as_slice(),
+        "durable artifact {uri} must match {}",
+        local_path.display()
+    );
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -967,6 +993,30 @@ async fn create_only_probe_requires_duplicate_create_rejection() {
 }
 
 #[tokio::test]
+async fn create_only_probe_replays_existing_same_payload_sentinels() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = InMemory::new();
+    let writer = CreateOnlyArtifactWriter::new(&store);
+
+    let first = writer
+        .probe_create_only(&root, "probe-run-123")
+        .await
+        .expect("first create-only probe");
+    let replay = writer
+        .probe_create_only(&root, "probe-run-123")
+        .await
+        .expect("same-payload probe replay must be idempotent");
+
+    assert_eq!(replay.probe_uri, first.probe_uri);
+    assert_eq!(replay.copy_source_uri, first.copy_source_uri);
+    assert_eq!(replay.copy_dest_uri, first.copy_dest_uri);
+    assert!(replay.first_create_succeeded);
+    assert!(replay.duplicate_create_rejected);
+    assert!(replay.first_copy_succeeded);
+    assert!(replay.duplicate_copy_rejected);
+}
+
+#[tokio::test]
 async fn persists_catalog_projection_directory_with_create_only_dispatch() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let dispatch = CatalogDispatchConfig {
@@ -1109,6 +1159,46 @@ async fn persists_catalog_projection_directory_with_create_only_dispatch() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn rejects_catalog_projection_symlink_without_following() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let dispatch = CatalogDispatchConfig {
+        bindings: vec![CatalogProjectionBinding {
+            source_binding: "binary-official".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            catalog_projection_id: "projection-run-123".to_string(),
+        }],
+    };
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let outside = tempfile::TempDir::new().expect("outside dir");
+    fs::create_dir_all(outside.path().join("data/trade_tick")).expect("outside catalog dir");
+    fs::write(
+        outside.path().join("data/trade_tick/part-000.parquet"),
+        b"outside-root",
+    )
+    .expect("outside catalog data");
+    std::os::unix::fs::symlink(outside.path(), temp.path().join("linked-catalog"))
+        .expect("catalog symlink");
+
+    let store = InMemory::new();
+    let err = persist_catalog_projection_for_source_binding(
+        &store,
+        &root,
+        &dispatch,
+        "binary-official",
+        MarketStructureFixture::BinaryOption,
+        temp.path(),
+    )
+    .await
+    .expect_err("catalog projection must reject symlinks instead of following them");
+
+    assert!(
+        format!("{err:#}").contains("catalog projection contains non-regular file linked-catalog"),
+        "{err:#}"
+    );
+}
+
 #[tokio::test]
 async fn rejects_duplicate_catalog_projection_bytes() {
     let root = artifact_config().resolve().expect("valid artifact root");
@@ -1231,6 +1321,78 @@ fn rejects_manifest_fixture_mismatch() {
 }
 
 #[tokio::test]
+async fn operator_artifact_store_path_rejects_artifact_store_region_mismatch_before_local_work() {
+    let gz = gzip(SAMPLE_CSV);
+    let mut spec = committed_run_spec_for(&gz);
+    spec.manifest
+        .artifact_store
+        .rust_storage_options
+        .insert("region".to_string(), "us-west-2".to_string());
+    let output_dir = tempfile::TempDir::new().expect("temp dir");
+    let store = InMemory::new();
+
+    let err = match run_from_run_spec_with_artifact_store(
+        &spec,
+        &gz,
+        output_dir.path(),
+        &store,
+        |_, _, _| panic!("artifact-store region mismatch must fail before runtime evidence"),
+    )
+    .await
+    {
+        Ok(_) => panic!("artifact-store region mismatch must fail"),
+        Err(err) => err,
+    };
+
+    assert!(
+        err.to_string().contains("artifact-store region mismatch"),
+        "{err}"
+    );
+    assert!(
+        !output_dir.path().join(CONVERSION_MANIFEST_FILE).exists(),
+        "artifact-store config mismatch must fail before local conversion work"
+    );
+}
+
+#[tokio::test]
+async fn operator_artifact_store_path_rejects_artifact_store_ssm_region_mismatch_before_local_work()
+{
+    let gz = gzip(SAMPLE_CSV);
+    let mut spec = committed_run_spec_for(&gz);
+    spec.manifest.artifact_store.ssm_parameters = Some(ManifestArtifactStoreSsmParameters {
+        region: "us-west-2".to_string(),
+        access_key_id: "/bolt-v2/test/access-key-id".to_string(),
+        secret_access_key: "/bolt-v2/test/secret-access-key".to_string(),
+        session_token: None,
+    });
+    let output_dir = tempfile::TempDir::new().expect("temp dir");
+    let store = InMemory::new();
+
+    let err = match run_from_run_spec_with_artifact_store(
+        &spec,
+        &gz,
+        output_dir.path(),
+        &store,
+        |_, _, _| panic!("artifact-store SSM region mismatch must fail before runtime evidence"),
+    )
+    .await
+    {
+        Ok(_) => panic!("artifact-store SSM region mismatch must fail"),
+        Err(err) => err,
+    };
+
+    assert!(
+        err.to_string()
+            .contains("artifact-store SSM region mismatch"),
+        "{err}"
+    );
+    assert!(
+        !output_dir.path().join(CONVERSION_MANIFEST_FILE).exists(),
+        "artifact-store SSM config mismatch must fail before local conversion work"
+    );
+}
+
+#[tokio::test]
 async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri() {
     let gz = gzip(SAMPLE_CSV);
     let spec = committed_run_spec_for(&gz);
@@ -1282,6 +1444,24 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     assert_eq!(
         artifacts.output.contract.artifact_uris.nt_catalog_uri,
         expected_catalog_root
+    );
+    let transient_catalog_uri = format!(
+        "{}/{}",
+        spec.manifest.output_prefix.trim_end_matches('/'),
+        CATALOG_DIR
+    );
+    for claim_limit in &artifacts.output.contract.claim_limits {
+        assert!(
+            !claim_limit.contains(&transient_catalog_uri),
+            "durable contract claim limit must not reference transient catalog URI: {claim_limit}"
+        );
+    }
+    assert!(
+        artifacts.output.contract.claim_limits.iter().any(|limit| {
+            limit.contains("NT pass_through surface catalog.catalog_path")
+                && limit.contains(&expected_catalog_root)
+        }),
+        "durable contract claim limits must reference the persisted catalog root"
     );
     assert!(
         artifacts
@@ -1390,7 +1570,40 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     );
     assert_eq!(
         artifacts.output.contract.catalog_hash,
-        persisted_projection.manifest_sha256
+        artifacts.output.conversion_catalog_metadata.catalog_hash,
+        "durable result contract must keep catalog_hash coherent with catalog metadata"
+    );
+    assert_eq!(
+        artifacts
+            .output
+            .conversion_catalog_metadata
+            .execution_catalog_uri,
+        expected_catalog_root,
+        "artifact-store path must rewrite catalog metadata to the durable catalog root"
+    );
+    assert!(
+        artifacts
+            .output
+            .conversion_catalog_metadata
+            .direct_s3_catalog_access_proven,
+        "artifact-store path must record the proved direct-S3 catalog access"
+    );
+    assert_eq!(
+        artifacts.output.contract.catalog_metadata_hash,
+        artifacts
+            .output
+            .conversion_catalog_metadata
+            .content_hash()
+            .expect("catalog metadata hash"),
+        "durable result contract must bind the rewritten catalog metadata"
+    );
+    let persisted_metadata: ConversionCatalogMetadata = serde_json::from_str(
+        &fs::read_to_string(&artifacts.catalog_metadata_path).expect("catalog metadata json"),
+    )
+    .expect("catalog metadata parses");
+    assert_eq!(
+        persisted_metadata, artifacts.output.conversion_catalog_metadata,
+        "catalog-metadata.json must be rewritten with durable execution access"
     );
     assert_eq!(
         artifacts
@@ -1406,8 +1619,8 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
     let persisted_contract: BacktestResultContract =
         serde_json::from_str(&persisted_contract_json).expect("durable contract parses");
     assert_eq!(
-        persisted_contract.catalog_hash,
-        persisted_projection.manifest_sha256
+        persisted_contract.catalog_hash, persisted_metadata.catalog_hash,
+        "persisted durable contract must keep catalog_hash coherent with persisted metadata"
     );
     assert_eq!(
         persisted_contract
@@ -1429,6 +1642,34 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
         contract_json.contains(expected_catalog_root.as_str()),
         "durable contract must contain canonical catalog root: {contract_json}"
     );
+    assert_store_uri_matches_file(
+        &store,
+        &artifact_root,
+        &persisted_contract.artifact_uris.source_proof_uri,
+        &artifacts.proof_path,
+    )
+    .await;
+    assert_store_uri_matches_file(
+        &store,
+        &artifact_root,
+        &persisted_contract.artifact_uris.canonical_table_uri,
+        &artifacts.canonical_artifact_path,
+    )
+    .await;
+    assert_store_uri_matches_file(
+        &store,
+        &artifact_root,
+        &persisted_contract.artifact_uris.catalog_metadata_uri,
+        &artifacts.catalog_metadata_path,
+    )
+    .await;
+    assert_store_uri_matches_file(
+        &store,
+        &artifact_root,
+        &persisted_contract.artifact_uris.result_contract_uri,
+        &artifacts.contract_path,
+    )
+    .await;
     for object in &artifacts.persisted_catalog_objects {
         let object_path = artifact_root
             .object_path_for_uri(&object.uri)
@@ -1459,6 +1700,74 @@ async fn operator_artifact_store_path_persists_catalog_and_rewrites_contract_uri
             .expect("objects array")
             .len()
             == persisted_projection.objects.len()
+    );
+
+    let mut second_spec = spec.clone();
+    second_spec.create_only_probe_id =
+        Some("backtesting-vertical-slice-bnbusdc-2026-03-01-rerun".to_string());
+    second_spec
+        .nt_catalog_capability_proof
+        .as_mut()
+        .expect("run spec carries NT catalog capability proof")
+        .proof_run_id = "synthetic-capability-proof-rerun".to_string();
+    let second = run_from_run_spec_with_artifact_store(
+        &second_spec,
+        &gz,
+        output_dir.path(),
+        &store,
+        |artifact_root, plan, create_only_probe| {
+            let mut evidence =
+                successful_capability_evidence(artifact_root, nt_catalog_capability_proof);
+            evidence.read_back.catalog_uri = plan.synthetic_catalog_root_uri.clone();
+            evidence.nt_catalog_storage_option_keys = plan.storage_options_keys.clone();
+            evidence.create_only_probe = create_only_probe;
+            Ok(evidence)
+        },
+    )
+    .await
+    .expect("operator artifact-store rerun replays idempotently");
+    assert_eq!(
+        second.canonical_catalog_uri.as_deref(),
+        Some(expected_catalog_root.as_str())
+    );
+    assert!(
+        !second.catalog_root.exists(),
+        "artifact-store rerun should still remove the transient local NT catalog after durable persistence"
+    );
+    assert_eq!(
+        second
+            .persisted_catalog_projection
+            .as_ref()
+            .expect("second persisted projection")
+            .manifest_create_only_write,
+        CreateOnlyWriteDisposition::AlreadyExistedSamePayload
+    );
+    assert!(
+        second
+            .persisted_catalog_objects
+            .iter()
+            .all(|object| object.create_only_write
+                == CreateOnlyWriteDisposition::AlreadyExistedSamePayload),
+        "artifact-store rerun must idempotently reuse durable catalog objects"
+    );
+    assert_eq!(
+        second
+            .nt_catalog_capability_proof_artifact
+            .as_ref()
+            .expect("second proof artifact")
+            .proof_artifact_create_only_write,
+        CreateOnlyWriteDisposition::Created
+    );
+    let second_contract: BacktestResultContract = serde_json::from_str(
+        &fs::read_to_string(&second.contract_path).expect("second durable contract json"),
+    )
+    .expect("second durable contract parses");
+    assert_eq!(
+        second_contract
+            .artifact_uris
+            .nt_catalog_manifest_uri
+            .as_deref(),
+        Some(persisted_projection.manifest_uri.as_str())
     );
 }
 

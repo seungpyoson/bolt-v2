@@ -131,9 +131,9 @@ is_quote_quantity = false
 side = "sell"
 position_side = "long"
 order_type = "market"
-time_in_force = "gtc"
+time_in_force = "ioc"
 is_post_only = false
-is_reduce_only = true
+is_reduce_only = false
 is_quote_quantity = false
 
 [parameters]

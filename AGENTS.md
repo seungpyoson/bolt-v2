@@ -74,7 +74,8 @@ These repo-level rules are in addition to any higher-level agent instructions.
 
 - Full CI is proof. Rust Probe is debugging.
 - Agents may use Rust Probe only when cheap local checks cannot answer the question.
-- Use the managed `just rust-probe ...` command only from a clean named branch whose `HEAD` is pushed to its upstream. The command dispatches the exact pushed SHA to GitHub Actions/Ubicloud and refuses unsafe local state.
+- Use `just rust-probe suggest` before dispatching a probe to choose the smallest targeted remote Rust debugging command.
+- Use dispatching `just rust-probe ...` modes only from a clean named branch whose `HEAD` is pushed to its upstream. Those modes dispatch the exact pushed SHA to GitHub Actions/Ubicloud and refuse unsafe local state.
 - Before running Rust Probe, state: (1) changed files, (2) suspected failure class, (3) selected mode, (4) selected test target/name, (5) why this is the smallest sufficient probe.
 - Limits: max 2 Rust Probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; Rust Probe must not replace the required `gate`; do not run full CI just to discover ordinary compiler errors.
 
@@ -84,6 +85,12 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Do not ask for or frame external red-team review while the branch has uncommitted changes, unpushed commits, unresolved findings, unanswered review comments, or failing checks.
 - Do not ask for external review until the exact PR head's CI is confirmed green.
 - If the only remaining local delta is a fix or cleanup already made locally, commit and push it before further review discussion instead of pausing in a half-finished state.
+
+## Merge Mechanics
+
+- A repo ruleset on `main` (`required_status_checks` plus any review rules) gates merges. A merge refused with "base branch policy prohibits the merge" while every active rule actually passes is usually GitHub's stale merge-state cache, not a real block: GitHub recomputes a PR's mergeability on PR events (push, review, close/reopen) and a periodic background pass, not immediately when a ruleset is edited — so a just-fixed rule can keep serving the old BLOCKED verdict.
+- List the active rules with `gh api repos/{owner}/{repo}/rules/branches/main` (`gh` fills `{owner}`/`{repo}` from the current repo), then verify each is actually satisfied — required checks green in the PR status rollup (`gh pr view <n> --json statusCheckRollup`) and any required approvals met. If they are, force a recompute (push, a review, or close/reopen) or wait for GitHub's background pass, then retry the merge.
+- Never force past a green-but-cached block with `gh pr merge --admin`; that bypasses the required checks.
 
 ## Response Format
 

@@ -112,6 +112,7 @@ pub struct RuntimeBlock {
 pub struct NautilusBlock {
     pub load_state: bool,
     pub save_state: bool,
+    pub shutdown_on_error: bool,
     pub timeout_connection_secs: u64,
     pub timeout_reconciliation_secs: u64,
     pub data_engine: NautilusDataEngineBlock,
@@ -137,7 +138,6 @@ pub struct NautilusDataEngineBlock {
     pub emit_quotes_from_book_depths: bool,
     pub external_clients: Vec<ClientId>,
     pub debug: bool,
-    pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
 }
 
@@ -180,7 +180,6 @@ pub struct NautilusExecEngineBlock {
     pub purge_account_events_lookback_mins: u32,
     pub purge_from_database: bool,
     pub own_books_audit_interval_secs: u64,
-    pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
     pub allow_overfills: bool,
     pub manage_own_order_books: bool,
@@ -263,7 +262,6 @@ pub struct NautilusRiskBlock {
     pub max_order_modify_rate: String,
     pub max_notional_per_order: BTreeMap<String, String>,
     pub debug: bool,
-    pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
 }
 

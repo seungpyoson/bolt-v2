@@ -88,7 +88,7 @@ fn promotion_config() -> PromotionConfigRef {
 }
 
 fn valid_experiment_result(kind: RaVerdictKind) -> ExperimentResultArtifact {
-    ExperimentResultArtifact {
+    let mut artifact = ExperimentResultArtifact {
         artifact_schema_version: 1,
         artifact_id: "experiment-result-123".to_string(),
         artifact_root: "s3://example-bucket/nt-research-analytics".to_string(),
@@ -111,7 +111,9 @@ fn valid_experiment_result(kind: RaVerdictKind) -> ExperimentResultArtifact {
         mutates_backtest_result_contracts: false,
         weakens_forbidden_claims: false,
         post_verdict_actions: Vec::new(),
-    }
+    };
+    artifact.content_hash = artifact.expected_content_hash();
+    artifact
 }
 
 fn run_spec(run_id: &str, accepted_object_bytes: &[u8]) -> RunSpec {
@@ -128,7 +130,8 @@ fn contract(run_id: &str, result_contract_uri: &str) -> BacktestResultContract {
         nt_version: "nt-test-rev".to_string(),
         source_proof_id: "source-proof-example-trades".to_string(),
         source_proof_version: 1,
-        manifest_hash: "manifest-hash".to_string(),
+        manifest_hash: "9999999999999999999999999999999999999999999999999999999999999999"
+            .to_string(),
         acceptance_mode: AcceptanceMode::Manual,
         accepted_by: "research-analytics-test".to_string(),
         accepted_at: "2026-06-14T00:00:00Z".to_string(),
@@ -150,6 +153,9 @@ fn contract(run_id: &str, result_contract_uri: &str) -> BacktestResultContract {
         selected_asset_ids_hash: None,
         strategy_config_hash: "1111111111111111111111111111111111111111111111111111111111111111"
             .to_string(),
+        execution_model: "nt_backtest_node".to_string(),
+        venue_queue_position: Some(false),
+        catalog_data_types: vec!["TradeTick".to_string()],
         run_purpose: "normal".to_string(),
         market_structure_fixture: "binary option".to_string(),
         fidelity_class: SourceProofFidelityClass::TradeReplay,
@@ -596,6 +602,7 @@ fn promotion_gate_stays_inert_without_go_finding() {
 fn go_finding_can_carry_typed_config_only_on_experiment_result() {
     let mut artifact = valid_experiment_result(RaVerdictKind::Go);
     artifact.promotion_config = Some(promotion_config());
+    artifact.content_hash = artifact.expected_content_hash();
 
     artifact
         .validate()
@@ -723,6 +730,19 @@ fn experiment_result_requires_source_refs_and_hashes_to_match() {
 }
 
 #[test]
+fn experiment_result_rejects_stale_content_hash() {
+    let mut artifact = valid_experiment_result(RaVerdictKind::NoGo);
+    artifact.owner = "research-analytics-drifted".to_string();
+
+    assert!(matches!(
+        artifact
+            .validate()
+            .expect_err("stale experiment-result content hash must fail closed"),
+        ResearchAnalyticsArtifactError::ContentHashMismatch { .. }
+    ));
+}
+
+#[test]
 fn experiment_result_rejects_unknown_schema_fields() {
     let artifact = valid_experiment_result(RaVerdictKind::NoGo);
     let mut value = serde_json::to_value(&artifact).expect("serialize experiment result");
@@ -760,6 +780,7 @@ fn experiment_result_preserves_dashboard_field_refs_as_read_only_metadata() {
         "dashboard:strategy-candidate-summary:v1".to_string(),
         "dashboard:backtest-evidence-link:v1".to_string(),
     ];
+    artifact.content_hash = artifact.expected_content_hash();
 
     artifact
         .validate()

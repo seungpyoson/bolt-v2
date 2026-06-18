@@ -21,7 +21,7 @@ sys.modules[SPEC.name] = VERIFIER
 SPEC.loader.exec_module(VERIFIER)
 
 
-NT_REV = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+NT_REV = "6be5a5094716790a8ca2875445fde4fa2586107e"
 BOLT_REV = "5f39d352c081446f309605e49d6beaba86931ca5"
 
 

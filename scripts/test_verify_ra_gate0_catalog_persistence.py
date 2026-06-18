@@ -67,8 +67,12 @@ impl ArtifactStoreConfig {
             .with_access_key_id(credentials.access_key_id())
             .with_secret_access_key(credentials.secret_access_key())
             .with_token(credentials.session_token().unwrap())
-            .with_conditional_put(S3ConditionalPut::ETagMatch)
-            .with_copy_if_not_exists(S3CopyIfNotExists::Multipart)
+            .with_conditional_put(match self.s3.conditional_put {
+                S3ConditionalPutMode::Etag => S3ConditionalPut::ETagMatch,
+            })
+            .with_copy_if_not_exists(match self.s3.copy_if_not_exists {
+                S3CopyIfNotExistsMode::Multipart => S3CopyIfNotExists::Multipart,
+            })
             .build()
     }
 
@@ -861,7 +865,10 @@ def test_comments_and_strings_only_do_not_satisfy_rust_snippets() -> None:
             """
 // pub struct S3ArtifactStoreConfig
 // pub async fn persist_catalog_projection_for_source_binding
-// .with_conditional_put(S3ConditionalPut::ETagMatch)
+// .with_conditional_put(match self.s3.conditional_put
+// S3ConditionalPutMode::Etag => S3ConditionalPut::ETagMatch
+// .with_copy_if_not_exists(match self.s3.copy_if_not_exists
+// S3CopyIfNotExistsMode::Multipart => S3CopyIfNotExists::Multipart
 const STUFFED: &str = "CreateOnlyArtifactWriter::new duplicate_create_rejected";
 """,
         )

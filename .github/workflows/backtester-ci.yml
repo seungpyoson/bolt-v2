@@ -22,6 +22,15 @@ name: Backtester CI
 # the PR can never satisfy the rule). Crate-change detection moved INSIDE the workflow: the
 # `detect` job computes `bvs_changed`, the fmt/clippy/test lanes SKIP when the crate is untouched,
 # and `backtester-gate` concludes success as an explicit no-op on non-crate PRs.
+#
+# DRAFT COST GOVERNANCE: draft pull_request opened/synchronize/reopened/converted_to_draft/edited
+# events publish `backtester-gate-deferred` and defer the managed-heavy proof lanes. Only
+# `backtester-gate` is required-capable; `backtester-gate-deferred` is draft-only feedback and
+# must not be marked required. Marking the PR ready, dispatching the workflow manually, or pushing
+# to main still runs full backtester proof. `bvs-fmt` remains cheap draft feedback and reports as
+# its own check; the deferred gate does not fold draft formatting failures into required proof.
+# Moving a ready PR back to draft does not rewrite a prior same-SHA `backtester-gate` result; the
+# GitHub draft state plus the non-required deferred context is the safety boundary.
 
 on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
@@ -38,19 +47,30 @@ on:
     # not only retargets, so this also re-runs the workflow on title/body edits.
     # We accept that cost because there is no narrower event for base-ref
     # changes.
-    # Note: ci.yml includes converted_to_draft because it defers some lanes when
-    # a PR is in draft. backtester-ci has no draft-deferral path, so we
-    # deliberately omit converted_to_draft.
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    # converted_to_draft is included so the gate records an explicit deferred
+    # backtester verdict when a ready PR is moved back to draft.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
   push:
     branches: [main]
 
 concurrency:
+  # Deferred and full PR runs intentionally use separate groups. Moving a ready PR back to draft
+  # records an explicit deferred verdict without cancelling a full proof already in progress.
+  # Manual workflow_dispatch runs share one full-CI group per branch, so a newer manual proof
+  # cancels an older manual proof for that branch.
   group: >-
     ${{ github.event_name == 'pull_request'
-        && format('bvs-pr-{0}', github.event.number)
+        && github.event.pull_request.draft == true
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
+        && format('bvs-pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && format('bvs-pr-{0}-full', github.event.number)
+        || github.event_name == 'workflow_dispatch'
+        && format('bvs-{0}-full-ci', github.ref_name)
         || format('bvs-{0}-{1}', github.ref_name, github.sha) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        || github.event_name == 'workflow_dispatch' }}
 
 env:
   JUST_VERSION: "1.49.0"
@@ -62,6 +82,32 @@ permissions:
   contents: read
 
 jobs:
+  ci-policy:
+    name: bvs-ci-policy
+    outputs:
+      ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
+      full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
+      full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
+      reason: ${{ steps.policy.outputs.reason }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Compute Backtester CI policy
+        id: policy
+        shell: bash
+        run: >
+          python3 scripts/ci_provenance.py ci-policy
+          --event-name "${{ github.event_name }}"
+          --event-action "${{ github.event.action || '' }}"
+          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --ref "${{ github.ref }}"
+          | tee -a "$GITHUB_OUTPUT"
+
   # Always-runs detector (no compile, no toolchain). Decides whether the crate or any of its
   # shared build inputs changed between the PR base and head, so the heavy lanes can skip on
   # PRs that never touch the crate while `backtester-gate` still reports a verdict.
@@ -91,6 +137,7 @@ jobs:
             justfile \
             scripts/rust_verification.py \
             scripts/command_understanding.py \
+            scripts/ci_provenance.py \
             rust-toolchain.toml \
             ci/github-actions-runners.toml \
             '.github/actions/setup-environment/**' \
@@ -131,8 +178,8 @@ jobs:
   # records the measured light-runner refusal); keep both files in sync.
   clippy:
     name: bvs-clippy
-    needs: [detect, fmt]
-    if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
+    needs: [ci-policy, detect, fmt]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -176,8 +223,8 @@ jobs:
 
   test:
     name: bvs-test
-    needs: [detect, fmt]
-    if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
+    needs: [ci-policy, detect, fmt]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -231,14 +278,25 @@ jobs:
           if-no-files-found: ignore
 
   gate:
-    name: backtester-gate
-    needs: [detect, fmt, clippy, test]
+    name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
+          && 'backtester-gate-deferred'
+          || 'backtester-gate' }}
+    needs: [ci-policy, detect, fmt, clippy, test]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - name: Check required lanes
         shell: bash
         run: |
+          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
+            echo "bvs-ci-policy did not succeed (${{ needs.ci-policy.result }})"
+            exit 1
+          fi
           if [[ "${{ needs.detect.result }}" != "success" ]]; then
             echo "bvs-detect did not succeed (${{ needs.detect.result }})"
             exit 1
@@ -246,6 +304,21 @@ jobs:
           if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
             echo "no crate changes; gate is a no-op"
             exit 0
+          fi
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}"
+          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
+            if [[ "$defer_run_context" != "true" ]]; then
+              echo "backtester deferred CI policy outside deferred draft PR context"
+              exit 1
+            fi
+            echo "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "full" ]]; then
+            echo "backtester proof required"
+          else
+            echo "unknown backtester CI policy path '$policy_path'"
+            exit 1
           fi
           if [[ "${{ needs.fmt.result }}" != "success" ]]; then
             echo "bvs-fmt did not succeed (${{ needs.fmt.result }})"

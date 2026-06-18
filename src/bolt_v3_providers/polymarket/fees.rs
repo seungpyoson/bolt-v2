@@ -260,6 +260,7 @@ mod tests {
             None,
             Some(Decimal::ZERO),
             Some(taker_fee),
+            None,
             Some(Params::new()),
             ts,
             ts,

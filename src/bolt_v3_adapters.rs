@@ -401,7 +401,9 @@ mod tests {
         common::enums::{
             BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
         },
-        config::BinanceDataClientConfig,
+        config::{
+            BinanceDataClientConfig, BinanceSpotMarketDataMode as NtBinanceSpotMarketDataMode,
+        },
     };
     use nautilus_model::identifiers::{AccountId, TraderId};
     use nautilus_polymarket::{
@@ -415,8 +417,9 @@ mod tests {
         updown::{self, UpdownTargetPlan},
     };
     use crate::bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
-        ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
+        DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS, ProviderAdapterMapContext, ProviderBinding,
+        ProviderResolvedSecrets, ProviderSecretResolveContext, ResolvedClientSecrets,
+        SsmSecretResolver,
         binance::{self, ResolvedBoltV3BinanceSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
         polyresearch::ResolvedBoltV3PolyResearchSecrets,
@@ -494,6 +497,7 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[updown::KEY],
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -513,6 +517,7 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -532,6 +537,7 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: &[],
         secret_field_names: &[],
@@ -875,8 +881,17 @@ mod tests {
         assert_eq!(data.http_timeout_secs, 60);
         assert_eq!(data.ws_timeout_secs, 30);
         assert_eq!(data.ws_max_subscriptions, 200);
-        assert_eq!(data.update_instruments_interval_mins, 60);
+        assert_eq!(data.update_instruments_interval_mins, Some(1));
         assert!(!data.subscribe_new_markets);
+        assert_eq!(
+            data.base_url_rtds.as_deref(),
+            Some("wss://ws-live-data.polymarket.com")
+        );
+        assert_eq!(data.new_market_fetch_max_concurrency, 8);
+        assert!(!data.resolve_poll_enabled);
+        assert_eq!(data.resolve_poll_interval_secs, 30);
+        assert_eq!(data.resolve_poll_grace_secs, 10);
+        assert_eq!(data.resolve_poll_max_wait_secs, 1800);
         assert_eq!(data.filters.len(), 1);
         assert_eq!(
             data.filters[0]
@@ -944,8 +959,9 @@ mod tests {
             .config_as::<BinanceDataClientConfig>()
             .expect("binance data config should downcast to NT config");
 
-        assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
+        assert_eq!(data.product_type, NtBinanceProductType::Spot);
         assert_eq!(data.environment, NtBinanceEnvironment::Live);
+        assert_eq!(data.spot_market_data_mode, NtBinanceSpotMarketDataMode::Sbe);
         // base_url_http and base_url_ws are now required bolt-v3
         // fields; the mapper must pass the configured values through to
         // NT as `Some(...)` rather than letting NT fall back to its

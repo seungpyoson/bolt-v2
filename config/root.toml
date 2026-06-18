@@ -341,6 +341,7 @@ order_execution_mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -361,7 +362,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -401,7 +401,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -414,7 +413,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]
@@ -515,17 +513,23 @@ venue = "POLYMARKET"
 [clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_rtds = "wss://ws-live-data.polymarket.com"
 base_url_gamma = "https://gamma-api.polymarket.com"
 base_url_data_api = "https://data-api.polymarket.com"
 http_timeout_secs = 60
 ws_timeout_secs = 30
 subscribe_new_markets = false
+new_market_fetch_max_concurrency = 8
 auto_load_missing_instruments = false
 auto_load_debounce_ms = 250
 auto_load_max_retries = 12
 auto_load_retry_delay_initial_secs = 5
 auto_load_retry_delay_max_secs = 15
-update_instruments_interval_mins = 60
+resolve_poll_enabled = false
+resolve_poll_interval_secs = 30
+resolve_poll_grace_secs = 10
+resolve_poll_max_wait_secs = 1800
+update_instruments_interval_mins = 1
 ws_max_subscriptions = 200
 transport_backend = "sockudo"
 
@@ -566,10 +570,11 @@ allow_metadata_target_sampling = true
 venue = "BINANCE"
 
 [clients.binance_spot_data.data]
-product_types = ["spot"]
+product_type = "spot"
 environment = "mainnet"
 base_url_http = "https://api.binance.com"
 base_url_ws = "wss://stream-sbe.binance.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -588,10 +593,11 @@ allow_metadata_target_sampling = true
 venue = "BINANCE"
 
 [clients.binance_usdm_data.data]
-product_types = ["usd_m"]
+product_type = "usd_m"
 environment = "live"
 base_url_http = "https://fapi.binance.com"
 base_url_ws = "wss://fstream.binance.com/market/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -610,10 +616,11 @@ allow_metadata_target_sampling = true
 venue = "BINANCE"
 
 [clients.binance_coinm_data.data]
-product_types = ["coin_m"]
+product_type = "coin_m"
 environment = "live"
 base_url_http = "https://dapi.binance.com"
 base_url_ws = "wss://dstream.binance.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -704,6 +711,7 @@ venue = "KRAKEN"
 [clients.kraken_spot_data.data]
 product_type = "spot"
 environment = "live"
+ws_idle_timeout_ms = 10000
 transport_backend = "sockudo"
 
 [clients.kraken_spot_data.readiness_probe]
@@ -720,6 +728,7 @@ venue = "KRAKEN"
 [clients.kraken_futures_data.data]
 product_type = "futures"
 environment = "live"
+ws_idle_timeout_ms = 10000
 transport_backend = "sockudo"
 
 [clients.kraken_futures_data.readiness_probe]
@@ -780,6 +789,72 @@ max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
 min_observed_targets = 10
 
+[clients.hyperliquid_execution]
+venue = "HYPERLIQUID"
+
+[clients.hyperliquid_execution.execution]
+account_id = "HYPERLIQUID-001"
+environment = "mainnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps", "spot", "hip3_builder_perps", "hip4_outcomes"]
+base_url_ws = "wss://api.hyperliquid.xyz/ws"
+base_url_http = "https://api.hyperliquid.xyz/info"
+base_url_exchange = "https://api.hyperliquid.xyz/exchange"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+include_builder_attribution = false
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 30
+
+[clients.hyperliquid_execution.execution.live_submit.standard_perps]
+approval_id = "hl-standard-perps-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.spot]
+approval_id = "hl-spot-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.hip3_builder_perps]
+approval_id = "hl-hip3-builder-perps-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.hip4_outcomes]
+approval_id = "hl-hip4-outcomes-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+
 # Live Chainlink Data Streams resolution-strike (price-to-beat) source. One
 # point-in-time strike per window-open timestamp, delivered as an NT
 # IndexPriceUpdate on the bound resolution instrument. Routes to the
@@ -809,7 +884,6 @@ websocket_endpoint = "wss://ws.testnet-dataengine.chain.link"
 websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
-heartbeat_message = "ping"
 reconnect_timeout_ms = 5000
 reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000

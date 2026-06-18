@@ -39,7 +39,7 @@ pub use polymarket::KEY as OUTCOME_GROUP_POLYMARKET_VENUE_KEY;
 
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, sync::Arc};
 
-use nautilus_model::identifiers::Venue;
+use nautilus_model::{enums::TimeInForce, identifiers::Venue};
 use rust_decimal::Decimal;
 use serde::Serialize;
 
@@ -119,6 +119,7 @@ pub struct ProviderLiveSubmitApprovalContext<'a> {
     pub client_key: &'a str,
     pub client: &'a ClientBlock,
     pub resolved: &'a ResolvedBoltV3Secrets,
+    pub product_surface: Option<&'a str>,
     pub now_unix_seconds: u64,
     pub build_head_sha: &'a str,
 }
@@ -510,10 +511,29 @@ pub struct ProviderSecretRequirement {
     pub consumer: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderMarketExitOrderConstraints {
+    pub allowed_market_time_in_forces: Option<&'static [TimeInForce]>,
+    pub reduce_only_supported: bool,
+}
+
+pub const DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS: ProviderMarketExitOrderConstraints =
+    ProviderMarketExitOrderConstraints {
+        allowed_market_time_in_forces: None,
+        reduce_only_supported: true,
+    };
+
+const IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS: ProviderMarketExitOrderConstraints =
+    ProviderMarketExitOrderConstraints {
+        allowed_market_time_in_forces: Some(&[TimeInForce::Ioc, TimeInForce::Fok]),
+        reduce_only_supported: false,
+    };
+
 pub struct ProviderBinding {
     pub key: &'static str,
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
+    pub market_exit_order_constraints: ProviderMarketExitOrderConstraints,
     pub metadata_refresh_interval_mins: Option<MetadataRefreshIntervalLoader>,
     pub required_secret_blocks: &'static [ProviderSecretRequirement],
     pub secret_field_names: &'static [&'static str],
@@ -602,6 +622,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: polymarket::KEY,
         validate_client: polymarket::validate_client,
         supported_market_families: polymarket::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: IMMEDIATE_ONLY_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: Some(polymarket::metadata_refresh_interval_mins),
         required_secret_blocks: polymarket::REQUIRED_SECRET_BLOCKS,
         secret_field_names: polymarket::SECRET_FIELD_NAMES,
@@ -620,6 +641,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: binance::KEY,
         validate_client: binance::validate_client,
         supported_market_families: binance::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: binance::REQUIRED_SECRET_BLOCKS,
         secret_field_names: binance::SECRET_FIELD_NAMES,
@@ -638,6 +660,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: hyperliquid::KEY,
         validate_client: hyperliquid::validate_client,
         supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: Some(hyperliquid::metadata_refresh_interval_mins),
         required_secret_blocks: hyperliquid::REQUIRED_SECRET_BLOCKS,
         secret_field_names: hyperliquid::SECRET_FIELD_NAMES,
@@ -658,6 +681,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::BITMEX_KEY,
         validate_client: market_data::validate_bitmex_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
@@ -676,6 +700,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::BYBIT_KEY,
         validate_client: market_data::validate_bybit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
@@ -694,6 +719,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::COINBASE_KEY,
         validate_client: market_data::validate_coinbase_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
@@ -712,6 +738,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::DERIBIT_KEY,
         validate_client: market_data::validate_deribit_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
@@ -730,6 +757,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::OKX_KEY,
         validate_client: market_data::validate_okx_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
@@ -748,6 +776,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: market_data::KRAKEN_KEY,
         validate_client: market_data::validate_kraken_client,
         supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
         secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
@@ -766,6 +795,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: chainlink::KEY,
         validate_client: chainlink::validate_client,
         supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: chainlink::REQUIRED_SECRET_BLOCKS,
         secret_field_names: chainlink::SECRET_FIELD_NAMES,
@@ -784,6 +814,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: chainlink_reference::KEY,
         validate_client: chainlink_reference::validate_client,
         supported_market_families: chainlink_reference::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: chainlink_reference::REQUIRED_SECRET_BLOCKS,
         secret_field_names: chainlink_reference::SECRET_FIELD_NAMES,
@@ -802,6 +833,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         key: polyresearch::KEY,
         validate_client: polyresearch::validate_client,
         supported_market_families: polyresearch::SUPPORTED_MARKET_FAMILIES,
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
         metadata_refresh_interval_mins: None,
         required_secret_blocks: polyresearch::REQUIRED_SECRET_BLOCKS,
         secret_field_names: polyresearch::SECRET_FIELD_NAMES,

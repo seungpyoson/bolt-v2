@@ -33,7 +33,7 @@ use crate::{
     artifact_store::{
         ArtifactStoreConfig, CatalogDispatchConfig, CreateOnlyArtifactWriter,
         CreateOnlyProbeTranscript, PersistedCatalogProjection, PersistedCatalogProjectionObject,
-        ResolvedArtifactRoot, persist_catalog_projection_for_source_binding,
+        ResolvedArtifactRoot, S3ConditionalPutMode, persist_catalog_projection_for_source_binding,
     },
     canonical_market_data::{
         CanonicalBarsTable, CanonicalIndexPricesTable, CanonicalMarkPricesTable,
@@ -107,8 +107,12 @@ pub const ACCEPTED_SOURCE_PROOF_FILE: &str = "accepted-source-proof.json";
 /// Published-catalog `BacktestNode` proof artifact filename.
 pub const PUBLISHED_CATALOG_PROOF_FILE: &str = "published-catalog-proof.json";
 
+const OPERATOR_ATTESTED_REDACTED: &str = "operator-attested-redacted";
+const OPERATOR_ATTESTED_ELAPSED_TIME_SECS: f64 = 0.0;
+
 /// Config-driven dataset facts for one operator run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunSpec {
     /// Ingest capture timestamp (RFC 3339).
     pub capture_time_utc: String,
@@ -153,6 +157,73 @@ impl RunSpec {
 
     /// # Errors
     ///
+    /// Returns an error when the manifest publish store and durable artifact
+    /// store disagree on the physical S3 store they both describe.
+    pub fn validate_artifact_store_publish_config(
+        &self,
+        artifact_store: &ArtifactStoreConfig,
+    ) -> Result<()> {
+        let manifest_root = self.manifest.artifact_root.trim_end_matches('/');
+        let artifact_root = artifact_store.artifact_root.trim_end_matches('/');
+        ensure!(
+            manifest_root == artifact_root,
+            "run spec artifact-store root mismatch: manifest.artifact_root {:?} != artifact_store.artifact_root {:?}",
+            self.manifest.artifact_root,
+            artifact_store.artifact_root
+        );
+
+        let output_prefix = format!("{}/", self.manifest.output_prefix.trim_end_matches('/'));
+        let backtests_prefix = format!(
+            "{}/{}/",
+            artifact_root,
+            artifact_store.subpaths.backtests.trim_matches('/')
+        );
+        ensure!(
+            output_prefix.starts_with(&backtests_prefix),
+            "run spec artifact-store output_prefix mismatch: manifest.output_prefix {:?} must be under {:?}",
+            self.manifest.output_prefix,
+            backtests_prefix
+        );
+
+        manifest_artifact_store_option(&self.manifest, "region").context(
+            "run spec manifest.artifact_store missing region for durable artifact store",
+        )?;
+        for (field, value) in manifest_artifact_store_options(&self.manifest, "region") {
+            ensure!(
+                value == artifact_store.s3.region,
+                "run spec artifact-store region mismatch: {field} {:?} != artifact_store.s3.region {:?}",
+                value,
+                artifact_store.s3.region
+            );
+        }
+        if let Some(ssm_parameters) = &self.manifest.artifact_store.ssm_parameters {
+            ensure!(
+                ssm_parameters.region == artifact_store.s3.region,
+                "run spec artifact-store SSM region mismatch: manifest.artifact_store.ssm_parameters.region {:?} != artifact_store.s3.region {:?}",
+                ssm_parameters.region,
+                artifact_store.s3.region
+            );
+        }
+
+        let expected_conditional_put = match artifact_store.s3.conditional_put {
+            S3ConditionalPutMode::Etag => "etag",
+        };
+        manifest_artifact_store_option(&self.manifest, "conditional_put").context(
+            "run spec manifest.artifact_store missing conditional_put for durable artifact store",
+        )?;
+        for (field, value) in manifest_artifact_store_options(&self.manifest, "conditional_put") {
+            ensure!(
+                value == expected_conditional_put,
+                "run spec artifact-store conditional_put mismatch: {field} {:?} != artifact_store.s3.conditional_put {:?}",
+                value,
+                expected_conditional_put
+            );
+        }
+        Ok(())
+    }
+
+    /// # Errors
+    ///
     /// Returns an error when the run-spec omits source-binding catalog dispatch
     /// configuration required by the publish/proof path.
     pub fn required_catalog_dispatch(&self) -> Result<&CatalogDispatchConfig> {
@@ -180,6 +251,35 @@ impl RunSpec {
             "run spec missing [nt_catalog_capability_proof] required for artifact-store publish path",
         )
     }
+}
+
+fn manifest_artifact_store_option<'a>(
+    manifest: &'a BacktestingRunManifest,
+    key: &str,
+) -> Option<&'a str> {
+    manifest
+        .artifact_store
+        .rust_storage_options
+        .get(key)
+        .or_else(|| manifest.artifact_store.storage_options.get(key))
+        .map(String::as_str)
+}
+
+fn manifest_artifact_store_options<'a>(
+    manifest: &'a BacktestingRunManifest,
+    key: &'static str,
+) -> Vec<(&'static str, &'a str)> {
+    let mut values = Vec::new();
+    if let Some(value) = manifest.artifact_store.storage_options.get(key) {
+        values.push(("manifest.artifact_store.storage_options", value.as_str()));
+    }
+    if let Some(value) = manifest.artifact_store.rust_storage_options.get(key) {
+        values.push((
+            "manifest.artifact_store.rust_storage_options",
+            value.as_str(),
+        ));
+    }
+    values
 }
 
 /// Instrument specs for the run-spec's projected tables.
@@ -387,14 +487,93 @@ fn portable_artifact_uris(manifest: &BacktestingRunManifest) -> ResultArtifactUr
 }
 
 fn redact_operator_contract(output: &mut BacktestRunOutput, local_catalog_root: &Path) {
-    output.contract.nt_result.machine_id = "operator-attested-redacted".to_string();
+    stabilize_operator_contract_nt_result(&mut output.contract);
     let local_catalog_root = local_catalog_root.to_string_lossy();
     if !local_catalog_root.is_empty() {
         let portable_catalog_uri = output.contract.artifact_uris.nt_catalog_uri.clone();
-        for claim_limit in &mut output.contract.claim_limits {
-            *claim_limit = claim_limit.replace(local_catalog_root.as_ref(), &portable_catalog_uri);
-        }
+        replace_contract_claim_limit_uri(
+            &mut output.contract,
+            local_catalog_root.as_ref(),
+            &portable_catalog_uri,
+        );
     }
+}
+
+fn stabilize_operator_contract_nt_result(contract: &mut BacktestResultContract) {
+    contract.nt_result.machine_id = OPERATOR_ATTESTED_REDACTED.to_string();
+    contract.nt_result.instance_id = OPERATOR_ATTESTED_REDACTED.to_string();
+    contract.nt_result.elapsed_time_secs = OPERATOR_ATTESTED_ELAPSED_TIME_SECS;
+}
+
+fn replace_contract_claim_limit_uri(
+    contract: &mut BacktestResultContract,
+    from_uri: &str,
+    to_uri: &str,
+) {
+    if from_uri.is_empty() || from_uri == to_uri {
+        return;
+    }
+    for claim_limit in &mut contract.claim_limits {
+        *claim_limit = claim_limit.replace(from_uri, to_uri);
+    }
+}
+
+async fn persist_durable_contract_artifact(
+    writer: &CreateOnlyArtifactWriter<'_>,
+    artifact_root: &ResolvedArtifactRoot,
+    local_path: &Path,
+    uri: &str,
+) -> Result<()> {
+    let path = artifact_root.object_path_for_uri(uri)?;
+    let payload = fs::read(local_path).with_context(|| {
+        format!(
+            "read durable contract artifact {} for {}",
+            local_path.display(),
+            uri
+        )
+    })?;
+    writer
+        .put_create_idempotent(&path, payload)
+        .await
+        .with_context(|| format!("persist durable contract artifact {uri}"))?;
+    Ok(())
+}
+
+async fn persist_durable_contract_artifacts(
+    writer: &CreateOnlyArtifactWriter<'_>,
+    artifact_root: &ResolvedArtifactRoot,
+    artifacts: &RunArtifacts,
+) -> Result<()> {
+    let uris = &artifacts.output.contract.artifact_uris;
+    persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.proof_path,
+        &uris.source_proof_uri,
+    )
+    .await?;
+    persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.canonical_artifact_path,
+        &uris.canonical_table_uri,
+    )
+    .await?;
+    persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.catalog_metadata_path,
+        &uris.catalog_metadata_uri,
+    )
+    .await?;
+    persist_durable_contract_artifact(
+        writer,
+        artifact_root,
+        &artifacts.contract_path,
+        &uris.result_contract_uri,
+    )
+    .await?;
+    Ok(())
 }
 
 fn verify_completed_result_contract(
@@ -912,6 +1091,14 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         event_count_ledger_hash: None,
         selected_asset_ids_hash: None,
         strategy: &inputs.manifest.strategy,
+        execution_model: &inputs.manifest.execution_model,
+        venue_queue_position: inputs.manifest.venue.queue_position,
+        catalog_data_types: inputs
+            .manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(&inputs.manifest),
         market_structure_fixture: market_structure_label(&inputs.manifest),
         fidelity_class: canonical_table.fidelity_class,
@@ -1005,6 +1192,15 @@ pub fn run_from_run_spec(
     object_bytes: &[u8],
     output_dir: &Path,
 ) -> Result<RunArtifacts> {
+    run_from_run_spec_inner(spec, object_bytes, output_dir, true)
+}
+
+fn run_from_run_spec_inner(
+    spec: &RunSpec,
+    object_bytes: &[u8],
+    output_dir: &Path,
+    reuse_completed_output: bool,
+) -> Result<RunArtifacts> {
     validate_converter_config(&spec.converter)?;
     let adapter =
         require_registered_source_adapter(&spec.converter.identity, &spec.converter.version)?;
@@ -1062,35 +1258,38 @@ pub fn run_from_run_spec(
     validate_local_run_manifest(&manifest, &accepted)?;
     let artifact_uris = portable_artifact_uris(&manifest);
 
-    match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
-        ConversionOutputState::Complete {
-            manifest_hash,
-            checkpoint_hash,
-            catalog_hash,
-        } => {
-            return run_from_completed_output(CompletedOutputInputs {
-                verified_sha256,
-                accepted_source_proof: accepted_proof,
-                accepted: &accepted,
-                canonical_artifact_path: canonical_path,
-                catalog_root,
-                proof_path,
-                contract_path,
-                run_manifest_path,
-                conversion_manifest_path,
-                conversion_checkpoint_path,
-                catalog_metadata_path,
-                manifest,
-                contract_manifest_hash,
-                conversion_manifest_hash: manifest_hash,
-                conversion_checkpoint_hash: checkpoint_hash,
-                expected_catalog_hash: catalog_hash,
-                artifact_uris,
-                created_at: &spec.created_at_utc,
-                spec_manifest: &spec.manifest,
-            });
+    if reuse_completed_output {
+        match inspect_conversion_output(output_dir, &conversion_fingerprint)? {
+            ConversionOutputState::Complete {
+                manifest_hash,
+                checkpoint_hash,
+                catalog_hash,
+            } => {
+                return run_from_completed_output(CompletedOutputInputs {
+                    verified_sha256,
+                    accepted_source_proof: accepted_proof,
+                    accepted: &accepted,
+                    canonical_artifact_path: canonical_path,
+                    catalog_root,
+                    proof_path,
+                    contract_path,
+                    run_manifest_path,
+                    conversion_manifest_path,
+                    conversion_checkpoint_path,
+                    catalog_metadata_path,
+                    manifest,
+                    contract_manifest_hash,
+                    conversion_manifest_hash: manifest_hash,
+                    conversion_checkpoint_hash: checkpoint_hash,
+                    expected_catalog_hash: catalog_hash,
+                    artifact_uris,
+                    created_at: &spec.created_at_utc,
+                    spec_manifest: &spec.manifest,
+                });
+            }
+            ConversionOutputState::CleanNew
+            | ConversionOutputState::ResumeFromCheckpoint { .. } => {}
         }
-        ConversionOutputState::CleanNew | ConversionOutputState::ResumeFromCheckpoint { .. } => {}
     }
 
     fs::create_dir_all(output_dir)
@@ -1219,18 +1418,19 @@ where
         CreateOnlyProbeTranscript,
     ) -> Result<NtCatalogCapabilityEvidence>,
 {
+    let artifact_store = spec.required_artifact_store()?;
+    spec.validate_artifact_store_publish_config(artifact_store)?;
+    let catalog_dispatch = spec.required_catalog_dispatch()?;
+    let create_only_probe_id = spec.required_create_only_probe_id()?;
+    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
     let base_spec = spec.clone();
     let base_gz_bytes = gz_bytes.to_vec();
     let base_output_dir = output_dir.to_path_buf();
     let mut artifacts = tokio::task::spawn_blocking(move || {
-        run_from_run_spec(&base_spec, &base_gz_bytes, &base_output_dir)
+        run_from_run_spec_inner(&base_spec, &base_gz_bytes, &base_output_dir, false)
     })
     .await
     .context("join base run for artifact-store path")??;
-    let artifact_store = spec.required_artifact_store()?;
-    let catalog_dispatch = spec.required_catalog_dispatch()?;
-    let create_only_probe_id = spec.required_create_only_probe_id()?;
-    let nt_catalog_capability_proof = spec.required_nt_catalog_capability_proof()?;
     let artifact_root = artifact_store.resolve()?;
     let nt_catalog_capability_plan = nt_catalog_capability_proof.proof_plan(artifact_store)?;
     let writer = CreateOnlyArtifactWriter::new(store);
@@ -1259,19 +1459,51 @@ where
     )
     .await?;
 
-    artifacts.output.contract.catalog_hash = persisted.manifest_sha256.clone();
+    artifacts.output.conversion_catalog_metadata = artifacts
+        .output
+        .conversion_catalog_metadata
+        .clone()
+        .with_execution_catalog_access(persisted.catalog_root_uri.clone(), true);
+    write_completed_conversion_artifacts(
+        output_dir,
+        &artifacts.output.conversion_manifest,
+        &artifacts.output.conversion_checkpoint,
+        &artifacts.output.conversion_catalog_metadata,
+    )?;
+    artifacts.output.contract.catalog_metadata_hash = artifacts
+        .output
+        .conversion_catalog_metadata
+        .content_hash()
+        .context("hash durable catalog metadata")?;
+    let transient_catalog_uri = artifacts
+        .output
+        .contract
+        .artifact_uris
+        .nt_catalog_uri
+        .clone();
     artifacts.output.contract.artifact_uris.nt_catalog_uri = persisted.catalog_root_uri.clone();
+    replace_contract_claim_limit_uri(
+        &mut artifacts.output.contract,
+        &transient_catalog_uri,
+        &persisted.catalog_root_uri,
+    );
     artifacts
         .output
         .contract
         .artifact_uris
         .nt_catalog_manifest_uri = Some(persisted.manifest_uri.clone());
+    artifacts
+        .output
+        .contract
+        .validate()
+        .map_err(|error| anyhow::anyhow!("durable result contract validation failed: {error}"))?;
     atomic_write(
         &artifacts.contract_path,
         &serde_json::to_vec_pretty(&artifacts.output.contract)
             .context("serialize durable result contract")?,
     )
     .with_context(|| format!("write {}", artifacts.contract_path.display()))?;
+    persist_durable_contract_artifacts(&writer, &artifact_root, &artifacts).await?;
     artifacts.canonical_catalog_uri = Some(persisted.catalog_root_uri.clone());
     artifacts.nt_catalog_capability_plan = Some(nt_catalog_capability_plan);
     artifacts.nt_catalog_capability_proof_artifact = Some(nt_catalog_capability_proof_artifact);
@@ -2167,7 +2399,7 @@ fn redact_multi_operator_contract(
     manifest: &BacktestingRunManifest,
     planned: &[PlannedTable],
 ) {
-    contract.nt_result.machine_id = "operator-attested-redacted".to_string();
+    stabilize_operator_contract_nt_result(contract);
     for table in planned {
         let local = table.subroot.to_string_lossy();
         if local.is_empty() {
@@ -2527,6 +2759,13 @@ pub fn run_multi_table_from_run_spec(
         event_count_ledger_hash,
         selected_asset_ids_hash,
         strategy: &local_manifest.strategy,
+        execution_model: &local_manifest.execution_model,
+        venue_queue_position: local_manifest.venue.queue_position,
+        catalog_data_types: local_manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(&local_manifest),
         market_structure_fixture: market_structure_label(&local_manifest),
         fidelity_class: primary_fidelity,
@@ -2789,6 +3028,13 @@ fn run_multi_from_completed_output(
         event_count_ledger_hash,
         selected_asset_ids_hash,
         strategy: &local_manifest.strategy,
+        execution_model: &local_manifest.execution_model,
+        venue_queue_position: local_manifest.venue.queue_position,
+        catalog_data_types: local_manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(&local_manifest),
         market_structure_fixture: market_structure_label(&local_manifest),
         fidelity_class: primary.table.fidelity_class(),
@@ -3365,6 +3611,28 @@ mod tests {
         spec
     }
 
+    #[test]
+    fn run_spec_rejects_unknown_top_level_fields() {
+        let mut value: toml::Value =
+            toml::from_str(COMMITTED_RUN_SPEC).expect("committed run-spec parses as TOML");
+        value
+            .as_table_mut()
+            .expect("committed run-spec is a TOML table")
+            .insert(
+                "unexpected_top_level".to_string(),
+                toml::Value::String("must fail closed".to_string()),
+            );
+        let text = toml::to_string(&value).expect("serialize mutated run-spec");
+
+        let err = toml::from_str::<RunSpec>(&text)
+            .expect_err("RunSpec must reject unknown top-level fields");
+        let message = err.to_string();
+        assert!(
+            message.contains("unknown field") && message.contains("unexpected_top_level"),
+            "{message}"
+        );
+    }
+
     fn pending_run_spec_for(gz_bytes: &[u8]) -> RunSpec {
         let mut spec = run_spec_for(gz_bytes);
         spec.source_proof.status = crate::source_proof::SourceProofStatus::Pending;
@@ -3635,6 +3903,19 @@ mod tests {
         let contract_json = fs::read_to_string(&artifacts.contract_path).unwrap();
         let parsed: BacktestResultContract = serde_json::from_str(&contract_json).unwrap();
         assert_eq!(parsed, artifacts.output.contract);
+        assert_eq!(parsed.execution_model, spec.manifest.execution_model);
+        assert_eq!(
+            parsed.venue_queue_position,
+            Some(spec.manifest.venue.queue_position)
+        );
+        assert_eq!(
+            parsed.catalog_data_types,
+            spec.manifest
+                .catalog_inputs
+                .iter()
+                .map(|input| input.data_type.clone())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3751,7 +4032,12 @@ mod tests {
 
         let contract_json = fs::read_to_string(&artifacts.contract_path).unwrap();
         let parsed: BacktestResultContract = serde_json::from_str(&contract_json).unwrap();
-        assert_eq!(parsed.nt_result.machine_id, "operator-attested-redacted");
+        assert_eq!(parsed.nt_result.machine_id, OPERATOR_ATTESTED_REDACTED);
+        assert_eq!(parsed.nt_result.instance_id, OPERATOR_ATTESTED_REDACTED);
+        assert_eq!(
+            parsed.nt_result.elapsed_time_secs,
+            OPERATOR_ATTESTED_ELAPSED_TIME_SECS
+        );
         for uri in [
             &parsed.artifact_uris.source_proof_uri,
             &parsed.artifact_uris.canonical_table_uri,

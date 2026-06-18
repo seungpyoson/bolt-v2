@@ -165,7 +165,7 @@ def scan_root(root: Path) -> list[str]:
         OPERATOR_PATH,
         operator_code,
         "serializable RunSpec",
-        r"\bderive\s*\([^\)]*Serialize[^\)]*Deserialize[^\)]*\)\s*\]\s*pub\s+struct\s+RunSpec\b",
+        r"\bderive\s*\([^\)]*Serialize[^\)]*Deserialize[^\)]*\)\s*\]\s*(?:#\s*\[[^\]]+\]\s*)*pub\s+struct\s+RunSpec\b",
         findings,
     )
     require_pattern(

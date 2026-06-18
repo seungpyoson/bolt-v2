@@ -2823,9 +2823,8 @@ const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
         fidelity: SourceProofFidelityClass::TradeBarReplay,
         role: AdmittanceRole::Auxiliary,
     },
-    // QuoteReplay/IndexReplay/MarkReplay: gate-capable in S2; projection lands
-    // in S3. Seeded L2 quote archives can now populate QuoteTick; the flat
-    // snapshot-quote/index/mark raw seams still fail loud.
+    // QuoteReplay/IndexReplay/MarkReplay/FundingReplay: gate-capable point
+    // streams with one NT-native primary row each.
     AdmittanceRow {
         data_type: NautilusDataType::QuoteTick,
         fidelity: SourceProofFidelityClass::QuoteReplay,
@@ -2839,6 +2838,11 @@ const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
     AdmittanceRow {
         data_type: NautilusDataType::MarkPriceUpdate,
         fidelity: SourceProofFidelityClass::MarkReplay,
+        role: AdmittanceRole::Primary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::FundingRateUpdate,
+        fidelity: SourceProofFidelityClass::FundingReplay,
         role: AdmittanceRole::Primary,
     },
 ];
@@ -3462,7 +3466,7 @@ mod tests {
             run_id: TEST_RUN_ID.to_string(),
             target_bolt_v2_branch: "main".to_string(),
             target_bolt_v2_ref: "refs/heads/main".to_string(),
-            resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+            resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
             market_structure_fixture: MarketStructureFixture::PerpsSpot,
             venue_binding_key: TEST_SOURCE_BINDING.to_string(),
             run_purpose: RunPurpose::Normal,
@@ -5402,6 +5406,21 @@ mod tests {
     }
 
     #[test]
+    fn funding_replay_admits_funding_rate_update() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "FundingRateUpdate".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::FundingReplay;
+
+        manifest
+            .validate(&accepted)
+            .expect("FundingReplay source proof should allow FundingRateUpdate catalog input");
+        let data = manifest.to_nt_data_config().expect("data config");
+
+        assert_eq!(data.data_type(), NautilusDataType::FundingRateUpdate);
+    }
+
+    #[test]
     fn quote_tick_rejected_under_trade_replay() {
         // The table must not over-admit across fidelity classes: a QuoteTick
         // input under the default TradeReplay proof has no admittance row.
@@ -5443,6 +5462,19 @@ mod tests {
     }
 
     #[test]
+    fn funding_rate_update_rejected_under_trade_replay() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "FundingRateUpdate".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "FundingRateUpdate".to_string(),
+                fidelity_class: SourceProofFidelityClass::TradeReplay,
+            }
+        );
+    }
+
+    #[test]
     fn quote_replay_rejects_when_no_quote() {
         // The must-have-primary check must still fire for the new classes: a
         // QuoteReplay proof carrying only a TradeTick input must fail closed.
@@ -5456,6 +5488,22 @@ mod tests {
             ManifestError::DataTypeFidelityMismatch {
                 data_type: "TradeTick".to_string(),
                 fidelity_class: SourceProofFidelityClass::QuoteReplay,
+            }
+        );
+    }
+
+    #[test]
+    fn funding_replay_rejects_when_no_funding_rate_update() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "TradeTick".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::FundingReplay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "TradeTick".to_string(),
+                fidelity_class: SourceProofFidelityClass::FundingReplay,
             }
         );
     }

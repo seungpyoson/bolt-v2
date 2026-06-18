@@ -51,6 +51,11 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs::File, process::Command, sync::Arc};
 use ustr::Ustr;
 
+const PMXT_TEST_EVENT_COUNT_LEDGER_HASH: &str =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+const PMXT_TEST_SELECTED_ASSET_IDS_HASH: &str =
+    "2222222222222222222222222222222222222222222222222222222222222222";
+
 #[test]
 fn pmxt_one_off_projection_uses_nt_polymarket_metadata_and_l2_parsers() {
     let projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
@@ -373,8 +378,14 @@ fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
     assert_eq!(selected.selected_rows, 3);
     assert_eq!(selected.projected_l2_rows, 2);
     assert_eq!(selected.skipped_non_l2_rows, 1);
-    assert_eq!(selected.event_count_ledger_hash, "event-count-ledger-hash");
-    assert_eq!(selected.selected_asset_ids_hash, "selected-assets-hash");
+    assert_eq!(
+        selected.event_count_ledger_hash,
+        PMXT_TEST_EVENT_COUNT_LEDGER_HASH
+    );
+    assert_eq!(
+        selected.selected_asset_ids_hash,
+        PMXT_TEST_SELECTED_ASSET_IDS_HASH
+    );
     assert_eq!(
         selected.projection.usage_scope,
         SourceProofUsageScope::OneOffBackfillData
@@ -703,8 +714,8 @@ fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_proven
         acceptance_mode: AcceptanceMode::Manual,
         accepted_by: "source-proof-reviewer",
         accepted_at: "2026-06-08T00:00:00Z",
-        event_count_ledger_hash: "event-count-ledger-hash",
-        selected_asset_ids_hash: "selected-assets-hash",
+        event_count_ledger_hash: PMXT_TEST_EVENT_COUNT_LEDGER_HASH,
+        selected_asset_ids_hash: PMXT_TEST_SELECTED_ASSET_IDS_HASH,
         artifact_uris,
         created_at: "2026-06-08T00:00:00Z",
         claim_limits: vec![
@@ -754,11 +765,24 @@ fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_proven
     );
     assert_eq!(
         output.contract.event_count_ledger_hash.as_deref(),
-        Some("event-count-ledger-hash")
+        Some(PMXT_TEST_EVENT_COUNT_LEDGER_HASH)
     );
     assert_eq!(
         output.contract.selected_asset_ids_hash.as_deref(),
-        Some("selected-assets-hash")
+        Some(PMXT_TEST_SELECTED_ASSET_IDS_HASH)
+    );
+    assert_eq!(output.contract.execution_model, manifest.execution_model);
+    assert_eq!(
+        output.contract.venue_queue_position,
+        Some(manifest.venue.queue_position)
+    );
+    assert_eq!(
+        output.contract.catalog_data_types,
+        manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         output.contract.nt_result.run_config_id.as_deref(),
@@ -797,8 +821,8 @@ fn pmxt_one_off_l2_backtest_result_contract_rejects_duplicate_manifest_data_type
         acceptance_mode: AcceptanceMode::Manual,
         accepted_by: "source-proof-reviewer",
         accepted_at: "2026-06-08T00:00:00Z",
-        event_count_ledger_hash: "event-count-ledger-hash",
-        selected_asset_ids_hash: "selected-assets-hash",
+        event_count_ledger_hash: PMXT_TEST_EVENT_COUNT_LEDGER_HASH,
+        selected_asset_ids_hash: PMXT_TEST_SELECTED_ASSET_IDS_HASH,
         artifact_uris: pmxt_result_artifact_uris(output_dir.path()),
         created_at: "2026-06-08T00:00:00Z",
         claim_limits: vec![
@@ -905,14 +929,14 @@ fn pmxt_one_off_l2_artifact_root_run_writes_result_contract_from_selected_source
             .contract
             .event_count_ledger_hash
             .as_deref(),
-        Some("event-count-ledger-hash")
+        Some(PMXT_TEST_EVENT_COUNT_LEDGER_HASH)
     );
     assert_eq!(
         run.contract_output
             .contract
             .selected_asset_ids_hash
             .as_deref(),
-        Some("selected-assets-hash")
+        Some(PMXT_TEST_SELECTED_ASSET_IDS_HASH)
     );
     assert_eq!(
         run.contract_output.contract.accepted_object_sha256,
@@ -1308,11 +1332,11 @@ result_contract_uri = "file://{output_dir}/backtest-result-contract.json"
     assert_eq!(contract.accepted_object_sha256, selected_source_sha256);
     assert_eq!(
         contract.event_count_ledger_hash.as_deref(),
-        Some("event-count-ledger-hash")
+        Some(PMXT_TEST_EVENT_COUNT_LEDGER_HASH)
     );
     assert_eq!(
         contract.selected_asset_ids_hash.as_deref(),
-        Some("selected-assets-hash")
+        Some(PMXT_TEST_SELECTED_ASSET_IDS_HASH)
     );
 }
 
@@ -1485,7 +1509,7 @@ fn pmxt_l2_manifest(
         run_id: "pmxt-one-off-l2-contract-proof".to_string(),
         target_bolt_v2_branch: "main".to_string(),
         target_bolt_v2_ref: "refs/heads/main".to_string(),
-        resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+        resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
         market_structure_fixture: MarketStructureFixture::BinaryOption,
         venue_binding_key: "synthetic-pmxt-one-off-source".to_string(),
         run_purpose: RunPurpose::Audit,
@@ -2131,14 +2155,14 @@ fn write_selector_report_with_excluded_events_fixture(
             "row_budget": 10,
             "max_selected_assets": 1
         },
-        "event_count_ledger_hash": "event-count-ledger-hash",
+        "event_count_ledger_hash": PMXT_TEST_EVENT_COUNT_LEDGER_HASH,
         "total_assets": 1,
         "eligible_assets": 1,
         "selected_assets": [{
             "asset_id": "token-a",
             "replay_rows": 3
         }],
-        "selected_asset_ids_hash": "selected-assets-hash",
+        "selected_asset_ids_hash": PMXT_TEST_SELECTED_ASSET_IDS_HASH,
         "excluded_event_asset_count": 0,
         "excluded_event_row_count": 0,
         "blocking_issues": []
@@ -2184,7 +2208,7 @@ fn write_selected_source_report_with_selector(
         projected_row_groups: 1,
         selected_rows: rows,
         selected_asset_count: 1,
-        selected_asset_ids_hash: "selected-assets-hash".to_string(),
+        selected_asset_ids_hash: PMXT_TEST_SELECTED_ASSET_IDS_HASH.to_string(),
         output_parquet_sha256: sha256_file(parquet_path),
     };
     let bytes = serde_json::to_vec_pretty(&report).expect("report json");

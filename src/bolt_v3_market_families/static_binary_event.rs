@@ -1,4 +1,4 @@
-//! Static binary-event market-family identity binding for configured Polymarket events.
+//! Static binary-event market-family identity binding for configured binary events.
 
 use std::{sync::Arc, time::Duration};
 
@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     bolt_v3_config::LoadedStrategy,
     bolt_v3_instrument_filters::InstrumentFilterError,
+    bolt_v3_maker_settlement::BinarySettlementPayout,
+    bolt_v3_numeric::sanitize_probability,
     bolt_v3_quote_lifecycle::Leg,
     bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
 };
@@ -17,7 +19,7 @@ use super::{
     MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget, OutcomeSide,
     SelectedBinaryOptionMarket, SelectedMarketRequirement, SelectedMarketRequirementParts,
     SelectedMarketSourceIdentity, TargetRuntimeFields, selected_market_metadata_provenance_fields,
-    selected_market_requirement_error, selected_market_requirement_from_parts, updown,
+    selected_market_requirement_error, selected_market_requirement_from_parts,
 };
 
 pub const KEY: &str = "static_binary_event";
@@ -38,7 +40,7 @@ const METADATA_QUESTION_ID_FIELD: &str = "question_id";
 const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";
 const METADATA_VENUE_FIELD: &str = "venue";
 const METADATA_YES_OUTCOME_FIELD: &str = "yes_outcome";
-const STATIC_RESOLUTION_KIND: &str = "polymarket_condition";
+const STATIC_RESOLUTION_KIND: &str = "static_binary_event_condition";
 const STATIC_VALUE_KIND: &str = "binary_outcome";
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -350,20 +352,20 @@ pub fn selected_market_requirement(
     })
 }
 
-pub fn fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<f64> {
-    None
+pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
+    sanitize_probability(inputs.spot_price)
 }
 
 pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
-    updown::maker_quote_targets(inputs)
+    super::binary_outcome::maker_quote_targets(inputs)
 }
 
-pub fn maker_settlement_payout(outcome: OutcomeSide, leg: Leg) -> Option<f64> {
-    updown::maker_settlement_payout(outcome, leg)
+pub fn maker_settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
+    super::binary_outcome::maker_settlement_payout(payout, leg)
 }
 
 pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
-    updown::maker_binary_fee_curve(fee_rate, price)
+    super::binary_outcome::maker_binary_fee_curve(fee_rate, price)
 }
 
 fn validate_static_target_block(context: &str, block: &TargetBlock) -> Vec<String> {
@@ -1027,19 +1029,39 @@ mod tests {
     }
 
     #[test]
-    fn fair_probability_remains_unavailable_until_reference_price_runtime_exists() {
-        let inputs = FairProbabilityInputs {
-            spot_price: 0.5,
-            strike_price: 0.5,
-            seconds_to_market_end: 60,
-            realized_vol: 0.0,
-            pricing_kurtosis: 0.0,
-        };
-
-        assert!(
-            super::super::fair_probability_up_for_family(KEY, &inputs).is_none(),
-            "static_binary_event must stay untradeable until PR730 supplies fair probability"
+    fn fair_probability_uses_reference_current_price_probability() {
+        let fair_probability = super::super::fair_probability_up_for_family(
+            KEY,
+            &FairProbabilityInputs {
+                spot_price: 0.63,
+                strike_price: f64::NAN,
+                seconds_to_market_end: 0,
+                realized_vol: f64::NAN,
+                pricing_kurtosis: f64::NAN,
+            },
         );
+
+        assert_eq!(fair_probability, Some(0.63));
+    }
+
+    #[test]
+    fn fair_probability_fails_closed_on_non_probability_reference_price() {
+        for spot_price in [-0.01, 1.01, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                super::super::fair_probability_up_for_family(
+                    KEY,
+                    &FairProbabilityInputs {
+                        spot_price,
+                        strike_price: 0.5,
+                        seconds_to_market_end: 60,
+                        realized_vol: 0.0,
+                        pricing_kurtosis: 0.0,
+                    },
+                ),
+                None,
+                "static binary fair probability must reject {spot_price}"
+            );
+        }
     }
 
     #[test]
@@ -1208,6 +1230,7 @@ mod tests {
             None,
             None,
             Some(Price::from("0.999")),
+            None,
             None,
             None,
             None,

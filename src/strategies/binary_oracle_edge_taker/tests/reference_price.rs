@@ -26,6 +26,20 @@ const TEST_REFERENCE_CURRENT_PRICE: f64 = 66_300.25;
 const TEST_REFERENCE_OBSERVED_TS_MS: u64 = 1_200;
 const TEST_REFERENCE_RECEIVED_TS_MS: u64 = 1_250;
 
+#[test]
+fn signal_quote_subscription_uses_configured_signal_client() {
+    let strategy = test_strategy();
+
+    assert_eq!(
+        strategy.signal_instrument_id(),
+        Some(InstrumentId::from("SIGNAL.SOURCE"))
+    );
+    assert_eq!(
+        strategy.signal_client_id(),
+        Some(ClientId::from("signal_data_client"))
+    );
+}
+
 fn reference_provider(key: &str) -> ReferencePriceProvider {
     ReferencePriceProvider::new(key).expect("test provider key should be valid")
 }

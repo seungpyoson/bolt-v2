@@ -1368,6 +1368,10 @@ impl BinaryOracleEdgeTaker {
             .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
     }
 
+    fn signal_client_id(&self) -> Option<ClientId> {
+        self.config.signal_venue.as_deref().map(ClientId::from)
+    }
+
     fn resolution_instrument_id(&self) -> Option<InstrumentId> {
         self.config
             .resolution_instrument_id
@@ -1399,10 +1403,11 @@ impl BinaryOracleEdgeTaker {
 
     fn subscribe_signal_quotes(&mut self) {
         if let Some(instrument_id) = self.signal_instrument_id() {
+            let client_id = self.signal_client_id();
             #[cfg(not(test))]
-            self.subscribe_quotes(instrument_id, None, None);
+            self.subscribe_quotes(instrument_id, client_id, None);
             #[cfg(test)]
-            let _ = instrument_id;
+            let _ = (instrument_id, client_id);
         }
     }
 
@@ -1454,10 +1459,11 @@ impl BinaryOracleEdgeTaker {
 
     fn unsubscribe_signal_quotes(&mut self) {
         if let Some(instrument_id) = self.signal_instrument_id() {
+            let client_id = self.signal_client_id();
             #[cfg(not(test))]
-            self.unsubscribe_quotes(instrument_id, None, None);
+            self.unsubscribe_quotes(instrument_id, client_id, None);
             #[cfg(test)]
-            let _ = instrument_id;
+            let _ = (instrument_id, client_id);
         }
     }
 

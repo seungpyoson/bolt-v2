@@ -2374,7 +2374,7 @@ mod tests {
             .expect("market portfolio policy threads");
         let expected_digest = markets_config_digest(&valid_markets()).expect("digest computes");
         table.insert(
-            super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
+            super::super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
             Value::String(expected_digest.clone()),
         );
         let config =

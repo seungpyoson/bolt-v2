@@ -17375,3 +17375,35 @@ literal = '''0o644'''
 context = '''pub const RUNTIME_CONFIG_FILE_MODE: u32 = 0o644;'''
 classification = "atomic_io_runtime_config_file_mode"
 reason = "Unix file mode for non-secret runtime files a service user must read (mirrors PRIVATE_ARTIFACT_FILE_MODE 0o600); it is a code constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"prod-btc-5m.toml"'''
+context = '''name: "prod-btc-5m.toml",'''
+classification = "prod_profile_release_anchor_name"
+reason = "Basename of the release-reviewed production profile the deploy/systemd unit passes as --profile; an identity constant for the binary-embedded release anchor, not an operator runtime value (a test asserts it matches the tracked profile)."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"../config/prod-btc-5m.toml"'''
+context = '''text: include_str!("../config/prod-btc-5m.toml"),'''
+classification = "prod_profile_release_anchor_embed_path"
+reason = "Compile-time include_str! source path that bakes the reviewed profile into the binary for the release anchor; a build-time path constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"strategies/binary_oracle_btc.toml"'''
+context = '''"strategies/binary_oracle_btc.toml",'''
+classification = "prod_profile_release_anchor_strategy_rel_path"
+reason = "Profile-relative path of the release-reviewed strategy file, keyed against the loaded profile's resolved strategy_files; an identity constant for the release anchor (a test asserts the embedded set matches the profile), not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"../config/strategies/binary_oracle_btc.toml"'''
+context = '''include_str!("../config/strategies/binary_oracle_btc.toml"),'''
+classification = "prod_profile_release_anchor_strategy_embed_path"
+reason = "Compile-time include_str! source path that bakes the reviewed strategy file into the binary for the release anchor; a build-time path constant, not an operator runtime value."

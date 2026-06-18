@@ -96,6 +96,34 @@ fn install_script_provisions_runtime_catalog_on_srv_volume() {
 }
 
 #[test]
+fn install_script_repairs_whole_config_bundle_for_service_user() {
+    // ExecStartPre runs `ops verify-live-config` as User=bolt and must read the tracked
+    // profile AND every referenced strategy file, not just live.toml. Files copied by root
+    // under a restrictive umask can land 0600 root:root; the installer must repair the whole
+    // bundle (strategies dir + all *.toml) to root:bolt group-readable so verification does
+    // not fail with a service-user lockout regardless of the deploy shell's umask (#768).
+    let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
+    let install = fs::read_to_string(&install_path).expect("install script should exist");
+
+    assert!(
+        install.contains("chmod 0750 \"${BOLT_INSTALL_ROOT}/config/strategies\""),
+        "installer must make the strategies dir traversable by the bolt group"
+    );
+    assert!(
+        install.contains(
+            "find \"${BOLT_INSTALL_ROOT}/config\" -type f -name '*.toml' -exec chown root:\"${BOLT_GROUP}\" {} +"
+        ),
+        "installer must own every deployed config/strategy TOML as root:bolt"
+    );
+    assert!(
+        install.contains(
+            "find \"${BOLT_INSTALL_ROOT}/config\" -type f -name '*.toml' -exec chmod 0640 {} +"
+        ),
+        "installer must make every deployed config/strategy TOML group-readable (0640) for the service user"
+    );
+}
+
+#[test]
 fn root_config_sets_runtime_catalog_and_min_free_space_on_srv_volume() {
     let root_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/root.toml");
     let root = fs::read_to_string(&root_path).expect("root config should exist");

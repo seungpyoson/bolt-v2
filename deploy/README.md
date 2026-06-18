@@ -46,14 +46,18 @@ secret-resolution and exact-binary config-load/storage checks that cannot run of
 
 The systemd unit **enforces** step 2 at every start: `ExecStartPre` runs `ops verify-live-config` (then
 `ops prestart-check`) before `run`, so a hand-edited or stale `/opt/bolt-v2/config/live.toml` — including
-one with loss rails disabled — fails service start instead of trading. The on-box profile's authenticity
-comes from deploying the git-tracked, PR-reviewed, CI-validated profile: `verify` proves the deployed
-config regenerates from the on-box profile and that the production invariants hold, but it does not by
-itself prove the on-box profile equals the reviewed Git revision — deploy from the reviewed checkout.
-Anchoring the on-box profile to an immutable release digest is tracked as a follow-up.
+one with loss rails disabled — fails service start instead of trading. `verify` also enforces a **release
+anchor**: the on-box profile and its strategy files must be byte-identical to the reviewed copy baked into
+the deployed binary at build time (`include_str!`), so a stale or hand-edited on-box profile that is
+merely self-consistent with its own generated `live.toml` is rejected too. Because the binary is the
+CI-built release artifact, this ties the deployed config to the PR-reviewed Git revision — deploy the
+binary and config from the same reviewed release.
 
-If `/opt/bolt-v2/config/live.toml` already exists, `deploy/install.sh` repairs it to `root:bolt`
-with mode `0640`.
+`deploy/install.sh` repairs the **entire** deployed config bundle — the tracked profile, the generated
+`live.toml`, and every `config/strategies/*.toml` — to `root:bolt` with group-readable modes (config and
+strategies dirs `0750`, TOML files `0640`). The service user runs `ops verify-live-config` /
+`prestart-check` / `run`, so this keeps the bundle readable regardless of the umask under which it was
+copied (a restrictive umask would otherwise leave root-copied files `0600 root:root` and fail start).
 
 The systemd unit refuses to start unless `/srv/bolt-v2` is mounted and the Rust prestart check
 passes against `/opt/bolt-v2/config/live.toml`. That prestart check requires

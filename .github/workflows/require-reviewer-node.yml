@@ -47,6 +47,9 @@ jobs:
           fi
 
           # Bootstrap-only path for the PR that first introduces this workflow.
+          # Trust model: this introducing PR is not protected by this new check;
+          # normal branch protection and human review remain the merge gate.
+          # Remove this block after scripts/require_sp_reviewer.py exists on main.
           git fetch --no-tags --depth=1 origin "$HEAD_SHA"
           git checkout --force FETCH_HEAD -- scripts/require_sp_reviewer.py
 

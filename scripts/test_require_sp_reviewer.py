@@ -173,12 +173,17 @@ def assert_current_head_approval_passes() -> None:
     assert result.latest_decisive_state == "APPROVED"
 
 
-def assert_workflow_bootstraps_script_only_when_base_lacks_it() -> None:
+def assert_workflow_documents_bootstrap_and_requires_node_id() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "Run the reviewer gate from the protected base branch" in workflow
+    assert "github.event.pull_request.base.sha" in workflow
+    assert "REQUIRED_REVIEWER_NODE_ID: U_kgDOEZMFhA" in workflow
+    assert "REQUIRED_REVIEWER:" not in workflow
     assert "Bootstrap reviewer gate script" in workflow
     assert "test -f scripts/require_sp_reviewer.py" in workflow
     assert "github.event.pull_request.head.sha" in workflow
+    assert "this introducing PR is not protected by this new check" in workflow
+    assert "Remove this block after scripts/require_sp_reviewer.py exists on main" in workflow
 
 
 def main() -> int:
@@ -193,7 +198,7 @@ def main() -> int:
     assert_configured_node_id_ignores_login_collision()
     assert_stale_approval_does_not_pass_for_new_head_sha()
     assert_current_head_approval_passes()
-    assert_workflow_bootstraps_script_only_when_base_lacks_it()
+    assert_workflow_documents_bootstrap_and_requires_node_id()
     print("OK: required reviewer gate self-tests passed.")
     return 0
 

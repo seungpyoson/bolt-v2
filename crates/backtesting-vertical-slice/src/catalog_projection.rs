@@ -1607,9 +1607,18 @@ pub fn read_back_index(
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
+    let mut read_back = catalog
         .query_typed_data::<IndexPriceUpdate>(None, None, None, None, Some(files), false)
-        .context("query index prices from catalog")
+        .context("query index prices from catalog")?;
+    read_back.sort_by_key(|p| {
+        (
+            p.ts_event.as_u64(),
+            p.instrument_id.to_string(),
+            p.value.as_decimal().to_string(),
+            p.ts_init.as_u64(),
+        )
+    });
+    Ok(read_back)
 }
 
 /// Convert canonical mark-price rows into NautilusTrader `MarkPriceUpdate`s at
@@ -1730,9 +1739,18 @@ pub fn read_back_mark(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
+    let mut read_back = catalog
         .query_typed_data::<MarkPriceUpdate>(None, None, None, None, Some(files), false)
-        .context("query mark prices from catalog")
+        .context("query mark prices from catalog")?;
+    read_back.sort_by_key(|p| {
+        (
+            p.ts_event.as_u64(),
+            p.instrument_id.to_string(),
+            p.value.as_decimal().to_string(),
+            p.ts_init.as_u64(),
+        )
+    });
+    Ok(read_back)
 }
 
 /// Convert canonical funding-rate rows into NautilusTrader
@@ -1858,9 +1876,20 @@ pub fn read_back_funding_rates(
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
+    let mut read_back = catalog
         .query_typed_data::<FundingRateUpdate>(None, None, None, None, Some(files), false)
-        .context("query funding rates from catalog")
+        .context("query funding rates from catalog")?;
+    read_back.sort_by(|a, b| {
+        a.ts_event
+            .cmp(&b.ts_event)
+            .then_with(|| a.instrument_id.cmp(&b.instrument_id))
+            .then_with(|| a.rate.cmp(&b.rate))
+            .then_with(|| a.rate.scale().cmp(&b.rate.scale()))
+            .then_with(|| a.interval.cmp(&b.interval))
+            .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
+            .then_with(|| a.ts_init.cmp(&b.ts_init))
+    });
+    Ok(read_back)
 }
 
 /// Convert canonical bar rows into NautilusTrader `Bar`s under the table's
@@ -4108,8 +4137,6 @@ max_notional = "200000"
 
         let loaded = read_back_index(dir.path(), "BNBUSDC.BYBIT").expect("read back");
         assert_eq!(loaded.len(), 2);
-        let mut loaded = loaded;
-        loaded.sort_by_key(|p| p.ts_event.as_u64());
         for (update, row) in loaded.iter().zip(table.rows.iter()) {
             assert_eq!(update.instrument_id.to_string(), "BNBUSDC.BYBIT");
             assert_eq!(
@@ -4303,8 +4330,6 @@ max_notional = "200000"
 
         let loaded = read_back_mark(dir.path(), "BNBUSDC.BYBIT").expect("read back");
         assert_eq!(loaded.len(), 2);
-        let mut loaded = loaded;
-        loaded.sort_by_key(|p| p.ts_event.as_u64());
         for (update, row) in loaded.iter().zip(table.rows.iter()) {
             assert_eq!(update.instrument_id.to_string(), "BNBUSDC.BYBIT");
             assert_eq!(
@@ -4515,32 +4540,8 @@ max_notional = "200000"
 
         let loaded = read_back_funding_rates(dir.path(), "BTCUSDT.BYBIT").expect("read back");
         assert_eq!(loaded.len(), 2);
-        let mut loaded = loaded;
-        loaded.sort_by_key(|p| p.ts_event.as_u64());
         crate::runner::assert_funding_read_back_matches(&loaded, &table, "BTCUSDT.BYBIT")
             .expect("shared funding read-back assertion");
-        for (update, row) in loaded.iter().zip(table.rows.iter()) {
-            assert_eq!(update.instrument_id.to_string(), "BTCUSDT.BYBIT");
-            assert_eq!(update.rate, Decimal::from_str(&row.rate).unwrap());
-            assert_eq!(update.interval, row.interval_minutes);
-            assert_eq!(
-                update.next_funding_ns.map(|ts| ts.as_u64()),
-                row.next_funding_time.map(|ts| u64::try_from(ts).unwrap())
-            );
-            let label = format!("funding rate {}", row.event_time);
-            assert_eq!(
-                update.ts_event.as_u64(),
-                ts_event_nanos(row.event_time, &label).unwrap().as_u64()
-            );
-            assert_eq!(row.availability_time, None);
-            assert_eq!(
-                update.ts_init.as_u64(),
-                ts_init_nanos(row.availability_time, row.capture_time, &label)
-                    .unwrap()
-                    .as_u64(),
-                "ts_init must equal capture_time (the receipt clock), not event_time"
-            );
-        }
     }
 
     #[test]

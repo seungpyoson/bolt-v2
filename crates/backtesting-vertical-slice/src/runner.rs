@@ -1061,12 +1061,12 @@ pub(crate) fn assert_quote_read_back_matches(
 }
 
 /// Prove an index-price catalog read-back is value-faithful, mirroring
-/// [`assert_read_back_matches`] for the index family: element-wise in catalog
-/// order, every read-back update must carry the projected instrument id and the
-/// canonical `value` decimal, with `ts_event` the event clock and `ts_init` the
-/// availability-or-capture receipt clock derived through the SAME shared
-/// projection owner the seam uses (NO DUAL PATHS) — this is the load-bearing
-/// `ts_init == capture_time` proof for the index family.
+/// [`assert_read_back_matches`] for the index family: element-wise in stable
+/// read-back order, every read-back update must carry the projected instrument
+/// id and the canonical `value` decimal, with `ts_event` the event clock and
+/// `ts_init` the availability-or-capture receipt clock derived through the SAME
+/// shared projection owner the seam uses (NO DUAL PATHS) — this is the
+/// load-bearing `ts_init == capture_time` proof for the index family.
 pub(crate) fn assert_index_read_back_matches(
     read_back: &[IndexPriceUpdate],
     table: &super::canonical_market_data::CanonicalIndexPricesTable,
@@ -1112,12 +1112,12 @@ pub(crate) fn assert_index_read_back_matches(
 }
 
 /// Prove a mark-price catalog read-back is value-faithful, mirroring
-/// [`assert_read_back_matches`] for the mark family: element-wise in catalog
-/// order, every read-back update must carry the projected instrument id and the
-/// canonical `value` decimal, with `ts_event` the event clock and `ts_init` the
-/// availability-or-capture receipt clock derived through the SAME shared
-/// projection owner the seam uses (NO DUAL PATHS) — this is the load-bearing
-/// `ts_init == capture_time` proof for the mark family.
+/// [`assert_read_back_matches`] for the mark family: element-wise in stable
+/// read-back order, every read-back update must carry the projected instrument
+/// id and the canonical `value` decimal, with `ts_event` the event clock and
+/// `ts_init` the availability-or-capture receipt clock derived through the SAME
+/// shared projection owner the seam uses (NO DUAL PATHS) — this is the
+/// load-bearing `ts_init == capture_time` proof for the mark family.
 pub(crate) fn assert_mark_read_back_matches(
     read_back: &[MarkPriceUpdate],
     table: &super::canonical_market_data::CanonicalMarkPricesTable,
@@ -1164,8 +1164,8 @@ pub(crate) fn assert_mark_read_back_matches(
 
 /// Prove a funding-rate catalog read-back is value-faithful, mirroring
 /// [`assert_index_read_back_matches`] for the funding family: element-wise in
-/// catalog order, every read-back update must carry the projected instrument id,
-/// rate, interval, next funding timestamp, event clock, and
+/// stable read-back order, every read-back update must carry the projected
+/// instrument id, rate, interval, next funding timestamp, event clock, and
 /// availability-or-capture receipt clock derived through the shared projection
 /// owner.
 pub(crate) fn assert_funding_read_back_matches(

@@ -158,7 +158,6 @@ use crate::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
-    bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
     bolt_v3_position_sizer::{
         FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
         SizingPolicy,

@@ -2638,6 +2638,11 @@ fn ensure_supported_enums(manifest: &BacktestingRunManifest) -> Result<(), Manif
         resolve_latency_model(venue.latency_model.as_ref())?;
         resolve_fee_model(venue.fee_model.as_ref())?;
     }
+    // Primary execution venue cost-realism anchor: the loop above already
+    // validates manifest.venue (it is chained in), but the RA cost-realism fence
+    // pins this exact spelling because fills settle against the primary venue.
+    // Keep it explicit so the guarantee stays statically visible.
+    resolve_fill_model(manifest.venue.fill_model.as_ref())?;
     Ok(())
 }
 
@@ -4671,7 +4676,7 @@ mod tests {
         StrategyConfigOverlaySource {
             production_root_config_path: "config/root.toml".to_string(),
             override_delta: ManifestBacktestConfigOverride {
-                label: "production config + documented OKX/Bybit override".to_string(),
+                label: "production config + documented multi-venue RV override".to_string(),
                 strategy_instance_id: "binary_oracle_btc".to_string(),
                 signal_role: "primary".to_string(),
                 signal_data_client_id: "okx_data".to_string(),
@@ -4683,8 +4688,8 @@ mod tests {
                         instrument_id: "BTC-USDT.OKX".to_string(),
                     },
                     ManifestRealizedVolatilitySourceSelector {
-                        data_client_id: "bybit_data".to_string(),
-                        instrument_id: "BTC-USDT.BYBIT".to_string(),
+                        data_client_id: "synthetic_rv_data".to_string(),
+                        instrument_id: "BTC-USDT.SYNTHETIC".to_string(),
                     },
                 ],
             },

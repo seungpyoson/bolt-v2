@@ -1234,6 +1234,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some(info),
             1.into(),
             1.into(),

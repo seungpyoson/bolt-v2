@@ -1313,6 +1313,7 @@ pub(super) fn updown_binary_option(
         None,
         None,
         None,
+        None,
         Some(info),
         1.into(),
         1.into(),

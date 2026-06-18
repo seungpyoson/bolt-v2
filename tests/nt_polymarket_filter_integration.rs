@@ -47,7 +47,7 @@ fn pinned_polymarket_provider_accepts_market_slug_filters() {
         RetryConfig::default(),
     )
     .unwrap();
-    let provider = PolymarketInstrumentProvider::with_filter(http_client, Arc::new(filter));
+    let provider = PolymarketInstrumentProvider::with_filter(http_client, None, Arc::new(filter));
 
     assert_eq!(provider.filters().len(), 1);
 }

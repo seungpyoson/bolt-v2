@@ -51,10 +51,11 @@ fn add_all_requested_data_clients(loaded: &mut LoadedBoltV3Config) {
 venue = "BINANCE"
 
 [data]
-product_types = ["spot"]
+product_type = "spot"
 environment = "mainnet"
 base_url_http = "https://api.binance.com"
 base_url_ws = "wss://stream-sbe.binance.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -69,10 +70,11 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 venue = "BINANCE"
 
 [data]
-product_types = ["usd_m"]
+product_type = "usd_m"
 environment = "testnet"
 base_url_http = "https://demo-fapi.binance.com"
 base_url_ws = "wss://fstream.binancefuture.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -87,10 +89,11 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 venue = "BINANCE"
 
 [data]
-product_types = ["coin_m"]
+product_type = "coin_m"
 environment = "testnet"
 base_url_http = "https://testnet.binancefuture.com"
 base_url_ws = "wss://dstream.binancefuture.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 

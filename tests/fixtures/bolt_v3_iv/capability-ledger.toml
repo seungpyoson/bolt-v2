@@ -2491,6 +2491,168 @@ matched_terms = ["greeks", "vol"]
 seed_family = "data_actor_subscription"
 classification = "excluded"
 
+# --- NautilusTrader develop-head (rev 6be5a50) new option/greeks surfaces ---
+# The bump added the derive/lighter adapters, tardis option-summary + options-chain
+# ingestion, and OptionGreeks serialization/persistence/python plumbing. These
+# surfaces match the IV/options sweep terms and require exact-review classification
+# (broad prefix rules do not cover greeks/implied/option_summary surfaces).
+[[surfaces]]
+surface_id = "nt.crates.adapters.binance.src.lib.arrow"
+evidence_path = "crates/adapters/binance/src/lib.rs"
+symbol = "arrow"
+matched_terms = ["option", "options", "surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.bybit.src.python.params.bybit_native_tp_sl_params"
+evidence_path = "crates/adapters/bybit/src/python/params.rs"
+symbol = "BybitNativeTpSlParams"
+matched_terms = ["option", "surface"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.derive.src.http.models.derive_option_pricing"
+evidence_path = "crates/adapters/derive/src/http/models.rs"
+symbol = "DeriveOptionPricing"
+matched_terms = ["greeks", "implied", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.derive.src.websocket.parse.parse_option_greeks"
+evidence_path = "crates/adapters/derive/src/websocket/parse.rs"
+symbol = "parse_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.lighter.src.common.symbol.product_type_from_instrument_id"
+evidence_path = "crates/adapters/lighter/src/common/symbol.rs"
+symbol = "product_type_from_instrument_id"
+matched_terms = ["implied"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.tardis.src.csv.convert.convert_options_chain_csv"
+evidence_path = "crates/adapters/tardis/src/csv/convert.rs"
+symbol = "convert_options_chain_csv"
+matched_terms = ["chain", "greeks", "option", "options"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.tardis.src.csv.load.load_options_chain"
+evidence_path = "crates/adapters/tardis/src/csv/load.rs"
+symbol = "load_options_chain"
+matched_terms = ["chain", "greeks", "option", "options"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.tardis.src.csv.stream.stream_options_chain"
+evidence_path = "crates/adapters/tardis/src/csv/stream.rs"
+symbol = "stream_options_chain"
+matched_terms = ["chain", "greeks", "option", "options"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.tardis.src.machine.message.option_summary_msg"
+evidence_path = "crates/adapters/tardis/src/machine/message.rs"
+symbol = "OptionSummaryMsg"
+matched_terms = ["greeks", "implied", "option", "options"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.tardis.src.machine.parse.parse_option_summary_msg"
+evidence_path = "crates/adapters/tardis/src/machine/parse.rs"
+symbol = "parse_option_summary_msg"
+matched_terms = ["greeks", "implied", "option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.adapters.tardis.src.machine.parse.parse_option_summary_msg_as_quote"
+evidence_path = "crates/adapters/tardis/src/machine/parse.rs"
+symbol = "parse_option_summary_msg_as_quote"
+matched_terms = ["option"]
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.common.src.msgbus.switchboard.get_pipeline_option_greeks_topic"
+evidence_path = "crates/common/src/msgbus/switchboard.rs"
+symbol = "get_pipeline_option_greeks_topic"
+matched_terms = ["greeks", "option"]
+seed_family = "msgbus"
+classification = "supported"
+engine_mapping = { mapping_kind = "runtime_operation", target = "iv_msgbus_topic" }
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.python.data.mod.pyobjects_to_option_greeks"
+evidence_path = "crates/model/src/python/data/mod.rs"
+symbol = "pyobjects_to_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.persistence.src.backend.catalog.option_greeks"
+evidence_path = "crates/persistence/src/backend/catalog.rs"
+symbol = "option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.persistence.src.python.catalog.query_option_greeks"
+evidence_path = "crates/persistence/src/python/catalog.rs"
+symbol = "query_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.persistence.src.python.catalog.write_option_greeks"
+evidence_path = "crates/persistence/src/python/catalog.rs"
+symbol = "write_option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.src.arrow.mod.option_greeks"
+evidence_path = "crates/serialization/src/arrow/mod.rs"
+symbol = "option_greeks"
+matched_terms = ["greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.src.arrow.mod.option_greeks_to_arrow_record_batch_bytes"
+evidence_path = "crates/serialization/src/arrow/mod.rs"
+symbol = "option_greeks_to_arrow_record_batch_bytes"
+matched_terms = ["greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.src.python.arrow.py_option_greeks_from_arrow_record_batch_bytes"
+evidence_path = "crates/serialization/src/python/arrow.rs"
+symbol = "py_option_greeks_from_arrow_record_batch_bytes"
+matched_terms = ["greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.crates.serialization.src.python.arrow.py_option_greeks_to_arrow_record_batch_bytes"
+evidence_path = "crates/serialization/src/python/arrow.rs"
+symbol = "py_option_greeks_to_arrow_record_batch_bytes"
+matched_terms = ["greeks", "option"]
+classification = "excluded"
+
+[[surfaces]]
+surface_id = "nt.patches.pyo3_stub_gen.src.pyproject.stub_gen_config"
+evidence_path = "patches/pyo3-stub-gen/src/pyproject.rs"
+symbol = "stub_gen_config"
+matched_terms = ["option", "options"]
+classification = "not_iv_options"
+
 [[engine_mapping_rules]]
 surface_id_prefix = "nt.model.option_greeks"
 engine_mapping = { mapping_kind = "product_kind", target = "iv_option_greeks" }

@@ -405,6 +405,15 @@ trait BoltV3NtVenueMutationSink {
         params: Option<Params>,
     ) -> Result<()>;
 
+    // The venue's in-place modify capability. Option A (#835) fail-closes the only
+    // routing path (`route_modify_with_sink` refuses live modifies and the maker FSM
+    // never emits a Modify while `supports_modify=false`), so this method is
+    // intentionally uncalled today. The wiring is retained for #835 (admission-gated
+    // in-place modify) and to keep the fail-closed differential tests load-bearing
+    // (reverting the fail-close to a venue call must still flip `modify_calls` 0->1).
+    // `expect` (not `allow`) is self-cleaning: when #835 wires a real caller the
+    // expectation goes unfulfilled and clippy forces this attribute removed.
+    #[expect(dead_code)]
     fn modify_order_via_nt(
         &mut self,
         client_order_id: ClientOrderId,

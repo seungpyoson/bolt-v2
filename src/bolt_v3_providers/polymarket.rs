@@ -51,7 +51,9 @@ use nautilus_polymarket::{
     common::consts::{HTTP_RATE_LIMIT, LOT_SIZE_SCALE},
     common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
     common::enums::SignatureType as NtPolymarketSignatureType,
-    config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
+    config::{
+        PolymarketDataClientConfig, PolymarketExecClientConfig, PolymarketInstrumentProviderConfig,
+    },
     factories::{PolymarketDataClientFactory, PolymarketExecutionClientFactory},
     filters::{
         EventQueryFilter, EventSlugFilter, GammaQueryFilter, InstrumentFilter, MarketSlugFilter,
@@ -158,16 +160,22 @@ pub const FORBIDDEN_ENV_VARS: &[&str] = &[
 pub struct PolymarketDataConfig {
     pub base_url_http: String,
     pub base_url_ws: String,
+    pub base_url_rtds: String,
     pub base_url_gamma: String,
     pub base_url_data_api: String,
     pub http_timeout_secs: u64,
     pub ws_timeout_secs: u64,
     pub subscribe_new_markets: bool,
+    pub new_market_fetch_max_concurrency: u64,
     pub auto_load_missing_instruments: bool,
     pub auto_load_debounce_ms: u64,
     pub auto_load_max_retries: u32,
     pub auto_load_retry_delay_initial_secs: u64,
     pub auto_load_retry_delay_max_secs: u64,
+    pub resolve_poll_enabled: bool,
+    pub resolve_poll_interval_secs: u64,
+    pub resolve_poll_grace_secs: u64,
+    pub resolve_poll_max_wait_secs: u64,
     pub update_instruments_interval_mins: u64,
     pub ws_max_subscriptions: u64,
     pub transport_backend: TransportBackend,
@@ -414,6 +422,22 @@ fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
         (
             "update_instruments_interval_mins",
             data.update_instruments_interval_mins,
+        ),
+        (
+            stringify!(new_market_fetch_max_concurrency),
+            data.new_market_fetch_max_concurrency,
+        ),
+        (
+            stringify!(resolve_poll_interval_secs),
+            data.resolve_poll_interval_secs,
+        ),
+        (
+            stringify!(resolve_poll_grace_secs),
+            data.resolve_poll_grace_secs,
+        ),
+        (
+            stringify!(resolve_poll_max_wait_secs),
+            data.resolve_poll_max_wait_secs,
         ),
         ("ws_max_subscriptions", data.ws_max_subscriptions),
         ("auto_load_debounce_ms", data.auto_load_debounce_ms),
@@ -796,22 +820,51 @@ fn map_data(
             ),
         }
     })?;
+    let new_market_fetch_max_concurrency = usize::try_from(cfg.new_market_fetch_max_concurrency)
+        .map_err(|_| BoltV3AdapterMappingError::NumericRange {
+            client_key: client_key.to_string(),
+            field: "data.new_market_fetch_max_concurrency",
+            message: format!(
+                "value {} does not fit in usize on this target",
+                cfg.new_market_fetch_max_concurrency
+            ),
+        })?;
     let filters = build_instrument_filters_for_client(root, plan, client_key, clock)?;
     Ok(PolymarketDataClientConfig {
+        // Restore the OLD-NT connect-time filtered bootstrap. In the pinned NT
+        // rev the provider only loads instruments when `instrument_config`
+        // triggers `should_load_all()`/`has_load_ids()`; `None` loaded nothing,
+        // so with `auto_load_missing_instruments = false` every subscribe bailed
+        // and the strategy received zero Polymarket data. `load_all = true` with
+        // no slug scope routes `initialize()` -> `load_scoped_all()` ->
+        // `load_all()` -> `load_filtered()`, applying the runtime `filters` below
+        // exactly as OLD `provider.load_all(None)` did, and re-enables the
+        // `update_instruments` refresh task (which early-returns when None).
+        instrument_config: Some(
+            PolymarketInstrumentProviderConfig::builder()
+                .load_all(true)
+                .build(),
+        ),
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
+        base_url_rtds: Some(cfg.base_url_rtds),
         base_url_gamma: Some(cfg.base_url_gamma),
         base_url_data_api: Some(cfg.base_url_data_api),
         http_timeout_secs: cfg.http_timeout_secs,
         ws_timeout_secs: cfg.ws_timeout_secs,
         ws_max_subscriptions,
-        update_instruments_interval_mins: cfg.update_instruments_interval_mins,
+        update_instruments_interval_mins: Some(cfg.update_instruments_interval_mins),
         subscribe_new_markets: cfg.subscribe_new_markets,
+        new_market_fetch_max_concurrency,
         auto_load_missing_instruments: cfg.auto_load_missing_instruments,
         auto_load_debounce_ms: cfg.auto_load_debounce_ms,
         auto_load_max_retries: cfg.auto_load_max_retries,
         auto_load_retry_delay_initial_secs: cfg.auto_load_retry_delay_initial_secs as f64,
         auto_load_retry_delay_max_secs: cfg.auto_load_retry_delay_max_secs as f64,
+        resolve_poll_enabled: cfg.resolve_poll_enabled,
+        resolve_poll_interval_secs: cfg.resolve_poll_interval_secs,
+        resolve_poll_grace_secs: cfg.resolve_poll_grace_secs,
+        resolve_poll_max_wait_secs: cfg.resolve_poll_max_wait_secs,
         transport_backend: cfg.transport_backend,
         filters,
         new_market_filter: None,
@@ -1240,6 +1293,72 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(slugs, vec!["will-sample-alpha-resolve-yes".to_string()]);
+    }
+
+    #[test]
+    fn map_data_enables_filtered_instrument_bootstrap_for_targeted_polymarket_client() {
+        // Regression for the NT-bump bug where `instrument_config: None` disabled
+        // the connect-time instrument bootstrap. In the pinned NT rev the provider
+        // only loads instruments when `instrument_config` triggers
+        // `should_load_all()`/`has_load_ids()`; with `auto_load_missing_instruments
+        // = false` (prod/fixture default) every subscribe then bailed and the
+        // strategy received zero Polymarket data.
+        let mut plan = MarketIdentityPlan::empty();
+        plan.push_target(StaticBinaryEventTargetPlan {
+            strategy_instance_id: "sample-static-alpha".to_string(),
+            configured_target_id: "sample-static-alpha-target".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            event_key: "sample_event_2026".to_string(),
+            market_slug: "will-sample-alpha-resolve-yes".to_string(),
+            condition_id: Some("condition-sample-alpha".to_string()),
+            yes_outcome: "Yes".to_string(),
+            no_outcome: "No".to_string(),
+        });
+        let root: BoltV3RootConfig =
+            toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture root config should parse");
+        let data = root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture must define polymarket_main client")
+            .data
+            .clone()
+            .expect("polymarket_main must carry a [data] block");
+
+        let cfg = map_data(
+            &root,
+            "polymarket_main",
+            &data,
+            &plan,
+            Arc::new(|| 1_746_000_000),
+        )
+        .expect("polymarket data mapping should succeed");
+
+        // Bootstrap must be enabled (the bug shipped `None`) and must stay scoped
+        // through the runtime `filters` rather than explicit slug/id scope, which
+        // would bypass the filters' `accept()` intersection in NT.
+        let ic = cfg
+            .instrument_config
+            .expect("instrument_config must be Some so initialize() performs a bootstrap");
+        assert!(
+            ic.should_load_all(),
+            "instrument_config must trigger a connect-time bootstrap"
+        );
+        assert!(
+            ic.load_all,
+            "bootstrap must run via load_all + runtime filters"
+        );
+        assert!(
+            ic.event_slugs.is_none()
+                && ic.market_slugs.is_none()
+                && ic.event_slug_builder.is_none()
+                && ic.load_ids.is_none(),
+            "must not set explicit slug/id scope, or NT bypasses the runtime filters"
+        );
+        assert!(
+            !cfg.filters.is_empty(),
+            "runtime fetch-only filters must remain populated to scope the bootstrap"
+        );
     }
 }
 

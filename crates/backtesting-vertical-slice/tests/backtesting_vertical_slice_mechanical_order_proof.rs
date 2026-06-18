@@ -225,7 +225,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
         run_id: "backtesting-vertical-slice-mechanical-order-proof".to_string(),
         target_bolt_v2_branch: "main".to_string(),
         target_bolt_v2_ref: "refs/heads/main".to_string(),
-        resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+        resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
         market_structure_fixture: MarketStructureFixture::PerpsSpot,
         venue_binding_key: "bybit-spot-tick-trades".to_string(),
         run_purpose: RunPurpose::Normal,

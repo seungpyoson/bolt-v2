@@ -5167,6 +5167,14 @@ reason = "This is a provider data-client TOML field-name allowlist entry; the ru
 [[allowed]]
 path = "src/bolt_v3_providers/market_data.rs"
 kind = "string"
+literal = '''"ws_idle_timeout_ms"'''
+context = '''"ws_idle_timeout_ms",'''
+classification = "provider_data_config_toml_field"
+reason = "This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/market_data.rs"
+kind = "string"
 literal = '''"timeout_secs"'''
 context = '''"timeout_secs",'''
 classification = "provider_data_config_toml_field"

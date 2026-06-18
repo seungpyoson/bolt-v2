@@ -218,6 +218,42 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
 }
 
 #[test]
+fn selection_retry_reissues_missing_live_input_subscriptions() {
+    let mut strategy = test_strategy();
+    strategy.config.reference_current_price = Some(reference_price_config());
+
+    strategy.retry_missing_live_input_subscriptions_at(1_500);
+
+    assert_eq!(
+        strategy.live_input_subscription_retry_events,
+        vec![LiveInputSubscriptionRetryEvent {
+            signal_missing: true,
+            reference_missing: true,
+            realized_volatility_missing: true,
+        }]
+    );
+    assert_eq!(strategy.reference_price_subscribe_events.len(), 4);
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[0],
+        REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BTC-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[2],
+        REFERENCE_PRICE_SUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BTC-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+}
+
+#[test]
 fn configured_polyresearch_reference_price_source_subscribes_for_asset() {
     let mut strategy = test_strategy();
     let mut reference_price = reference_price_config();

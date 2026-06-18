@@ -13,12 +13,6 @@ use nautilus_model::{data::TradeTick, identifiers::InstrumentId};
 use crate::bolt_v3_maker_mu_estimator::{
     MuEstimatorConfig, MuHealthConfig, MuHealthReason, UsableMu, mint_usable_mu,
 };
-// `estimate_informed_fraction` / `evaluate_mu_health` are read only by the
-// test-only `mu_for` / `health_for` observability helpers below; production reads
-// μ exclusively through `mint_usable_mu`, so these imports are `#[cfg(test)]` to
-// stay clean of `-D unused-imports` in the production build.
-#[cfg(test)]
-use crate::bolt_v3_maker_mu_estimator::{estimate_informed_fraction, evaluate_mu_health};
 use crate::bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig};
 
 /// Per-instrument signed trade-flow buffers plus the projected μ-estimator and
@@ -56,56 +50,18 @@ impl MakerMuState {
             .observe(trade);
     }
 
-    /// The raw informed-fraction μ for `instrument_id` as of `now_ms`, or `None`
-    /// if the instrument is unseen or the estimator cannot produce a μ.
-    ///
-    /// Private and `#[cfg(test)]`: a raw μ is gate-unchecked, so production
-    /// consumers must read μ only through the fail-closed
-    /// [`usable_mu_for`](Self::usable_mu_for) (which derives μ from
-    /// [`estimate_informed_fraction`] directly, not through this helper). This
-    /// building block exists solely so unit tests can assert the raw μ independent
-    /// of the gate, so it is compiled out of the production binary.
-    #[cfg(test)]
-    fn mu_for(&self, instrument_id: &InstrumentId, now_ms: u64) -> Option<f64> {
-        let flow = self.flows.get(instrument_id)?;
-        estimate_informed_fraction(flow, now_ms, &self.estimator)
-    }
-
-    /// The fail-closed health verdict for `instrument_id` as of `now_ms`. An
-    /// instrument with no buffer yet is [`MuHealthReason::Absent`] (fail-closed);
-    /// `None` means healthy.
-    ///
-    /// The staleness reference is the newest trade **inside the retention window
-    /// as of `now_ms`** — exactly the point-in-time view
-    /// [`estimate_informed_fraction`] reduces μ over (`samples_within`), not the
-    /// raw buffer tail. Anchoring on the raw tail would let a future-dated or
-    /// out-of-window trade read as fresh and mask the staleness of the data μ is
-    /// actually computed from. Private and `#[cfg(test)]` for the same reason as
-    /// [`mu_for`](Self::mu_for): production reads the verdict only inside the gate
-    /// (`mint_usable_mu`), so this test-only observability helper is compiled out
-    /// of the production binary.
-    #[cfg(test)]
-    fn health_for(&self, instrument_id: &InstrumentId, now_ms: u64) -> Option<MuHealthReason> {
-        let Some(flow) = self.flows.get(instrument_id) else {
-            return Some(MuHealthReason::Absent);
-        };
-        let mu = estimate_informed_fraction(flow, now_ms, &self.estimator);
-        let last_trade_ms = flow
-            .samples_within(now_ms)
-            .last()
-            .map(|sample| sample.ts_ms);
-        evaluate_mu_health(mu, last_trade_ms, now_ms, &self.health)
-    }
-
     /// The single gate-checked μ read for consumers (quoting, go-live). Returns
     /// `Ok(UsableMu)` only when the health gate passes, and `Err(reason)` carrying
     /// the fail-closed block reason otherwise — so a consumer cannot obtain a μ
     /// without first clearing the gate. The `Ok` value is the [`UsableMu`]
     /// newtype, not a bare `f64`, so the gate-cleared μ is the only μ the quote
     /// planner can be constructed with (the bypass becomes a compile error). This
-    /// is the only public μ accessor; the raw `mu_for` / `health_for` building
-    /// blocks are private and test-only (`#[cfg(test)]`) so no production quoting
-    /// path can bypass the gate.
+    /// is the only μ accessor at all: the gate (μ estimation + the fail-closed
+    /// staleness/finiteness/floor checks) runs entirely inside
+    /// [`mint_usable_mu`](crate::bolt_v3_maker_mu_estimator::mint_usable_mu), so
+    /// there is no raw, ungated μ read on `MakerMuState` for any path to bypass it
+    /// through. The estimator's pure building blocks (`estimate_informed_fraction`,
+    /// `evaluate_mu_health`) are unit-tested directly in their own module.
     pub fn usable_mu_for(
         &self,
         instrument_id: &InstrumentId,
@@ -115,8 +71,8 @@ impl MakerMuState {
         // and runs the health gate internally, so this is the only path to a
         // `UsableMu` and the gate cannot be skipped: `UsableMu::new` is private to
         // that module (a mint anywhere else is a compile error). An unseen
-        // instrument has no flow → `Absent`, matching `health_for`'s fail-closed
-        // verdict. The staleness anchor is no longer passed in: `mint_usable_mu`
+        // instrument has no flow → `Absent` (fail-closed). The staleness anchor is
+        // no longer passed in: `mint_usable_mu`
         // derives it internally as the newest sample inside the retention window as
         // of `now_ms` (not the raw tail), so no caller here can forge a fresh
         // reference to slip a stale-but-in-window μ past the gate.
@@ -196,15 +152,7 @@ mod tests {
     #[test]
     fn unknown_instrument_is_absent() {
         let state = state();
-        assert_eq!(
-            state.health_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
-            Some(MuHealthReason::Absent)
-        );
-        assert_eq!(
-            state.mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
-            None
-        );
-        // The gate-checked read fails closed for an unseen instrument.
+        // The only μ read (the gate) fails closed for an unseen instrument.
         assert_eq!(
             state.usable_mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
             Err(MuHealthReason::Absent)
@@ -215,15 +163,7 @@ mod tests {
     fn one_sided_flow_is_healthy() {
         let mut state = state();
         observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
-        assert_eq!(
-            state.mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
-            Some(1.0)
-        );
-        assert_eq!(
-            state.health_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
-            None
-        );
-        // The only public read returns the gate-cleared μ once the gate passes.
+        // The gate passes and returns the cleared μ (one-sided buy flow → 1.0).
         assert_eq!(
             state
                 .usable_mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS)
@@ -245,15 +185,8 @@ mod tests {
                 AggressorSide::Seller,
             ],
         );
-        assert_eq!(
-            state.mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
-            Some(0.0)
-        );
-        assert_eq!(
-            state.health_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
-            Some(MuHealthReason::BelowFloor)
-        );
-        // A degenerate μ is gated even though the raw read would hand back 0.0.
+        // A balanced flow's μ collapses to 0.0; the gate blocks it as degenerate
+        // (the raw 0.0 estimate is covered by the estimator module's own tests).
         assert_eq!(
             state.usable_mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
             Err(MuHealthReason::BelowFloor)
@@ -264,13 +197,16 @@ mod tests {
     fn instruments_are_tracked_independently() {
         let mut state = state();
         observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
+        // B was never observed → its gate fails closed Absent; A's gate clears.
         assert_eq!(
-            state.health_for(&InstrumentId::from(INSTRUMENT_B), NOW_MS),
-            Some(MuHealthReason::Absent)
+            state.usable_mu_for(&InstrumentId::from(INSTRUMENT_B), NOW_MS),
+            Err(MuHealthReason::Absent)
         );
         assert_eq!(
-            state.health_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS),
-            None
+            state
+                .usable_mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS)
+                .map(UsableMu::get),
+            Ok(1.0)
         );
     }
 
@@ -280,17 +216,12 @@ mod tests {
 
     #[test]
     fn in_window_but_stale_flow_blocks_stale() {
-        // Drives the fail-closed Stale branch through `health_for`: four one-sided
-        // buys whose newest is 96s old yield a producible μ that the staleness
-        // gate must still block.
+        // Drives the fail-closed Stale branch through the gate: four one-sided buys
+        // whose newest is 96s old yield a producible μ (inside the 600s retention
+        // window) that the 60s staleness gate must still block.
         let mut state = state();
         let id = InstrumentId::from(INSTRUMENT_A);
         observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
-        assert_eq!(state.mu_for(&id, STALE_NOW_MS), Some(1.0));
-        assert_eq!(
-            state.health_for(&id, STALE_NOW_MS),
-            Some(MuHealthReason::Stale)
-        );
         assert_eq!(
             state.usable_mu_for(&id, STALE_NOW_MS),
             Err(MuHealthReason::Stale)
@@ -303,18 +234,14 @@ mod tests {
         // buffer tail. Four stale in-window buys (newest 96s old) plus one
         // future-dated trade: the future tick is the raw tail but is excluded from
         // the in-window view μ uses, so anchoring on the tail would read fresh and
-        // pass a stale μ. The gate must report Stale. This assertion fails on the
-        // prior `samples().back()` anchor (which returns healthy here) and passes
-        // on the `samples_within(now).last()` anchor.
+        // pass a stale μ. The gate must report Stale. This assertion fails if the
+        // anchor were the raw `samples().back()` tail (which reads healthy here) and
+        // passes on the `samples_within(now).last()` anchor `mint_usable_mu` derives.
         let mut state = state();
         let id = InstrumentId::from(INSTRUMENT_A);
         observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
         // ts 200_000 > STALE_NOW_MS (100_000): newest in the raw buffer, future.
         state.observe(&trade(INSTRUMENT_A, AggressorSide::Buyer, 200_000));
-        assert_eq!(
-            state.health_for(&id, STALE_NOW_MS),
-            Some(MuHealthReason::Stale)
-        );
         assert_eq!(
             state.usable_mu_for(&id, STALE_NOW_MS),
             Err(MuHealthReason::Stale)
@@ -338,7 +265,6 @@ mod tests {
                 65_000 + index * 1_000,
             ));
         }
-        assert_eq!(state.health_for(&id, now_ms), None);
         assert_eq!(state.usable_mu_for(&id, now_ms).map(UsableMu::get), Ok(1.0));
     }
 

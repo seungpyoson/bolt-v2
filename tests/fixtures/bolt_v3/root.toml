@@ -30,6 +30,7 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "CONFIGURED_ASSET"
 canonical_quote_asset = "USDT"
 
 [runtime]

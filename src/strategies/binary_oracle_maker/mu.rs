@@ -12,7 +12,7 @@ use nautilus_model::{data::TradeTick, identifiers::InstrumentId};
 
 use crate::bolt_v3_maker_mu_estimator::{
     MuEstimatorConfig, MuHealthConfig, MuHealthReason, UsableMu, estimate_informed_fraction,
-    evaluate_mu_health,
+    evaluate_mu_health, mint_usable_mu,
 };
 use crate::bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig};
 
@@ -99,16 +99,22 @@ impl MakerMuState {
         instrument_id: &InstrumentId,
         now_ms: u64,
     ) -> Result<UsableMu, MuHealthReason> {
-        match self.health_for(instrument_id, now_ms) {
-            Some(reason) => Err(reason),
-            // A healthy verdict guarantees the estimator produced a finite,
-            // at-or-above-floor μ; fall back to `Absent` rather than unwrap so the
-            // read stays fail-closed even if the two views ever diverge.
-            None => self
-                .mu_for(instrument_id, now_ms)
-                .map(UsableMu::new)
-                .ok_or(MuHealthReason::Absent),
-        }
+        // The mint lives with the `UsableMu` type in `bolt_v3_maker_mu_estimator`
+        // and runs the health gate internally, so this is the only path to a
+        // `UsableMu` and the gate cannot be skipped: `UsableMu::new` is private to
+        // that module (a mint anywhere else is a compile error). An unseen
+        // instrument has no flow → `Absent`, matching `health_for`'s fail-closed
+        // verdict. `last_trade_ms` is the newest sample inside the retention window
+        // as of `now_ms` (not the raw tail), the same staleness reference the gate
+        // has always used.
+        let Some(flow) = self.flows.get(instrument_id) else {
+            return Err(MuHealthReason::Absent);
+        };
+        let last_trade_ms = flow
+            .samples_within(now_ms)
+            .last()
+            .map(|sample| sample.ts_ms);
+        mint_usable_mu(flow, last_trade_ms, now_ms, &self.estimator, &self.health)
     }
 }
 

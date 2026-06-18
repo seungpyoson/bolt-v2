@@ -64,10 +64,24 @@ pub struct MuHealthConfig {
 pub struct UsableMu(f64);
 
 impl UsableMu {
-    /// Wrap a gate-cleared μ. `pub(crate)` so only in-crate gate code (the
-    /// `MakerMuState::usable_mu_for` read) can mint a `UsableMu`; no public
-    /// constructor exists, so a consumer cannot fabricate one from a raw `f64`.
-    pub(crate) fn new(value: f64) -> Self {
+    /// Wrap a gate-cleared μ. **Module-private** (not `pub(crate)`): the only
+    /// in-crate caller is [`mint_usable_mu`] in this module, which runs the
+    /// fail-closed health gate before constructing. Module privacy is enforced by
+    /// the compiler regardless of call syntax — a `UsableMu::new`, UFCS
+    /// `<UsableMu>::new`, alias, or macro mint in any *other* module is a compile
+    /// error (E0603) — so the sole-mint property is structural, not a convention a
+    /// text fence approximates.
+    fn new(value: f64) -> Self {
+        Self(value)
+    }
+
+    /// Test-only constructor for cross-module unit tests that need a `UsableMu`
+    /// without standing up a full estimator + flow (e.g. the quote-planner unit
+    /// tests). `#[cfg(test)]` means it does not exist in the production binary, so
+    /// production sole-mint stays compiler-guaranteed; it is `pub(crate)` only so
+    /// sibling-module test code can reach it.
+    #[cfg(test)]
+    pub(crate) fn for_test(value: f64) -> Self {
         Self(value)
     }
 
@@ -76,6 +90,34 @@ impl UsableMu {
     /// the value out earlier and route it around the gate.
     pub fn get(self) -> f64 {
         self.0
+    }
+}
+
+/// Mint a [`UsableMu`] — the ONLY in-crate path to one — by running the
+/// fail-closed health gate over the raw inputs and constructing only on a pass.
+///
+/// This co-locates the mint authorization with the type, in the shared estimator
+/// module (so the `bolt_v3_*` quote planner can name `UsableMu` without a
+/// `crate::strategies::*` dependency, keeping the dependency-direction fence
+/// green). The seam takes the RAW `flow` + configs and computes μ *and* runs
+/// [`evaluate_mu_health`] itself, so a caller cannot fabricate a "cleared" verdict
+/// to slip an ungated μ through — any `UsableMu` this returns provably cleared the
+/// same health check `usable_mu_for` applies. `last_trade_ms` is the caller's
+/// in-window staleness reference (the newest sample inside the retention window as
+/// of `now_ms`), matching the existing gate semantics. Returns `Err(reason)` on a
+/// blocked gate and falls back to `Absent` rather than unwrap so the mint stays
+/// fail-closed even if the μ and health views ever diverge.
+pub(crate) fn mint_usable_mu(
+    flow: &SignedTradeFlow,
+    last_trade_ms: Option<u64>,
+    now_ms: u64,
+    estimator: &MuEstimatorConfig,
+    health: &MuHealthConfig,
+) -> Result<UsableMu, MuHealthReason> {
+    let mu = estimate_informed_fraction(flow, now_ms, estimator);
+    match evaluate_mu_health(mu, last_trade_ms, now_ms, health) {
+        Some(reason) => Err(reason),
+        None => mu.map(UsableMu::new).ok_or(MuHealthReason::Absent),
     }
 }
 

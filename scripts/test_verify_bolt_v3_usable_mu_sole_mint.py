@@ -22,23 +22,25 @@ sys.modules[SPEC.name] = VERIFIER
 SPEC.loader.exec_module(VERIFIER)
 
 
-# A minimal gate file whose only `UsableMu::new` mint is inside `usable_mu_for`,
-# mirroring the real src/strategies/binary_oracle_maker/mu.rs shape (multi-line
-# signature, mint via `.map`).
+# A minimal seam file whose only `UsableMu::new` mint is inside `mint_usable_mu`,
+# mirroring the real src/bolt_v3_maker_mu_estimator.rs shape (multi-line signature,
+# gate runs internally, mint via `.map`).
 GATE_FILE_OK = """
-impl MakerMuState {
-    pub fn usable_mu_for(
-        &self,
-        instrument_id: &InstrumentId,
-        now_ms: u64,
-    ) -> Result<UsableMu, MuHealthReason> {
-        match self.health_for(instrument_id, now_ms) {
-            Some(reason) => Err(reason),
-            None => self
-                .mu_for(instrument_id, now_ms)
-                .map(UsableMu::new)
-                .ok_or(MuHealthReason::Absent),
-        }
+fn new(value: f64) -> Self {
+    Self(value)
+}
+
+pub(crate) fn mint_usable_mu(
+    flow: &SignedTradeFlow,
+    last_trade_ms: Option<u64>,
+    now_ms: u64,
+    estimator: &MuEstimatorConfig,
+    health: &MuHealthConfig,
+) -> Result<UsableMu, MuHealthReason> {
+    let mu = estimate_informed_fraction(flow, now_ms, estimator);
+    match evaluate_mu_health(mu, last_trade_ms, now_ms, health) {
+        Some(reason) => Err(reason),
+        None => mu.map(UsableMu::new).ok_or(MuHealthReason::Absent),
     }
 }
 """
@@ -129,10 +131,10 @@ class UsableMuSoleMintFenceTests(unittest.TestCase):
 
     # --- new differential cases (each FAILS pre-fix; see rationale in commit) ---
 
-    def test_extra_mint_in_gate_file_outside_usable_mu_for_fails(self) -> None:
+    def test_extra_mint_in_gate_file_outside_mint_seam_fails(self) -> None:
         # Pre-fix (whole-file `if path == GATE_PATH: return []`) this passed — a
-        # rogue mint anywhere in the gate file was exempt. Now the exemption is
-        # scoped to the usable_mu_for body span, so a mint OUTSIDE it fails while
+        # rogue mint anywhere in the seam file was exempt. Now the exemption is
+        # scoped to the mint_usable_mu body span, so a mint OUTSIDE it fails while
         # the real mint inside it still passes.
         gate_with_rogue = (
             GATE_FILE_OK
@@ -143,19 +145,18 @@ class UsableMuSoleMintFenceTests(unittest.TestCase):
             """
         )
         violations = VERIFIER.find_violations_in_text(VERIFIER.GATE_PATH, gate_with_rogue)
-        # Exactly one violation: the rogue mint outside usable_mu_for. The real
-        # mint inside usable_mu_for is NOT flagged (differential: same file, only
-        # the out-of-span mint fails). The excerpt is the mint line itself.
+        # Exactly one violation: the rogue mint outside mint_usable_mu. The real
+        # mint inside the seam is NOT flagged (differential: same file, only the
+        # out-of-span mint fails). The excerpt is the mint line itself.
         self.assertEqual(len(violations), 1)
-        self.assertIn("outside the usable_mu_for gate function", violations[0].rule)
+        self.assertIn(f"outside the {VERIFIER.GATE_FN} gate function", violations[0].rule)
         self.assertIn("UsableMu::new(raw)", violations[0].excerpt)
-        # The gate mint's line (`.map(UsableMu::new)`) is in the allowed span, so
-        # the rogue mint's reported line is strictly after it.
+        # The seam's own `.map(UsableMu::new)` is in the allowed span → no violation.
         gate_only = VERIFIER.find_violations_in_text(VERIFIER.GATE_PATH, GATE_FILE_OK)
         self.assertEqual(gate_only, [])
 
     def test_missing_gate_function_fails_closed(self) -> None:
-        # If usable_mu_for cannot be located in the gate file, every mint is
+        # If mint_usable_mu cannot be located in the seam file, every mint is
         # unexempt — an unparseable gate is not a license to mint.
         violations = VERIFIER.find_violations_in_text(
             VERIFIER.GATE_PATH,

@@ -152,7 +152,7 @@ mod tests {
         // the comparison is exact.) A seam that dropped or defaulted the gated μ —
         // e.g. read 0.0 instead of `.get()` — would collapse the GM band to
         // bid==ask==fair and fail the strict-inequality assertions below.
-        let mu = UsableMu::new(TEST_MU);
+        let mu = UsableMu::for_test(TEST_MU);
         let plan = plan_maker_quote_targets(plan_inputs(mu)).expect("interior inputs plan");
 
         let expected = gm_binary_quote(FAIR_UP, TEST_MU).expect("interior band");
@@ -171,9 +171,9 @@ mod tests {
         // must widen the reservation band. If the seam ignored `informed_fraction`
         // and used a constant, both plans would be identical and this fails. This is
         // the differential half of the value-flow guard at the planner boundary.
-        let narrow = plan_maker_quote_targets(plan_inputs(UsableMu::new(TEST_MU)))
+        let narrow = plan_maker_quote_targets(plan_inputs(UsableMu::for_test(TEST_MU)))
             .expect("low-mu interior plan");
-        let wide = plan_maker_quote_targets(plan_inputs(UsableMu::new(TEST_MU * 4.0)))
+        let wide = plan_maker_quote_targets(plan_inputs(UsableMu::for_test(TEST_MU * 4.0)))
             .expect("high-mu interior plan");
 
         assert!(

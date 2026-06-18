@@ -1,34 +1,35 @@
 #!/usr/bin/env python3
-"""Verify `UsableMu` is minted only by the μ health gate.
+"""Defense-in-depth check that `UsableMu` is minted only by the μ health gate.
 
-`UsableMu` (`src/bolt_v3_maker_mu_estimator.rs`) is the newtype that carries a
-gate-cleared informed-fraction μ into the maker quote planner. Its private field
-and `pub(crate) fn new` already make an *accidental* bare-`f64`
-`MakerQuotePlanInputs { informed_fraction: 0.5, .. }` a hard compile error. But a
-`pub(crate)` constructor leaves a *deliberate* in-crate mint outside the gate
-possible, which would route an ungated μ around the `MuHealthReason` checks (the
-exact class MU-3 closes: "an ungated μ reaches the planner"). This fence makes
-the sole-mint property structural, not convention: the only production mint of a
-`UsableMu` is the gate `MakerMuState::usable_mu_for`
-(`src/strategies/binary_oracle_maker/mu.rs`), and only inside that one function.
+THE COMPILER IS THE GUARANTEE, not this fence. `UsableMu`
+(`src/bolt_v3_maker_mu_estimator.rs`) has a private field and a **module-private**
+`fn new` (not `pub(crate)`). The only in-crate caller of `new` is `mint_usable_mu`
+in that same module, which runs the fail-closed `evaluate_mu_health` gate over the
+raw inputs before constructing — so the ONLY way to obtain a `UsableMu` in
+production is to pass real inputs that clear the health check. A mint in any other
+module — `UsableMu::new`, UFCS `<UsableMu>::new`, an aliased/renamed call, or a
+macro expansion — is a hard compile error (E0603), because module privacy is
+enforced by the compiler regardless of call syntax. The build/clippy CI lanes are
+the real enforcer; that is why this fence does NOT chase UFCS/macro/alias
+completeness (a text matcher provably cannot be complete against macro expansion).
 
-The fence closes the CLASS of bypass, not one form:
-  1. A `UsableMu::new` mint (call, `.map` function-reference, or raw-ident
-     `r#new`) anywhere in production `src/` is a violation, EXCEPT inside the
-     body of `usable_mu_for` in the gate file. A rogue mint elsewhere in the gate
-     file (e.g. a second `pub fn` that mints) fails — the exemption is scoped to
-     the gate function span, not the whole file.
-  2. A rename evades a literal `UsableMu::new` regex, so any production
-     `use …UsableMu as <Alias>;` import-rename and any `type <X> = UsableMu;`
-     type alias is itself a violation (no legitimate production reason to rename
-     the gated newtype), AND a mint through the captured alias (`<Alias>::new`)
-     is flagged too.
+This fence stays as early-warning defense-in-depth and to keep the ONE named
+crate-visible seam honest:
+  1. A literal `UsableMu::new` mint (call, `.map` function-reference, raw-ident
+     `r#new`) anywhere in production `src/` is flagged, EXCEPT inside the body of
+     `mint_usable_mu` in the seam file (the sole legitimate mint) — span-scoped via
+     brace matching, not a whole-file exemption, so a rogue mint elsewhere in that
+     file still fails. (The compiler already rejects mints in other modules; this
+     catches a same-file regression early.)
+  2. Any production `use …UsableMu as <Alias>;` import-rename or
+     `type <X> = UsableMu;` type alias is flagged (no legitimate production reason
+     to rename the gated newtype), plus mints through the captured alias.
   3. `new` must stay the only constructor: a `From`/`Default`/`Deserialize` impl
-     for `UsableMu`, or any non-`new` associated fn returning `Self`/`UsableMu`,
-     would be a structural mint surface and is flagged.
+     for `UsableMu` (a structural mint surface) is flagged.
 
 `#[cfg(test)]` items are stripped before scanning (shared `production_text`
-helper), so unit-test mints stay legal without a public bypass constructor.
+helper), so the `#[cfg(test)] for_test` constructor and unit-test mints stay legal
+without a production bypass constructor.
 """
 
 from __future__ import annotations
@@ -72,11 +73,13 @@ USABLE_MU_DESERIALIZE_IMPL = re.compile(
     r"(?<![A-Za-z0-9_])impl(?:<[^>]*>)?\s+Deserialize(?:<[^>]*>)?\s+for\s+UsableMu(?![A-Za-z0-9_])"
 )
 
-# The μ health gate is the sole legitimate mint of `UsableMu`: `usable_mu_for`
-# clears the `MuHealthReason` checks and only then maps the cleared value through
-# `UsableMu::new`. Every other production mint is a bypass of that gate.
-GATE_PATH = "src/strategies/binary_oracle_maker/mu.rs"
-GATE_FN = "usable_mu_for"
+# `mint_usable_mu` is the sole legitimate mint of `UsableMu`: it lives in the same
+# module as the (module-private) `fn new`, runs the `MuHealthReason` gate over the
+# raw inputs, and only then constructs. It is the one named crate-visible seam; the
+# compiler already forbids `UsableMu::new` in every other module. Every other mint
+# in this seam file is a same-file regression bypassing that gate.
+GATE_PATH = "src/bolt_v3_maker_mu_estimator.rs"
+GATE_FN = "mint_usable_mu"
 
 
 @dataclass(frozen=True)
@@ -132,9 +135,10 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
     scan_text = strip_rust_comments_and_literals(text)
     violations: list[Violation] = []
 
-    # Rule 1: gate function is the sole mint of `UsableMu::new`. In the gate file
-    # the exemption is scoped to the `usable_mu_for` body span; elsewhere any mint
-    # is a violation. Renamed mints (Rule 2) are matched via the alias set below.
+    # Rule 1: the gate seam function is the sole mint of `UsableMu::new`. In the
+    # seam file the exemption is scoped to the `mint_usable_mu` body span; a mint
+    # elsewhere in that file is a (same-file) regression. Renamed mints (Rule 2)
+    # are matched via the alias set below.
     if path == GATE_PATH:
         span = function_body_span(scan_text, GATE_FN)
         if span is None:
@@ -150,7 +154,7 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
                     path=path,
                     line=line_number(scan_text, match.start()),
                     excerpt=excerpt_at(text, match.start()),
-                    rule="UsableMu mint outside the usable_mu_for gate function",
+                    rule=f"UsableMu mint outside the {GATE_FN} gate function",
                 )
             )
     else:

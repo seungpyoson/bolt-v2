@@ -2306,7 +2306,9 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     }
     // Funding-rate loop appended AFTER the mark loop with NEW unique
     // domain-separator tags 42..47 (existing tags end at 41 for mark prices).
-    // Empty funding catalogs emit nothing, preserving existing reference hashes.
+    // Empty funding catalogs emit nothing, preserving existing reference hashes;
+    // funding-bearing catalog bytes are pinned by
+    // `funding_catalog_hash_matches_golden_v1`.
     for funding_rate in funding_rates {
         hasher.update([42u8]);
         hasher.update(funding_rate.instrument_id.to_string().as_bytes());
@@ -4726,6 +4728,26 @@ max_notional = "200000"
         assert_eq!(
             a.catalog_hash, b.catalog_hash,
             "same funding data must hash identically regardless of root"
+        );
+    }
+
+    #[test]
+    fn funding_catalog_hash_matches_golden_v1() {
+        const EXPECTED: &str =
+            "1193d55c1d22b2c3fc95398904d7ebeed6a5c939eacdebe7427f279df5967dfa";
+
+        let table = canonical_funding_rates_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let projection = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            projection.catalog_hash, EXPECTED,
+            "funding-bearing logical catalog hash v1 bytes changed"
         );
     }
 

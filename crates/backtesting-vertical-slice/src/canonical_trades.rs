@@ -150,7 +150,7 @@ pub const INDEX_PRICES_TABLE_FAMILY: &str = "index_prices";
 /// Source-agnostic: a new index/oracle source that emits the same point-update
 /// shape binds this identity. The raw wire normalizer that fills a
 /// `CanonicalIndexPricesTable` from raw bytes is OUT OF SCOPE for this slice
-/// (data acquisition is tracked in bolt-v2 #685); only the canonical->NT
+/// (data acquisition is tracked in bolt-v2 #836/#437); only the canonical->NT
 /// projection path is delivered here. The operator dispatch fails loud naming
 /// that follow-up.
 pub const INDEX_PRICES_TRANSFORM_IDENTITY: &str = "index-price-source-to-canonical-index-prices.v1";
@@ -170,7 +170,7 @@ pub const MARK_PRICES_TABLE_FAMILY: &str = "mark_prices";
 /// Source-agnostic: a new mark/reference source that emits the same point-update
 /// shape binds this identity. The raw wire normalizer that fills a
 /// `CanonicalMarkPricesTable` from raw bytes is OUT OF SCOPE for this slice
-/// (data acquisition is tracked in bolt-v2 #685); only the canonical->NT
+/// (data acquisition is tracked in bolt-v2 #836/#437); only the canonical->NT
 /// projection path is delivered here. The operator dispatch fails loud naming
 /// that follow-up.
 pub const MARK_PRICES_TRANSFORM_IDENTITY: &str = "mark-price-source-to-canonical-mark-prices.v1";
@@ -2054,11 +2054,11 @@ pub fn normalize_registered_quote_converter(
 ///
 /// Symmetric with [`normalize_registered_quote_converter`]: raw index-price wire
 /// acquisition from source bytes into a [`CanonicalIndexPricesTable`] lands in a
-/// FOLLOW-UP slice (bolt-v2 #685). This entry point validates that the converter
-/// is a real registered index-price adapter for the table family, then fails
-/// loud naming the follow-up — a registered seam that fails loud is tracked
-/// work, and the canonical table + its NT `IndexPriceUpdate` projection are
-/// proven by the synthetic round-trip test in [`super::catalog_projection`].
+/// FOLLOW-UP slice tracked by bolt-v2 #836/#437. This entry point validates that
+/// the converter is a real registered index-price adapter for the table family,
+/// then fails loud naming the follow-up — a registered seam that fails loud is
+/// tracked work, and the canonical table + its NT `IndexPriceUpdate` projection
+/// are proven by the synthetic round-trip test in [`super::catalog_projection`].
 ///
 /// # Errors
 ///
@@ -2080,7 +2080,7 @@ pub fn normalize_registered_index_converter(
     )?;
     bail!(
         "index-price wire normalizer is a registered seam but its raw acquisition \
-         path lands in a follow-up slice (bolt-v2 #685); the CanonicalIndexPricesTable \
+         path lands in a follow-up slice tracked by bolt-v2 #836/#437; the CanonicalIndexPricesTable \
          contract and its catalog projection are proven by the synthetic round-trip test"
     )
 }
@@ -2089,11 +2089,11 @@ pub fn normalize_registered_index_converter(
 ///
 /// Symmetric with [`normalize_registered_quote_converter`]: raw mark-price wire
 /// acquisition from source bytes into a [`CanonicalMarkPricesTable`] lands in a
-/// FOLLOW-UP slice (bolt-v2 #685). This entry point validates that the converter
-/// is a real registered mark-price adapter for the table family, then fails loud
-/// naming the follow-up — a registered seam that fails loud is tracked work,
-/// and the canonical table + its NT `MarkPriceUpdate` projection are proven by
-/// the synthetic round-trip test in [`super::catalog_projection`].
+/// FOLLOW-UP slice tracked by bolt-v2 #836/#437. This entry point validates that
+/// the converter is a real registered mark-price adapter for the table family,
+/// then fails loud naming the follow-up — a registered seam that fails loud is
+/// tracked work, and the canonical table + its NT `MarkPriceUpdate` projection
+/// are proven by the synthetic round-trip test in [`super::catalog_projection`].
 ///
 /// # Errors
 ///
@@ -2115,7 +2115,7 @@ pub fn normalize_registered_mark_converter(
     )?;
     bail!(
         "mark-price wire normalizer is a registered seam but its raw acquisition \
-         path lands in a follow-up slice (bolt-v2 #685); the CanonicalMarkPricesTable \
+         path lands in a follow-up slice tracked by bolt-v2 #836/#437; the CanonicalMarkPricesTable \
          contract and its catalog projection are proven by the synthetic round-trip test"
     )
 }
@@ -2124,9 +2124,9 @@ pub fn normalize_registered_mark_converter(
 ///
 /// Symmetric with [`normalize_registered_index_converter`]: raw funding-rate
 /// acquisition from source bytes into a [`CanonicalFundingRatesTable`] lands in a
-/// FOLLOW-UP slice (bolt-v2 #685). This entry point validates that the converter
-/// is a real registered funding-rate adapter for the table family, then fails
-/// loud naming the follow-up. The canonical table + its NT
+/// FOLLOW-UP slice tracked by bolt-v2 #836/#437. This entry point validates that
+/// the converter is a real registered funding-rate adapter for the table family,
+/// then fails loud naming the follow-up. The canonical table + its NT
 /// `FundingRateUpdate` projection are proven by the synthetic round-trip test
 /// in [`super::catalog_projection`].
 ///
@@ -2150,7 +2150,7 @@ pub fn normalize_registered_funding_converter(
     )?;
     bail!(
         "funding-rate wire normalizer is a registered seam but its raw acquisition \
-         path lands in a follow-up slice (bolt-v2 #685); the CanonicalFundingRatesTable \
+         path lands in a follow-up slice tracked by bolt-v2 #836/#437; the CanonicalFundingRatesTable \
          contract and its catalog projection are proven by the synthetic round-trip test"
     )
 }

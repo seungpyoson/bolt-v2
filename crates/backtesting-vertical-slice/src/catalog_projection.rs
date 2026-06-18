@@ -4517,6 +4517,8 @@ max_notional = "200000"
         assert_eq!(loaded.len(), 2);
         let mut loaded = loaded;
         loaded.sort_by_key(|p| p.ts_event.as_u64());
+        crate::runner::assert_funding_read_back_matches(&loaded, &table, "BTCUSDT.BYBIT")
+            .expect("shared funding read-back assertion");
         for (update, row) in loaded.iter().zip(table.rows.iter()) {
             assert_eq!(update.instrument_id.to_string(), "BTCUSDT.BYBIT");
             assert_eq!(update.rate, Decimal::from_str(&row.rate).unwrap());
@@ -4752,6 +4754,36 @@ max_notional = "200000"
     }
 
     #[test]
+    fn funding_catalog_hash_orders_scale_distinct_equal_rates_deterministically() {
+        let mut table_a = canonical_funding_rates_table();
+        table_a.rows[0].rate = "0.000100".to_string();
+        table_a.rows[1] = table_a.rows[0].clone();
+        table_a.rows[1].rate = "0.0001000".to_string();
+
+        let mut table_b = table_a.clone();
+        table_b.rows.reverse();
+
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_funding_rates_to_catalog(
+            &table_a,
+            &linear_perpetual_spec(),
+            dir_a.path(),
+        )
+        .unwrap();
+        let b = project_canonical_funding_rates_to_catalog(
+            &table_b,
+            &linear_perpetual_spec(),
+            dir_b.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            a.catalog_hash, b.catalog_hash,
+            "scale-distinct equal rates must sort deterministically regardless of input order"
+        );
+    }
+
+    #[test]
     fn funding_catalog_hash_changes_with_interval_content() {
         let table_a = canonical_funding_rates_table();
         let mut table_b = canonical_funding_rates_table();
@@ -4817,6 +4849,23 @@ max_notional = "200000"
             projection.catalog_hash,
             expected_logical_catalog_hash(&instrument, &ticks),
             "an empty mark section must add zero bytes to a trade-only catalog hash"
+        );
+    }
+
+    #[test]
+    fn funding_section_does_not_change_trade_only_catalog_hash() {
+        // The funding loop is appended after mark with fresh tags 42..47 and
+        // emits nothing for catalogs with no funding files. Trade-only catalogs
+        // must keep the committed logical-hash byte stream unchanged.
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("ticks");
+        assert_eq!(
+            projection.catalog_hash,
+            expected_logical_catalog_hash(&instrument, &ticks),
+            "an empty funding section must add zero bytes to a trade-only catalog hash"
         );
     }
 

@@ -20,7 +20,7 @@ v3 keeps the v2 design that the review did not challenge (the F1–F15 resolutio
 - **R-8 (write_mode migration atomicity):** the coverage ledger's exclusion heuristic (`backfill_coverage_ledger.py:289-293`) is replaced with positive identification; the 13 producer/ledger edits + schema-validation test ship as ONE indivisible change set (§6.2, §16 Group G-A).
 - **R-9 (`:v0-pending`):** the provisional suffix is an opaque ROW-ID discriminator decoupled from the typed `source_proof_version` field (a positive integer; pending = `1`); §6.3.
 - **R-10 (orphan recovery):** a distinct `recovered_orphan` `commit_state` + distinct manifest schema, required accepted+resolved `source_proof_id`, FULL (not sampled) hash verify, complete provenance, barred from coverage and promotion until human-reviewed; §6.4.
-- **R-11 (Tier-A version coupling):** CI guard asserts the current `NautilusDataType` member set, including `FundingRateUpdate` at the repo-pinned NT rev, plus the exact projector-relevant prefix STRINGS (NOT a blanket `CatalogPathPrefix` count) + the `timestamps_to_filename` format; projector pinned to `6be5a5094716790a8ca2875445fde4fa2586107e`; §11/§12.
+- **R-11 (Tier-A version coupling):** CI guard asserts the current `NautilusDataType` member set, including `FundingRateUpdate` and `OptionGreeks` at the repo-pinned NT rev, plus the exact projector-relevant prefix STRINGS (NOT a blanket `CatalogPathPrefix` count) + the `timestamps_to_filename` format; projector pinned to `6be5a5094716790a8ca2875445fde4fa2586107e`; §11/§12.
 - **R-12 (Python dual write path):** §3 declares a single writer (Rust `ConditionalCatalogWriter`); Python is strictly read-only against both the NT catalog and Tier-C Parquet; the v2 "Python convenience that writes the same format" clause is removed.
 - **R-13 (promotion TOCTOU + staging cleanup):** at-WRITE-time re-verification of the logical digest before canonical materialization (whole-package fail-loud abort), plus a fail-safe staging-cleanup policy that pins every URI a constructed-but-uncommitted PromotionPackage enumerates; §4.4 / §4.4b.
 - **R-14 (synthetic↔provider root collision):** Phase-0/3 proofs write to a dedicated synthetic-only top-level root with a fail-loud disjointness assertion before any byte; §4.4 / §10.2.
@@ -65,15 +65,15 @@ NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`, crate `nautilus-persistence`:
   `OrderBookDepth10→order_book_depths` (**NOT** `order_book_depth_10`, `catalog.rs:4112`),
   `Bar→bars`, `IndexPriceUpdate→index_prices`, `MarkPriceUpdate→mark_prices`,
   `FundingRateUpdate→funding_rate_update` (**NOT** `funding_rates`, `catalog.rs:4116`),
-  `InstrumentStatus→instrument_status`, `InstrumentClose→instrument_closes`,
+  `InstrumentStatus→instrument_status`, `OptionGreeks→option_greeks`, `InstrumentClose→instrument_closes`,
   `InstrumentAny→instruments`, `AccountState→account_state`, plus order/position/report lifecycle
   prefixes (execution outputs, out of scope here). The full `impl_catalog_path_prefix!` set is 38
   entries (`catalog.rs:4109-4146`) — only the load-bearing subset is asserted by the R-11 guard (§11/§12).
 - The Rust `BacktestNode` replay path (`crates/backtest/src/node.rs`, `dispatch_query`)
   streams the current `NautilusDataType` enum (`crates/backtest/src/config.rs`):
   `QuoteTick, TradeTick, Bar, OrderBookDelta, OrderBookDepth10, MarkPriceUpdate, IndexPriceUpdate,
-  InstrumentStatus, InstrumentClose, FundingRateUpdate`. `FundingRateUpdate` has a native dispatch
-  arm at the pinned rev.
+  FundingRateUpdate, InstrumentStatus, OptionGreeks, InstrumentClose`. `FundingRateUpdate` and
+  `OptionGreeks` have native dispatch arms at the pinned rev.
 - `instruments` load via a separate lane: write (`write_instruments`, `catalog.rs:701`) /
   read (`query_instruments`, `catalog.rs:827`, called at `node.rs:165`), NOT through `dispatch_query`.
 - `MarkPriceUpdate`/`IndexPriceUpdate` are **point updates** carrying a single price + timestamp
@@ -122,7 +122,7 @@ v1 collapsed two NT surfaces that are NOT the same. There are THREE tiers, not t
 
 - **Tier A — NT-replayable**: type is a `NautilusDataType` member, so a Rust `BacktestNode` can
   `query::<T>` it and stream it. Exhaustive set is the pinned `NautilusDataType` enum; at
-  `6be5a5094716790a8ca2875445fde4fa2586107e` this includes `FundingRateUpdate`.
+  `6be5a5094716790a8ca2875445fde4fa2586107e` this includes `FundingRateUpdate` and `OptionGreeks`.
 - **Tier B — catalog-writable, NOT engine-replayable**: type has a `CatalogPathPrefix` and a typed
   write path but is NOT a `NautilusDataType`. This tranche is empty for the current plan after
   `FundingRateUpdate` moved to Tier A.
@@ -183,11 +183,13 @@ do NOT go through `dispatch_query`.
 | `InstrumentStatus` | `instrument_status` | A | yes |
 | `InstrumentClose` | `instrument_closes` | A | yes |
 | `FundingRateUpdate` | `funding_rate_update` | **A** | **yes** |
+| `OptionGreeks` | `option_greeks` | **A** | **yes** |
 | `InstrumentAny` | `instruments` | separate lane — write via `ConditionalCatalogWriter` (NEVER NT `write_instruments` for platform-root writes, `catalog.rs:701`; §4.1 scope-boundary note); read via `query_instruments` (`catalog.rs:827`, called at `node.rs:165`) | n/a |
 | `AccountState` | `account_state` | execution output, out of scope | no |
 
 Confirmed exact strings: `order_book_depths` (NOT `order_book_depth_10`); `funding_rate_update`
-(NOT `funding_rates`). `FundingRateUpdate` is Tier A at the current repo-pinned NT rev.
+(NOT `funding_rates`); `option_greeks`. `FundingRateUpdate` and `OptionGreeks` are Tier A at the
+current repo-pinned NT rev.
 
 ### 2.3 Authoritative table-target matrix (every contract table family)
 
@@ -235,11 +237,16 @@ Confirmed exact strings: `order_book_depths` (NOT `order_book_depth_10`); `fundi
 | `taker_buy_sell_volume` | Tier C — non-NT research-only Parquet |
 | `borrow_lending_rates` | Tier C — non-NT research-only Parquet |
 
-**Options** (`contract:146-153`) — all Tier C (no NT class):
-`option_greeks`, `implied_volatility`, `historical_volatility`, `forward_prices`, `delivery_prices`
-→ Tier C. `settlements` → Tier C (event records; closest NT analogue is `InstrumentClose`, but
-settlements are not 1:1 with NT instrument-close semantics — keep non-NT unless an `InstrumentClose`
-mapping is separately source-proven — see Open decision §13.2).
+**Options** (`contract:146-153`):
+
+| Contract family | Target |
+| --- | --- |
+| `option_greeks` | Tier A — `OptionGreeks → option_greeks` at the current repo-pinned NT rev. S7 still owns source-specific canonicalization/projection and any `OptionGreeks -> on_option_greeks` engine proof |
+| `implied_volatility` | Tier C — non-NT research-only Parquet |
+| `historical_volatility` | Tier C — non-NT research-only Parquet |
+| `forward_prices` | Tier C — non-NT research-only Parquet |
+| `delivery_prices` | Tier C — non-NT research-only Parquet |
+| `settlements` | Tier C — event records; closest NT analogue is `InstrumentClose`, but settlements are not 1:1 with NT instrument-close semantics — keep non-NT unless an `InstrumentClose` mapping is separately source-proven — see Open decision §13.2 |
 
 **Prediction-Market Metadata** (`contract:164-167`) — all Tier C (no NT class):
 `prediction_market_events`, `prediction_market_outcomes`, `prediction_market_settlements`,
@@ -266,11 +273,11 @@ kline does not losslessly become a point update. **Resolution rule:**
 **Rule P-NT-REPLAY:** The `BacktestNode`/`BacktestEngine` replay claim applies ONLY to Tier A — the
 current `NautilusDataType` set, routed through `dispatch_query`: `quotes`, `trades`, `bars`,
 `order_book_deltas`, `order_book_depths`, `mark_prices`, `index_prices`, `instrument_status`,
-`instrument_closes`, `funding_rate_update` — plus the `instruments` precondition lane. NOTHING else is replayable:
+`instrument_closes`, `funding_rate_update`, `option_greeks` — plus the `instruments` precondition lane. NOTHING else is replayable:
 
 - **All Tier C families are NOT replayable** — `open_interest`, `premium_index_prices`,
   `long_short_ratios`, `taker_buy_sell_volume`, `borrow_lending_rates`, `liquidations`,
-  `historical_volatility`, `option_greeks`, `implied_volatility`, `forward_prices`, `settlements`,
+  `historical_volatility`, `implied_volatility`, `forward_prices`, `settlements`,
   `delivery_prices`, `order_book_snapshot_deltas`, `order_book_snapshots_full`,
   `order_book_snapshots_fixed_depth`, and all `prediction_market_*`.
 - Any consumption smoke test that claims replay MUST use a Tier A type. It does NOT prove replay for
@@ -1904,14 +1911,14 @@ projector workspace pins `nautilus-persistence` / `nautilus-backtest` to
 projector workspace asserts, against the pinned source, ALL of:
 1. `NautilusDataType` includes the pinned replay surface (`crates/backtest/src/config.rs`:
    `QuoteTick, TradeTick, Bar, OrderBookDelta, OrderBookDepth10, MarkPriceUpdate, IndexPriceUpdate,
-   InstrumentStatus, InstrumentClose, FundingRateUpdate`). A removal or unreviewed member drift fails
+   FundingRateUpdate, InstrumentStatus, OptionGreeks, InstrumentClose`). A removal or unreviewed member drift fails
    the guard.
 2. The **exact** `CatalogPathPrefix` strings the projector depends on
    (`crates/persistence/src/backend/catalog.rs:4109-4119`) are byte-for-byte unchanged:
    `QuoteTick→"quotes"`, `TradeTick→"trades"`, `OrderBookDelta→"order_book_deltas"`,
    `OrderBookDepth10→"order_book_depths"`, `Bar→"bars"`, `IndexPriceUpdate→"index_prices"`,
    `MarkPriceUpdate→"mark_prices"`, `FundingRateUpdate→"funding_rate_update"`,
-   `InstrumentStatus→"instrument_status"`, `InstrumentClose→"instrument_closes"`,
+   `InstrumentStatus→"instrument_status"`, `OptionGreeks→"option_greeks"`, `InstrumentClose→"instrument_closes"`,
    `InstrumentAny→"instruments"`.
 3. `timestamps_to_filename` still produces `"{iso1}_{iso2}.parquet"` (`catalog.rs:4175-4179`) — the
    NT-native canonical filename the reader parses (B-1).
@@ -2021,7 +2028,9 @@ actor-injection path that earlier revisions named as a candidate.
 
 **Decision:** funding uses the native NT `FundingRateUpdate` catalog stream. The custom-data path
 remains relevant for S6/S7 families that NT still does not model natively, such as open interest,
-option greeks, implied volatility, and settlements. A bolt-side engine replay claim for funding still
+implied volatility, historical volatility, forward/delivery prices, and settlements. `OptionGreeks`
+is also NT-native at the pinned rev, but its source-specific S7 mapping/projection remains separate
+from this funding slice. A bolt-side engine replay claim for funding still
 requires a focused `FundingRateUpdate -> on_funding_rate` proof; catalog projection/readback alone is
 not that proof.
 
@@ -2205,7 +2214,7 @@ the built store (`aws/precondition.rs:117-160`, `aws/client.rs:209`).
 | **R-8** `write_mode` migration not atomic | RESOLVED. §6.2: ledger flips from exclusion heuristic (`backfill_coverage_ledger.py:289-293`) to positive identification (`local_staging`+`staging_location=s3_noncanonical`); unknown/missing = hard error; producers + ledger + schema-validation test ship as one indivisible change set (§16 G-A). |
 | **R-9** `:v0-pending` violates `source_proof_version` schema | RESOLVED. §6.3: `:v0-pending` is an opaque ROW-ID discriminator; `source_proof_version` is a positive integer (pending = `1`, `status=pending`); provisional id must resolve to a real pending record; acceptance creates a NEW immutable record. Schema-validation test rejects non-integer/<1 versions. |
 | **R-10** Orphan acceptance path too weak | RESOLVED. §6.4: distinct `recovered_orphan` state + distinct manifest schema; required resolved ACCEPTED `source_proof_id`; FULL hash verify; complete provenance (incomplete→`unrecoverable`); barred from `accepted_binding` and §4.4 PromotionPackage until a human-reviewed `recovered_orphan → staged` transition. |
-| **R-11** Tier-A version coupling | RESOLVED. §12: CI guard pins projector to `6be5a5094716790a8ca2875445fde4fa2586107e` and asserts the pinned `NautilusDataType` replay surface, including `FundingRateUpdate`, plus exact projector-relevant prefix STRINGS (NOT a blanket count) + `timestamps_to_filename` format. |
+| **R-11** Tier-A version coupling | RESOLVED. §12: CI guard pins projector to `6be5a5094716790a8ca2875445fde4fa2586107e` and asserts the pinned `NautilusDataType` replay surface, including `FundingRateUpdate` and `OptionGreeks`, plus exact projector-relevant prefix STRINGS (NOT a blanket count) + `timestamps_to_filename` format. |
 | **R-12** Python dual write path | RESOLVED. §3: single Rust writer; Python strictly read-only against the NT catalog (`parquet.py:198,1576,1628,1675,2039`) and Tier-C Parquet; forbidden methods named (`write_data`/`write_chunk`/`consolidate_*`); v2 "Python writes the same format" clause removed; read creds SSM-only. |
 | **R-13** Promotion TOCTOU + staging cleanup | RESOLVED. §4.4 step 3: at-WRITE-time re-verification of the §4.3b logical digest before canonical materialization, whole-package fail-loud abort. §4.4b: fail-safe staging-cleanup policy pins every URI a constructed-but-uncommitted PromotionPackage enumerates; per-exact-URI, never prefix/glob; aborts deleting nothing if it cannot enumerate staged packages. |
 | **R-14** Synthetic vs provider root collision | RESOLVED. §4.4 step 8 / §10.2: Phase-0/3 proofs write to a dedicated synthetic-only top-level root (`nt-catalog-synthetic-proof/<run_uuid>/`) with a fail-loud disjointness assertion before any byte. |

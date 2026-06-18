@@ -633,24 +633,25 @@ fn ensure_container_matches_adapter_kind(
             matches!(container, RawPayloadContainer::ParquetFile)
         }
         // The index-price raw normalizer (and thus its container shape) is not
-        // yet built — data acquisition is deferred to bolt-v2 #685. No container
-        // is admissible, so a run-spec naming the index adapter fails loud here
-        // at config validation; the canonical->NT projection path is exercised
-        // directly by the synthetic round-trip tests, not via this raw decode
-        // boundary.
+        // yet built — data acquisition is tracked by bolt-v2 #836/#437. No
+        // container is admissible, so a run-spec naming the index adapter fails
+        // loud here at config validation; the canonical->NT projection path is
+        // exercised directly by the synthetic round-trip tests, not via this raw
+        // decode boundary.
         SourceAdapterKind::IndexPrices => false,
         // The mark-price raw normalizer (and thus its container shape) is not yet
-        // built — data acquisition is deferred to bolt-v2 #685. No container is
-        // admissible, so a run-spec naming the mark adapter fails loud here at
-        // config validation; the canonical->NT projection path is exercised
+        // built — data acquisition is tracked by bolt-v2 #836/#437. No container
+        // is admissible, so a run-spec naming the mark adapter fails loud here
+        // at config validation; the canonical->NT projection path is exercised
         // directly by the synthetic round-trip tests, not via this raw decode
         // boundary.
         SourceAdapterKind::MarkPrices => false,
         // The funding-rate raw normalizer (and thus its container shape) is not
-        // yet built — data acquisition is deferred to bolt-v2 #685. No container
-        // is admissible, so a run-spec naming the funding adapter fails loud here
-        // at config validation; the registered seam keeps funding on the same
-        // operator path as index/mark while failing before raw decode.
+        // yet built; data acquisition is tracked by bolt-v2 #836/#437. No
+        // container is admissible, so a run-spec naming the funding adapter
+        // fails loud here at config validation; the registered seam keeps
+        // funding on the same operator path as index/mark while failing before
+        // raw decode.
         SourceAdapterKind::FundingRates => false,
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => false,
@@ -2080,12 +2081,12 @@ fn normalize_tables_for_kind(
                 anyhow::bail!("index-price adapter requires a text payload container");
             };
             // The index-price wire normalizer (raw acquisition) is a registered
-            // seam; its parsing path lands in a follow-up slice (bolt-v2 #685,
-            // failing loud naming that follow-up). The canonical index table +
-            // canonical->NT projection + read-back are proven by the synthetic
-            // round-trip tests in catalog_projection. Dispatching through the
-            // seam keeps NormalizedTable::Index on the one normalization path
-            // (no parallel admittance logic).
+            // seam; its parsing path lands in a follow-up slice tracked by
+            // bolt-v2 #836/#437, failing loud naming that follow-up. The
+            // canonical index table + canonical->NT projection + read-back are
+            // proven by the synthetic round-trip tests in catalog_projection.
+            // Dispatching through the seam keeps NormalizedTable::Index on the
+            // one normalization path (no parallel admittance logic).
             normalize_registered_index_converter(
                 &spec.converter,
                 accepted,
@@ -2103,12 +2104,12 @@ fn normalize_tables_for_kind(
                 anyhow::bail!("mark-price adapter requires a text payload container");
             };
             // The mark-price wire normalizer (raw acquisition) is a registered
-            // seam; its parsing path lands in a follow-up slice (bolt-v2 #685,
-            // failing loud naming that follow-up). The canonical mark table +
-            // canonical->NT projection + read-back are proven by the synthetic
-            // round-trip tests in catalog_projection. Dispatching through the
-            // seam keeps NormalizedTable::Mark on the one normalization path
-            // (no parallel admittance logic).
+            // seam; its parsing path lands in a follow-up slice tracked by
+            // bolt-v2 #836/#437, failing loud naming that follow-up. The
+            // canonical mark table + canonical->NT projection + read-back are
+            // proven by the synthetic round-trip tests in catalog_projection.
+            // Dispatching through the seam keeps NormalizedTable::Mark on the
+            // one normalization path (no parallel admittance logic).
             normalize_registered_mark_converter(
                 &spec.converter,
                 accepted,
@@ -2126,11 +2127,11 @@ fn normalize_tables_for_kind(
                 anyhow::bail!("funding-rate adapter requires a text payload container");
             };
             // The funding-rate wire normalizer (raw acquisition) is a registered
-            // seam; its parsing path lands in a follow-up slice. The canonical
-            // funding table + canonical->NT projection + read-back are proven by
-            // the synthetic round-trip tests in catalog_projection. Dispatching
-            // through the seam keeps NormalizedTable::Funding on the one
-            // normalization path.
+            // seam; its parsing path lands in a follow-up slice tracked by
+            // bolt-v2 #836/#437. The canonical funding table + canonical->NT
+            // projection + read-back are proven by the synthetic round-trip
+            // tests in catalog_projection. Dispatching through the seam keeps
+            // NormalizedTable::Funding on the one normalization path.
             normalize_registered_funding_converter(
                 &spec.converter,
                 accepted,
@@ -3543,7 +3544,8 @@ mod tests {
 
     use super::*;
     use crate::canonical_trades::{
-        CsvTimestampUnit, REGISTERED_SOURCE_ADAPTERS, RawPayloadConfig, RawPayloadContainer,
+        CsvTimestampUnit, FUNDING_RATES_TRANSFORM_IDENTITY, FUNDING_RATES_TRANSFORM_VERSION,
+        REGISTERED_SOURCE_ADAPTERS, RawPayloadConfig, RawPayloadContainer,
     };
     use crate::conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
@@ -3873,6 +3875,23 @@ mod tests {
                 .expect("zip_member on a non-zip container must be rejected");
             assert!(err.to_string().contains("zip_member"), "{err}");
         }
+    }
+
+    #[test]
+    fn funding_converter_config_fails_loud_before_raw_decode() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        spec.converter.identity = FUNDING_RATES_TRANSFORM_IDENTITY.to_string();
+        spec.converter.version = FUNDING_RATES_TRANSFORM_VERSION.to_string();
+        spec.converter.raw_payload = payload_config(RawPayloadContainer::JsonlText);
+
+        let err = validate_converter_config(&spec.converter)
+            .expect_err("funding raw acquisition must fail at converter preflight");
+        let message = err.to_string();
+        assert!(
+            message.contains("FundingRates") && message.contains("not admissible"),
+            "{message}"
+        );
     }
 
     #[test]

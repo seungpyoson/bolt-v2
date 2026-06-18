@@ -20,7 +20,10 @@ ci-policy = "github_hosted"
 detector = "github_hosted"
 fmt-check = "managed_light"
 deny = "github_hosted"
-clippy = "managed_light"
+# NT develop increased the restored managed target enough that full-repo clippy
+# now refuses on the light tier before compilation with disk_pressure. Keep it
+# on the heavy tier, matching other NT-heavy compile lanes.
+clippy = "managed_heavy"
 check-aarch64 = "managed_heavy"
 source-fence = "managed_heavy"
 nextest-fingerprint = "github_hosted"

@@ -916,7 +916,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         market_structure_fixture: market_structure_label(&inputs.manifest),
         fidelity_class: canonical_table.fidelity_class,
         claim_limits,
-        warnings: result_contract_warnings(&nt_result),
+        warnings: result_contract_warnings(&nt_result, canonical_table.fidelity_class),
         mechanical_blockers: Vec::new(),
         config_override_report: config_override_report.as_ref(),
         run_guard_report: run_guard_report.as_ref(),
@@ -2159,20 +2159,6 @@ fn multi_artifact_uris(
     }
 }
 
-/// Zero-order warning for multi-table runs.
-fn multi_result_contract_warnings(nt_result: &BacktestResult) -> Vec<String> {
-    let mut warnings = Vec::new();
-    if nt_result.total_orders == 0 {
-        warnings.push(
-            "No orders were placed. Treat P/L as non-armed unless the run_guard_report shows \
-             armed=true and traded=true; inspect run_guard_report.did_not_arm_reason for the \
-             missing or stale feed."
-                .to_string(),
-        );
-    }
-    warnings
-}
-
 /// Redact host-locality from a multi-table contract: machine identity and
 /// every local subroot path inside claim limits, replaced by the portable
 /// published subroot URI.
@@ -2545,7 +2531,7 @@ pub fn run_multi_table_from_run_spec(
         market_structure_fixture: market_structure_label(&local_manifest),
         fidelity_class: primary_fidelity,
         claim_limits,
-        warnings: multi_result_contract_warnings(&nt_result),
+        warnings: result_contract_warnings(&nt_result, primary_fidelity),
         mechanical_blockers: Vec::new(),
         config_override_report: config_override_report.as_ref(),
         run_guard_report: run_guard_report.as_ref(),
@@ -2807,7 +2793,7 @@ fn run_multi_from_completed_output(
         market_structure_fixture: market_structure_label(&local_manifest),
         fidelity_class: primary.table.fidelity_class(),
         claim_limits,
-        warnings: multi_result_contract_warnings(&nt_result),
+        warnings: result_contract_warnings(&nt_result, primary.table.fidelity_class()),
         mechanical_blockers: Vec::new(),
         config_override_report: config_override_report.as_ref(),
         run_guard_report: run_guard_report.as_ref(),

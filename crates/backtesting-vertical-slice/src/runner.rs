@@ -376,15 +376,29 @@ pub(crate) fn nt_extension_surface_claim_limits(
         .collect())
 }
 
-pub(crate) fn result_contract_warnings(nt_result: &BacktestResult) -> Vec<String> {
+pub(crate) fn result_contract_warnings(
+    nt_result: &BacktestResult,
+    fidelity_class: SourceProofFidelityClass,
+) -> Vec<String> {
     let mut warnings = Vec::new();
     if nt_result.total_orders == 0 {
-        warnings.push(
+        // Two honest, mutually exclusive reasons for a zero-order run, keyed off
+        // the source fidelity. Trade-only sources carry no quote ticks, so a
+        // quote-driven strategy structurally cannot enter — expected fidelity,
+        // not a defect. Any quote-bearing source had ticks available, so zero
+        // orders means the strategy never armed; point the operator at the run
+        // guard report instead. One source of truth, shared by every run path.
+        let message = if fidelity_class == SourceProofFidelityClass::TradeReplay {
+            "No orders were placed: the accepted data is trade-only and carries no quote ticks, \
+             and the configured strategy's order entry is quote-driven. NautilusTrader still \
+             aggregated the accepted trades into bars and ran the strategy's signal logic. This \
+             reflects the TRADE_REPLAY fidelity of the source, not a defect."
+        } else {
             "No orders were placed. Treat P/L as non-armed unless the run_guard_report shows \
              armed=true and traded=true; inspect run_guard_report.did_not_arm_reason for the \
              missing or stale feed."
-                .to_string(),
-        );
+        };
+        warnings.push(message.to_string());
     }
     warnings
 }
@@ -1145,7 +1159,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         .context("hash catalog metadata")?;
 
     // Gate 6: objective result contract.
-    let warnings = result_contract_warnings(&nt_result);
+    let warnings = result_contract_warnings(&nt_result, canonical_table.fidelity_class);
     let mut claim_limits = inputs.accepted.result_contract_claim_limits();
     claim_limits.extend(nt_extension_surface_claim_limits(inputs.manifest)?);
     let (event_count_ledger_hash, selected_asset_ids_hash) =
@@ -3009,7 +3023,13 @@ mod tests {
             strategy_config_hash: sha256_hex(
                 b"config/root.toml + production config + documented OKX/Bybit override",
             ),
-            venue: issue_789_venue("POLYMARKET", "USDC", "L2_MBP", true, true),
+            // POLYMARKET must be funded in the binary's settlement currency
+            // (pUSD — the NT Polymarket adapter's collateral currency), not
+            // USDC. NT's multi-currency portfolio manager refuses to auto-create
+            // a balance for a negative realized PnL, so settling a held loser in
+            // a currency the account was never funded in silently drops the P/L
+            // from stats_pnls. The instrument's settlement currency owns this.
+            venue: issue_789_venue("POLYMARKET", "pUSD", "L2_MBP", true, true),
             additional_venues: vec![
                 issue_789_venue("OKX", "USDT", "L1_MBP", false, false),
                 issue_789_venue("BYBIT", "USDT", "L1_MBP", false, false),

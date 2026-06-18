@@ -1742,7 +1742,7 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         market_structure_fixture: market_structure_label(spec.manifest),
         fidelity_class: SourceProofFidelityClass::L2Replay,
         claim_limits,
-        warnings: result_contract_warnings(&nt_result),
+        warnings: result_contract_warnings(&nt_result, SourceProofFidelityClass::L2Replay),
         mechanical_blockers: Vec::new(),
         config_override_report: nt_run.config_override_report.as_ref(),
         run_guard_report: nt_run.run_guard_report.as_ref(),

@@ -5546,9 +5546,10 @@ fn sync_nt_trading_state_for_kill_switch(node: &mut LiveNode, state: &KillSwitch
 fn nt_trading_state_for_kill_switch_state(state: &KillSwitchState) -> Option<TradingState> {
     match state {
         KillSwitchState::Armed => None,
-        KillSwitchState::Halting { .. } | KillSwitchState::Halted { .. } => {
-            Some(TradingState::Reducing)
-        }
+        KillSwitchState::Halting { .. }
+        | KillSwitchState::Halted { .. }
+        | KillSwitchState::Cancelling { .. }
+        | KillSwitchState::Flattening { .. } => Some(TradingState::Reducing),
         KillSwitchState::Flat { .. } | KillSwitchState::FailedManualIntervention { .. } => {
             Some(TradingState::Halted)
         }

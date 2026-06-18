@@ -1,6 +1,6 @@
 mod support;
 
-use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason};
+use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
 use bolt_v2::bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler;
 use bolt_v2::bolt_v3_loss_runtime_feed::{
     LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig, subscribe_loss_governor_runtime_feed,
@@ -658,6 +658,127 @@ fn flat_daily_pnl_portfolio_snapshot_does_not_lower_peak_equity() {
     ));
 }
 
+#[test]
+fn feed_fails_closed_on_mixed_currency_portfolio_without_base_currency() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-006");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    );
+
+    // No base currency, with money facts spanning two currencies: the feed cannot
+    // resolve a single account currency and must publish nothing.
+    assert!(
+        feed.on_portfolio_snapshot(&mixed_currency_portfolio_snapshot(account_id, 1_000))
+            .is_none()
+    );
+    assert!(feed.latest_snapshot().is_none());
+}
+
+#[test]
+fn feed_fails_closed_on_empty_portfolio_money_facts() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-007");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    );
+
+    // A snapshot with no money facts for the account currency must fail closed
+    // rather than treat the missing values as zero.
+    assert!(
+        feed.on_portfolio_snapshot(&empty_money_portfolio_snapshot(account_id, 1_000))
+            .is_none()
+    );
+    assert!(feed.latest_snapshot().is_none());
+}
+
+#[test]
+fn feed_fails_closed_on_mixed_currency_position_pnl() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-008");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    );
+
+    // realized PnL in a different currency than unrealized PnL cannot be combined
+    // into a single trade-level figure, so the event must be dropped fail-closed.
+    assert!(
+        feed.on_position_event(&mixed_currency_changed_position_event(account_id, 1_000))
+            .is_none()
+    );
+    assert!(feed.latest_snapshot().is_none());
+}
+
+#[test]
+fn published_snapshot_invokes_configured_halt_action_handler() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-009");
+
+    let invocations: Rc<RefCell<Vec<(u64, Option<Decimal>)>>> = Rc::new(RefCell::new(Vec::new()));
+    let recorder = invocations.clone();
+    let handler: LossGovernorHaltActionHandler = Rc::new(
+        move |snapshot: Option<&LossSnapshot>, observed_at_ns: u64| {
+            recorder.borrow_mut().push((
+                observed_at_ns,
+                snapshot.and_then(|snapshot| snapshot.daily_pnl),
+            ));
+        },
+    );
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    )
+    .with_halt_action_handler(handler);
+
+    // A complete portfolio snapshot is published; the configured halt-action
+    // handler must fire with that snapshot so the loss-governor trigger path
+    // (feed -> handler) is exercised end to end.
+    let published = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, -50.0, 0.0, 950.0))
+        .expect("complete portfolio facts should publish a loss snapshot");
+
+    // Pin the concrete propagated facts independently so the wiring assertion
+    // below is not self-referential: daily PnL is realized(-50) + unrealized(0)
+    // and observed_at_ns is the min over all four facts, which share ts_event.
+    assert_eq!(published.observed_at_ns, 1_000);
+    assert_eq!(published.daily_pnl, Some(Decimal::new(-50, 0)));
+
+    let recorded = invocations.borrow();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0], (1_000, Some(Decimal::new(-50, 0))));
+}
+
 fn loss_policy() -> LossGovernorPolicy {
     LossGovernorPolicy {
         max_snapshot_age_ns: 1_000,
@@ -891,6 +1012,66 @@ fn changed_position_event_for_position(
         realized_return: 0.0,
         realized_pnl: None,
         unrealized_pnl: Money::new(unrealized_pnl, Currency::USD()),
+        event_id: UUID4::default(),
+        ts_opened: UnixNanos::from(1),
+        ts_event: UnixNanos::from(ts_event),
+        ts_init: UnixNanos::from(ts_event),
+    })
+}
+
+fn mixed_currency_portfolio_snapshot(account_id: AccountId, ts_event: u64) -> PortfolioSnapshot {
+    PortfolioSnapshot::new(
+        account_id,
+        AccountType::Cash,
+        None,
+        vec![],
+        vec![],
+        vec![Money::new(-3.0, Currency::USD())],
+        vec![Money::new(-4.0, Currency::USD())],
+        vec![Money::new(1_000.0, Currency::EUR())],
+        UUID4::default(),
+        ts_event.into(),
+        ts_event.into(),
+    )
+}
+
+fn empty_money_portfolio_snapshot(account_id: AccountId, ts_event: u64) -> PortfolioSnapshot {
+    PortfolioSnapshot::new(
+        account_id,
+        AccountType::Cash,
+        Some(Currency::USD()),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        UUID4::default(),
+        ts_event.into(),
+        ts_event.into(),
+    )
+}
+
+fn mixed_currency_changed_position_event(account_id: AccountId, ts_event: u64) -> PositionEvent {
+    PositionEvent::PositionChanged(PositionChanged {
+        trader_id: TraderId::from("TRADER-LOSS-001"),
+        strategy_id: StrategyId::from("STRATEGY-LOSS-001"),
+        instrument_id: InstrumentId::from("INSTRUMENT-LOSS-001.SIM"),
+        position_id: PositionId::from("POSITION-LOSS-001"),
+        account_id,
+        opening_order_id: ClientOrderId::from("ORDER-LOSS-001"),
+        entry: OrderSide::Buy,
+        side: PositionSide::Long,
+        signed_qty: 1.0,
+        quantity: Quantity::from("1"),
+        peak_quantity: Quantity::from("1"),
+        last_qty: Quantity::from("1"),
+        last_px: Price::from("1.00"),
+        currency: Currency::USD(),
+        avg_px_open: 1.0,
+        avg_px_close: None,
+        realized_return: 0.0,
+        realized_pnl: Some(Money::new(-4.0, Currency::EUR())),
+        unrealized_pnl: Money::new(-3.0, Currency::USD()),
         event_id: UUID4::default(),
         ts_opened: UnixNanos::from(1),
         ts_event: UnixNanos::from(ts_event),

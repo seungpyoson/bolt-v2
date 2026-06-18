@@ -31,6 +31,8 @@ fn enabled_kill_switch_config(state_path: &str) -> KillSwitchConfigBlock {
         authorized_operator_ids: vec!["operator-primary".to_string()],
         account_ids: vec!["POLYMARKET-001".to_string()],
         instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+        cancel: None,
+        flatten: None,
     }
 }
 
@@ -260,12 +262,36 @@ fn recovered_runtime_latch_states() -> Vec<(KillSwitchState, KillSwitchStateKind
             },
             KillSwitchStateKind::Flat,
         ),
+        (
+            KillSwitchState::Cancelling {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            KillSwitchStateKind::Cancelling,
+        ),
+        (
+            KillSwitchState::Flattening {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            KillSwitchStateKind::Flattening,
+        ),
     ]
 }
 
 fn recovered_runtime_nt_trading_states() -> Vec<(KillSwitchState, TradingState)> {
     vec![
         (halted_runtime_state(), TradingState::Reducing),
+        (
+            KillSwitchState::Cancelling {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            TradingState::Reducing,
+        ),
+        (
+            KillSwitchState::Flattening {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            TradingState::Reducing,
+        ),
         (
             KillSwitchState::Flat {
                 halt_id: "halt-runtime-1".to_string(),

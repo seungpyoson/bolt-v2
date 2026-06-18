@@ -1676,7 +1676,13 @@ fn latched_kill_switch_blocks_replace_submit_even_when_lifecycle_policy_allows_r
 #[test]
 fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(5, 0));
+    // Single normal order slot: the one verified exit below consumes it, so the
+    // second exit (attempted while latched) must hit the normal count cap rather
+    // than slip through on a forced-reduction-style bypass. The merge that folded
+    // #548 in left this at 2 while dropping the original entry-then-exit setup,
+    // which made the cap unreachable; the assertions below (one Admitted outcome,
+    // admitted_order_count() == 1) are written for a single slot.
+    let admission = limited_admission_with_writer(writer.clone(), 1, Decimal::new(5, 0));
     admission
         .admit(&submit_request_with_kind(
             Decimal::new(1, 1),

@@ -52,16 +52,21 @@ use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     CapitalPoolBlock, ClientBlock, DataClientReadinessProbeQuoteTargetSource,
     GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock,
-    KillSwitchConfigBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
+    KillSwitchCancelConfigBlock, KillSwitchConfigBlock, KillSwitchFlattenConfigBlock,
+    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock,
     RealizedVolatilityAggregationBlock, RealizedVolatilityJumpPolicyBlock,
     RealizedVolatilityNoiseMethodBlock, RealizedVolatilityPricingComponentBlock,
     RealizedVolatilitySampleKindBlock, RealizedVolatilitySourceClassBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
-use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
+use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchOutstandingOrderRiskSurface;
+use crate::bolt_v3_loss_halt_actions::{
+    LossGovernorMarketExitAction, LossGovernorTradingStateAction,
+};
 use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_order_execution::BoltV3OrderExecutionMode;
+use crate::bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config};
 use crate::bolt_v3_providers::{
     ReferencePriceIdentifierKind, reference_price_provider_identifier_is_configured,
     reference_price_provider_metadata,
@@ -1726,6 +1731,168 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
             ));
         }
     }
+    if let Some(cancel) = &block.cancel {
+        errors.extend(validate_kill_switch_cancel_block(cancel));
+    }
+    if let Some(flatten) = &block.flatten {
+        errors.extend(validate_kill_switch_flatten_block(
+            flatten,
+            block.forced_reduction_max_live_order_count,
+            &block.forced_reduction_max_notional_per_order,
+        ));
+    }
+    errors
+}
+
+fn validate_kill_switch_cancel_block(block: &KillSwitchCancelConfigBlock) -> Vec<String> {
+    if !block.enabled {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    if block.retry_max_attempts == 0 {
+        errors.push("risk.kill_switch.cancel.retry_max_attempts must be positive".to_string());
+    }
+    if block.retry_timeout_ms == 0 {
+        errors.push("risk.kill_switch.cancel.retry_timeout_ms must be positive".to_string());
+    }
+    if block.retry_backoff_ms == 0 {
+        errors.push("risk.kill_switch.cancel.retry_backoff_ms must be positive".to_string());
+    }
+    if block.source_freshness_max_age_ms == 0 {
+        errors.push(
+            "risk.kill_switch.cancel.source_freshness_max_age_ms must be positive".to_string(),
+        );
+    }
+
+    let mut configured_surfaces = BTreeSet::new();
+    for surface in &block.mandatory_surfaces {
+        match parse_kill_switch_cancel_surface(surface.trim()) {
+            Some(surface) => {
+                configured_surfaces.insert(surface);
+            }
+            None => errors.push(format!(
+                "risk.kill_switch.cancel.mandatory_surfaces[`{surface}`] is not a supported outstanding order risk surface"
+            )),
+        }
+    }
+    let required_surfaces = BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if !required_surfaces.is_subset(&configured_surfaces) {
+        errors.push(
+            "risk.kill_switch.cancel.mandatory_surfaces must include every mandatory outstanding order risk surface"
+                .to_string(),
+        );
+    }
+
+    errors
+}
+
+fn parse_kill_switch_cancel_surface(
+    value: &str,
+) -> Option<BoltV3KillSwitchOutstandingOrderRiskSurface> {
+    match value {
+        "open" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Open),
+        "inflight" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Inflight),
+        "pending-cancel" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel),
+        "emulated" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Emulated),
+        "algorithm-managed" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::AlgorithmManaged),
+        "contingent" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Contingent),
+        "accepted-but-not-terminal" => {
+            Some(BoltV3KillSwitchOutstandingOrderRiskSurface::AcceptedButNotTerminal)
+        }
+        _ => None,
+    }
+}
+
+fn validate_kill_switch_flatten_block(
+    block: &KillSwitchFlattenConfigBlock,
+    global_max_live_order_count: u32,
+    global_max_notional_per_order: &str,
+) -> Vec<String> {
+    if !block.enabled {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    if block.retry_max_attempts == 0 {
+        errors.push("risk.kill_switch.flatten.retry_max_attempts must be positive".to_string());
+    }
+    if block.retry_timeout_ms == 0 {
+        errors.push("risk.kill_switch.flatten.retry_timeout_ms must be positive".to_string());
+    }
+    if block.retry_backoff_ms == 0 {
+        errors.push("risk.kill_switch.flatten.retry_backoff_ms must be positive".to_string());
+    }
+    if block.source_freshness_max_age_ms == 0 {
+        errors.push(
+            "risk.kill_switch.flatten.source_freshness_max_age_ms must be positive".to_string(),
+        );
+    }
+    if block.max_position_proof_age_ms == 0 {
+        errors.push(
+            "risk.kill_switch.flatten.max_position_proof_age_ms must be positive".to_string(),
+        );
+    }
+    if block.max_live_order_count == 0 {
+        errors.push("risk.kill_switch.flatten.max_live_order_count must be positive".to_string());
+    }
+    if global_max_live_order_count > 0 && block.max_live_order_count > global_max_live_order_count {
+        errors.push(
+            "risk.kill_switch.flatten.max_live_order_count must be <= risk.kill_switch.forced_reduction_max_live_order_count"
+                .to_string(),
+        );
+    }
+
+    match (
+        parse_decimal_string(&block.max_notional_per_order),
+        parse_decimal_string(global_max_notional_per_order),
+    ) {
+        (Ok(local), Ok(global)) if local > Decimal::ZERO && local <= global => {}
+        (Ok(local), Ok(_)) if local <= Decimal::ZERO => {
+            errors.push(
+                "risk.kill_switch.flatten.max_notional_per_order must be positive".to_string(),
+            );
+        }
+        (Ok(_), Ok(_)) => errors.push(
+            "risk.kill_switch.flatten.max_notional_per_order must be <= risk.kill_switch.forced_reduction_max_notional_per_order"
+                .to_string(),
+        ),
+        (Err(reason), _) => errors.push(format!(
+            "risk.kill_switch.flatten.max_notional_per_order is not a valid decimal string ({reason}): `{}`",
+            block.max_notional_per_order
+        )),
+        (_, Err(_)) => {}
+    }
+
+    if !block.is_reduce_only {
+        errors.push("risk.kill_switch.flatten.is_reduce_only must be true".to_string());
+    }
+    if block.is_quote_quantity {
+        errors.push("risk.kill_switch.flatten.is_quote_quantity must be false".to_string());
+    }
+
+    let order_template = NtOrderTemplateConfig {
+        order_type: block.order_type,
+        time_in_force: block.time_in_force,
+        expire_time_unix_nanos: None,
+        trigger_price: None,
+        activation_price: None,
+        trigger_type: None,
+        trigger_instrument_id: None,
+        trailing_offset: None,
+        trailing_offset_type: None,
+        is_post_only: block.is_post_only,
+        is_reduce_only: block.is_reduce_only,
+        is_quote_quantity: block.is_quote_quantity,
+    };
+    errors.extend(check_nt_order_template_config(
+        "risk.kill_switch.flatten",
+        "order_template",
+        &order_template,
+    ));
     errors
 }
 

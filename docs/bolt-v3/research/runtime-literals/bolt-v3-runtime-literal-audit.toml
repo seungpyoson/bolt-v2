@@ -6765,6 +6765,14 @@ classification = "kill_switch_trigger_kind_hash_label"
 reason = "Stable trigger-kind label included in halt-id derivation for loss-governor breaches; not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
+literal = '''64'''
+context = '''pub(crate) const SHA256_HEX_DIGEST_LEN: usize = 64;'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Shared SHA-256 hex digest length constant; single source for the digest-shape guards across the kill-switch action-router/cancel/flatten modules and loss-governor recovery validation. Not an operator runtime value.'''
+
+[[allowed]]
 path = "src/bolt_v3_kill_switch_store.rs"
 kind = "number"
 literal = '''1'''
@@ -17511,3 +17519,75 @@ literal = '''"market_portfolio_min_slot_notional"'''
 context = '''const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slot_notional";'''
 classification = "maker_market_portfolio_schema_field"
 reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"open"'''
+context = '''"open" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Open),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"inflight"'''
+context = '''"inflight" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Inflight),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"pending-cancel"'''
+context = '''"pending-cancel" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"emulated"'''
+context = '''"emulated" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Emulated),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"algorithm-managed"'''
+context = '''"algorithm-managed" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::AlgorithmManaged),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"contingent"'''
+context = '''"contingent" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Contingent),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"accepted-but-not-terminal"'''
+context = '''"accepted-but-not-terminal" => {'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_flatten.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''for right in candidates.iter().skip(index + 1) {'''
+classification = '''kill_switch_flatten_pairwise_scan_offset'''
+reason = '''Loop offset used to compare each NT position-proof candidate pair exactly once when detecting conflicting cache/report evidence; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"order_template"'''
+context = '''"order_template",'''
+classification = '''kill_switch_flatten_order_template_diagnostic_field'''
+reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''

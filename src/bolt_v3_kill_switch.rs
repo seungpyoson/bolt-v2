@@ -15,6 +15,12 @@ pub enum KillSwitchState {
         halt_id: String,
         trigger: KillSwitchHaltTrigger,
     },
+    Cancelling {
+        halt_id: String,
+    },
+    Flattening {
+        halt_id: String,
+    },
     Flat {
         halt_id: String,
     },
@@ -175,6 +181,8 @@ pub enum KillSwitchStateKind {
     Armed,
     Halting,
     Halted,
+    Cancelling,
+    Flattening,
     Flat,
     FailedManualIntervention,
 }
@@ -249,6 +257,8 @@ impl KillSwitchState {
             KillSwitchState::Armed => KillSwitchStateKind::Armed,
             KillSwitchState::Halting { .. } => KillSwitchStateKind::Halting,
             KillSwitchState::Halted { .. } => KillSwitchStateKind::Halted,
+            KillSwitchState::Cancelling { .. } => KillSwitchStateKind::Cancelling,
+            KillSwitchState::Flattening { .. } => KillSwitchStateKind::Flattening,
             KillSwitchState::Flat { .. } => KillSwitchStateKind::Flat,
             KillSwitchState::FailedManualIntervention { .. } => {
                 KillSwitchStateKind::FailedManualIntervention

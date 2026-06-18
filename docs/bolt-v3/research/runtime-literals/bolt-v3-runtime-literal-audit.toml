@@ -10541,6 +10541,14 @@ reason = "Stable canonical source field label used only inside the realized-vola
 [[allowed]]
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "string"
+literal = '''"source.canonical_base_asset={}"'''
+context = '''"source.canonical_base_asset={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
 literal = '''"source.canonical_quote_asset={}"'''
 context = '''"source.canonical_quote_asset={}",'''
 classification = "realized_volatility_config_fingerprint_field_label"

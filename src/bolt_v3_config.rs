@@ -449,6 +449,7 @@ pub struct RealizedVolatilitySourceBlock {
     pub sample_kind: RealizedVolatilitySampleKindBlock,
     pub enabled: bool,
     pub counts_toward_quorum: bool,
+    pub canonical_base_asset: String,
     pub canonical_quote_asset: String,
 }
 
@@ -783,6 +784,7 @@ pub fn realized_volatility_engine_config(
                 },
                 enabled: source.enabled,
                 counts_toward_quorum: source.counts_toward_quorum,
+                canonical_base_asset: source.canonical_base_asset.clone(),
                 canonical_quote_asset: source.canonical_quote_asset.clone(),
             })
             .collect(),
@@ -1385,6 +1387,7 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "<BASE_ASSET>"
 canonical_quote_asset = "<QUOTE_ASSET>"
 "#,
             minimal_root_toml()
@@ -1468,6 +1471,10 @@ canonical_quote_asset = "<QUOTE_ASSET>"
         assert_eq!(
             source.instrument_id,
             parsed_source.instrument_id.to_string()
+        );
+        assert_eq!(
+            source.canonical_base_asset,
+            parsed_source.canonical_base_asset
         );
         assert_eq!(
             source.canonical_quote_asset,

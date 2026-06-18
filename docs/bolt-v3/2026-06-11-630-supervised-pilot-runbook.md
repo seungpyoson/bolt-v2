@@ -43,10 +43,12 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
 ## Phase 1 — deploy (operator present)
 
 - [ ] Stop the service. Install binary per `deploy/README.md`, then generate + verify
-      the runtime config from the tracked profile on the box
-      (`ops generate-live-config --profile config/prod-btc-5m.toml --output
-      /opt/bolt-v2/config/live.toml`, then `ops verify-live-config`); config
-      `/opt/bolt-v2/config/live.toml` root:bolt 0640.
+      the runtime config from the tracked profile on the box, using the same absolute
+      paths the systemd unit runs:
+      `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --output /opt/bolt-v2/config/live.toml`,
+      then
+      `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --deployed /opt/bolt-v2/config/live.toml`;
+      config `/opt/bolt-v2/config/live.toml` root:bolt 0640.
 - [ ] Record a `deploy/<date>-<shortsha>/deploy.txt` evidence entry (existing
       convention): binary sha256, config sha256, git SHA, operator id, date.
 

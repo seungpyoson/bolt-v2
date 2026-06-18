@@ -8,6 +8,17 @@ use bolt_v2::{
     },
 };
 
+fn fixture_without_kill_switch() -> String {
+    let mut fixture: toml::Value =
+        toml::from_str(include_str!("fixtures/bolt_v3/root.toml")).unwrap();
+    fixture
+        .get_mut("risk")
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture should have a risk table")
+        .remove("kill_switch");
+    toml::to_string(&fixture).expect("fixture without kill switch should serialize")
+}
+
 #[test]
 fn missing_corrupt_or_unresolved_evidence_recovers_fail_closed() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -86,7 +97,7 @@ fn config_relative_state_path_recovers_missing_evidence_fail_closed() {
     let root_path = temp.path().join("root.toml");
     let root_toml = format!(
         "{}\n{}",
-        include_str!("fixtures/bolt_v3/root.toml"),
+        fixture_without_kill_switch(),
         r#"
 [risk.kill_switch]
 enabled = true

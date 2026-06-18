@@ -13,6 +13,10 @@ on:
       - submitted
       - dismissed
   pull_request_review_comment:
+    # GitHub Actions does not expose a review-thread-resolved event.
+    # If resolving a thread in the UI does not rerun this check, manually rerun
+    # the workflow or create another review/comment event before marking review
+    # feedback addressed.
     types:
       - created
       - edited

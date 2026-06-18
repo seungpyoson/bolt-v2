@@ -117,11 +117,34 @@ def assert_graphql_non_object_nodes_fail_closed() -> None:
         raise AssertionError("malformed reviewThreads.nodes entry should fail")
 
 
+def assert_graphql_next_page_without_cursor_fails_closed() -> None:
+    module = load_script()
+    payload = {
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": True, "endCursor": None},
+                    }
+                }
+            }
+        }
+    }
+    try:
+        module._extract_review_threads(payload)
+    except module.ReviewThreadGateError as exc:
+        assert "endCursor" in str(exc)
+    else:
+        raise AssertionError("hasNextPage without endCursor should fail closed")
+
+
 def assert_workflow_uses_base_script_and_review_thread_events() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "Require resolved review threads" in workflow
     assert "review threads resolved" in workflow
     assert "pull_request_review_comment" in workflow
+    assert "GitHub Actions does not expose a review-thread-resolved event" in workflow
     assert "github.event.pull_request.base.sha" in workflow
     assert "test -f scripts/require_resolved_review_threads.py" in workflow
     assert "Remove this block after scripts/require_resolved_review_threads.py exists on main" in workflow
@@ -136,6 +159,7 @@ def main() -> int:
     assert_unresolved_outdated_thread_still_fails()
     assert_non_thread_payload_is_rejected()
     assert_graphql_non_object_nodes_fail_closed()
+    assert_graphql_next_page_without_cursor_fails_closed()
     assert_workflow_uses_base_script_and_review_thread_events()
     print("OK: required resolved review-thread gate self-tests passed.")
     return 0

@@ -206,6 +206,8 @@ def _extract_review_threads(payload: dict[str, Any]) -> tuple[list[dict[str, Any
     end_cursor = page_info.get("endCursor")
     if end_cursor is not None and not isinstance(end_cursor, str):
         raise ReviewThreadGateError("GitHub GraphQL pageInfo.endCursor must be string or null")
+    if has_next_page and end_cursor is None:
+        raise ReviewThreadGateError("GitHub GraphQL pageInfo.endCursor is required when hasNextPage is true")
     return nodes, has_next_page, end_cursor
 
 

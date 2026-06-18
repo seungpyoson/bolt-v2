@@ -477,6 +477,18 @@ pub fn validate_maker_market_target(
 ) -> Vec<String> {
     let mut errors =
         super::validate_underlying_asset(context, "underlying_asset", target.underlying_asset);
+    // The static_binary_event family resolves a fixed (non-rotating) market, so the
+    // operator-declared cadence_seconds is its selection window, not a rotation cadence:
+    // only the positive-integer invariant applies here — mirroring the family's own
+    // selection_window_secs check — NOT updown's minute-alignment (`% 60`) rule, which is
+    // specific to rotating markets. Without this, a `cadence_seconds <= 0` declaration
+    // passed this validator at load while updown rejected it (FINDING B fail-open).
+    if target.cadence_seconds <= 0 {
+        errors.push(format!(
+            "{context}: target.cadence_seconds must be a positive integer (got {})",
+            target.cadence_seconds
+        ));
+    }
     validate_market_slug(context, target.cadence_slug_token, &mut errors);
     match (target.static_yes_outcome, target.static_no_outcome) {
         (Some(yes), Some(no)) => {

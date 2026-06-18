@@ -1478,6 +1478,48 @@ mod tests {
     }
 
     #[test]
+    fn maker_market_target_validation_rejects_static_binary_event_nonpositive_cadence() {
+        // FINDING B: static_binary_event::validate_maker_market_target validated the
+        // underlying, slug, outcomes, and condition_id but never the operator-declared
+        // cadence_seconds, so a non-positive cadence passed at load while updown (and the
+        // family's own selection_window_secs invariant) rejected it. A static market does
+        // not rotate, so the rule is the positive-integer invariant only — NOT updown's
+        // minute-alignment (`% 60`). Differential: pre-fix this target produced no errors
+        // (the gap); post-fix it reports the cadence error. Every other field is valid so
+        // the cadence check is the sole failure.
+        fn target(cadence_seconds: i64) -> MarketSelectionTarget<'static> {
+            MarketSelectionTarget {
+                family_key: "static_binary_event",
+                underlying_asset: "ETH",
+                cadence_seconds,
+                cadence_slug_token: "daily",
+                static_condition_id: Some("0xcondition"),
+                static_yes_outcome: Some("yes"),
+                static_no_outcome: Some("no"),
+            }
+        }
+
+        for nonpositive in [0_i64, -1, -3_600] {
+            let errors =
+                validate_maker_market_target_from_target("strategy `m`", target(nonpositive));
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("cadence_seconds must be a positive integer")),
+                "cadence {nonpositive} should be rejected: {errors:?}"
+            );
+        }
+
+        // A positive cadence carries no rotation-alignment requirement for a static
+        // market, so the otherwise-valid target validates clean (no `% 60` rule applied).
+        let errors = validate_maker_market_target_from_target("strategy `m`", target(3_600));
+        assert!(
+            errors.is_empty(),
+            "valid static target should produce no errors: {errors:?}"
+        );
+    }
+
+    #[test]
     fn fair_probability_routes_to_injected_family_binding_without_parent_family_branch() {
         let inputs = FairProbabilityInputs {
             spot_price: 3_105.0,

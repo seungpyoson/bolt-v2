@@ -2551,6 +2551,100 @@ mod tests {
         }
     }
 
+    /// Regression guard for the #789 crossed-book reconstruction defect.
+    ///
+    /// The raw PMXT archive's `best_bid`/`best_ask` are always uncrossed, but a
+    /// naive level-delta replay of the snapshot-sparse archive accumulates stale
+    /// opposite-side levels and the rebuilt book crosses on the large majority of
+    /// ticks, which trips the taker's `BookCrossed` entry gate and blocks every
+    /// trade. The projection now prunes levels that cross the venue's
+    /// authoritative inside market. This applies the projected deltas through the
+    /// same book maintenance the strategy uses (`OutcomeBookState::update_from_deltas`)
+    /// and asserts the book stays uncrossed at every atomic update boundary while
+    /// still becoming two-sided — so the guard is not vacuous.
+    #[test]
+    fn issue_789_reconstructed_pmxt_book_never_crosses() -> Result<()> {
+        use std::collections::BTreeMap;
+
+        use nautilus_model::{
+            data::OrderBookDelta,
+            enums::{BookAction, OrderSide, RecordFlag},
+            types::Price,
+        };
+
+        let gamma_markets = issue_789_gamma_markets()?;
+        let pmxt_rows = issue_789_pmxt_rows()?;
+        let last_flag = RecordFlag::F_LAST as u8;
+
+        for token in [ISSUE_789_UP_TOKEN, ISSUE_789_DOWN_TOKEN] {
+            let projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
+                source_binding: "pmxt-free-r2-archive".to_string(),
+                usage_scope: SourceProofUsageScope::OneOffBackfillData,
+                selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
+                selected_token_id: token.to_string(),
+                gamma_markets: gamma_markets.clone(),
+                rows: pmxt_rows_for_token(&pmxt_rows, token)?,
+            })
+            .with_context(|| format!("project PMXT token {token}"))?;
+
+            let mut bids: BTreeMap<Price, f64> = BTreeMap::new();
+            let mut asks: BTreeMap<Price, f64> = BTreeMap::new();
+            let mut became_priced = false;
+
+            for delta in &projection.order_book_deltas {
+                // Mirror OutcomeBookState::update_from_deltas exactly.
+                match delta.action {
+                    BookAction::Clear => {
+                        bids.clear();
+                        asks.clear();
+                    }
+                    BookAction::Delete => match delta.order.side {
+                        OrderSide::Buy => {
+                            bids.remove(&delta.order.price);
+                        }
+                        OrderSide::Sell => {
+                            asks.remove(&delta.order.price);
+                        }
+                        _ => {}
+                    },
+                    BookAction::Add | BookAction::Update => {
+                        let levels = match delta.order.side {
+                            OrderSide::Buy => Some(&mut bids),
+                            OrderSide::Sell => Some(&mut asks),
+                            _ => None,
+                        };
+                        if let Some(levels) = levels {
+                            if delta.order.size.is_zero() {
+                                levels.remove(&delta.order.price);
+                            } else {
+                                levels.insert(delta.order.price, delta.order.size.as_f64());
+                            }
+                        }
+                    }
+                }
+                if (delta.flags & last_flag) == 0 {
+                    continue;
+                }
+                if let (Some((best_bid, _)), Some((best_ask, _))) =
+                    (bids.iter().next_back(), asks.iter().next())
+                {
+                    became_priced = true;
+                    assert!(
+                        best_bid <= best_ask,
+                        "token {token}: reconstructed book crossed (best_bid {best_bid} > best_ask {best_ask})"
+                    );
+                }
+            }
+
+            assert!(
+                became_priced,
+                "token {token}: reconstructed book never became two-sided; guard is vacuous"
+            );
+        }
+
+        Ok(())
+    }
+
     fn issue_789_gamma_markets() -> Result<Vec<GammaMarket>> {
         serde_json::from_str(&format!(
             r#"[{{

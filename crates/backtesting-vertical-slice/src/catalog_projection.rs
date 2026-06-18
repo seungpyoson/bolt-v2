@@ -1804,15 +1804,18 @@ pub fn project_canonical_funding_rates_to_catalog<S: CatalogInstrumentSpecSource
     table.validate()?;
     let instrument = spec.build_instrument_any()?;
     let instrument_id = instrument.id();
-    let row_instrument_id = table.rows[0]
-        .nt_instrument_id
-        .as_deref()
-        .context("canonical row missing nt_instrument_id")?;
-    ensure!(
-        instrument_id.to_string() == row_instrument_id,
-        "instrument id {instrument_id} does not match canonical rows {}",
-        row_instrument_id
-    );
+    let instrument_id_text = instrument_id.to_string();
+    for (index, row) in table.rows.iter().enumerate() {
+        let row_instrument_id = row
+            .nt_instrument_id
+            .as_deref()
+            .with_context(|| format!("row {index}: canonical row missing nt_instrument_id"))?;
+        ensure!(
+            instrument_id_text == row_instrument_id,
+            "row {index}: instrument id {instrument_id} does not match canonical rows {}",
+            row_instrument_id
+        );
+    }
     let updates = canonical_rows_to_funding_rate_updates(table, &instrument)?;
     let count = updates.len();
 
@@ -4569,6 +4572,26 @@ max_notional = "200000"
     }
 
     #[test]
+    fn funding_projection_rejects_later_missing_nt_instrument_id() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[1].nt_instrument_id = None;
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("later missing nt_instrument_id rejected");
+
+        assert!(err.to_string().contains("row 1"), "{err}");
+        assert!(
+            err.to_string().contains("missing nt_instrument_id"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn funding_projection_rejects_nt_instrument_id_mismatch() {
         let mut table = canonical_funding_rates_table();
         table.rows[0].nt_instrument_id = Some("ETHUSDT.BYBIT".to_string());
@@ -4583,6 +4606,65 @@ max_notional = "200000"
 
         assert!(
             err.to_string().contains("does not match canonical rows"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_projection_rejects_later_nt_instrument_id_mismatch() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[1].nt_instrument_id = Some("ETHUSDT.BYBIT".to_string());
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("later nt_instrument_id mismatch rejected");
+
+        assert!(err.to_string().contains("row 1"), "{err}");
+        assert!(
+            err.to_string().contains("does not match canonical rows"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_fail_loud_when_rate_is_malformed() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].rate = "not-a-decimal".to_string();
+        let instrument = linear_perpetual_spec()
+            .build_instrument_any()
+            .expect("instrument");
+        let err = canonical_rows_to_funding_rate_updates(&table, &instrument).unwrap_err();
+        assert!(err.to_string().contains("invalid funding rate"), "{err}");
+    }
+
+    #[test]
+    fn funding_rates_fail_loud_when_next_funding_time_is_negative() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].next_funding_time = Some(-1);
+        let instrument = linear_perpetual_spec()
+            .build_instrument_any()
+            .expect("instrument");
+        let err = canonical_rows_to_funding_rate_updates(&table, &instrument).unwrap_err();
+        assert!(
+            err.to_string().contains("negative next_funding_time"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_fail_loud_when_next_funding_time_is_zero() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].next_funding_time = Some(0);
+        let instrument = linear_perpetual_spec()
+            .build_instrument_any()
+            .expect("instrument");
+        let err = canonical_rows_to_funding_rate_updates(&table, &instrument).unwrap_err();
+        assert!(
+            err.to_string().contains("non-positive next_funding_time"),
             "{err}"
         );
     }

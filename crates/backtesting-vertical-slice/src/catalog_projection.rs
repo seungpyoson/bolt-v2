@@ -2156,7 +2156,7 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             .cmp(&b.ts_event)
             .then_with(|| a.instrument_id.cmp(&b.instrument_id))
             .then_with(|| a.rate.cmp(&b.rate))
-            .then_with(|| a.rate.to_string().cmp(&b.rate.to_string()))
+            .then_with(|| a.rate.scale().cmp(&b.rate.scale()))
             .then_with(|| a.interval.cmp(&b.interval))
             .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
             .then_with(|| a.ts_init.cmp(&b.ts_init))

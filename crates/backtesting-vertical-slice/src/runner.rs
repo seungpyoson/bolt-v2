@@ -1179,9 +1179,11 @@ pub(crate) fn assert_funding_read_back_matches(
         read_back.len(),
         table.rows.len()
     );
+    let expected_id = InstrumentId::from_str(expected_instrument_id)
+        .with_context(|| format!("invalid expected_instrument_id {expected_instrument_id:?}"))?;
     for (index, (update, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
         ensure!(
-            update.instrument_id.to_string() == expected_instrument_id,
+            update.instrument_id == expected_id,
             "funding read-back {index} instrument {} does not match projected {expected_instrument_id}",
             update.instrument_id
         );

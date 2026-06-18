@@ -17,14 +17,24 @@
 //! .toml`) and gives it one generation + verification path:
 //!
 //! * [`generate_live_config`] loads the tracked profile through the SAME
-//!   [`load_bolt_v3_config`] the binary uses at startup, enforces the
-//!   production invariants the deploy requires (loss rails present, strategy
-//!   selection present), and emits a deterministic, provenance-stamped runtime
-//!   config. Any schema or semantic error fails the generation closed.
+//!   [`load_bolt_v3_config`] the binary uses at startup, enforces the production
+//!   invariants a live deploy requires (loss rails present AND enabled — disabled
+//!   rails are inert at runtime — and a non-empty strategy selection), and emits a
+//!   deterministic, provenance-stamped runtime config. Any schema, semantic, or
+//!   invariant error fails the generation closed.
 //! * [`verify_live_config`] re-generates from the approved profile and proves a
-//!   deployed runtime config is (a) byte-identical to the regenerated artifact
-//!   **and** (b) still loads against this exact binary. Hash/byte parity alone
-//!   is insufficient — the independent load is what catches schema staleness.
+//!   deployed runtime config is (a) byte-identical to the regenerated artifact,
+//!   (b) still loads against this exact binary, and (c) has strategy files whose
+//!   contents match the approved profile's (strategy_files are referenced by path,
+//!   so they are not in the byte-compared root body). Byte parity alone is
+//!   insufficient — the independent load catches schema staleness.
+//!
+//! `verify_live_config` covers the config-identity half of pre-arm. The full
+//! pre-arm gate chains it with live secret resolution and the no-submit/readiness
+//! check: `generate-live-config` → `verify-live-config` → `secrets resolve` →
+//! `ops prestart-check` (see `deploy/README.md`). The single source of truth is
+//! the tracked profile; `config/root.toml` is the multi-asset template and owns
+//! the shared infrastructure blocks (a test fails CI if the profile drifts from it).
 //!
 //! The profile is itself a complete [`BoltV3RootConfig`], so schema currency is
 //! enforced by the real parser (`#[serde(deny_unknown_fields)]`), not a parallel
@@ -175,18 +185,35 @@ fn confirm_production_invariants(
         )
     })?;
 
-    let require = |value: &Option<String>, field: &str| -> Result<String, ProfileError> {
-        value.clone().ok_or_else(|| {
-            ProfileError::Invariant(format!(
-                "[risk.loss_governor].{field} must be set before live deploy"
-            ))
-        })
-    };
+    if !governor.enabled {
+        return Err(ProfileError::Invariant(
+            "[risk.loss_governor].enabled must be true before live deploy — present-but-disabled \
+             rails are inert at runtime (loss_governor_policy_from_loaded returns None when \
+             disabled, so no loss-governor policy is constructed)"
+                .to_string(),
+        ));
+    }
 
-    let max_per_trade_loss = require(&governor.max_per_trade_loss, "max_per_trade_loss")?;
-    let max_daily_loss = require(&governor.max_daily_loss, "max_daily_loss")?;
-    let max_rolling_loss = require(&governor.max_rolling_loss, "max_rolling_loss")?;
-    let max_drawdown = require(&governor.max_drawdown, "max_drawdown")?;
+    let max_per_trade_loss = governor.max_per_trade_loss.clone().ok_or_else(|| {
+        ProfileError::Invariant(
+            "[risk.loss_governor].max_per_trade_loss must be set before live deploy".to_string(),
+        )
+    })?;
+    let max_daily_loss = governor.max_daily_loss.clone().ok_or_else(|| {
+        ProfileError::Invariant(
+            "[risk.loss_governor].max_daily_loss must be set before live deploy".to_string(),
+        )
+    })?;
+    let max_rolling_loss = governor.max_rolling_loss.clone().ok_or_else(|| {
+        ProfileError::Invariant(
+            "[risk.loss_governor].max_rolling_loss must be set before live deploy".to_string(),
+        )
+    })?;
+    let max_drawdown = governor.max_drawdown.clone().ok_or_else(|| {
+        ProfileError::Invariant(
+            "[risk.loss_governor].max_drawdown must be set before live deploy".to_string(),
+        )
+    })?;
 
     Ok(ProductionInvariants {
         strategy_files: loaded.root.strategy_files.clone(),
@@ -264,6 +291,44 @@ pub fn verify_live_config(
             source,
         })?;
     let invariants = confirm_production_invariants(&deployed_loaded)?;
+
+    // The byte-equality above pins the root body, but strategy_files are referenced
+    // by relative path and resolved at the deploy site — their CONTENTS are not part
+    // of the compared bytes. Compare them explicitly so a divergent deployed strategy
+    // file (valid schema, but different sizing/feeds/stale) cannot pass as approved.
+    let profile_loaded =
+        load_bolt_v3_config(profile_path).map_err(|source| ProfileError::Load {
+            path: profile_path.to_path_buf(),
+            source,
+        })?;
+    if profile_loaded.strategies.len() != deployed_loaded.strategies.len() {
+        return Err(ProfileError::Mismatch(format!(
+            "deployed runtime config references {} strategy file(s) but must match the profile's {}",
+            deployed_loaded.strategies.len(),
+            profile_loaded.strategies.len()
+        )));
+    }
+    for (approved, deployed) in profile_loaded
+        .strategies
+        .iter()
+        .zip(deployed_loaded.strategies.iter())
+    {
+        if approved.relative_path != deployed.relative_path {
+            return Err(ProfileError::Mismatch(format!(
+                "deployed strategy path `{}` must match the approved `{}`",
+                deployed.relative_path, approved.relative_path
+            )));
+        }
+        let approved_text = read_config_text(&approved.config_path)?;
+        let deployed_strategy_text = read_config_text(&deployed.config_path)?;
+        if approved_text != deployed_strategy_text {
+            return Err(ProfileError::Mismatch(format!(
+                "deployed strategy `{}` must match the tracked profile's copy; redeploy the \
+                 strategy files alongside the generated runtime config",
+                deployed.relative_path
+            )));
+        }
+    }
 
     Ok(LiveConfigVerification {
         profile_path: profile_path.to_path_buf(),

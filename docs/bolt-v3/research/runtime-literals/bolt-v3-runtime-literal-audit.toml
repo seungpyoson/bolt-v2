@@ -17351,3 +17351,19 @@ literal = '''"market_portfolio_min_slot_notional"'''
 context = '''const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slot_notional";'''
 classification = "maker_market_portfolio_schema_field"
 reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "number"
+literal = '''1'''
+context = '''pub const GENERATOR_FORMAT_VERSION: u32 = 1;'''
+classification = "prod_profile_generator_format_version"
+reason = "Provenance-header format version stamped onto the generated runtime config and bumped only when the header format changes; it is a code constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"# bolt-v2:generated-live-config format="'''
+context = '''pub const GENERATED_MARKER_PREFIX: &str = "# bolt-v2:generated-live-config format=";'''
+classification = "prod_profile_generation_marker"
+reason = "Fixed provenance-marker prefix stamped onto, and matched in, the generated runtime config; it is a code constant, not an operator runtime value."

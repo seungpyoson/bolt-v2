@@ -8,6 +8,14 @@
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
 # `funder` is a public on-chain Safe address. NEVER put secret values here.
 #
+# Relationship to config/root.toml: root.toml is the multi-asset TEMPLATE (it carries
+# placeholder execution values); this profile is the PRODUCTION source for the BTC 5m
+# pilot. Shared infrastructure (runtime, nautilus, persistence, aws, logging,
+# gate_providers, and each venue's [data]/[secrets]) is single-sourced — CI
+# (prod_profile_does_not_drift_from_root_shared_blocks) fails if it drifts from root.
+# This profile owns only the pilot deltas: strategy/RV selection, the loss_governor
+# rails, and the Polymarket execution funder/signature_type.
+#
 # Deploy/run: `bolt-v2 ops generate-live-config --profile config/prod-btc-5m.toml
 # --output <live.toml>` stamps a provenance header onto this file and writes the
 # runtime config; `ops verify-live-config` proves the deployed file regenerates
@@ -150,7 +158,10 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.loss_governor]
-enabled = false
+# Must be true for a live deploy: ops generate/verify-live-config fail closed on
+# disabled rails, which go inert at runtime (loss_governor_policy_from_loaded returns
+# None when disabled, so no LossGovernorPolicy is constructed).
+enabled = true
 account_id = "POLYMARKET-001"
 max_snapshot_age_ns = 5000000000
 rolling_window_ns = 300000000000

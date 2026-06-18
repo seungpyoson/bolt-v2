@@ -21,7 +21,9 @@ use bolt_v2::{
         run_bolt_v3_live_node,
     },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
-    bolt_v3_prod_profile::{GENERATOR_FORMAT_VERSION, generate_live_config, verify_live_config},
+    bolt_v3_prod_profile::{
+        GENERATOR_FORMAT_VERSION, ProductionInvariants, generate_live_config, verify_live_config,
+    },
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
@@ -262,6 +264,30 @@ fn run_data_client_census(
     Ok(())
 }
 
+// Output reports are typed structs (serde derives the JSON keys from the field
+// names) rather than `json!` string keys, so no operator-runtime string literals
+// are introduced in this binary's output path.
+#[derive(serde::Serialize)]
+struct GenerateLiveConfigReport {
+    generated_live_config: bool,
+    output: String,
+    source_profile: String,
+    profile_bundle_sha256: String,
+    generator_format_version: u32,
+    invariants: ProductionInvariants,
+}
+
+#[derive(serde::Serialize)]
+struct VerifyLiveConfigReport {
+    verified_live_config: bool,
+    profile: String,
+    deployed: String,
+    profile_bundle_sha256: String,
+    matches_profile: bool,
+    loads_against_binary: bool,
+    invariants: ProductionInvariants,
+}
+
 fn run_generate_live_config(
     profile: &Path,
     output: &Path,
@@ -274,17 +300,15 @@ fn run_generate_live_config(
             error.source
         )
     })?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "generated_live_config": true,
-            "output": output.display().to_string(),
-            "source_profile": generated.source_profile,
-            "profile_bundle_sha256": generated.profile_bundle_sha256,
-            "generator_format_version": GENERATOR_FORMAT_VERSION,
-            "invariants": generated.invariants,
-        }))?
-    );
+    let report = GenerateLiveConfigReport {
+        generated_live_config: true,
+        output: output.display().to_string(),
+        source_profile: generated.source_profile,
+        profile_bundle_sha256: generated.profile_bundle_sha256,
+        generator_format_version: GENERATOR_FORMAT_VERSION,
+        invariants: generated.invariants,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 
@@ -293,18 +317,16 @@ fn run_verify_live_config(
     deployed: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let verification = verify_live_config(profile, deployed)?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "verified_live_config": true,
-            "profile": profile.display().to_string(),
-            "deployed": deployed.display().to_string(),
-            "profile_bundle_sha256": verification.profile_bundle_sha256,
-            "matches_profile": verification.matches_profile,
-            "loads_against_binary": verification.loads_against_binary,
-            "invariants": verification.invariants,
-        }))?
-    );
+    let report = VerifyLiveConfigReport {
+        verified_live_config: true,
+        profile: profile.display().to_string(),
+        deployed: deployed.display().to_string(),
+        profile_bundle_sha256: verification.profile_bundle_sha256,
+        matches_profile: verification.matches_profile,
+        loads_against_binary: verification.loads_against_binary,
+        invariants: verification.invariants,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

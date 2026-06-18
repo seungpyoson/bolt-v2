@@ -79,6 +79,10 @@ fn tracked_prod_profile_is_btc_only_with_loss_rails() {
         .as_ref()
         .expect("pilot profile must declare [risk.loss_governor] loss rails");
     assert!(
+        governor.enabled,
+        "pilot loss rails must be ENABLED — present-but-disabled rails are inert at runtime"
+    );
+    assert!(
         governor.max_per_trade_loss.is_some()
             && governor.max_daily_loss.is_some()
             && governor.max_rolling_loss.is_some()
@@ -114,11 +118,33 @@ fn prod_profile_references_only_ssm_secret_paths() {
 // --- Single source of truth: venue [data] blocks live only in root.toml -------
 
 #[test]
-fn prod_profile_shares_root_client_data_blocks() {
+fn prod_profile_does_not_drift_from_root_shared_blocks() {
     let root: toml::Value =
         toml::from_str(&support::repo_text("config/root.toml")).expect("root.toml parses");
     let profile: toml::Value =
         toml::from_str(&support::repo_text(PROFILE)).expect("profile parses");
+
+    // Shared infrastructure is single-sourced in root.toml. The 2026-06-18 deploy
+    // failure was a stale key in [nautilus.data_engine]; asserting these blocks are
+    // byte-equal means a schema/config change to root cannot silently skip the profile.
+    // The profile owns ONLY the pilot deltas (strategy_files, realized_volatility_surfaces
+    // selection, [runtime] mode, [risk] loss_governor, client-set membership, and the
+    // Polymarket execution funder/signature_type), which are intentionally NOT compared here.
+    for key in [
+        "nautilus",
+        "persistence",
+        "aws",
+        "logging",
+        "chainlink_data_streams",
+        "gate_providers",
+    ] {
+        assert_eq!(
+            profile.get(key),
+            root.get(key),
+            "[{key}] must be identical in {PROFILE} and config/root.toml — this infrastructure \
+             block is single-sourced in root; change root.toml, not the profile"
+        );
+    }
 
     let root_clients = root
         .get("clients")
@@ -133,11 +159,17 @@ fn prod_profile_shares_root_client_data_blocks() {
         let root_client = root_clients.get(name).unwrap_or_else(|| {
             panic!("profile client `{name}` must also exist in root.toml (single source for venue blocks)")
         });
+        // [data] (venue connection) and [secrets] (SSM references) are single-sourced in
+        // root. [execution] and [readiness_probe] are allowlisted profile-owned deltas.
         assert_eq!(
             profile_client.get("data"),
             root_client.get("data"),
-            "profile client `{name}` [data] block must match root.toml — venue connection \
-             details are single-sourced in root; update root.toml, not the profile, when a venue changes"
+            "client `{name}` [data] must match root.toml (single-sourced venue connection)"
+        );
+        assert_eq!(
+            profile_client.get("secrets"),
+            root_client.get("secrets"),
+            "client `{name}` [secrets] must match root.toml (single-sourced SSM references)"
         );
     }
 }
@@ -201,9 +233,10 @@ fn verify_rejects_tampered_deployed_body() {
     let deployed = dir.path().join("live.toml");
     // Flip a real value (sizing notional) — still valid TOML, but not what the
     // approved profile generates.
-    let tampered = generated
-        .text
-        .replace("default_max_notional_per_order", "default_max_notional_per_order # tampered");
+    let tampered = generated.text.replace(
+        "default_max_notional_per_order",
+        "default_max_notional_per_order # tampered",
+    );
     assert_ne!(tampered, generated.text, "the tamper must change the bytes");
     write(&deployed, &tampered);
 
@@ -216,9 +249,10 @@ fn verify_rejects_tampered_deployed_body() {
 }
 
 #[test]
-fn verify_rejects_schema_stale_deployed_config() {
-    // Reproduce the 2026-06-18 failure mode: a deployed config carrying a stale
-    // key the binary no longer accepts. It must be rejected, not started.
+fn verify_rejects_a_stale_keyed_deployed_config_as_a_mismatch() {
+    // A deployed config carrying the 2026-06-18 stale key differs from the approved
+    // bytes, so verify rejects it at the byte-equality check as a profile mismatch.
+    // The loader-level staleness proof is binary_rejects_the_2026_06_18_stale_key_directly.
     let dir = stage_runtime_dir("prod-profile-stale");
     let generated = generate_live_config(&support::repo_path(PROFILE)).expect("generate succeeds");
     let stale = generated.text.replace(
@@ -233,10 +267,11 @@ fn verify_rejects_schema_stale_deployed_config() {
     write(&deployed, &stale);
 
     let error = verify_live_config(&support::repo_path(PROFILE), &deployed)
-        .expect_err("a schema-stale deployed config must fail verification");
+        .expect_err("a stale-keyed deployed config must fail verification");
     assert!(
-        matches!(error, ProfileError::Mismatch(_) | ProfileError::Load { .. }),
-        "schema-stale deployed config must be rejected, got: {error}"
+        matches!(error, ProfileError::Mismatch(_)),
+        "a deployed config carrying an injected stale key differs from the approved bytes and \
+         must be rejected as a profile mismatch, got: {error}"
     );
 }
 
@@ -321,6 +356,69 @@ fn generate_rejects_an_already_generated_file() {
     );
 }
 
+#[test]
+fn generate_rejects_profile_with_disabled_loss_rails() {
+    let dir = stage_runtime_dir("prod-profile-disabled-rails");
+    let profile_text = support::repo_text(PROFILE);
+    let disabled = with_loss_governor_disabled(&profile_text);
+    assert_ne!(
+        disabled, profile_text,
+        "the loss_governor enabled flag must have been flipped to false for this negative case"
+    );
+    let path = dir.path().join("prod-disabled-rails.toml");
+    write(&path, &disabled);
+
+    let error = generate_live_config(&path)
+        .expect_err("a profile with present-but-disabled loss rails must fail closed");
+    match error {
+        ProfileError::Invariant(message) => assert!(
+            message.contains("enabled"),
+            "invariant error must point at the disabled rails, got: {message}"
+        ),
+        other => panic!("expected an invariant error, got: {other}"),
+    }
+}
+
+#[test]
+fn verify_rejects_divergent_deployed_strategy_file() {
+    let dir = stage_runtime_dir("prod-profile-divergent-strategy");
+    let generated = generate_live_config(&support::repo_path(PROFILE)).expect("generate succeeds");
+    let deployed = dir.path().join("live.toml");
+    write(&deployed, &generated.text);
+    // The deployed live.toml bytes are unchanged; only the referenced strategy file is
+    // tampered (still valid TOML). The byte-compare cannot see this — only verify's
+    // explicit strategy-content comparison can.
+    let strategy = dir.path().join("strategies").join("binary_oracle_btc.toml");
+    let original = std::fs::read_to_string(&strategy).expect("staged strategy readable");
+    write(&strategy, &format!("{original}\n# deployed-side tamper\n"));
+
+    let error = verify_live_config(&support::repo_path(PROFILE), &deployed)
+        .expect_err("a deployed strategy file diverging from the profile must fail verification");
+    assert!(
+        matches!(error, ProfileError::Mismatch(_)),
+        "a divergent deployed strategy file must be rejected as a mismatch, got: {error}"
+    );
+}
+
+#[test]
+fn deploy_readme_documents_the_full_pre_arm_gate() {
+    // #768 step 3 pre-arm duties beyond config identity — live secret resolution and the
+    // no-submit/readiness check — are the documented `secrets resolve` + `prestart-check`
+    // steps that chain after generate -> verify. The runbook must spell out the full gate.
+    let readme = support::repo_text("deploy/README.md");
+    for needle in [
+        "generate-live-config",
+        "verify-live-config",
+        "secrets resolve",
+        "prestart-check",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "deploy/README.md must document `{needle}` in the pre-arm sequence (#768 step 3)"
+        );
+    }
+}
+
 /// Drop the `[risk.loss_governor]` table (header + its key lines) up to the next
 /// section header, leaving an otherwise-valid profile with no loss rails.
 fn without_loss_governor(profile_text: &str) -> String {
@@ -340,6 +438,32 @@ fn without_loss_governor(profile_text: &str) -> String {
             }
         }
         out.push(line);
+    }
+    let mut joined = out.join("\n");
+    joined.push('\n');
+    joined
+}
+
+/// Flip `[risk.loss_governor].enabled` to false in an otherwise-unchanged profile,
+/// touching only the `enabled` line inside that section.
+fn with_loss_governor_disabled(profile_text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_block = false;
+    for line in profile_text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("[risk.loss_governor]") {
+            in_block = true;
+            out.push(line.to_string());
+            continue;
+        }
+        if in_block && trimmed.starts_with('[') {
+            in_block = false;
+        }
+        if in_block && trimmed.starts_with("enabled") && line.contains("true") {
+            out.push(line.replacen("true", "false", 1));
+            continue;
+        }
+        out.push(line.to_string());
     }
     let mut joined = out.join("\n");
     joined.push('\n');

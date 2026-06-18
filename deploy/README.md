@@ -21,6 +21,22 @@ Recommended sequence:
 6. Run `sudo BOLT_DATA_DEVICE=/dev/<data-volume-device> ./deploy/install.sh`.
 7. Enable and start the service after the binary and config are in place.
 
+## Pre-arm gate (issue #768)
+
+The full pre-arm verification runs in order; the service must not start until all pass:
+
+1. `bolt-v2 ops generate-live-config --profile config/prod-btc-5m.toml --output /opt/bolt-v2/config/live.toml`
+   — produce the runtime config from the tracked profile (fail-closed on schema/invariant errors).
+2. `bolt-v2 ops verify-live-config --profile config/prod-btc-5m.toml --deployed /opt/bolt-v2/config/live.toml`
+   — byte parity vs the regenerated config + independent schema load + strategy-file content match.
+3. `bolt-v2 secrets resolve --config /opt/bolt-v2/config/live.toml` — confirm every SSM credential
+   resolves without printing values (#768 step 3c).
+4. `bolt-v2 ops prestart-check --config /opt/bolt-v2/config/live.toml` — storage + no-submit/readiness
+   gate (#768 step 3d; the systemd unit also runs this as `ExecStartPre`).
+
+Steps 1–2 are config identity (covered by `ops verify-live-config` and CI); steps 3–4 are the live
+secret-resolution and readiness checks that cannot run offline, so they stay as explicit commands here.
+
 If `/opt/bolt-v2/config/live.toml` already exists, `deploy/install.sh` repairs it to `root:bolt`
 with mode `0640`.
 

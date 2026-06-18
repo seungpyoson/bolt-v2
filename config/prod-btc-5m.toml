@@ -1,0 +1,583 @@
+# Tracked production profile — BTC 5m supervised pilot (issue #768).
+#
+# This is the SINGLE source of truth for live runtime config. It is a complete,
+# schema-valid bolt-v3 root config (no overlay, no placeholders). CI loads it
+# through the exact deployed binary, so it cannot silently drift against the
+# schema the way the former gitignored config/live.toml did.
+#
+# Non-secret only: every credential is an SSM parameter reference; the Polymarket
+# `funder` is a public on-chain Safe address. NEVER put secret values here.
+#
+# Deploy/run: `bolt-v2 ops generate-live-config --profile config/prod-btc-5m.toml
+# --output <live.toml>` stamps a provenance header onto this file and writes the
+# runtime config; `ops verify-live-config` proves the deployed file regenerates
+# from this profile and still loads against the running binary. Do NOT hand-edit
+# the deployed live.toml — edit this profile in a reviewed PR instead.
+schema_version = 1
+trader_id = "BOLT-001"
+
+strategy_files = [
+  "strategies/binary_oracle_btc.toml",
+]
+
+[realized_volatility_surfaces.btc_usdt_midpoint_rv]
+canonical_base_asset = "BTC"
+canonical_quote_asset = "USDT"
+
+[realized_volatility_surfaces.btc_usdt_midpoint_rv.policy]
+window_ms = 600000
+sampling_interval_ms = 1000
+min_ready_sources = 1
+max_source_age_ms = 30000
+max_event_receive_lag_ms = 1000
+max_inter_sample_gap_ms = 60000
+min_coverage_ratio = 0.5
+max_cross_source_dispersion = 1.0
+seconds_per_annum = 31536000.0
+aggregation = "upper_quantile"
+upper_quantile = 1.0
+
+[realized_volatility_surfaces.btc_usdt_midpoint_rv.estimator]
+noise_robust_method = "subsampled"
+subsamples = 2
+min_ready_subsamples = 2
+jump_policy = "separate"
+pricing_component = "noise_robust"
+
+[[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
+source_id = "okx_btc_usdt_midpoint"
+data_client_id = "okx_data"
+instrument_id = "BTC-USDT.OKX"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
+source_id = "binance_btc_usdt_midpoint"
+data_client_id = "binance_spot_data"
+instrument_id = "BTC-USDT.BINANCE"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+[[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
+source_id = "bybit_btc_usdt_midpoint"
+data_client_id = "bybit_data"
+instrument_id = "BTC-USDT.BYBIT"
+source_class = "spot_quote"
+sample_kind = "midpoint"
+enabled = true
+counts_toward_quorum = true
+canonical_quote_asset = "USDT"
+
+
+[runtime]
+mode = "Live"
+order_execution_mode = "live"
+
+[nautilus]
+load_state = true
+save_state = true
+shutdown_on_error = false
+timeout_connection_secs = 30
+timeout_reconciliation_secs = 60
+timeout_portfolio_secs = 10
+timeout_disconnection_secs = 10
+delay_post_stop_secs = 5
+timeout_shutdown_secs = 10
+
+[nautilus.data_engine]
+time_bars_build_with_no_updates = true
+time_bars_timestamp_on_close = true
+time_bars_skip_first_non_full_bar = false
+time_bars_interval_type = "LEFT_OPEN"
+time_bars_build_delay = 0
+time_bars_origins = {}
+validate_data_sequence = false
+buffer_deltas = false
+emit_quotes_from_book = false
+emit_quotes_from_book_depths = false
+external_clients = []
+debug = false
+qsize = 100000
+
+[nautilus.exec_engine]
+load_cache = true
+snapshot_orders = false
+snapshot_positions = false
+snapshot_positions_interval_secs = 0
+external_clients = []
+debug = false
+reconciliation = true
+reconciliation_startup_delay_secs = 10
+reconciliation_lookback_mins = 0
+reconciliation_instrument_ids = []
+filter_unclaimed_external_orders = false
+filter_position_reports = false
+filtered_client_order_ids = []
+generate_missing_orders = true
+inflight_check_interval_ms = 2000
+inflight_check_threshold_ms = 5000
+inflight_check_retries = 5
+open_check_interval_secs = 0
+open_check_lookback_mins = 60
+open_check_threshold_ms = 5000
+open_check_missing_retries = 5
+open_check_open_only = true
+max_single_order_queries_per_cycle = 10
+single_order_query_delay_ms = 100
+position_check_interval_secs = 0
+position_check_lookback_mins = 60
+position_check_threshold_ms = 5000
+position_check_retries = 3
+purge_closed_orders_interval_mins = 0
+purge_closed_orders_buffer_mins = 0
+purge_closed_positions_interval_mins = 0
+purge_closed_positions_buffer_mins = 0
+purge_account_events_interval_mins = 0
+purge_account_events_lookback_mins = 0
+purge_from_database = false
+own_books_audit_interval_secs = 0
+qsize = 100000
+allow_overfills = false
+manage_own_order_books = false
+
+[risk]
+default_max_notional_per_order = "10.00"
+
+[risk.loss_governor]
+enabled = false
+account_id = "POLYMARKET-001"
+max_snapshot_age_ns = 5000000000
+rolling_window_ns = 300000000000
+active_position_pnl_max_entries = 64
+on_loss_breach_trading_state = "reducing"
+on_untrusted_snapshot_trading_state = "reducing"
+recovery_mode = "manual"
+manual_recovery_evidence_max_path_bytes = 256
+max_per_trade_loss = "3.50"
+max_daily_loss = "10.00"
+max_rolling_loss = "10.00"
+max_drawdown = "15.00"
+
+[risk.nautilus]
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
+max_notional_per_order = {}
+debug = false
+qsize = 100000
+
+[logging]
+stdout_level = "INFO"
+fileout_level = "INFO"
+
+[persistence]
+catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+required_catalog_prefix = "/srv/bolt-v2"
+# 10 GiB free-space floor for the live-node catalog filesystem.
+min_free_bytes = 10737418240
+runtime_capture_start_poll_interval_ms = 50
+
+[persistence.decision_evidence]
+order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
+
+[persistence.streaming]
+catalog_fs_protocol = "file"
+flush_interval_ms = 1000
+replace_existing = false
+rotation_kind = "none"
+
+[aws]
+region = "eu-west-2"
+
+# Shared Chainlink Data Streams catalog. Client transport config consumes these
+# feed bindings; client-local feed catalogs are rejected.
+[chainlink_data_streams]
+
+[[chainlink_data_streams.feed_bindings]]
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+instrument_id = "BTC-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[chainlink_data_streams.feed_bindings]]
+feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
+instrument_id = "ETH-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[chainlink_data_streams.feed_bindings]]
+feed_id = "0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6"
+instrument_id = "SOL-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[chainlink_data_streams.feed_bindings]]
+feed_id = "0x000387d7c042a9d5c97c15354b531bd01bf6d3a351e190f2394403cf2f79bde9"
+instrument_id = "BNB-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[chainlink_data_streams.feed_bindings]]
+feed_id = "0x00035e3ddda6345c3c8ce45639d4449451f1d5828d7a70845e446f04905937cd"
+instrument_id = "XRP-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[[chainlink_data_streams.feed_bindings]]
+feed_id = "0x00032057c7f224d0266b4311a81cdc3e38145e36442713350d3300fb12e85c99"
+instrument_id = "DOGE-USD.CHAINLINK"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 8
+
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value", "reference_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 18
+
+[clients.polymarket_main]
+venue = "POLYMARKET"
+
+[clients.polymarket_main.data]
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+base_url_rtds = "wss://ws-live-data.polymarket.com"
+base_url_gamma = "https://gamma-api.polymarket.com"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_secs = 60
+ws_timeout_secs = 30
+subscribe_new_markets = false
+new_market_fetch_max_concurrency = 8
+auto_load_missing_instruments = false
+auto_load_debounce_ms = 250
+auto_load_max_retries = 12
+auto_load_retry_delay_initial_secs = 5
+auto_load_retry_delay_max_secs = 15
+resolve_poll_enabled = false
+resolve_poll_interval_secs = 30
+resolve_poll_grace_secs = 10
+resolve_poll_max_wait_secs = 1800
+update_instruments_interval_mins = 60
+ws_max_subscriptions = 200
+transport_backend = "sockudo"
+
+[clients.polymarket_main.execution]
+account_id = "POLYMARKET-001"
+signature_type = "poly_gnosis_safe"
+funder = "0xA3a5E9c062331237E5f1403b2bba7A184e5de983"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+ack_timeout_secs = 5
+fee_cache_ttl_secs = 300
+transport_backend = "sockudo"
+
+
+[clients.polymarket_main.secrets]
+private_key_ssm_path = "/bolt/polymarket/private-key"
+api_key_ssm_path = "/bolt/polymarket/api-key"
+api_secret_ssm_path = "/bolt/polymarket/api-secret"
+passphrase_ssm_path = "/bolt/polymarket/api-passphrase"
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
+[clients.binance_spot_data]
+venue = "BINANCE"
+
+[clients.binance_spot_data.data]
+product_type = "spot"
+environment = "mainnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream-sbe.binance.com/ws"
+spot_market_data_mode = "sbe"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[clients.binance_spot_data.secrets]
+api_key_ssm_path = "/bolt/binance/api-key"
+api_secret_ssm_path = "/bolt/binance/api-secret"
+
+[clients.binance_spot_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
+[clients.binance_usdm_data]
+venue = "BINANCE"
+
+[clients.binance_usdm_data.data]
+product_type = "usd_m"
+environment = "live"
+base_url_http = "https://fapi.binance.com"
+base_url_ws = "wss://fstream.binance.com/market/ws"
+spot_market_data_mode = "sbe"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[clients.binance_usdm_data.secrets]
+api_key_ssm_path = "/bolt/binance/api-key"
+api_secret_ssm_path = "/bolt/binance/api-secret"
+
+[clients.binance_usdm_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
+[clients.binance_coinm_data]
+venue = "BINANCE"
+
+[clients.binance_coinm_data.data]
+product_type = "coin_m"
+environment = "live"
+base_url_http = "https://dapi.binance.com"
+base_url_ws = "wss://dstream.binance.com/ws"
+spot_market_data_mode = "sbe"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[clients.binance_coinm_data.secrets]
+api_key_ssm_path = "/bolt/binance/api-key"
+api_secret_ssm_path = "/bolt/binance/api-secret"
+
+[clients.binance_coinm_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
+[clients.bitmex_data]
+venue = "BITMEX"
+
+[clients.bitmex_data.data]
+# Data-only readiness uses BitMEX production (mainnet) public data: pinned NT's
+# strict BitmexInstrumentType enum cannot deserialize the testnet-only `FFMCSX`
+# typ, and active_only=true avoids the historical `/instrument` dump whose
+# settled instruments break NT's whole-array deserialize. See T043A docs.
+environment = "mainnet"
+active_only = true
+transport_backend = "sockudo"
+
+[clients.bitmex_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+# Pass once >= this many sampled targets stream fresh book deltas. Proves the
+# adapter data path without requiring every illiquid sampled instrument to tick
+# within the wait. Unset = strict (all sampled targets). See T043A docs.
+min_observed_targets = 10
+
+[clients.bybit_data]
+venue = "BYBIT"
+
+[clients.bybit_data.data]
+product_types = ["spot", "linear", "inverse", "option"]
+environment = "mainnet"
+transport_backend = "sockudo"
+
+[clients.bybit_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
+[clients.coinbase_data]
+venue = "COINBASE"
+
+[clients.coinbase_data.data]
+environment = "Live"
+transport_backend = "sockudo"
+
+[clients.coinbase_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+min_observed_targets = 10
+
+[clients.deribit_data]
+venue = "DERIBIT"
+
+[clients.deribit_data.data]
+product_types = ["future", "option", "spot", "future_combo", "option_combo"]
+environment = "mainnet"
+transport_backend = "sockudo"
+
+[clients.deribit_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
+[clients.kraken_spot_data]
+venue = "KRAKEN"
+
+[clients.kraken_spot_data.data]
+product_type = "spot"
+environment = "live"
+ws_idle_timeout_ms = 10000
+transport_backend = "sockudo"
+
+[clients.kraken_spot_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
+[clients.kraken_futures_data]
+venue = "KRAKEN"
+
+[clients.kraken_futures_data.data]
+product_type = "futures"
+environment = "live"
+ws_idle_timeout_ms = 10000
+transport_backend = "sockudo"
+
+[clients.kraken_futures_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
+[clients.okx_data]
+venue = "OKX"
+
+[clients.okx_data.data]
+instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
+contract_types = ["linear", "inverse"]
+# load_spreads=false: pinned NT has no books websocket channel for spread
+# instruments, so the venue rejects spread instId subscriptions (error 60018).
+load_spreads = false
+# Data-only readiness uses OKX production (live) public data: the demo
+# paper-trading websocket serves empty/thin books for production instruments,
+# producing `deltas cannot be empty` parse errors. See T043A docs.
+environment = "live"
+transport_backend = "sockudo"
+
+[clients.okx_data.readiness_probe]
+# Trade chunk-count probe (#490): walk OKX's full instrument universe in chunks
+# of `chunk_size`, kept below the venue's silent delivery ceiling (200 channels
+# deliver; the full ~1900 are suppressed), watching each chunk
+# `chunk_observation_window_seconds` for trades. Pass once `min_observed_targets`
+# (m) distinct markets trade; fail closed if the whole universe is walked without
+# reaching m. Liveness-driven selection avoids certifying on the illiquid
+# alphabetical long tail that a fixed metadata sample lands on. The other venues
+# above keep book probes (book deltas flow even for illiquid instruments, so they
+# do not exhibit the false-negative trade exposed).
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+
+# Live Chainlink Data Streams resolution-strike (price-to-beat) source. One
+# point-in-time strike per window-open timestamp, delivered as an NT
+# IndexPriceUpdate on the bound resolution instrument. Routes to the
+# chainlink::map_adapters provider binding via venue = "CHAINLINK_DATA_STREAMS"
+# (the chainlink::KEY matched in bolt_v3_providers::binding_for_provider_key).
+# Each strategy instance subscribes its asset's feed via the per-asset
+# [resolution_data] block in strategies/binary_oracle_<asset>.toml.
+[clients.chainlink_strike]
+venue = "CHAINLINK_DATA_STREAMS"
+
+[clients.chainlink_strike.data]
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+
+[clients.chainlink_strike.secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+# Live Chainlink Data Streams current-price websocket source. This is the
+# continuous reference-price stream used by [reference_current_price] sources.
+[clients.chainlink_reference]
+venue = "CHAINLINK_REFERENCE_PRICE"
+
+[clients.chainlink_reference.data]
+websocket_endpoint = "wss://ws.testnet-dataengine.chain.link"
+websocket_path = "/api/v1/ws"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "ping"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+reconnect_max_attempts = 0
+idle_timeout_ms = 10000
+
+[clients.chainlink_reference.secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+# Live PolyResearch/PolyNode current-price websocket source. This is an
+# alternate continuous reference-price stream for [reference_current_price].
+[clients.polyresearch_reference]
+venue = "POLYRESEARCH_REFERENCE_PRICE"
+
+[clients.polyresearch_reference.data]
+websocket_endpoint = "wss://ws.polynode.dev/ws"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "{\"action\":\"ping\"}"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+reconnect_max_attempts = "unlimited"
+subscribe_ack_timeout_ms = 2000
+idle_timeout_ms = 10000
+
+[clients.polyresearch_reference.secrets]
+api_key_ssm_parameter = "/bolt/polyresearch/api-key"

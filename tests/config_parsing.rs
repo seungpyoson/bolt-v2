@@ -4882,8 +4882,12 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
     let justfile = std::fs::read_to_string(support::repo_path("justfile"))
         .expect("justfile should be readable");
     assert!(
-        justfile.contains("live_root := \"config/live.local.toml\""),
-        "live recipes should use the ignored operator root"
+        justfile.contains("live_root := \"config/prod-btc-5m.toml\""),
+        "live recipes should source the tracked production profile (single source of truth, #768)"
+    );
+    assert!(
+        !justfile.contains("live_root := \"config/live.local.toml\""),
+        "live recipes must no longer source the gitignored operator root"
     );
     assert!(
         !justfile.contains("live_root_example"),

@@ -13,6 +13,7 @@ use std::{
 };
 
 use bolt_v2::{
+    bolt_v3_atomic_io::write_private_atomic_file,
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{
         build_bolt_v3_live_node, build_bolt_v3_strategy_free_data_client_probe_live_node,
@@ -20,6 +21,7 @@ use bolt_v2::{
         run_bolt_v3_live_node,
     },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
+    bolt_v3_prod_profile::{GENERATOR_FORMAT_VERSION, generate_live_config, verify_live_config},
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
@@ -97,6 +99,18 @@ enum OpsCommand {
         config: PathBuf,
         #[arg(long)]
         client_key: String,
+    },
+    GenerateLiveConfig {
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    VerifyLiveConfig {
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long)]
+        deployed: PathBuf,
     },
 }
 
@@ -203,6 +217,12 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::DataClientCensus { config, client_key } => {
             run_data_client_census(&config, &client_key)
         }
+        OpsCommand::GenerateLiveConfig { profile, output } => {
+            run_generate_live_config(&profile, &output)
+        }
+        OpsCommand::VerifyLiveConfig { profile, deployed } => {
+            run_verify_live_config(&profile, &deployed)
+        }
     }
 }
 
@@ -239,6 +259,52 @@ fn run_data_client_census(
         run_bolt_v3_data_client_census(node_runtime, &census_loaded, client_key).await
     }))?;
     println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_generate_live_config(
+    profile: &Path,
+    output: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let generated = generate_live_config(profile)?;
+    write_private_atomic_file(output, generated.text.as_bytes()).map_err(|error| {
+        format!(
+            "failed to write generated runtime config `{}`: {}",
+            error.path.display(),
+            error.source
+        )
+    })?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "generated_live_config": true,
+            "output": output.display().to_string(),
+            "source_profile": generated.source_profile,
+            "profile_bundle_sha256": generated.profile_bundle_sha256,
+            "generator_format_version": GENERATOR_FORMAT_VERSION,
+            "invariants": generated.invariants,
+        }))?
+    );
+    Ok(())
+}
+
+fn run_verify_live_config(
+    profile: &Path,
+    deployed: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let verification = verify_live_config(profile, deployed)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "verified_live_config": true,
+            "profile": profile.display().to_string(),
+            "deployed": deployed.display().to_string(),
+            "profile_bundle_sha256": verification.profile_bundle_sha256,
+            "matches_profile": verification.matches_profile,
+            "loads_against_binary": verification.loads_against_binary,
+            "invariants": verification.invariants,
+        }))?
+    );
     Ok(())
 }
 
@@ -735,6 +801,54 @@ mod tests {
                 assert_eq!(client_key, "bybit_data");
             }
             _ => panic!("expected ops data-client-probe command"),
+        }
+    }
+
+    #[test]
+    fn ops_generate_live_config_cli_parses_profile_and_output() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "generate-live-config",
+            "--profile",
+            "config/prod-btc-5m.toml",
+            "--output",
+            "config/live.toml",
+        ])
+        .expect("generate-live-config command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::GenerateLiveConfig { profile, output },
+            } => {
+                assert_eq!(profile, PathBuf::from("config/prod-btc-5m.toml"));
+                assert_eq!(output, PathBuf::from("config/live.toml"));
+            }
+            _ => panic!("expected ops generate-live-config command"),
+        }
+    }
+
+    #[test]
+    fn ops_verify_live_config_cli_parses_profile_and_deployed() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "verify-live-config",
+            "--profile",
+            "config/prod-btc-5m.toml",
+            "--deployed",
+            "/opt/bolt-v2/config/live.toml",
+        ])
+        .expect("verify-live-config command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::VerifyLiveConfig { profile, deployed },
+            } => {
+                assert_eq!(profile, PathBuf::from("config/prod-btc-5m.toml"));
+                assert_eq!(deployed, PathBuf::from("/opt/bolt-v2/config/live.toml"));
+            }
+            _ => panic!("expected ops verify-live-config command"),
         }
     }
 

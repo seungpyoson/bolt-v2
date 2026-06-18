@@ -8,10 +8,18 @@ Recommended sequence:
 
 1. Copy the prebuilt binary to `/opt/bolt-v2/bolt-v2` with mode `0755`; do not use the EC2
    instance as a Rust build/cache host for the live service.
-2. Copy the rendered runtime config to `/opt/bolt-v2/config/live.toml`.
-3. Keep the config readable by the service user, for example `root:bolt` with mode `0640`.
-4. Run `sudo BOLT_DATA_DEVICE=/dev/<data-volume-device> ./deploy/install.sh`.
-5. Enable and start the service after the binary and config are in place.
+2. Copy the tracked production profile and its strategy files to the instance, for example
+   `/opt/bolt-v2/config/prod-btc-5m.toml` and `/opt/bolt-v2/config/strategies/`. The runtime config
+   references its strategy files by relative path, so they must sit alongside it.
+3. Generate the runtime config from the profile — never hand-edit `live.toml` (issue #768):
+   `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --output /opt/bolt-v2/config/live.toml`
+4. Verify it regenerates from the approved profile and still loads against the deployed binary
+   before any start (byte parity + independent schema load — catches stale-key drift that hash
+   parity alone does not):
+   `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --deployed /opt/bolt-v2/config/live.toml`
+5. Keep the config readable by the service user, for example `root:bolt` with mode `0640`.
+6. Run `sudo BOLT_DATA_DEVICE=/dev/<data-volume-device> ./deploy/install.sh`.
+7. Enable and start the service after the binary and config are in place.
 
 If `/opt/bolt-v2/config/live.toml` already exists, `deploy/install.sh` repairs it to `root:bolt`
 with mode `0640`.

@@ -31,9 +31,10 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
 - [ ] `git fetch && git log -1 origin/main` — record the SHA; must contain 7c3dedf25
       (signal/pricing role split). Build THIS sha: `just build` (aarch64 cross-build).
 - [ ] `sha256sum` the binary; record for the deploy evidence file.
-- [ ] `just live-check` and `just live-resolve` pass against the operator's
-      `config/live.local.toml` (secret completeness, SSM resolution).
-- [ ] Confirm `config/live.local.toml` strategy selection points at the BTC strategy
+- [ ] `just live-check` and `just live-resolve` pass against the tracked production
+      profile `config/prod-btc-5m.toml` (the recipes generate the runtime config from it
+      first, then check secret completeness / SSM resolution).
+- [ ] Confirm `config/prod-btc-5m.toml` strategy selection points at the BTC strategy
       from `config/strategies/binary_oracle_btc.toml` (its `strategy_instance_id` is
       `binary_oracle_btc`). Historical note: the Jun-6 smoke ran the OLD on-box
       config's id `bitcoin_updown_main` — expect the instance id (and the evidence
@@ -41,9 +42,11 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
 
 ## Phase 1 — deploy (operator present)
 
-- [ ] Stop the service. Install binary + rendered config per `deploy/README.md`
-      (binary `/opt/bolt-v2/bolt-v2` 0755; config `/opt/bolt-v2/config/live.toml`
-      root:bolt 0640).
+- [ ] Stop the service. Install binary per `deploy/README.md`, then generate + verify
+      the runtime config from the tracked profile on the box
+      (`ops generate-live-config --profile config/prod-btc-5m.toml --output
+      /opt/bolt-v2/config/live.toml`, then `ops verify-live-config`); config
+      `/opt/bolt-v2/config/live.toml` root:bolt 0640.
 - [ ] Record a `deploy/<date>-<shortsha>/deploy.txt` evidence entry (existing
       convention): binary sha256, config sha256, git SHA, operator id, date.
 

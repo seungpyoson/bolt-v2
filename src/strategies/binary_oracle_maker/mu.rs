@@ -104,17 +104,14 @@ impl MakerMuState {
         // `UsableMu` and the gate cannot be skipped: `UsableMu::new` is private to
         // that module (a mint anywhere else is a compile error). An unseen
         // instrument has no flow → `Absent`, matching `health_for`'s fail-closed
-        // verdict. `last_trade_ms` is the newest sample inside the retention window
-        // as of `now_ms` (not the raw tail), the same staleness reference the gate
-        // has always used.
+        // verdict. The staleness anchor is no longer passed in: `mint_usable_mu`
+        // derives it internally as the newest sample inside the retention window as
+        // of `now_ms` (not the raw tail), so no caller here can forge a fresh
+        // reference to slip a stale-but-in-window μ past the gate.
         let Some(flow) = self.flows.get(instrument_id) else {
             return Err(MuHealthReason::Absent);
         };
-        let last_trade_ms = flow
-            .samples_within(now_ms)
-            .last()
-            .map(|sample| sample.ts_ms);
-        mint_usable_mu(flow, last_trade_ms, now_ms, &self.estimator, &self.health)
+        mint_usable_mu(flow, now_ms, &self.estimator, &self.health)
     }
 }
 

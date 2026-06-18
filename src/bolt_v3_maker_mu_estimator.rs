@@ -99,22 +99,32 @@ impl UsableMu {
 /// This co-locates the mint authorization with the type, in the shared estimator
 /// module (so the `bolt_v3_*` quote planner can name `UsableMu` without a
 /// `crate::strategies::*` dependency, keeping the dependency-direction fence
-/// green). The seam takes the RAW `flow` + configs and computes μ *and* runs
-/// [`evaluate_mu_health`] itself, so a caller cannot fabricate a "cleared" verdict
-/// to slip an ungated μ through — any `UsableMu` this returns provably cleared the
-/// same health check `usable_mu_for` applies. `last_trade_ms` is the caller's
-/// in-window staleness reference (the newest sample inside the retention window as
-/// of `now_ms`), matching the existing gate semantics. Returns `Err(reason)` on a
-/// blocked gate and falls back to `Absent` rather than unwrap so the mint stays
-/// fail-closed even if the μ and health views ever diverge.
+/// green). The seam takes the RAW `flow` + configs and computes μ, *derives* the
+/// staleness anchor, *and* runs [`evaluate_mu_health`] itself, so a caller cannot
+/// fabricate a "cleared" verdict to slip an ungated μ through — any `UsableMu`
+/// this returns provably cleared the same health check `usable_mu_for` applies.
+///
+/// The staleness anchor is **derived here, not accepted from the caller**: it is
+/// the newest sample inside the retention window as of `now_ms`
+/// (`flow.samples_within(now_ms).last()`), the exact point-in-time view
+/// [`estimate_informed_fraction`] reduces μ over. Because the anchor is computed
+/// internally from `flow` + `now_ms` rather than passed in, no same-crate caller
+/// can forge a fresh staleness reference (e.g. `Some(now_ms)`) to mint a μ over
+/// stale-but-in-window flow that the gate would otherwise reject as `Stale`.
+///
+/// Returns `Err(reason)` on a blocked gate and falls back to `Absent` rather than
+/// unwrap so the mint stays fail-closed even if the μ and health views ever diverge.
 pub(crate) fn mint_usable_mu(
     flow: &SignedTradeFlow,
-    last_trade_ms: Option<u64>,
     now_ms: u64,
     estimator: &MuEstimatorConfig,
     health: &MuHealthConfig,
 ) -> Result<UsableMu, MuHealthReason> {
     let mu = estimate_informed_fraction(flow, now_ms, estimator);
+    let last_trade_ms = flow
+        .samples_within(now_ms)
+        .last()
+        .map(|sample| sample.ts_ms);
     match evaluate_mu_health(mu, last_trade_ms, now_ms, health) {
         Some(reason) => Err(reason),
         None => mu.map(UsableMu::new).ok_or(MuHealthReason::Absent),
@@ -499,6 +509,60 @@ mod tests {
                 &health_config()
             ),
             Some(MuHealthReason::BelowFloor)
+        );
+    }
+
+    #[test]
+    fn mint_derives_staleness_anchor_and_blocks_stale_in_window_flow() {
+        // X1 differential: a one-sided flow whose newest in-window sample is 46s
+        // old (inside the 600s retention window so μ is producible, but past the 5s
+        // stale window) must mint `Err(Stale)`. `mint_usable_mu` derives the
+        // staleness anchor internally from `flow` + `now_ms`, so there is no
+        // parameter through which a caller could forge a fresh reference
+        // (e.g. `Some(TEST_NOW_MS)`) to slip this stale μ past the gate.
+        //
+        // Pre-fix `mint_usable_mu` accepted `last_trade_ms: Option<u64>`; a caller
+        // passing `Some(TEST_NOW_MS)` here made `now - last == 0 <= stale_window`,
+        // so the gate read fresh and the mint returned `Ok(UsableMu(1.0))` over
+        // provably stale data. With the parameter removed and the anchor derived as
+        // the newest in-window sample (ts 4_000, age 46_000ms), the gate now
+        // correctly reports `Stale` and no caller-supplied timestamp can override it.
+        let flow = flow_with(&[
+            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+        ]);
+        // Sanity: μ is producible for this flow at TEST_NOW_MS (one-sided → 1.0),
+        // so the only thing blocking the mint is the derived staleness anchor.
+        assert_eq!(
+            estimate_informed_fraction(&flow, TEST_NOW_MS, &estimator_config()),
+            Some(TEST_ONE_SIDED_MU)
+        );
+        assert_eq!(
+            mint_usable_mu(&flow, TEST_NOW_MS, &estimator_config(), &health_config()),
+            Err(MuHealthReason::Stale)
+        );
+    }
+
+    #[test]
+    fn mint_returns_gate_cleared_mu_for_fresh_in_window_flow() {
+        // The legitimate production path is unchanged: a one-sided flow whose newest
+        // in-window sample is fresh (age within the stale window) mints the
+        // gate-cleared μ. `now_ms` is one stale-window past the newest sample
+        // (ts 4_000) so the derived anchor reads fresh and the gate passes.
+        let flow = flow_with(&[
+            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+        ]);
+        let newest_ts_ms = TEST_FIRST_TRADE_TS_MS + 3 * TEST_TRADE_TS_STEP_MS;
+        let fresh_now_ms = newest_ts_ms + TEST_STALE_WINDOW_MS;
+        assert_eq!(
+            mint_usable_mu(&flow, fresh_now_ms, &estimator_config(), &health_config())
+                .map(UsableMu::get),
+            Ok(TEST_ONE_SIDED_MU)
         );
     }
 

@@ -57,7 +57,7 @@ pub(crate) fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Op
 /// underlying has less time to drift across the strike, so the fair estimate is
 /// MORE reliable near resolution, not less.
 ///
-/// Regression note (#789): this replaces an inverted `1 - seconds_to_expiry /
+/// Regression note (#789): this replaces an inverted `1 - seconds_to_market_end /
 /// cadence_seconds` term that GREW toward expiry to ~1.0 (0.067 at 280s, 0.967
 /// at 10s of a 300s market). That term saturated the band — blocking pricing
 /// (`UncertaintyBandUnavailable`) and crushing the worst-case success
@@ -65,13 +65,13 @@ pub(crate) fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Op
 /// real late-window taker edge.
 pub(crate) fn time_uncertainty_probability(
     realized_vol: f64,
-    seconds_to_expiry: u64,
+    seconds_to_market_end: u64,
     seconds_per_year: f64,
 ) -> Option<f64> {
     if !is_non_negative_finite(realized_vol) || !is_positive_finite(seconds_per_year) {
         return None;
     }
-    let horizon_years = seconds_to_expiry as f64 / seconds_per_year;
+    let horizon_years = seconds_to_market_end as f64 / seconds_per_year;
     Some(clamp_probability(realized_vol * horizon_years.sqrt()))
 }
 
@@ -244,7 +244,7 @@ mod tests {
     fn time_uncertainty_band_shrinks_toward_expiry() {
         // #789 regression guard. The band's time component is the diffusion std
         // over the remaining horizon (realized_vol * sqrt(T)) and must SHRINK to
-        // 0 at expiry. The prior inverted `1 - seconds_to_expiry/cadence` term
+        // 0 at expiry. The prior inverted `1 - seconds_to_market_end/cadence` term
         // GREW toward expiry (0.067 at 280s, 0.967 at 10s of a 300s market);
         // every assertion below fails under that inverted shape.
         let year = 31_557_600.0;

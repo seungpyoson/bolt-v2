@@ -681,6 +681,33 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
+    // Both-sided cheap book so each outcome is unambiguously tradeable: the #789
+    // diffusion-grounded uncertainty band is nonzero even at market open, so a
+    // knife-edge near-strike book would correctly wipe the marginal side.
+    let cheap_outcome_price = UNIT_F64 / BPS_DENOMINATOR.sqrt();
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (
+                BookAction::Clear,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Sell,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+        ],
+    );
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.4, 1_200)));
@@ -1523,10 +1550,10 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
         near_expiry.pricing_blocked_by.contains(
             &EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
-                BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
+                BinaryOutcomeEdgeBlockReason::EdgeBelowThreshold
             )
         ),
-        "theta-scaled threshold miss should surface as an executable-edge pricing block: {near_expiry:#?}"
+        "theta-scaled threshold miss should surface as an edge-below-threshold pricing block: {near_expiry:#?}"
     );
     assert!(near_expiry.up_worst_case_ev_bps.is_some());
     assert!(near_expiry.min_worst_case_ev_bps.is_some());

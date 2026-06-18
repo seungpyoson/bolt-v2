@@ -26,6 +26,32 @@ const TEST_REFERENCE_CURRENT_PRICE: f64 = 66_300.25;
 const TEST_REFERENCE_OBSERVED_TS_MS: u64 = 1_200;
 const TEST_REFERENCE_RECEIVED_TS_MS: u64 = 1_250;
 
+#[test]
+fn signal_quote_subscription_uses_configured_signal_client() {
+    let strategy = test_strategy();
+
+    assert_eq!(
+        strategy.signal_instrument_id(),
+        Some(InstrumentId::from("SIGNAL.SOURCE"))
+    );
+    assert_eq!(
+        strategy.signal_client_id(),
+        Some(ClientId::from("signal_data_client"))
+    );
+}
+
+#[test]
+fn signal_quote_subscription_without_signal_client_preserves_default_routing() {
+    let mut strategy = test_strategy();
+    strategy.config.signal_venue = None;
+
+    assert_eq!(
+        strategy.signal_instrument_id(),
+        Some(InstrumentId::from("SIGNAL.SOURCE"))
+    );
+    assert_eq!(strategy.signal_client_id(), None);
+}
+
 fn reference_provider(key: &str) -> ReferencePriceProvider {
     ReferencePriceProvider::new(key).expect("test provider key should be valid")
 }
@@ -214,6 +240,42 @@ fn reference_price_sources_subscribe_as_custom_data_on_start_and_unsubscribe_on_
         "polyresearch_reference",
         None,
         Some("BTC"),
+    );
+}
+
+#[test]
+fn selection_retry_reissues_missing_live_input_subscriptions() {
+    let mut strategy = test_strategy();
+    strategy.config.reference_current_price = Some(reference_price_config());
+
+    strategy.retry_missing_live_input_subscriptions_at(1_500);
+
+    assert_eq!(
+        strategy.live_input_subscription_retry_events,
+        vec![LiveInputSubscriptionRetryEvent {
+            signal_missing: true,
+            reference_missing: true,
+            realized_volatility_missing: true,
+        }]
+    );
+    assert_eq!(strategy.reference_price_subscribe_events.len(), 4);
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[0],
+        REFERENCE_PRICE_UNSUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BTC-USD.CHAINLINK_REFERENCE"),
+        None,
+    );
+    assert_reference_price_subscription(
+        &strategy.reference_price_subscribe_events[2],
+        REFERENCE_PRICE_SUBSCRIBE_ACTION,
+        CHAINLINK_PRIMARY_SOURCE_ID,
+        CHAINLINK_REFERENCE_PROVIDER,
+        "chainlink_reference",
+        Some("BTC-USD.CHAINLINK_REFERENCE"),
+        None,
     );
 }
 

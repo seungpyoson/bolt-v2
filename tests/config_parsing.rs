@@ -250,7 +250,7 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
         .expect("polymarket data block should exist")
         .try_into()
         .expect("polymarket data block should parse with NT names");
-    assert_eq!(data.update_instruments_interval_mins, 60);
+    assert_eq!(data.update_instruments_interval_mins, 1);
     assert_eq!(data.ws_max_subscriptions, 200);
     assert_eq!(data.base_url_rtds, "wss://ws-live-data.polymarket.com");
     assert_eq!(data.new_market_fetch_max_concurrency, 8);
@@ -312,6 +312,47 @@ fn retired_gate_config_block_is_rejected() {
         .expect_err("retired gate config block should be rejected");
     let rendered = error.to_string();
     assert!(rendered.contains("unknown field"));
+}
+
+#[test]
+fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
+    use bolt_v2::bolt_v3_providers::chainlink_reference::ChainlinkReferencePriceDataConfig;
+
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let parsed = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let data_value = parsed
+            .get("clients")
+            .and_then(|value| value.get("chainlink_reference"))
+            .and_then(|value| value.get("data"))
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!("{relative_path} should declare clients.chainlink_reference.data")
+            });
+        let data = data_value
+            .as_table()
+            .expect("chainlink reference data should be a table");
+        let data_config: ChainlinkReferencePriceDataConfig =
+            data_value.clone().try_into().unwrap_or_else(|error| {
+                panic!("{relative_path} chainlink reference data should deserialize: {error}")
+            });
+
+        assert_eq!(
+            data.get("heartbeat_secs").and_then(toml::Value::as_integer),
+            Some(5),
+            "{relative_path} should keep a configured heartbeat interval"
+        );
+        assert!(
+            !data.contains_key("heartbeat_message"),
+            "{relative_path} Chainlink reference WS must omit heartbeat_message so NT sends protocol Ping frames instead of text"
+        );
+        assert_eq!(
+            data_config.heartbeat_message, None,
+            "{relative_path} parsed Chainlink reference config must use protocol Ping frames"
+        );
+    }
 }
 
 #[test]
@@ -613,8 +654,8 @@ fn bolt_v3_polymarket_client_rejects_execution_without_data_block_with_client_vo
     // provider-neutral per the source-fence.
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
-    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let polymarket_main_data_block = "[clients.polymarket_main.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n";
+    let polymarket_data_only_client = "\n[clients.polymarket_data]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_data.data]\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://gamma-api.polymarket.com\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let split_fixture = format!(
         "{}{}",
         replace_in_fixture_root(polymarket_main_data_block, ""),
@@ -7294,7 +7335,7 @@ auto_load_debounce_ms = 250
 auto_load_max_retries = 12
 auto_load_retry_delay_initial_secs = 5
 auto_load_retry_delay_max_secs = 15
-update_instruments_interval_mins = 60
+update_instruments_interval_mins = 1
 ws_max_subscriptions = 200
 transport_backend = "sockudo"
 "#
@@ -8289,7 +8330,7 @@ fn rejects_polymarket_data_auto_load_retry_initial_after_max() {
 fn allows_multiple_configured_client_ids_for_same_nt_venue() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
+    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_rtds = \"wss://ws-live-data.polymarket.com\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nnew_market_fetch_max_concurrency = 8\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nresolve_poll_enabled = false\nresolve_poll_interval_secs = 30\nresolve_poll_grace_secs = 10\nresolve_poll_max_wait_secs = 1800\nupdate_instruments_interval_mins = 1\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_client}");
@@ -8859,161 +8900,190 @@ fn root_config_wires_hyperliquid_data_only_client_without_execution_or_secrets()
 }
 
 #[test]
-fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates() {
+fn root_config_wires_single_hyperliquid_execution_client_for_all_surfaces() {
     use nautilus_model::identifiers::ClientId;
 
     let loaded =
         bolt_v2::bolt_v3_config::load_bolt_v3_config(&support::repo_path("config/root.toml"))
-            .expect("root.toml should load with Hyperliquid execution clients");
+            .expect("root.toml should load with a Hyperliquid execution client");
 
-    for (
-        client_key,
-        product_surface,
-        approval_id,
-        approval_artifact_path,
-        product_proof_artifact_path,
-        private_key_ssm_path,
-        outcome_settlement_poll_secs,
-    ) in [
+    for client_key in [
+        "hyperliquid_standard_perps_execution",
+        "hyperliquid_spot_execution",
+        "hyperliquid_hip3_execution",
+        "hyperliquid_hip4_execution",
+    ] {
+        assert!(
+            !loaded.root.clients.contains_key(client_key),
+            "{client_key} must stay collapsed into the single Hyperliquid execution client"
+        );
+    }
+
+    let client = loaded
+        .root
+        .clients
+        .get("hyperliquid_execution")
+        .expect("hyperliquid_execution must be configured in root.toml");
+
+    assert_eq!(client.venue.as_str(), "HYPERLIQUID");
+    assert!(
+        client.data.is_none(),
+        "issue #785 wires execution separately from the data-only #784 client"
+    );
+    let execution = client
+        .execution
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_execution must declare an [execution] table");
+    assert_eq!(
+        execution
+            .get(stringify!(environment))
+            .and_then(toml::Value::as_str),
+        Some("mainnet")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(execution_mode))
+            .and_then(toml::Value::as_str),
+        Some("master_account_api_wallet")
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(product_surfaces))
+            .and_then(toml::Value::as_array)
+            .expect("hyperliquid_execution product_surfaces must be an array")
+            .iter()
+            .map(toml::Value::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            Some("standard_perps"),
+            Some("spot"),
+            Some("hip3_builder_perps"),
+            Some("hip4_outcomes"),
+        ]
+    );
+    assert_eq!(
+        execution
+            .get(stringify!(outcome_settlement_poll_secs))
+            .and_then(toml::Value::as_integer),
+        Some(30)
+    );
+    let live_submit = execution
+        .get(stringify!(live_submit))
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_execution must declare per-surface live-submit gates");
+    for (surface, approval_id, approval_artifact_path, product_proof_artifact_path) in [
         (
-            "hyperliquid_standard_perps_execution",
             "standard_perps",
             "hl-standard-perps-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json",
-            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
-            0,
         ),
         (
-            "hyperliquid_spot_execution",
             "spot",
             "hl-spot-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json",
-            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
-            0,
         ),
         (
-            "hyperliquid_hip3_execution",
             "hip3_builder_perps",
             "hl-hip3-builder-perps-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json",
-            "/bolt/hyperliquid/master_api_wallet/hip3/private_key",
-            0,
         ),
         (
-            "hyperliquid_hip4_execution",
             "hip4_outcomes",
             "hl-hip4-outcomes-mainnet-001",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json",
             "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json",
-            "/bolt/hyperliquid/master_api_wallet/hip4/private_key",
-            30,
         ),
     ] {
-        let client = loaded
-            .root
-            .clients
-            .get(client_key)
-            .unwrap_or_else(|| panic!("{client_key} must be configured in root.toml"));
-
-        assert_eq!(client.venue.as_str(), "HYPERLIQUID");
-        assert!(
-            client.data.is_none(),
-            "issue #785 wires execution separately from the data-only #784 client"
-        );
-        let execution = client
-            .execution
-            .as_ref()
+        let surface_config = live_submit
+            .get(surface)
             .and_then(toml::Value::as_table)
-            .unwrap_or_else(|| panic!("{client_key} must declare an [execution] table"));
+            .unwrap_or_else(|| panic!("live_submit.{surface} must be configured"));
         assert_eq!(
-            execution
-                .get(stringify!(environment))
-                .and_then(toml::Value::as_str),
-            Some("mainnet")
-        );
-        assert_eq!(
-            execution
-                .get(stringify!(execution_mode))
-                .and_then(toml::Value::as_str),
-            Some("master_account_api_wallet")
-        );
-        assert_eq!(
-            execution
-                .get(stringify!(product_surfaces))
-                .and_then(toml::Value::as_array)
-                .unwrap_or_else(|| panic!("{client_key} product_surfaces must be an array"))
-                .iter()
-                .map(toml::Value::as_str)
-                .collect::<Vec<_>>(),
-            vec![Some(product_surface)]
-        );
-        assert_eq!(
-            execution
-                .get(stringify!(outcome_settlement_poll_secs))
-                .and_then(toml::Value::as_integer),
-            Some(outcome_settlement_poll_secs)
-        );
-        assert_eq!(
-            execution
-                .get(stringify!(live_submit_approval_id))
+            surface_config
+                .get(stringify!(approval_id))
                 .and_then(toml::Value::as_str),
             Some(approval_id)
         );
         assert_eq!(
-            execution
-                .get(stringify!(live_submit_approval_artifact_path))
+            surface_config
+                .get(stringify!(approval_artifact_path))
                 .and_then(toml::Value::as_str),
             Some(approval_artifact_path)
         );
         assert_eq!(
-            execution
-                .get(stringify!(live_submit_product_proof_artifact_path))
+            surface_config
+                .get(stringify!(approval_artifact_max_bytes))
+                .and_then(toml::Value::as_integer),
+            Some(65536)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(max_order_count))
+                .and_then(toml::Value::as_integer),
+            Some(1)
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(max_order_notional))
+                .and_then(toml::Value::as_str),
+            Some("10.00")
+        );
+        assert_eq!(
+            surface_config
+                .get(stringify!(product_proof_artifact_path))
                 .and_then(toml::Value::as_str),
             Some(product_proof_artifact_path)
         );
         assert_eq!(
-            execution
-                .get(stringify!(live_submit_product_proof_artifact_sha256))
+            surface_config
+                .get(stringify!(product_proof_artifact_sha256))
                 .and_then(toml::Value::as_str),
             Some("0000000000000000000000000000000000000000000000000000000000000000")
         );
-
-        let secrets = client
-            .secrets
-            .as_ref()
-            .and_then(toml::Value::as_table)
-            .unwrap_or_else(|| panic!("{client_key} must declare SSM-backed [secrets]"));
         assert_eq!(
-            secrets
-                .get(stringify!(private_key_ssm_path))
-                .and_then(toml::Value::as_str),
-            Some(private_key_ssm_path)
-        );
-        assert_eq!(
-            secrets
-                .get(stringify!(account_address_ssm_path))
-                .and_then(toml::Value::as_str),
-            Some("/bolt/hyperliquid/master_api_wallet/account_address")
-        );
-        for forbidden in [
-            stringify!(private_key),
-            stringify!(account_address),
-            stringify!(vault_address),
-        ] {
-            assert!(
-                !secrets.contains_key(forbidden),
-                "Hyperliquid execution secrets must stay SSM-only; found raw field {forbidden}"
-            );
-        }
-        assert_eq!(
-            secrets.len(),
-            2,
-            "{client_key} must not introduce another secret source"
+            surface_config
+                .get(stringify!(product_proof_artifact_max_bytes))
+                .and_then(toml::Value::as_integer),
+            Some(65536)
         );
     }
+
+    let secrets = client
+        .secrets
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .expect("hyperliquid_execution must declare SSM-backed [secrets]");
+    assert_eq!(
+        secrets
+            .get(stringify!(private_key_ssm_path))
+            .and_then(toml::Value::as_str),
+        Some("/bolt/hyperliquid/master_api_wallet/private_key")
+    );
+    assert_eq!(
+        secrets
+            .get(stringify!(account_address_ssm_path))
+            .and_then(toml::Value::as_str),
+        Some("/bolt/hyperliquid/master_api_wallet/account_address")
+    );
+    for forbidden in [
+        stringify!(private_key),
+        stringify!(account_address),
+        stringify!(vault_address),
+    ] {
+        assert!(
+            !secrets.contains_key(forbidden),
+            "Hyperliquid execution secrets must stay SSM-only; found raw field {forbidden}"
+        );
+    }
+    assert_eq!(
+        secrets.len(),
+        2,
+        "hyperliquid_execution must not introduce another secret source"
+    );
 
     for strategy in &loaded.strategies {
         assert_eq!(
@@ -9026,13 +9096,13 @@ fn root_config_wires_all_hyperliquid_execution_surfaces_behind_live_submit_gates
 }
 
 #[test]
-fn root_config_resolves_hyperliquid_execution_surfaces_with_approved_spotperp_api_wallet_sharing() {
+fn root_config_resolves_single_hyperliquid_execution_client_from_master_api_wallet() {
     use bolt_v2::{
         bolt_v3_config::load_bolt_v3_config, bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     };
 
     let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
-        .expect("root.toml should load with Hyperliquid execution clients");
+        .expect("root.toml should load with the Hyperliquid execution client");
     let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
         "/bolt/polymarket/private-key" => {
             Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
@@ -9050,48 +9120,23 @@ fn root_config_resolves_hyperliquid_execution_surfaces_with_approved_spotperp_ap
         "/bolt/hyperliquid/master_api_wallet/account_address" => {
             Ok("0x1111111111111111111111111111111111111111".to_string())
         }
-        "/bolt/hyperliquid/master_api_wallet/spotperp/private_key" => {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
             Ok("0x1111111111111111111111111111111111111111111111111111111111111111".to_string())
-        }
-        "/bolt/hyperliquid/master_api_wallet/hip3/private_key" => {
-            Ok("0x3333333333333333333333333333333333333333333333333333333333333333".to_string())
-        }
-        "/bolt/hyperliquid/master_api_wallet/hip4/private_key" => {
-            Ok("0x4444444444444444444444444444444444444444444444444444444444444444".to_string())
         }
         _ => Err("unexpected root SSM path"),
     })
-    .expect("root Hyperliquid execution clients should resolve with approved spotperp sharing");
+    .expect("root Hyperliquid execution client should resolve through the master API wallet");
 
-    for (client_key, private_key_ssm_path) in [
-        (
-            "hyperliquid_standard_perps_execution",
-            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
-        ),
-        (
-            "hyperliquid_spot_execution",
-            "/bolt/hyperliquid/master_api_wallet/spotperp/private_key",
-        ),
-        (
-            "hyperliquid_hip3_execution",
-            "/bolt/hyperliquid/master_api_wallet/hip3/private_key",
-        ),
-        (
-            "hyperliquid_hip4_execution",
-            "/bolt/hyperliquid/master_api_wallet/hip4/private_key",
-        ),
-    ] {
-        assert!(
-            resolved.clients.contains_key(client_key),
-            "{client_key} should resolve through the root SSM resolver"
-        );
-        let client = loaded.root.clients.get(client_key).unwrap();
-        let secrets = client.secrets.as_ref().unwrap().as_table().unwrap();
-        assert_eq!(
-            secrets
-                .get(stringify!(private_key_ssm_path))
-                .and_then(toml::Value::as_str),
-            Some(private_key_ssm_path)
-        );
-    }
+    assert!(
+        resolved.clients.contains_key("hyperliquid_execution"),
+        "hyperliquid_execution should resolve through the root SSM resolver"
+    );
+    let client = loaded.root.clients.get("hyperliquid_execution").unwrap();
+    let secrets = client.secrets.as_ref().unwrap().as_table().unwrap();
+    assert_eq!(
+        secrets
+            .get(stringify!(private_key_ssm_path))
+            .and_then(toml::Value::as_str),
+        Some("/bolt/hyperliquid/master_api_wallet/private_key")
+    );
 }

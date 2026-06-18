@@ -35,6 +35,12 @@
 //! `ops prestart-check` (see `deploy/README.md`). The single source of truth is
 //! the tracked profile; `config/root.toml` is the multi-asset template and owns
 //! the shared infrastructure blocks (a test fails CI if the profile drifts from it).
+//! The production systemd unit runs `verify-live-config` as `ExecStartPre`, so the
+//! gate is enforced at the live entry point, not advisory. `verify` proves the
+//! deployed config regenerates from the on-box profile and that the production
+//! invariants hold; establishing that the on-box profile is the reviewed Git
+//! revision is the deploy process's responsibility (deploy from the reviewed
+//! checkout), with a release-digest anchor tracked as a follow-up.
 //!
 //! The profile is itself a complete [`BoltV3RootConfig`], so schema currency is
 //! enforced by the real parser (`#[serde(deny_unknown_fields)]`), not a parallel

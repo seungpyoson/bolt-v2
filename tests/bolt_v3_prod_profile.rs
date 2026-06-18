@@ -146,6 +146,25 @@ fn prod_profile_does_not_drift_from_root_shared_blocks() {
         );
     }
 
+    // [risk] is single-sourced except the profile-owned loss_governor rails. Compare the
+    // rest (default_max_notional_per_order, [risk.nautilus] rate/notional caps) so a root
+    // change to live-trading risk controls cannot skip the profile while CI stays green.
+    let mut profile_risk = profile
+        .get("risk")
+        .and_then(toml::Value::as_table)
+        .expect("profile has [risk]")
+        .clone();
+    profile_risk.remove("loss_governor");
+    let root_risk = root
+        .get("risk")
+        .and_then(toml::Value::as_table)
+        .expect("root has [risk]");
+    assert_eq!(
+        &profile_risk, root_risk,
+        "[risk] minus the profile-owned [risk.loss_governor] rails must match root.toml — \
+         risk controls (default_max_notional_per_order, [risk.nautilus]) are single-sourced in root"
+    );
+
     let root_clients = root
         .get("clients")
         .and_then(toml::Value::as_table)

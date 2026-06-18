@@ -13,7 +13,7 @@ use std::{
 };
 
 use bolt_v2::{
-    bolt_v3_atomic_io::write_private_atomic_file,
+    bolt_v3_atomic_io::{RUNTIME_CONFIG_FILE_MODE, write_atomic_file_with_mode},
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{
         build_bolt_v3_live_node, build_bolt_v3_strategy_free_data_client_probe_live_node,
@@ -293,13 +293,17 @@ fn run_generate_live_config(
     output: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let generated = generate_live_config(profile)?;
-    write_private_atomic_file(output, generated.text.as_bytes()).map_err(|error| {
-        format!(
-            "failed to write generated runtime config `{}`: {}",
-            error.path.display(),
-            error.source
-        )
-    })?;
+    // Non-secret runtime config (SSM refs + public addresses only) — written
+    // group/world-readable so the `bolt` service user can read it (the deploy may
+    // tighten ownership/mode to root:bolt 0640). NOT the private 0600 secret mode.
+    write_atomic_file_with_mode(output, generated.text.as_bytes(), RUNTIME_CONFIG_FILE_MODE)
+        .map_err(|error| {
+            format!(
+                "failed to write generated runtime config `{}`: {}",
+                error.path.display(),
+                error.source
+            )
+        })?;
     let report = GenerateLiveConfigReport {
         generated_live_config: true,
         output: output.display().to_string(),

@@ -44,6 +44,14 @@ readiness is exercised at live-node startup and can be probed with `bolt-v2 ops 
 Steps 1–2 are config identity (covered by `ops verify-live-config` and CI); steps 3–4 are the live
 secret-resolution and exact-binary config-load/storage checks that cannot run offline.
 
+The systemd unit **enforces** step 2 at every start: `ExecStartPre` runs `ops verify-live-config` (then
+`ops prestart-check`) before `run`, so a hand-edited or stale `/opt/bolt-v2/config/live.toml` — including
+one with loss rails disabled — fails service start instead of trading. The on-box profile's authenticity
+comes from deploying the git-tracked, PR-reviewed, CI-validated profile: `verify` proves the deployed
+config regenerates from the on-box profile and that the production invariants hold, but it does not by
+itself prove the on-box profile equals the reviewed Git revision — deploy from the reviewed checkout.
+Anchoring the on-box profile to an immutable release digest is tracked as a follow-up.
+
 If `/opt/bolt-v2/config/live.toml` already exists, `deploy/install.sh` repairs it to `root:bolt`
 with mode `0640`.
 

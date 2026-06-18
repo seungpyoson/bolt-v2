@@ -2,7 +2,8 @@ use std::{fs, path::Path};
 
 use bolt_v2::{
     bolt_v3_atomic_io::{
-        PRIVATE_ATOMIC_FILE_MODE, private_atomic_temp_path, write_private_atomic_file,
+        PRIVATE_ATOMIC_FILE_MODE, RUNTIME_CONFIG_FILE_MODE, private_atomic_temp_path,
+        write_atomic_file_with_mode, write_private_atomic_file,
     },
     bolt_v3_kill_switch::KillSwitchState,
     bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
@@ -69,6 +70,30 @@ fn atomic_write_uses_private_file_mode() {
         .mode()
         & 0o777;
     assert_eq!(mode, PRIVATE_ATOMIC_FILE_MODE);
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_config_atomic_write_is_service_readable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("live.toml");
+
+    write_atomic_file_with_mode(&path, b"schema_version = 1\n", RUNTIME_CONFIG_FILE_MODE)
+        .expect("atomic write should succeed");
+
+    let mode = fs::metadata(&path)
+        .expect("metadata should read")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, RUNTIME_CONFIG_FILE_MODE);
+    assert_eq!(
+        mode & 0o044,
+        0o044,
+        "generated runtime config must be group- and world-readable so the bolt service user can read it"
+    );
 }
 
 #[test]

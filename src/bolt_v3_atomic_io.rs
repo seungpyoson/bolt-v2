@@ -10,6 +10,12 @@ use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 
 pub const PRIVATE_ATOMIC_FILE_MODE: u32 = PRIVATE_ARTIFACT_FILE_MODE;
 
+/// Mode for non-secret files a service user must read (e.g. the generated runtime
+/// config, which carries only SSM references and public addresses). Group- and
+/// world-readable so the `bolt` service user can read it regardless of ownership;
+/// the deploy may further tighten ownership/mode to root:bolt 0640.
+pub const RUNTIME_CONFIG_FILE_MODE: u32 = 0o644;
+
 #[derive(Debug)]
 pub struct AtomicIoError {
     pub path: PathBuf,
@@ -19,6 +25,17 @@ pub struct AtomicIoError {
 static PRIVATE_ATOMIC_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoError> {
+    write_atomic_file_with_mode(path, bytes, PRIVATE_ATOMIC_FILE_MODE)
+}
+
+/// Atomically write `bytes` to `path` with the given Unix `mode` (create new temp +
+/// fsync + rename + parent fsync). Use [`PRIVATE_ATOMIC_FILE_MODE`] for secret-bearing
+/// artifacts and [`RUNTIME_CONFIG_FILE_MODE`] for non-secret files a service user reads.
+pub fn write_atomic_file_with_mode(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<(), AtomicIoError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| AtomicIoError {
             path: parent.to_path_buf(),
@@ -27,7 +44,7 @@ pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), Atomic
     }
 
     let temp_path = private_atomic_temp_path_for_write(path);
-    if let Err(error) = write_private_synced_temp_file(&temp_path, bytes) {
+    if let Err(error) = write_synced_temp_file(&temp_path, bytes, mode) {
         let _ = fs::remove_file(&temp_path);
         return Err(error);
     }
@@ -67,10 +84,10 @@ fn private_atomic_temp_path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(temp_path)
 }
 
-fn write_private_synced_temp_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoError> {
+fn write_synced_temp_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), AtomicIoError> {
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
-    configure_private_file_options(&mut options);
+    configure_file_options(&mut options, mode);
 
     let mut file = options.open(path).map_err(|source| AtomicIoError {
         path: path.to_path_buf(),
@@ -85,13 +102,13 @@ fn write_private_synced_temp_file(path: &Path, bytes: &[u8]) -> Result<(), Atomi
 }
 
 #[cfg(unix)]
-fn configure_private_file_options(options: &mut OpenOptions) {
+fn configure_file_options(options: &mut OpenOptions, mode: u32) {
     use std::os::unix::fs::OpenOptionsExt;
-    options.mode(PRIVATE_ATOMIC_FILE_MODE);
+    options.mode(mode);
 }
 
 #[cfg(not(unix))]
-fn configure_private_file_options(_options: &mut OpenOptions) {}
+fn configure_file_options(_options: &mut OpenOptions, _mode: u32) {}
 
 fn sync_parent_dir(path: &Path) -> Result<(), AtomicIoError> {
     let Some(parent) = path.parent() else {

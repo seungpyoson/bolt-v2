@@ -39,6 +39,32 @@ fn systemd_unit_runs_rust_prestart_storage_check() {
 }
 
 #[test]
+fn systemd_unit_verifies_live_config_against_profile_before_start() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
+
+    assert!(
+        unit.contains(
+            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --deployed /opt/bolt-v2/config/live.toml"
+        ),
+        "systemd unit must verify the deployed live.toml against the tracked profile before start, \
+         so the fail-closed gate (incl. enabled loss rails) is enforced at the prod entry point, not advisory (#768)"
+    );
+
+    let verify_at = unit
+        .find("ops verify-live-config")
+        .expect("verify-live-config ExecStartPre must be present");
+    let run_at = unit
+        .find("bolt-v2 run --config")
+        .expect("ExecStart run must be present");
+    assert!(
+        verify_at < run_at,
+        "verify-live-config must run before the service starts"
+    );
+}
+
+#[test]
 fn install_script_provisions_runtime_catalog_on_srv_volume() {
     let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
     let install = fs::read_to_string(&install_path).expect("install script should exist");

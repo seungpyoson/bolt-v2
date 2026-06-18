@@ -670,6 +670,7 @@ fn feed_fails_closed_on_mixed_currency_portfolio_without_base_currency() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission,
     );
@@ -695,6 +696,7 @@ fn feed_fails_closed_on_empty_portfolio_money_facts() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission,
     );
@@ -720,6 +722,7 @@ fn feed_fails_closed_on_mixed_currency_position_pnl() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission,
     );
@@ -756,6 +759,7 @@ fn published_snapshot_invokes_configured_halt_action_handler() {
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 250,
+            active_position_pnl_max_entries: 64,
         },
         admission,
     )

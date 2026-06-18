@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # clean-merged-managed
-# clean-merged: post-rewrite hook (extends Entire CLI's post-rewrite).
+# clean-merged: post-rewrite hook.
 #
 # Fires after `git pull --rebase` with divergent local (actual rebase, not FF),
 # `git rebase`, and `git commit --amend`. Covers the Lane H trigger gap when an
 # operator has pull.rebase=true and the local main has divergent commits.
-#
-# Preserves the Entire CLI post-rewrite dispatch (session linkage remap after
-# amend/rebase) by invoking it first; clean-merged's Lane H runs after.
 #
 # Never breaks the git op: every path exits 0.
 
@@ -20,11 +17,6 @@ _cm_disabled() {
         *) return 0 ;;
     esac
 }
-
-# Entire CLI post-rewrite: remap session linkage after amend/rebase rewrites.
-# Preserved verbatim from the prior local hook; runs first so session state is
-# remapped before any cleanup.
-entire hooks git post-rewrite "${1:-}" 2>/dev/null || true
 
 # clean-merged Lane H dispatch (offline, reflog-safe).
 _cm_disabled && exit 0

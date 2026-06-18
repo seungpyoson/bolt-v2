@@ -127,7 +127,7 @@ Implementation commits:
 - current slice update: Hyperliquid provider advertises `updown` market-family support for HIP-4 outcome routing gate compatibility
 - current slice update: Hyperliquid rejects `updown` targets on non-HIP-4 product surfaces before execution mapping can open
 - current slice update: Hyperliquid provider advertises `hyperliquid_instrument` for static/direct Hyperliquid instrument route identity
-- current slice update: static Hyperliquid target product surfaces fail closed when they do not match the execution client's configured/approved product surface
+- current slice update: static Hyperliquid target product surfaces fail closed when they do not match any of the execution client's configured/approved product surfaces
 - current slice update: production Hyperliquid approval loading rejects static target surface mismatches before spending one-time approval artifacts
 - current slice update: proof-policy-only trade transport drops unrelated execution clients before provider approval loading
 - current slice update: Hyperliquid provider egress model accounts the official `userFees` request weight before live-submit validation
@@ -179,7 +179,7 @@ Current live-submit state:
 - `operator-artifacts generate-product-submit-proof` routes through `ProviderBinding`, accepts only provider/config identity and proof-reference paths/checksums, and writes the Hyperliquid product-proof schema without raw secret inputs.
 - A consumed approval for one surface cannot authorize a different surface.
 - HIP-4 requires positive `outcome_settlement_poll_secs` in TOML before mapper handoff and can pass the shared `updown` market-family execution-client routing gate.
-- Static/direct Hyperliquid instrument targets can pass the shared execution-client routing gate through `hyperliquid_instrument` only when their target product surface matches the execution client's single configured and approved product surface; binary rotating-market selection remains fail-closed for that family, and canary proof sizing constraints are TOML-owned on the target.
+- Static/direct Hyperliquid instrument targets can pass the shared execution-client routing gate through `hyperliquid_instrument` only when their target product surface matches one of the execution client's configured and approved product surfaces (a single live node arms at most one surface per execution client); binary rotating-market selection remains fail-closed for that family, and canary proof sizing constraints are TOML-owned on the target.
 - `updown` targets can pass Hyperliquid route validation only for HIP-4 outcomes execution clients; non-HIP-4 surfaces reject that family before NT execution mapping opens.
 - `operator-artifacts collect-canary-proof-artifacts` is wired for Hyperliquid static instrument targets and writes a no-resolution gate session plus candidate/order-intent artifacts bound to the configured Hyperliquid execution client.
 - Hyperliquid REST egress is modeled at 1200 weight/min and derates order-command validation by the official 20-weight `userFees` policy while the pinned NT adapter still reports 2.

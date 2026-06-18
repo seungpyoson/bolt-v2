@@ -89,7 +89,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 ## Merge Mechanics
 
 - A repo ruleset on `main` (`required_status_checks` plus any review rules) gates merges. A merge refused with "base branch policy prohibits the merge" while every active rule actually passes is usually GitHub's stale merge-state cache, not a real block: GitHub recomputes a PR's mergeability on PR events (push, review, close/reopen) and a periodic background pass, not immediately when a ruleset is edited — so a just-fixed rule can keep serving the old BLOCKED verdict.
-- Confirm the live rules with `gh api repos/{owner}/{repo}/rules/branches/main` (`gh` fills `{owner}`/`{repo}` from the current repo). If they all pass, force a recompute (push, a review, or close/reopen) or wait for GitHub's background pass, then retry the merge.
+- List the active rules with `gh api repos/{owner}/{repo}/rules/branches/main` (`gh` fills `{owner}`/`{repo}` from the current repo), then verify each is actually satisfied — required checks green in the PR status rollup (`gh pr view <n> --json statusCheckRollup`) and any required approvals met. If they are, force a recompute (push, a review, or close/reopen) or wait for GitHub's background pass, then retry the merge.
 - Never force past a green-but-cached block with `gh pr merge --admin`; that bypasses the required checks.
 
 ## Response Format

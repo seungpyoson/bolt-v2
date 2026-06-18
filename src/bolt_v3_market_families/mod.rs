@@ -1499,24 +1499,32 @@ mod tests {
             }
         }
 
-        for nonpositive in [0_i64, -1, -3_600] {
-            let errors =
-                validate_maker_market_target_from_target("strategy `m`", target(nonpositive));
-            assert!(
-                errors
-                    .iter()
-                    .any(|error| error.contains("cadence_seconds must be a positive integer")),
-                "cadence {nonpositive} should be rejected: {errors:?}"
-            );
+        // Cases: (cadence_seconds, expect_cadence_rejection). A static market does not rotate,
+        // so only the positive-integer invariant applies — non-positive cadence is rejected,
+        // and EVERY positive cadence validates clean regardless of minute-alignment. The
+        // positive non-multiple-of-60 cases (1, 61) are load-bearing: they would fail if the
+        // fix wrongly reused updown's `% 60` rule (which rejects any cadence not divisible by
+        // 60). 3_600 keeps the minute-aligned positive case covered.
+        let cases: [(i64, bool); 6] = [
+            (0, true),
+            (-1, true),
+            (-3_600, true),
+            (1, false),
+            (61, false),
+            (3_600, false),
+        ];
+        for (cadence, expect_rejected) in cases {
+            let errors = validate_maker_market_target_from_target("strategy `m`", target(cadence));
+            let rejected = errors
+                .iter()
+                .any(|error| error.contains("cadence_seconds must be a positive integer"));
+            assert_eq!(rejected, expect_rejected, "cadence {cadence}: {errors:?}");
+            if !expect_rejected {
+                // A valid positive cadence must produce NO errors at all (in particular no
+                // `% 60` rejection), not merely no cadence error.
+                assert!(errors.is_empty(), "positive cadence {cadence}: {errors:?}");
+            }
         }
-
-        // A positive cadence carries no rotation-alignment requirement for a static
-        // market, so the otherwise-valid target validates clean (no `% 60` rule applied).
-        let errors = validate_maker_market_target_from_target("strategy `m`", target(3_600));
-        assert!(
-            errors.is_empty(),
-            "valid static target should produce no errors: {errors:?}"
-        );
     }
 
     #[test]

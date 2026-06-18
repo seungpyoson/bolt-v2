@@ -1,11 +1,12 @@
-//! Gate 2 — canonical normalized order-book-delta, bar, quote, index-price, and
-//! mark-price tables.
+//! Gate 2 — canonical normalized order-book-delta, bar, quote, index-price,
+//! mark-price, and funding-rate tables.
 //!
 //! Extends the canonical normalization layer beyond native `trades`
 //! ([`super::canonical_trades`]) to the additional NautilusTrader data families
 //! this slice projects: aggregated L2 order-book deltas, externally-aggregated
-//! OHLCV bars, top-of-book quotes, index-price reference updates, and mark-price
-//! reference updates. Every table carries the same identity and provenance
+//! OHLCV bars, top-of-book quotes, index-price reference updates, mark-price
+//! reference updates, and funding-rate updates. Every table carries the same
+//! identity and provenance
 //! header shape as [`super::canonical_trades::CanonicalTradesTable`] and
 //! preserves the exact source price/size strings, so the catalog projection in
 //! [`super::catalog_projection`] is the single bridge from accepted evidence to
@@ -17,14 +18,15 @@
 //! [`SourceProofFidelityClass::L2Replay`], bars require
 //! [`SourceProofFidelityClass::TradeBarReplay`], top-of-book quotes require
 //! [`SourceProofFidelityClass::QuoteReplay`], index-price updates require
-//! [`SourceProofFidelityClass::IndexReplay`], and mark-price updates require
-//! [`SourceProofFidelityClass::MarkReplay`].
+//! [`SourceProofFidelityClass::IndexReplay`], mark-price updates require
+//! [`SourceProofFidelityClass::MarkReplay`], and funding-rate updates require
+//! [`SourceProofFidelityClass::FundingReplay`].
 
 use std::{fs::File, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, ensure};
 use arrow::{
-    array::{ArrayRef, Int64Array, StringArray, UInt8Array, UInt64Array},
+    array::{ArrayRef, Int64Array, StringArray, UInt8Array, UInt16Array, UInt64Array},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -1138,6 +1140,174 @@ impl CanonicalMarkPricesTable {
     }
 }
 
+/// One normalized funding-rate update with full provenance.
+///
+/// The provenance prefix mirrors
+/// [`super::canonical_trades::CanonicalTradeRow`] exactly; the payload fields
+/// map onto NautilusTrader's `FundingRateUpdate` (`rate`, optional
+/// `interval_minutes`, and optional `next_funding_time`). Funding rates are not
+/// prices, so negative and zero rates are valid when the source reports them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalFundingRateRow {
+    pub schema_version: String,
+    pub ingest_run_id: String,
+    pub source_binding: String,
+    pub venue: String,
+    pub product_family: String,
+    pub product_category: String,
+    pub instrument_id: String,
+    pub canonical_instrument_key: String,
+    pub venue_symbol: String,
+    pub nt_instrument_id: Option<String>,
+    /// Exchange/source event timestamp in Unix nanoseconds.
+    pub event_time: i64,
+    /// Worker receipt/capture timestamp in Unix nanoseconds.
+    pub capture_time: i64,
+    /// Source availability timestamp in Unix nanoseconds, when distinct from event time.
+    pub availability_time: Option<i64>,
+    /// Native source sequence identity, when present.
+    pub source_sequence: Option<String>,
+    pub raw_payload_id: String,
+    pub source_proof_id: String,
+    /// Lowercase SHA-256 hex over the canonical raw object bytes.
+    pub payload_hash: String,
+    /// Lowercase SHA-256 hex over the transform identity.
+    pub transform_hash: String,
+    /// Exact source funding-rate decimal string.
+    pub rate: String,
+    /// Funding interval in minutes, when supplied by the venue/source.
+    pub interval_minutes: Option<u16>,
+    /// Next funding timestamp in Unix nanoseconds, when supplied.
+    pub next_funding_time: Option<i64>,
+}
+
+/// A validated canonical normalized funding-rate table for one accepted object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalFundingRatesTable {
+    pub schema_version: String,
+    pub partition: TradesPartition,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
+    pub fidelity_class: SourceProofFidelityClass,
+    pub forbidden_claims: Vec<String>,
+    pub transform_hash: String,
+    pub payload_hash: String,
+    pub rows: Vec<CanonicalFundingRateRow>,
+}
+
+impl CanonicalFundingRatesTable {
+    /// Validate required fields, fidelity class, timestamps, and parseable rates.
+    ///
+    /// A funding-rate series is a point update stream for perpetual swaps. It
+    /// binds [`SourceProofFidelityClass::FundingReplay`] and allows negative
+    /// rates because exchange funding can credit either long or short side.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first contract violation.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.schema_version == NORMALIZED_SCHEMA_VERSION,
+            "unexpected schema_version {:?}",
+            self.schema_version
+        );
+        ensure!(
+            !self.rows.is_empty(),
+            "canonical funding rates table is empty"
+        );
+        for field in [
+            &self.partition.venue,
+            &self.partition.product_family,
+            &self.partition.product_category,
+            &self.partition.instrument_id,
+            &self.partition.dt,
+            &self.source_proof_id,
+            &self.transform_hash,
+            &self.payload_hash,
+        ] {
+            ensure!(!field.trim().is_empty(), "empty partition/provenance field");
+        }
+        ensure!(
+            self.fidelity_class == SourceProofFidelityClass::FundingReplay,
+            "funding rates must be labelled FUNDING_REPLAY"
+        );
+        ensure!(
+            !self.forbidden_claims.is_empty(),
+            "funding rate table must carry explicit forbidden claims"
+        );
+
+        let mut previous_event_time = i64::MIN;
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(
+                row.schema_version == NORMALIZED_SCHEMA_VERSION,
+                "row {index}: schema_version mismatch"
+            );
+            ensure!(row.event_time > 0, "row {index}: non-positive event_time");
+            ensure!(
+                row.event_time >= previous_event_time,
+                "row {index}: event_time {} precedes previous {}",
+                row.event_time,
+                previous_event_time
+            );
+            previous_event_time = row.event_time;
+            ensure!(
+                row.instrument_id == self.partition.instrument_id,
+                "row {index}: instrument_id does not match partition"
+            );
+            for field in [
+                &row.ingest_run_id,
+                &row.source_binding,
+                &row.venue,
+                &row.product_family,
+                &row.product_category,
+                &row.instrument_id,
+                &row.canonical_instrument_key,
+                &row.venue_symbol,
+                &row.raw_payload_id,
+                &row.source_proof_id,
+                &row.payload_hash,
+                &row.transform_hash,
+                &row.rate,
+            ] {
+                ensure!(
+                    !field.trim().is_empty(),
+                    "row {index}: empty required field"
+                );
+            }
+            for (name, field) in [
+                ("nt_instrument_id", &row.nt_instrument_id),
+                ("source_sequence", &row.source_sequence),
+            ] {
+                if let Some(field) = field {
+                    ensure!(
+                        !field.trim().is_empty(),
+                        "row {index}: empty nullable field {name}"
+                    );
+                }
+            }
+            row.rate.parse::<Decimal>().map_err(|error| {
+                anyhow::anyhow!("row {index}: invalid rate {:?}: {error}", row.rate)
+            })?;
+            if let Some(interval) = row.interval_minutes {
+                ensure!(interval > 0, "row {index}: interval must be positive");
+            }
+            if let Some(next_funding_time) = row.next_funding_time {
+                ensure!(
+                    next_funding_time > 0,
+                    "row {index}: non-positive next_funding_time"
+                );
+                ensure!(
+                    next_funding_time > row.event_time,
+                    "row {index}: next_funding_time {} is not after event_time {}",
+                    next_funding_time,
+                    row.event_time
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Write one canonical table record batch as a Parquet artifact.
 ///
 /// Shared by the bar and order-book-delta canonical writers; mirrors the
@@ -1649,6 +1819,110 @@ impl CanonicalMarkPricesTable {
             ],
         )
         .context("failed to build canonical mark price record batch")
+    }
+
+    /// Write the canonical normalized table as a Parquet artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the table is invalid or the file cannot be written.
+    pub fn write_parquet(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        write_record_batch_parquet(&self.to_record_batch()?, path)
+    }
+}
+
+impl CanonicalFundingRatesTable {
+    /// Arrow schema for the canonical funding-rate table.
+    ///
+    /// Lists the IDENTICAL provenance columns as the quote/index/mark schema
+    /// plus the funding-specific `rate`, `interval_minutes`, and
+    /// `next_funding_time` payload columns.
+    #[must_use]
+    pub fn arrow_schema() -> Arc<Schema> {
+        let utf8 = |name: &str| Field::new(name, DataType::Utf8, false);
+        let utf8_nullable = |name: &str| Field::new(name, DataType::Utf8, true);
+        let int64 = |name: &str| Field::new(name, DataType::Int64, false);
+        let int64_nullable = |name: &str| Field::new(name, DataType::Int64, true);
+        let uint16_nullable = |name: &str| Field::new(name, DataType::UInt16, true);
+        Arc::new(Schema::new(vec![
+            utf8("schema_version"),
+            utf8("ingest_run_id"),
+            utf8("source_binding"),
+            utf8("venue"),
+            utf8("product_family"),
+            utf8("product_category"),
+            utf8("instrument_id"),
+            utf8("canonical_instrument_key"),
+            utf8("venue_symbol"),
+            utf8_nullable("nt_instrument_id"),
+            int64("event_time"),
+            int64("capture_time"),
+            int64_nullable("availability_time"),
+            utf8_nullable("source_sequence"),
+            utf8("raw_payload_id"),
+            utf8("source_proof_id"),
+            utf8("payload_hash"),
+            utf8("transform_hash"),
+            utf8("rate"),
+            uint16_nullable("interval_minutes"),
+            int64_nullable("next_funding_time"),
+        ]))
+    }
+
+    fn to_record_batch(&self) -> Result<RecordBatch> {
+        let utf8_col = |f: fn(&CanonicalFundingRateRow) -> &str| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let int64_col = |f: fn(&CanonicalFundingRateRow) -> i64| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_utf8_col = |f: fn(&CanonicalFundingRateRow) -> Option<&str>| {
+            Arc::new(StringArray::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_int64_col = |f: fn(&CanonicalFundingRateRow) -> Option<i64>| {
+            Arc::new(Int64Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        let opt_u16_col = |f: fn(&CanonicalFundingRateRow) -> Option<u16>| {
+            Arc::new(UInt16Array::from(
+                self.rows.iter().map(f).collect::<Vec<_>>(),
+            )) as ArrayRef
+        };
+        RecordBatch::try_new(
+            Self::arrow_schema(),
+            vec![
+                utf8_col(|r| r.schema_version.as_str()),
+                utf8_col(|r| r.ingest_run_id.as_str()),
+                utf8_col(|r| r.source_binding.as_str()),
+                utf8_col(|r| r.venue.as_str()),
+                utf8_col(|r| r.product_family.as_str()),
+                utf8_col(|r| r.product_category.as_str()),
+                utf8_col(|r| r.instrument_id.as_str()),
+                utf8_col(|r| r.canonical_instrument_key.as_str()),
+                utf8_col(|r| r.venue_symbol.as_str()),
+                opt_utf8_col(|r| r.nt_instrument_id.as_deref()),
+                int64_col(|r| r.event_time),
+                int64_col(|r| r.capture_time),
+                opt_int64_col(|r| r.availability_time),
+                opt_utf8_col(|r| r.source_sequence.as_deref()),
+                utf8_col(|r| r.raw_payload_id.as_str()),
+                utf8_col(|r| r.source_proof_id.as_str()),
+                utf8_col(|r| r.payload_hash.as_str()),
+                utf8_col(|r| r.transform_hash.as_str()),
+                utf8_col(|r| r.rate.as_str()),
+                opt_u16_col(|r| r.interval_minutes),
+                opt_int64_col(|r| r.next_funding_time),
+            ],
+        )
+        .context("failed to build canonical funding rate record batch")
     }
 
     /// Write the canonical normalized table as a Parquet artifact.
@@ -2674,5 +2948,155 @@ mod tests {
         table.rows[0].value = "0".to_string();
         let error = table.validate().expect_err("non-positive value rejected");
         assert!(error.to_string().contains("non-positive value"), "{error}");
+    }
+
+    fn funding_rate_row(
+        event_time: i64,
+        rate: &str,
+        interval_minutes: Option<u16>,
+        next_funding_time: Option<i64>,
+    ) -> CanonicalFundingRateRow {
+        CanonicalFundingRateRow {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "testvenue".to_string(),
+            product_family: "perpetual".to_string(),
+            product_category: "linear-perp".to_string(),
+            instrument_id: "BTCUSDT".to_string(),
+            canonical_instrument_key: "testvenue/perpetual/BTCUSDT".to_string(),
+            venue_symbol: "BTCUSDT".to_string(),
+            nt_instrument_id: Some("BTCUSDT.TESTVENUE".to_string()),
+            event_time,
+            capture_time: event_time,
+            availability_time: None,
+            source_sequence: Some(event_time.to_string()),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            rate: rate.to_string(),
+            interval_minutes,
+            next_funding_time,
+        }
+    }
+
+    fn funding_rates_table() -> CanonicalFundingRatesTable {
+        let base = 1_700_000_000_000_000_000;
+        let rows = vec![
+            funding_rate_row(
+                base,
+                "-0.000100",
+                Some(480),
+                Some(base + 28_800_000_000_000),
+            ),
+            funding_rate_row(base + 1, "0", Some(480), Some(base + 28_800_000_000_000)),
+        ];
+        CanonicalFundingRatesTable {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: TradesPartition {
+                venue: "testvenue".to_string(),
+                product_family: "perpetual".to_string(),
+                product_category: "linear-perp".to_string(),
+                instrument_id: "BTCUSDT".to_string(),
+                dt: "2026-05-22".to_string(),
+            },
+            source_proof_id: "source-proof-synthetic".to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::FundingReplay,
+            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            transform_hash: "0badc0de".to_string(),
+            payload_hash: "feedface".to_string(),
+            rows,
+        }
+    }
+
+    #[test]
+    fn funding_rates_validate_accepts_well_formed_table() {
+        funding_rates_table()
+            .validate()
+            .expect("well-formed funding rate table is valid");
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_empty_table() {
+        let mut table = funding_rates_table();
+        table.rows.clear();
+        let error = table
+            .validate()
+            .expect_err("empty funding rate table rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("canonical funding rates table is empty"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_wrong_fidelity_class() {
+        let mut table = funding_rates_table();
+        table.fidelity_class = SourceProofFidelityClass::SignalOnly;
+        let error = table.validate().expect_err("wrong fidelity rejected");
+        assert!(error.to_string().contains("FUNDING_REPLAY"), "{error}");
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_empty_forbidden_claims() {
+        let mut table = funding_rates_table();
+        table.forbidden_claims.clear();
+        let error = table
+            .validate()
+            .expect_err("empty forbidden claims rejected");
+        assert!(error.to_string().contains("forbidden claims"), "{error}");
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_non_positive_event_time() {
+        let mut table = funding_rates_table();
+        table.rows[0].event_time = 0;
+        let error = table
+            .validate()
+            .expect_err("non-positive event_time rejected");
+        assert!(
+            error.to_string().contains("non-positive event_time"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_decreasing_event_time() {
+        let mut table = funding_rates_table();
+        table.rows[1].event_time = table.rows[0].event_time - 1;
+        let error = table
+            .validate()
+            .expect_err("decreasing event_time rejected");
+        assert!(error.to_string().contains("precedes previous"), "{error}");
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_unparseable_rate() {
+        let mut table = funding_rates_table();
+        table.rows[0].rate = "not-a-decimal".to_string();
+        let error = table.validate().expect_err("unparseable rate rejected");
+        assert!(error.to_string().contains("invalid rate"), "{error}");
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_zero_interval() {
+        let mut table = funding_rates_table();
+        table.rows[0].interval_minutes = Some(0);
+        let error = table.validate().expect_err("zero interval rejected");
+        assert!(error.to_string().contains("interval"), "{error}");
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_non_positive_next_funding_time() {
+        let mut table = funding_rates_table();
+        table.rows[0].next_funding_time = Some(0);
+        let error = table
+            .validate()
+            .expect_err("non-positive next_funding_time rejected");
+        assert!(error.to_string().contains("next_funding_time"), "{error}");
     }
 }

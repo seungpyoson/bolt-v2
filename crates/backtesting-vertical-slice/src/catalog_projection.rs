@@ -4543,6 +4543,13 @@ max_notional = "200000"
     }
 
     #[test]
+    fn read_back_funding_rates_returns_empty_when_catalog_has_no_funding_files() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let loaded = read_back_funding_rates(dir.path(), "BTCUSDT.BYBIT").expect("read back");
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
     fn funding_rates_fail_loud_when_capture_invalid_and_no_availability() {
         let mut table = canonical_funding_rates_table();
         table.rows[0].availability_time = None;
@@ -4625,6 +4632,56 @@ max_notional = "200000"
         assert_ne!(
             a.catalog_hash, b.catalog_hash,
             "different funding rate must change the catalog hash"
+        );
+    }
+
+    #[test]
+    fn funding_catalog_hash_changes_with_interval_content() {
+        let table_a = canonical_funding_rates_table();
+        let mut table_b = canonical_funding_rates_table();
+        table_b.rows[0].interval_minutes = Some(240);
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_funding_rates_to_catalog(
+            &table_a,
+            &linear_perpetual_spec(),
+            dir_a.path(),
+        )
+        .unwrap();
+        let b = project_canonical_funding_rates_to_catalog(
+            &table_b,
+            &linear_perpetual_spec(),
+            dir_b.path(),
+        )
+        .unwrap();
+        assert_ne!(
+            a.catalog_hash, b.catalog_hash,
+            "different funding interval must change the catalog hash"
+        );
+    }
+
+    #[test]
+    fn funding_catalog_hash_changes_with_next_funding_time_content() {
+        let table_a = canonical_funding_rates_table();
+        let mut table_b = canonical_funding_rates_table();
+        table_b.rows[0].next_funding_time = Some(table_b.rows[0].event_time + 57_600_000_000_000);
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_funding_rates_to_catalog(
+            &table_a,
+            &linear_perpetual_spec(),
+            dir_a.path(),
+        )
+        .unwrap();
+        let b = project_canonical_funding_rates_to_catalog(
+            &table_b,
+            &linear_perpetual_spec(),
+            dir_b.path(),
+        )
+        .unwrap();
+        assert_ne!(
+            a.catalog_hash, b.catalog_hash,
+            "different next funding time must change the catalog hash"
         );
     }
 

@@ -1244,6 +1244,16 @@ impl CanonicalFundingRatesTable {
             );
             ensure!(row.event_time > 0, "row {index}: non-positive event_time");
             ensure!(
+                row.capture_time > 0,
+                "row {index}: non-positive capture_time"
+            );
+            if let Some(availability_time) = row.availability_time {
+                ensure!(
+                    availability_time > 0,
+                    "row {index}: non-positive availability_time"
+                );
+            }
+            ensure!(
                 row.event_time >= previous_event_time,
                 "row {index}: event_time {} precedes previous {}",
                 row.event_time,
@@ -3075,6 +3085,62 @@ mod tests {
     }
 
     #[test]
+    fn funding_rates_validate_rejects_partition_instrument_mismatch() {
+        let mut table = funding_rates_table();
+        table.rows[0].instrument_id = "ETHUSDT".to_string();
+        let error = table
+            .validate()
+            .expect_err("partition instrument mismatch rejected");
+        assert!(
+            error.to_string().contains("instrument_id does not match"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_non_positive_capture_time() {
+        let mut table = funding_rates_table();
+        table.rows[0].capture_time = 0;
+        let error = table
+            .validate()
+            .expect_err("non-positive capture_time rejected");
+        assert!(
+            error.to_string().contains("non-positive capture_time"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_non_positive_availability_time() {
+        let mut table = funding_rates_table();
+        table.rows[0].availability_time = Some(0);
+        let error = table
+            .validate()
+            .expect_err("non-positive availability_time rejected");
+        assert!(
+            error.to_string().contains("non-positive availability_time"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_empty_nullable_fields() {
+        let mut table = funding_rates_table();
+        table.rows[0].nt_instrument_id = Some(String::new());
+        let error = table
+            .validate()
+            .expect_err("empty nt_instrument_id rejected");
+        assert!(error.to_string().contains("nt_instrument_id"), "{error}");
+
+        let mut table = funding_rates_table();
+        table.rows[0].source_sequence = Some(String::new());
+        let error = table
+            .validate()
+            .expect_err("empty source_sequence rejected");
+        assert!(error.to_string().contains("source_sequence"), "{error}");
+    }
+
+    #[test]
     fn funding_rates_validate_rejects_unparseable_rate() {
         let mut table = funding_rates_table();
         table.rows[0].rate = "not-a-decimal".to_string();
@@ -3098,5 +3164,18 @@ mod tests {
             .validate()
             .expect_err("non-positive next_funding_time rejected");
         assert!(error.to_string().contains("next_funding_time"), "{error}");
+    }
+
+    #[test]
+    fn funding_rates_validate_rejects_next_funding_time_not_after_event_time() {
+        let mut table = funding_rates_table();
+        table.rows[0].next_funding_time = Some(table.rows[0].event_time);
+        let error = table
+            .validate()
+            .expect_err("next_funding_time at event_time rejected");
+        assert!(
+            error.to_string().contains("not after event_time"),
+            "{error}"
+        );
     }
 }

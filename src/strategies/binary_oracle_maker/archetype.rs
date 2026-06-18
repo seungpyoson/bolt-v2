@@ -1504,8 +1504,9 @@ mod tests {
         }];
         let errors = market_declaration_errors(markets);
         assert!(
-            errors.iter().any(|error| error.contains("family_key")
-                && error.contains("not a registered market family")),
+            errors
+                .iter()
+                .any(|error| error.contains("is not a registered market family")),
             "{errors:?}"
         );
     }
@@ -2371,6 +2372,11 @@ mod tests {
         insert_runtime_knobs(&mut table, &valid_runtime()).expect("knobs thread");
         insert_market_portfolio_knobs(&mut table, &valid_market_portfolio())
             .expect("market portfolio policy threads");
+        let expected_digest = markets_config_digest(&valid_markets()).expect("digest computes");
+        table.insert(
+            super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
+            Value::String(expected_digest.clone()),
+        );
         let config =
             parse_config(&Value::Table(table)).expect("flat table parses into the consumer config");
         assert_eq!(config.client_id, "maker_execution_client");
@@ -2383,6 +2389,7 @@ mod tests {
         assert_eq!(config.market_portfolio_max_active_markets, 3);
         assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
         assert_eq!(config.market_portfolio_min_slot_notional, 100.0);
+        assert_eq!(config.markets_config_digest, expected_digest);
     }
 
     #[test]

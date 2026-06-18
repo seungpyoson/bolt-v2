@@ -482,7 +482,7 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(data.http_timeout_secs, 60);
     assert_eq!(data.ws_timeout_secs, 30);
     assert_eq!(data.ws_max_subscriptions, 200);
-    assert_eq!(data.update_instruments_interval_mins, Some(60));
+    assert_eq!(data.update_instruments_interval_mins, Some(1));
     assert!(!data.subscribe_new_markets);
     assert_eq!(
         data.base_url_rtds.as_deref(),

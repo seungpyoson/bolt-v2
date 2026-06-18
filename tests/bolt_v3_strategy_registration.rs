@@ -248,6 +248,36 @@ fn realized_volatility_validation_rejects_source_asset_mismatch() {
 }
 
 #[test]
+fn realized_volatility_validation_rejects_padded_surface_base_asset() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.canonical_base_asset = " CONFIGURED_ASSET ".to_string();
+            surface.sources[0].canonical_base_asset = " CONFIGURED_ASSET ".to_string();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "canonical_base_asset must not contain surrounding whitespace",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_padded_surface_quote_asset() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.canonical_quote_asset = " <QUOTE_ASSET> ".to_string();
+            surface.sources[0].canonical_quote_asset = " <QUOTE_ASSET> ".to_string();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "canonical_quote_asset must not contain surrounding whitespace",
+    );
+}
+
+#[test]
 fn realized_volatility_validation_rejects_empty_source_base_asset() {
     assert_realized_volatility_validation_error(
         |loaded| {
@@ -262,6 +292,20 @@ fn realized_volatility_validation_rejects_empty_source_base_asset() {
 }
 
 #[test]
+fn realized_volatility_validation_rejects_padded_source_base_asset() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].canonical_base_asset = " CONFIGURED_ASSET ".to_string();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "canonical_base_asset must not contain surrounding whitespace",
+    );
+}
+
+#[test]
 fn realized_volatility_validation_rejects_blank_source_quote_asset() {
     assert_realized_volatility_validation_error(
         |loaded| {
@@ -272,6 +316,20 @@ fn realized_volatility_validation_rejects_blank_source_quote_asset() {
                 Some("<surface_id>".to_string());
         },
         "canonical_quote_asset must be non-empty",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_padded_source_quote_asset() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let mut surface = valid_realized_volatility_surface();
+            surface.sources[0].canonical_quote_asset = " <QUOTE_ASSET> ".to_string();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded.strategies[0].config.realized_volatility_surface_id =
+                Some("<surface_id>".to_string());
+        },
+        "canonical_quote_asset must not contain surrounding whitespace",
     );
 }
 

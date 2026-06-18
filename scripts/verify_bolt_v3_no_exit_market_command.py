@@ -75,8 +75,22 @@ def is_routed_chokepoint_api(api: str) -> bool:
 
     The decision is exact set membership, never a substring test. A name such as
     `force_modify_order` or `cancel_all_orders_bypass` embeds an allowed name as a
-    substring but is a DIFFERENT, unrouted API and must NOT be exempted: substring
-    matching would fail-open the moment a forbidden API name embeds an allowed one.
+    substring but is a DIFFERENT, unrouted API; this returns False for it so the
+    chokepoint exemption stays per-API.
+
+    Scope of what this guards: this exact-match form is FORWARD-PROOFING of the
+    chokepoint-exemption contract, not a fix for a currently-reachable bypass. In
+    `find_violations_in_text`, `match.group("api")` is supplied by the forbidden
+    lifecycle regex, whose `(?:\\.|::)` prefix and `(?![A-Za-z0-9_])` suffix make the
+    capture ALWAYS exactly one of the listed API tokens — an impostor name like
+    `force_modify_order` can never reach this function through the real pipeline
+    (the regex boundary already rejects it; that path is covered by the
+    substring/comment boundary test). So a prior substring form was not exploitable
+    via the pipeline. What this function adds is a directly unit-tested,
+    self-contained exemption contract: `is_routed_chokepoint_api` is asserted on its
+    own (the impostor cases below document and forward-proof the contract), so the
+    chokepoint allowlist can't silently widen to a near-miss name if the regex ever
+    changes.
     """
     return api in ALLOWED_CHOKEPOINT_APIS
 

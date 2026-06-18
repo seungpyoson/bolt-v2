@@ -145,15 +145,21 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
         self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
 
     def test_chokepoint_exemption_is_exact_match_not_substring(self) -> None:
-        # The chokepoint exemption matches the routed API name EXACTLY, never as a
-        # substring. The exact routed APIs are exempt...
+        # Unit-tests the `is_routed_chokepoint_api` exemption contract directly:
+        # exact set membership, never a substring test. The exact routed APIs are
+        # exempt...
         self.assertTrue(VERIFIER.is_routed_chokepoint_api("modify_order"))
         self.assertTrue(VERIFIER.is_routed_chokepoint_api("cancel_all_orders"))
         # ...but a DIFFERENT, unrouted API that merely embeds an allowed name as a
-        # substring must NOT be exempted. The prior substring check
-        # (`api in match.group(0)`) returned True for `force_modify_order` /
-        # `cancel_all_orders_bypass` and would fail-open the fence the moment a
-        # forbidden API name embedded an allowed one; this guards that regression.
+        # substring is NOT exempted. NOTE: this is a forward-proofing contract test,
+        # not a guard against a currently-reachable integration bypass. Through the
+        # real pipeline `match.group("api")` is always exactly one listed token (the
+        # forbidden regex's `(?:\.|::)` / `(?![A-Za-z0-9_])` boundary rejects
+        # impostor names like `force_modify_order` before they reach this function —
+        # that boundary is covered by `test_identifier_rules_do_not_match_substrings
+        # _or_comments`). A prior substring form was therefore not exploitable via
+        # the pipeline; pinning the exemption to exact membership keeps the allowlist
+        # from silently widening to a near-miss name if the regex ever changes.
         for impostor in (
             "force_modify_order",
             "modify_order_internal",

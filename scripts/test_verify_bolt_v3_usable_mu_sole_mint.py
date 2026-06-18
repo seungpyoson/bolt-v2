@@ -224,6 +224,147 @@ class UsableMuSoleMintFenceTests(unittest.TestCase):
             any("Deserialize impl mints UsableMu" in v.rule for v in deser_v)
         )
 
+    def test_derive_default_on_usable_mu_struct_is_flagged(self) -> None:
+        # A `#[derive(Default)]` on the UsableMu struct creates an ungated
+        # `Default::default` constructor that the hand-written-impl regexes miss.
+        violations = VERIFIER.find_violations_in_text(
+            VERIFIER.GATE_PATH,
+            """
+            #[derive(Debug, Clone, Copy, Default, PartialEq)]
+            pub struct UsableMu(f64);
+            """,
+        )
+        self.assertTrue(
+            any("derive(Default) mints UsableMu" in v.rule for v in violations),
+            violations,
+        )
+
+    def test_derive_deserialize_on_usable_mu_struct_is_flagged(self) -> None:
+        # `#[derive(Deserialize)]` mints via `Deserialize::deserialize`; flagged.
+        # The attribute may be one of several contiguous attributes before the
+        # struct, so a `#[derive(Debug)]` line above it must not hide it.
+        violations = VERIFIER.find_violations_in_text(
+            VERIFIER.GATE_PATH,
+            """
+            #[derive(Debug, Clone, Copy)]
+            #[derive(Deserialize)]
+            pub struct UsableMu(f64);
+            """,
+        )
+        self.assertTrue(
+            any("derive(Deserialize) mints UsableMu" in v.rule for v in violations),
+            violations,
+        )
+
+    def test_derive_serialize_only_on_usable_mu_struct_is_not_flagged(self) -> None:
+        # `Serialize` does NOT construct, so a derive list with only constructing
+        # traits absent (Debug/Clone/Copy/PartialEq/Serialize) must not be flagged.
+        violations = VERIFIER.find_violations_in_text(
+            VERIFIER.GATE_PATH,
+            """
+            #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+            pub struct UsableMu(f64);
+            """,
+        )
+        self.assertEqual(violations, [])
+
+    def test_same_file_tuple_literal_mint_outside_gate_is_flagged(self) -> None:
+        # `UsableMu` is a tuple struct, so `UsableMu(raw)` is a valid same-file
+        # constructor the `::new` checks never see. A rogue same-file mint must
+        # fail; the legitimate struct def + gate + new must not. This is the
+        # finding-2 load-bearing differential.
+        gate_with_rogue = (
+            GATE_FILE_OK
+            + """
+            pub fn rogue(raw: f64) -> UsableMu {
+                UsableMu(raw)
+            }
+            """
+        )
+        violations = VERIFIER.find_violations_in_text(
+            VERIFIER.GATE_PATH, gate_with_rogue
+        )
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn(
+            f"tuple-literal mint outside the {VERIFIER.GATE_FN} gate function",
+            violations[0].rule,
+        )
+        self.assertIn("UsableMu(raw)", violations[0].excerpt)
+        # Without the rogue line the same text is clean (the struct def, the
+        # inherent `fn new` `Self(value)`, and the gate's `UsableMu::new` are all
+        # legitimate) — differential: only the rogue line flips the result.
+        self.assertEqual(
+            VERIFIER.find_violations_in_text(VERIFIER.GATE_PATH, GATE_FILE_OK), []
+        )
+
+    def test_same_file_self_tuple_mint_in_usable_mu_impl_is_flagged(self) -> None:
+        # `Self(raw)` inside an `impl UsableMu` block (outside `fn new`/gate) mints
+        # a UsableMu. Here a rogue method in the inherent impl uses `Self(raw)`.
+        gate_with_rogue_self = """
+        pub struct UsableMu(f64);
+
+        impl UsableMu {
+            fn new(value: f64) -> Self {
+                Self(value)
+            }
+
+            pub fn rogue(raw: f64) -> Self {
+                Self(raw)
+            }
+        }
+
+        pub(crate) fn mint_usable_mu(
+            flow: &SignedTradeFlow,
+            now_ms: u64,
+        ) -> Result<UsableMu, MuHealthReason> {
+            let mu = estimate(flow, now_ms);
+            mu.map(UsableMu::new).ok_or(MuHealthReason::Absent)
+        }
+        """
+        violations = VERIFIER.find_violations_in_text(
+            VERIFIER.GATE_PATH, gate_with_rogue_self
+        )
+        # Exactly one violation: the rogue `Self(raw)` in `fn rogue`. The `fn new`
+        # `Self(value)` is in the allowed span; the gate `UsableMu::new` is in the
+        # gate span; the struct def is excluded.
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn(
+            f"Self(...) mint outside the {VERIFIER.GATE_FN} gate function",
+            violations[0].rule,
+        )
+        self.assertIn("Self(raw)", violations[0].excerpt)
+
+    def test_self_tuple_ctor_in_other_types_impl_is_not_flagged(self) -> None:
+        # `Self(...)` inside a DIFFERENT type's impl in the seam file is not a
+        # UsableMu mint and must not be flagged (scoped to UsableMu impl spans).
+        text = """
+        pub struct UsableMu(f64);
+
+        impl UsableMu {
+            fn new(value: f64) -> Self {
+                Self(value)
+            }
+        }
+
+        pub struct Other(f64);
+
+        impl Other {
+            fn make(raw: f64) -> Self {
+                Self(raw)
+            }
+        }
+
+        pub(crate) fn mint_usable_mu(
+            flow: &SignedTradeFlow,
+            now_ms: u64,
+        ) -> Result<UsableMu, MuHealthReason> {
+            mu(flow, now_ms).map(UsableMu::new).ok_or(MuHealthReason::Absent)
+        }
+        """
+        self.assertEqual(
+            VERIFIER.find_violations_in_text(VERIFIER.GATE_PATH, text), []
+        )
+
     def test_alias_keyword_substrings_do_not_false_positive(self) -> None:
         # `type UsableMuView = SomethingElse;` and an unrelated `as` rename must
         # not trip the UsableMu alias rules.

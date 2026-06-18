@@ -73,9 +73,9 @@ impl MakerMuState {
         // that module (a mint anywhere else is a compile error). An unseen
         // instrument has no flow → `Absent` (fail-closed). The staleness anchor is
         // no longer passed in: `mint_usable_mu`
-        // derives it internally as the newest sample inside the retention window as
-        // of `now_ms` (not the raw tail), so no caller here can forge a fresh
-        // reference to slip a stale-but-in-window μ past the gate.
+        // derives it internally as the newest *classified* sample inside the
+        // retention window as of `now_ms` (not the raw tail), so no caller here can
+        // forge a fresh reference to slip a stale-but-in-window μ past the gate.
         let Some(flow) = self.flows.get(instrument_id) else {
             return Err(MuHealthReason::Absent);
         };

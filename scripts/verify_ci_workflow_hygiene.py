@@ -58,6 +58,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/rust-probe.yml": "rust_probe",
     "actionlint.yml": "actionlint",
     ".github/workflows/actionlint.yml": "actionlint",
+    "require-reviewer-node.yml": "require_reviewer_node",
+    ".github/workflows/require-reviewer-node.yml": "require_reviewer_node",
     "advisory.yml": "advisory",
     ".github/workflows/advisory.yml": "advisory",
     "summary.yml": "summary",

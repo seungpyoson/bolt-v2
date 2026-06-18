@@ -1,0 +1,51 @@
+name: Require reviewer node
+
+on:
+  pull_request:
+    branches: [main]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - review_requested
+      - review_request_removed
+      - edited
+  pull_request_review:
+    types:
+      - submitted
+      - dismissed
+
+concurrency:
+  group: reviewer-node-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  require-reviewer-node:
+    name: reviewer node_id requested or approved
+    if: >-
+      ${{ github.event.pull_request.base.ref == 'main'
+          && github.event.pull_request.draft == false }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Run the reviewer gate from the protected base branch, not from PR code.
+          repository: ${{ github.event.pull_request.base.repo.full_name }}
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Check reviewer node_id status
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          REQUIRED_REVIEWER_NODE_ID: U_kgDOEZMFhA
+        run: python3 scripts/require_sp_reviewer.py

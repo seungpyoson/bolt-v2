@@ -82,6 +82,10 @@ These repo-level rules are in addition to any higher-level agent instructions.
 ## Review Bar
 
 - Every unique substantive issue counts as a finding regardless of severity. Do not downgrade real issues into “just notes” or treat “tracked” as “resolved” unless the finding is actually fixed or the user explicitly waives it.
+- Before marking coding work complete or attempting to merge, coding agents must open a PR and request review from the GitHub account with node ID `U_kgDOEZMFhA`.
+- GitHub review requests are login-based; resolve node ID `U_kgDOEZMFhA` to the account's current login before requesting review.
+- Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval from GitHub node ID `U_kgDOEZMFhA`.
+- If review from GitHub node ID `U_kgDOEZMFhA` cannot be requested, stop and report the blocker.
 - Do not ask for or frame external red-team review while the branch has uncommitted changes, unpushed commits, unresolved findings, unanswered review comments, or failing checks.
 - Do not ask for external review until the exact PR head's CI is confirmed green.
 - If the only remaining local delta is a fix or cleanup already made locally, commit and push it before further review discussion instead of pausing in a half-finished state.

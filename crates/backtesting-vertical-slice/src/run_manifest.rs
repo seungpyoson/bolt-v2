@@ -2394,8 +2394,8 @@ struct AdmittanceRow {
 /// quotes/index_prices/mark_prices). Their canonical tables and canonical->NT
 /// projections landed in S3 (`project_canonical_{quotes,index,mark}_to_catalog`
 /// and `read_back_{quotes,index,mark}`); the raw venue-wire normalizers that
-/// populate those tables from source bytes remain a follow-up slice (bolt-v2
-/// #685). Auxiliary status/close pairing for the three new classes is
+/// populate those tables from source bytes remain a follow-up slice tracked by
+/// bolt-v2 #836/#437. Auxiliary status/close pairing for the three new classes is
 /// deliberately omitted here — each new class carries a single primary row.
 const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
     // TradeReplay: native trade prints are primary; status/close auxiliary.

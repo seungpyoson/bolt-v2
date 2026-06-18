@@ -4,6 +4,8 @@
 //! commands to the existing NT order-construction path and a caller-provided
 //! runtime sink, so strategies do not own maker submit/cancel/modify mechanics.
 
+use std::cell::RefMut;
+
 use anyhow::Result;
 use nautilus_common::factories::OrderFactory;
 use nautilus_model::{
@@ -53,7 +55,7 @@ pub enum MakerOrderDispatchOutcome {
 }
 
 pub trait MakerOrderCommandSink {
-    fn order_factory(&mut self) -> &mut OrderFactory;
+    fn order_factory(&mut self) -> RefMut<'_, OrderFactory>;
 
     fn submit_maker_order(&mut self, order: OrderAny) -> Result<()>;
 
@@ -92,12 +94,18 @@ pub fn dispatch_maker_order_command(
             inputs,
             fallback_price,
         } => {
-            let order = build_nt_order(
-                sink.order_factory(),
-                input.submit_order_prefix,
-                template,
-                *inputs,
-            )?;
+            let order = {
+                // `order_factory()` now yields a `RefMut` guard (NT moved the strategy
+                // `OrderFactory` behind `Rc<RefCell<_>>`). Scope it so the borrow of `sink`
+                // is released before the `submit_maker_order` call below.
+                let mut order_factory = sink.order_factory();
+                build_nt_order(
+                    &mut order_factory,
+                    input.submit_order_prefix,
+                    template,
+                    *inputs,
+                )?
+            };
             let client_order_id = order.client_order_id();
             let instrument_id = order.instrument_id();
             let price = order.price().unwrap_or(*fallback_price);

@@ -1,10 +1,11 @@
 venue = "BINANCE"
 
 [data]
-product_types = ["spot"]
+product_type = "spot"
 environment = "mainnet"
 base_url_http = "https://api.binance.com"
 base_url_ws = "wss://stream-sbe.binance.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 

@@ -1,4 +1,4 @@
-use std::any::type_name;
+use std::{any::type_name, cell::RefMut};
 
 use anyhow::Result;
 use nautilus_common::{
@@ -467,7 +467,7 @@ where
 }
 
 trait BoltV3MakerOrderRuntime: BoltV3NtVenueMutationSink {
-    fn order_factory(&mut self) -> &mut OrderFactory;
+    fn order_factory(&mut self) -> RefMut<'_, OrderFactory>;
 }
 
 struct NtStrategyMakerOrderRuntime<'a, S>
@@ -534,7 +534,7 @@ impl<S> BoltV3MakerOrderRuntime for NtStrategyMakerOrderRuntime<'_, S>
 where
     S: Strategy + ?Sized,
 {
-    fn order_factory(&mut self) -> &mut OrderFactory {
+    fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
         self.strategy.core_mut().order_factory()
     }
 }
@@ -575,7 +575,7 @@ impl<R> MakerOrderCommandSink for BoltV3MakerOrderPolicySink<'_, R>
 where
     R: BoltV3MakerOrderRuntime + ?Sized,
 {
-    fn order_factory(&mut self) -> &mut OrderFactory {
+    fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
         self.runtime.order_factory()
     }
 
@@ -683,7 +683,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
-        cell::RefCell,
+        cell::{RefCell, RefMut},
         collections::BTreeMap,
         rc::Rc,
         sync::{Arc, Mutex},
@@ -763,14 +763,14 @@ mod tests {
 
     #[derive(Debug)]
     struct RecordingMakerRuntime {
-        order_factory: OrderFactory,
+        order_factory: RefCell<OrderFactory>,
         venue_sink: RecordingVenueMutationSink,
     }
 
     impl RecordingMakerRuntime {
         fn new() -> Self {
             Self {
-                order_factory: generic_order_factory(),
+                order_factory: RefCell::new(generic_order_factory()),
                 venue_sink: RecordingVenueMutationSink::default(),
             }
         }
@@ -820,8 +820,8 @@ mod tests {
     }
 
     impl BoltV3MakerOrderRuntime for RecordingMakerRuntime {
-        fn order_factory(&mut self) -> &mut OrderFactory {
-            &mut self.order_factory
+        fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
+            self.order_factory.borrow_mut()
         }
     }
 

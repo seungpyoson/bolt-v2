@@ -1709,6 +1709,7 @@ fn normalize_binary_option_for_catalog(instrument: InstrumentAny) -> Result<Inst
         None, // margin_maint: not encoded by the NT catalog Arrow schema
         Some(bo.maker_fee),
         Some(bo.taker_fee),
+        None, // tick_scheme (NT bump): not populated by bolt
         bo.info,
         bo.ts_event,
         bo.ts_init,
@@ -2087,6 +2088,7 @@ mod tests {
             None,
             Some(Price::from("0.999")), // max_price: NT sentinel, not persistable
             Some(Price::from("0.001")), // min_price: NT sentinel, not persistable
+            None,
             None,
             None,
             None,

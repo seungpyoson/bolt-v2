@@ -4566,8 +4566,9 @@ impl BinaryOracleEdgeTaker {
             .config
             .entry_order
             .nt_order_template(ORDER_CONFIGURATION_PREFIX_ENTRY, price.precision)?;
+        let mut order_factory = self.core.order_factory();
         build_nt_order(
-            self.core.order_factory(),
+            &mut order_factory,
             ORDER_CONFIGURATION_PREFIX_ENTRY,
             &template,
             NtOrderBuildInputs {
@@ -4654,8 +4655,9 @@ impl BinaryOracleEdgeTaker {
         );
         let template =
             order_config.nt_order_template(ORDER_CONFIGURATION_PREFIX_EXIT, price.precision)?;
+        let mut order_factory = self.core.order_factory();
         build_nt_order(
-            self.core.order_factory(),
+            &mut order_factory,
             ORDER_CONFIGURATION_PREFIX_EXIT,
             &template,
             NtOrderBuildInputs {

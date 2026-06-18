@@ -71,11 +71,11 @@ fn realized_loss_breach_latches_persists_and_emits_flatten_actions() {
         .expect("second loss should breach the daily limit")
         .expect("breach should return the latched state");
 
-    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
     assert!(matches!(
         admission.admit(&entry_request()),
         Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
-            state: KillSwitchStateKind::Halting
+            state: KillSwitchStateKind::Halted
         })
     ));
     assert!(matches!(
@@ -83,10 +83,7 @@ fn realized_loss_breach_latches_persists_and_emits_flatten_actions() {
             .store()
             .load_recovery_state()
             .expect("persisted halt should be readable"),
-        KillSwitchRecoveryState::FailClosed {
-            reason: KillSwitchRecoveryReason::UnresolvedHalt,
-            state: Some(KillSwitchState::Halting { .. })
-        }
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Halted { .. })
     ));
 
     let recorded = actions.actions();
@@ -199,7 +196,7 @@ fn position_event_filter_requires_configured_account_and_instrument() {
         .expect("configured instrument event should be handled")
         .expect("configured instrument event should breach");
 
-    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
     assert_eq!(actions.actions().len(), 1);
 }
 
@@ -413,8 +410,15 @@ fn failed_halt_actions_retry_after_configured_interval_until_success() {
     assert!(matches!(
         admission.admit(&entry_request()),
         Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
-            state: KillSwitchStateKind::Halting
+            state: KillSwitchStateKind::Halted
         })
+    ));
+    assert!(matches!(
+        protection
+            .store()
+            .load_recovery_state()
+            .expect("retry-success state should be durable"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Halted { .. })
     ));
 }
 
@@ -475,11 +479,11 @@ fn daily_realized_pnl_survives_restart_until_utc_bucket_rolls_forward() {
         .expect("post-restart loss should breach with persisted daily total")
         .expect("persisted daily total should latch the kill switch");
 
-    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
     assert!(matches!(
         restart_admission.admit(&entry_request()),
         Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
-            state: KillSwitchStateKind::Halting
+            state: KillSwitchStateKind::Halted
         })
     ));
 }
@@ -588,7 +592,7 @@ fn stale_utc_bucket_events_do_not_clear_current_day_loss_accumulator() {
         .expect("current-day loss should still breach after stale event")
         .expect("current-day accumulator should not have been cleared");
 
-    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
 }
 
 #[test]
@@ -713,7 +717,7 @@ fn closed_position_prunes_cumulative_baseline_before_position_id_reuse() {
         .expect("reused position id should start a fresh cumulative baseline")
         .expect("fresh reused position loss should breach the daily limit");
 
-    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
 }
 
 #[test]
@@ -762,7 +766,7 @@ fn duplicate_closed_position_event_still_prunes_cumulative_baseline() {
         .expect("reused position id should not inherit the closed baseline")
         .expect("fresh reused position loss should breach the daily limit");
 
-    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
 }
 
 #[test]
@@ -995,7 +999,7 @@ fn duplicate_adjusted_position_replay_counts_delta_once() {
         .expect("new adjustment should be counted")
         .expect("total unique adjustments should breach");
 
-    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
     assert_eq!(actions.actions().len(), 1);
 }
 
@@ -1039,7 +1043,7 @@ fn late_distinct_adjusted_position_event_is_counted_by_event_id() {
         .expect("late distinct adjustment should still be counted")
         .expect("distinct adjustments should breach even when out of order");
 
-    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
     assert_eq!(actions.actions().len(), 1);
 }
 
@@ -1075,8 +1079,15 @@ fn halting_recovery_without_pending_snapshot_reissues_flatten() {
         .seed_from_store(1_717_200_000_000_000_000)
         .expect("halting recovery should seed");
 
-    assert!(matches!(recovered, KillSwitchState::Halting { .. }));
+    assert!(matches!(recovered, KillSwitchState::Halted { .. }));
     assert_eq!(actions.actions().len(), 1);
+    assert!(matches!(
+        protection
+            .store()
+            .load_recovery_state()
+            .expect("recovered halt action state should persist"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Halted { .. })
+    ));
 }
 
 #[derive(Debug, Default)]

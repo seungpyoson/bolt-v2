@@ -173,6 +173,10 @@ impl KillSwitchLossProtection {
             });
             self.persist_runtime_snapshot_or_fail_closed()?;
             log::error!("kill switch recovery halt action dispatch failed: {error:?}");
+        } else if matches!(state, KillSwitchState::Halting { .. })
+            && self.pending_halt_actions.is_none()
+        {
+            state = self.record_halt_actions_recorded(state)?;
         }
         Ok(state)
     }
@@ -435,7 +439,7 @@ impl KillSwitchLossProtection {
                 "daily realized loss halt action dispatch failed: {error:?}"
             ));
         }
-        Ok(Some(halting))
+        Ok(Some(self.record_halt_actions_recorded(halting)?))
     }
 
     fn accept_observation_bucket(&mut self, observed_at_unix_nanos: u64) -> bool {
@@ -491,9 +495,29 @@ impl KillSwitchLossProtection {
                 "daily realized loss halt action retry failed: {error:?}"
             ));
         }
-        self.pending_halt_actions = None;
-        self.persist_runtime_snapshot_or_fail_closed()?;
+        self.record_halt_actions_recorded(pending.state)?;
         Ok(())
+    }
+
+    fn record_halt_actions_recorded(
+        &mut self,
+        state: KillSwitchState,
+    ) -> anyhow::Result<KillSwitchState> {
+        let halted = transition_kill_switch_state(
+            state,
+            KillSwitchEvent::DurableHaltEvidenceRecorded,
+            KillSwitchTransitionContext {
+                state_write_succeeded: true,
+                durable_halt_evidence_recorded: true,
+                ..inert_transition_context()
+            },
+        )
+        .map_err(|error| anyhow!("halt action recorded transition failed: {error:?}"))?;
+        self.pending_halt_actions = None;
+        self.admission.replace_kill_switch_state(halted.clone());
+        self.state = halted.clone();
+        self.persist_runtime_snapshot_or_fail_closed()?;
+        Ok(halted)
     }
 
     fn fail_halt_actions(&mut self, state: KillSwitchState, reason: String) -> anyhow::Result<()> {

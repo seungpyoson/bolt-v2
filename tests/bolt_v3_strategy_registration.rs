@@ -134,6 +134,7 @@ fn valid_realized_volatility_surface() -> RealizedVolatilitySurfaceBlock {
             sample_kind: RealizedVolatilitySampleKindBlock::Midpoint,
             enabled: true,
             counts_toward_quorum: true,
+            canonical_base_asset: "CONFIGURED_ASSET".to_string(),
             canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
         }],
     }
@@ -237,13 +238,64 @@ fn realized_volatility_validation_rejects_source_asset_mismatch() {
     assert_realized_volatility_validation_error(
         |loaded| {
             let mut surface = valid_realized_volatility_surface();
-            surface.sources[0].instrument_id =
-                InstrumentId::from("OTHER_ASSET-QUOTE.<DATA_CLIENT_ID>");
+            surface.sources[0].canonical_base_asset = "OTHER_ASSET".to_string();
             insert_realized_volatility_surface(&mut loaded.root, surface);
             loaded.strategies[0].config.realized_volatility_surface_id =
                 Some("<surface_id>".to_string());
         },
         "canonical_base_asset",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_accepts_nt_native_spot_symbols() {
+    let errors = realized_volatility_validation_errors(|loaded| {
+        let mut surface = valid_realized_volatility_surface();
+        surface.canonical_base_asset = "BTC".to_string();
+        surface.canonical_quote_asset = "USDT".to_string();
+        surface.sources[0].source_id = "okx_btc_usdt_midpoint".to_string();
+        surface.sources[0].data_client_id = ClientId::from(RV_DATA_CLIENT_ID);
+        surface.sources[0].instrument_id = InstrumentId::from("BTC-USDT.OKX");
+        surface.sources[0].canonical_base_asset = "BTC".to_string();
+        surface.sources[0].canonical_quote_asset = "USDT".to_string();
+        surface.sources.push(RealizedVolatilitySourceBlock {
+            source_id: "binance_btc_usdt_midpoint".to_string(),
+            data_client_id: ClientId::from(RV_DATA_CLIENT_ID),
+            instrument_id: InstrumentId::from("BTCUSDT.BINANCE"),
+            source_class: RealizedVolatilitySourceClassBlock::SpotQuote,
+            sample_kind: RealizedVolatilitySampleKindBlock::Midpoint,
+            enabled: true,
+            counts_toward_quorum: true,
+            canonical_base_asset: "BTC".to_string(),
+            canonical_quote_asset: "USDT".to_string(),
+        });
+        surface.sources.push(RealizedVolatilitySourceBlock {
+            source_id: "bybit_btc_usdt_midpoint".to_string(),
+            data_client_id: ClientId::from(RV_DATA_CLIENT_ID),
+            instrument_id: InstrumentId::from("BTCUSDT-SPOT.BYBIT"),
+            source_class: RealizedVolatilitySourceClassBlock::SpotQuote,
+            sample_kind: RealizedVolatilitySampleKindBlock::Midpoint,
+            enabled: true,
+            counts_toward_quorum: true,
+            canonical_base_asset: "BTC".to_string(),
+            canonical_quote_asset: "USDT".to_string(),
+        });
+        insert_realized_volatility_surface(&mut loaded.root, surface);
+        loaded.strategies[0]
+            .config
+            .target
+            .as_table_mut()
+            .expect("fixture target should be a table")
+            .insert(
+                "underlying_asset".to_string(),
+                toml::Value::String("BTC".to_string()),
+            );
+        loaded.strategies[0].config.realized_volatility_surface_id =
+            Some("<surface_id>".to_string());
+    });
+    assert!(
+        errors.is_empty(),
+        "NT-native spot symbols should validate without RV errors: {errors:?}"
     );
 }
 

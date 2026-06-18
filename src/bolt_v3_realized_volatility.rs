@@ -212,6 +212,7 @@ pub struct RealizedVolSourceConfig {
     pub sample_kind: RealizedVolSampleKind,
     pub enabled: bool,
     pub counts_toward_quorum: bool,
+    pub canonical_base_asset: String,
     pub canonical_quote_asset: String,
 }
 
@@ -1433,6 +1434,12 @@ fn config_fingerprint(config: &RealizedVolEngineConfig) -> String {
         .expect("canonical fingerprint write should not fail");
         writeln!(
             &mut canonical,
+            "source.canonical_base_asset={}",
+            source.canonical_base_asset
+        )
+        .expect("canonical fingerprint write should not fail");
+        writeln!(
+            &mut canonical,
             "source.canonical_quote_asset={}",
             source.canonical_quote_asset
         )
@@ -1721,6 +1728,7 @@ mod tests {
                 sample_kind: RealizedVolSampleKind::Midpoint,
                 enabled: true,
                 counts_toward_quorum: true,
+                canonical_base_asset: "<BASE_ASSET>".to_string(),
                 canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
             }],
         }

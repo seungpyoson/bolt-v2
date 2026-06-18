@@ -492,11 +492,10 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                 ));
             }
 
-            let source_base_asset = instrument_base_asset(&source.instrument_id);
-            if source_base_asset != surface.canonical_base_asset {
+            if source.canonical_base_asset != surface.canonical_base_asset {
                 errors.push(format!(
-                    "{source_context}.instrument_id `{}` resolves to base asset `{source_base_asset}`, which must match {context}.canonical_base_asset `{}`",
-                    source.instrument_id, surface.canonical_base_asset,
+                    "{source_context}.canonical_base_asset `{}` must match {context}.canonical_base_asset `{}`",
+                    source.canonical_base_asset, surface.canonical_base_asset,
                 ));
             }
             let instrument_key = source.instrument_id.to_string();
@@ -587,11 +586,6 @@ fn realized_volatility_source_pair_supported(
             RealizedVolatilitySampleKindBlock::Index,
         )
     )
-}
-
-fn instrument_base_asset(instrument_id: &InstrumentId) -> &str {
-    let symbol = instrument_id.symbol.as_str();
-    symbol.split_once('-').map_or(symbol, |(asset, _)| asset)
 }
 
 fn validate_gate_providers(

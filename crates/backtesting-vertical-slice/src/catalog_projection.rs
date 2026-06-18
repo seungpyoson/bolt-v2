@@ -4550,6 +4550,44 @@ max_notional = "200000"
     }
 
     #[test]
+    fn funding_projection_requires_nt_instrument_id() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].nt_instrument_id = None;
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("missing nt_instrument_id rejected");
+
+        assert!(
+            err.to_string().contains("missing nt_instrument_id"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn funding_projection_rejects_nt_instrument_id_mismatch() {
+        let mut table = canonical_funding_rates_table();
+        table.rows[0].nt_instrument_id = Some("ETHUSDT.BYBIT".to_string());
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        let err = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .expect_err("nt_instrument_id mismatch rejected");
+
+        assert!(
+            err.to_string().contains("does not match canonical rows"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn funding_rates_fail_loud_when_capture_invalid_and_no_availability() {
         let mut table = canonical_funding_rates_table();
         table.rows[0].availability_time = None;

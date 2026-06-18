@@ -2512,7 +2512,7 @@ fn fidelity_primary_type(fidelity: SourceProofFidelityClass) -> Option<NautilusD
 /// Parse a catalog-input data-type string into a bolt-admitted [`NautilusDataType`].
 ///
 /// String boundary for the admittance table: `NautilusDataType::from_str` admits
-/// all nine NT variants, then the table filters to bolt-supported types. A type
+/// the pinned NT variants, then the table filters to bolt-supported types. A type
 /// NT knows but the table omits (e.g. `OrderBookDepth10`) and pure junk both
 /// surface the same [`ManifestError::UnsupportedDataType`] with the original
 /// string payload.

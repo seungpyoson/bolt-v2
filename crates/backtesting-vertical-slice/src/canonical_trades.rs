@@ -178,6 +178,23 @@ pub const MARK_PRICES_TRANSFORM_IDENTITY: &str = "mark-price-source-to-canonical
 /// Version of the registered mark-price converter contract.
 pub const MARK_PRICES_TRANSFORM_VERSION: &str = "1";
 
+/// Contract table family for funding-rate updates.
+///
+/// The canonical family uses the contract name `funding_rates`; the NT catalog
+/// projection writes NautilusTrader's `funding_rate_update` prefix.
+pub const FUNDING_RATES_TABLE_FAMILY: &str = "funding_rates";
+
+/// Stable identity of the config-driven funding-rate normalization transform.
+///
+/// Source-agnostic: a new funding source that emits the same point-update shape
+/// binds this identity. Raw acquisition remains a follow-up; this registration
+/// keeps the operator path wired to the canonical table and NT projection.
+pub const FUNDING_RATES_TRANSFORM_IDENTITY: &str =
+    "funding-rate-source-to-canonical-funding-rates.v1";
+
+/// Version of the registered funding-rate converter contract.
+pub const FUNDING_RATES_TRANSFORM_VERSION: &str = "1";
+
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// Expected sample raw header, in order.
@@ -201,6 +218,7 @@ pub enum SourceAdapterKind {
     SnapshotQuotes,
     IndexPrices,
     MarkPrices,
+    FundingRates,
     #[cfg(test)]
     SyntheticOrderBookDeltas,
 }
@@ -444,6 +462,15 @@ pub const MARK_PRICES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_MARK_PRICE_UPDATE,
 };
 
+pub const FUNDING_RATES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: FUNDING_RATES_TRANSFORM_IDENTITY,
+    version: FUNDING_RATES_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::FundingRates,
+    table_family: FUNDING_RATES_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_FUNDING_RATE_UPDATE,
+};
+
 #[cfg(test)]
 pub const SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: "synthetic-order-book-deltas-fixture.v1",
@@ -466,6 +493,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     SNAPSHOT_QUOTES_ADAPTER,
     INDEX_PRICES_ADAPTER,
     MARK_PRICES_ADAPTER,
+    FUNDING_RATES_ADAPTER,
 ];
 
 #[cfg(test)]
@@ -480,6 +508,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     SNAPSHOT_QUOTES_ADAPTER,
     INDEX_PRICES_ADAPTER,
     MARK_PRICES_ADAPTER,
+    FUNDING_RATES_ADAPTER,
     SYNTHETIC_ORDER_BOOK_DELTAS_ADAPTER,
 ];
 
@@ -787,6 +816,30 @@ pub fn require_registered_mark_converter_for_table_family(
     ensure!(
         adapter.kind == SourceAdapterKind::MarkPrices,
         "adapter {:?} version {:?} is {:?}, not a mark-price converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+/// Resolve the registered funding-rate source adapter for the table family.
+///
+/// # Errors
+///
+/// Returns an error if no adapter is registered for the identity/version, the
+/// adapter does not serve the table family, or the adapter is not a funding-rate
+/// converter.
+pub fn require_registered_funding_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::FundingRates,
+        "adapter {:?} version {:?} is {:?}, not a funding-rate converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -1360,6 +1413,9 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::MarkPrices => {
             bail!("mark-price adapter cannot normalize native trades")
         }
+        SourceAdapterKind::FundingRates => {
+            bail!("funding-rate adapter cannot normalize native trades")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize native trades")
@@ -1442,6 +1498,9 @@ pub fn normalize_registered_bar_converter(
         }
         SourceAdapterKind::MarkPrices => {
             bail!("mark-price adapter cannot normalize native bars")
+        }
+        SourceAdapterKind::FundingRates => {
+            bail!("funding-rate adapter cannot normalize native bars")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1526,6 +1585,9 @@ pub fn normalize_registered_paged_json_bar_converter(
         }
         SourceAdapterKind::MarkPrices => {
             bail!("mark-price adapter cannot normalize paged-JSON bars")
+        }
+        SourceAdapterKind::FundingRates => {
+            bail!("funding-rate adapter cannot normalize paged-JSON bars")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1613,6 +1675,9 @@ pub fn normalize_registered_jsonl_multi_interval_bar_converter(
         SourceAdapterKind::MarkPrices => {
             bail!("mark-price adapter cannot normalize JSONL multi-interval bars")
         }
+        SourceAdapterKind::FundingRates => {
+            bail!("funding-rate adapter cannot normalize JSONL multi-interval bars")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize JSONL multi-interval bars")
@@ -1697,6 +1762,9 @@ pub fn normalize_registered_order_book_delta_converter(
         }
         SourceAdapterKind::MarkPrices => {
             bail!("mark-price adapter cannot normalize order-book deltas")
+        }
+        SourceAdapterKind::FundingRates => {
+            bail!("funding-rate adapter cannot normalize order-book deltas")
         }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
@@ -1790,6 +1858,9 @@ pub fn normalize_registered_tar_order_book_delta_converter(
         SourceAdapterKind::MarkPrices => {
             bail!("mark-price adapter cannot normalize tar order-book deltas")
         }
+        SourceAdapterKind::FundingRates => {
+            bail!("funding-rate adapter cannot normalize tar order-book deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize tar order-book deltas")
@@ -1882,6 +1953,9 @@ pub fn normalize_registered_event_stream_delta_converter(
         SourceAdapterKind::MarkPrices => {
             bail!("mark-price adapter cannot normalize event-stream deltas")
         }
+        SourceAdapterKind::FundingRates => {
+            bail!("funding-rate adapter cannot normalize event-stream deltas")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize event-stream deltas")
@@ -1903,7 +1977,7 @@ pub fn normalize_registered_event_stream_delta_converter(
 /// [`CanonicalQuotesTable`] from raw bytes lands in a FOLLOW-UP slice. This entry
 /// point therefore validates that the converter is a real registered
 /// snapshot-quotes adapter carrying its `quotes` mapping, then fails loud naming
-/// the follow-up — a registered seam that fails loud is not a debt/TODO, and the
+/// the follow-up — a registered seam that fails loud is tracked work, and the
 /// canonical table + projection are proven by the synthetic round-trip test in
 /// [`super::catalog_projection`].
 ///
@@ -1966,6 +2040,9 @@ pub fn normalize_registered_quote_converter(
         SourceAdapterKind::MarkPrices => {
             bail!("mark-price adapter cannot normalize top-of-book quotes")
         }
+        SourceAdapterKind::FundingRates => {
+            bail!("funding-rate adapter cannot normalize top-of-book quotes")
+        }
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => {
             bail!("test fixture adapter cannot normalize top-of-book quotes")
@@ -1979,8 +2056,8 @@ pub fn normalize_registered_quote_converter(
 /// acquisition from source bytes into a [`CanonicalIndexPricesTable`] lands in a
 /// FOLLOW-UP slice (bolt-v2 #685). This entry point validates that the converter
 /// is a real registered index-price adapter for the table family, then fails
-/// loud naming the follow-up — a registered seam that fails loud is not a
-/// debt/TODO, and the canonical table + its NT `IndexPriceUpdate` projection are
+/// loud naming the follow-up — a registered seam that fails loud is tracked
+/// work, and the canonical table + its NT `IndexPriceUpdate` projection are
 /// proven by the synthetic round-trip test in [`super::catalog_projection`].
 ///
 /// # Errors
@@ -2014,7 +2091,7 @@ pub fn normalize_registered_index_converter(
 /// acquisition from source bytes into a [`CanonicalMarkPricesTable`] lands in a
 /// FOLLOW-UP slice (bolt-v2 #685). This entry point validates that the converter
 /// is a real registered mark-price adapter for the table family, then fails loud
-/// naming the follow-up — a registered seam that fails loud is not a debt/TODO,
+/// naming the follow-up — a registered seam that fails loud is tracked work,
 /// and the canonical table + its NT `MarkPriceUpdate` projection are proven by
 /// the synthetic round-trip test in [`super::catalog_projection`].
 ///
@@ -2039,6 +2116,41 @@ pub fn normalize_registered_mark_converter(
     bail!(
         "mark-price wire normalizer is a registered seam but its raw acquisition \
          path lands in a follow-up slice (bolt-v2 #685); the CanonicalMarkPricesTable \
+         contract and its catalog projection are proven by the synthetic round-trip test"
+    )
+}
+
+/// Registered-seam entry point for the funding-rate source normalizer.
+///
+/// Symmetric with [`normalize_registered_index_converter`]: raw funding-rate
+/// acquisition from source bytes into a [`CanonicalFundingRatesTable`] lands in a
+/// FOLLOW-UP slice (bolt-v2 #685). This entry point validates that the converter
+/// is a real registered funding-rate adapter for the table family, then fails
+/// loud naming the follow-up. The canonical table + its NT
+/// `FundingRateUpdate` projection are proven by the synthetic round-trip test
+/// in [`super::catalog_projection`].
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a registered funding-rate converter
+/// for the table family, or — until the follow-up acquisition slice — always
+/// (naming that follow-up).
+pub fn normalize_registered_funding_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    _identity: &CanonicalInstrumentIdentity,
+    _text: &str,
+    _capture_time_nanos: i64,
+    _ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalFundingRatesTable>> {
+    let _adapter = require_registered_funding_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    bail!(
+        "funding-rate wire normalizer is a registered seam but its raw acquisition \
+         path lands in a follow-up slice (bolt-v2 #685); the CanonicalFundingRatesTable \
          contract and its catalog projection are proven by the synthetic round-trip test"
     )
 }
@@ -3007,6 +3119,39 @@ mod tests {
             &mismatch,
         )
         .expect_err("mark-price adapter table-family mismatch must fail closed");
+        assert!(err.to_string().contains("table_family"), "{err}");
+    }
+
+    #[test]
+    fn funding_rate_source_adapter_registry_exposes_data_family_metadata() {
+        let adapter = require_registered_source_adapter_for_table_family(
+            FUNDING_RATES_TRANSFORM_IDENTITY,
+            FUNDING_RATES_TRANSFORM_VERSION,
+            FUNDING_RATES_TABLE_FAMILY,
+        )
+        .expect("registered funding-rate source adapter");
+
+        assert_eq!(adapter.kind, SourceAdapterKind::FundingRates);
+        assert_eq!(adapter.table_family, FUNDING_RATES_TABLE_FAMILY);
+        assert_eq!(adapter.normalized_schema_version, NORMALIZED_SCHEMA_VERSION);
+        assert_eq!(
+            adapter.nt_data_type,
+            crate::catalog_projection::NT_DATA_TYPE_FUNDING_RATE_UPDATE
+        );
+        assert_eq!(adapter.nt_data_type, "FundingRateUpdate");
+        assert!(REGISTERED_SOURCE_ADAPTERS.contains(&FUNDING_RATES_ADAPTER));
+        assert_eq!(FUNDING_RATES_TABLE_FAMILY, "funding_rates");
+    }
+
+    #[test]
+    fn funding_rate_source_adapter_registry_rejects_table_family_mismatch() {
+        let mismatch = format!("{FUNDING_RATES_TABLE_FAMILY}_mismatch");
+        let err = require_registered_source_adapter_for_table_family(
+            FUNDING_RATES_TRANSFORM_IDENTITY,
+            FUNDING_RATES_TRANSFORM_VERSION,
+            &mismatch,
+        )
+        .expect_err("funding-rate adapter table-family mismatch must fail closed");
         assert!(err.to_string().contains("table_family"), "{err}");
     }
 

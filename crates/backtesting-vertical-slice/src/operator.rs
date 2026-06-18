@@ -36,15 +36,16 @@ use crate::{
         ResolvedArtifactRoot, S3ConditionalPutMode, persist_catalog_projection_for_source_binding,
     },
     canonical_market_data::{
-        CanonicalBarsTable, CanonicalIndexPricesTable, CanonicalMarkPricesTable,
-        CanonicalOrderBookDeltasTable, CanonicalQuotesTable,
+        CanonicalBarsTable, CanonicalFundingRatesTable, CanonicalIndexPricesTable,
+        CanonicalMarkPricesTable, CanonicalOrderBookDeltasTable, CanonicalQuotesTable,
     },
     canonical_trades::{
         BAR_TABLE_FAMILY, CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig,
-        DELTAS_TABLE_FAMILY, INDEX_PRICES_TABLE_FAMILY, MARK_PRICES_TABLE_FAMILY,
-        QUOTE_TABLE_FAMILY, RawPayloadConfig, RawPayloadContainer, SourceAdapterKind,
-        TRADE_TABLE_FAMILY, normalize_registered_bar_converter,
-        normalize_registered_event_stream_delta_converter, normalize_registered_index_converter,
+        DELTAS_TABLE_FAMILY, FUNDING_RATES_TABLE_FAMILY, INDEX_PRICES_TABLE_FAMILY,
+        MARK_PRICES_TABLE_FAMILY, QUOTE_TABLE_FAMILY, RawPayloadConfig, RawPayloadContainer,
+        SourceAdapterKind, TRADE_TABLE_FAMILY, normalize_registered_bar_converter,
+        normalize_registered_event_stream_delta_converter, normalize_registered_funding_converter,
+        normalize_registered_index_converter,
         normalize_registered_jsonl_multi_interval_bar_converter,
         normalize_registered_mark_converter, normalize_registered_order_book_delta_converter,
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
@@ -53,13 +54,14 @@ use crate::{
     },
     catalog_projection::{
         CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
-        NT_DATA_TYPE_INDEX_PRICE_UPDATE, NT_DATA_TYPE_MARK_PRICE_UPDATE,
-        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK, NT_DATA_TYPE_TRADE_TICK,
-        logical_catalog_hash, project_canonical_bars_to_catalog,
-        project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
-        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
-        project_canonical_trades_to_catalog, read_back_bars, read_back_index, read_back_mark,
-        read_back_order_book_deltas, read_back_quotes, read_back_trade_ticks, ts_init_nanos,
+        NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
+        NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
+        NT_DATA_TYPE_TRADE_TICK, logical_catalog_hash, project_canonical_bars_to_catalog,
+        project_canonical_funding_rates_to_catalog, project_canonical_index_to_catalog,
+        project_canonical_mark_to_catalog, project_canonical_order_book_deltas_to_catalog,
+        project_canonical_quotes_to_catalog, project_canonical_trades_to_catalog, read_back_bars,
+        read_back_funding_rates, read_back_index, read_back_mark, read_back_order_book_deltas,
+        read_back_quotes, read_back_trade_ticks, ts_init_nanos,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_TABLES_FILE, ConversionCatalogMetadata,
@@ -78,12 +80,12 @@ use crate::{
     run_manifest::{BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, ManifestCatalogInput},
     runner::{
         BacktestRunInputs, BacktestRunOutput, assert_bar_read_back_matches,
-        assert_delta_read_back_matches, assert_index_read_back_matches,
-        assert_mark_read_back_matches, assert_quote_read_back_matches, assert_read_back_matches,
-        assert_time_window_overlaps_data, expected_iterations, iterations_mismatch,
-        market_structure_label, nt_extension_surface_claim_limits, result_contract_warnings,
-        run_backtest, run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data,
-        window_bound_nanos,
+        assert_delta_read_back_matches, assert_funding_read_back_matches,
+        assert_index_read_back_matches, assert_mark_read_back_matches,
+        assert_quote_read_back_matches, assert_read_back_matches, assert_time_window_overlaps_data,
+        expected_iterations, iterations_mismatch, market_structure_label,
+        nt_extension_surface_claim_limits, result_contract_warnings, run_backtest,
+        run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data, window_bound_nanos,
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
@@ -644,6 +646,12 @@ fn ensure_container_matches_adapter_kind(
         // directly by the synthetic round-trip tests, not via this raw decode
         // boundary.
         SourceAdapterKind::MarkPrices => false,
+        // The funding-rate raw normalizer (and thus its container shape) is not
+        // yet built — data acquisition is deferred to bolt-v2 #685. No container
+        // is admissible, so a run-spec naming the funding adapter fails loud here
+        // at config validation; the registered seam keeps funding on the same
+        // operator path as index/mark while failing before raw decode.
+        SourceAdapterKind::FundingRates => false,
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => false,
     };
@@ -1503,6 +1511,7 @@ enum NormalizedTable {
     Quotes(CanonicalQuotesTable),
     Index(CanonicalIndexPricesTable),
     Mark(CanonicalMarkPricesTable),
+    Funding(CanonicalFundingRatesTable),
 }
 
 impl NormalizedTable {
@@ -1514,6 +1523,7 @@ impl NormalizedTable {
             Self::Quotes(_) => QUOTE_TABLE_FAMILY,
             Self::Index(_) => INDEX_PRICES_TABLE_FAMILY,
             Self::Mark(_) => MARK_PRICES_TABLE_FAMILY,
+            Self::Funding(_) => FUNDING_RATES_TABLE_FAMILY,
         }
     }
 
@@ -1525,6 +1535,7 @@ impl NormalizedTable {
             Self::Quotes(_) => NT_DATA_TYPE_QUOTE_TICK,
             Self::Index(_) => NT_DATA_TYPE_INDEX_PRICE_UPDATE,
             Self::Mark(_) => NT_DATA_TYPE_MARK_PRICE_UPDATE,
+            Self::Funding(_) => NT_DATA_TYPE_FUNDING_RATE_UPDATE,
         }
     }
 
@@ -1536,6 +1547,7 @@ impl NormalizedTable {
             Self::Quotes(table) => &table.schema_version,
             Self::Index(table) => &table.schema_version,
             Self::Mark(table) => &table.schema_version,
+            Self::Funding(table) => &table.schema_version,
         }
     }
 
@@ -1547,6 +1559,7 @@ impl NormalizedTable {
             Self::Quotes(table) => table.fidelity_class,
             Self::Index(table) => table.fidelity_class,
             Self::Mark(table) => table.fidelity_class,
+            Self::Funding(table) => table.fidelity_class,
         }
     }
 
@@ -1558,6 +1571,7 @@ impl NormalizedTable {
             Self::Quotes(table) => table.rows.len(),
             Self::Index(table) => table.rows.len(),
             Self::Mark(table) => table.rows.len(),
+            Self::Funding(table) => table.rows.len(),
         }
     }
 
@@ -1584,6 +1598,10 @@ impl NormalizedTable {
                 .first()
                 .and_then(|row| row.nt_instrument_id.as_deref()),
             Self::Mark(table) => table
+                .rows
+                .first()
+                .and_then(|row| row.nt_instrument_id.as_deref()),
+            Self::Funding(table) => table
                 .rows
                 .first()
                 .and_then(|row| row.nt_instrument_id.as_deref()),
@@ -1617,6 +1635,10 @@ impl NormalizedTable {
                 .rows
                 .first()
                 .map(|row| row.canonical_instrument_key.as_str()),
+            Self::Funding(table) => table
+                .rows
+                .first()
+                .map(|row| row.canonical_instrument_key.as_str()),
         };
         key.context("normalized table is missing rows[0].canonical_instrument_key")
     }
@@ -1631,7 +1653,8 @@ impl NormalizedTable {
             | Self::Deltas(_)
             | Self::Quotes(_)
             | Self::Index(_)
-            | Self::Mark(_) => TABLE_DISCRIMINANT_DEFAULT.to_string(),
+            | Self::Mark(_)
+            | Self::Funding(_) => TABLE_DISCRIMINANT_DEFAULT.to_string(),
         }
     }
 
@@ -1702,6 +1725,14 @@ impl NormalizedTable {
                     row.availability_time,
                     row.capture_time,
                     &format!("mark price {}", row.event_time),
+                )?
+                .as_u64())
+            }),
+            Self::Funding(table) => fold(&table.rows, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("funding rate {}", row.event_time),
                 )?
                 .as_u64())
             }),
@@ -1779,6 +1810,14 @@ impl NormalizedTable {
                     row.availability_time,
                     row.capture_time,
                     &format!("mark price {}", row.event_time),
+                )?
+                .as_u64())
+            }),
+            Self::Funding(table) => count(&table.rows, start, end, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("funding rate {}", row.event_time),
                 )?
                 .as_u64())
             }),
@@ -2082,6 +2121,28 @@ fn normalize_tables_for_kind(
             .map(NormalizedTable::Mark)
             .collect()
         }
+        SourceAdapterKind::FundingRates => {
+            let DecodedPayload::Text(text) = payload else {
+                anyhow::bail!("funding-rate adapter requires a text payload container");
+            };
+            // The funding-rate wire normalizer (raw acquisition) is a registered
+            // seam; its parsing path lands in a follow-up slice. The canonical
+            // funding table + canonical->NT projection + read-back are proven by
+            // the synthetic round-trip tests in catalog_projection. Dispatching
+            // through the seam keeps NormalizedTable::Funding on the one
+            // normalization path.
+            normalize_registered_funding_converter(
+                &spec.converter,
+                accepted,
+                spec.identity.single()?,
+                &text,
+                capture_time_nanos,
+                run_id,
+            )?
+            .into_iter()
+            .map(NormalizedTable::Funding)
+            .collect()
+        }
         SourceAdapterKind::CsvNativeTrades => {
             anyhow::bail!(
                 "CSV native-trades adapter dispatches through the single-table trade entry"
@@ -2126,7 +2187,8 @@ fn plan_projected_tables(
             | NormalizedTable::Deltas(_)
             | NormalizedTable::Quotes(_)
             | NormalizedTable::Index(_)
-            | NormalizedTable::Mark(_) => None,
+            | NormalizedTable::Mark(_)
+            | NormalizedTable::Funding(_) => None,
         };
         planned.push(PlannedTable {
             subroot: output_dir.join(&subroot_relative),
@@ -2206,6 +2268,11 @@ fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
             let prices = read_back_mark(&planned.subroot, &planned.nt_instrument_id)
                 .context("catalog read-back failed")?;
             assert_mark_read_back_matches(&prices, table, &planned.nt_instrument_id)
+        }
+        NormalizedTable::Funding(table) => {
+            let rates = read_back_funding_rates(&planned.subroot, &planned.nt_instrument_id)
+                .context("catalog read-back failed")?;
+            assert_funding_read_back_matches(&rates, table, &planned.nt_instrument_id)
         }
     }
 }
@@ -2546,6 +2613,7 @@ pub fn run_multi_table_from_run_spec(
         QUOTE_TABLE_FAMILY,
         INDEX_PRICES_TABLE_FAMILY,
         MARK_PRICES_TABLE_FAMILY,
+        FUNDING_RATES_TABLE_FAMILY,
     ] {
         let path = output_dir.join(stale_tree);
         if path.exists() {
@@ -2578,6 +2646,11 @@ pub fn run_multi_table_from_run_spec(
             NormalizedTable::Mark(canonical) => {
                 project_canonical_mark_to_catalog(canonical, instrument_spec, &table.subroot)
             }
+            NormalizedTable::Funding(canonical) => project_canonical_funding_rates_to_catalog(
+                canonical,
+                instrument_spec,
+                &table.subroot,
+            ),
         }
         .with_context(|| format!("catalog projection failed for {}", table.subroot_relative))?;
         ensure!(
@@ -2606,6 +2679,7 @@ pub fn run_multi_table_from_run_spec(
             NormalizedTable::Quotes(canonical) => canonical.write_parquet(&table.canonical_path),
             NormalizedTable::Index(canonical) => canonical.write_parquet(&table.canonical_path),
             NormalizedTable::Mark(canonical) => canonical.write_parquet(&table.canonical_path),
+            NormalizedTable::Funding(canonical) => canonical.write_parquet(&table.canonical_path),
         }
         .with_context(|| {
             format!(

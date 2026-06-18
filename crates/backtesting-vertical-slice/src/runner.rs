@@ -32,8 +32,8 @@ use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, IndexPriceUpdate, MarkPriceUpdate, OrderBookDelta, QuoteTick,
-        TradeTick,
+        Bar, BarSpecification, FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate,
+        OrderBookDelta, QuoteTick, TradeTick,
     },
     enums::{AggregationSource, AggressorSide, BookAction, OrderSide, OrderStatus, PriceType},
     identifiers::{InstrumentId, Venue},
@@ -1156,6 +1156,71 @@ pub(crate) fn assert_mark_read_back_matches(
         ensure!(
             update.ts_init.as_u64() == expected_ts_init,
             "mark read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+            update.ts_init.as_u64()
+        );
+    }
+    Ok(())
+}
+
+/// Prove a funding-rate catalog read-back is value-faithful, mirroring
+/// [`assert_index_read_back_matches`] for the funding family: element-wise in
+/// catalog order, every read-back update must carry the projected instrument id,
+/// rate, interval, next funding timestamp, event clock, and
+/// availability-or-capture receipt clock derived through the shared projection
+/// owner.
+pub(crate) fn assert_funding_read_back_matches(
+    read_back: &[FundingRateUpdate],
+    table: &super::canonical_market_data::CanonicalFundingRatesTable,
+    expected_instrument_id: &str,
+) -> Result<()> {
+    ensure!(
+        read_back.len() == table.rows.len(),
+        "funding catalog read-back count {} does not match canonical rows {}",
+        read_back.len(),
+        table.rows.len()
+    );
+    for (index, (update, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
+        ensure!(
+            update.instrument_id.to_string() == expected_instrument_id,
+            "funding read-back {index} instrument {} does not match projected {expected_instrument_id}",
+            update.instrument_id
+        );
+        let expected_rate = Decimal::from_str(&row.rate)
+            .with_context(|| format!("canonical rate {:?}", row.rate))?;
+        ensure!(
+            update.rate == expected_rate,
+            "funding read-back {index} rate {} does not match canonical {expected_rate}",
+            update.rate
+        );
+        ensure!(
+            update.interval == row.interval_minutes,
+            "funding read-back {index} interval {:?} does not match canonical {:?}",
+            update.interval,
+            row.interval_minutes
+        );
+        let expected_next = row
+            .next_funding_time
+            .map(|value| u64::try_from(value))
+            .transpose()
+            .with_context(|| format!("canonical next_funding_time {:?}", row.next_funding_time))?;
+        ensure!(
+            update.next_funding_ns.map(|value| value.as_u64()) == expected_next,
+            "funding read-back {index} next_funding_ns {:?} does not match canonical {:?}",
+            update.next_funding_ns.map(|value| value.as_u64()),
+            expected_next
+        );
+        let label = format!("funding rate {}", row.event_time);
+        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+        ensure!(
+            update.ts_event.as_u64() == expected_ts_event,
+            "funding read-back {index} ts_event {} does not match canonical {expected_ts_event}",
+            update.ts_event.as_u64()
+        );
+        let expected_ts_init =
+            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+        ensure!(
+            update.ts_init.as_u64() == expected_ts_init,
+            "funding read-back {index} ts_init {} does not match canonical {expected_ts_init}",
             update.ts_init.as_u64()
         );
     }

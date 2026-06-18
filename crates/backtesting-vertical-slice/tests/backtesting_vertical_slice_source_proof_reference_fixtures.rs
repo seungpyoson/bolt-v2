@@ -293,6 +293,23 @@ fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofRep
                 "trade-replay fixture report {path:?} must bind mapping evidence to NT TradeTick catalog readback"
             );
         }
+        ("funding_rates", SourceProofFidelityClass::FundingReplay) => {
+            assert_eq!(
+                report.nt_mapping_status,
+                NtMappingStatus::Accepted,
+                "funding-replay fixture report {path:?} must carry accepted NT catalog mapping evidence"
+            );
+            assert_eq!(
+                report.required_checks.nt_mapping.outcome,
+                CheckOutcome::Passed,
+                "funding-replay fixture report {path:?} must pass NT mapping before provider selection"
+            );
+            let evidence = report.required_checks.nt_mapping.evidence_ref.as_str();
+            assert!(
+                evidence.contains("FundingRateUpdate") && evidence.contains("ParquetDataCatalog"),
+                "funding-replay fixture report {path:?} must bind mapping evidence to NT FundingRateUpdate catalog readback"
+            );
+        }
         (_, SourceProofFidelityClass::TradeBarReplay) => {
             // Bar-replay sources (e.g. Kalshi official historical candlesticks) must carry
             // a committed NT mapping inspection reference, not a free-form "pending" string.

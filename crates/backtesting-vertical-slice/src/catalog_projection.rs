@@ -2156,6 +2156,7 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             .cmp(&b.ts_event)
             .then_with(|| a.instrument_id.cmp(&b.instrument_id))
             .then_with(|| a.rate.cmp(&b.rate))
+            .then_with(|| a.rate.to_string().cmp(&b.rate.to_string()))
             .then_with(|| a.interval.cmp(&b.interval))
             .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
             .then_with(|| a.ts_init.cmp(&b.ts_init))
@@ -2279,27 +2280,25 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     // Empty funding catalogs emit nothing, preserving existing reference hashes.
     for funding_rate in funding_rates {
         hasher.update([42u8]);
-        hasher.update(funding_rate.instrument_id.symbol.as_str().as_bytes());
-        hasher.update([0xff]);
-        hasher.update(funding_rate.instrument_id.venue.as_str().as_bytes());
+        hasher.update(funding_rate.instrument_id.to_string().as_bytes());
         hasher.update([43u8]);
         hasher.update(funding_rate.rate.to_string().as_bytes());
         hasher.update([44u8]);
         if let Some(value) = funding_rate.interval {
-            hasher.update(value.to_be_bytes());
+            hasher.update(value.to_string().as_bytes());
         } else {
             hasher.update(b"<none>");
         }
         hasher.update([45u8]);
         if let Some(value) = funding_rate.next_funding_ns {
-            hasher.update(value.as_u64().to_be_bytes());
+            hasher.update(value.as_u64().to_string().as_bytes());
         } else {
             hasher.update(b"<none>");
         }
         hasher.update([46u8]);
-        hasher.update(funding_rate.ts_event.as_u64().to_be_bytes());
+        hasher.update(funding_rate.ts_event.as_u64().to_string().as_bytes());
         hasher.update([47u8]);
-        hasher.update(funding_rate.ts_init.as_u64().to_be_bytes());
+        hasher.update(funding_rate.ts_init.as_u64().to_string().as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
 }

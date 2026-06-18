@@ -3,7 +3,7 @@
 `plan_version`: `normalization-catalog-plan.v3`
 `supersedes`: `normalization-catalog-plan.v2`
 `status`: DRAFT pending owner sign-off. v2 went through a six-model adversarial-review pass (B-1 convergent blocker + R-2…R-16). v3 incorporates every grounded cluster correction. Does NOT itself authorize canonical writes (those remain owner-gated, see "Contract gate handling" §5.1 / contract §292-309).
-`NT rev`: `6e059dcbb59ac1e582132fc431a581936c216c3c` (crate `nautilus-persistence`); `object_store` 0.13.2.
+`NT rev`: `6be5a5094716790a8ca2875445fde4fa2586107e` (crate `nautilus-persistence`); `object_store` 0.13.2.
 `archive note`: the superseded plan chain — `normalization-catalog-plan.v1.md`, `normalization-catalog-plan.v2.md`, `normalization-catalog-plan.v2-review-synthesis.md`, `normalization-catalog-plan.v2-reviews/` — is removed from the live tree; this document is the only living plan surface. Retrieve any archived file from git history: `git show b2beaf9c1:specs/023-nt-research-analytics-platform/reference/<name>`. File:line citations to those documents elsewhere in this plan refer to the archived copies.
 
 ## v3 changes from v2
@@ -20,12 +20,12 @@ v3 keeps the v2 design that the review did not challenge (the F1–F15 resolutio
 - **R-8 (write_mode migration atomicity):** the coverage ledger's exclusion heuristic (`backfill_coverage_ledger.py:289-293`) is replaced with positive identification; the 13 producer/ledger edits + schema-validation test ship as ONE indivisible change set (§6.2, §16 Group G-A).
 - **R-9 (`:v0-pending`):** the provisional suffix is an opaque ROW-ID discriminator decoupled from the typed `source_proof_version` field (a positive integer; pending = `1`); §6.3.
 - **R-10 (orphan recovery):** a distinct `recovered_orphan` `commit_state` + distinct manifest schema, required accepted+resolved `source_proof_id`, FULL (not sampled) hash verify, complete provenance, barred from coverage and promotion until human-reviewed; §6.4.
-- **R-11 (Tier-A version coupling):** CI guard asserts `NautilusDataType` == exactly 9 members (`config.rs:52-62`) + the exact projector-relevant prefix STRINGS (NOT a blanket 38-entry `CatalogPathPrefix` count) + the `timestamps_to_filename` format; projector pinned to `6e059dc`; §11/§12.
+- **R-11 (Tier-A version coupling):** CI guard asserts the current `NautilusDataType` member set, including `FundingRateUpdate` at the repo-pinned NT rev, plus the exact projector-relevant prefix STRINGS (NOT a blanket `CatalogPathPrefix` count) + the `timestamps_to_filename` format; projector pinned to `6be5a5094716790a8ca2875445fde4fa2586107e`; §11/§12.
 - **R-12 (Python dual write path):** §3 declares a single writer (Rust `ConditionalCatalogWriter`); Python is strictly read-only against both the NT catalog and Tier-C Parquet; the v2 "Python convenience that writes the same format" clause is removed.
 - **R-13 (promotion TOCTOU + staging cleanup):** at-WRITE-time re-verification of the logical digest before canonical materialization (whole-package fail-loud abort), plus a fail-safe staging-cleanup policy that pins every URI a constructed-but-uncommitted PromotionPackage enumerates; §4.4 / §4.4b.
 - **R-14 (synthetic↔provider root collision):** Phase-0/3 proofs write to a dedicated synthetic-only top-level root with a fail-loud disjointness assertion before any byte; §4.4 / §10.2.
 - **R-15 (framing):** new §16 separates design-decided (D-1..D-7) from repo-edits-pending (atomic, file:line-targeted tasks G-A..G-C); the plan owns the list but does not itself perform the edits.
-- **R-16 (Tier B funding, kept open):** `funding_rate_update` confirmed absent from `NautilusDataType` (`config.rs:52-62`) and `dispatch_query` (`node.rs:539-567`); custom-data/actor injection named as the candidate, not wired; build-time owner-gated.
+- **R-16 (funding native replay, resolved):** `FundingRateUpdate` is present in `NautilusDataType` and `dispatch_query` at repo-pinned NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`; funding uses the native NT catalog stream. Custom-data remains for non-native S6/S7 families, not funding.
 
 Canonical-write authorization is unchanged: writes remain owner-gated; v3 does not authorize them. Status stays DRAFT pending owner sign-off.
 
@@ -58,7 +58,7 @@ v2" above).
 
 ## 1. Verified-at-pinned-rev facts (re-checked by the main session)
 
-NT rev `6e059dc`, crate `nautilus-persistence`:
+NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`, crate `nautilus-persistence`:
 
 - The catalog's `CatalogPathPrefix` set is fixed (`crates/persistence/src/backend/catalog.rs:4109-4146`):
   `QuoteTick→quotes`, `TradeTick→trades`, `OrderBookDelta→order_book_deltas`,
@@ -69,11 +69,11 @@ NT rev `6e059dc`, crate `nautilus-persistence`:
   `InstrumentAny→instruments`, `AccountState→account_state`, plus order/position/report lifecycle
   prefixes (execution outputs, out of scope here). The full `impl_catalog_path_prefix!` set is 38
   entries (`catalog.rs:4109-4146`) — only the load-bearing subset is asserted by the R-11 guard (§11/§12).
-- The Rust `BacktestNode` replay path (`crates/backtest/src/node.rs:539-567`, `dispatch_query`)
-  streams ONLY the 9-member `NautilusDataType` enum (`crates/backtest/src/config.rs:52-62`):
+- The Rust `BacktestNode` replay path (`crates/backtest/src/node.rs`, `dispatch_query`)
+  streams the current `NautilusDataType` enum (`crates/backtest/src/config.rs`):
   `QuoteTick, TradeTick, Bar, OrderBookDelta, OrderBookDepth10, MarkPriceUpdate, IndexPriceUpdate,
-  InstrumentStatus, InstrumentClose`. `FundingRateUpdate` is **absent** from `NautilusDataType` and
-  from the `Data` enum (`crates/model/src/data/mod.rs:100-112`).
+  InstrumentStatus, InstrumentClose, FundingRateUpdate`. `FundingRateUpdate` has a native dispatch
+  arm at the pinned rev.
 - `instruments` load via a separate lane: write (`write_instruments`, `catalog.rs:701`) /
   read (`query_instruments`, `catalog.rs:827`, called at `node.rs:165`), NOT through `dispatch_query`.
 - `MarkPriceUpdate`/`IndexPriceUpdate` are **point updates** carrying a single price + timestamp
@@ -114,18 +114,18 @@ NT rev `6e059dc`, crate `nautilus-persistence`:
 ## 2. NT-class target matrix (authoritative — resolves F1)
 
 `source_of_truth`: catalog write surface = `crates/persistence/src/backend/catalog.rs`; backtest
-replay surface = `crates/backtest/src/{config.rs,node.rs}`; NT rev `6e059dc`.
+replay surface = `crates/backtest/src/{config.rs,node.rs}`; NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`.
 
 ### 2.1 Three-tier classification + the instruments lane (resolves F1, R-4)
 
 v1 collapsed two NT surfaces that are NOT the same. There are THREE tiers, not two:
 
 - **Tier A — NT-replayable**: type is a `NautilusDataType` member, so a Rust `BacktestNode` can
-  `query::<T>` it and stream it. Exhaustive set is the 9-member `NautilusDataType` enum
-  (`crates/backtest/src/config.rs:52-62`); `dispatch_query` is the exhaustive replay dispatch.
+  `query::<T>` it and stream it. Exhaustive set is the pinned `NautilusDataType` enum; at
+  `6be5a5094716790a8ca2875445fde4fa2586107e` this includes `FundingRateUpdate`.
 - **Tier B — catalog-writable, NOT engine-replayable**: type has a `CatalogPathPrefix` and a typed
-  write path but is NOT a `NautilusDataType`. Only member in this tranche: `FundingRateUpdate →
-  funding_rate_update` (`catalog.rs:4116`).
+  write path but is NOT a `NautilusDataType`. This tranche is empty for the current plan after
+  `FundingRateUpdate` moved to Tier A.
 - **Tier C — non-NT research-only Parquet**: no NT data class. Lands as custom-data Parquet
   (`catalog.rs:431-433,449-451`) or a plain research table under `normalized/`. `BacktestNode` does
   NOT consume it.
@@ -138,7 +138,7 @@ Instruments are a backtest precondition (instrument definitions), not a streamed
 do NOT go through `dispatch_query`.
 
 > **Instruments-lane write hazard (resolves R-4).** `write_instruments` is **not** a separate, safe
-> write path — it inherits the exact F2 non-atomic last-writer-wins defect. Verified at `6e059dc`,
+> write path — it inherits the exact F2 non-atomic last-writer-wins defect. Verified at `6be5a50`,
 > `write_instruments` (`catalog.rs:701-789`) does: a `head()` existence probe
 > (`catalog.rs:742`), then on miss an unconditional `write_batches_to_object_store(...)` whose final
 > step is a plain `object_store.put(...)` (`catalog.rs:773-783` → `parquet.rs:197`, default
@@ -182,14 +182,12 @@ do NOT go through `dispatch_query`.
 | `MarkPriceUpdate` | `mark_prices` | A | yes |
 | `InstrumentStatus` | `instrument_status` | A | yes |
 | `InstrumentClose` | `instrument_closes` | A | yes |
-| `FundingRateUpdate` | `funding_rate_update` | **B** | **NO** |
+| `FundingRateUpdate` | `funding_rate_update` | **A** | **yes** |
 | `InstrumentAny` | `instruments` | separate lane — write via `ConditionalCatalogWriter` (NEVER NT `write_instruments` for platform-root writes, `catalog.rs:701`; §4.1 scope-boundary note); read via `query_instruments` (`catalog.rs:827`, called at `node.rs:165`) | n/a |
 | `AccountState` | `account_state` | execution output, out of scope | no |
 
 Confirmed exact strings: `order_book_depths` (NOT `order_book_depth_10`); `funding_rate_update`
-(NOT `funding_rates`). `FundingRateUpdate` is Tier B, not Tier A. v1's blanket "NT class for funding"
-is correct at the catalog-write level but MUST be qualified: funding cannot be replayed by
-`BacktestNode`.
+(NOT `funding_rates`). `FundingRateUpdate` is Tier A at the current repo-pinned NT rev.
 
 ### 2.3 Authoritative table-target matrix (every contract table family)
 
@@ -230,7 +228,7 @@ is correct at the catalog-write level but MUST be qualified: funding cannot be r
 | `mark_prices` | Tier A — `MarkPriceUpdate → mark_prices` (point update, NOT a bar — see §2.4) |
 | `index_prices` | Tier A — `IndexPriceUpdate → index_prices` (point update, NOT a bar) |
 | `premium_index_prices` | Tier C — non-NT research-only Parquet (no NT class) |
-| `funding_rates` (contract name) | **Tier B** — `FundingRateUpdate → funding_rate_update`. Catalog-writable with a real NT prefix, but NOT in `NautilusDataType`, so NOT BacktestNode-replayable. All `funding_rates` references use prefix `funding_rate_update` where the NT class is targeted |
+| `funding_rates` (contract name) | Tier A — `FundingRateUpdate → funding_rate_update`. Catalog-writable and native-replayable at the current repo-pinned NT rev. All `funding_rates` references use prefix `funding_rate_update` where the NT class is targeted |
 | `open_interest` | Tier C — non-NT research-only Parquet |
 | `liquidations` | Tier C — non-NT research-only Parquet |
 | `long_short_ratios` | Tier C — non-NT research-only Parquet |
@@ -266,26 +264,23 @@ kline does not losslessly become a point update. **Resolution rule:**
 ### 2.5 Replay-claim rule (binds the BacktestNode subset)
 
 **Rule P-NT-REPLAY:** The `BacktestNode`/`BacktestEngine` replay claim applies ONLY to Tier A — the
-9-member `NautilusDataType` set, routed through `dispatch_query`: `quotes`, `trades`, `bars`,
+current `NautilusDataType` set, routed through `dispatch_query`: `quotes`, `trades`, `bars`,
 `order_book_deltas`, `order_book_depths`, `mark_prices`, `index_prices`, `instrument_status`,
-`instrument_closes` — plus the `instruments` precondition lane. NOTHING else is replayable:
+`instrument_closes`, `funding_rate_update` — plus the `instruments` precondition lane. NOTHING else is replayable:
 
-- **Funding is NOT replayable** by `BacktestNode`. `funding_rate_update` (Tier B) is catalog-resident
-  with a real NT prefix but absent from `NautilusDataType`. Funding consumption is a strategy/actor-
-  side concern outside the catalog-stream path, or via custom data (Open decision §13.1, R-16 fold).
 - **All Tier C families are NOT replayable** — `open_interest`, `premium_index_prices`,
   `long_short_ratios`, `taker_buy_sell_volume`, `borrow_lending_rates`, `liquidations`,
   `historical_volatility`, `option_greeks`, `implied_volatility`, `forward_prices`, `settlements`,
   `delivery_prices`, `order_book_snapshot_deltas`, `order_book_snapshots_full`,
   `order_book_snapshots_fixed_depth`, and all `prediction_market_*`.
 - Any consumption smoke test that claims replay MUST use a Tier A type. It does NOT prove replay for
-  any Tier B/C family.
+  any non-Tier-A family.
 
 ### 2.6 Evidence-matrix amendment
 
 The expanded evidence matrix (`contract:303-304`) gains a per-`(venue, product_family, table_family)`
 column **`nt_target`** with exactly one of: `nt_replayable:<prefix>` (Tier A),
-`nt_catalog_only:funding_rate_update` (Tier B), `instruments_lane` (instruments), or
+`instruments_lane` (instruments), or
 `non_nt_research_parquet` (Tier C). This column is the single source mapping each contract table to
 its NT-surface tier and is what scopes the replay claim.
 
@@ -358,7 +353,7 @@ either (bolt rule 6).
 
 ### 3.4 How NT resolves a catalog (the mechanic the whole read-path design rests on)
 
-Verified at rev `6e059dc`:
+Verified at rev `6be5a50`:
 
 - A backtest declares **one catalog root URI per `BacktestDataConfig`**: `catalog_path` +
   optional `catalog_fs_protocol` (`config.rs:599,601`). `create_catalog` builds `<protocol>://<path>`
@@ -459,7 +454,7 @@ for read-back/query (`query_files`, `query_instruments`).
 > methods are in `crates/persistence/src/backend/catalog.rs`.
 
 **4.3.0 Encoder boundary — verified `pub`, but encode and `put` share one function (resolves R-5).**
-At `6e059dc` the public encoder is `write_batches_to_object_store` (**`parquet.rs:170`**, declared
+At `6be5a50` the public encoder is `write_batches_to_object_store` (**`parquet.rs:170`**, declared
 `pub async fn`). It IS public and callable from an external crate that depends on
 `nautilus-persistence`. **However it is NOT a pure byte-encoder:** it encodes the `&[RecordBatch]` into
 an in-memory `buffer: Vec<u8>` via `ArrowWriter` (`parquet.rs:178-194`) and then, in the SAME function
@@ -900,7 +895,7 @@ value in X between build and promote → assert the at-write re-verify FAILS and
 
 ### 4.5 Cross-kind atomicity, the run-pinned reader rule, and the instruments-lane writer (resolves R-2, R-4)
 
-**Why a per-kind pointer is not enough (NT read-path, verified at `6e059dc`).** NT's reader has zero
+**Why a per-kind pointer is not enough (NT read-path, verified at `6be5a50`).** NT's reader has zero
 pointer/snapshot/set awareness and re-resolves the catalog *independently, multiple times, at different
 wall-clock moments within one run*:
 
@@ -1072,8 +1067,7 @@ staging at all.**
 
 1. **Staging NEVER emits a Tier A/B NT-replayable catalog.** Interim staging materializes only Tier-C
    research Parquet (and the operational provenance tables). It does **not** write any
-   `OrderBookDepth10`/`QuoteTick`/`TradeTick`/… catalog under a Tier A prefix, nor a `FundingRateUpdate`
-   (Tier B) catalog. The NT-replayable catalog exists **only** as a committed per-commit root produced
+   `OrderBookDepth10`/`QuoteTick`/`TradeTick`/… catalog under a Tier A prefix. The NT-replayable catalog exists **only** as a committed per-commit root produced
    by promotion (§4.4). There is no NT catalog in staging to be mis-read.
 
 2. **Staged data lives under a physically non-NT path layout NT cannot enumerate.** Staged research
@@ -1761,7 +1755,7 @@ canonical-promotion step.
 
 | New step | Action | Maps to v1 | Why moved |
 |---|---|---|---|
-| **S1** | NT-catalog-on-S3 capability proof on a research-only crate (`cloud` feature, rev `6e059dc`); negative control + invalid-creds control + positive write/re-open/query — **over SYNTHETIC fixtures only** (one synthetic `binary option`, one synthetic `perps/spot`), into a DISTINCT synthetic-only root (R-14, §10.2). | v1 STEP 1 (now synthetic-bound) | Source-independent; must not read provider bytes. |
+| **S1** | NT-catalog-on-S3 capability proof on a research-only crate (`cloud` feature, rev `6be5a50`); negative control + invalid-creds control + positive write/re-open/query — **over SYNTHETIC fixtures only** (one synthetic `binary option`, one synthetic `perps/spot`), into a DISTINCT synthetic-only root (R-14, §10.2). | v1 STEP 1 (now synthetic-bound) | Source-independent; must not read provider bytes. |
 | **S2** | Approve `artifact_root` URI + typed prefix schema + URI-validation tests. | v1 STEP 2 | Unchanged. |
 | **S3** | Shared Common Identity normalization library (nanos multiplier table, decimal-string preservation, `canonical_instrument_key`, `transform_hash` over code+config, `raw_payload_id`, deterministic provisional `source_proof_id` plumbing, the §4.3b logical-content digest) + timestamp-unit unit tests + the `event_time_source` fail-loud guard (§7.3). | v1 STEP 3 | Unchanged (source-independent). |
 | **S4** | The `ConditionalCatalogWriter` create-only/no-overwrite write layer (§4.3) incl. encoder-boundary decision (0.E), conditional-put + copy-if-not-exists probe (0.6); concurrency proof; `no_overwrite_proof`. | v1 STEP 4 (promoted to BLOCKER) | Source-independent; blocking. |
@@ -1789,7 +1783,7 @@ canonical-promotion step.
   - **0.4 Positive proof.** SSM-resolved creds → write two SYNTHETIC fixtures → re-open → `query_files`
     → assert; stamp `NtCapabilityProof` (exact `storage_options` key set consumed, credential source =
     SSM).
-  - **0.E Encoder-boundary verification (BLOCKING, R-5).** Verify at `6e059dc` that
+  - **0.E Encoder-boundary verification (BLOCKING, R-5).** Verify at `6be5a50` that
     `write_batches_to_object_store` is `pub` (`parquet.rs:170`) and that the encode and `put` share one
     function (`parquet.rs:178-197`); choose and lock the encoder strategy (vendor the ~25-LOC encode body
     OR arrow-rs byte-compatible encode) per §4.3.0; record the encoder identity in `NtCapabilityProof`.
@@ -1881,9 +1875,9 @@ and falsifiable.
   `bolt-v2/Cargo.toml` via `[workspace] exclude` so it never joins the live binary's resolution graph;
   OR a fully separate repo/path checkout. **Prior art already in-repo (do not duplicate scaffolding
   unknowingly):** `crates/backtesting-vertical-slice/` on `main` implements exactly this pattern —
-  its own `[workspace]` root + `Cargo.lock` with `nautilus-persistence = { rev = "6e059dc…",
+  its own `[workspace]` root + `Cargo.lock` with `nautilus-persistence = { rev = "6be5a509…",
   features = ["cloud"] }`, outside the live binary's graph. Phase-0 decides at build time whether to
-  extend that crate or scaffold the sibling projector crate. It depends on `nautilus-persistence = { rev = "6e059dc...",
+  extend that crate or scaffold the sibling projector crate. It depends on `nautilus-persistence = { rev = "6be5a509...",
   features = ["cloud"] }` (`cloud = object_store/{aws,azure,gcp,http}`, `crates/persistence/
   Cargo.toml:25-30`). The live `bolt-v2` package keeps its dependency line (`Cargo.toml:39`) with NO
   `cloud` feature.
@@ -1902,15 +1896,16 @@ target's resolution graph contains the AWS cloud surface:
   not the crate's presence, because `object_store` is unavoidably in the tree via datafusion. A green
   guard is the empirical proof that no path pulled cloud/aws into the live LiveNode.
 
-**R-11 drift guard (CI, pinned to `6e059dc`).** The tier matrix (§2), the replay-claim rule (§2.5), the
+**R-11 drift guard (CI, pinned to `6be5a5094716790a8ca2875445fde4fa2586107e`).** The tier matrix (§2), the replay-claim rule (§2.5), the
 projector's NT-class routing, and the NT-native canonical filename assumption (B-1) all assume a FIXED
-NT surface at `6e059dc`; an NT rev bump could silently invalidate them. The separate cloud-enabled
+NT surface at `6be5a5094716790a8ca2875445fde4fa2586107e`; an NT rev bump could silently invalidate them. The separate cloud-enabled
 projector workspace pins `nautilus-persistence` / `nautilus-backtest` to
-`rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"` (no floating rev, no version range). A CI test in the
+`rev = "6be5a5094716790a8ca2875445fde4fa2586107e"` (no floating rev, no version range). A CI test in the
 projector workspace asserts, against the pinned source, ALL of:
-1. `NautilusDataType` has **exactly 9** members (`crates/backtest/src/config.rs:52-62`:
+1. `NautilusDataType` includes the pinned replay surface (`crates/backtest/src/config.rs`:
    `QuoteTick, TradeTick, Bar, OrderBookDelta, OrderBookDepth10, MarkPriceUpdate, IndexPriceUpdate,
-   InstrumentStatus, InstrumentClose`). A 10th member or a removal fails the guard.
+   InstrumentStatus, InstrumentClose, FundingRateUpdate`). A removal or unreviewed member drift fails
+   the guard.
 2. The **exact** `CatalogPathPrefix` strings the projector depends on
    (`crates/persistence/src/backend/catalog.rs:4109-4119`) are byte-for-byte unchanged:
    `QuoteTick→"quotes"`, `TradeTick→"trades"`, `OrderBookDelta→"order_book_deltas"`,
@@ -1922,14 +1917,14 @@ projector workspace asserts, against the pinned source, ALL of:
    NT-native canonical filename the reader parses (B-1).
 
 > **Why assert the enum count AND the explicit strings, not a blanket "CatalogPathPrefix count":** the
-> full `impl_catalog_path_prefix!` set is 38 entries (`catalog.rs:4109-4146`) — the 9 replayable types
-> + `FundingRateUpdate` (Tier B, `:4116`) + `InstrumentAny` (`:4119`) + `AccountState` (`:4120`) + 25
+> full `impl_catalog_path_prefix!` set is broader than the replay surface (`catalog.rs:4109-4146`) — the replayable types
+> + `InstrumentAny` (`:4119`) + `AccountState` (`:4120`) + execution-output prefixes
 > order/position/report execution-output prefixes (`:4121-4146`) the projector does NOT map. A blanket
 > member-count assertion (e.g. "== 9" against `CatalogPathPrefix`) would be **wrong** (the set is 38),
 > brittle (it would fire on an unrelated execution-type addition that doesn't affect this projection),
 > AND insufficient (a renamed-but-same-count prefix would slip through). The guard keys on the
-> load-bearing surface only: the 9-member replay enum + the exact projector-relevant prefix strings (the
-> 9 replayable + `funding_rate_update` + `instruments`) + the canonical filename format. On ANY drift
+> load-bearing surface only: the replay enum + the exact projector-relevant prefix strings (the
+> replayable prefixes, including `funding_rate_update`, + `instruments`) + the canonical filename format. On ANY drift
 > the guard FAILS and blocks the projector until the tier matrix (§2) is re-verified against the new rev.
 
 This guard runs alongside the `cargo tree -e features` guard; both live in the projector workspace's CI,
@@ -2017,21 +2012,18 @@ keyed to the pinned rev.
    egress, wall-clock under chosen parallelism) and the HL requester-pays pre-stage line item before the
    one-year run (§9.5). Tied to decision 2.
 
-### 13.R16 — Tier B funding (`funding_rate_update`) is not BacktestNode-replayable (open, kept)
+### 13.R16 — RESOLVED: funding (`funding_rate_update`) is NT-native at the repo-pinned rev
 
-`FundingRateUpdate → funding_rate_update` is Tier B (§2.2): catalog-writable with a real NT prefix but
-absent from `NautilusDataType` (`config.rs:52-62`) and from `dispatch_query` (`node.rs:539-567`), so
-`BacktestNode` cannot stream it. Under the §4.4 root model a committed canonical root MAY contain a
-`data/funding_rate_update/` tree with NT-native interval filenames (it is catalog-writable), but **no
-replay path consumes it** — `dispatch_query` has no `FundingRateUpdate` arm.
+`FundingRateUpdate → funding_rate_update` is Tier A (§2.2) at
+`6be5a5094716790a8ca2875445fde4fa2586107e`: it is catalog-writable, present in
+`NautilusDataType`, and has a `dispatch_query` arm. Funding no longer needs the custom-data or
+actor-injection path that earlier revisions named as a candidate.
 
-**Open decision (build-time, owner-gated):** if a backtest needs historical funding applied to PnL
-during replay, funding cannot ride the `BacktestNode` catalog stream. The candidate path is
-**strategy/actor-side injection or a custom-data subscription**: project funding as
-`Data::Custom`/custom-data Parquet (`catalog.rs:431-433,449-451`) and have a funding actor subscribe and
-apply it during the run. This stays an explicit, deferred decision; v3 does NOT wire it. The Tier-A
-replay claim (§2.5 rule P-NT-REPLAY) remains scoped to exclude funding, and any consumption smoke test
-that claims replay MUST use a Tier A type — it never proves replay for `funding_rate_update`.
+**Decision:** funding uses the native NT `FundingRateUpdate` catalog stream. The custom-data path
+remains relevant for S6/S7 families that NT still does not model natively, such as open interest,
+option greeks, implied volatility, and settlements. A bolt-side engine replay claim for funding still
+requires a focused `FundingRateUpdate -> on_funding_rate` proof; catalog projection/readback alone is
+not that proof.
 
 ### 13.6 — RESOLVED: "Pointer-commit ordering across kinds"
 
@@ -2213,12 +2205,12 @@ the built store (`aws/precondition.rs:117-160`, `aws/client.rs:209`).
 | **R-8** `write_mode` migration not atomic | RESOLVED. §6.2: ledger flips from exclusion heuristic (`backfill_coverage_ledger.py:289-293`) to positive identification (`local_staging`+`staging_location=s3_noncanonical`); unknown/missing = hard error; producers + ledger + schema-validation test ship as one indivisible change set (§16 G-A). |
 | **R-9** `:v0-pending` violates `source_proof_version` schema | RESOLVED. §6.3: `:v0-pending` is an opaque ROW-ID discriminator; `source_proof_version` is a positive integer (pending = `1`, `status=pending`); provisional id must resolve to a real pending record; acceptance creates a NEW immutable record. Schema-validation test rejects non-integer/<1 versions. |
 | **R-10** Orphan acceptance path too weak | RESOLVED. §6.4: distinct `recovered_orphan` state + distinct manifest schema; required resolved ACCEPTED `source_proof_id`; FULL hash verify; complete provenance (incomplete→`unrecoverable`); barred from `accepted_binding` and §4.4 PromotionPackage until a human-reviewed `recovered_orphan → staged` transition. |
-| **R-11** Tier-A version coupling | RESOLVED. §12: CI guard pins projector to `6e059dc` and asserts `NautilusDataType` == exactly 9 (`config.rs:52-62`) + exact projector-relevant prefix STRINGS (NOT a blanket 38-entry count) + `timestamps_to_filename` format. |
+| **R-11** Tier-A version coupling | RESOLVED. §12: CI guard pins projector to `6be5a5094716790a8ca2875445fde4fa2586107e` and asserts the pinned `NautilusDataType` replay surface, including `FundingRateUpdate`, plus exact projector-relevant prefix STRINGS (NOT a blanket count) + `timestamps_to_filename` format. |
 | **R-12** Python dual write path | RESOLVED. §3: single Rust writer; Python strictly read-only against the NT catalog (`parquet.py:198,1576,1628,1675,2039`) and Tier-C Parquet; forbidden methods named (`write_data`/`write_chunk`/`consolidate_*`); v2 "Python writes the same format" clause removed; read creds SSM-only. |
 | **R-13** Promotion TOCTOU + staging cleanup | RESOLVED. §4.4 step 3: at-WRITE-time re-verification of the §4.3b logical digest before canonical materialization, whole-package fail-loud abort. §4.4b: fail-safe staging-cleanup policy pins every URI a constructed-but-uncommitted PromotionPackage enumerates; per-exact-URI, never prefix/glob; aborts deleting nothing if it cannot enumerate staged packages. |
 | **R-14** Synthetic vs provider root collision | RESOLVED. §4.4 step 8 / §10.2: Phase-0/3 proofs write to a dedicated synthetic-only top-level root (`nt-catalog-synthetic-proof/<run_uuid>/`) with a fail-loud disjointness assertion before any byte. |
 | **R-15** Design-decided vs repo-edits-pending framing | RESOLVED. §16: D-1..D-7 design-decided vs Group G-A/G-B/G-C repo-edits-pending (atomic, file:line-targeted, with per-group acceptance tests). The plan owns the list; implementation applies the edits. |
-| **R-16** Tier B funding not BacktestNode-replayable | OPEN (kept). §13.R16: custom-data/actor injection is the candidate path, decided at build time; v3 does NOT wire it; the Tier-A replay claim excludes funding. |
+| **R-16** Funding native replay boundary | RESOLVED. §13.R16: funding is native `FundingRateUpdate` at the repo-pinned NT rev; custom-data/actor injection is not the funding path and remains reserved for non-native S6/S7 families. |
 
 ---
 

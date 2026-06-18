@@ -494,8 +494,11 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
 
             if source.canonical_base_asset != surface.canonical_base_asset {
                 errors.push(format!(
-                    "{source_context}.canonical_base_asset `{}` must match {context}.canonical_base_asset `{}`",
-                    source.canonical_base_asset, surface.canonical_base_asset,
+                    "{source_context}.{} `{}` must match {context}.{} `{}`",
+                    stringify!(canonical_base_asset),
+                    source.canonical_base_asset,
+                    stringify!(canonical_base_asset),
+                    surface.canonical_base_asset,
                 ));
             }
             let instrument_key = source.instrument_id.to_string();
@@ -518,8 +521,11 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
 
             if source.canonical_quote_asset != surface.canonical_quote_asset {
                 errors.push(format!(
-                    "{source_context}.canonical_quote_asset `{}` must match {context}.canonical_quote_asset `{}`",
-                    source.canonical_quote_asset, surface.canonical_quote_asset
+                    "{source_context}.{} `{}` must match {context}.{} `{}`",
+                    stringify!(canonical_quote_asset),
+                    source.canonical_quote_asset,
+                    stringify!(canonical_quote_asset),
+                    surface.canonical_quote_asset,
                 ));
             }
             if !realized_volatility_source_pair_supported(source.source_class, source.sample_kind) {

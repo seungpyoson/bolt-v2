@@ -11,9 +11,14 @@ use std::collections::BTreeMap;
 use nautilus_model::{data::TradeTick, identifiers::InstrumentId};
 
 use crate::bolt_v3_maker_mu_estimator::{
-    MuEstimatorConfig, MuHealthConfig, MuHealthReason, UsableMu, estimate_informed_fraction,
-    evaluate_mu_health, mint_usable_mu,
+    MuEstimatorConfig, MuHealthConfig, MuHealthReason, UsableMu, mint_usable_mu,
 };
+// `estimate_informed_fraction` / `evaluate_mu_health` are read only by the
+// test-only `mu_for` / `health_for` observability helpers below; production reads
+// μ exclusively through `mint_usable_mu`, so these imports are `#[cfg(test)]` to
+// stay clean of `-D unused-imports` in the production build.
+#[cfg(test)]
+use crate::bolt_v3_maker_mu_estimator::{estimate_informed_fraction, evaluate_mu_health};
 use crate::bolt_v3_trade_flow::{SignedTradeFlow, SignedTradeFlowConfig};
 
 /// Per-instrument signed trade-flow buffers plus the projected μ-estimator and

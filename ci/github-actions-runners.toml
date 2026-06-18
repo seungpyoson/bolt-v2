@@ -64,6 +64,9 @@ actionlint = "github_hosted"
 [workflows.require_reviewer_node]
 require-reviewer-node = "github_hosted"
 
+[workflows.require_resolved_review_threads]
+require-resolved-review-threads = "github_hosted"
+
 [workflows.dispatch_ci_cancel]
 cancel-obsolete-dispatch = "github_hosted"
 

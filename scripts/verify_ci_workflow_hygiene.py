@@ -60,6 +60,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/actionlint.yml": "actionlint",
     "require-reviewer-node.yml": "require_reviewer_node",
     ".github/workflows/require-reviewer-node.yml": "require_reviewer_node",
+    "require-resolved-review-threads.yml": "require_resolved_review_threads",
+    ".github/workflows/require-resolved-review-threads.yml": "require_resolved_review_threads",
     "advisory.yml": "advisory",
     ".github/workflows/advisory.yml": "advisory",
     "summary.yml": "summary",

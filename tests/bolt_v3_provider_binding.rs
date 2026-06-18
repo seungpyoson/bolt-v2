@@ -51,13 +51,16 @@ use bolt_v2::{
     },
     bolt_v3_providers::{
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
-        ProviderProductSubmitProofArtifactRequest, binance::ResolvedBoltV3BinanceSecrets,
-        binding_for_provider_key, chainlink::ResolvedBoltV3ChainlinkSecrets,
+        ProviderProductSubmitProofArtifactRequest,
+        binance::ResolvedBoltV3BinanceSecrets,
+        binding_for_provider_key,
+        chainlink::ResolvedBoltV3ChainlinkSecrets,
         chainlink_reference::ResolvedBoltV3ChainlinkReferenceSecrets,
-        hyperliquid::ResolvedBoltV3HyperliquidSecrets,
+        hyperliquid::{ResolvedBoltV3HyperliquidSecrets, load_live_submit_approval},
         hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
         polymarket::ResolvedBoltV3PolymarketSecrets,
-        polyresearch::ResolvedBoltV3PolyResearchSecrets, validate_client_block,
+        polyresearch::ResolvedBoltV3PolyResearchSecrets,
+        validate_client_block,
     },
     bolt_v3_secrets::{
         ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
@@ -223,38 +226,58 @@ fn add_hyperliquid_live_submit_approval(client: &mut ClientBlock) {
         .expect("test Hyperliquid client should have execution")
         .as_table_mut()
         .expect("test Hyperliquid execution should be a table");
-    execution.insert(
-        "live_submit_approval_id".to_string(),
+    let mut standard_perps = toml::map::Map::new();
+    standard_perps.insert(
+        "approval_id".to_string(),
         toml::Value::String("hl-standard-perps-approval-001".to_string()),
     );
-    execution.insert(
-        "live_submit_approval_artifact_path".to_string(),
+    standard_perps.insert(
+        "approval_artifact_path".to_string(),
         toml::Value::String("operator/hyperliquid-live-submit-approval.json".to_string()),
     );
-    execution.insert(
-        "live_submit_approval_artifact_max_bytes".to_string(),
+    standard_perps.insert(
+        "approval_artifact_max_bytes".to_string(),
         toml::Value::Integer(65536),
     );
-    execution.insert(
-        "live_submit_max_order_count".to_string(),
-        toml::Value::Integer(1),
-    );
-    execution.insert(
-        "live_submit_max_order_notional".to_string(),
+    standard_perps.insert("max_order_count".to_string(), toml::Value::Integer(1));
+    standard_perps.insert(
+        "max_order_notional".to_string(),
         toml::Value::String("10.00".to_string()),
     );
-    execution.insert(
-        "live_submit_product_proof_artifact_path".to_string(),
+    standard_perps.insert(
+        "product_proof_artifact_path".to_string(),
         toml::Value::String("operator/hyperliquid-product-submit-proof.json".to_string()),
     );
-    execution.insert(
-        "live_submit_product_proof_artifact_sha256".to_string(),
+    standard_perps.insert(
+        "product_proof_artifact_sha256".to_string(),
         toml::Value::String("d".repeat(64)),
     );
-    execution.insert(
-        "live_submit_product_proof_artifact_max_bytes".to_string(),
+    standard_perps.insert(
+        "product_proof_artifact_max_bytes".to_string(),
         toml::Value::Integer(65536),
     );
+    let mut live_submit = toml::map::Map::new();
+    live_submit.insert(
+        "standard_perps".to_string(),
+        toml::Value::Table(standard_perps),
+    );
+    execution.insert("live_submit".to_string(), toml::Value::Table(live_submit));
+}
+
+fn hyperliquid_standard_perps_live_submit_mut(
+    client: &mut ClientBlock,
+) -> &mut toml::map::Map<String, toml::Value> {
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .get_mut("live_submit")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|live_submit| live_submit.get_mut("standard_perps"))
+        .and_then(toml::Value::as_table_mut)
+        .expect("test Hyperliquid live_submit.standard_perps should be a table")
 }
 
 fn set_hyperliquid_base_url_http(client: &mut ClientBlock, url: String) {
@@ -400,7 +423,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     )
 }
 
-fn hyperliquid_hip4_execution_client_without_settlement_poll() -> ClientBlock {
+fn hyperliquid_hip4_client_without_settlement_poll() -> ClientBlock {
     data_only_client_from_toml(
         r#"
 venue = "HYPERLIQUID"
@@ -682,7 +705,8 @@ fn provider_binding_accepts_hyperliquid_live_submit_when_official_user_fees_weig
 }
 
 #[test]
-fn provider_binding_rejects_hyperliquid_live_submit_with_multiple_product_surfaces() {
+fn provider_binding_accepts_surface_scoped_hyperliquid_live_submit_with_multiple_product_surfaces()
+{
     let mut client = hyperliquid_execution_client(
         "/bolt/hyperliquid/master_api_wallet/private_key",
         "/bolt/hyperliquid/master_api_wallet/account_address",
@@ -702,13 +726,104 @@ fn provider_binding_rejects_hyperliquid_live_submit_with_multiple_product_surfac
             ]),
         );
 
+    assert_eq!(
+        validate_client_block("hyperliquid_perps", &client),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_live_submit_surface_not_enabled() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "product_surfaces".to_string(),
+            toml::Value::Array(vec![toml::Value::String("spot".to_string())]),
+        );
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(
+        rendered.contains("execution.live_submit.standard_perps requires execution.product_surfaces to include standard_perps"),
+        "surface-scoped live_submit blocks must be enabled by product_surfaces: {rendered}"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_empty_product_surfaces() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert("product_surfaces".to_string(), toml::Value::Array(vec![]));
+
     let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
 
     assert!(
         rendered.contains(
-            "clients.hyperliquid_perps.execution.product_surfaces must select exactly one Hyperliquid product surface when live_submit_approval_id is configured"
+            "execution.product_surfaces must select at least one Hyperliquid product surface"
         ),
-        "multi-surface live-submit config must fail validation before mapping: {rendered}"
+        "empty product_surfaces must fail closed: {rendered}"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_empty_hyperliquid_live_submit_table() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "live_submit".to_string(),
+            toml::Value::Table(toml::map::Map::new()),
+        );
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(
+        rendered.contains(
+            "execution.live_submit must configure at least one Hyperliquid product surface"
+        ),
+        "empty live_submit table must fail closed: {rendered}"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_live_submit_zero_max_order_count() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client)
+        .insert("max_order_count".to_string(), toml::Value::Integer(0));
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(
+        rendered.contains("execution.live_submit.standard_perps.max_order_count must be positive"),
+        "zero max_order_count must fail closed: {rendered}"
     );
 }
 
@@ -807,7 +922,7 @@ async fn provider_binding_reuses_hyperliquid_user_fees_across_instruments() {
 
 #[test]
 fn provider_binding_rejects_hip4_execution_without_settlement_poll() {
-    let client = hyperliquid_hip4_execution_client_without_settlement_poll();
+    let client = hyperliquid_hip4_client_without_settlement_poll();
     let errors = validate_client_block("hyperliquid_hip4", &client);
 
     assert!(
@@ -869,21 +984,15 @@ fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runt
         "/bolt/hyperliquid/master_api_wallet/account_address",
     );
     add_hyperliquid_live_submit_approval(&mut client);
-    client
-        .execution
-        .as_mut()
-        .expect("test Hyperliquid client should have execution")
-        .as_table_mut()
-        .expect("test Hyperliquid execution should be a table")
-        .insert(
-            "live_submit_approval_artifact_path".to_string(),
-            toml::Value::String(
-                approval_path
-                    .to_str()
-                    .expect("approval path should be utf-8")
-                    .to_string(),
-            ),
-        );
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
     loaded
         .root
         .clients
@@ -914,6 +1023,7 @@ fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runt
                 .get("hyperliquid_perps")
                 .expect("test client should exist"),
             resolved: &resolved,
+            product_surface: Some("standard_perps"),
             now_unix_seconds,
             build_head_sha: &build_head_sha,
         },
@@ -952,6 +1062,349 @@ fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runt
     let artifact_text = fs::read_to_string(&approval_path).expect("artifact should read");
     assert!(!artifact_text.contains(private_key));
     assert!(!artifact_text.contains(account_address));
+}
+
+#[test]
+fn provider_binding_rejects_operator_surface_not_enabled_by_product_surfaces() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+
+    let error = writer(
+        ProviderLiveSubmitApprovalContext {
+            loaded: &loaded,
+            client_key: "hyperliquid_perps",
+            client: loaded
+                .root
+                .clients
+                .get("hyperliquid_perps")
+                .expect("test client should exist"),
+            resolved: &resolved,
+            product_surface: Some("spot"),
+            now_unix_seconds,
+            build_head_sha: &build_head_sha,
+        },
+        now_unix_seconds + 600,
+    )
+    .expect_err("operator surface outside execution.product_surfaces must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("is not enabled by execution.product_surfaces"),
+        "error should identify the disabled operator surface: {error}"
+    );
+    assert!(
+        !approval_path.exists(),
+        "no approval artifact may be written when the operator surface is not enabled"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_unsupported_operator_product_surface_name() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+
+    let error = writer(
+        ProviderLiveSubmitApprovalContext {
+            loaded: &loaded,
+            client_key: "hyperliquid_perps",
+            client: loaded
+                .root
+                .clients
+                .get("hyperliquid_perps")
+                .expect("test client should exist"),
+            resolved: &resolved,
+            product_surface: Some("perpetuals_that_do_not_exist"),
+            now_unix_seconds,
+            build_head_sha: &build_head_sha,
+        },
+        now_unix_seconds + 600,
+    )
+    .expect_err("an unsupported operator product surface name must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported Hyperliquid product surface"),
+        "error should reject the unsupported operator surface name: {error}"
+    );
+    assert!(
+        !approval_path.exists(),
+        "no approval artifact may be written for an unsupported product surface name"
+    );
+}
+
+#[test]
+fn provider_binding_rejects_operator_surface_without_matching_live_submit_block() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "product_surfaces".to_string(),
+            toml::Value::Array(vec![
+                toml::Value::String("standard_perps".to_string()),
+                toml::Value::String("spot".to_string()),
+            ]),
+        );
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+
+    let error = writer(
+        ProviderLiveSubmitApprovalContext {
+            loaded: &loaded,
+            client_key: "hyperliquid_perps",
+            client: loaded
+                .root
+                .clients
+                .get("hyperliquid_perps")
+                .expect("test client should exist"),
+            resolved: &resolved,
+            product_surface: Some("spot"),
+            now_unix_seconds,
+            build_head_sha: &build_head_sha,
+        },
+        now_unix_seconds + 600,
+    )
+    .expect_err("a selected surface without a live_submit block must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("no matching execution.live_submit block is configured"),
+        "error should identify the missing per-surface live_submit block: {error}"
+    );
+    assert!(
+        !approval_path.exists(),
+        "no approval artifact may be written when the selected surface has no live_submit block"
+    );
+}
+
+/// Differential guard for the deliberately removed "single-surface
+/// fallback" in `selected_live_submit_surface_for_plan`. A Hyperliquid
+/// execution client configured with exactly one `product_surfaces`
+/// entry and a matching `live_submit` block, but with no strategy
+/// target routing to it (`loaded.strategies` cleared), derives an empty
+/// market-identity plan. With `product_surface = None`, surface
+/// selection falls through to the plan-derived path, which must return
+/// `Ok(None)` (zero active surfaces ⇒ nothing armed). `load_live_submit_approval`
+/// therefore short-circuits at the `selected_live_submit_config_for_context`
+/// guard and returns `Ok(None)` BEFORE reading or consuming any approval
+/// artifact, leaving the (nonexistent) artifact path untouched.
+///
+/// If a single-surface fallback were reintroduced (e.g. selecting the
+/// lone configured surface when the active set is empty), this function
+/// would instead select `standard_perps`, then attempt to read the
+/// missing approval artifact and return `Err`. Asserting `Ok(None)` here
+/// is the load-bearing differential signal: it PASSES on the fail-closed
+/// code and FAILS (`Err`) on the buggy fallback variant.
+#[test]
+fn provider_binding_does_not_arm_single_surface_hyperliquid_client_without_routed_target() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    // Approval path intentionally points at a file that does NOT exist:
+    // the fail-closed contract must return Ok(None) before any read.
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    // Clearing strategies removes every target that could route to this
+    // client, so the derived market-identity plan has zero active
+    // surfaces for `hyperliquid_perps`.
+    loaded.strategies.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    // Exactly ONE configured product surface — this is the precondition
+    // the removed single-surface fallback would have keyed off of.
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "product_surfaces".to_string(),
+            toml::Value::Array(vec![toml::Value::String("standard_perps".to_string())]),
+        );
+    // Keep only the standard_perps live_submit block so the config is
+    // valid (every live_submit surface is in product_surfaces) and point
+    // its approval artifact at the nonexistent temp path.
+    add_hyperliquid_live_submit_approval(&mut client);
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "approval_artifact_path".to_string(),
+        toml::Value::String(
+            approval_path
+                .to_str()
+                .expect("approval path should be utf-8")
+                .to_string(),
+        ),
+    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
+            Ok("0x4242424242424242424242424242424242424242424242424242424242424242".to_string())
+        }
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+
+    // `product_surface: None` is critical: passing `Some(..)` would
+    // short-circuit surface selection before plan derivation and would
+    // NOT exercise the removed fallback.
+    let approval = load_live_submit_approval(ProviderLiveSubmitApprovalContext {
+        loaded: &loaded,
+        client_key: "hyperliquid_perps",
+        client: loaded
+            .root
+            .clients
+            .get("hyperliquid_perps")
+            .expect("test client should exist"),
+        resolved: &resolved,
+        product_surface: None,
+        now_unix_seconds,
+        build_head_sha: &build_head_sha,
+    })
+    .expect(
+        "a single configured surface with no routed target must not error (fail-closed Ok(None))",
+    );
+
+    assert!(
+        approval.is_none(),
+        "no surface may be armed when no strategy target routes to the client, even if exactly one product surface is configured; a reintroduced single-surface fallback would select `standard_perps` here"
+    );
+    assert!(
+        !approval_path.exists(),
+        "the fail-closed path must not read or write the approval artifact: selection returns Ok(None) before the artifact is ever touched"
+    );
 }
 
 #[test]
@@ -1011,16 +1464,10 @@ fn provider_binding_preflights_hyperliquid_live_submit_arming_without_consuming_
         "/bolt/hyperliquid/master_api_wallet/account_address",
     );
     add_hyperliquid_live_submit_approval(&mut client);
-    client
-        .execution
-        .as_mut()
-        .expect("test Hyperliquid client should have execution")
-        .as_table_mut()
-        .expect("test Hyperliquid execution should be a table")
-        .insert(
-            "live_submit_product_proof_artifact_sha256".to_string(),
-            toml::Value::String(product_written.sha256),
-        );
+    hyperliquid_standard_perps_live_submit_mut(&mut client).insert(
+        "product_proof_artifact_sha256".to_string(),
+        toml::Value::String(product_written.sha256),
+    );
     loaded
         .root
         .clients
@@ -1037,6 +1484,7 @@ fn provider_binding_preflights_hyperliquid_live_submit_arming_without_consuming_
             .get("hyperliquid_perps")
             .expect("test client should exist"),
         resolved: &resolved,
+        product_surface: Some("standard_perps"),
         now_unix_seconds,
         build_head_sha: &build_head_sha,
     };
@@ -1112,6 +1560,7 @@ fn provider_binding_preflight_rejects_missing_product_submit_proof_without_consu
             .get("hyperliquid_perps")
             .expect("test client should exist"),
         resolved: &resolved,
+        product_surface: Some("standard_perps"),
         now_unix_seconds,
         build_head_sha: &build_head_sha,
     };
@@ -1236,7 +1685,7 @@ fn provider_binding_rejects_duplicate_hyperliquid_signer_owner() {
 }
 
 #[test]
-fn provider_binding_allows_only_one_hyperliquid_standard_perps_spot_signer_pair() {
+fn provider_binding_rejects_duplicate_hyperliquid_signer_owner_when_paths_match() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     loaded.root.clients.clear();
@@ -1248,160 +1697,26 @@ fn provider_binding_allows_only_one_hyperliquid_standard_perps_spot_signer_pair(
             client_key.to_string(),
             hyperliquid_execution_client_for_surface(
                 surface,
-                "/bolt/hyperliquid/spotperp/private_key",
-                "/bolt/hyperliquid/spotperp/account_address",
-            ),
-        );
-    }
-
-    resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
-        .expect("one standard-perps/spot pair may intentionally share one API wallet path");
-}
-
-#[test]
-fn provider_binding_rejects_hyperliquid_shared_signer_for_unapproved_surface_pair() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.clients.clear();
-    for (client_key, surface) in [
-        ("hyperliquid_standard_perps", "standard_perps"),
-        ("hyperliquid_hip3", "hip3_builder_perps"),
-    ] {
-        loaded.root.clients.insert(
-            client_key.to_string(),
-            hyperliquid_execution_client_for_surface(
-                surface,
-                "/bolt/hyperliquid/spotperp/private_key",
-                "/bolt/hyperliquid/spotperp/account_address",
-            ),
-        );
-    }
-
-    let error = resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
-        .expect_err("only the standard-perps/spot pair may share one Hyperliquid signer");
-
-    assert!(error.to_string().contains("signer/API-wallet owner"));
-}
-
-#[test]
-fn provider_binding_rejects_hyperliquid_shared_signer_when_paths_differ() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.clients.clear();
-    for (client_key, surface, private_key_path) in [
-        (
-            "hyperliquid_standard_perps",
-            "standard_perps",
-            "/bolt/hyperliquid/standard_perps/private_key",
-        ),
-        (
-            "hyperliquid_spot",
-            "spot",
-            "/bolt/hyperliquid/spot/private_key",
-        ),
-    ] {
-        loaded.root.clients.insert(
-            client_key.to_string(),
-            hyperliquid_execution_client_for_surface(
-                surface,
-                private_key_path,
-                "/bolt/hyperliquid/spotperp/account_address",
+                "/bolt/hyperliquid/master_api_wallet/private_key",
+                "/bolt/hyperliquid/master_api_wallet/account_address",
             ),
         );
     }
 
     let error = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
-        "/bolt/hyperliquid/standard_perps/private_key" | "/bolt/hyperliquid/spot/private_key" => {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => {
             Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
         }
-        "/bolt/hyperliquid/spotperp/account_address" => {
+        "/bolt/hyperliquid/master_api_wallet/account_address" => {
             Ok("0x1111111111111111111111111111111111111111".to_string())
         }
         _ => Err("unexpected SSM path requested by Hyperliquid binding"),
     })
-    .expect_err("same resolved key through different SSM paths must fail closed");
+    .expect_err(
+        "multiple Hyperliquid clients must not share one signer after the single-client collapse",
+    );
 
     assert!(error.to_string().contains("signer/API-wallet owner"));
-}
-
-#[test]
-fn provider_binding_rejects_hyperliquid_shared_signer_when_account_address_paths_differ() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.clients.clear();
-    for (client_key, surface, account_address_path) in [
-        (
-            "hyperliquid_standard_perps",
-            "standard_perps",
-            "/bolt/hyperliquid/standard_perps/account_address",
-        ),
-        (
-            "hyperliquid_spot",
-            "spot",
-            "/bolt/hyperliquid/spot/account_address",
-        ),
-    ] {
-        loaded.root.clients.insert(
-            client_key.to_string(),
-            hyperliquid_execution_client_for_surface(
-                surface,
-                "/bolt/hyperliquid/spotperp/private_key",
-                account_address_path,
-            ),
-        );
-    }
-
-    let error = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
-        "/bolt/hyperliquid/spotperp/private_key" => {
-            Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
-        }
-        "/bolt/hyperliquid/standard_perps/account_address"
-        | "/bolt/hyperliquid/spot/account_address" => {
-            Ok("0x1111111111111111111111111111111111111111".to_string())
-        }
-        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
-    })
-    .expect_err("shared signer clients must also share the account-address SSM path");
-
-    assert!(error.to_string().contains("signer/API-wallet owner"));
-}
-
-#[test]
-fn provider_binding_rejects_third_hyperliquid_client_on_shared_signer_path() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    loaded.root.clients.clear();
-    for (client_key, surface) in [
-        ("hl_a_standard_perps", "standard_perps"),
-        ("hl_b_spot", "spot"),
-        ("hl_c_spot", "spot"),
-    ] {
-        loaded.root.clients.insert(
-            client_key.to_string(),
-            hyperliquid_execution_client_for_surface(
-                surface,
-                "/bolt/hyperliquid/spotperp/private_key",
-                "/bolt/hyperliquid/spotperp/account_address",
-            ),
-        );
-    }
-
-    let error = resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
-        .expect_err("only one standard-perps client and one spot client may share the signer");
-
-    assert!(error.to_string().contains("signer/API-wallet owner"));
-}
-
-fn hyperliquid_shared_spotperp_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
-    match path {
-        "/bolt/hyperliquid/spotperp/private_key" => {
-            Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
-        }
-        "/bolt/hyperliquid/spotperp/account_address" => {
-            Ok("0x1111111111111111111111111111111111111111".to_string())
-        }
-        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
-    }
 }
 
 #[test]

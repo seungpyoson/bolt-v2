@@ -8,8 +8,15 @@ mod support;
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use bolt_v2::bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters};
+use bolt_v2::bolt_v3_adapters::{
+    BoltV3AdapterMappingError, map_bolt_v3_adapters_with_market_identity_and_runtime_approvals,
+};
 use bolt_v2::bolt_v3_config::{ClientBlock, LoadedBoltV3Config, load_bolt_v3_config};
+use bolt_v2::bolt_v3_market_families::{
+    MarketIdentityPlan,
+    hyperliquid_instrument::{HyperliquidInstrumentTargetPlan, ProductSurface},
+};
+use bolt_v2::bolt_v3_providers::ProviderRuntimeApprovals;
 use bolt_v2::bolt_v3_providers::hyperliquid::{
     HyperliquidDiscoveryStatus, HyperliquidProductMatrixEntry, HyperliquidProductSurface,
     HyperliquidSubmitStatus, ResolvedBoltV3HyperliquidSecrets, hyperliquid_product_matrix,
@@ -17,6 +24,8 @@ use bolt_v2::bolt_v3_providers::hyperliquid::{
 use bolt_v2::bolt_v3_providers::hyperliquid_artifacts::write_hyperliquid_product_matrix_artifact;
 use bolt_v2::bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets};
 use nautilus_hyperliquid::http::query::InfoRequest;
+use nautilus_model::identifiers::InstrumentId;
+use rust_decimal::Decimal;
 use zeroize::Zeroizing;
 
 fn assert_info_request_type(request: InfoRequest, expected_type: &str, context: &str) {
@@ -82,10 +91,6 @@ account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["{surface}"]
-live_submit_approval_id = "hl-unproven-surface-approval"
-live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-live_submit_product_proof_artifact_max_bytes = 65536
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -99,6 +104,16 @@ include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = {outcome_settlement_poll_secs}
+
+[execution.live_submit.{surface}]
+approval_id = "hl-unproven-surface-approval"
+approval_artifact_path = "operator/hyperliquid-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+product_proof_artifact_max_bytes = 65536
 
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
@@ -137,12 +152,52 @@ fn resolved_hyperliquid_secrets() -> ResolvedBoltV3Secrets {
     ResolvedBoltV3Secrets { clients }
 }
 
+fn target_product_surface(surface: &str) -> ProductSurface {
+    match surface {
+        "standard_perps" => ProductSurface::StandardPerps,
+        "spot" => ProductSurface::Spot,
+        "hip3_builder_perps" => ProductSurface::Hip3BuilderPerps,
+        "hip4_outcomes" => ProductSurface::Hip4Outcomes,
+        other => panic!("unknown test Hyperliquid product surface {other}"),
+    }
+}
+
+fn target_instrument_id(surface: &str) -> &'static str {
+    match surface {
+        "spot" => "BTC/USDC.HYPERLIQUID",
+        "hip4_outcomes" => "BTC-YES.HYPERLIQUID",
+        _ => "BTC-PERP.HYPERLIQUID",
+    }
+}
+
+fn target_plan_for_surface(surface: &str) -> MarketIdentityPlan {
+    let mut plan = MarketIdentityPlan::empty();
+    plan.push_target(HyperliquidInstrumentTargetPlan {
+        strategy_instance_id: "hyperliquid-product-matrix-strategy".to_string(),
+        configured_target_id: format!("hyperliquid-product-matrix-{surface}"),
+        execution_client_id: "hyperliquid_unproven_surface".to_string(),
+        product_surface: target_product_surface(surface),
+        instrument_id: InstrumentId::from(target_instrument_id(surface)),
+        quantity_step: Decimal::new(1, 3),
+        notional_step: None,
+        min_quantity: Some(Decimal::new(1, 3)),
+        min_notional: Some(Decimal::new(100, 2)),
+    });
+    plan
+}
+
 fn assert_surface_without_approval_rejects_live_submit(surface: &str) {
     let loaded = loaded_config_for_surface(surface);
     let resolved = resolved_hyperliquid_secrets();
 
-    let error = map_bolt_v3_adapters(&loaded, &resolved)
-        .expect_err("Hyperliquid surface must fail closed without consumed approval");
+    let error = map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+        &loaded,
+        &resolved,
+        &target_plan_for_surface(surface),
+        Arc::new(|| 1_800_000_000),
+        ProviderRuntimeApprovals::none(),
+    )
+    .expect_err("Hyperliquid surface must fail closed without consumed approval");
 
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
@@ -151,7 +206,7 @@ fn assert_surface_without_approval_rejects_live_submit(surface: &str) {
             message,
         } => {
             assert_eq!(client_key, "hyperliquid_unproven_surface");
-            assert_eq!(field, "execution.live_submit_approval_id");
+            assert_eq!(field, "execution.live_submit.approval_id");
             assert!(
                 message.contains("consumed live-submit approval"),
                 "surface rejection must name missing approval: {message}"
@@ -257,6 +312,11 @@ fn hip4_outcomes_product_matrix_records_nt_discovery_and_approval_gated_submit()
         ],
     );
     assert_approval_gated(hip4);
+}
+
+#[test]
+fn standard_perps_live_submit_enablement_rejects_without_consumed_surface_approval() {
+    assert_surface_without_approval_rejects_live_submit("standard_perps");
 }
 
 #[test]

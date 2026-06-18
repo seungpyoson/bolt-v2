@@ -789,128 +789,14 @@ max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
 min_observed_targets = 10
 
-[clients.hyperliquid_standard_perps_execution]
+[clients.hyperliquid_execution]
 venue = "HYPERLIQUID"
 
-[clients.hyperliquid_standard_perps_execution.execution]
+[clients.hyperliquid_execution.execution]
 account_id = "HYPERLIQUID-001"
 environment = "mainnet"
 execution_mode = "master_account_api_wallet"
-product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-mainnet-001"
-live_submit_approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json"
-live_submit_approval_artifact_max_bytes = 65536
-live_submit_max_order_count = 1
-live_submit_max_order_notional = "10.00"
-live_submit_product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-live_submit_product_proof_artifact_max_bytes = 65536
-base_url_ws = "wss://api.hyperliquid.xyz/ws"
-base_url_http = "https://api.hyperliquid.xyz/info"
-base_url_exchange = "https://api.hyperliquid.xyz/exchange"
-http_timeout_secs = 60
-max_retries = 3
-retry_delay_initial_ms = 250
-retry_delay_max_ms = 2000
-normalize_prices = true
-market_order_slippage_bps = 50
-include_builder_attribution = false
-transport_backend = "sockudo"
-ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
-
-[clients.hyperliquid_standard_perps_execution.secrets]
-# Shared Hyperliquid spot/perp API wallet: keep this private-key path identical
-# to hyperliquid_spot_execution and do not reuse it for HIP-3/HIP-4.
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/spotperp/private_key"
-account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
-
-[clients.hyperliquid_spot_execution]
-venue = "HYPERLIQUID"
-
-[clients.hyperliquid_spot_execution.execution]
-account_id = "HYPERLIQUID-001"
-environment = "mainnet"
-execution_mode = "master_account_api_wallet"
-product_surfaces = ["spot"]
-live_submit_approval_id = "hl-spot-mainnet-001"
-live_submit_approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json"
-live_submit_approval_artifact_max_bytes = 65536
-live_submit_max_order_count = 1
-live_submit_max_order_notional = "10.00"
-live_submit_product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-live_submit_product_proof_artifact_max_bytes = 65536
-base_url_ws = "wss://api.hyperliquid.xyz/ws"
-base_url_http = "https://api.hyperliquid.xyz/info"
-base_url_exchange = "https://api.hyperliquid.xyz/exchange"
-http_timeout_secs = 60
-max_retries = 3
-retry_delay_initial_ms = 250
-retry_delay_max_ms = 2000
-normalize_prices = true
-market_order_slippage_bps = 50
-include_builder_attribution = false
-transport_backend = "sockudo"
-ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
-
-[clients.hyperliquid_spot_execution.secrets]
-# Shared Hyperliquid spot/perp API wallet: keep this private-key path identical
-# to hyperliquid_standard_perps_execution and do not reuse it for HIP-3/HIP-4.
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/spotperp/private_key"
-account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
-
-[clients.hyperliquid_hip3_execution]
-venue = "HYPERLIQUID"
-
-[clients.hyperliquid_hip3_execution.execution]
-account_id = "HYPERLIQUID-001"
-environment = "mainnet"
-execution_mode = "master_account_api_wallet"
-product_surfaces = ["hip3_builder_perps"]
-live_submit_approval_id = "hl-hip3-builder-perps-mainnet-001"
-live_submit_approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json"
-live_submit_approval_artifact_max_bytes = 65536
-live_submit_max_order_count = 1
-live_submit_max_order_notional = "10.00"
-live_submit_product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-live_submit_product_proof_artifact_max_bytes = 65536
-base_url_ws = "wss://api.hyperliquid.xyz/ws"
-base_url_http = "https://api.hyperliquid.xyz/info"
-base_url_exchange = "https://api.hyperliquid.xyz/exchange"
-http_timeout_secs = 60
-max_retries = 3
-retry_delay_initial_ms = 250
-retry_delay_max_ms = 2000
-normalize_prices = true
-market_order_slippage_bps = 50
-include_builder_attribution = false
-transport_backend = "sockudo"
-ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
-
-[clients.hyperliquid_hip3_execution.secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/hip3/private_key"
-account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
-
-[clients.hyperliquid_hip4_execution]
-venue = "HYPERLIQUID"
-
-[clients.hyperliquid_hip4_execution.execution]
-account_id = "HYPERLIQUID-001"
-environment = "mainnet"
-execution_mode = "master_account_api_wallet"
-product_surfaces = ["hip4_outcomes"]
-live_submit_approval_id = "hl-hip4-outcomes-mainnet-001"
-live_submit_approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json"
-live_submit_approval_artifact_max_bytes = 65536
-live_submit_max_order_count = 1
-live_submit_max_order_notional = "10.00"
-live_submit_product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-live_submit_product_proof_artifact_max_bytes = 65536
+product_surfaces = ["standard_perps", "spot", "hip3_builder_perps", "hip4_outcomes"]
 base_url_ws = "wss://api.hyperliquid.xyz/ws"
 base_url_http = "https://api.hyperliquid.xyz/info"
 base_url_exchange = "https://api.hyperliquid.xyz/exchange"
@@ -925,8 +811,48 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 30
 
-[clients.hyperliquid_hip4_execution.secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/hip4/private_key"
+[clients.hyperliquid_execution.execution.live_submit.standard_perps]
+approval_id = "hl-standard-perps-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.spot]
+approval_id = "hl-spot-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.hip3_builder_perps]
+approval_id = "hl-hip3-builder-perps-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.hip4_outcomes]
+approval_id = "hl-hip4-outcomes-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
 # Live Chainlink Data Streams resolution-strike (price-to-beat) source. One

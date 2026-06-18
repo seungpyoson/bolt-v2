@@ -39,7 +39,6 @@ use crate::bolt_v3_maker_go_live_gate::{
 use crate::bolt_v3_maker_market_selection::{
     MakerMarketPortfolioBlocker, MakerMarketPortfolioPolicy, maker_market_portfolio_policy_blockers,
 };
-use crate::bolt_v3_market_families::validation_bindings;
 use crate::bolt_v3_operator_artifacts::{
     build_head_sha_matches_current, is_lowercase_sha256, json_artifact_sha256,
 };
@@ -883,6 +882,7 @@ fn binding_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_market_families::validation_bindings;
 
     const CONTEXT: &str = "strategy `maker-001`";
     const TEST_ARTIFACT_SHA256: &str =

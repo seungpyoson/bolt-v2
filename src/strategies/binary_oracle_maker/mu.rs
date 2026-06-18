@@ -54,9 +54,13 @@ impl MakerMuState {
     /// The raw informed-fraction μ for `instrument_id` as of `now_ms`, or `None`
     /// if the instrument is unseen or the estimator cannot produce a μ.
     ///
-    /// Private: a raw μ is gate-unchecked, so consumers must read μ only through
-    /// the fail-closed [`usable_mu_for`](Self::usable_mu_for). This building block
-    /// is used internally by `usable_mu_for` and by unit tests.
+    /// Private and `#[cfg(test)]`: a raw μ is gate-unchecked, so production
+    /// consumers must read μ only through the fail-closed
+    /// [`usable_mu_for`](Self::usable_mu_for) (which derives μ from
+    /// [`estimate_informed_fraction`] directly, not through this helper). This
+    /// building block exists solely so unit tests can assert the raw μ independent
+    /// of the gate, so it is compiled out of the production binary.
+    #[cfg(test)]
     fn mu_for(&self, instrument_id: &InstrumentId, now_ms: u64) -> Option<f64> {
         let flow = self.flows.get(instrument_id)?;
         estimate_informed_fraction(flow, now_ms, &self.estimator)
@@ -71,8 +75,11 @@ impl MakerMuState {
     /// [`estimate_informed_fraction`] reduces μ over (`samples_within`), not the
     /// raw buffer tail. Anchoring on the raw tail would let a future-dated or
     /// out-of-window trade read as fresh and mask the staleness of the data μ is
-    /// actually computed from. Private for the same reason as
-    /// [`mu_for`](Self::mu_for).
+    /// actually computed from. Private and `#[cfg(test)]` for the same reason as
+    /// [`mu_for`](Self::mu_for): production reads the verdict only inside the gate
+    /// (`mint_usable_mu`), so this test-only observability helper is compiled out
+    /// of the production binary.
+    #[cfg(test)]
     fn health_for(&self, instrument_id: &InstrumentId, now_ms: u64) -> Option<MuHealthReason> {
         let Some(flow) = self.flows.get(instrument_id) else {
             return Some(MuHealthReason::Absent);
@@ -91,8 +98,8 @@ impl MakerMuState {
     /// without first clearing the gate. The `Ok` value is the [`UsableMu`]
     /// newtype, not a bare `f64`, so the gate-cleared μ is the only μ the quote
     /// planner can be constructed with (the bypass becomes a compile error). This
-    /// is the only public μ accessor; the raw [`mu_for`](Self::mu_for) /
-    /// [`health_for`](Self::health_for) building blocks are private so no quoting
+    /// is the only public μ accessor; the raw `mu_for` / `health_for` building
+    /// blocks are private and test-only (`#[cfg(test)]`) so no production quoting
     /// path can bypass the gate.
     pub fn usable_mu_for(
         &self,

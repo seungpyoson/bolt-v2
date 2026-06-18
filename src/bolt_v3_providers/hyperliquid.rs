@@ -149,6 +149,7 @@ pub struct HyperliquidExecutionConfig {
     pub retry_delay_max_ms: u64,
     pub normalize_prices: bool,
     pub market_order_slippage_bps: u32,
+    pub include_builder_attribution: bool,
     pub transport_backend: TransportBackend,
     pub ws_post_timeout_secs: u64,
     pub outcome_settlement_poll_secs: u64,
@@ -1314,7 +1315,7 @@ fn hyperliquid_fee_http_client(
             .vault_address
             .as_ref()
             .map(|vault_address| vault_address.as_str().to_owned()),
-        Some(secrets.account_address.as_str().to_owned()),
+        Some(secrets.account_address.as_str()),
         nt_environment(cfg.environment),
         cfg.http_timeout_secs,
         cfg.proxy_url.clone(),
@@ -1475,6 +1476,7 @@ fn map_execution(
             retry_delay_max_ms: cfg.retry_delay_max_ms,
             normalize_prices: cfg.normalize_prices,
             market_order_slippage_bps: cfg.market_order_slippage_bps,
+            include_builder_attribution: cfg.include_builder_attribution,
             transport_backend: cfg.transport_backend,
             ws_post_timeout_secs: cfg.ws_post_timeout_secs,
             outcome_settlement_poll_secs: cfg.outcome_settlement_poll_secs,

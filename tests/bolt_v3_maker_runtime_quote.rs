@@ -37,7 +37,11 @@ use nautilus_model::{
     orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::{RefCell, RefMut},
+    collections::BTreeMap,
+    rc::Rc,
+};
 
 const TEST_REFERENCE_ASSET: &str = "reference_asset";
 const TEST_REALIZED_VOL_SURFACE_ID: &str = "maker_reference_surface";
@@ -847,7 +851,7 @@ fn order_identity(client_order_id: &str, generation: u64) -> OrderIdentity {
 }
 
 struct RecordingMakerOrderSink {
-    order_factory: OrderFactory,
+    order_factory: RefCell<OrderFactory>,
     submitted: Vec<OrderAny>,
     canceled_all: Vec<(Option<Leg>, InstrumentId, Option<OrderSide>)>,
 }
@@ -856,7 +860,7 @@ impl RecordingMakerOrderSink {
     fn new() -> Self {
         let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
         Self {
-            order_factory: OrderFactory::new(
+            order_factory: RefCell::new(OrderFactory::new(
                 TraderId::new("MAKER-TRADER-001"),
                 StrategyId::new("MAKER-RUNTIME-001"),
                 None,
@@ -864,7 +868,7 @@ impl RecordingMakerOrderSink {
                 clock,
                 false,
                 true,
-            ),
+            )),
             submitted: Vec::new(),
             canceled_all: Vec::new(),
         }
@@ -879,8 +883,8 @@ impl RecordingMakerOrderSink {
 }
 
 impl MakerOrderCommandSink for RecordingMakerOrderSink {
-    fn order_factory(&mut self) -> &mut OrderFactory {
-        &mut self.order_factory
+    fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
+        self.order_factory.borrow_mut()
     }
 
     fn submit_maker_order(&mut self, order: OrderAny) -> Result<()> {

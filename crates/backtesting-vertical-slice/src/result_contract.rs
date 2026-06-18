@@ -514,7 +514,7 @@ mod tests {
         BacktestResultContract {
             contract_version: RESULT_CONTRACT_VERSION.to_string(),
             run_id: "run".to_string(),
-            nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+            nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
             manifest_hash: HASH_A.to_string(),
@@ -572,12 +572,12 @@ mod tests {
     fn parses_revision_from_multiline_dependency_table() {
         let manifest = r#"[dependencies.nautilus-backtest]
 git = "https://github.com/nautechsystems/nautilus_trader.git"
-rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+rev = "6be5a5094716790a8ca2875445fde4fa2586107e"
 features = ["streaming", "examples"]
 "#;
         assert_eq!(
             nautilus_revision_from_manifest(manifest).as_deref(),
-            Some("6e059dcbb59ac1e582132fc431a581936c216c3c")
+            Some("6be5a5094716790a8ca2875445fde4fa2586107e")
         );
     }
 

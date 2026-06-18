@@ -847,7 +847,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `6e059dcbb59ac1e582132fc431a581936c216c3c`
+  - current value: `6be5a5094716790a8ca2875445fde4fa2586107e`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1472,7 +1472,7 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins NautilusTrader to upstream rev
-`6e059dcbb59ac1e582132fc431a581936c216c3c`, which contains upstream
+`6be5a5094716790a8ca2875445fde4fa2586107e`, which contains upstream
 Polymarket CLOB V2 adapter support, Binance Spot SBE schema version 4 support,
 and the Hyperliquid HIP-4 metadata path. The compatibility evidence proves
 focused Bolt-v3 compile and test compatibility only. It does not prove live

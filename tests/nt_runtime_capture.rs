@@ -1516,6 +1516,7 @@ async fn captures_instrument_any_to_per_instrument_feather_spool() {
                     None,
                     None,
                     None,
+                    None,
                     1.into(),
                     1.into(),
                 );

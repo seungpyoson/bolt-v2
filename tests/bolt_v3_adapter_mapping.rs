@@ -35,7 +35,9 @@ use bolt_v2::{
 use nautilus_binance::common::enums::{
     BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
 };
-use nautilus_binance::config::BinanceDataClientConfig;
+use nautilus_binance::config::{
+    BinanceDataClientConfig, BinanceSpotMarketDataMode as NtBinanceSpotMarketDataMode,
+};
 use nautilus_binance::spot::sbe::SBE_SCHEMA_VERSION as NT_BINANCE_SPOT_SBE_SCHEMA_VERSION;
 use nautilus_hyperliquid::{
     common::enums::HyperliquidEnvironment as NtHyperliquidEnvironment,
@@ -243,6 +245,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = {outcome_settlement_poll_secs}
@@ -479,8 +482,17 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(data.http_timeout_secs, 60);
     assert_eq!(data.ws_timeout_secs, 30);
     assert_eq!(data.ws_max_subscriptions, 200);
-    assert_eq!(data.update_instruments_interval_mins, 60);
+    assert_eq!(data.update_instruments_interval_mins, Some(60));
     assert!(!data.subscribe_new_markets);
+    assert_eq!(
+        data.base_url_rtds.as_deref(),
+        Some("wss://ws-live-data.polymarket.com")
+    );
+    assert_eq!(data.new_market_fetch_max_concurrency, 8);
+    assert!(!data.resolve_poll_enabled);
+    assert_eq!(data.resolve_poll_interval_secs, 30);
+    assert_eq!(data.resolve_poll_grace_secs, 10);
+    assert_eq!(data.resolve_poll_max_wait_secs, 1800);
     assert!(!data.auto_load_missing_instruments);
     assert_eq!(data.auto_load_debounce_ms, 250);
     assert_eq!(data.transport_backend, TransportBackend::Sockudo);
@@ -696,6 +708,7 @@ fn hyperliquid_standard_perps_maps_to_nt_after_consumed_approval() {
     assert_eq!(config.config.retry_delay_max_ms, 2000);
     assert!(config.config.normalize_prices);
     assert_eq!(config.config.market_order_slippage_bps, 50);
+    assert!(!config.config.include_builder_attribution);
     assert_eq!(config.config.transport_backend, TransportBackend::Sockudo);
     assert_eq!(config.config.ws_post_timeout_secs, 10);
     assert_eq!(config.config.outcome_settlement_poll_secs, 0);
@@ -1255,8 +1268,9 @@ fn binance_data_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
         .config_as::<BinanceDataClientConfig>()
         .expect("binance [data] should downcast to NT BinanceDataClientConfig");
 
-    assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
+    assert_eq!(data.product_type, NtBinanceProductType::Spot);
     assert_eq!(data.environment, NtBinanceEnvironment::Live);
+    assert_eq!(data.spot_market_data_mode, NtBinanceSpotMarketDataMode::Sbe);
     // The bolt-v3 binance data schema now requires explicit
     // base_url_http and base_url_ws so NT cannot silently fall back to
     // its compiled-in default Binance endpoints. Both must arrive at
@@ -1300,6 +1314,7 @@ order_execution_mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -1320,7 +1335,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -1360,7 +1374,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -1373,7 +1386,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]

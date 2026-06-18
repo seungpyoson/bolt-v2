@@ -376,6 +376,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -405,6 +406,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -440,6 +442,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -459,10 +462,11 @@ fn add_requested_market_data_clients(loaded: &mut bolt_v2::bolt_v3_config::Loade
 venue = "BINANCE"
 
 [data]
-product_types = ["spot"]
+product_type = "spot"
 environment = "mainnet"
 base_url_http = "https://api.binance.com"
 base_url_ws = "wss://stream-sbe.binance.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -477,10 +481,11 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 venue = "BINANCE"
 
 [data]
-product_types = ["usd_m"]
+product_type = "usd_m"
 environment = "testnet"
 base_url_http = "https://demo-fapi.binance.com"
 base_url_ws = "wss://fstream.binancefuture.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -495,10 +500,11 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 venue = "BINANCE"
 
 [data]
-product_types = ["coin_m"]
+product_type = "coin_m"
 environment = "testnet"
 base_url_http = "https://testnet.binancefuture.com"
 base_url_ws = "wss://dstream.binancefuture.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 

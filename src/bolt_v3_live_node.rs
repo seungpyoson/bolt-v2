@@ -5478,6 +5478,8 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         bypass_logging: false,
         file_config: None,
         clear_log_file: false,
+        fileout_sync_on_flush: true,
+        buffered_stdout: false,
     };
     let nautilus = &loaded.root.nautilus;
     let data = &nautilus.data_engine;
@@ -5496,7 +5498,6 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         emit_quotes_from_book_depths: data.emit_quotes_from_book_depths,
         external_clients: configured_external_clients(&data.external_clients),
         debug: data.debug,
-        graceful_shutdown_on_error: data.graceful_shutdown_on_error,
         qsize: data.qsize,
     };
     let exec = &nautilus.exec_engine;
@@ -5549,7 +5550,6 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         ),
         purge_from_database: exec.purge_from_database,
         own_books_audit_interval_secs: u64_zero_as_none_f64(exec.own_books_audit_interval_secs),
-        graceful_shutdown_on_error: exec.graceful_shutdown_on_error,
         qsize: exec.qsize,
         allow_overfills: exec.allow_overfills,
         manage_own_order_books: exec.manage_own_order_books,
@@ -5572,7 +5572,6 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
             .into_iter()
             .collect(),
         debug: loaded.root.risk.nautilus.debug,
-        graceful_shutdown_on_error: loaded.root.risk.nautilus.graceful_shutdown_on_error,
         qsize: loaded.root.risk.nautilus.qsize,
     };
 
@@ -5583,6 +5582,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         trader_id,
         load_state: nautilus.load_state,
         save_state: nautilus.save_state,
+        shutdown_on_error: nautilus.shutdown_on_error,
         logging,
         instance_id: None,
         timeout_connection: Duration::from_secs(nautilus.timeout_connection_secs),
@@ -6430,6 +6430,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -6853,6 +6854,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -6978,6 +6980,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -7098,6 +7101,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -7211,6 +7215,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -7324,6 +7329,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -10282,7 +10288,7 @@ configured_source_param = "configured-value"
         assert!(!cfg.data_engine.emit_quotes_from_book_depths);
         assert_eq!(cfg.data_engine.external_clients, None);
         assert!(!cfg.data_engine.debug);
-        assert!(!cfg.data_engine.graceful_shutdown_on_error);
+        assert!(!cfg.shutdown_on_error);
         assert_eq!(cfg.data_engine.qsize, 100_000);
         assert!(cfg.exec_engine.load_cache);
         assert!(!cfg.exec_engine.snapshot_orders);
@@ -10320,7 +10326,6 @@ configured_source_param = "configured-value"
         assert_eq!(cfg.exec_engine.purge_account_events_lookback_mins, None);
         assert!(!cfg.exec_engine.purge_from_database);
         assert_eq!(cfg.exec_engine.own_books_audit_interval_secs, None);
-        assert!(!cfg.exec_engine.graceful_shutdown_on_error);
         assert_eq!(cfg.exec_engine.qsize, 100_000);
         assert!(!cfg.exec_engine.allow_overfills);
         assert!(!cfg.exec_engine.manage_own_order_books);
@@ -10329,7 +10334,6 @@ configured_source_param = "configured-value"
         assert_eq!(cfg.risk_engine.max_order_modify_rate, "40/00:01:00");
         assert!(cfg.risk_engine.max_notional_per_order.is_empty());
         assert!(!cfg.risk_engine.debug);
-        assert!(!cfg.risk_engine.graceful_shutdown_on_error);
         assert_eq!(cfg.risk_engine.qsize, 100_000);
     }
 
@@ -10463,6 +10467,8 @@ configured_source_param = "configured-value"
         assert!(!cfg.logging.bypass_logging);
         assert!(cfg.logging.file_config.is_none());
         assert!(!cfg.logging.clear_log_file);
+        assert!(cfg.logging.fileout_sync_on_flush);
+        assert!(!cfg.logging.buffered_stdout);
     }
 
     #[test]

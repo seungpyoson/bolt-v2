@@ -401,7 +401,9 @@ mod tests {
         common::enums::{
             BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
         },
-        config::BinanceDataClientConfig,
+        config::{
+            BinanceDataClientConfig, BinanceSpotMarketDataMode as NtBinanceSpotMarketDataMode,
+        },
     };
     use nautilus_model::identifiers::{AccountId, TraderId};
     use nautilus_polymarket::{
@@ -881,8 +883,17 @@ mod tests {
         assert_eq!(data.http_timeout_secs, 60);
         assert_eq!(data.ws_timeout_secs, 30);
         assert_eq!(data.ws_max_subscriptions, 200);
-        assert_eq!(data.update_instruments_interval_mins, 60);
+        assert_eq!(data.update_instruments_interval_mins, Some(60));
         assert!(!data.subscribe_new_markets);
+        assert_eq!(
+            data.base_url_rtds.as_deref(),
+            Some("wss://ws-live-data.polymarket.com")
+        );
+        assert_eq!(data.new_market_fetch_max_concurrency, 8);
+        assert!(!data.resolve_poll_enabled);
+        assert_eq!(data.resolve_poll_interval_secs, 30);
+        assert_eq!(data.resolve_poll_grace_secs, 10);
+        assert_eq!(data.resolve_poll_max_wait_secs, 1800);
         assert_eq!(data.filters.len(), 1);
         assert_eq!(
             data.filters[0]
@@ -950,8 +961,9 @@ mod tests {
             .config_as::<BinanceDataClientConfig>()
             .expect("binance data config should downcast to NT config");
 
-        assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
+        assert_eq!(data.product_type, NtBinanceProductType::Spot);
         assert_eq!(data.environment, NtBinanceEnvironment::Live);
+        assert_eq!(data.spot_market_data_mode, NtBinanceSpotMarketDataMode::Sbe);
         // base_url_http and base_url_ws are now required bolt-v3
         // fields; the mapper must pass the configured values through to
         // NT as `Some(...)` rather than letting NT fall back to its

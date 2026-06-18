@@ -42,7 +42,13 @@ use bolt_v2::{
         BoltV3AdapterMappingError, BoltV3MarketClockFn, map_bolt_v3_adapters_with_market_identity,
     },
     bolt_v3_config::{ClientBlock, LoadedStrategy, load_bolt_v3_config},
-    bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
+    bolt_v3_market_families::{
+        MarketIdentityPlan, market_identity_plan_from_config as plan_market_identity,
+        outcome_group::OutcomeGroupTargetPlan, static_binary_event::StaticBinaryEventTargetPlan,
+    },
+    bolt_v3_outcome_group_sources::{
+        GammaQueryBlock, OutcomeGroupSourceConfig, OutcomeGroupSourceKind as SourceConfigKind,
+    },
     bolt_v3_providers::{
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
         ProviderProductSubmitProofArtifactRequest, binance::ResolvedBoltV3BinanceSecrets,
@@ -58,7 +64,7 @@ use bolt_v2::{
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with,
     },
 };
-use nautilus_model::identifiers::{InstrumentId, Venue};
+use nautilus_model::identifiers::{ClientId, InstrumentId, Venue};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
@@ -183,6 +189,31 @@ private_key_ssm_path = "{private_key_path}"
 account_address_ssm_path = "{account_address_path}"
 "#
     ))
+}
+
+fn hyperliquid_execution_client_for_surface(
+    product_surface: &str,
+    private_key_path: &str,
+    account_address_path: &str,
+) -> ClientBlock {
+    let mut client = hyperliquid_execution_client(private_key_path, account_address_path);
+    let execution = client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table");
+    execution.insert(
+        stringify!(product_surfaces).to_string(),
+        toml::Value::Array(vec![toml::Value::String(product_surface.to_string())]),
+    );
+    if product_surface == "hip4_outcomes" {
+        execution.insert(
+            stringify!(outcome_settlement_poll_secs).to_string(),
+            toml::Value::Integer(30),
+        );
+    }
+    client
 }
 
 fn add_hyperliquid_live_submit_approval(client: &mut ClientBlock) {
@@ -322,6 +353,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -351,6 +383,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -386,6 +419,7 @@ retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 normalize_prices = true
 market_order_slippage_bps = 50
+include_builder_attribution = false
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 0
@@ -405,10 +439,11 @@ fn add_requested_market_data_clients(loaded: &mut bolt_v2::bolt_v3_config::Loade
 venue = "BINANCE"
 
 [data]
-product_types = ["spot"]
+product_type = "spot"
 environment = "mainnet"
 base_url_http = "https://api.binance.com"
 base_url_ws = "wss://stream-sbe.binance.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -423,10 +458,11 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 venue = "BINANCE"
 
 [data]
-product_types = ["usd_m"]
+product_type = "usd_m"
 environment = "testnet"
 base_url_http = "https://demo-fapi.binance.com"
 base_url_ws = "wss://fstream.binancefuture.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -441,10 +477,11 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 venue = "BINANCE"
 
 [data]
-product_types = ["coin_m"]
+product_type = "coin_m"
 environment = "testnet"
 base_url_http = "https://testnet.binancefuture.com"
 base_url_ws = "wss://dstream.binancefuture.com/ws"
+spot_market_data_mode = "sbe"
 instrument_status_poll_secs = 3600
 transport_backend = "sockudo"
 
@@ -1199,6 +1236,175 @@ fn provider_binding_rejects_duplicate_hyperliquid_signer_owner() {
 }
 
 #[test]
+fn provider_binding_allows_only_one_hyperliquid_standard_perps_spot_signer_pair() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    for (client_key, surface) in [
+        ("hyperliquid_standard_perps", "standard_perps"),
+        ("hyperliquid_spot", "spot"),
+    ] {
+        loaded.root.clients.insert(
+            client_key.to_string(),
+            hyperliquid_execution_client_for_surface(
+                surface,
+                "/bolt/hyperliquid/spotperp/private_key",
+                "/bolt/hyperliquid/spotperp/account_address",
+            ),
+        );
+    }
+
+    resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
+        .expect("one standard-perps/spot pair may intentionally share one API wallet path");
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_shared_signer_for_unapproved_surface_pair() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    for (client_key, surface) in [
+        ("hyperliquid_standard_perps", "standard_perps"),
+        ("hyperliquid_hip3", "hip3_builder_perps"),
+    ] {
+        loaded.root.clients.insert(
+            client_key.to_string(),
+            hyperliquid_execution_client_for_surface(
+                surface,
+                "/bolt/hyperliquid/spotperp/private_key",
+                "/bolt/hyperliquid/spotperp/account_address",
+            ),
+        );
+    }
+
+    let error = resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
+        .expect_err("only the standard-perps/spot pair may share one Hyperliquid signer");
+
+    assert!(error.to_string().contains("signer/API-wallet owner"));
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_shared_signer_when_paths_differ() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    for (client_key, surface, private_key_path) in [
+        (
+            "hyperliquid_standard_perps",
+            "standard_perps",
+            "/bolt/hyperliquid/standard_perps/private_key",
+        ),
+        (
+            "hyperliquid_spot",
+            "spot",
+            "/bolt/hyperliquid/spot/private_key",
+        ),
+    ] {
+        loaded.root.clients.insert(
+            client_key.to_string(),
+            hyperliquid_execution_client_for_surface(
+                surface,
+                private_key_path,
+                "/bolt/hyperliquid/spotperp/account_address",
+            ),
+        );
+    }
+
+    let error = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/standard_perps/private_key" | "/bolt/hyperliquid/spot/private_key" => {
+            Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
+        }
+        "/bolt/hyperliquid/spotperp/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect_err("same resolved key through different SSM paths must fail closed");
+
+    assert!(error.to_string().contains("signer/API-wallet owner"));
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_shared_signer_when_account_address_paths_differ() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    for (client_key, surface, account_address_path) in [
+        (
+            "hyperliquid_standard_perps",
+            "standard_perps",
+            "/bolt/hyperliquid/standard_perps/account_address",
+        ),
+        (
+            "hyperliquid_spot",
+            "spot",
+            "/bolt/hyperliquid/spot/account_address",
+        ),
+    ] {
+        loaded.root.clients.insert(
+            client_key.to_string(),
+            hyperliquid_execution_client_for_surface(
+                surface,
+                "/bolt/hyperliquid/spotperp/private_key",
+                account_address_path,
+            ),
+        );
+    }
+
+    let error = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/spotperp/private_key" => {
+            Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
+        }
+        "/bolt/hyperliquid/standard_perps/account_address"
+        | "/bolt/hyperliquid/spot/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect_err("shared signer clients must also share the account-address SSM path");
+
+    assert!(error.to_string().contains("signer/API-wallet owner"));
+}
+
+#[test]
+fn provider_binding_rejects_third_hyperliquid_client_on_shared_signer_path() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    for (client_key, surface) in [
+        ("hl_a_standard_perps", "standard_perps"),
+        ("hl_b_spot", "spot"),
+        ("hl_c_spot", "spot"),
+    ] {
+        loaded.root.clients.insert(
+            client_key.to_string(),
+            hyperliquid_execution_client_for_surface(
+                surface,
+                "/bolt/hyperliquid/spotperp/private_key",
+                "/bolt/hyperliquid/spotperp/account_address",
+            ),
+        );
+    }
+
+    let error = resolve_bolt_v3_secrets_with(&loaded, hyperliquid_shared_spotperp_resolver)
+        .expect_err("only one standard-perps client and one spot client may share the signer");
+
+    assert!(error.to_string().contains("signer/API-wallet owner"));
+}
+
+fn hyperliquid_shared_spotperp_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
+    match path {
+        "/bolt/hyperliquid/spotperp/private_key" => {
+            Ok("0x5656565656565656565656565656565656565656565656565656565656565656".to_string())
+        }
+        "/bolt/hyperliquid/spotperp/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    }
+}
+
+#[test]
 fn requested_market_data_clients_map_as_data_only_and_execution_stays_config_owned() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -1543,6 +1749,258 @@ fn empty_market_identity_plan_installs_no_provider_filter() {
 }
 
 #[test]
+fn provider_binding_projects_only_referenced_polymarket_outcome_group_sources() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    configure_outcome_group_strategy(
+        &mut loaded,
+        vec![
+            "poly_event_source".to_string(),
+            "poly_market_source".to_string(),
+        ],
+    );
+    loaded.root.outcome_group_sources = Some(vec![
+        outcome_event_source("poly_event_source", &["world-cup-final"], Some(3)),
+        outcome_market_slug_source("poly_market_source", &["home-market", "draw-market"]),
+        outcome_market_slug_source("unreferenced_poly_source", &["unreferenced-market"]),
+    ]);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("outcome-group plan should derive cleanly");
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should support configured outcome_group targets");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(
+        data.filters.len(),
+        2,
+        "only the two target.group_sources entries should project into NT filters"
+    );
+    let event_queries = data.filters[0]
+        .event_queries()
+        .expect("bounded event source should use NT EventQueryFilter");
+    assert_eq!(event_queries.len(), 1);
+    assert_eq!(event_queries[0].0, "world-cup-final");
+    assert_eq!(
+        event_queries[0].1.max_markets,
+        Some(3),
+        "configured cap must reach NT Gamma market query params"
+    );
+    assert_eq!(
+        data.filters[1].market_slugs(),
+        Some(vec!["home-market".to_string(), "draw-market".to_string()]),
+        "market-slug outcome sources should map to NT MarketSlugFilter in target order"
+    );
+    assert!(
+        data.new_market_filter.is_none(),
+        "outcome-group discovery must not enable broad new-market subscriptions"
+    );
+}
+
+#[test]
+fn provider_binding_deduplicates_repeated_polymarket_outcome_group_sources() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    configure_outcome_group_strategy(
+        &mut loaded,
+        vec![
+            "poly_market_source".to_string(),
+            "poly_market_source".to_string(),
+        ],
+    );
+    loaded.root.outcome_group_sources = Some(vec![outcome_market_slug_source(
+        "poly_market_source",
+        &["home-market", "draw-market"],
+    )]);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("outcome-group plan should derive cleanly");
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should support duplicate target source references");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(
+        data.filters.len(),
+        1,
+        "duplicate group_sources entries must not produce duplicate NT filters"
+    );
+    assert_eq!(
+        data.filters[0].market_slugs(),
+        Some(vec!["home-market".to_string(), "draw-market".to_string()])
+    );
+}
+
+#[test]
+fn provider_binding_composes_updown_outcome_group_and_static_filters_for_same_client() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.outcome_group_sources = Some(vec![outcome_market_slug_source(
+        "poly_market_source",
+        &["home-market", "draw-market"],
+    )]);
+    let mut plan =
+        plan_market_identity(&loaded).expect("fixture updown plan should derive cleanly");
+    plan.push_target(OutcomeGroupTargetPlan {
+        strategy_instance_id: "complete-set-sample".to_string(),
+        configured_target_id: "complete-set-target".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
+        group_sources: vec!["poly_market_source".to_string()],
+    });
+    plan.push_target(StaticBinaryEventTargetPlan {
+        strategy_instance_id: "static-sample".to_string(),
+        configured_target_id: "static-target".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
+        event_key: "sample_event_2026".to_string(),
+        market_slug: "will-sample-static-resolve-yes".to_string(),
+        condition_id: Some("condition-sample-static".to_string()),
+        yes_outcome: "Yes".to_string(),
+        no_outcome: "No".to_string(),
+    });
+    let resolved = fixture_resolved_secrets();
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should compose all fetch-only filter families");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(
+        data.filters.len(),
+        3,
+        "same-client updown, outcome-group, and static targets should each install one fetch filter"
+    );
+    assert_eq!(
+        data.filters[0].market_slugs(),
+        Some(vec![
+            "configured_asset-updown-configuredwindow-600".to_string(),
+            "configured_asset-updown-configuredwindow-900".to_string(),
+        ]),
+        "updown filters must stay first"
+    );
+    assert_eq!(
+        data.filters[1].market_slugs(),
+        Some(vec!["home-market".to_string(), "draw-market".to_string()]),
+        "outcome-group filters must stay after updown filters"
+    );
+    assert_eq!(
+        data.filters[2].market_slugs(),
+        Some(vec!["will-sample-static-resolve-yes".to_string()]),
+        "static binary-event filters must stay after outcome-group filters"
+    );
+    assert!(
+        data.new_market_filter.is_none(),
+        "composed target filters must not enable broad new-market subscriptions"
+    );
+}
+
+#[test]
+fn provider_binding_projects_bounded_polymarket_gamma_query_source() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    configure_outcome_group_strategy(&mut loaded, vec!["poly_query_source".to_string()]);
+    loaded.root.outcome_group_sources = Some(vec![outcome_gamma_query_source("poly_query_source")]);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("outcome-group plan should derive cleanly");
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should support configured outcome_group targets");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(data.filters.len(), 1);
+    let params = data.filters[0]
+        .query_params()
+        .expect("Gamma query source should use NT GammaQueryFilter");
+    assert_eq!(params.tag_id, Some("sports-tag".to_string()));
+    assert_eq!(params.sports_market_types, Some("moneyline".to_string()));
+    assert_eq!(params.max_markets, Some(3));
+    assert!(
+        data.new_market_filter.is_none(),
+        "Gamma query sources must not use NT new_market_filter"
+    );
+}
+
+#[test]
+fn provider_binding_accepts_polymarket_gamma_event_query_without_tag() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    configure_outcome_group_strategy(&mut loaded, vec!["poly_query_source".to_string()]);
+    let mut source = outcome_gamma_query_source("poly_query_source");
+    let query = source
+        .gamma_query
+        .as_mut()
+        .expect("gamma query source fixture");
+    query.event_query = Some("world cup".to_string());
+    query.tag_id = None;
+    loaded.root.outcome_group_sources = Some(vec![source]);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("outcome-group plan should derive cleanly");
+
+    let configs =
+        map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, fixed_clock(601))
+            .expect("Polymarket should support event-query bounded outcome_group targets");
+    let data = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must be present")
+        .data
+        .as_ref()
+        .expect("polymarket data config")
+        .config_as::<PolymarketDataClientConfig>()
+        .expect("polymarket data config should downcast");
+
+    assert_eq!(data.filters.len(), 1);
+    let event_queries = data.filters[0]
+        .event_queries()
+        .expect("event_query source should use NT EventQueryFilter");
+    assert_eq!(event_queries.len(), 1);
+    assert_eq!(event_queries[0].0, "world cup");
+    assert_eq!(event_queries[0].1.tag_id, None);
+    assert_eq!(
+        event_queries[0].1.sports_market_types,
+        Some("moneyline".to_string())
+    );
+    assert_eq!(event_queries[0].1.max_markets, Some(3));
+    assert!(
+        data.new_market_filter.is_none(),
+        "Gamma event-query sources must not use NT new_market_filter"
+    );
+}
+
+#[test]
 fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_clock() {
     // The pinned NT contract for `MarketSlugFilter::new` re-evaluates
     // the closure on every `load_all` cycle so the slug pair rolls
@@ -1677,5 +2135,76 @@ fn provider_binding_rejects_updown_target_bound_to_unknown_client() {
             );
         }
         other => panic!("expected ValidationInvariant, got {other}"),
+    }
+}
+
+fn configure_outcome_group_strategy(
+    loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    group_sources: Vec<String>,
+) {
+    let strategy = &mut loaded.strategies[0];
+    strategy.config.strategy_archetype = toml::Value::String("complete_set_arbitrage".to_string())
+        .try_into()
+        .expect("complete-set archetype key should parse");
+    strategy.config.execution_client_id = ClientId::from("polymarket_main");
+    strategy.config.target = toml::toml! {
+        configured_target_id = "complete_set_target"
+        kind = "static_outcome_group"
+        rotating_market_family = "outcome_group"
+        group_sources = group_sources
+    }
+    .into();
+}
+
+fn outcome_event_source(
+    source_id: &str,
+    event_slugs: &[&str],
+    max_markets: Option<usize>,
+) -> OutcomeGroupSourceConfig {
+    let mut source = outcome_source_base(source_id, SourceConfigKind::GammaEvent);
+    source.event_slugs = Some(event_slugs.iter().map(|value| value.to_string()).collect());
+    source.max_markets = max_markets;
+    source
+}
+
+fn outcome_market_slug_source(source_id: &str, market_slugs: &[&str]) -> OutcomeGroupSourceConfig {
+    let mut source = outcome_source_base(source_id, SourceConfigKind::GammaMarketSlug);
+    source.market_slugs = Some(market_slugs.iter().map(|value| value.to_string()).collect());
+    source
+}
+
+fn outcome_gamma_query_source(source_id: &str) -> OutcomeGroupSourceConfig {
+    let mut source = outcome_source_base(source_id, SourceConfigKind::GammaQuery);
+    source.gamma_query = Some(GammaQueryBlock {
+        search: None,
+        event_query: None,
+        market_query: None,
+        tag_id: Some("sports-tag".to_string()),
+        sports_market_types: Some(vec!["moneyline".to_string()]),
+        max_events: None,
+        max_markets: 3,
+    });
+    source
+}
+
+fn outcome_source_base(source_id: &str, kind: SourceConfigKind) -> OutcomeGroupSourceConfig {
+    OutcomeGroupSourceConfig {
+        source_id: source_id.to_string(),
+        client_id: ClientId::from("polymarket_main"),
+        kind,
+        event_slugs: None,
+        market_slugs: None,
+        sports_market_types: None,
+        gamma_query: None,
+        question: None,
+        expected_neg_risk_market_id: Some("neg-risk-123".to_string()),
+        terminal_state_labels: Some(vec!["home".to_string(), "draw".to_string()]),
+        max_markets: None,
+        max_groups: None,
+        enabled: true,
+        freshness: None,
+        order_constraints: None,
+        role_bindings: None,
+        settlement_rules: None,
     }
 }

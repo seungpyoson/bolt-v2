@@ -3,10 +3,10 @@ mod support;
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
-    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3PositionSizerRebuildAuditEvidence,
-    BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-    BoltV3SubmitReservationMetadataEvidence,
+    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
+    BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+    BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -1052,6 +1052,13 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
         ))
     }
 
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_position_sizer_rebuild_audit(
         &self,
         _audit: &BoltV3PositionSizerRebuildAuditEvidence,
@@ -1151,6 +1158,13 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
             }
         }
         state.admission_decisions.push(decision.clone());
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 

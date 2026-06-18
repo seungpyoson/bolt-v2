@@ -2,7 +2,9 @@ mod support;
 
 use anyhow::Result;
 use bolt_v2::{
-    bolt_v3_archetypes::binary_oracle_edge_taker,
+    bolt_v3_adapters::map_bolt_v3_adapters,
+    bolt_v3_archetypes::{binary_oracle_edge_taker, complete_set_arbitrage},
+    bolt_v3_client_registration::register_bolt_v3_clients,
     bolt_v3_config::{
         BoltV3RootConfig, ClientBlock, DataInstrumentBlock, RealizedVolatilityAggregationBlock,
         RealizedVolatilityPolicyBlock, RealizedVolatilitySampleKindBlock,
@@ -20,6 +22,8 @@ use bolt_v2::{
     },
     strategies::{
         binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
+        complete_set_arbitrage::CompleteSetArbitrageBuilder,
+        production_strategy_registry,
         registry::{FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError},
     },
 };
@@ -30,7 +34,7 @@ use nautilus_model::{
     identifiers::{ClientId, InstrumentId, StrategyId, Venue},
 };
 use rust_decimal::Decimal;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, fs, sync::Arc};
 
 struct NoopFeeProvider;
 
@@ -208,6 +212,23 @@ fn realized_volatility_validation_rejects_unknown_data_client_id() {
             insert_realized_volatility_surface(&mut loaded.root, surface);
         },
         "data_client_id",
+    );
+}
+
+#[test]
+fn realized_volatility_validation_rejects_non_data_client_id() {
+    assert_realized_volatility_validation_error(
+        |loaded| {
+            let surface = valid_realized_volatility_surface();
+            insert_realized_volatility_surface(&mut loaded.root, surface);
+            loaded
+                .root
+                .clients
+                .get_mut(RV_DATA_CLIENT_ID)
+                .expect("test RV client should exist")
+                .data = None;
+        },
+        "must reference a data-capable client",
     );
 }
 
@@ -521,8 +542,13 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
         };
-    let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
-        .expect("v3 LiveNodeBuilder should construct before strategy registration")
+    let adapters =
+        map_bolt_v3_adapters(&loaded, &resolved).expect("fixture adapters should map cleanly");
+    let builder = make_bolt_v3_live_node_builder(&empty_loaded)
+        .expect("v3 LiveNodeBuilder should construct before strategy registration");
+    let (builder, _summary) = register_bolt_v3_clients(builder, adapters)
+        .expect("fixture data clients should register before strategy registration");
+    let mut node = builder
         .build()
         .expect("v3 LiveNode should build before strategy registration");
 
@@ -606,6 +632,270 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         kill_switch_forced_reduction: None,
         position_sizing: None,
     }
+}
+
+#[test]
+fn complete_set_runtime_binding_and_production_registry_are_active_after_source_integrity() {
+    assert!(
+        bolt_v2::strategy_bindings::production_validation_bindings()
+            .iter()
+            .any(|binding| binding.key == complete_set_arbitrage::KEY),
+        "complete-set archetype validation binding should be active after OUTCOME_GROUP_KEY"
+    );
+    let runtime = bolt_v2::strategy_bindings::production_runtime_bindings()
+        .iter()
+        .find(|binding| binding.key == complete_set_arbitrage::KEY)
+        .expect("complete-set runtime binding should be active");
+    assert_eq!(
+        (runtime.strategy_kind)(),
+        CompleteSetArbitrageBuilder::kind()
+    );
+
+    let registry = production_strategy_registry().expect("production registry should build");
+    assert!(
+        registry.get(CompleteSetArbitrageBuilder::kind()).is_some(),
+        "complete-set builder should be in the production strategy registry"
+    );
+}
+
+#[test]
+fn complete_set_runtime_mapping_produces_strategy_shell_raw_config() {
+    let (_temp, loaded) = complete_set_runtime_fixture();
+    let strategy = loaded
+        .strategies
+        .first()
+        .expect("complete-set fixture should include one strategy");
+
+    let raw = complete_set_arbitrage::raw_complete_set_config(strategy, &loaded)
+        .expect("complete-set strategy should map into concrete raw config");
+
+    let mut errors: Vec<ValidationError> = Vec::new();
+    CompleteSetArbitrageBuilder::validate_config(
+        &raw,
+        "strategies.complete_set_arb_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.is_empty(),
+        "mapped complete-set config should validate: {errors:?}"
+    );
+
+    let table = raw
+        .as_table()
+        .expect("mapped complete-set config should be a table");
+    assert_eq!(
+        table.get("strategy_id").and_then(|value| value.as_str()),
+        Some("complete_set_arbitrage-901")
+    );
+    assert_eq!(
+        table.get("client_id").and_then(|value| value.as_str()),
+        Some("polymarket_main")
+    );
+    assert_eq!(
+        table.get("submit_mode").and_then(|value| value.as_str()),
+        Some("ioc")
+    );
+    assert_eq!(
+        table
+            .get("market_exit_reduce_only")
+            .and_then(|value| value.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        table
+            .get("max_open_baskets")
+            .and_then(|value| value.as_integer()),
+        Some(1)
+    );
+}
+
+#[test]
+fn complete_set_live_node_build_registers_strategy_from_strategy_files_after_source_integrity() {
+    let (_temp, loaded) = complete_set_runtime_fixture();
+
+    let (node, summary) =
+        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
+            .expect("complete-set LiveNode build should register after source-integrity coverage");
+
+    assert_eq!(summary.clients.len(), 2);
+    assert!(
+        summary.clients.contains_key("okx_data"),
+        "RV source client must be retained in the strategy transport"
+    );
+    assert!(
+        summary.clients.contains_key("polymarket_main"),
+        "complete-set strategy client must remain registered"
+    );
+    assert_eq!(
+        node.registered_strategy_ids(),
+        vec![StrategyId::from("complete_set_arbitrage-901")]
+    );
+}
+
+fn complete_set_runtime_fixture() -> (
+    support::TempCaseDir,
+    bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+) {
+    let temp = support::TempCaseDir::new("bolt-v3-complete-set-runtime");
+    let strategy_dir = temp.path().join("strategies");
+    fs::create_dir_all(&strategy_dir).expect("complete-set strategy dir should be created");
+    let root_path = temp.path().join("root.toml");
+    let strategy_path = strategy_dir.join("complete_set.toml");
+    let root = complete_set_root_toml();
+    fs::write(&root_path, root).expect("complete-set temp root should be written");
+    fs::write(&strategy_path, complete_set_strategy_toml())
+        .expect("complete-set strategy file should be written");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("complete-set fixture should load");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    (temp, loaded)
+}
+
+fn complete_set_root_toml() -> String {
+    let mut fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml").replace(
+        "order_execution_mode = \"live\"",
+        "order_execution_mode = \"shadow\"",
+    );
+    fixture = fixture.replace(
+        "strategy_files = [\n  \"strategies/binary_oracle.toml\",\n]",
+        "strategy_files = [\n  \"strategies/complete_set.toml\",\n]",
+    );
+    let gate_provider_start = fixture
+        .find("\n[gate_providers.resolution_oracle_primary]\n")
+        .expect("fixture root should include binary-oracle gate provider");
+    let gate_provider_end = fixture
+        .find("\n[clients.polymarket_main]\n")
+        .expect("fixture root should include polymarket client block");
+    fixture.replace_range(gate_provider_start..gate_provider_end, "\n");
+    format!(
+        "{fixture}\n{}\n{}",
+        outcome_group_basket_execution_toml(),
+        valid_polymarket_event_source_toml()
+    )
+}
+
+fn outcome_group_basket_execution_toml() -> String {
+    r#"
+[risk.basket_execution]
+enabled = true
+state_path = "bolt-v3/baskets/state.json"
+schema_version = 1
+max_state_file_bytes = 1048576
+recovery_policy = "fail_closed_reconcile_before_new_baskets"
+max_recovery_age_ms = 300000
+max_metadata_age_ms = 7200000
+
+[risk.basket_execution.repair]
+max_retries = 2
+max_book_age_ms = 250
+max_slippage_bps = 50
+max_depth_levels = 4
+
+[risk.basket_execution.unwind]
+max_retries = 2
+max_book_age_ms = 250
+max_slippage_bps = 50
+max_depth_levels = 4
+"#
+    .to_string()
+}
+
+fn complete_set_strategy_toml() -> String {
+    r#"
+schema_version = 2
+strategy_instance_id = "complete_set_arb_main"
+strategy_archetype = "complete_set_arbitrage"
+order_id_tag = "901"
+oms_type = "netting"
+use_uuid_client_order_ids = true
+use_hyphens_in_client_order_ids = false
+external_order_claims = []
+manage_contingent_orders = false
+manage_gtd_expiry = false
+manage_stop = false
+market_exit_interval_ms = 100
+market_exit_max_attempts = 100
+market_exit_reduce_only = true
+log_events = true
+log_commands = true
+log_rejected_due_post_only_as_warning = true
+execution_client_id = "polymarket_main"
+
+[target]
+configured_target_id = "complete_set_arb_target"
+kind = "static_outcome_group"
+rotating_market_family = "outcome_group"
+group_sources = ["poly_world_cup"]
+
+[signal_data]
+
+[parameters.runtime]
+min_edge_bps = 25
+max_basket_notional = "10"
+max_open_baskets = 1
+submit_mode = "ioc"
+vwap_depth_limit_bps = 2000
+slippage_buffer_bps = 100
+max_repair_attempts = 1
+max_unwind_attempts = 1
+"#
+    .to_string()
+}
+
+fn valid_polymarket_event_source_toml() -> String {
+    let digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    format!(
+        r#"
+[[outcome_group_sources]]
+source_id = "poly_world_cup"
+client_id = "polymarket_main"
+kind = "polymarket_gamma_event"
+event_slugs = ["world-cup-final"]
+sports_market_types = ["moneyline"]
+expected_neg_risk_market_id = "neg-risk-123"
+terminal_state_labels = ["home", "draw", "away"]
+max_markets = 20
+enabled = true
+
+[outcome_group_sources.freshness]
+max_age_ms = 500
+max_clock_skew_ms = 250
+
+[outcome_group_sources.order_constraints]
+default_min_quantity = "5"
+default_min_notional = "1"
+
+[outcome_group_sources.role_bindings]
+kind = "operator_attested_positive_side"
+attestation_sha256 = "{digest}"
+legs = [
+  {{ terminal_state_label = "home", pays_on_terminal_state_native_leg_id = "home-positive", pays_unless_terminal_state_native_leg_id = "home-inverse" }},
+  {{ terminal_state_label = "draw", pays_on_terminal_state_native_leg_id = "draw-positive", pays_unless_terminal_state_native_leg_id = "draw-inverse" }},
+  {{ terminal_state_label = "away", pays_on_terminal_state_native_leg_id = "away-positive", pays_unless_terminal_state_native_leg_id = "away-inverse" }},
+]
+
+[outcome_group_sources.settlement_rules]
+settlement_contract_id = "ctf-world-cup-final"
+settlement_source_kind = "polymarket_ctf_uma"
+terminal_state_convention = "exactly_one_winner"
+void_policy = "refund_all_legs"
+rounding_policy = "decimal_exact"
+timing_policy = "venue_final_resolution"
+attestation_sha256 = "{digest}"
+
+[outcome_group_sources.settlement_rules.non_standard_terminal_payouts.void_refund]
+convention = "operator_attested_static_payout_per_unit"
+terminal_state_label = "void_refund"
+legs = [
+  {{ outcome_label = "home", side_label = "operator-positive", payout_per_unit = "1" }},
+  {{ outcome_label = "home", side_label = "operator-inverse", payout_per_unit = "1" }},
+  {{ outcome_label = "draw", side_label = "operator-positive", payout_per_unit = "1" }},
+  {{ outcome_label = "draw", side_label = "operator-inverse", payout_per_unit = "1" }},
+  {{ outcome_label = "away", side_label = "operator-positive", payout_per_unit = "1" }},
+  {{ outcome_label = "away", side_label = "operator-inverse", payout_per_unit = "1" }},
+]
+attestation_sha256 = "{digest}"
+"#
+    )
 }
 
 #[test]

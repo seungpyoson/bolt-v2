@@ -21,15 +21,6 @@ STRATEGY_SOURCE_FILE = source_files(STRATEGY_SOURCE_ROOT)[0].relative_to(
 ).as_posix()
 
 
-def rust_registry_relative_roots(registry_source: str) -> set[str]:
-    roots: set[str] = set()
-    for block in re.findall(
-        r"\brelative_roots\s*:\s*&\[(.*?)\]", registry_source, flags=re.DOTALL
-    ):
-        roots.update(re.findall(r'"([^"]+)"', block))
-    return roots
-
-
 def rust_text_accessor_max_bytes(source: str) -> int:
     match = re.search(r"\bconst\s+TEXT_ACCESSOR_MAX_BYTES:\s*u64\s*=\s*([^;]+);", source)
     if not match:
@@ -238,47 +229,109 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             finally:
                 source_roots.REPO_ROOT = original_root
 
-    def test_python_source_roots_match_rust_registry_relative_roots(self) -> None:
-        registry = (
-            source_roots.REPO_ROOT / "src/source_canonicalization.rs"
+    def test_python_source_roots_match_manifest(self) -> None:
+        # The gated root list lives in one place: gated_source_roots.manifest,
+        # read by both build.rs (Rust) and bolt_v3_source_roots.py (Python). This
+        # asserts the Python module's exposed roots equal an INDEPENDENT, PER-KEY
+        # parse of that manifest — section membership and order preserved, not a
+        # flat set — so a Python-side parser regression, including a root assigned
+        # to the wrong section, fails loudly. The Rust side is pinned by the
+        # registry-membership tests in bolt_v3_source_integrity.rs, which assert
+        # the generated constant equals the same expected list.
+        manifest = (
+            source_roots.REPO_ROOT / "gated_source_roots.manifest"
         ).read_text(encoding="utf-8")
-        rust_roots = rust_registry_relative_roots(registry)
+        sections: dict[str, list[str]] = {}
+        current: str | None = None
+        for raw_line in manifest.split("\n"):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                current = line[1:-1].strip()
+                sections[current] = []
+                continue
+            self.assertIsNotNone(current, f"root {line!r} precedes any [section]")
+            assert current is not None  # narrow type for the checker
+            sections[current].append(line)
 
         self.assertEqual(
-            rust_roots,
+            sections,
             {
-                *source_roots.STRATEGY_SOURCE_ROOTS,
-                source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
+                source_roots.STRATEGY_KEY: list(source_roots.STRATEGY_SOURCE_ROOTS),
+                source_roots.SUBMIT_ADMISSION_KEY: list(
+                    source_roots.SUBMIT_ADMISSION_SOURCE_ROOTS
+                ),
+                source_roots.OUTCOME_GROUP_KEY: list(
+                    source_roots.OUTCOME_GROUP_SOURCE_ROOTS
+                ),
+                source_roots.MAKER_KEY: list(source_roots.MAKER_SOURCE_ROOTS),
             },
         )
 
-    def test_rust_registry_relative_root_parser_accepts_wrapped_fields(self) -> None:
-        registry = """
-            GatedSourceRoot {
-                key: STRATEGY_KEY,
-                relative_roots: &[
-                    "src/strategies/binary_oracle_edge_taker",
-                    // The archetype is the sole TOML->runtime-table translator.
-                    "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs",
-                    "src/bolt_v3_order_execution.rs",
-                    "src/bolt_v3_book_sizing.rs",
-                    "src/bolt_v3_binary_outcome_edge.rs",
-                    "src/bolt_v3_executable_cost.rs",
-                    "src/bolt_v3_sizing.rs",
-                    "src/bolt_v3_taker_updown_signal.rs",
-                ],
-            },
-            GatedSourceRoot {
-                key: SUBMIT_ADMISSION_KEY,
-                relative_roots: &["src/bolt_v3_submit_admission.rs"],
-            },
-        """
-
+    def test_manifest_parser_matches_rust_line_semantics(self) -> None:
+        # build.rs parses the manifest with Rust ``str::lines()`` (splits on
+        # ``\n`` and ``\r\n`` only). The Python parser must use the same line
+        # semantics, else a manifest the Rust build rejects could parse cleanly
+        # in Python and the two source-of-truth parsers would disagree. A
+        # manifest whose lines are joined by a bare ``\r`` is ONE Rust line (a
+        # malformed section header) and must be rejected on both sides; Python's
+        # ``str.splitlines()`` would wrongly break it into valid lines and accept
+        # it. This guards the parser against regressing back to ``splitlines()``.
+        body = (
+            "[strategy]\nsrc/a.rs\n"
+            "[submit_admission]\nsrc/b.rs\n"
+            "[outcome_group]\nsrc/c.rs\n"
+            "[maker]\nsrc/d.rs\n"
+        )
         self.assertEqual(
-            rust_registry_relative_roots(registry),
+            source_roots._parse_manifest_text(body),
             {
-                *source_roots.STRATEGY_SOURCE_ROOTS,
-                source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
+                source_roots.STRATEGY_KEY: ("src/a.rs",),
+                source_roots.SUBMIT_ADMISSION_KEY: ("src/b.rs",),
+                source_roots.OUTCOME_GROUP_KEY: ("src/c.rs",),
+                source_roots.MAKER_KEY: ("src/d.rs",),
+            },
+        )
+        # Same bytes, bare-CR separators: Rust ``str::lines()`` sees one line, so
+        # the Python parser must reject it too (matching the loud Rust build
+        # failure) rather than silently accept the ``splitlines()`` split.
+        with self.assertRaises(ValueError):
+            source_roots._parse_manifest_text(body.replace("\n", "\r"))
+
+    def test_manifest_parser_matches_rust_trim_whitespace(self) -> None:
+        # build.rs trims each line/key with Rust ``str::trim()`` (the Unicode
+        # ``White_Space`` set). Python's bare ``str.strip()`` strips a SUPERSET —
+        # it also removes U+001C–U+001F (the information separators) — so the
+        # parser strips the exact Rust set instead. A section header with a
+        # trailing U+001C is a malformed header to Rust (the control char stays,
+        # so it no longer ends with ``]``) and must be rejected on the Python
+        # side too; bare ``str.strip()`` would silently accept it. This guards
+        # against the parser regressing back to ``.strip()``.
+        info_separator = "\x1c"
+        body = (
+            f"[strategy]{info_separator}\nsrc/a.rs\n"
+            "[submit_admission]\nsrc/b.rs\n"
+            "[outcome_group]\nsrc/c.rs\n"
+            "[maker]\nsrc/d.rs\n"
+        )
+        with self.assertRaises(ValueError):
+            source_roots._parse_manifest_text(body)
+        # Ordinary trailing whitespace (space + tab) is still trimmed on both
+        # sides, so the same manifest with real whitespace parses cleanly.
+        spaced = (
+            "[strategy] \t\nsrc/a.rs\n"
+            "[submit_admission]\nsrc/b.rs\n"
+            "[outcome_group]\nsrc/c.rs\n"
+            "[maker]\nsrc/d.rs\n"
+        )
+        self.assertEqual(
+            source_roots._parse_manifest_text(spaced),
+            {
+                source_roots.STRATEGY_KEY: ("src/a.rs",),
+                source_roots.SUBMIT_ADMISSION_KEY: ("src/b.rs",),
+                source_roots.OUTCOME_GROUP_KEY: ("src/c.rs",),
+                source_roots.MAKER_KEY: ("src/d.rs",),
             },
         )
 

@@ -18,6 +18,41 @@
     "source_proof_status": "pending",
     "table_family": "order_book_snapshot_deltas"
   },
+  "committed_input_hashes": {
+    "pending_source_fixture": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json",
+      "sha256": "0ce36fc546f7da91a8b174e54bce7ec81dbc94e6f8459d49cf20483dd2732ce0"
+    },
+    "source_universe_manifest": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/manifest/source-universe-object-manifest.json",
+      "sha256": "1fc294c059bf0c13dfab528b80a8bc19a2fb1534fbe6bac2301197211e2239a6"
+    },
+    "category_manifest": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/backfill-source-universe-object-manifests/pmxt-polymarket-v2-current/category-manifests/pmxt-polymarket-v2-object-manifest-orderbook.json",
+      "sha256": "807108d31702a59a3a1cf6036fca817428f5f950ef8fad3f3bb2f335ac5a5a18"
+    },
+    "archive_index_manifest": {
+      "path": "repo://specs/023-nt-research-analytics-platform/reference/source-archive-index-manifests/pmxt-polymarket-v2-current/manifest/source-archive-index-manifest.json",
+      "sha256": "dc76ed0a60f55e0a0f2c082b5aa6031ac89f8bd869c7c039a4f1d294a6552ed9"
+    }
+  },
+  "expanded_manifest_snapshot": {
+    "source_binding": "polymarket-parquet-archive-index",
+    "table_family": "order_book_snapshot_deltas",
+    "source_universe_manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current",
+    "category_manifest_id": "backfill-source-universe-object-manifest-pmxt-polymarket-v2-current-category-orderbook",
+    "source_archive_index_manifest_id": "source-archive-index-manifest-pmxt-polymarket-v2-current",
+    "source_archive_index_snapshot_id": "source-archive-index-snapshot-pmxt-polymarket-v2-current-2026-06-10T15",
+    "object_count": 1351,
+    "verified_head_count": 1351,
+    "indexed_compressed_bytes": 557815904970,
+    "first_archive_hour_utc": "2026-04-13T19:00:00Z",
+    "last_archive_hour_utc": "2026-06-10T15:00:00Z",
+    "payload_records": 1351,
+    "payload_downloaded": false,
+    "canonical_ready": false,
+    "blocking_issue": "source_proof_not_accepted"
+  },
   "ledger_run": {
     "command": "python3 scripts/rust_verification.py cargo --repo crates/backtesting-vertical-slice -- run --locked --bin backfill_coverage_ledger -- --spec /private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml",
     "spec_path": "/private/tmp/bte-pmxt-coverage-ledger-source-proof-20260609/pmxt-coverage-ledger.toml",
@@ -63,12 +98,17 @@
   "claim_limits": [
     "This artifact does not accept PMXT as a durable source.",
     "This artifact does not authorize canonical-ready PMXT backfill.",
-    "This artifact does not prove one-year or expanded coverage.",
+    "This artifact source-fences indexed PMXT manifest coverage/cost shape, but does not prove accepted one-year or canonical expanded coverage.",
     "This artifact does not prove dynamic tick-size replay or an accepted bounded-exclusion policy."
   ],
   "next_required_evidence": [
     "Accept a durable Polymarket SourceProofReport before any coverage ledger can become canonical-ready.",
     "Record expanded coverage, retention/freshness, completeness, storage, and exact accepted-window cost evidence under that accepted source proof.",
     "Prove dynamic tick-size replay or accept a source-proof-bound no-tick-size-change exclusion policy before broad L2 replay claims."
-  ]
+  ],
+  "guard_verification": {
+    "script": "repo://scripts/verify_bte_022_pmxt_coverage_ledger.py",
+    "self_test": "repo://scripts/test_verify_bte_022_pmxt_coverage_ledger.py",
+    "source_fence_static": true
+  }
 }

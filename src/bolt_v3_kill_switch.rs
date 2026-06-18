@@ -55,11 +55,25 @@ impl KillSwitchHaltTrigger {
             reason: reason.into(),
         }
     }
+
+    pub fn basket_execution_stuck(
+        source: impl Into<String>,
+        source_timestamp_unix_nanos: u64,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: KillSwitchHaltTriggerKind::BasketExecutionStuck,
+            source: source.into(),
+            source_timestamp_unix_nanos,
+            reason: reason.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KillSwitchHaltTriggerKind {
     LossGovernorBreach,
+    BasketExecutionStuck,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +305,7 @@ fn halt_id_for_trigger(trigger: &KillSwitchHaltTrigger) -> String {
     hasher.update([0]);
     hasher.update(match trigger.kind {
         KillSwitchHaltTriggerKind::LossGovernorBreach => b"loss_governor_breach".as_slice(),
+        KillSwitchHaltTriggerKind::BasketExecutionStuck => b"basket_execution_stuck".as_slice(),
     });
     hasher.update([0]);
     hasher.update(trigger.source.as_bytes());

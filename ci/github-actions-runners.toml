@@ -20,7 +20,10 @@ ci-policy = "github_hosted"
 detector = "github_hosted"
 fmt-check = "managed_light"
 deny = "github_hosted"
-clippy = "managed_light"
+# NT develop increased the restored managed target enough that full-repo clippy
+# now refuses on the light tier before compilation with disk_pressure. Keep it
+# on the heavy tier, matching other NT-heavy compile lanes.
+clippy = "managed_heavy"
 check-aarch64 = "managed_heavy"
 source-fence = "managed_heavy"
 nextest-fingerprint = "github_hosted"
@@ -34,6 +37,7 @@ gate = "github_hosted"
 deploy = "github_hosted"
 
 [workflows.backtester_ci]
+ci-policy = "github_hosted"
 detect = "github_hosted"
 fmt = "managed_light"
 # clippy compiles the full NT-heavy crate (same footprint as test) and rides above the disk-pressure
@@ -165,6 +169,7 @@ retention_days = 30
 draft_pr_synchronize = "defer"
 draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
+draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
 ready_for_review = "full"

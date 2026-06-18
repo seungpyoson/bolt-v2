@@ -3,6 +3,15 @@ name: CI docs pass stub
 on:
   pull_request:
     branches: [main]
+    # Explicit types are required because the default set (opened,
+    # synchronize, reopened) does not fire on draft-to-ready transitions
+    # (ready_for_review) or base-ref changes (edited). For docs-only PRs this
+    # stub is the sole source of the build/clippy/test/gate required checks,
+    # so missing those events leaves the PR frozen.
+    # Note: GitHub's edited event fires on ANY PR edit (title, body, base
+    # ref), not only retargets. We accept that cost because there is no
+    # narrower event for base-ref changes.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
     paths:
       - 'AGENTS.md'
       - 'CLAUDE.md'

@@ -30,6 +30,9 @@ import rust_verification
 
 REPO_ROOT = _SCRIPTS_DIR.parent
 
+LOCAL_VERIFICATION_GATE_ENV = "BOLT_LOCAL_VERIFICATION_GATE"
+_LOCAL_GATE_LANE_PREFIX = "local-gate:"
+
 # Handles held for the lifetime of the process; flock releases on exit/kill.
 _HELD_HANDLES: list[object] = []
 _LOCK_BUSY_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
@@ -137,6 +140,19 @@ def _read_holder(lock_path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def release(handle) -> None:
+    """Release a held lane lock handle and unregister the lifetime reference."""
+    if handle is None:
+        return
+    try:
+        handle.close()
+    finally:
+        try:
+            _HELD_HANDLES.remove(handle)
+        except ValueError:
+            pass
+
+
 def acquire(
     lane: str | None = None,
     *,
@@ -145,6 +161,7 @@ def acquire(
     acquire_timeout_seconds: float | None = None,
     heartbeat_seconds: float | None = None,
     poll_interval_seconds: float | None = None,
+    fail_fast: bool = False,
 ):
     """Acquire the per-repo lane lock; return the held handle, or None.
 
@@ -187,6 +204,20 @@ def acquire(
                 ) from exc
             holder = _read_holder(lock_path)
             holder_pid = holder.get("pid")
+            holder_lane = holder.get("lane")
+            if (
+                not fail_fast
+                and os.environ.get(LOCAL_VERIFICATION_GATE_ENV) == "1"
+                and isinstance(holder_pid, int)
+                and isinstance(holder_lane, str)
+                and holder_lane.startswith(_LOCAL_GATE_LANE_PREFIX)
+                and holder_is_ancestor(holder_pid)
+            ):
+                # A local-verification gate writes stable holder metadata
+                # before spawning children, so gated children can re-enter
+                # without paying the generic two-poll race guard.
+                handle.close()
+                return None
             if (
                 isinstance(holder_pid, int)
                 and holder_pid == last_busy_holder_pid
@@ -201,6 +232,16 @@ def acquire(
             last_busy_holder_pid = holder_pid if isinstance(holder_pid, int) else None
             now = time.monotonic()
             waited = now - started
+            if fail_fast:
+                handle.close()
+                print(
+                    f"lane-governor: {label!r} not started because another local "
+                    f"verification lane is already running; held by pid "
+                    f"{holder.get('pid')} lane {holder.get('lane')!r}. "
+                    "Reuse that run or retry after it finishes.",
+                    file=sys.stderr,
+                )
+                raise LaneLockTimeout(1)
             if waited >= timeout:
                 handle.close()
                 print(

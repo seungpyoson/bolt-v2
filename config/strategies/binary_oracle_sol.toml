@@ -15,7 +15,7 @@ log_events = true
 log_commands = true
 log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
-realized_volatility_surface_id = "okx_sol_usdt_midpoint_rv"
+realized_volatility_surface_id = "sol_usdt_midpoint_rv"
 
 [target]
 configured_target_id = "binary_oracle_sol_target"
@@ -93,7 +93,7 @@ instrument_id = "SOL-USD.CHAINLINK"
 [parameters.runtime]
 reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-003"
 warmup_tick_count = 20
-reentry_cooldown_secs = 30
+reentry_cooldown_secs = 10
 book_impact_cap_bps = 50
 vwap_depth_limit_bps = 50
 slippage_buffer_bps = 50
@@ -132,9 +132,9 @@ is_quote_quantity = false
 side = "sell"
 position_side = "long"
 order_type = "market"
-time_in_force = "gtc"
+time_in_force = "ioc"
 is_post_only = false
-is_reduce_only = true
+is_reduce_only = false
 is_quote_quantity = false
 
 [parameters]

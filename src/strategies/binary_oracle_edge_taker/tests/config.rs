@@ -816,6 +816,159 @@ fn builder_accepts_registry_bound_rotating_market_family() {
 }
 
 #[test]
+fn builder_accepts_static_binary_event_market_family_with_configured_outcomes() {
+    let raw = static_binary_event_raw_config();
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+        .expect("static binary event runtime config should parse");
+
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error.code == "unknown_market_family"),
+        "static family is registry-bound and must not raise unknown-market-family: {errors:?}"
+    );
+    assert_eq!(
+        config.rotating_market_family,
+        crate::bolt_v3_market_families::static_binary_event::KEY
+    );
+    assert_eq!(
+        config.static_condition_id.as_deref(),
+        Some("condition-sample-event")
+    );
+    assert_eq!(config.static_yes_outcome.as_deref(), Some("Yes"));
+    assert_eq!(config.static_no_outcome.as_deref(), Some("No"));
+    assert_eq!(
+        config.static_fair_probability_source.as_deref(),
+        Some("reference_current_price")
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn builder_rejects_static_binary_event_without_configured_outcomes() {
+    let mut raw = static_binary_event_raw_config();
+    let table = raw.as_table_mut().expect("valid config must be a table");
+    table.remove("static_yes_outcome");
+    table.remove("static_no_outcome");
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    find_error(
+        &errors,
+        "strategies[0].config.static_yes_outcome",
+        "missing_static_yes_outcome",
+    );
+    find_error(
+        &errors,
+        "strategies[0].config.static_no_outcome",
+        "missing_static_no_outcome",
+    );
+}
+
+#[test]
+fn builder_rejects_static_binary_event_without_fair_probability_source() {
+    let mut raw = static_binary_event_raw_config();
+    let table = raw.as_table_mut().expect("valid config must be a table");
+    table.remove("static_fair_probability_source");
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    find_error(
+        &errors,
+        "strategies[0].config.static_fair_probability_source",
+        "missing_static_fair_probability_source",
+    );
+}
+
+#[test]
+fn builder_rejects_static_binary_event_unsupported_fair_probability_source() {
+    let mut raw = static_binary_event_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert(
+            "static_fair_probability_source".to_string(),
+            Value::String("manual_probability".to_string()),
+        );
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    find_error(
+        &errors,
+        "strategies[0].config.static_fair_probability_source",
+        "unsupported_static_fair_probability_source",
+    );
+}
+
+#[test]
+fn builder_rejects_static_event_fields_for_non_static_family() {
+    let mut raw = valid_raw_config();
+    raw.as_table_mut()
+        .expect("valid config must be a table")
+        .insert(
+            "static_yes_outcome".to_string(),
+            Value::String("Yes".to_string()),
+        );
+    let mut errors = Vec::new();
+
+    BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+    find_error(
+        &errors,
+        "strategies[0].config.static_yes_outcome",
+        "static_field_for_non_static_family",
+    );
+}
+
+fn static_binary_event_raw_config() -> Value {
+    let mut raw = valid_raw_config();
+    let table = raw.as_table_mut().expect("valid config must be a table");
+    table.insert(
+        "target_kind".to_string(),
+        Value::String("static_market".to_string()),
+    );
+    table.insert(
+        "rotating_market_family".to_string(),
+        Value::String(crate::bolt_v3_market_families::static_binary_event::KEY.to_string()),
+    );
+    table.insert(
+        "underlying_asset".to_string(),
+        Value::String("sample_event_2026".to_string()),
+    );
+    table.insert("cadence_seconds".to_string(), Value::Integer(1));
+    table.insert(
+        "cadence_slug_token".to_string(),
+        Value::String("will-sample-event-resolve-yes".to_string()),
+    );
+    table.insert(
+        "market_selection_rule".to_string(),
+        Value::String("configured_static".to_string()),
+    );
+    table.insert(
+        "static_condition_id".to_string(),
+        Value::String("condition-sample-event".to_string()),
+    );
+    table.insert(
+        "static_yes_outcome".to_string(),
+        Value::String("Yes".to_string()),
+    );
+    table.insert(
+        "static_no_outcome".to_string(),
+        Value::String("No".to_string()),
+    );
+    table.insert(
+        "static_fair_probability_source".to_string(),
+        Value::String("reference_current_price".to_string()),
+    );
+    raw
+}
+
+#[test]
 fn builder_accepts_integer_literals_for_f64_fields() {
     let mut raw = valid_raw_config();
     let raw_table = raw.as_table_mut().expect("valid config must be a table");

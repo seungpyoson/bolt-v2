@@ -200,6 +200,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn record_position_sizer_rebuild_audit(
         &self,
         _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
@@ -247,6 +254,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
     ) -> Result<()> {
         anyhow::bail!("admission decision write failed")
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("basket admission decision write failed")
     }
 
     fn record_position_sizer_rebuild_audit(
@@ -331,6 +345,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
                 decision.clone(),
             ));
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -516,6 +537,10 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
             resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
             realized_volatility_surface_id: "<surface_id>".to_string(),
+            static_condition_id: None,
+            static_yes_outcome: None,
+            static_no_outcome: None,
+            static_fair_probability_source: None,
             use_uuid_client_order_ids: true,
             use_hyphens_in_client_order_ids: false,
             external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
@@ -746,7 +771,9 @@ pub(super) fn ready_to_trade_strategy() -> BinaryOracleEdgeTaker {
     strategy.active.books.down.best_ask = Some(0.45);
     strategy.active.books.down.liquidity_available = Some(5_000.0);
     strategy.active.fast_venue_incoherent = false;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -812,7 +839,9 @@ pub(super) fn ready_to_trade_strategy_with_recording_fees(
     strategy.active.books.down.best_ask = Some(0.49);
     strategy.active.books.down.liquidity_available = Some(5_000.0);
     strategy.active.fast_venue_incoherent = false;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -1279,6 +1308,7 @@ pub(super) fn updown_binary_option(
         // ever fill or settle at, which the market-style admission valuation
         // uses as the universal worst case.
         Some(Price::from("0.999")),
+        None,
         None,
         None,
         None,

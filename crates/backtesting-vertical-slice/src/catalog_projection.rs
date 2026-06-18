@@ -362,6 +362,7 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
         None,
         None,
         None,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -539,6 +540,7 @@ pub fn build_crypto_perpetual(spec: &CryptoPerpetualInstrumentSpec) -> Result<Cr
         parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -602,6 +604,7 @@ pub fn build_crypto_future(spec: &CryptoFutureInstrumentSpec) -> Result<CryptoFu
         parse_optional_decimal(spec.margin_maint.as_deref(), "margin_maint")?,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -683,6 +686,7 @@ pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOp
         None,
         parse_optional_decimal(spec.maker_fee.as_deref(), "maker_fee")?,
         parse_optional_decimal(spec.taker_fee.as_deref(), "taker_fee")?,
+        None, // tick_scheme (NT bump): not populated by bolt
         None,
         UnixNanos::default(),
         UnixNanos::default(),
@@ -2711,6 +2715,7 @@ fn update_currency_pair_hash(hasher: &mut Sha256, instrument: &CurrencyPair) -> 
 mod tests {
     use super::*;
     use crate::{
+        canonical_market_data::CanonicalBarSpec,
         canonical_trades::{CanonicalInstrumentIdentity, normalize_sample_spot_tick_trades},
         source_proof::{
             AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
@@ -2720,6 +2725,7 @@ mod tests {
             TimeRange, select_accepted_dataset,
         },
     };
+    use nautilus_model::enums::BarAggregation;
 
     fn spec() -> SpotInstrumentSpec {
         SpotInstrumentSpec {
@@ -4478,6 +4484,117 @@ max_notional = "200000"
         assert_eq!(option.margin_maint, Decimal::ZERO);
     }
 
+    fn binary_option_bar_row(
+        open_time: i64,
+        open: &str,
+        high: &str,
+        low: &str,
+        close: &str,
+        volume: &str,
+    ) -> CanonicalBarRow {
+        CanonicalBarRow {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-binary-option-bars".to_string(),
+            source_binding: "kalshi-official-historical-api".to_string(),
+            venue: "TESTVENUE".to_string(),
+            product_family: "prediction-market".to_string(),
+            product_category: "binary".to_string(),
+            instrument_id: "YES".to_string(),
+            canonical_instrument_key: "YES".to_string(),
+            venue_symbol: "YES".to_string(),
+            nt_instrument_id: Some("YES.TESTVENUE".to_string()),
+            open_time,
+            close_time: open_time + 60_000_000_000,
+            capture_time: open_time + 60_000_000_500,
+            availability_time: None,
+            source_sequence: Some(open_time.to_string()),
+            raw_payload_id: "kalshi-bars-sample-1".to_string(),
+            source_proof_id:
+                "source-proof-kalshi-official-historical-binary-option-pending-2026-06-08"
+                    .to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            open: open.to_string(),
+            high: high.to_string(),
+            low: low.to_string(),
+            close: close.to_string(),
+            volume: volume.to_string(),
+        }
+    }
+
+    fn binary_option_bars_table() -> CanonicalBarsTable {
+        let base = 1_700_000_000_000_000_000;
+        CanonicalBarsTable {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: crate::canonical_trades::TradesPartition {
+                venue: "TESTVENUE".to_string(),
+                product_family: "prediction-market".to_string(),
+                product_category: "binary".to_string(),
+                instrument_id: "YES".to_string(),
+                dt: "2023-11-14".to_string(),
+            },
+            source_proof_id:
+                "source-proof-kalshi-official-historical-binary-option-pending-2026-06-08"
+                    .to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::TradeBarReplay,
+            forbidden_claims: vec!["No execution-quality claims.".to_string()],
+            transform_hash: "0badc0de".to_string(),
+            payload_hash: "feedface".to_string(),
+            bar_spec: CanonicalBarSpec {
+                step: 1,
+                aggregation: BarAggregation::Minute,
+            },
+            rows: vec![
+                binary_option_bar_row(base, "0.49", "0.55", "0.48", "0.52", "100"),
+                binary_option_bar_row(
+                    base + 60_000_000_000,
+                    "0.52",
+                    "0.58",
+                    "0.51",
+                    "0.57",
+                    "120.5",
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn binary_option_bar_catalog_projection_round_trips_through_nt_catalog() {
+        let table = binary_option_bars_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection =
+            project_canonical_bars_to_catalog(&table, &binary_option_spec(), dir.path())
+                .expect("project binary-option bars");
+        assert_eq!(projection.trade_count, table.rows.len());
+        assert_eq!(projection.data_type, NT_DATA_TYPE_BAR);
+        assert_eq!(projection.nt_instrument_id, "YES.TESTVENUE");
+        assert_eq!(
+            projection.fidelity_class,
+            SourceProofFidelityClass::TradeBarReplay
+        );
+        assert!(!projection.catalog_hash.is_empty());
+
+        let mut loaded = read_back_bars(dir.path(), "YES.TESTVENUE").expect("read back bars");
+        loaded.sort_by_key(|bar| bar.ts_event.as_u64());
+        assert_eq!(loaded.len(), table.rows.len());
+        assert_eq!(loaded[0].instrument_id().to_string(), "YES.TESTVENUE");
+        assert_eq!(loaded[0].open, Price::from("0.49"));
+        assert_eq!(loaded[0].high, Price::from("0.55"));
+        assert_eq!(loaded[0].low, Price::from("0.48"));
+        assert_eq!(loaded[0].close, Price::from("0.52"));
+        assert_eq!(loaded[0].volume, Quantity::from("100.000"));
+        assert_eq!(loaded[0].ts_event.as_u64(), 1_700_000_060_000_000_000);
+        assert_eq!(loaded[0].ts_init.as_u64(), 1_700_000_060_000_000_500);
+
+        let catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+        let instruments = catalog
+            .query_instruments(Some(&["YES.TESTVENUE".to_string()]))
+            .expect("query instruments");
+        assert_eq!(instruments.len(), 1);
+        assert!(matches!(&instruments[0], InstrumentAny::BinaryOption(_)));
+    }
+
     #[test]
     fn projection_hashes_url_encoded_non_ascii_instrument_catalog() {
         let mut spec = synthetic_spot_spec();
@@ -4559,6 +4676,7 @@ max_notional = "200000"
                 None,
                 Some(Decimal::ZERO),
                 Some(Decimal::ZERO),
+                None, // tick_scheme (NT bump)
                 None,
                 ts_init,
                 ts_init,

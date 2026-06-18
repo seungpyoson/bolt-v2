@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
-    io::{self, Read, Write},
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -10,9 +10,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    bolt_v3_atomic_io::{AtomicIoError, write_private_atomic_file},
     bolt_v3_config::{KillSwitchConfigBlock, resolve_root_relative_path},
     bolt_v3_kill_switch::KillSwitchState,
-    bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE,
 };
 
 pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 1;
@@ -116,33 +116,9 @@ impl KillSwitchStore {
             state: state.clone(),
             loss_protection: loss_protection.map(PersistedKillSwitchLossProtectionSnapshot::from),
         };
-        self.write_persisted_state(&persisted)
-    }
-
-    pub fn invalidate(&self) -> Result<(), KillSwitchStoreError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|source| KillSwitchStoreError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-
-        let temp_path = self.temp_path();
-        write_private_synced_file(&temp_path, b"!")?;
-        fs::rename(&temp_path, &self.path).map_err(|source| KillSwitchStoreError::Io {
-            path: self.path.clone(),
-            source,
-        })?;
-        sync_parent_dir(&self.path)?;
-        Ok(())
-    }
-
-    fn write_persisted_state(
-        &self,
-        persisted: &PersistedKillSwitchState,
-    ) -> Result<(), KillSwitchStoreError> {
-        let bytes =
+        let mut bytes =
             serde_json::to_vec_pretty(&persisted).map_err(KillSwitchStoreError::Serialize)?;
+        bytes.push(b'\n');
         if bytes.len() as u64 > self.max_state_file_bytes {
             return Err(KillSwitchStoreError::StateTooLarge {
                 path: self.path.clone(),
@@ -150,21 +126,12 @@ impl KillSwitchStore {
                 max_bytes: self.max_state_file_bytes,
             });
         }
+        write_private_atomic_file(&self.path, &bytes)?;
+        Ok(())
+    }
 
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|source| KillSwitchStoreError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-
-        let temp_path = self.temp_path();
-        write_private_synced_file(&temp_path, &bytes)?;
-        fs::rename(&temp_path, &self.path).map_err(|source| KillSwitchStoreError::Io {
-            path: self.path.clone(),
-            source,
-        })?;
-        sync_parent_dir(&self.path)?;
+    pub fn invalidate(&self) -> Result<(), KillSwitchStoreError> {
+        write_private_atomic_file(&self.path, b"!")?;
         Ok(())
     }
 
@@ -266,12 +233,6 @@ impl KillSwitchStore {
             recovery_state,
             loss_protection,
         })
-    }
-
-    fn temp_path(&self) -> PathBuf {
-        let mut temp_path = self.path.clone();
-        temp_path.set_extension("tmp");
-        temp_path
     }
 }
 
@@ -404,43 +365,11 @@ impl std::error::Error for KillSwitchStoreError {
     }
 }
 
-fn write_private_synced_file(path: &Path, bytes: &[u8]) -> Result<(), KillSwitchStoreError> {
-    let mut options = OpenOptions::new();
-    options.create(true).truncate(true).write(true);
-    configure_private_file_options(&mut options);
-
-    let mut file = options
-        .open(path)
-        .map_err(|source| KillSwitchStoreError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    file.write_all(bytes)
-        .and_then(|()| file.write_all(b"\n"))
-        .and_then(|()| file.sync_all())
-        .map_err(|source| KillSwitchStoreError::Io {
-            path: path.to_path_buf(),
-            source,
-        })
-}
-
-#[cfg(unix)]
-fn configure_private_file_options(options: &mut OpenOptions) {
-    use std::os::unix::fs::OpenOptionsExt;
-    options.mode(PRIVATE_ARTIFACT_FILE_MODE);
-}
-
-#[cfg(not(unix))]
-fn configure_private_file_options(_options: &mut OpenOptions) {}
-
-fn sync_parent_dir(path: &Path) -> Result<(), KillSwitchStoreError> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    fs::File::open(parent)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|source| KillSwitchStoreError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })
+impl From<AtomicIoError> for KillSwitchStoreError {
+    fn from(error: AtomicIoError) -> Self {
+        Self::Io {
+            path: error.path,
+            source: error.source,
+        }
+    }
 }

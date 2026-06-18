@@ -111,6 +111,7 @@ def test_real_scan_covers_provider_neutral_source_files() -> None:
         "src/bolt_v3_providers/polymarket.rs",
         "src/bolt_v3_providers/polymarket/fees.rs",
         "src/bolt_v3_market_families/updown.rs",
+        "src/bolt_v3_outcome_group_polymarket.rs",
     ):
         assert rel not in core_files
 
@@ -167,6 +168,84 @@ def test_provider_key_constants_in_shared_market_data_module_are_findings() -> N
 
         assert "concrete provider type name in core production code" in messages
         assert "provider-key string literal in core production code" in messages
+
+
+def test_outcome_group_source_native_proof_labels_are_allowlisted() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_providers/hyperliquid.rs": 'pub const KEY: &str = "hyperliquid";\n',
+                "src/bolt_v3_outcome_groups.rs": """
+                    pub enum OutcomeGroupSourceKind {
+                        Polymarket,
+                        Hyperliquid,
+                    }
+                    pub enum GroupingProof {
+                        PolymarketNegRisk {
+                            discovery_scope: PolymarketDiscoveryScopeEvidence,
+                        },
+                        HyperliquidOutcome {
+                            question: u32,
+                        },
+                    }
+                    impl GroupingProof {
+                        fn native_identity(&self) -> String {
+                            match self {
+                                Self::PolymarketNegRisk {
+                                    ..
+                                } => String::new(),
+                                Self::HyperliquidOutcome { question, .. } => format!("hyperliquid:{question}"),
+                            }
+                        }
+                    }
+                    pub struct PolymarketDiscoveryScopeEvidence {
+                        source_id: String,
+                    }
+                    fn labels(source_kind: OutcomeGroupSourceKind, proof: GroupingProof) -> &'static str {
+                        match source_kind {
+                            OutcomeGroupSourceKind::Polymarket => "polymarket",
+                            OutcomeGroupSourceKind::Hyperliquid => "hyperliquid",
+                        }
+                    }
+                    fn metadata(proof: GroupingProof) {
+                        match proof {
+                            GroupingProof::PolymarketNegRisk {
+                                ..
+                            } => {}
+                            GroupingProof::HyperliquidOutcome {
+                                ..
+                            } => {}
+                        }
+                    }
+                """,
+            },
+        )
+
+        assert verifier.scan_root(root) == []
+
+
+def test_outcome_group_allowance_does_not_hide_other_provider_type_leaks() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_outcome_groups.rs": """
+                    pub struct PolymarketClientLeak;
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "concrete provider type name in core production code" in messages
 
 
 def test_shared_secret_module_provider_import_is_finding() -> None:

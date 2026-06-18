@@ -471,4 +471,3 @@ catalog_mapping_evaluation_path = "specs/023-nt-research-analytics-platform/refe
 record_id = "backfill-accepted-tranche-binance-bnbusdc-2026-05-31"
 publication_evidence_path = "specs/023-nt-research-analytics-platform/reference/binance-bnbusdc-2026-05-31-accepted-publication-evidence.2026-06-10.json"
 catalog_mapping_evaluation_path = "specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-evaluation.backtesting-engine.binance-bnbusdc-2026-05-31.2026-06-10.json"
-

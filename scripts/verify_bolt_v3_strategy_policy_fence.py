@@ -16,7 +16,13 @@ import re
 import sys
 from dataclasses import dataclass
 
-from bolt_v3_source_roots import REPO_ROOT, STRATEGY_SOURCE_ROOTS, source_set_files
+from bolt_v3_source_roots import (
+    ALL_GATED_SOURCE_ROOTS,
+    MAKER_SOURCE_ROOT,
+    REPO_ROOT,
+    STRATEGY_SOURCE_ROOTS,
+    source_set_files,
+)
 from verify_bolt_v3_pure_rust_runtime import production_text
 
 
@@ -63,6 +69,7 @@ NT_VENUE_MUTATION_METHOD_NAMES: tuple[str, ...] = (
     # Private Bolt wrapper names stay fenced everywhere outside the policy module.
     "submit_order_via_nt",
     "cancel_order_via_nt",
+    "cancel_all_orders_via_nt",
     # Near-neighbor variants are fenced before a future NT bump can use them.
     "submit_order_with_params",
     "submit_order_list_with_params",
@@ -205,6 +212,15 @@ STRATEGY_POLICY_RULES: tuple[Rule, ...] = (
             r"|\bregistry\.register\s*<\s*(?:super::)+"
         ),
     ),
+    Rule(
+        "maker dependency on taker pricing internals",
+        re.compile(
+            r"\bcrate\s*::\s*bolt_v3_taker_pricing\b"
+            r"|\b(?:super\s*::\s*)+bolt_v3_taker_pricing\b"
+            r"|\bbolt_v3_taker_pricing\s*::"
+            r"|\bTakerPricing[A-Za-z0-9_]*\b"
+        ),
+    ),
 )
 
 EXECUTION_POLICY_RULES: tuple[Rule, ...] = (
@@ -232,6 +248,12 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
 )
 
 ALLOWED_DIRECT_NT_MUTATION_PATHS = frozenset(
+    {
+        "src/bolt_v3_order_execution.rs",
+    }
+)
+
+ALLOWED_KILL_SWITCH_ACTION_BYPASS_PATHS = frozenset(
     {
         "src/bolt_v3_order_execution.rs",
     }
@@ -267,6 +289,10 @@ STRATEGY_ROOT_POLICY_EXEMPT_PATHS = frozenset(
         "src/strategies/registry.rs",
     }
 )
+
+
+def is_maker_strategy_source_path(path: str) -> bool:
+    return path == MAKER_SOURCE_ROOT or path.startswith(f"{MAKER_SOURCE_ROOT}/")
 
 
 def line_number(text: str, pos: int) -> int:
@@ -307,9 +333,13 @@ def source_files_for_mutation_fence() -> list:
 
 
 def gated_strategy_source_root_names() -> set[str]:
+    # A strategy directory under `src/strategies/` is gated if it belongs to ANY
+    # gated source set (taker, maker, or a future seal), not only the taker's
+    # `STRATEGY_SOURCE_ROOTS`. Deriving from the union keeps each newly sealed
+    # strategy recognized as gated without re-listing it here.
     return {
         relative_root
-        for relative_root in STRATEGY_SOURCE_ROOTS
+        for relative_root in ALL_GATED_SOURCE_ROOTS
         if relative_root.startswith("src/strategies/")
     }
 
@@ -359,6 +389,11 @@ def find_violations_in_text(
         ):
             continue
         if (
+            rule.label == "direct kill-switch action bypass"
+            and path in ALLOWED_KILL_SWITCH_ACTION_BYPASS_PATHS
+        ):
+            continue
+        if (
             rule.label == "strategy-local execution policy construction"
             and path in ALLOWED_EXECUTION_POLICY_CONSTRUCTION_PATHS
         ):
@@ -371,6 +406,11 @@ def find_violations_in_text(
         if (
             rule.label == "strategy-local execution policy override"
             and path in ALLOWED_EXECUTION_POLICY_OVERRIDE_PATHS
+        ):
+            continue
+        if (
+            rule.label == "maker dependency on taker pricing internals"
+            and not is_maker_strategy_source_path(path)
         ):
             continue
         for match in rule.pattern.finditer(text):

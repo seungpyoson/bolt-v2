@@ -8,7 +8,7 @@ RawEvidenceRecord / CatalogProjection / NT Result / NT Report
   -> point-in-time feature joins
   -> ExperimentRun
   -> analysis artifacts and metrics
-  -> PromotionPackage
+  -> ExperimentResult verdict + optional typed promotion-config
 ```
 
 Research Analytics is flexible at the exploration layer, but promotion is strict:
@@ -38,11 +38,14 @@ contracts.
   backtest Artifact Index records. Derived research artifacts require explicit
   RA-owned artifact kind/schema before Analytics can publish index records.
 - RA-owned derived artifacts use one top-level Artifact Index kind,
-  `research-analytics`, with four subfamilies: `datasets`, `feature-tables`,
-  `experiment-results`, and `promotion-packages`. These subfamilies commit into
-  one `research-analytics` snapshot and do not get separate latest pointers.
+  `research-analytics`, with three subfamilies: `datasets`, `feature-tables`,
+  and `experiment-results`. These subfamilies commit into one
+  `research-analytics` snapshot and do not get separate latest pointers.
+  Promotion config is a typed field/URI on an `experiment-results` artifact,
+  not a separate artifact family/path.
 - Analytics preserves upstream `SourceProofReport` ids, fidelity classes, and
-  claim limits through datasets, experiments, and promotion packages. It may
+  claim limits through datasets, experiments, and verdict-bearing experiment
+  results. It may
   narrow claims but cannot accept upstream proof, upgrade proof strength, or
   weaken forbidden claims. It preserves proof version/supersession metadata and
   cannot mutate accepted proof records. Historical experiments remain tied to
@@ -57,7 +60,7 @@ contracts.
   hash, manifest schema, or historical data window; those require separate
   future currentness rules deferred to manifest-schema work.
 - Artifact lifecycle metadata is preserved from source through datasets,
-  experiments, and promotion packages. Analytics cannot add default delete or
+  experiments, and experiment results. Analytics cannot add default delete or
   expiration rules for canonical artifacts.
 - Lifecycle state remains simple for analytics consumers: `active` until the
   configured quiet window passes, then `inactive`.
@@ -69,12 +72,19 @@ contracts.
 3. Define experiment metadata and artifact retention.
 4. Define claim-limit propagation from source fidelity to research result.
 5. Define notebook permission boundary.
-6. Define promotion package and review checklist.
+6. Define findings, promotion-config fields, and review checklist.
 7. Define artifact URI and Artifact Index consumption rules for the configured S3
    `artifact_root`.
 8. Define lifecycle metadata rules for retain-forever artifacts, quiet window,
    and active-to-inactive transition.
 9. Define cost refresh and provider/license proof triggers for selected data.
+
+## Backtest Phase Prerequisite
+
+The BTE runner currently registers only the NT example strategy
+`HurstVpinDirectional` over `bybit-spot`. Wiring bolt's
+`binary_oracle_edge_taker` plus venue normalization into the BTE is a
+hard precondition before any Phase-3 sweep is real.
 
 ## Point-In-Time Rules
 
@@ -91,28 +101,23 @@ contracts.
 - A promoted candidate must become typed TOML/NT-compatible config plus runtime
   contract.
 - `BacktestResultContract` is an objective evidence input only. Strategy
-  escalation, candidate status, rejection, or approval belongs to
-  `PromotionPackage` or a later RA-owned review artifact.
-- `PromotionPackage` status must use the canonical enum: `draft`, `blocked`,
-  `ready_for_review`, `changes_requested`, `rejected`, and
-  `approved_for_config`. `changes_requested` is the iterate/research-more state.
-  `approved_for_config` is not live-trading approval.
-- `approved_for_config` requires accepted `SourceProofReport` refs, objective
+  escalation, candidate status, rejection, or approval belongs to the
+  `experiment-results` verdict field set or a later RA-owned review artifact.
+- A real `go` finding may carry typed TOML/NT-compatible promotion-config
+  fields on the same `experiment-results` artifact. `go` is not live-trading
+  approval.
+- Promotion config requires accepted `SourceProofReport` refs, objective
   backtest result refs, preserved claim limits, fidelity-compatible claims, no
   notebook runtime code, typed TOML/NT-compatible config output,
   reviewer/policy refs, and explicit non-live boundary.
-- After `approved_for_config`, the only allowed output is a typed config
-  artifact for later implementation/review. It must not auto-merge,
-  auto-enable a strategy, schedule live trading, touch SSM credentials, or
-  mutate production runtime config.
-- Generated promotion/config artifacts live under the configured S3 `artifact_root`
-  as RA-owned derived artifacts, for example
-  `research-analytics/v1/promotion-packages/`. They must not be written
-  directly into repo runtime config; importing them into production config is a
-  separate future implementation/review step.
+- The only allowed output is a typed config field/URI on the
+  `experiment-results` artifact for later implementation/review. It must not
+  auto-merge, auto-enable a strategy, schedule live trading, touch SSM
+  credentials, mutate production runtime config, or create a separate promotion
+  artifact family/path.
 - Promotion must name required Backtesting Engine evidence and selected
-  Dashboard source fields, if any, using the `PromotionPackage` reference fields
-  defined in the project spec.
+  Dashboard source fields, if any, using the experiment-result verdict and
+  promotion-config fields defined in the project spec.
 - Promotion must not bypass SSM-only live credential handling or Rust-only
   production runtime rules.
 

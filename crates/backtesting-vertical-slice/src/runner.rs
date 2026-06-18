@@ -10,9 +10,25 @@
 //! There is no custom simulation behaviour: NautilusTrader owns the engine,
 //! catalog, fills, and results.
 
-use std::{path::Path, str::FromStr};
+use std::{path::Path, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result, bail, ensure};
+use bolt_v2::{
+    bolt_v3_decision_evidence::{
+        BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
+        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    },
+    bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
+    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    strategies::{
+        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
+        registry::{FeeProvider, StrategyBuildContext},
+    },
+};
+use futures_util::future::BoxFuture;
+use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
 use nautilus_model::{
     data::{
@@ -20,7 +36,7 @@ use nautilus_model::{
         TradeTick,
     },
     enums::{AggregationSource, AggressorSide, BookAction, OrderSide, OrderStatus, PriceType},
-    identifiers::InstrumentId,
+    identifiers::{InstrumentId, Venue},
     orders::Order,
     types::Quantity,
 };
@@ -39,13 +55,17 @@ use super::{
     conversion_boundary::{
         ConversionCatalogMetadata, ConversionCheckpoint, ConversionFingerprint, ConversionManifest,
     },
+    domain_metrics::{
+        domain_statistics_from_analyzer, register_domain_statistics, resolve_domain_statistics,
+    },
     mechanical_probe_strategy::{MechanicalTradeReplayProbe, MechanicalTradeReplayProbeConfig},
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
     run_manifest::{
-        BacktestingRunManifest, NtSurfaceClassification, STRATEGY_HURST_VPIN_DIRECTIONAL,
-        STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
+        BacktestingRunManifest, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
+        STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
+        STRATEGY_PARAM_ORDER_EXECUTION_MODE,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -54,6 +74,74 @@ use super::{
 const PARAM_BAR_TYPE: &str = "bar_type";
 /// Strategy parameter key for the trade size.
 const PARAM_TRADE_SIZE: &str = "trade_size";
+/// Strategy parameter key for the normalized binary-oracle builder TOML.
+const PARAM_CONFIG_TOML: &str = "config_toml";
+/// Strategy parameter key for the backtest fee-provider assumption.
+const PARAM_FEE_BPS: &str = "fee_bps";
+
+#[derive(Debug)]
+struct BacktestDecisionEvidenceWriter;
+
+impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct ManifestFeeProvider {
+    fee_bps: Decimal,
+}
+
+impl FeeProvider for ManifestFeeProvider {
+    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
+        Some(self.fee_bps)
+    }
+
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 /// Strategy parameter key for the number of delivered trades before the entry order.
 const PARAM_ENTRY_AFTER_TRADES: &str = "entry_after_trades";
 /// Strategy parameter key for the number of further delivered trades before the close.
@@ -200,6 +288,56 @@ fn add_manifest_strategy(
                 .add_strategy(HurstVpinDirectional::new(config))
                 .context("add HurstVpinDirectional strategy")
         }
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
+            let raw_config = strategy
+                .parameters
+                .get(PARAM_CONFIG_TOML)
+                .with_context(|| format!("strategy parameter {PARAM_CONFIG_TOML} is required"))?;
+            let raw_config = toml::from_str::<toml::Value>(raw_config)
+                .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))?;
+            let fee_bps_raw = strategy
+                .parameters
+                .get(PARAM_FEE_BPS)
+                .with_context(|| format!("strategy parameter {PARAM_FEE_BPS} is required"))?;
+            let fee_bps = Decimal::from_str(fee_bps_raw)
+                .with_context(|| format!("invalid {PARAM_FEE_BPS} {fee_bps_raw:?}"))?;
+            ensure!(
+                fee_bps >= Decimal::ZERO,
+                "strategy parameter {PARAM_FEE_BPS} must be non-negative"
+            );
+            let order_execution_mode_raw = strategy
+                .parameters
+                .get(STRATEGY_PARAM_ORDER_EXECUTION_MODE)
+                .with_context(|| {
+                    format!("strategy parameter {STRATEGY_PARAM_ORDER_EXECUTION_MODE} is required")
+                })?;
+            let order_execution_mode: BoltV3OrderExecutionMode = toml::Value::String(
+                order_execution_mode_raw.clone(),
+            )
+            .try_into()
+            .with_context(|| {
+                format!(
+                    "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
+                )
+            })?;
+            let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
+                Arc::new(BacktestDecisionEvidenceWriter);
+            let submit_admission =
+                Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
+            let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
+            let build_context = StrategyBuildContext::new(
+                fee_provider,
+                decision_evidence,
+                submit_admission,
+                BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
+                Venue::from(manifest.venue.nt_venue.as_str()),
+            );
+            let strategy =
+                BinaryOracleEdgeTakerBuilder::build_strategy(&raw_config, &build_context)
+                    .context("build binary_oracle_edge_taker strategy")?;
+            let result = engine.add_strategy(strategy);
+            result.context("add binary_oracle_edge_taker strategy")
+        }
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
             let catalog_input = manifest.primary_catalog_input().map_err(|error| {
                 anyhow::anyhow!("strategy instrument requires catalog input: {error}")
@@ -281,6 +419,9 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
+    let domain_statistics = resolve_domain_statistics(&manifest.domain_metrics)?;
+    let mut domain_analyzer = PortfolioAnalyzer::new();
+    register_domain_statistics(&mut domain_analyzer, &domain_statistics);
     let mut node = BacktestNode::new(vec![run_config]).context("construct BacktestNode")?;
     node.build().context("build BacktestNode")?;
     {
@@ -299,14 +440,27 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
     // holds its post-run cache here; capture each order's terminal state before
     // the node is dropped. A run that disposed (NautilusTrader default) would
     // leave this empty and the order-terminal proof would have nothing to check.
+    let mut nt_result = results.remove(0);
     let order_terminals = {
         let engine = node
             .get_engine(&manifest.run_id)
             .with_context(|| format!("no engine for run id {} after run", manifest.run_id))?;
+        let positions: Vec<_> = {
+            let cache = engine.kernel().cache.borrow();
+            cache
+                .positions(None, None, None, None, None)
+                .into_iter()
+                .map(|position| position.cloned())
+                .collect()
+        };
+        domain_analyzer.add_positions(&positions);
+        for (name, value) in domain_statistics_from_analyzer(&domain_analyzer, &domain_statistics) {
+            nt_result.stats_general.insert(name, value);
+        }
         capture_order_terminals(engine)
     };
     Ok(NtBacktestNodeRun {
-        result: results.remove(0),
+        result: nt_result,
         order_terminals,
     })
 }
@@ -520,6 +674,14 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         event_count_ledger_hash,
         selected_asset_ids_hash,
         strategy: &inputs.manifest.strategy,
+        execution_model: &inputs.manifest.execution_model,
+        venue_queue_position: inputs.manifest.venue.queue_position,
+        catalog_data_types: inputs
+            .manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect(),
         run_purpose: run_purpose_label(inputs.manifest),
         market_structure_fixture: market_structure_label(inputs.manifest),
         fidelity_class: canonical_table.fidelity_class,
@@ -1308,12 +1470,20 @@ mod tests {
         let hashes = selector_provenance_hashes(
             SourceProofFidelityClass::L2Replay,
             Some(BacktestSelectorProvenance {
-                event_count_ledger_hash: "eventledgerabc",
-                selected_asset_ids_hash: "selectedassetsabc",
+                event_count_ledger_hash:
+                    "7777777777777777777777777777777777777777777777777777777777777777",
+                selected_asset_ids_hash:
+                    "8888888888888888888888888888888888888888888888888888888888888888",
             }),
         )
         .expect("selector provenance");
-        assert_eq!(hashes, (Some("eventledgerabc"), Some("selectedassetsabc")));
+        assert_eq!(
+            hashes,
+            (
+                Some("7777777777777777777777777777777777777777777777777777777777777777"),
+                Some("8888888888888888888888888888888888888888888888888888888888888888")
+            )
+        );
 
         assert_eq!(
             selector_provenance_hashes(SourceProofFidelityClass::TradeReplay, None)

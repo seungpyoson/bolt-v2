@@ -74,9 +74,9 @@ independent PnL/account truth.
 - Dashboard may display `run_purpose` and must not present reproduction,
   audit, regression, or migration results as normal current results.
 - Dashboard may display Research Analytics strategy-review or promotion status
-  only from `PromotionPackage` or later RA-owned review artifacts. It must not
-  infer "use/escalate this strategy" from `BacktestResultContract` metrics or
-  mutate promotion state.
+  only from experiment-result verdict/promotion-config fields or later RA-owned
+  review artifacts. It must not infer "use/escalate this strategy" from
+  `BacktestResultContract` metrics or mutate promotion state.
 - Dashboard must preserve artifact lifecycle status and must not add delete or
   expiration behavior for canonical artifacts.
 - Dashboard user-facing labels, status names, and legends must be finalized in a
@@ -137,6 +137,9 @@ independent PnL/account truth.
 
 Link or depend on #36, #77, #88, #148, #236, #369, and #409. Dashboard source
 contract work does not close production readiness by itself.
+
+GitHub issue #733 records the dashboard source-contract scope and links the
+named dependency set for implementation review.
 
 ## Non-Goals
 

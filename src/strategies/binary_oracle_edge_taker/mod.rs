@@ -127,12 +127,14 @@ mod exposure;
 
 use self::exposure::{
     BlindRecoveryReason, BlindRecoveryState, ConfiguredPositionContract, EntryReconcileReason,
-    ExitPendingState, ExposureOccupancy, ExposureState, ForcedFlatInputs, ForcedFlatReason,
-    ManagedPositionOrigin, ManagedPositionState, OpenPositionState, PendingEntryState,
-    PendingExitState, PositionMaterializationSpec, UnsupportedObservedReason,
-    UnsupportedObservedState, evaluate_forced_flat_predicates,
+    ExitPendingState, ExposureOccupancy, ExposureState, ManagedPositionOrigin,
+    ManagedPositionState, OpenPositionState, PendingEntryState, PendingExitState,
+    PositionMaterializationSpec, UnsupportedObservedReason, UnsupportedObservedState,
     infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
     supports_strategy_managed_position,
+};
+use crate::bolt_v3_feed_health::{
+    ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -548,11 +550,13 @@ impl PricingState {
                 reference_current_price.is_finite() && *reference_current_price > 0.0
             })
             && self
-                .last_reference_current_price_ts_ms
+                .last_reference_current_price_ts_ms()
                 .is_none_or(|last| snapshot.ts_ms > last)
         {
-            self.last_reference_current_price_ts_ms = Some(snapshot.ts_ms);
-            self.last_reference_current_price = Some(reference_current_price);
+            self.set_last_reference_observation(
+                Some(snapshot.ts_ms),
+                Some(reference_current_price),
+            );
         }
 
         let candidates = self.build_lead_venue_signals(snapshot);
@@ -569,7 +573,7 @@ impl PricingState {
                     .observed_ts_ms
                     .expect("selected lead venue should carry timestamp"),
             };
-            self.fast_spot = Some(fast_spot);
+            self.set_selected_pricing_spot(Some(fast_spot));
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
             self.last_jitter_penalty_probability = Some(if max_jitter_ms == 0 {
                 0.0
@@ -581,7 +585,7 @@ impl PricingState {
             self.last_fast_venue_jitter_ms = Some(candidate.jitter_ms);
             self.fast_venue_incoherent = false;
         } else {
-            self.fast_spot = None;
+            self.set_selected_pricing_spot(None);
             self.last_lead_gap_probability = None;
             self.last_jitter_penalty_probability = None;
             self.last_lead_agreement_corr = None;
@@ -593,7 +597,7 @@ impl PricingState {
 
     #[cfg(test)]
     fn build_lead_venue_signals(&mut self, snapshot: &ReferenceSnapshot) -> Vec<LeadVenueSignal> {
-        let reference_anchor = self.last_reference_current_price;
+        let reference_anchor = self.last_reference_current_price();
         let agreement_anchor = best_healthy_oracle_price(snapshot).or(reference_anchor);
 
         snapshot
@@ -1358,28 +1362,44 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn subscribe_realized_volatility_sources(&mut self) {
-        for (instrument_id, client_id) in self
+        let surface_id = self.config.realized_volatility_surface_id.clone();
+        let quote_requests = self
             .context
-            .realized_volatility_quote_subscription_requests()
-        {
+            .realized_volatility_quote_subscription_requests_for_surface(&surface_id);
+        let trade_requests = self
+            .context
+            .realized_volatility_trade_subscription_requests_for_surface(&surface_id);
+        let index_requests = self
+            .context
+            .realized_volatility_index_subscription_requests_for_surface(&surface_id);
+
+        // Defense-in-depth: make a zero-subscription configured surface observable. For a
+        // validated config this is typically unreachable because policy requires at least one
+        // enabled quorum source, but it still catches a validation regression or
+        // no-ready-source edge that would otherwise leave pricing silently
+        // `RealizedVolNotReady`. Pricing fails closed regardless; this warning is the only
+        // operator signal.
+        if quote_requests.is_empty() && trade_requests.is_empty() && index_requests.is_empty() {
+            log::warn!(
+                "binary_oracle_edge_taker configured RV surface `{}` has no enabled subscribable sources; pricing will stay RealizedVolNotReady (strategy_id={})",
+                surface_id,
+                self.config.strategy_id
+            );
+        }
+
+        for (instrument_id, client_id) in quote_requests {
             #[cfg(not(test))]
             self.subscribe_quotes(instrument_id, client_id, None);
             #[cfg(test)]
             let _ = (instrument_id, client_id);
         }
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_trade_subscription_requests()
-        {
+        for (instrument_id, client_id) in trade_requests {
             #[cfg(not(test))]
             self.subscribe_trades(instrument_id, client_id, None);
             #[cfg(test)]
             let _ = (instrument_id, client_id);
         }
-        for (instrument_id, client_id) in self
-            .context
-            .realized_volatility_index_subscription_requests()
-        {
+        for (instrument_id, client_id) in index_requests {
             #[cfg(not(test))]
             self.subscribe_index_prices(instrument_id, client_id, None);
             #[cfg(test)]
@@ -1817,9 +1837,10 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn unsubscribe_realized_volatility_sources(&mut self) {
+        let surface_id = self.config.realized_volatility_surface_id.clone();
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_quote_subscription_requests()
+            .realized_volatility_quote_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_quotes(instrument_id, client_id, None);
@@ -1828,7 +1849,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_trade_subscription_requests()
+            .realized_volatility_trade_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_trades(instrument_id, client_id, None);
@@ -1837,7 +1858,7 @@ impl BinaryOracleEdgeTaker {
         }
         for (instrument_id, client_id) in self
             .context
-            .realized_volatility_index_subscription_requests()
+            .realized_volatility_index_subscription_requests_for_surface(&surface_id)
         {
             #[cfg(not(test))]
             self.unsubscribe_index_prices(instrument_id, client_id, None);
@@ -2353,7 +2374,7 @@ impl BinaryOracleEdgeTaker {
 
     fn active_forced_flat_reasons_at(&self, now_ms: u64) -> Vec<ForcedFlatReason> {
         evaluate_forced_flat_predicates(&ForcedFlatInputs {
-            phase: self.active.phase,
+            frozen: self.active.phase == SelectionPhase::Freeze,
             metadata_matches_selection: self.active.books.metadata_matches_selection(),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
             now_ms,
@@ -2372,7 +2393,7 @@ impl BinaryOracleEdgeTaker {
         };
 
         evaluate_forced_flat_predicates(&ForcedFlatInputs {
-            phase: self.active.phase,
+            frozen: self.active.phase == SelectionPhase::Freeze,
             metadata_matches_selection: open_position.book.metadata_matches_selection(),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
             now_ms,
@@ -2440,7 +2461,7 @@ impl BinaryOracleEdgeTaker {
         if open_position.market_id.as_deref() != self.active.market_id.as_deref() {
             return None;
         }
-        self.pricing.fast_spot.as_ref()
+        self.pricing.selected_pricing_spot()
     }
 
     fn current_position_spot_price(&self) -> Option<f64> {
@@ -2500,8 +2521,7 @@ impl BinaryOracleEdgeTaker {
         let evaluation = &submission.evaluation;
         let spot_venue_name = self
             .pricing
-            .fast_spot
-            .as_ref()
+            .selected_pricing_spot()
             .map(|spot| spot.venue.clone());
         let fast_venue_available = spot_venue_name.is_some();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
@@ -2514,7 +2534,7 @@ impl BinaryOracleEdgeTaker {
             pricing_blocked_by: evaluation.pricing_blocked_by.clone(),
             spot_price: self.pricing.spot_price(),
             spot_venue_name,
-            reference_current_price: self.pricing.last_reference_current_price,
+            reference_current_price: self.pricing.last_reference_current_price(),
             interval_open: self.active.interval_open,
             seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
@@ -2615,7 +2635,7 @@ impl BinaryOracleEdgeTaker {
             selected_side: evaluation.selected_side,
             fast_venue_available,
             reference_current_price_available_without_fast_venue: !fast_venue_available
-                && self.pricing.last_reference_current_price.is_some(),
+                && self.pricing.last_reference_current_price().is_some(),
             lead_quality_policy_applied: self.pricing.lead_quality_policy_applied,
             lead_quality_reason: if self.pricing.fast_venue_incoherent {
                 EVIDENCE_REASON_NO_FAST_VENUE_CLEARED_LEAD_QUALITY_THRESHOLDS
@@ -3769,7 +3789,7 @@ impl BinaryOracleEdgeTaker {
             spot_venue_name: self
                 .current_position_fast_spot()
                 .map(|spot| spot.venue.clone()),
-            reference_current_price: self.pricing.last_reference_current_price,
+            reference_current_price: self.pricing.last_reference_current_price(),
             interval_open: open_position.and_then(|position| position.interval_open),
             seconds_to_expiry: self.current_position_seconds_to_expiry_at(now_ms),
             realized_vol: self.current_realized_vol_at(now_ms),
@@ -4110,11 +4130,7 @@ impl BinaryOracleEdgeTaker {
     fn realized_volatility_evidence_fields(&self) -> RealizedVolatilityEvidenceFields {
         let realized_volatility_snapshot = self
             .pricing
-            .latest_realized_vol_snapshot
-            .as_ref()
-            .filter(|snapshot| {
-                self.config.realized_volatility_surface_id.as_str() == snapshot.surface_id.as_str()
-            });
+            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id);
         match realized_volatility_snapshot {
             Some(snapshot) => RealizedVolatilityEvidenceFields {
                 surface_id: snapshot.surface_id.clone(),
@@ -4261,7 +4277,7 @@ impl BinaryOracleEdgeTaker {
                 .map_or_else(String::new, evidence_number),
             reference_current_price: self
                 .pricing
-                .last_reference_current_price
+                .last_reference_current_price()
                 .map(evidence_number),
             reference_current_price_source_id: self
                 .active
@@ -4478,7 +4494,7 @@ impl BinaryOracleEdgeTaker {
             spot_price: evidence_number(spot_price),
             reference_current_price: self
                 .pricing
-                .last_reference_current_price
+                .last_reference_current_price()
                 .map(evidence_number),
             reference_current_price_source_id: self
                 .active
@@ -4550,8 +4566,9 @@ impl BinaryOracleEdgeTaker {
             .config
             .entry_order
             .nt_order_template(ORDER_CONFIGURATION_PREFIX_ENTRY, price.precision)?;
+        let mut order_factory = self.core.order_factory();
         build_nt_order(
-            self.core.order_factory(),
+            &mut order_factory,
             ORDER_CONFIGURATION_PREFIX_ENTRY,
             &template,
             NtOrderBuildInputs {
@@ -4638,8 +4655,9 @@ impl BinaryOracleEdgeTaker {
         );
         let template =
             order_config.nt_order_template(ORDER_CONFIGURATION_PREFIX_EXIT, price.precision)?;
+        let mut order_factory = self.core.order_factory();
         build_nt_order(
-            self.core.order_factory(),
+            &mut order_factory,
             ORDER_CONFIGURATION_PREFIX_EXIT,
             &template,
             NtOrderBuildInputs {
@@ -4875,12 +4893,10 @@ impl BinaryOracleEdgeTaker {
                 .contains(&EntryPricingBlockReason::RealizedVolNotReady)
             && self
                 .pricing
-                .latest_realized_vol_snapshot
-                .as_ref()
-                .is_some_and(|snapshot| {
-                    snapshot.surface_id.as_str()
-                        == self.config.realized_volatility_surface_id.as_str()
-                })
+                .latest_realized_vol_snapshot_for_surface(
+                    &self.config.realized_volatility_surface_id,
+                )
+                .is_some()
         {
             let strategy_input_snapshot =
                 self.blocked_entry_strategy_input_evidence_snapshot_at(now_ms, &decision)?;
@@ -5831,10 +5847,7 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
     }
 
     fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
-        Ok(Box::new(BinaryOracleEdgeTaker::new(
-            Self::parse_config(raw)?,
-            context.clone(),
-        )))
+        Ok(Box::new(Self::build_strategy(raw, context)?))
     }
 
     fn register(

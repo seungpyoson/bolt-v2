@@ -15,12 +15,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
+    hashing::is_lowercase_sha256_hex,
     run_manifest::StrategySource,
     source_proof::{AcceptanceMode, SourceProofFidelityClass},
 };
 
 /// Result contract schema version.
-pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v1";
+pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v2";
+const RESULT_CONTRACT_V1: &str = "backtest-result-contract.v1";
 
 /// This crate's manifest, embedded at compile time so the recorded NautilusTrader
 /// revision is exactly the one this binary was built against. This crate's own
@@ -82,6 +84,7 @@ pub fn strategy_config_hash(strategy: &StrategySource) -> String {
 /// Objective pointer into the NautilusTrader result. Carries only mechanical
 /// run facts, never a judgement.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NautilusResultPointer {
     pub trader_id: String,
     pub machine_id: String,
@@ -118,16 +121,20 @@ impl NautilusResultPointer {
 
 /// Artifact URIs recorded by the contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResultArtifactUris {
     pub source_proof_uri: String,
     pub canonical_table_uri: String,
     pub nt_catalog_uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nt_catalog_manifest_uri: Option<String>,
     pub catalog_metadata_uri: String,
     pub result_contract_uri: String,
 }
 
 /// The objective backtest result contract.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BacktestResultContract {
     pub contract_version: String,
     pub run_id: String,
@@ -151,6 +158,12 @@ pub struct BacktestResultContract {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_asset_ids_hash: Option<String>,
     pub strategy_config_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub execution_model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub venue_queue_position: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub catalog_data_types: Vec<String>,
     pub run_purpose: String,
     pub market_structure_fixture: String,
     pub fidelity_class: SourceProofFidelityClass,
@@ -166,6 +179,8 @@ pub struct BacktestResultContract {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultContractError {
     MissingField(&'static str),
+    InvalidSha256 { field: &'static str, value: String },
+    UnsupportedVersion { actual: String },
     SubjectivePromotionLanguage { field: String, phrase: String },
 }
 
@@ -173,6 +188,16 @@ impl std::fmt::Display for ResultContractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "missing required field: {field}"),
+            Self::InvalidSha256 { field, value } => {
+                write!(
+                    f,
+                    "{field} must be a lowercase SHA-256 hex digest, got {value:?}"
+                )
+            }
+            Self::UnsupportedVersion { actual } => write!(
+                f,
+                "unsupported result contract version: expected {RESULT_CONTRACT_VERSION}, got {actual:?}"
+            ),
             Self::SubjectivePromotionLanguage { field, phrase } => write!(
                 f,
                 "result contract field {field} contains subjective promotion language: {phrase:?}"
@@ -251,6 +276,34 @@ impl BacktestResultContract {
                 return Err(ResultContractError::MissingField(name));
             }
         }
+        if self.contract_version != RESULT_CONTRACT_VERSION
+            && self.contract_version != RESULT_CONTRACT_V1
+        {
+            return Err(ResultContractError::UnsupportedVersion {
+                actual: self.contract_version.clone(),
+            });
+        }
+        for (field, value) in [
+            ("manifest_hash", self.manifest_hash.as_str()),
+            (
+                "accepted_object_sha256",
+                self.accepted_object_sha256.as_str(),
+            ),
+            ("converter_config_hash", self.converter_config_hash.as_str()),
+            (
+                "conversion_manifest_hash",
+                self.conversion_manifest_hash.as_str(),
+            ),
+            (
+                "conversion_checkpoint_hash",
+                self.conversion_checkpoint_hash.as_str(),
+            ),
+            ("catalog_hash", self.catalog_hash.as_str()),
+            ("catalog_metadata_hash", self.catalog_metadata_hash.as_str()),
+            ("strategy_config_hash", self.strategy_config_hash.as_str()),
+        ] {
+            validate_sha256(field, value)?;
+        }
         if let Some(run_config_id) = &self.nt_result.run_config_id
             && run_config_id.trim().is_empty()
         {
@@ -258,6 +311,17 @@ impl BacktestResultContract {
         }
         if self.claim_limits.is_empty() {
             return Err(ResultContractError::MissingField("claim_limits"));
+        }
+        if self.contract_version != RESULT_CONTRACT_V1 {
+            if self.execution_model.trim().is_empty() {
+                return Err(ResultContractError::MissingField("execution_model"));
+            }
+            if self.venue_queue_position.is_none() {
+                return Err(ResultContractError::MissingField("venue_queue_position"));
+            }
+            if self.catalog_data_types.is_empty() {
+                return Err(ResultContractError::MissingField("catalog_data_types"));
+            }
         }
         if self.fidelity_class == SourceProofFidelityClass::L2Replay
             && self
@@ -267,6 +331,9 @@ impl BacktestResultContract {
         {
             return Err(ResultContractError::MissingField("event_count_ledger_hash"));
         }
+        if let Some(hash) = self.event_count_ledger_hash.as_deref() {
+            validate_sha256("event_count_ledger_hash", hash)?;
+        }
         if self.fidelity_class == SourceProofFidelityClass::L2Replay
             && self
                 .selected_asset_ids_hash
@@ -274,6 +341,9 @@ impl BacktestResultContract {
                 .is_none_or(|hash| hash.trim().is_empty())
         {
             return Err(ResultContractError::MissingField("selected_asset_ids_hash"));
+        }
+        if let Some(hash) = self.selected_asset_ids_hash.as_deref() {
+            validate_sha256("selected_asset_ids_hash", hash)?;
         }
         self.assert_objective()
     }
@@ -316,6 +386,17 @@ impl BacktestResultContract {
     }
 }
 
+fn validate_sha256(field: &'static str, value: &str) -> Result<(), ResultContractError> {
+    if is_lowercase_sha256_hex(value) {
+        Ok(())
+    } else {
+        Err(ResultContractError::InvalidSha256 {
+            field,
+            value: value.to_string(),
+        })
+    }
+}
+
 /// Inputs assembled by the runner to build a [`BacktestResultContract`].
 pub struct ResultContractInputs<'a> {
     pub run_id: &'a str,
@@ -336,6 +417,9 @@ pub struct ResultContractInputs<'a> {
     pub event_count_ledger_hash: Option<&'a str>,
     pub selected_asset_ids_hash: Option<&'a str>,
     pub strategy: &'a StrategySource,
+    pub execution_model: &'a str,
+    pub venue_queue_position: bool,
+    pub catalog_data_types: Vec<String>,
     pub run_purpose: &'a str,
     pub market_structure_fixture: &'a str,
     pub fidelity_class: SourceProofFidelityClass,
@@ -379,6 +463,9 @@ pub fn build_result_contract(
         event_count_ledger_hash: inputs.event_count_ledger_hash.map(str::to_string),
         selected_asset_ids_hash: inputs.selected_asset_ids_hash.map(str::to_string),
         strategy_config_hash: strategy_config_hash(inputs.strategy),
+        execution_model: inputs.execution_model.to_string(),
+        venue_queue_position: Some(inputs.venue_queue_position),
+        catalog_data_types: inputs.catalog_data_types,
         run_purpose: inputs.run_purpose.to_string(),
         market_structure_fixture: inputs.market_structure_fixture.to_string(),
         fidelity_class: inputs.fidelity_class,
@@ -413,14 +500,24 @@ mod tests {
         }
     }
 
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const HASH_D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    const HASH_E: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    const HASH_F: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    const HASH_0: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    const HASH_1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const HASH_2: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
     fn contract() -> BacktestResultContract {
         BacktestResultContract {
             contract_version: RESULT_CONTRACT_VERSION.to_string(),
             run_id: "run".to_string(),
-            nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+            nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
             source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
             source_proof_version: 1,
-            manifest_hash: "manifestabc".to_string(),
+            manifest_hash: HASH_A.to_string(),
             acceptance_mode: AcceptanceMode::Manual,
             accepted_by: "vertical-slice-operator".to_string(),
             accepted_at: "2026-06-02T00:00:00Z".to_string(),
@@ -428,14 +525,17 @@ mod tests {
                 "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598".to_string(),
             converter_identity: "csv-native-trades-to-canonical-trades.v1".to_string(),
             converter_version: "1".to_string(),
-            converter_config_hash: "converterconfigabc".to_string(),
-            conversion_manifest_hash: "conversionmanifestabc".to_string(),
-            conversion_checkpoint_hash: "conversioncheckpointabc".to_string(),
-            catalog_hash: "abc123".to_string(),
-            catalog_metadata_hash: "metahashabc".to_string(),
+            converter_config_hash: HASH_B.to_string(),
+            conversion_manifest_hash: HASH_C.to_string(),
+            conversion_checkpoint_hash: HASH_D.to_string(),
+            catalog_hash: HASH_E.to_string(),
+            catalog_metadata_hash: HASH_F.to_string(),
             event_count_ledger_hash: None,
             selected_asset_ids_hash: None,
-            strategy_config_hash: "def456".to_string(),
+            strategy_config_hash: HASH_0.to_string(),
+            execution_model: "nt_backtest_node".to_string(),
+            venue_queue_position: Some(false),
+            catalog_data_types: vec!["TradeTick".to_string()],
             run_purpose: "normal".to_string(),
             market_structure_fixture: "perps-spot".to_string(),
             fidelity_class: SourceProofFidelityClass::TradeReplay,
@@ -453,6 +553,7 @@ mod tests {
                 source_proof_uri: "s3://.../source-proofs/p.json".to_string(),
                 canonical_table_uri: "s3://.../trades.parquet".to_string(),
                 nt_catalog_uri: "s3://.../nt-catalog/".to_string(),
+                nt_catalog_manifest_uri: None,
                 catalog_metadata_uri: "s3://.../catalog-metadata.json".to_string(),
                 result_contract_uri: "s3://.../backtests/run/result.json".to_string(),
             },
@@ -471,12 +572,12 @@ mod tests {
     fn parses_revision_from_multiline_dependency_table() {
         let manifest = r#"[dependencies.nautilus-backtest]
 git = "https://github.com/nautechsystems/nautilus_trader.git"
-rev = "6e059dcbb59ac1e582132fc431a581936c216c3c"
+rev = "6be5a5094716790a8ca2875445fde4fa2586107e"
 features = ["streaming", "examples"]
 "#;
         assert_eq!(
             nautilus_revision_from_manifest(manifest).as_deref(),
-            Some("6e059dcbb59ac1e582132fc431a581936c216c3c")
+            Some("6be5a5094716790a8ca2875445fde4fa2586107e")
         );
     }
 
@@ -489,7 +590,7 @@ features = ["streaming", "examples"]
     fn result_contract_binds_manifest_and_acceptance_provenance() {
         let c = contract();
 
-        assert_eq!(c.manifest_hash, "manifestabc");
+        assert_eq!(c.manifest_hash, HASH_A);
         assert_eq!(c.acceptance_mode, AcceptanceMode::Manual);
         assert_eq!(c.accepted_by, "vertical-slice-operator");
         assert_eq!(c.accepted_at, "2026-06-02T00:00:00Z");
@@ -502,10 +603,10 @@ features = ["streaming", "examples"]
             "csv-native-trades-to-canonical-trades.v1"
         );
         assert_eq!(c.converter_version, "1");
-        assert_eq!(c.converter_config_hash, "converterconfigabc");
-        assert_eq!(c.conversion_manifest_hash, "conversionmanifestabc");
-        assert_eq!(c.conversion_checkpoint_hash, "conversioncheckpointabc");
-        assert_eq!(c.catalog_metadata_hash, "metahashabc");
+        assert_eq!(c.converter_config_hash, HASH_B);
+        assert_eq!(c.conversion_manifest_hash, HASH_C);
+        assert_eq!(c.conversion_checkpoint_hash, HASH_D);
+        assert_eq!(c.catalog_metadata_hash, HASH_F);
         assert_eq!(
             c.artifact_uris.catalog_metadata_uri,
             "s3://.../catalog-metadata.json"
@@ -524,6 +625,9 @@ features = ["streaming", "examples"]
             "conversion_manifest_hash",
             "conversion_checkpoint_hash",
             "catalog_metadata_hash",
+            "execution_model",
+            "venue_queue_position",
+            "catalog_data_types",
         ] {
             assert!(
                 json.get(field).is_some(),
@@ -621,6 +725,48 @@ features = ["streaming", "examples"]
     }
 
     #[test]
+    fn v2_result_contract_requires_manifest_execution_evidence() {
+        let mut c = contract();
+        c.execution_model.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("execution_model")
+        );
+
+        let mut c = contract();
+        c.venue_queue_position = None;
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("venue_queue_position")
+        );
+
+        let mut c = contract();
+        c.catalog_data_types.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("catalog_data_types")
+        );
+    }
+
+    #[test]
+    fn v1_result_contract_without_manifest_execution_evidence_still_deserializes() {
+        let mut value = serde_json::to_value(contract()).expect("serialize");
+        value["contract_version"] = serde_json::json!(RESULT_CONTRACT_V1);
+        value.as_object_mut().unwrap().remove("execution_model");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("venue_queue_position");
+        value.as_object_mut().unwrap().remove("catalog_data_types");
+
+        let parsed: BacktestResultContract =
+            serde_json::from_value(value).expect("deserialize v1 contract");
+        parsed
+            .validate()
+            .expect("v1 contract remains readable as historical evidence");
+    }
+
+    #[test]
     fn l2_result_contract_requires_event_count_ledger_hash() {
         let mut c = contract();
         c.fidelity_class = SourceProofFidelityClass::L2Replay;
@@ -634,23 +780,77 @@ features = ["streaming", "examples"]
     fn l2_result_contract_requires_and_binds_selected_asset_ids_hash() {
         let mut c = contract();
         c.fidelity_class = SourceProofFidelityClass::L2Replay;
-        c.event_count_ledger_hash = Some("eventledgerabc".to_string());
+        c.event_count_ledger_hash = Some(HASH_1.to_string());
         assert_eq!(
             c.validate().unwrap_err(),
             ResultContractError::MissingField("selected_asset_ids_hash")
         );
 
-        c.selected_asset_ids_hash = Some("selectedassetsabc".to_string());
+        c.selected_asset_ids_hash = Some(HASH_2.to_string());
         c.validate()
             .expect("L2 contract with selector hashes is complete");
         let json = serde_json::to_value(&c).expect("serialize");
         assert_eq!(
             json.get("event_count_ledger_hash").and_then(|v| v.as_str()),
-            Some("eventledgerabc")
+            Some(HASH_1)
         );
         assert_eq!(
             json.get("selected_asset_ids_hash").and_then(|v| v.as_str()),
-            Some("selectedassetsabc")
+            Some(HASH_2)
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_hash_fields() {
+        type HashMutator = fn(&mut BacktestResultContract, &str);
+        let cases: [(&str, HashMutator, &str); 3] = [
+            (
+                "manifest_hash",
+                |c: &mut BacktestResultContract, value: &str| {
+                    c.manifest_hash = value.to_string();
+                },
+                "abc123",
+            ),
+            (
+                "converter_config_hash",
+                |c: &mut BacktestResultContract, value: &str| {
+                    c.converter_config_hash = value.to_string();
+                },
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ),
+            (
+                "catalog_metadata_hash",
+                |c: &mut BacktestResultContract, value: &str| {
+                    c.catalog_metadata_hash = value.to_string();
+                },
+                "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+            ),
+        ];
+        for (field, mutate, value) in cases {
+            let mut c = contract();
+            mutate(&mut c, value);
+            assert_eq!(
+                c.validate().unwrap_err(),
+                ResultContractError::InvalidSha256 {
+                    field,
+                    value: value.to_string()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn l2_result_contract_rejects_malformed_selector_hashes() {
+        let mut c = contract();
+        c.fidelity_class = SourceProofFidelityClass::L2Replay;
+        c.event_count_ledger_hash = Some("abc123".to_string());
+        c.selected_asset_ids_hash = Some(HASH_2.to_string());
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::InvalidSha256 {
+                field: "event_count_ledger_hash",
+                value: "abc123".to_string()
+            }
         );
     }
 
@@ -661,6 +861,46 @@ features = ["streaming", "examples"]
         assert_eq!(
             c.validate().unwrap_err(),
             ResultContractError::MissingField("contract_version")
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_contract_version() {
+        let mut c = contract();
+        c.contract_version = "backtest-result-contract.v999".to_string();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::UnsupportedVersion {
+                actual: "backtest-result-contract.v999".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_contract_fields() {
+        let c = contract();
+        let mut value = serde_json::to_value(&c).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("contract object")
+            .insert("future_schema_field".to_string(), serde_json::json!(true));
+        assert!(
+            serde_json::from_value::<BacktestResultContract>(value).is_err(),
+            "top-level unknown result contract fields must fail closed"
+        );
+
+        let mut value = serde_json::to_value(&c).expect("serialize");
+        value
+            .get_mut("artifact_uris")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("artifact_uris object")
+            .insert(
+                "future_artifact_uri".to_string(),
+                serde_json::json!("s3://example/future.json"),
+            );
+        assert!(
+            serde_json::from_value::<BacktestResultContract>(value).is_err(),
+            "nested unknown result contract fields must fail closed"
         );
     }
 

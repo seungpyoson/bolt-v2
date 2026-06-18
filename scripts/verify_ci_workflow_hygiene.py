@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import json
 import pathlib
 import re
 import shlex
@@ -154,6 +155,7 @@ CI_PROVENANCE_POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
     "draft_pr_reopened",
+    "draft_pr_edited",
     "converted_to_draft",
     "ready_pr",
     "ready_for_review",
@@ -166,6 +168,7 @@ CI_PROVENANCE_POLICY_EXPECTED = {
     "draft_pr_synchronize": "defer",
     "draft_pr_opened": "defer",
     "draft_pr_reopened": "defer",
+    "draft_pr_edited": "defer",
     "converted_to_draft": "defer",
     "ready_pr": "full",
     "ready_for_review": "full",
@@ -761,6 +764,9 @@ def evaluate_ci_policy(
         elif action == "reopened":
             path = str(policy["draft_pr_reopened"])
             reason = "draft_pr_reopened"
+        elif action == "edited":
+            path = str(policy["draft_pr_edited"])
+            reason = "draft_pr_edited"
         elif action == "converted_to_draft":
             path = str(policy["converted_to_draft"])
             reason = "converted_to_draft"
@@ -803,7 +809,7 @@ def parse_inline_yaml_list(value: str) -> set[str]:
     return {item.strip().strip("'\"") for item in stripped[1:-1].split(",") if item.strip()}
 
 
-def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
+def workflow_pull_request_types(workflow_text: str) -> set[str]:
     block = workflow_trigger_block(workflow_text, "pull_request")
     types: set[str] = set()
     for index, line in enumerate(block):
@@ -816,8 +822,16 @@ def workflow_pull_request_type_errors(workflow_text: str) -> list[str]:
                 if not child_stripped.startswith("- "):
                     break
                 types.add(child_stripped.removeprefix("- ").strip().strip("'\""))
+    return types
+
+
+def workflow_pull_request_type_errors(
+    workflow_text: str,
+    required_types: tuple[str, ...] = ("ready_for_review", "converted_to_draft", "edited"),
+) -> list[str]:
+    types = workflow_pull_request_types(workflow_text)
     errors: list[str] = []
-    for required_type in ("ready_for_review", "converted_to_draft"):
+    for required_type in required_types:
         if required_type not in types:
             errors.append(f"pull_request types must include {required_type}")
     return errors
@@ -4465,6 +4479,75 @@ def just_recipe_blocks(justfile_text: str) -> dict[str, tuple[list[str], list[st
     return recipes
 
 
+def active_recipe_lines(recipes: dict[str, tuple[list[str], list[str]]], name: str) -> list[str]:
+    return [line for line in (strip_comment(raw_line).strip() for raw_line in recipes[name][1]) if line]
+
+
+LOCAL_VERIFICATION_GATE_RECIPES = (
+    "fmt-check",
+    "source-fence-static",
+    "ci-lint-workflow",
+)
+
+
+def local_verification_inner_errors(
+    recipes: dict[str, tuple[list[str], list[str]]],
+    inner_name: str,
+) -> list[str]:
+    if inner_name not in recipes:
+        return []
+    errors: list[str] = []
+    dependencies, _body = recipes[inner_name]
+    if any(dependency in LOCAL_VERIFICATION_GATE_RECIPES for dependency in dependencies):
+        errors.append(f"justfile {inner_name} must not depend on local verification gate recipes")
+    for line in active_recipe_lines(recipes, inner_name):
+        if "scripts/local_verification_gate.py" in line:
+            errors.append(f"justfile {inner_name} must not invoke local verification gate recipes")
+            continue
+        for recipe_name in LOCAL_VERIFICATION_GATE_RECIPES:
+            if re.search(rf"\bjust\s+{re.escape(recipe_name)}\b", line):
+                errors.append(f"justfile {inner_name} must not invoke local verification gate recipes")
+                break
+    return errors
+
+
+def gated_inner_recipe_name(
+    recipes: dict[str, tuple[list[str], list[str]]],
+    public_name: str,
+    inner_name: str,
+    errors: list[str],
+) -> str:
+    if public_name not in recipes:
+        errors.append(f"justfile {public_name} recipe is required")
+        return public_name
+    public_lines = active_recipe_lines(recipes, public_name)
+    gate_command = f"python3 scripts/local_verification_gate.py {public_name} -- just {inner_name}"
+    if gate_command not in public_lines:
+        errors.append(f"justfile {public_name} must run through scripts/local_verification_gate.py")
+        return public_name
+    if public_lines != [gate_command]:
+        errors.append(f"justfile {public_name} must contain only the local verification gate command")
+    if inner_name not in recipes:
+        errors.append(f"justfile {inner_name} recipe is required")
+        return public_name
+    inner_dependencies, _inner_body = recipes[inner_name]
+    if "require-local-verification-gate" not in inner_dependencies:
+        errors.append(f"justfile {inner_name} must require the local verification gate")
+    errors.extend(local_verification_inner_errors(recipes, inner_name))
+    return inner_name
+
+
+def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
+    recipes = just_recipe_blocks(justfile_text)
+    errors: list[str] = []
+    for public_name, inner_name in (
+        ("fmt-check", "fmt-check-inner"),
+        ("ci-lint-workflow", "ci-lint-workflow-inner"),
+    ):
+        gated_inner_recipe_name(recipes, public_name, inner_name, errors)
+    return errors
+
+
 def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     recipes = just_recipe_blocks(justfile_text)
     errors: list[str] = []
@@ -4477,15 +4560,20 @@ def verify_source_fence_static_recipe(justfile_text: str) -> list[str]:
     source_fence_dependencies, source_fence_body = recipes["source-fence"]
     if "source-fence-static" not in source_fence_dependencies:
         errors.append("justfile source-fence must depend on source-fence-static")
-    static_lines = [
-        line for line in (strip_comment(raw_line).strip() for raw_line in recipes["source-fence-static"][1]) if line
-    ]
+    static_recipe_name = gated_inner_recipe_name(
+        recipes,
+        "source-fence-static",
+        "source-fence-static-inner",
+        errors,
+    )
+    static_lines = active_recipe_lines(recipes, static_recipe_name)
     static_body = "\n".join(static_lines)
     if command_has_managed_compile_heavy_invocation(static_body) or re.search(r"\brust_verification\.py\b[^\n]*\bcargo\b", static_body):
         errors.append("justfile source-fence-static must not invoke wrapper-routed Cargo")
     if "cargo fetch" in static_body or re.search(r"\bscripts/verify_runtime_capture_yaml\.py\b", static_body):
         errors.append("justfile source-fence-static must stop before cargo fetch and runtime capture verification")
     for command in (
+        "python3 scripts/test_local_verification_gate.py",
         "python3 scripts/test_lane_governor.py",
         "python3 scripts/test_verify_lane_governance.py",
         "python3 scripts/verify_lane_governance.py",
@@ -7419,12 +7507,12 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
 GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
-GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}\""""
+GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
 GATE_DEFERRED_NAME_EXPRESSION = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}"""
 
@@ -7590,7 +7678,13 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         errors.append("gate must branch on ci_policy_path tag_reuse")
     defer_sections = top_level_if_body_and_remainder(gate_text, GATE_DEFER_CONDITION)
     defer_body = defer_sections[0] if defer_sections is not None else None
-    if defer_body is None or "full CI deferred for draft PR" not in defer_body or not body_exits_zero(defer_body):
+    if (
+        defer_body is None
+        or "full CI deferred for draft PR" not in defer_body
+        or "just rust-probe suggest" not in defer_body
+        or "just verify-remote only for final proof" not in defer_body
+        or not body_exits_zero(defer_body)
+    ):
         errors.append("gate must pass deferred full CI without failing stale draft checks")
     if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
         errors.append("gate must fail deferred policy outside deferred draft PR context")
@@ -8598,13 +8692,170 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
     return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
 
 
+BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}"
+BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)"""
+BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
+BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
+BACKTESTER_REQUIRED_GATE_COMMENT = (
+    "`backtester-gate` is required-capable; `backtester-gate-deferred` is draft-only feedback and\n"
+    "# must not be marked required"
+)
+BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION = """    name: >-
+      ${{ github.event_name == 'pull_request'
+          && github.event.pull_request.draft == true
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
+          && 'backtester-gate-deferred'
+          || 'backtester-gate' }}"""
+BACKTESTER_DEFER_ACTION_LIST_RE = re.compile(
+    r"contains\(fromJSON\('(?P<actions>\[[^']+\])'\), github\.event\.action\)"
+)
+BACKTESTER_POLICY_DEFER_ACTIONS = {
+    row.removeprefix("draft_pr_") if row.startswith("draft_pr_") else row
+    for row, path in CI_PROVENANCE_POLICY_EXPECTED.items()
+    if path == "defer"
+}
+
+
+def backtester_concurrency_group_text(text: str) -> str:
+    block = top_level_block(text, "concurrency")
+    group_lines: list[str] = []
+    for line in block:
+        if line.strip().startswith("cancel-in-progress:"):
+            break
+        group_lines.append(line)
+    return " ".join(line.strip() for line in group_lines if line.strip())
+
+
+def workflow_header_text(text: str) -> str:
+    header_lines: list[str] = []
+    for line in text.splitlines():
+        if line.strip() == "on:":
+            break
+        header_lines.append(line)
+    return "\n".join(header_lines)
+
+
+def backtester_defer_action_lists(text: str) -> set[str]:
+    return {match.group("actions") for match in BACKTESTER_DEFER_ACTION_LIST_RE.finditer(text)}
+
+
+def backtester_defer_actions(text: str) -> set[str] | None:
+    actions: set[str] = set()
+    for raw_actions in backtester_defer_action_lists(text):
+        try:
+            parsed_actions = json.loads(raw_actions)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed_actions, list) or not all(isinstance(action, str) for action in parsed_actions):
+            return None
+        actions.update(parsed_actions)
+    return actions
+
+
+def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    jobs = parse_jobs(text)
+    errors: list[str] = []
+    if BACKTESTER_REQUIRED_GATE_COMMENT not in workflow_header_text(text):
+        errors.append("backtester draft deferral must document that only backtester-gate should be required")
+    policy = jobs.get("ci-policy")
+    if policy is None:
+        errors.append("backtester draft deferral must define ci-policy job")
+    else:
+        policy_text = uncommented_text(policy)
+        for required in [
+            "full_ci_required: ${{ steps.policy.outputs.full_ci_required }}",
+            "full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}",
+            "python3 scripts/ci_provenance.py ci-policy",
+            '--event-name "${{ github.event_name }}"',
+            '--event-action "${{ github.event.action || \'\' }}"',
+            '--pull-request-draft "${{ github.event.pull_request.draft || false }}"',
+            '--ref "${{ github.ref }}"',
+        ]:
+            if required not in policy_text:
+                errors.append(f"backtester draft deferral ci-policy job must include {required}")
+
+    for heavy_job in ("clippy", "test"):
+        job = jobs.get(heavy_job)
+        if job is None:
+            continue
+        needs = extract_needs(job)
+        if "ci-policy" not in needs:
+            errors.append(f"backtester draft deferral managed-heavy job {heavy_job} must need ci-policy")
+        if BACKTESTER_FULL_PROOF_IF not in uncommented_text(job):
+            errors.append("backtester draft deferral managed-heavy jobs must require full CI policy")
+
+    gate = jobs.get("gate")
+    if gate is None:
+        errors.append("backtester draft deferral must define backtester-gate")
+    else:
+        gate_text = uncommented_text(gate)
+        if BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION not in gate_text:
+            errors.append("backtester draft deferral gate must publish backtester-gate-deferred for deferred draft PR runs")
+        if "ci-policy" not in extract_needs(gate):
+            errors.append("backtester draft deferral gate must need ci-policy")
+        if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
+            errors.append("backtester draft deferral gate must read ci_policy_path")
+        if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
+            errors.append("backtester draft deferral gate must read full_ci_deferred")
+        if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
+            errors.append("backtester draft deferral gate must check needs.ci-policy.result")
+        if BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
+            errors.append("backtester draft deferral gate must compute deferred draft PR context")
+        defer_sections = top_level_if_body_and_remainder(gate_text, BACKTESTER_DEFER_CONDITION)
+        defer_body = defer_sections[0] if defer_sections is not None else None
+        if defer_body is None or not body_exits_zero(defer_body):
+            errors.append("backtester draft deferral gate must pass deferred draft PR proof")
+        if defer_body is None or BACKTESTER_DEFER_MESSAGE not in defer_body:
+            errors.append("backtester draft deferral gate must explain how to request proof")
+        if defer_body is None or not branch_exits_reachable(
+            defer_body,
+            "if",
+            '"$defer_run_context" != "true"',
+        ):
+            errors.append("backtester draft deferral gate must fail deferred policy outside deferred draft PR context")
+        full_body = defer_sections[1] if defer_sections is not None else gate_text
+        for job in ("fmt", "clippy", "test"):
+            condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
+            if not branch_exits_reachable(full_body, "if", condition):
+                errors.append(f"backtester draft deferral gate must require {job} success on full proof path")
+
+    group_text = backtester_concurrency_group_text(text)
+    if "format('bvs-pr-{0}-deferred', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:
+        errors.append("backtester draft deferral concurrency must split deferred PR runs from full proof runs")
+    if BACKTESTER_DEFER_ACTION_FILTER not in group_text:
+        errors.append("backtester draft deferral concurrency must use the deferred draft action filter")
+    defer_action_lists = backtester_defer_action_lists(group_text)
+    if gate is not None:
+        defer_action_lists.update(backtester_defer_action_lists(gate_text))
+    if len(defer_action_lists) != 1:
+        errors.append("backtester draft deferral must use one deferred draft action list across gate and concurrency")
+    defer_actions = backtester_defer_actions(group_text + "\n" + (gate_text if gate is not None else ""))
+    if defer_actions is None:
+        errors.append("backtester draft deferral must use a valid deferred draft action list")
+    elif defer_actions:
+        missing_trigger_actions = sorted(defer_actions - workflow_pull_request_types(text))
+        if missing_trigger_actions:
+            errors.append(
+                "backtester draft deferral pull_request types must include deferred actions: "
+                + ", ".join(missing_trigger_actions)
+            )
+        if defer_actions != BACKTESTER_POLICY_DEFER_ACTIONS:
+            errors.append("backtester draft deferral action list must match ci_provenance defer policy actions")
+    return errors
+
+
 def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     if not file_name.endswith("backtester-ci.yml"):
         return []
     detect_job = parse_jobs(text).get("detect", [])
-    if any("ci/github-actions-runners.toml" in line for line in detect_job):
-        return []
-    return ["backtester detect paths must include ci/github-actions-runners.toml"]
+    errors: list[str] = []
+    for required in ("ci/github-actions-runners.toml", "scripts/ci_provenance.py"):
+        if not any(required in line for line in detect_job):
+            errors.append(f"backtester detect paths must include {required}")
+    return errors
 
 
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
@@ -8623,6 +8874,43 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             errors,
             (f"{file_name}: {error}" for error in backtester_detect_path_errors(file_name, text)),
         )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_draft_deferral_errors(file_name, text)),
+        )
+        if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited"),
+                    )
+                ),
+            )
+        if file_name == "backtester-ci.yml" or file_name.endswith("/backtester-ci.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited", "converted_to_draft"),
+                    )
+                ),
+            )
+        if file_name == "ci-docs-pass-stub.yml" or file_name.endswith("/ci-docs-pass-stub.yml"):
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in workflow_pull_request_type_errors(
+                        text,
+                        required_types=("ready_for_review", "edited"),
+                    )
+                ),
+            )
         automation_texts = [text, *yaml_run_shell_texts(uncommented_text(text.splitlines()))]
         for automation_text in automation_texts:
             add_unique_errors(
@@ -9254,6 +9542,7 @@ def main() -> int:
     errors.extend(verify_repo_automation_texts(repo_automation_texts))
     errors.extend(verify_rust_verification_policies())
     if "justfile" in repo_automation_texts:
+        errors.extend(verify_local_verification_gate_recipes(repo_automation_texts["justfile"]))
         errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():
         errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))

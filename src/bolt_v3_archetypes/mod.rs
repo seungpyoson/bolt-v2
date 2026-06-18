@@ -8,28 +8,33 @@
 //! checks, root risk-cap comparison), and archetype-specific error-
 //! message policy — lives in a per-archetype binding module under
 //! this root. This module is the family-agnostic dispatch layer: it
-//! owns the static archetype binding list and calls into the matching
-//! archetype binding so core validation does not name any concrete
-//! archetype variant, deserialize the archetype's parameter row, or
-//! carry archetype-specific error wording. Core validation parses the
-//! root risk cap once and passes it in here as
+//! owns the generic dispatch fn
+//! (`validate_strategy_archetype_with_bindings`) that, given an
+//! injected binding list, calls into the matching archetype binding so
+//! core validation does not name any concrete archetype variant,
+//! deserialize the archetype's parameter row, or carry
+//! archetype-specific error wording. Core validation parses the root
+//! risk cap once and passes it in here as
 //! `default_max_notional_decimal`.
 //!
-//! Today bolt-v3 has a single archetype binding. When a second
-//! archetype is introduced, it adds its own per-archetype module and
-//! one entry in this root's binding list; core validation does not
-//! change.
+//! The production binding *lists* themselves live in the non-scanned
+//! crate-root module `crate::strategy_bindings`
+//! (`production_validation_bindings` / `production_runtime_bindings`),
+//! so a strategy-layer archetype binding (the maker's
+//! `crate::strategies::binary_oracle_maker::archetype`) can be listed
+//! without a scanned `src/bolt_v3_*` file referencing
+//! `crate::strategies`. When a new archetype is introduced it adds its
+//! own per-archetype binding module and one entry in those lists; this
+//! dispatch fn does not change.
 
 pub mod binary_oracle_edge_taker;
+pub mod complete_set_arbitrage;
 
 use std::collections::BTreeSet;
 
 use rust_decimal::Decimal;
 
-use crate::{
-    bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig},
-    bolt_v3_strategy_registration::StrategyRuntimeBinding,
-};
+use crate::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GateRole {
@@ -57,36 +62,6 @@ pub struct ArchetypeValidationBinding {
     pub key: &'static str,
     pub validate_strategy:
         fn(&str, &BoltV3RootConfig, &BoltV3StrategyConfig, Option<&Decimal>) -> Vec<String>,
-}
-
-const VALIDATION_BINDINGS: &[ArchetypeValidationBinding] = &[ArchetypeValidationBinding {
-    key: binary_oracle_edge_taker::KEY,
-    validate_strategy: binary_oracle_edge_taker::validate_strategy,
-}];
-
-const RUNTIME_BINDINGS: &[StrategyRuntimeBinding] = &[binary_oracle_edge_taker::RUNTIME_BINDING];
-
-pub fn validation_bindings() -> &'static [ArchetypeValidationBinding] {
-    VALIDATION_BINDINGS
-}
-
-pub fn runtime_bindings() -> &'static [StrategyRuntimeBinding] {
-    RUNTIME_BINDINGS
-}
-
-pub fn validate_strategy_archetype(
-    context: &str,
-    root: &BoltV3RootConfig,
-    strategy: &BoltV3StrategyConfig,
-    default_max_notional_decimal: Option<&Decimal>,
-) -> Vec<String> {
-    validate_strategy_archetype_with_bindings(
-        context,
-        root,
-        strategy,
-        default_max_notional_decimal,
-        validation_bindings(),
-    )
 }
 
 pub fn validate_strategy_archetype_with_bindings(
@@ -164,8 +139,13 @@ rotating_market_family = "fixture-family"
             toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
                 .expect("fixture root parses");
 
-        let production_errors =
-            validate_strategy_archetype("strategy `fixture`", &root, &strategy, None);
+        let production_errors = validate_strategy_archetype_with_bindings(
+            "strategy `fixture`",
+            &root,
+            &strategy,
+            None,
+            crate::strategy_bindings::production_validation_bindings(),
+        );
         assert!(
             production_errors
                 .iter()

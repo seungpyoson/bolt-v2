@@ -3,7 +3,12 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+    # edited catches base-ref changes (including retargets to main). Without it
+    # a PR created against another branch and later retargeted to main would not
+    # trigger CI. Note: GitHub's edited event fires on ANY PR edit (title, body,
+    # base ref), not only retargets, so this also re-runs CI on title/body edits.
+    # We accept that cost because there is no narrower event for base-ref changes.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
     # paths-ignore is intentionally narrow: only explicitly-listed root-level
     # agent docs and pure-config dirs whose contents are NOT consumed by any
     # build/test/lint script. Do NOT add '**.md' or 'docs/**' — both contain
@@ -49,7 +54,7 @@ concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
-        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+        && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
@@ -242,7 +247,7 @@ jobs:
     name: clippy
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -686,7 +691,7 @@ jobs:
     name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action)
+          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}
     needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
@@ -757,13 +762,13 @@ jobs:
             echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
             exit 1
           fi
-          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft"]'), github.event.action) && 'true' || 'false' }}"
+          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}"
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
             if [[ "$defer_run_context" != "true" ]]; then
               echo "deferred CI policy outside deferred draft PR context"
               exit 1
             fi
-            echo "full CI deferred for draft PR; run just verify-remote or mark ready"
+            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then

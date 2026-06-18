@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_iv::config::IvRootConfig,
     bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
+    bolt_v3_outcome_group_sources::{BasketExecutionRiskBlock, OutcomeGroupSourceConfig},
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolCoarserGridPolicy, RealizedVolEngineConfig,
         RealizedVolEstimatorConfig, RealizedVolJumpConfig, RealizedVolJumpPolicy,
@@ -81,6 +82,7 @@ pub struct BoltV3RootConfig {
     pub clients: BTreeMap<String, ClientBlock>,
     pub realized_volatility_surfaces: Option<BTreeMap<String, RealizedVolatilitySurfaceBlock>>,
     pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
+    pub outcome_group_sources: Option<Vec<OutcomeGroupSourceConfig>>,
     pub iv: Option<IvRootConfig>,
 }
 
@@ -110,6 +112,7 @@ pub struct RuntimeBlock {
 pub struct NautilusBlock {
     pub load_state: bool,
     pub save_state: bool,
+    pub shutdown_on_error: bool,
     pub timeout_connection_secs: u64,
     pub timeout_reconciliation_secs: u64,
     pub data_engine: NautilusDataEngineBlock,
@@ -135,7 +138,6 @@ pub struct NautilusDataEngineBlock {
     pub emit_quotes_from_book_depths: bool,
     pub external_clients: Vec<ClientId>,
     pub debug: bool,
-    pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
 }
 
@@ -178,7 +180,6 @@ pub struct NautilusExecEngineBlock {
     pub purge_account_events_lookback_mins: u32,
     pub purge_from_database: bool,
     pub own_books_audit_interval_secs: u64,
-    pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
     pub allow_overfills: bool,
     pub manage_own_order_books: bool,
@@ -192,6 +193,7 @@ pub struct RiskBlock {
     pub capital_pools: Option<Vec<CapitalPoolBlock>>,
     pub nautilus: NautilusRiskBlock,
     pub kill_switch: Option<KillSwitchConfigBlock>,
+    pub basket_execution: Option<BasketExecutionRiskBlock>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -260,7 +262,6 @@ pub struct NautilusRiskBlock {
     pub max_order_modify_rate: String,
     pub max_notional_per_order: BTreeMap<String, String>,
     pub debug: bool,
-    pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
 }
 
@@ -295,6 +296,8 @@ pub struct LoggingBlock {
 #[serde(deny_unknown_fields)]
 pub struct PersistenceBlock {
     pub catalog_directory: String,
+    pub required_catalog_prefix: Option<String>,
+    pub min_free_bytes: Option<u64>,
     pub runtime_capture_start_poll_interval_ms: u64,
     pub decision_evidence: DecisionEvidenceBlock,
     pub streaming: StreamingBlock,
@@ -559,6 +562,7 @@ pub struct BoltV3StrategyConfig {
     pub manage_stop: bool,
     pub market_exit_interval_ms: u64,
     pub market_exit_max_attempts: u64,
+    pub market_exit_reduce_only: Option<bool>,
     pub log_events: bool,
     pub log_commands: bool,
     pub log_rejected_due_post_only_as_warning: bool,

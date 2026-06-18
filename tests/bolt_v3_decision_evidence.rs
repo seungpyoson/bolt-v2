@@ -9,6 +9,7 @@ use bolt_v2::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
+        BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
         BoltV3OrderIntentOrderFields, BoltV3PositionSizerRebuildAuditEvidence,
         BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
@@ -178,6 +179,20 @@ fn latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admissio
         chain.admission.client_order_id,
         chain.snapshot.client_order_id
     );
+}
+
+#[test]
+fn latest_entry_decision_evidence_chain_skips_basket_admission_records() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = sample_entry_decision_evidence_lines().to_vec();
+    lines.insert(1, sample_basket_admission_decision_line());
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let chain = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
+        .expect("basket admission decisions must not block entry-chain recovery");
+
+    assert_eq!(chain.snapshot.client_order_id, "client-order-one");
 }
 
 #[test]
@@ -422,6 +437,35 @@ fn submit_reservation_recovery_skips_legacy_v9_non_recovery_lines() {
 }
 
 #[test]
+fn submit_reservation_recovery_skips_basket_admission_records() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            sample_basket_admission_decision_line(),
+            serde_json::json!({
+                "schema_version": EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION,
+                "recorded_at_utc_ns": 2_i64,
+                "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "submit_reservation_metadata",
+                "metadata": sample_submit_reservation_metadata(),
+            }),
+        ],
+    );
+
+    let recovery = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect("basket admission decisions must not block submit-reservation recovery");
+
+    assert!(
+        recovery
+            .metadata_by_client_order_id
+            .contains_key("client-order-one")
+    );
+}
+
+#[test]
 fn submit_reservation_recovery_rejects_legacy_v9_reservation_metadata() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
@@ -585,6 +629,29 @@ fn sample_submit_reservation_metadata() -> BoltV3SubmitReservationMetadataEviden
     }
 }
 
+fn sample_basket_admission_decision_line() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 2_i64,
+        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "basket_admission_decision",
+        "decision": BoltV3BasketAdmissionDecisionEvidence {
+            strategy_id: "complete-set-arb".to_string(),
+            execution_client_id: "polymarket-main".to_string(),
+            basket_id: "basket-one".to_string(),
+            group_id: "group-one".to_string(),
+            leg_instrument_ids: vec![
+                "condition-one-yes.POLYMARKET".to_string(),
+                "condition-one-no.POLYMARKET".to_string(),
+            ],
+            total_notional: "1.0".to_string(),
+            leg_order_count: 2,
+            outcome: BoltV3BasketAdmissionOutcome::Admitted,
+        },
+    })
+}
+
 fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
     let mut body = String::new();
     for line in lines {
@@ -610,6 +677,13 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     }
 
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 

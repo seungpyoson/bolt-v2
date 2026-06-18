@@ -1464,7 +1464,9 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
     strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
     strategy.config.exit_order.is_post_only = true;
     set_active_books_best_prices(&mut strategy, 0.43, 0.51);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1495,7 +1497,9 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     strategy.config.exit_order.is_quote_quantity = true;
     strategy.config.exit_hysteresis_bps = 1_000_000;
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
@@ -1578,7 +1582,7 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
     strategy.config.forced_exit_order.order_type = OrderType::Market;
     strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
     strategy.config.forced_exit_order.is_post_only = false;
-    strategy.config.forced_exit_order.is_reduce_only = true;
+    strategy.config.forced_exit_order.is_reduce_only = false;
     set_active_books_best_prices(&mut strategy, 0.44, 0.45);
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
@@ -1600,12 +1604,12 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
     assert_eq!(decision.order_type, Some(OrderType::Market));
     assert_eq!(decision.time_in_force, Some(TimeInForce::Ioc));
     assert_eq!(decision.is_post_only, Some(false));
-    assert_eq!(decision.is_reduce_only, Some(true));
+    assert_eq!(decision.is_reduce_only, Some(false));
     assert_eq!(decision.price, Some(0.44));
 }
 
 #[test]
-fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
+fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.active.phase = SelectionPhase::Freeze;
@@ -1616,7 +1620,7 @@ fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
     strategy.config.forced_exit_order.order_type = OrderType::Market;
     strategy.config.forced_exit_order.time_in_force = TimeInForce::Ioc;
     strategy.config.forced_exit_order.is_post_only = false;
-    strategy.config.forced_exit_order.is_reduce_only = true;
+    strategy.config.forced_exit_order.is_reduce_only = false;
     let instrument_id = selected_entry_instrument(&strategy);
     let open_position = materialize_configured_position(
         &mut strategy,
@@ -1662,7 +1666,7 @@ fn forced_flat_exit_order_object_preserves_forced_exit_reduce_only_config() {
     assert_eq!(order.order_type(), OrderType::Market);
     assert_eq!(order.time_in_force(), TimeInForce::Ioc);
     assert_eq!(order.price(), None);
-    assert!(order.is_reduce_only());
+    assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
 }
 
@@ -2695,7 +2699,7 @@ fn expected_exit_submission_blocks_do_not_warn() {
 #[test]
 fn task5_forced_flat_predicates_cover_current_strategy_visible_triggers() {
     let reasons = evaluate_forced_flat_predicates(&ForcedFlatInputs {
-        phase: SelectionPhase::Freeze,
+        frozen: true,
         metadata_matches_selection: false,
         last_reference_ts_ms: Some(1_000),
         now_ms: 3_000,
@@ -2920,7 +2924,9 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         open_position,
         ManagedPositionOrigin::StrategyEntry,
     );
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_099.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);

@@ -14,14 +14,15 @@
 //! resolved error type carries client key, secret-config field, and SSM
 //! field context, but never the resolved secret value or raw SSM path itself.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map::Entry};
 
 use zeroize::Zeroizing;
 
 use crate::{
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config},
     bolt_v3_providers::{
-        self, ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
+        self, ProviderSecretResolveContext, ProviderSharedSignerOwnerContext,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     secrets::SsmResolverSession,
 };
@@ -233,7 +234,8 @@ where
 {
     let region = loaded.root.aws.region.as_str();
     let mut clients = BTreeMap::new();
-    let mut exclusive_signer_owners: BTreeMap<(&'static str, String), String> = BTreeMap::new();
+    let mut exclusive_signer_owners: BTreeMap<(&'static str, String), Vec<String>> =
+        BTreeMap::new();
 
     for (client_key, client) in &loaded.root.clients {
         let Some(resolved) =
@@ -243,17 +245,45 @@ where
         };
         if let Some(owner) = resolved.exclusive_signer_owner() {
             let owner_key = (owner.provider_key, owner.fingerprint.clone());
-            if let Some(existing_client_key) = exclusive_signer_owners.get(&owner_key) {
-                return Err(BoltV3SecretError {
-                    client_key: client_key.clone(),
-                    field: "signer_owner".to_string(),
-                    source: format!(
-                        "provider `{}` signer/API-wallet owner is already assigned to client `{existing_client_key}`; duplicate execution clients sharing one signer are not allowed",
-                        owner.provider_key
-                    ),
-                });
+            if let Some(existing_client_keys) = exclusive_signer_owners.get(&owner_key) {
+                let existing_client_key = existing_client_keys
+                    .first()
+                    .expect("signer owner group must not be empty");
+                let allowed = bolt_v3_providers::binding_for_provider_key(owner.provider_key)
+                    .and_then(|binding| binding.allow_shared_signer_owner)
+                    .is_some_and(|allow_shared| {
+                        let Some(existing_client) = loaded.root.clients.get(existing_client_key)
+                        else {
+                            return false;
+                        };
+                        allow_shared(ProviderSharedSignerOwnerContext {
+                            region,
+                            existing_client_keys,
+                            existing_client_key,
+                            existing_client,
+                            client_key,
+                            client,
+                        })
+                    });
+                if !allowed {
+                    return Err(BoltV3SecretError {
+                        client_key: client_key.clone(),
+                        field: "signer_owner".to_string(),
+                        source: format!(
+                            "provider `{}` signer/API-wallet owner is already assigned to client `{existing_client_key}`; duplicate execution clients sharing one signer are not allowed unless they intentionally share one SSM path for an approved provider product-surface group",
+                            owner.provider_key
+                        ),
+                    });
+                }
             }
-            exclusive_signer_owners.insert(owner_key, client_key.clone());
+            match exclusive_signer_owners.entry(owner_key) {
+                Entry::Occupied(mut entry) => {
+                    entry.get_mut().push(client_key.clone());
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(vec![client_key.clone()]);
+                }
+            }
         }
         clients.insert(client_key.clone(), resolved);
     }

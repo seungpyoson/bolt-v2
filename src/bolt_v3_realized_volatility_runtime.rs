@@ -58,7 +58,11 @@ struct RealizedVolSurfaceState {
 pub struct RealizedVolSurfaceRuntime {
     surfaces: BTreeMap<String, RealizedVolSurfaceState>,
     routes_by_event: BTreeMap<EventRouteKey, Vec<RealizedVolSourceRoute>>,
-    subscription_requests: Vec<RealizedVolSubscriptionRequest>,
+    // Single source of truth for RV subscriptions, keyed by `surface_id`. The global
+    // `subscription_requests` accessor is only a DERIVED deduped union for audit/fanout
+    // semantics; production strategy callers must use the `*_for_surface` variants so a
+    // strategy only subscribes its configured surface.
+    subscription_requests_by_surface: BTreeMap<String, Vec<RealizedVolSubscriptionRequest>>,
 }
 
 impl RealizedVolSurfaceRuntime {
@@ -66,7 +70,7 @@ impl RealizedVolSurfaceRuntime {
         Self {
             surfaces: BTreeMap::new(),
             routes_by_event: BTreeMap::new(),
-            subscription_requests: Vec::new(),
+            subscription_requests_by_surface: BTreeMap::new(),
         }
     }
 
@@ -76,7 +80,10 @@ impl RealizedVolSurfaceRuntime {
         let mut surfaces = BTreeMap::new();
         let mut routes_by_event: BTreeMap<EventRouteKey, Vec<RealizedVolSourceRoute>> =
             BTreeMap::new();
-        let mut subscription_keys = BTreeSet::new();
+        let mut subscription_requests_by_surface: BTreeMap<
+            String,
+            BTreeSet<RealizedVolSubscriptionRequest>,
+        > = BTreeMap::new();
 
         for (surface_id, config) in configs {
             if surface_id != config.surface_id {
@@ -122,11 +129,18 @@ impl RealizedVolSurfaceRuntime {
                     routes_by_event.insert(route_key, vec![route]);
                 }
                 if source.enabled {
-                    subscription_keys.insert(RealizedVolSubscriptionRequest {
+                    let request = RealizedVolSubscriptionRequest {
                         instrument_id,
                         data_client_id,
                         kind,
-                    });
+                    };
+                    if let Some(requests) = subscription_requests_by_surface.get_mut(&surface_id) {
+                        requests.insert(request);
+                    } else {
+                        let mut requests = BTreeSet::new();
+                        requests.insert(request);
+                        subscription_requests_by_surface.insert(surface_id.clone(), requests);
+                    }
                 }
             }
             surfaces.insert(
@@ -139,10 +153,15 @@ impl RealizedVolSurfaceRuntime {
             );
         }
 
+        let subscription_requests_by_surface = subscription_requests_by_surface
+            .into_iter()
+            .map(|(surface_id, requests)| (surface_id, requests.into_iter().collect()))
+            .collect();
+
         Ok(Self {
             surfaces,
             routes_by_event,
-            subscription_requests: subscription_keys.into_iter().collect(),
+            subscription_requests_by_surface,
         })
     }
 
@@ -170,32 +189,68 @@ impl RealizedVolSurfaceRuntime {
         self.surfaces.keys().cloned().collect()
     }
 
+    /// Deduped union of every surface's subscription requests, in canonical (sorted) order.
+    /// Test/audit-only derived view for fanout diagnostics (see
+    /// `subscription_requests_by_surface`). A strategy must NOT subscribe from this; use
+    /// `*_for_surface` with its configured surface.
+    #[doc(hidden)]
     pub fn subscription_requests(&self) -> Vec<RealizedVolSubscriptionRequest> {
-        self.subscription_requests.clone()
+        let mut union: BTreeSet<RealizedVolSubscriptionRequest> = BTreeSet::new();
+        for requests in self.subscription_requests_by_surface.values() {
+            union.extend(requests.iter().cloned());
+        }
+        union.into_iter().collect()
     }
 
-    pub fn quote_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        self.subscription_requests
-            .iter()
-            .filter(|request| request.kind == RealizedVolSubscriptionKind::Quotes)
-            .map(|request| (request.instrument_id, Some(request.data_client_id)))
-            .collect()
+    /// Subscriptions belonging to a single configured surface. Returns an empty `Vec` for an
+    /// unknown surface, which leaves pricing `RealizedVolNotReady` (fail-closed); config
+    /// validation already rejects unknown configured surfaces at load time.
+    pub fn subscription_requests_for_surface(
+        &self,
+        surface_id: &str,
+    ) -> Vec<RealizedVolSubscriptionRequest> {
+        match self.subscription_requests_by_surface.get(surface_id) {
+            Some(requests) => requests.clone(),
+            // Unknown surface: no subscriptions, so pricing stays `RealizedVolNotReady`
+            // (fail-closed). Config validation rejects unknown configured surfaces at load.
+            None => Vec::new(),
+        }
     }
 
-    pub fn trade_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        self.subscription_requests
-            .iter()
-            .filter(|request| request.kind == RealizedVolSubscriptionKind::Trades)
-            .map(|request| (request.instrument_id, Some(request.data_client_id)))
-            .collect()
+    pub fn quote_subscription_requests_for_surface(
+        &self,
+        surface_id: &str,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        match self.subscription_requests_by_surface.get(surface_id) {
+            Some(requests) => {
+                quote_trade_index_requests(requests, RealizedVolSubscriptionKind::Quotes)
+            }
+            None => Vec::new(),
+        }
     }
 
-    pub fn index_subscription_requests(&self) -> Vec<(InstrumentId, Option<ClientId>)> {
-        self.subscription_requests
-            .iter()
-            .filter(|request| request.kind == RealizedVolSubscriptionKind::IndexPrices)
-            .map(|request| (request.instrument_id, Some(request.data_client_id)))
-            .collect()
+    pub fn trade_subscription_requests_for_surface(
+        &self,
+        surface_id: &str,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        match self.subscription_requests_by_surface.get(surface_id) {
+            Some(requests) => {
+                quote_trade_index_requests(requests, RealizedVolSubscriptionKind::Trades)
+            }
+            None => Vec::new(),
+        }
+    }
+
+    pub fn index_subscription_requests_for_surface(
+        &self,
+        surface_id: &str,
+    ) -> Vec<(InstrumentId, Option<ClientId>)> {
+        match self.subscription_requests_by_surface.get(surface_id) {
+            Some(requests) => {
+                quote_trade_index_requests(requests, RealizedVolSubscriptionKind::IndexPrices)
+            }
+            None => Vec::new(),
+        }
     }
 
     pub fn observe(&mut self, observation: RealizedVolObservation) -> bool {
@@ -352,4 +407,15 @@ fn subscription_kind(
         }
         _ => None,
     }
+}
+
+fn quote_trade_index_requests(
+    requests: &[RealizedVolSubscriptionRequest],
+    kind: RealizedVolSubscriptionKind,
+) -> Vec<(InstrumentId, Option<ClientId>)> {
+    requests
+        .iter()
+        .filter(|request| request.kind == kind)
+        .map(|request| (request.instrument_id, Some(request.data_client_id)))
+        .collect()
 }

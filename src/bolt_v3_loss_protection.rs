@@ -46,6 +46,7 @@ pub struct PositionRealizedPnlObservation {
     pub account_id: String,
     pub instrument_id: String,
     pub position_id: String,
+    pub event_id: Option<String>,
     pub observed: RealizedPnlObservation,
     pub cumulative_realized_pnl: bool,
     pub closes_position: bool,
@@ -337,18 +338,15 @@ impl KillSwitchLossProtection {
         &mut self,
         observation: &PositionRealizedPnlObservation,
     ) -> bool {
-        if let Some(previous) = self.adjusted_position_pnl.get(&observation.position_id) {
-            if observation.observed.observed_at_unix_nanos < previous.last_observed_at_unix_nanos {
-                return true;
-            }
-            if observation.observed.observed_at_unix_nanos == previous.last_observed_at_unix_nanos
-                && observation.observed.realized_pnl == previous.realized_pnl
-            {
-                return true;
-            }
+        let dedupe_key = observation
+            .event_id
+            .as_deref()
+            .unwrap_or(&observation.position_id);
+        if self.adjusted_position_pnl.contains_key(dedupe_key) {
+            return true;
         }
         self.adjusted_position_pnl.insert(
-            observation.position_id.clone(),
+            dedupe_key.to_string(),
             CumulativePositionPnl {
                 realized_pnl: observation.observed.realized_pnl,
                 last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
@@ -451,11 +449,19 @@ impl KillSwitchLossProtection {
             Some(current) if bucket > current => {
                 self.daily_bucket = Some(bucket);
                 self.daily_realized_pnl = Decimal::ZERO;
+                self.prune_completed_position_snapshots_before_bucket(bucket);
                 true
             }
             Some(current) if bucket == current => true,
             Some(_) => false,
         }
+    }
+
+    fn prune_completed_position_snapshots_before_bucket(&mut self, bucket: u64) {
+        self.closed_position_pnl
+            .retain(|_, value| value.last_observed_at_unix_nanos / NANOS_PER_UTC_DAY >= bucket);
+        self.adjusted_position_pnl
+            .retain(|_, value| value.last_observed_at_unix_nanos / NANOS_PER_UTC_DAY >= bucket);
     }
 
     pub fn poll_pending_halt_actions(&mut self, observed_at_unix_nanos: u64) -> anyhow::Result<()> {
@@ -743,6 +749,7 @@ fn position_realized_pnl_observation(
                 account_id: changed.account_id.to_string(),
                 instrument_id: changed.instrument_id.to_string(),
                 position_id: changed.position_id.to_string(),
+                event_id: None,
                 observed: RealizedPnlObservation {
                     source: "nt_position_changed",
                     observed_at_unix_nanos: changed.ts_event.as_u64(),
@@ -758,6 +765,7 @@ fn position_realized_pnl_observation(
                 account_id: closed.account_id.to_string(),
                 instrument_id: closed.instrument_id.to_string(),
                 position_id: closed.position_id.to_string(),
+                event_id: None,
                 observed: RealizedPnlObservation {
                     source: "nt_position_closed",
                     observed_at_unix_nanos: closed.ts_event.as_u64(),
@@ -773,6 +781,7 @@ fn position_realized_pnl_observation(
                 account_id: adjusted.account_id.to_string(),
                 instrument_id: adjusted.instrument_id.to_string(),
                 position_id: adjusted.position_id.to_string(),
+                event_id: Some(adjusted.event_id.to_string()),
                 observed: RealizedPnlObservation {
                     source: "nt_position_adjusted",
                     observed_at_unix_nanos: adjusted.ts_event.as_u64(),

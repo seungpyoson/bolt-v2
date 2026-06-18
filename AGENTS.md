@@ -62,19 +62,20 @@ These repo-level rules are in addition to any higher-level agent instructions.
 ## Remote-First Rust Verification
 
 - Do not run local compile-heavy Rust verification by default: no local managed Rust test/build/clippy recipes through `just`, and no raw cargo subcommands refused by `ci/rust-verification.toml` `[local_compile_policy]`.
-- Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`.
+- Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`. Use the public `just` recipes; do not invoke `*-inner` local-verification recipes directly.
 - For compile/test/clippy proof: commit, push, ensure the branch has an open or draft PR, then run `just verify-remote` and use exact-head PR CI evidence from Ubicloud/GitHub Actions.
 - `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
 - Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
 - Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, whose source and installer are tracked in this repo at `scripts/cargo-shim` and `scripts/install-cargo-shim`. The shim reads this repo's `ci/rust-verification.toml` `[local_compile_policy]`.
-- CPU-heavy local verifier lanes self-serialize: every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires the per-repo machine-level lane lock declared in `ci/rust-verification.toml` `[local_lane_policy]` before doing work. Concurrent local runs queue with stderr heartbeats and fail loud at the policy timeout; CI (`allowed_ci_env`) bypasses the lock; a holder that is a process ancestor passes through. Coverage drift is a CI failure via `scripts/verify_lane_governance.py` in `source-fence-static`.
+- CPU-heavy local verifier lanes self-serialize: every `scripts/verify_*.py` / `scripts/test_*.py` entry point acquires the per-repo machine-level lane lock declared in `ci/rust-verification.toml` `[local_lane_policy]` before doing work. Broad public local gates (`just fmt-check`, `just source-fence-static`, and `just ci-lint-workflow`) acquire that lane once through `scripts/local_verification_gate.py`; a competing public gate fails fast with the active holder instead of launching duplicate verifier work. Child verifier scripts whose holder is a process ancestor pass through. Direct lower-level verifier runs still acquire the lane themselves. CI (`allowed_ci_env`) bypasses the lock. Coverage drift is a CI failure via `scripts/verify_lane_governance.py` in `source-fence-static`.
 - Residual local bypasses remain outside the accidental-use guard: absolute-path cargo invocation, `rustup run <toolchain> cargo ...`, cross-repo invocations issued outside this repo such as `cargo --manifest-path <repo>/Cargo.toml ...` or `cargo -C <repo> ...`, already-running daemons with old environments, non-no-mistakes daemon managers whose `PATH` does not include the shim directory, processes that never load shell startup files, and direct `rustc` execution.
 
 ## Rust Probe Policy
 
 - Full CI is proof. Rust Probe is debugging.
 - Agents may use Rust Probe only when cheap local checks cannot answer the question.
-- Use the managed `just rust-probe ...` command only from a clean named branch whose `HEAD` is pushed to its upstream. The command dispatches the exact pushed SHA to GitHub Actions/Ubicloud and refuses unsafe local state.
+- Use `just rust-probe suggest` before dispatching a probe to choose the smallest targeted remote Rust debugging command.
+- Use dispatching `just rust-probe ...` modes only from a clean named branch whose `HEAD` is pushed to its upstream. Those modes dispatch the exact pushed SHA to GitHub Actions/Ubicloud and refuse unsafe local state.
 - Before running Rust Probe, state: (1) changed files, (2) suspected failure class, (3) selected mode, (4) selected test target/name, (5) why this is the smallest sufficient probe.
 - Limits: max 2 Rust Probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; Rust Probe must not replace the required `gate`; do not run full CI just to discover ordinary compiler errors.
 
@@ -84,6 +85,12 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Do not ask for or frame external red-team review while the branch has uncommitted changes, unpushed commits, unresolved findings, unanswered review comments, or failing checks.
 - Do not ask for external review until the exact PR head's CI is confirmed green.
 - If the only remaining local delta is a fix or cleanup already made locally, commit and push it before further review discussion instead of pausing in a half-finished state.
+
+## Merge Mechanics
+
+- A repo ruleset on `main` (`required_status_checks` plus any review rules) gates merges. A merge refused with "base branch policy prohibits the merge" while every active rule actually passes is usually GitHub's stale merge-state cache, not a real block: GitHub recomputes a PR's mergeability on PR events (push, review, close/reopen) and a periodic background pass, not immediately when a ruleset is edited — so a just-fixed rule can keep serving the old BLOCKED verdict.
+- List the active rules with `gh api repos/{owner}/{repo}/rules/branches/main` (`gh` fills `{owner}`/`{repo}` from the current repo), then verify each is actually satisfied — required checks green in the PR status rollup (`gh pr view <n> --json statusCheckRollup`) and any required approvals met. If they are, force a recompute (push, a review, or close/reopen) or wait for GitHub's background pass, then retry the merge.
+- Never force past a green-but-cached block with `gh pr merge --admin`; that bypasses the required checks.
 
 ## Response Format
 

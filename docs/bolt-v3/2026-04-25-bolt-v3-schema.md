@@ -93,6 +93,7 @@ mode = "Live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -113,7 +114,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -153,7 +153,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -166,7 +165,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]
@@ -174,7 +172,9 @@ stdout_level = "INFO"
 fileout_level = "INFO"
 
 [persistence]
-catalog_directory = "/var/lib/bolt/catalog"
+catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+required_catalog_prefix = "/srv/bolt-v2"
+min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]
@@ -195,13 +195,22 @@ venue = "POLYMARKET"
 [clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com" # NT: nautilus_polymarket::config::PolymarketDataClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market" # NT: PolymarketDataClientConfig.base_url_ws
+base_url_rtds = "wss://ws-live-data.polymarket.com" # NT: PolymarketDataClientConfig.base_url_rtds
 base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_gamma
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_data_api
 http_timeout_secs = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_secs = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
+new_market_fetch_max_concurrency = 8 # NT: PolymarketDataClientConfig.new_market_fetch_max_concurrency
 auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load_missing_instruments — forced false in current bolt-v3 scope
 auto_load_debounce_ms = 250 # NT: PolymarketDataClientConfig.auto_load_debounce_ms
+auto_load_max_retries = 12 # NT: PolymarketDataClientConfig.auto_load_max_retries
+auto_load_retry_delay_initial_secs = 5 # NT: PolymarketDataClientConfig.auto_load_retry_delay_initial_secs
+auto_load_retry_delay_max_secs = 15 # NT: PolymarketDataClientConfig.auto_load_retry_delay_max_secs
+resolve_poll_enabled = false # NT: PolymarketDataClientConfig.resolve_poll_enabled
+resolve_poll_interval_secs = 30 # NT: PolymarketDataClientConfig.resolve_poll_interval_secs
+resolve_poll_grace_secs = 10 # NT: PolymarketDataClientConfig.resolve_poll_grace_secs
+resolve_poll_max_wait_secs = 1800 # NT: PolymarketDataClientConfig.resolve_poll_max_wait_secs
 update_instruments_interval_mins = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 ws_max_subscriptions = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 transport_backend = "sockudo" # NT: PolymarketDataClientConfig.transport_backend
@@ -231,10 +240,11 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 venue = "BINANCE"
 
 [clients.binance_reference.data]
-product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
+product_type = "spot" # NT: nautilus_binance::config::BinanceDataClientConfig.product_type
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: BinanceDataClientConfig.base_url_ws
+spot_market_data_mode = "sbe" # NT: BinanceDataClientConfig.spot_market_data_mode
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 transport_backend = "sockudo" # NT: BinanceDataClientConfig.transport_backend
 
@@ -314,6 +324,13 @@ The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-le
 - required: yes
 - maps to Nautilus live-node state saving
 
+#### `shutdown_on_error`
+
+- type: boolean
+- required: yes
+- maps to Nautilus `LiveNodeConfig.shutdown_on_error`
+- current baseline value is `false`
+
 #### `timeout_connection_secs`
 
 - type: positive integer
@@ -355,10 +372,9 @@ The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-le
 
 All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into the NautilusTrader Rust live-node config. Empty `external_clients` maps to Nautilus `None`. `time_bars_origins` keys must be Nautilus `BarAggregation` variant strings such as `Minute`, and values are origin offsets in nanoseconds.
 
-Fields rejected by NautilusTrader's current Rust live runtime are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
+Runtime-support guard fields are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 
-- `graceful_shutdown_on_error = false`
-- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
+- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`
 
 | Field | Type / Rule | Maps to |
 |---|---|---|
@@ -374,8 +390,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `emit_quotes_from_book_depths` | boolean | `LiveDataEngineConfig.emit_quotes_from_book_depths` |
 | `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
 | `debug` | boolean | `LiveDataEngineConfig.debug` |
-| `graceful_shutdown_on_error` | must be `false` | `LiveDataEngineConfig.graceful_shutdown_on_error` |
-| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6` | `LiveDataEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, currently `100000` at NT rev `6be5a5094716790a8ca2875445fde4fa2586107e` | `LiveDataEngineConfig.qsize` |
 
 ### `[nautilus.exec_engine]`
 
@@ -386,8 +401,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `snapshot_orders = false`
 - `snapshot_positions = false`
 - `purge_from_database = false`
-- `graceful_shutdown_on_error = false`
-- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`
 
 #### `reconciliation_lookback_mins`
 
@@ -454,8 +468,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 | `purge_account_events_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_account_events_lookback_mins` |
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
 | `own_books_audit_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
-| `graceful_shutdown_on_error` | must be `false` | `LiveExecEngineConfig.graceful_shutdown_on_error` |
-| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6` | `LiveExecEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, currently `100000` at NT rev `6be5a5094716790a8ca2875445fde4fa2586107e` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
 | `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 
@@ -504,19 +517,12 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - maps to Nautilus `LiveRiskEngineConfig.debug`
 - current baseline value is `false`
 
-#### `graceful_shutdown_on_error` (inside `[risk.nautilus]`)
-
-- type: boolean
-- required: yes
-- maps to Nautilus `LiveRiskEngineConfig.graceful_shutdown_on_error`
-- must remain `false`; NautilusTrader rejects non-default values on the current Rust live runtime
-
 #### `qsize` (inside `[risk.nautilus]`)
 
 - type: positive integer
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.qsize`
-- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, currently `100000` at NT rev `7c2aafb30fb143069c915a3f2057bb12174405f6`
+- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, currently `100000` at NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`
 
 ### `[logging]`
 
@@ -558,6 +564,18 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - required: yes
 - local Nautilus catalog root for structured decision events and raw NautilusTrader capture
 - persistence behavior and local-evidence requirements are defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Sections 9.6, 9.7, and 10
+
+#### `required_catalog_prefix`
+
+- type: absolute path string
+- required: yes for live startup and storage prestart checks
+- canonical parent path that `catalog_directory` must stay under before a live node starts
+
+#### `min_free_bytes`
+
+- type: positive integer
+- required: yes for live startup and storage prestart checks
+- free-space floor for the filesystem that contains `catalog_directory`; the production root config uses `10737418240` bytes, or 10 GiB
 
 #### `runtime_capture_start_poll_interval_ms`
 
@@ -692,6 +710,12 @@ Presence of `[data]` means a data client is configured.
 - type: string
 - required: yes
 
+##### `base_url_rtds`
+
+- type: string
+- required: yes
+- maps directly to `PolymarketDataClientConfig.base_url_rtds`
+
 ##### `base_url_gamma`
 
 - type: string
@@ -720,6 +744,12 @@ Presence of `[data]` means a data client is configured.
 - the pinned NautilusTrader Polymarket data client calls `ws_client.subscribe_market(vec![])` from inside its `connect()` when this flag is `true`, which is effectively an all-markets subscription and violates the bolt-v3 controlled-connect boundary
 - this flag is forced `false` until the dedicated market-subscription slice owns the controlled-subscribe path
 
+##### `new_market_fetch_max_concurrency`
+
+- type: positive integer
+- required: yes
+- maps directly to `PolymarketDataClientConfig.new_market_fetch_max_concurrency`
+
 ##### `auto_load_missing_instruments`
 
 - type: boolean
@@ -733,10 +763,53 @@ Presence of `[data]` means a data client is configured.
 - required: yes
 - maps directly to `PolymarketDataClientConfig.auto_load_debounce_ms`
 
+##### `auto_load_max_retries`
+
+- type: positive integer
+- required: yes
+- maps directly to `PolymarketDataClientConfig.auto_load_max_retries`
+
+##### `auto_load_retry_delay_initial_secs`
+
+- type: positive integer
+- required: yes
+- maps directly to `PolymarketDataClientConfig.auto_load_retry_delay_initial_secs`
+
+##### `auto_load_retry_delay_max_secs`
+
+- type: positive integer
+- required: yes
+- maps directly to `PolymarketDataClientConfig.auto_load_retry_delay_max_secs`
+
+##### `resolve_poll_enabled`
+
+- type: boolean
+- required: yes
+- maps directly to `PolymarketDataClientConfig.resolve_poll_enabled`
+
+##### `resolve_poll_interval_secs`
+
+- type: positive integer
+- required: yes
+- maps directly to `PolymarketDataClientConfig.resolve_poll_interval_secs`
+
+##### `resolve_poll_grace_secs`
+
+- type: positive integer
+- required: yes
+- maps directly to `PolymarketDataClientConfig.resolve_poll_grace_secs`
+
+##### `resolve_poll_max_wait_secs`
+
+- type: positive integer
+- required: yes
+- maps directly to `PolymarketDataClientConfig.resolve_poll_max_wait_secs`
+
 ##### `update_instruments_interval_mins`
 
 - type: positive integer
 - required: yes
+- maps to `PolymarketDataClientConfig.update_instruments_interval_mins` as `Some(value)`
 - background Polymarket adapter refresh interval only
 - not the sole mechanism keeping current rotating-market data loaded
 
@@ -866,13 +939,13 @@ For current Binance reference-data use:
 
 #### Binance data fields
 
-##### `product_types`
+##### `product_type`
 
-- type: array of string enums
+- type: string enum
 - required: yes
 - current allowed value:
   - `spot`
-- maps to Nautilus `BinanceDataClientConfig.product_types`
+- maps to Nautilus `BinanceDataClientConfig.product_type`
 
 ##### `environment`
 
@@ -895,7 +968,17 @@ For current Binance reference-data use:
 - required: yes
 - maps to Nautilus `BinanceDataClientConfig.base_url_ws`
 - explicit TOML ownership prevents NautilusTrader from falling back to its compiled-in Binance WebSocket URL
-- must not use NautilusTrader's Binance Spot JSON WebSocket host; the bolt-v3 reference quote probe requires an SBE endpoint or compatible SBE proxy so NT `subscribe_quotes` can emit `QuoteTick` data
+- current baseline uses Binance's SBE WebSocket endpoint, matching `spot_market_data_mode = "sbe"`
+
+##### `spot_market_data_mode`
+
+- type: string enum
+- required: yes
+- current allowed values:
+  - `sbe`
+  - `json`
+- maps to Nautilus `BinanceDataClientConfig.spot_market_data_mode`
+- current baseline value is `sbe`, matching the configured Binance SBE WebSocket endpoint
 
 ##### `instrument_status_poll_secs`
 
@@ -1027,9 +1110,9 @@ is_quote_quantity = false
 side = "sell"
 position_side = "long"
 order_type = "market"
-time_in_force = "gtc"
+time_in_force = "ioc"
 is_post_only = false
-is_reduce_only = true
+is_reduce_only = false
 is_quote_quantity = false
 
 [parameters]
@@ -1267,6 +1350,7 @@ Entry orders use the configured `entry_order` template.
 Normal exits use the configured `exit_order` template.
 Forced-flat exits use the configured `forced_exit_order` template.
 When `manage_stop = true`, pinned NautilusTrader `Strategy::close_all_positions` submits market close orders; config validation therefore requires `parameters.forced_exit_order.order_type = "market"` for that mode.
+For Polymarket-routed market `exit_order` and `forced_exit_order` templates, use `time_in_force = "ioc"` or `"fok"`; shipped configs use `"ioc"`. Polymarket also rejects reduce-only exit templates before submit, so set `is_reduce_only = false`.
 Set `manage_stop = false` to use a non-market `forced_exit_order` through the strategy forced-flat path.
 
 #### `side`
@@ -1538,6 +1622,7 @@ order_execution_mode = "live"
 [nautilus]
 load_state = true
 save_state = true
+shutdown_on_error = false
 timeout_connection_secs = 30
 timeout_reconciliation_secs = 60
 timeout_portfolio_secs = 10
@@ -1558,7 +1643,6 @@ emit_quotes_from_book = false
 emit_quotes_from_book_depths = false
 external_clients = []
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [nautilus.exec_engine]
@@ -1598,7 +1682,6 @@ purge_account_events_interval_mins = 0
 purge_account_events_lookback_mins = 0
 purge_from_database = false
 own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
 qsize = 100000
 allow_overfills = false
 manage_own_order_books = false
@@ -1611,7 +1694,6 @@ max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
-graceful_shutdown_on_error = false
 qsize = 100000
 
 [logging]
@@ -1619,7 +1701,9 @@ stdout_level = "INFO"
 fileout_level = "INFO"
 
 [persistence]
-catalog_directory = "/var/lib/bolt/catalog"
+catalog_directory = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+required_catalog_prefix = "/srv/bolt-v2"
+min_free_bytes = 10737418240
 runtime_capture_start_poll_interval_ms = 50
 
 [persistence.decision_evidence]
@@ -1640,13 +1724,22 @@ venue = "POLYMARKET"
 [clients.polymarket_main.data]
 base_url_http = "https://clob.polymarket.com" # NT: nautilus_polymarket::config::PolymarketDataClientConfig.base_url_http
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market" # NT: PolymarketDataClientConfig.base_url_ws
+base_url_rtds = "wss://ws-live-data.polymarket.com" # NT: PolymarketDataClientConfig.base_url_rtds
 base_url_gamma = "https://gamma-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_gamma
 base_url_data_api = "https://data-api.polymarket.com" # NT: PolymarketDataClientConfig.base_url_data_api
 http_timeout_secs = 60 # NT: PolymarketDataClientConfig.http_timeout_secs
 ws_timeout_secs = 30 # NT: PolymarketDataClientConfig.ws_timeout_secs
 subscribe_new_markets = false # NT: PolymarketDataClientConfig.subscribe_new_markets — forced false in current bolt-v3 scope
+new_market_fetch_max_concurrency = 8 # NT: PolymarketDataClientConfig.new_market_fetch_max_concurrency
 auto_load_missing_instruments = false # NT: PolymarketDataClientConfig.auto_load_missing_instruments — forced false in current bolt-v3 scope
 auto_load_debounce_ms = 250 # NT: PolymarketDataClientConfig.auto_load_debounce_ms
+auto_load_max_retries = 12 # NT: PolymarketDataClientConfig.auto_load_max_retries
+auto_load_retry_delay_initial_secs = 5 # NT: PolymarketDataClientConfig.auto_load_retry_delay_initial_secs
+auto_load_retry_delay_max_secs = 15 # NT: PolymarketDataClientConfig.auto_load_retry_delay_max_secs
+resolve_poll_enabled = false # NT: PolymarketDataClientConfig.resolve_poll_enabled
+resolve_poll_interval_secs = 30 # NT: PolymarketDataClientConfig.resolve_poll_interval_secs
+resolve_poll_grace_secs = 10 # NT: PolymarketDataClientConfig.resolve_poll_grace_secs
+resolve_poll_max_wait_secs = 1800 # NT: PolymarketDataClientConfig.resolve_poll_max_wait_secs
 update_instruments_interval_mins = 60 # NT: PolymarketDataClientConfig.update_instruments_interval_mins
 ws_max_subscriptions = 200 # NT: PolymarketDataClientConfig.ws_max_subscriptions
 transport_backend = "sockudo" # NT: PolymarketDataClientConfig.transport_backend
@@ -1676,10 +1769,11 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 venue = "BINANCE"
 
 [clients.binance_reference.data]
-product_types = ["spot"] # NT: nautilus_binance::config::BinanceDataClientConfig.product_types
+product_type = "spot" # NT: nautilus_binance::config::BinanceDataClientConfig.product_type
 environment = "mainnet" # NT: BinanceDataClientConfig.environment
 base_url_http = "https://api.binance.com" # NT: BinanceDataClientConfig.base_url_http
 base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: BinanceDataClientConfig.base_url_ws
+spot_market_data_mode = "sbe" # NT: BinanceDataClientConfig.spot_market_data_mode
 instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
 transport_backend = "sockudo" # NT: BinanceDataClientConfig.transport_backend
 
@@ -1745,9 +1839,9 @@ is_quote_quantity = false
 side = "sell"
 position_side = "long"
 order_type = "market"
-time_in_force = "gtc"
+time_in_force = "ioc"
 is_post_only = false
-is_reduce_only = true
+is_reduce_only = false
 is_quote_quantity = false
 
 [parameters]

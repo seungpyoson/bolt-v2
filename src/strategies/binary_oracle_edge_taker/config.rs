@@ -18,8 +18,10 @@ use crate::{
     bolt_v3_config::ReferencePriceBlock,
     bolt_v3_market_families,
     bolt_v3_numeric::{BPS_DENOMINATOR, is_non_negative_finite, is_positive_finite},
-    strategies::registry::ValidationError,
+    strategies::registry::{StrategyBuildContext, ValidationError},
 };
+
+use super::BinaryOracleEdgeTaker;
 
 trait TomlValueExt {
     fn as_float_or_integer(&self) -> Option<f64>;
@@ -157,6 +159,10 @@ macro_rules! define_config_struct {
             pub(super) resolution_instrument_id: Option<String>,
             pub(super) reference_current_price: Option<ReferencePriceBlock>,
             pub(super) realized_volatility_surface_id: String,
+            pub(super) static_condition_id: Option<String>,
+            pub(super) static_yes_outcome: Option<String>,
+            pub(super) static_no_outcome: Option<String>,
+            pub(super) static_fair_probability_source: Option<String>,
             pub(super) entry_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) exit_order: BinaryOracleEdgeTakerOrderConfig,
             pub(super) forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -313,6 +319,16 @@ impl BinaryOracleEdgeTakerBuilder {
         Ok(config)
     }
 
+    pub fn build_strategy(
+        raw: &Value,
+        context: &StrategyBuildContext,
+    ) -> Result<BinaryOracleEdgeTaker> {
+        Ok(BinaryOracleEdgeTaker::new(
+            Self::parse_config(raw)?,
+            context.clone(),
+        ))
+    }
+
     fn ensure_bps_runtime_knobs_within_full_scale(
         config: &BinaryOracleEdgeTakerConfig,
     ) -> Result<()> {
@@ -444,6 +460,10 @@ impl BinaryOracleEdgeTakerBuilder {
                     | "resolution_instrument_id"
                     | "reference_current_price"
                     | REALIZED_VOLATILITY_SURFACE_ID_FIELD
+                    | "static_condition_id"
+                    | "static_yes_outcome"
+                    | "static_no_outcome"
+                    | "static_fair_probability_source"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -489,6 +509,15 @@ impl BinaryOracleEdgeTakerBuilder {
             table,
             field_prefix,
             REALIZED_VOLATILITY_SURFACE_ID_FIELD,
+            errors,
+        );
+        Self::validate_optional_string_field(table, field_prefix, "static_condition_id", errors);
+        Self::validate_optional_string_field(table, field_prefix, "static_yes_outcome", errors);
+        Self::validate_optional_string_field(table, field_prefix, "static_no_outcome", errors);
+        Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            "static_fair_probability_source",
             errors,
         );
         Self::validate_required_realized_volatility_surface_id(table, field_prefix, errors);
@@ -565,6 +594,7 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::validate_executable_entry_order_shape(table, field_prefix, errors);
         Self::validate_slippage_buffer_covers_vwap_depth(table, field_prefix, errors);
         Self::validate_rotating_market_family(table, field_prefix, errors);
+        Self::validate_static_binary_event_runtime_fields(table, field_prefix, errors);
     }
 
     fn validate_executable_entry_order_shape(
@@ -745,6 +775,79 @@ impl BinaryOracleEdgeTakerBuilder {
                 field: format!("{field_prefix}.{field_name}"),
                 code: stringify!(unknown_market_family),
                 message: format!("unknown market family `{family}`"),
+            });
+        }
+    }
+
+    fn validate_static_binary_event_runtime_fields(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let family = table
+            .get(stringify!(rotating_market_family))
+            .and_then(Value::as_str);
+        let static_fields = [
+            "static_condition_id",
+            "static_yes_outcome",
+            "static_no_outcome",
+            "static_fair_probability_source",
+        ];
+        if family != Some(bolt_v3_market_families::static_binary_event_family_key()) {
+            for field_name in static_fields {
+                if table.contains_key(field_name) {
+                    errors.push(ValidationError {
+                        field: format!("{field_prefix}.{field_name}"),
+                        code: stringify!(static_field_for_non_static_family),
+                        message: format!(
+                            "is only valid when rotating_market_family is `{}`",
+                            bolt_v3_market_families::static_binary_event_family_key()
+                        ),
+                    });
+                }
+            }
+            return;
+        }
+
+        for (field_name, code) in [
+            ("static_yes_outcome", "missing_static_yes_outcome"),
+            ("static_no_outcome", "missing_static_no_outcome"),
+            (
+                "static_fair_probability_source",
+                "missing_static_fair_probability_source",
+            ),
+        ] {
+            if !table.contains_key(field_name) {
+                Self::push_missing(
+                    errors,
+                    format!("{field_prefix}.{field_name}"),
+                    code,
+                    BinaryOracleEdgeTakerFieldType::String,
+                );
+            }
+        }
+
+        let yes = table.get("static_yes_outcome").and_then(Value::as_str);
+        let no = table.get("static_no_outcome").and_then(Value::as_str);
+        if yes.is_some() && yes == no {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.static_no_outcome"),
+                code: stringify!(static_outcomes_not_distinct),
+                message: "must be distinct from static_yes_outcome".to_string(),
+            });
+        }
+
+        if let Some(source) = table.get("static_fair_probability_source").and_then(Value::as_str)
+            && source
+                != bolt_v3_market_families::static_binary_event_reference_current_price_fair_probability_source()
+        {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.static_fair_probability_source"),
+                code: stringify!(unsupported_static_fair_probability_source),
+                message: format!(
+                    "must be `{}` until another static-event fair-probability source is implemented",
+                    bolt_v3_market_families::static_binary_event_reference_current_price_fair_probability_source()
+                ),
             });
         }
     }

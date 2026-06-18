@@ -21,7 +21,9 @@
 //! own archetype parameter bounds such as parameter decimal syntax and
 //! root-cap comparison. `validate_strategies` dispatches into the
 //! matching archetype validator via
-//! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
+//! `crate::bolt_v3_archetypes::validate_strategy_archetype_with_bindings`,
+//! passing the production binding list from
+//! `crate::strategy_bindings::production_validation_bindings`.
 //! Per-provider venue-block validation (provider-shaped
 //! `[clients.<id>.{data,execution,secrets}]` rules: typed
 //! deserialization, cross-block presence rules, provider data /
@@ -186,9 +188,13 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
+    errors.extend(crate::bolt_v3_outcome_group_sources::validate_root_sources(
+        root,
+    ));
     if let Some(iv) = &root.iv {
         errors.extend(crate::bolt_v3_iv::config::validate_iv_root_config(iv));
     }
+    errors.extend(validate_realized_volatility_source_clients(root));
     errors.extend(validate_iv_source_clients(root));
     errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
 
@@ -215,6 +221,35 @@ pub(crate) fn validate_iv_source_clients(root: &BoltV3RootConfig) -> Vec<String>
                 Some(client) if client.data.is_none() => errors.push(format!(
                     "{context}.client_id `{}` must reference a data-capable client (the referenced client has no [data] block)",
                     source.client_id
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+
+    errors
+}
+
+pub(crate) fn validate_realized_volatility_source_clients(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(realized_volatility_surfaces) = root.realized_volatility_surfaces.as_ref() else {
+        return errors;
+    };
+
+    for (surface_id, surface) in realized_volatility_surfaces {
+        for source in surface.sources.iter().filter(|source| source.enabled) {
+            let context = format!(
+                "realized_volatility_surfaces.{surface_id}.sources.{}",
+                source.source_id
+            );
+            match root.clients.get(source.data_client_id.as_str()) {
+                None => errors.push(format!(
+                    "{context}.data_client_id `{}` does not match any [clients.<id>] block",
+                    source.data_client_id
+                )),
+                Some(client) if client.data.is_none() => errors.push(format!(
+                    "{context}.data_client_id `{}` must reference a data-capable client (no [data] block)",
+                    source.data_client_id
                 )),
                 Some(_) => {}
             }
@@ -455,21 +490,6 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                     "{source_context}.source_id duplicate source_id `{}`",
                     source.source_id
                 ));
-            }
-
-            match root.clients.get(source.data_client_id.as_str()) {
-                None => errors.push(format!(
-                    "{source_context}.data_client_id `{}` does not match any [clients.<id>] block",
-                    source.data_client_id
-                )),
-                Some(client) => {
-                    if client.data.is_none() {
-                        errors.push(format!(
-                            "{source_context}.data_client_id `{}` must reference a data-capable client (the referenced client has no [data] block)",
-                            source.data_client_id
-                        ));
-                    }
-                }
             }
 
             let source_base_asset = instrument_base_asset(&source.instrument_id);
@@ -1131,12 +1151,6 @@ fn validate_data_engine_block(
             ));
         }
     }
-    if block.graceful_shutdown_on_error {
-        errors.push(
-            "nautilus.data_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
-                .to_string(),
-        );
-    }
     let nt_data_default = nautilus_live::config::LiveDataEngineConfig::default();
     if block.qsize != nt_data_default.qsize {
         errors.push(format!(
@@ -1188,11 +1202,6 @@ fn validate_exec_engine_block(
     if block.purge_from_database {
         errors.push(
             "nautilus.exec_engine.purge_from_database must be false; NT rejects true on the Rust live runtime".to_string(),
-        );
-    }
-    if block.graceful_shutdown_on_error {
-        errors.push(
-            "nautilus.exec_engine.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime".to_string(),
         );
     }
     let nt_exec_default = nautilus_live::config::LiveExecEngineConfig::default();
@@ -1363,12 +1372,6 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     if let Some(capital_pools) = block.capital_pools.as_ref() {
         errors.extend(validate_capital_pools(capital_pools));
     }
-    if block.nautilus.graceful_shutdown_on_error {
-        errors.push(
-            "risk.nautilus.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"
-                .to_string(),
-        );
-    }
     let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
     if block.nautilus.qsize != nt_risk_default.qsize {
         errors.push(format!(
@@ -1416,6 +1419,11 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     }
     if let Some(kill_switch) = &block.kill_switch {
         errors.extend(validate_kill_switch_block(kill_switch));
+    }
+    if let Some(basket_execution) = &block.basket_execution {
+        errors.extend(
+            crate::bolt_v3_outcome_group_sources::validate_basket_execution(basket_execution),
+        );
     }
     errors
 }
@@ -1623,6 +1631,12 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
             block.max_utc_daily_realized_loss
         )),
     }
+    if block.flatten_open_positions_on_breach {
+        errors.push(
+            "risk.kill_switch.flatten_open_positions_on_breach=true is not supported until a shared execution-policy flatten path exists"
+                .to_string(),
+        );
+    }
     if block.action_retry_interval_ms == 0 {
         errors.push("risk.kill_switch.action_retry_interval_ms must be positive".to_string());
     }
@@ -1723,7 +1737,12 @@ const SECONDS_PER_MINUTE: u64 = 60;
 /// Validates an NT `limit/HH:MM:SS` rate-limit string and returns the parsed
 /// `(limit, interval_seconds)` so callers can reconcile the rate against a
 /// venue REST egress ceiling without re-parsing.
-fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
+///
+/// `pub(crate)` so the maker requote-budget bridge
+/// ([`crate::bolt_v3_maker_rate_budget`]) sources its submit-governor cap and
+/// window from the same single parser the config validator uses, rather than
+/// introducing a second rate-string interpretation.
+pub(crate) fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
     let (limit, interval) = value
         .split_once('/')
         .ok_or_else(|| "expected `limit/HH:MM:SS`".to_string())?;
@@ -1873,11 +1892,31 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
             block.catalog_directory
         ));
     }
+    if let Some(required_catalog_prefix) = block.required_catalog_prefix.as_deref()
+        && !Path::new(required_catalog_prefix).is_absolute()
+    {
+        errors.push(format!(
+            "{}.{} must be an absolute path: `{}`",
+            stringify!(persistence),
+            stringify!(required_catalog_prefix),
+            required_catalog_prefix
+        ));
+    }
     if block.runtime_capture_start_poll_interval_ms == 0 {
         errors.push(
             "persistence.runtime_capture_start_poll_interval_ms must be a positive integer"
                 .to_string(),
         );
+    }
+    if block
+        .min_free_bytes
+        .is_some_and(|min_free_bytes| min_free_bytes == 0)
+    {
+        errors.push(format!(
+            "{}.{} must be a positive integer",
+            stringify!(persistence),
+            stringify!(min_free_bytes)
+        ));
     }
     if block.streaming.flush_interval_ms == 0 {
         errors
@@ -2265,25 +2304,21 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
                 &context, root, strategy,
             ),
         );
+        errors.extend(validate_complete_set_activation_is_shadow_only(
+            &context, root, strategy,
+        ));
 
-        match &strategy.realized_volatility_surface_id {
-            None => errors.push(format!(
-                "{context}: {} is required",
+        if let Some(surface_id) = &strategy.realized_volatility_surface_id
+            && !root
+                .realized_volatility_surfaces
+                .as_ref()
+                .is_some_and(|surfaces| surfaces.contains_key(surface_id))
+        {
+            errors.push(format!(
+                "{context}: {} `{surface_id}` references missing {}.{surface_id}",
                 stringify!(realized_volatility_surface_id),
-            )),
-            Some(surface_id)
-                if !root
-                    .realized_volatility_surfaces
-                    .as_ref()
-                    .is_some_and(|surfaces| surfaces.contains_key(surface_id)) =>
-            {
-                errors.push(format!(
-                    "{context}: {} `{surface_id}` references missing {}.{surface_id}",
-                    stringify!(realized_volatility_surface_id),
-                    stringify!(realized_volatility_surfaces),
-                ));
-            }
-            _ => {}
+                stringify!(realized_volatility_surfaces),
+            ));
         }
 
         if let Some(surface_id) = &strategy.realized_volatility_surface_id
@@ -2330,17 +2365,42 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         errors.extend(target_errors.into_iter().map(|error| error.to_string()));
 
         errors.extend(validate_reference_current_price(&context, root, strategy));
-        errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
-            &context,
-            root,
-            strategy,
-            default_max_notional_decimal.as_ref(),
-        ));
+        errors.extend(
+            crate::bolt_v3_archetypes::validate_strategy_archetype_with_bindings(
+                &context,
+                root,
+                strategy,
+                default_max_notional_decimal.as_ref(),
+                crate::strategy_bindings::production_validation_bindings(),
+            ),
+        );
     }
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
+    errors.extend(
+        crate::bolt_v3_outcome_group_sources::validate_outcome_group_strategy_links(
+            root, strategies,
+        ),
+    );
 
     errors
+}
+
+fn validate_complete_set_activation_is_shadow_only(
+    context: &str,
+    root: &BoltV3RootConfig,
+    strategy: &BoltV3StrategyConfig,
+) -> Vec<String> {
+    if strategy.strategy_archetype.as_str()
+        != crate::bolt_v3_outcome_group_sources::COMPLETE_SET_ARBITRAGE_KEY
+        || root.runtime.order_execution_mode == BoltV3OrderExecutionMode::Shadow
+    {
+        return Vec::new();
+    }
+
+    vec![format!(
+        "{context}: complete_set_arbitrage runtime activation is registration-only until NautilusTrader event forwarding is wired; runtime.order_execution_mode must be shadow for this substrate slice"
+    )]
 }
 
 fn validate_shadow_order_execution_mode_forbids_managed_venue_actions(

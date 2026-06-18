@@ -14,7 +14,9 @@ fn switch_resets_only_active_market_state() {
         },
     );
     set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
-    strategy.pricing.fast_spot = Some(fast_spot("bybit", 3_100.5, 1_200));
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.5, 1_200)));
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
@@ -41,13 +43,13 @@ fn switch_resets_only_active_market_state() {
     assert!(!active.outcome_fees.up_ready);
     assert!(!active.outcome_fees.down_ready);
     assert_eq!(
-        strategy.pricing.fast_spot,
+        strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot("bybit", 3_100.5, 1_200))
     );
     assert_eq!(strategy.pricing.current_realized_vol_at(1_200), Some(1.5));
     assert_eq!(
         strategy.pricing.current_realized_vol_source_at(1_200),
-        (None, Some(1_200))
+        (Some("<SOURCE_ID>".to_string()), Some(1_200))
     );
 }
 
@@ -358,6 +360,52 @@ fn strategy_selects_configured_updown_target_from_nt_binary_option_metadata() {
     assert_eq!(market.market_id, "market-1");
     assert_eq!(market.up.instrument_id, "token-up.POLYMARKET");
     assert_eq!(market.down.instrument_id, "token-down.POLYMARKET");
+}
+
+#[test]
+fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadata() {
+    let mut strategy = test_strategy();
+    strategy.config.target_kind = "static_market".to_string();
+    strategy.config.rotating_market_family =
+        crate::bolt_v3_market_families::static_binary_event::KEY.to_string();
+    strategy.config.underlying_asset = "sample_event_2026".to_string();
+    strategy.config.cadence_seconds = 1;
+    strategy.config.cadence_slug_token = "will-sample-event-resolve-yes".to_string();
+    strategy.config.market_selection_rule = "configured_static".to_string();
+    strategy.config.static_condition_id = Some("condition-sample-event-yes-no".to_string());
+    strategy.config.static_yes_outcome = Some("Yes".to_string());
+    strategy.config.static_no_outcome = Some("No".to_string());
+    let instruments = vec![
+        updown_binary_option(
+            "sample-event-no.POLYMARKET",
+            &strategy.config.cadence_slug_token,
+            "sample-event-yes-no",
+            "No",
+            1_000,
+            30_000,
+        ),
+        updown_binary_option(
+            "sample-event-yes.POLYMARKET",
+            &strategy.config.cadence_slug_token,
+            "sample-event-yes-no",
+            "Yes",
+            1_000,
+            30_000,
+        ),
+    ];
+
+    let snapshot = selection_snapshot_from_instruments(&strategy.config, &instruments, 10_000);
+
+    let SelectionState::Active { market } = snapshot.decision.state else {
+        panic!("configured static event should select active market: {snapshot:?}");
+    };
+    assert_eq!(market.market_id, "sample-event-yes-no");
+    assert_eq!(market.up.instrument_id, "sample-event-yes.POLYMARKET");
+    assert_eq!(market.down.instrument_id, "sample-event-no.POLYMARKET");
+    assert_eq!(
+        market.source_identity.condition_id,
+        "condition-sample-event-yes-no"
+    );
 }
 
 #[test]

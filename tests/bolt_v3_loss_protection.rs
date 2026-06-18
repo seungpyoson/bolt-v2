@@ -592,6 +592,82 @@ fn stale_utc_bucket_events_do_not_clear_current_day_loss_accumulator() {
 }
 
 #[test]
+fn utc_day_rollover_prunes_completed_position_dedup_snapshots() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-rollover-prunes-dedup");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection =
+        KillSwitchLossProtection::new(loss_config(Decimal::new(100, 0)), admission, store, actions)
+            .expect("loss protection should initialize");
+
+    protection
+        .record_position_event(&adjusted_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -5.0,
+            1,
+        ))
+        .expect("adjustment should record");
+    protection
+        .record_position_event(&changed_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            2,
+        ))
+        .expect("open position cumulative pnl should record");
+    protection
+        .record_position_event(&closed_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -15.0,
+            3,
+        ))
+        .expect("closed position cumulative pnl should record");
+
+    let before_rollover = protection
+        .store()
+        .load_recovery_record()
+        .expect("snapshot before rollover should load")
+        .loss_protection
+        .expect("snapshot before rollover should exist");
+    assert_eq!(before_rollover.adjusted_position_pnl.len(), 1);
+    assert_eq!(before_rollover.closed_position_pnl.len(), 1);
+
+    protection
+        .record_realized_pnl(RealizedPnlObservation {
+            source: "nt_position_event",
+            observed_at_unix_nanos: NANOS_PER_UTC_DAY,
+            realized_pnl: Decimal::ZERO,
+        })
+        .expect("first next-day observation should roll the bucket forward");
+
+    protection
+        .record_position_event(&adjusted_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -5.0,
+            1,
+        ))
+        .expect("stale prior-day adjustment should be ignored after rollover");
+
+    let after_rollover = protection
+        .store()
+        .load_recovery_record()
+        .expect("snapshot after rollover should load")
+        .loss_protection
+        .expect("snapshot after rollover should exist");
+    assert!(after_rollover.adjusted_position_pnl.is_empty());
+    assert!(after_rollover.closed_position_pnl.is_empty());
+}
+
+#[test]
 fn closed_position_prunes_cumulative_baseline_before_position_id_reuse() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-prune-closed");
     let store = KillSwitchStore::new(
@@ -888,20 +964,23 @@ fn duplicate_adjusted_position_replay_counts_delta_once() {
     )
     .expect("loss protection should initialize");
 
+    let duplicate_event_id = UUID4::new();
     protection
-        .record_position_event(&adjusted_position_event(
+        .record_position_event(&adjusted_position_event_with_id(
             "POLYMARKET-001",
             "BTC-USD.BINANCE",
             -10.0,
             1,
+            duplicate_event_id,
         ))
         .expect("first adjustment should record below limit");
     protection
-        .record_position_event(&adjusted_position_event(
+        .record_position_event(&adjusted_position_event_with_id(
             "POLYMARKET-001",
             "BTC-USD.BINANCE",
             -10.0,
             1,
+            duplicate_event_id,
         ))
         .expect("duplicate adjustment should not double count");
     assert!(admission.admit(&entry_request()).is_ok());
@@ -915,6 +994,50 @@ fn duplicate_adjusted_position_replay_counts_delta_once() {
         ))
         .expect("new adjustment should be counted")
         .expect("total unique adjustments should breach");
+
+    assert!(matches!(latched, KillSwitchState::Halting { .. }));
+    assert_eq!(actions.actions().len(), 1);
+}
+
+#[test]
+fn late_distinct_adjusted_position_event_is_counted_by_event_id() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-late-adjusted-event");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(15, 0)),
+        admission,
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_position_event(&adjusted_position_event_with_id(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            2,
+            UUID4::new(),
+        ))
+        .expect("newer adjustment should record below limit");
+
+    let latched = protection
+        .record_position_event(&adjusted_position_event_with_id(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -6.0,
+            1,
+            UUID4::new(),
+        ))
+        .expect("late distinct adjustment should still be counted")
+        .expect("distinct adjustments should breach even when out of order");
 
     assert!(matches!(latched, KillSwitchState::Halting { .. }));
     assert_eq!(actions.actions().len(), 1);
@@ -1057,6 +1180,16 @@ fn adjusted_position_event(
     pnl: f64,
     ts_event: u64,
 ) -> PositionEvent {
+    adjusted_position_event_with_id(account_id, instrument_id, pnl, ts_event, UUID4::new())
+}
+
+fn adjusted_position_event_with_id(
+    account_id: &str,
+    instrument_id: &str,
+    pnl: f64,
+    ts_event: u64,
+    event_id: UUID4,
+) -> PositionEvent {
     PositionEvent::PositionAdjusted(PositionAdjusted::new(
         TraderId::from("TESTER-001"),
         StrategyId::from("strategy-a"),
@@ -1067,7 +1200,7 @@ fn adjusted_position_event(
         None,
         Some(Money::new(pnl, Currency::USDC())),
         None,
-        UUID4::default(),
+        event_id,
         ts_event.into(),
         ts_event.into(),
     ))

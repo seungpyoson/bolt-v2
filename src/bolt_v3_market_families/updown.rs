@@ -52,6 +52,7 @@ use crate::{
         RESOLUTION_GATE_ROLE,
     },
     bolt_v3_instrument_filters::{InstrumentFilterError, format_target_prefix},
+    bolt_v3_maker_settlement::BinarySettlementPayout,
     bolt_v3_market_families::{
         FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
         MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
@@ -65,9 +66,7 @@ use crate::{
         is_non_negative_finite, is_positive_finite, sanitize_probability,
     },
     bolt_v3_quote_lifecycle::Leg,
-    bolt_v3_quoting::{
-        FamilyQuoteInputs, QuoteSide, QuoteTargetLeg, QuoteTargets, compose_binary_legs,
-    },
+    bolt_v3_quoting::{FamilyQuoteInputs, QuoteTargets},
 };
 
 pub const KEY: &str = "updown";
@@ -87,49 +86,29 @@ const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";
 const METADATA_VENUE_FIELD: &str = "venue";
 
 pub fn maker_quote_targets(inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
-    let p_up = sanitize_probability(inputs.fair)?;
-    let legs = compose_binary_legs(
-        p_up,
-        inputs.reservation_bid,
-        inputs.reservation_ask,
-        inputs.half_spread_floor,
-        inputs.max_half_spread,
-        inputs.tau,
-        inputs.reference_tau,
-        inputs.time_widen_cap,
-        inputs.inventory_skew,
-        inputs.eps,
-    )?;
-    Some(QuoteTargets {
-        leg_a: QuoteTargetLeg {
-            side: QuoteSide::Buy,
-            price: legs.yes_price,
-        },
-        leg_b: QuoteTargetLeg {
-            side: QuoteSide::Buy,
-            price: legs.no_price,
-        },
-    })
+    super::binary_outcome::maker_quote_targets(inputs)
 }
 
-pub fn maker_settlement_payout(outcome: OutcomeSide, leg: Leg) -> Option<f64> {
-    Some(match (outcome, leg) {
-        (OutcomeSide::Up, Leg::Yes) | (OutcomeSide::Down, Leg::No) => UNIT_F64,
-        (OutcomeSide::Up, Leg::No) | (OutcomeSide::Down, Leg::Yes) => ZERO_F64,
-    })
+pub fn maker_settlement_payout(payout: BinarySettlementPayout, leg: Leg) -> Option<f64> {
+    super::binary_outcome::maker_settlement_payout(payout, leg)
+}
+
+pub fn maker_settlement_payout_from_reference_prices(
+    close_price: f64,
+    strike_price: f64,
+) -> Option<BinarySettlementPayout> {
+    if !is_positive_finite(close_price) || !is_positive_finite(strike_price) {
+        return None;
+    }
+    if close_price >= strike_price {
+        BinarySettlementPayout::new(UNIT_F64, ZERO_F64)
+    } else {
+        BinarySettlementPayout::new(ZERO_F64, UNIT_F64)
+    }
 }
 
 pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
-    if !fee_rate.is_finite() || fee_rate < ZERO_F64 {
-        return None;
-    }
-    let price = sanitize_probability(price)?;
-    let fee = fee_rate * price * (UNIT_F64 - price);
-    if fee.is_finite() && fee >= ZERO_F64 {
-        Some(fee)
-    } else {
-        None
-    }
+    super::binary_outcome::maker_binary_fee_curve(fee_rate, price)
 }
 
 /// Updown rotating-cadence target block. Owned by the updown market-
@@ -822,6 +801,10 @@ pub fn target_runtime_fields(
         cadence_seconds_source_field: "target.cadence_secs",
         cadence_slug_token: target.cadence_slug_token,
         market_selection_rule: target_runtime_string(target.market_selection_rule)?,
+        static_condition_id: None,
+        static_yes_outcome: None,
+        static_no_outcome: None,
+        static_fair_probability_source: None,
         retry_interval_seconds: target.retry_interval_secs,
         blocked_after_seconds: target.blocked_after_secs,
     })
@@ -1809,6 +1792,7 @@ mod tests {
             Price::from("0.001"),
             Quantity::from("0.01"),
             Some(ustr::Ustr::from(outcome)),
+            None,
             None,
             None,
             None,

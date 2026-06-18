@@ -15,8 +15,8 @@
 //! contract), never by a venue name.
 //!
 //! Scope (W2 slices 1–3): both requote paths per leg — cancel+resubmit
-//! (Polymarket binary; the adapter has no order-modify) and modify-in-place
-//! (modify-capable venues, with a modify-reject degrade) — plus the two-leg
+//! (venues without order-modify support) and modify-in-place (modify-capable
+//! venues, with a modify-reject degrade) — plus the two-leg
 //! (YES/NO) market controller with explicit cancel scope (single-leg, both-leg
 //! drain, one-side). The requote throttle, reconnect resync, and the NT handler
 //! translation arrive in later W2 slices.
@@ -153,8 +153,8 @@ impl QuoteLeg {
                 self.state = LegState::ModifyPending;
                 Some(LifecycleAction::Modify)
             }
-            // T4-cancel: same trigger on a modify-unsupported venue (Polymarket)
-            // cancels first; the replacement submit is emitted once the cancel
+            // T4-cancel: same trigger on a modify-unsupported venue cancels
+            // first; the replacement submit is emitted once the cancel
             // confirms (T5).
             (
                 LegState::Resting,

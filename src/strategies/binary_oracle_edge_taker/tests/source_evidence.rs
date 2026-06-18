@@ -74,8 +74,7 @@ fn surfaced_realized_volatility_quote_source_forwards_snapshot_to_pricing() {
 
     let snapshot = strategy
         .pricing
-        .latest_realized_vol_snapshot
-        .as_ref()
+        .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
         .expect("RV forwarding should publish a pricing snapshot");
     assert_eq!(snapshot.surface_id, TEST_SURFACE_ID);
     assert_eq!(snapshot.source_diagnostics[0].source_id, TEST_SOURCE_ID);
@@ -105,8 +104,7 @@ fn surfaced_realized_volatility_forwards_duplicate_stream_bindings() {
 
     let snapshot = strategy
         .pricing
-        .latest_realized_vol_snapshot
-        .as_ref()
+        .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
         .expect("RV forwarding should publish a pricing snapshot");
     for source_id in [TEST_SOURCE_ID, TEST_SOURCE_ID_B] {
         let diagnostic = snapshot
@@ -144,8 +142,7 @@ fn surfaced_realized_volatility_forwards_disabled_source_observations_for_audit(
 
     let snapshot = strategy
         .pricing
-        .latest_realized_vol_snapshot
-        .as_ref()
+        .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
         .expect("RV forwarding should publish a pricing snapshot");
     let disabled_diagnostic = snapshot
         .source_diagnostics
@@ -232,8 +229,7 @@ fn surfaced_realized_volatility_refresh_blocks_when_source_goes_stale() {
     assert_eq!(strategy.current_realized_vol_at(4_501), None);
     let snapshot = strategy
         .pricing
-        .latest_realized_vol_snapshot
-        .as_ref()
+        .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
         .expect("RV refresh should publish a pricing snapshot");
     assert_eq!(snapshot.as_of_ms, 4_501);
     assert_eq!(
@@ -282,8 +278,7 @@ fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument_for
 
     let snapshot = strategy
         .pricing
-        .latest_realized_vol_snapshot
-        .as_ref()
+        .latest_realized_vol_snapshot_for_surface(TEST_SURFACE_ID)
         .expect("RV forwarding should publish a pricing snapshot");
     let quote_diagnostic = snapshot
         .source_diagnostics
@@ -964,7 +959,9 @@ fn strategy_input_evidence_records_realized_volatility_unknown_source_rejections
     );
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
-    strategy.pricing.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
+    strategy
+        .pricing
+        .set_realized_volatility_surface_id(TEST_SURFACE_ID.to_string());
     let mut unknown_source_rejections = std::collections::BTreeMap::new();
     unknown_source_rejections.insert("<UNKNOWN_SOURCE_ID>".to_string(), 2);
     strategy.pricing.observe_realized_vol_snapshot(
@@ -1020,7 +1017,9 @@ fn strategy_input_evidence_accepts_ready_surfaced_zero_realized_volatility() {
     );
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
-    strategy.pricing.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
+    strategy
+        .pricing
+        .set_realized_volatility_surface_id(TEST_SURFACE_ID.to_string());
     strategy.pricing.observe_realized_vol_snapshot(
         crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
             surface_id: TEST_SURFACE_ID.to_string(),
@@ -1074,7 +1073,9 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
     );
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
-    strategy.pricing.realized_volatility_surface_id = TEST_SURFACE_ID.to_string();
+    strategy
+        .pricing
+        .set_realized_volatility_surface_id(TEST_SURFACE_ID.to_string());
     strategy.pricing.observe_realized_vol_snapshot(
         crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
             surface_id: TEST_SURFACE_ID.to_string(),

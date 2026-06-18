@@ -225,7 +225,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
         run_id: "backtesting-vertical-slice-mechanical-order-proof".to_string(),
         target_bolt_v2_branch: "main".to_string(),
         target_bolt_v2_ref: "refs/heads/main".to_string(),
-        resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+        resolved_nt_version: "6be5a5094716790a8ca2875445fde4fa2586107e".to_string(),
         market_structure_fixture: MarketStructureFixture::PerpsSpot,
         venue_binding_key: "bybit-spot-tick-trades".to_string(),
         run_purpose: RunPurpose::Normal,
@@ -245,8 +245,8 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             ]),
             typed_config_uri: None,
             typed_config_hash: None,
-            promotion_package_uri: None,
-            promotion_package_hash: None,
+            experiment_result_uri: None,
+            experiment_result_hash: None,
         },
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
@@ -311,6 +311,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             rust_storage_options: BTreeMap::new(),
             ssm_parameters: None,
         },
+        domain_metrics: Vec::new(),
         start_time: None,
         end_time: None,
     }
@@ -349,6 +350,7 @@ fn mechanical_probe_produces_orders_and_positions_through_result_contract() {
                 .to_string(),
             canonical_table_uri: canonical_path.to_string_lossy().to_string(),
             nt_catalog_uri: catalog_path.clone(),
+            nt_catalog_manifest_uri: None,
             catalog_metadata_uri:
                 "s3://bolt-parquet/nt-research-analytics/backtests/probe/catalog-metadata.json"
                     .to_string(),

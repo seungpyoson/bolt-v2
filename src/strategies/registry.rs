@@ -157,31 +157,37 @@ impl StrategyBuildContext {
         self.execution_venue
     }
 
-    pub fn realized_volatility_quote_subscription_requests(
+    /// Subscription requests scoped to a single configured surface. A strategy must use this
+    /// (with its configured `realized_volatility_surface_id`) so it only subscribes the RV
+    /// feeds it prices against, even when the root config defines many surfaces.
+    pub fn realized_volatility_quote_subscription_requests_for_surface(
         &self,
+        surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
         self.realized_volatility_runtime
             .lock()
             .expect("realized-volatility runtime lock should not be poisoned")
-            .quote_subscription_requests()
+            .quote_subscription_requests_for_surface(surface_id)
     }
 
-    pub fn realized_volatility_trade_subscription_requests(
+    pub fn realized_volatility_trade_subscription_requests_for_surface(
         &self,
+        surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
         self.realized_volatility_runtime
             .lock()
             .expect("realized-volatility runtime lock should not be poisoned")
-            .trade_subscription_requests()
+            .trade_subscription_requests_for_surface(surface_id)
     }
 
-    pub fn realized_volatility_index_subscription_requests(
+    pub fn realized_volatility_index_subscription_requests_for_surface(
         &self,
+        surface_id: &str,
     ) -> Vec<(InstrumentId, Option<ClientId>)> {
         self.realized_volatility_runtime
             .lock()
             .expect("realized-volatility runtime lock should not be poisoned")
-            .index_subscription_requests()
+            .index_subscription_requests_for_surface(surface_id)
     }
 
     pub fn observe_realized_volatility_quote(&self, quote: &QuoteTick) -> Vec<RealizedVolSnapshot> {
@@ -393,6 +399,13 @@ mod tests {
         fn record_admission_decision(
             &self,
             _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &crate::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
         ) -> Result<()> {
             Ok(())
         }

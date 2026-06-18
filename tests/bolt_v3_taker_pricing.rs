@@ -142,7 +142,10 @@ fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmu
         result.realized_vol_surface_id.as_deref(),
         Some("<surface_id>")
     );
-    assert_eq!(result.realized_vol_source_venue, None);
+    assert_eq!(
+        result.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID_A>")
+    );
     assert_eq!(result.realized_vol_source_ts_ms, Some(1_000));
 }
 
@@ -268,7 +271,10 @@ fn taker_pricing_returns_current_rv_source_theta_and_fair_probabilities() {
         result.realized_vol_surface_id.as_deref(),
         Some("<surface_id>")
     );
-    assert_eq!(result.realized_vol_source_venue, None);
+    assert_eq!(
+        result.realized_vol_source_venue.as_deref(),
+        Some("<SOURCE_ID_A>")
+    );
     assert_eq!(result.realized_vol_source_ts_ms, Some(4_000));
     assert_close(result.theta_scaled_min_edge_bps, 10.0);
     assert!(result.fair_probability_up.is_finite());
@@ -304,6 +310,67 @@ fn taker_pricing_reports_current_readiness_blockers_without_strategy_order_state
             TakerPricingBlockReason::RealizedVolNotReady,
             TakerPricingBlockReason::ThetaScalerUnavailable,
         ]
+    );
+}
+
+#[test]
+fn taker_pricing_reports_stale_signal_spot_with_other_fair_value_blockers() {
+    let config = pricing_config();
+    let mut pricing = TakerPricingState::from_config(&config);
+
+    observe_pair(&mut pricing, &config, 1_000, 3_100.0);
+    pricing.observe_reference_current_price(&FastSpotObservation {
+        venue: "reference".to_string(),
+        price: 3_101.0,
+        observed_ts_ms: 3_000,
+    });
+
+    let blocked = pricing
+        .entry_pricing_inputs_at(
+            &config,
+            TakerPricingRequest {
+                now_ms: 3_001,
+                strike_price: None,
+                seconds_to_market_end: Some(300),
+            },
+        )
+        .expect_err("stale signal spot must remain visible with shared FV blockers");
+
+    assert_eq!(
+        blocked,
+        vec![
+            TakerPricingBlockReason::SpotPriceMissing,
+            TakerPricingBlockReason::StrikePriceMissing,
+            TakerPricingBlockReason::RealizedVolNotReady,
+        ]
+    );
+}
+
+#[test]
+fn shared_fair_value_pricing_stays_available_when_taker_theta_is_unavailable() {
+    let mut config = pricing_config();
+    config.cadence_seconds = 0;
+    let mut pricing = TakerPricingState::from_config(&config);
+    observe_pair(&mut pricing, &config, 1_000, 100.0);
+    seed_ready_realized_vol(&mut pricing, Some("bybit".to_string()), 0.50, 1_000);
+    let request = TakerPricingRequest {
+        now_ms: 1_000,
+        strike_price: Some(100.0),
+        seconds_to_market_end: Some(300),
+    };
+
+    let fair_value = pricing
+        .fair_value_pricing_at(&config, request)
+        .expect("shared fair-value inputs should not depend on taker theta");
+
+    assert_eq!(fair_value.spot_price, 100.0);
+    assert_eq!(fair_value.strike_price, 100.0);
+    assert_eq!(fair_value.seconds_to_market_end, 300);
+    assert_eq!(fair_value.realized_vol, 0.50);
+    assert!(fair_value.fair_probability_up.is_finite());
+    assert_eq!(
+        pricing.entry_pricing_inputs_at(&config, request),
+        Err(vec![TakerPricingBlockReason::ThetaScalerUnavailable])
     );
 }
 
@@ -349,7 +416,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_000), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_000),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
 
     seed_ready_realized_vol(&mut pricing, Some("older".to_string()), 3.0, 999);
@@ -357,7 +424,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_000), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_000),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
 
     seed_ready_realized_vol(&mut pricing, None, 3.0, 1_001);
@@ -373,7 +440,7 @@ fn taker_pricing_accepts_source_owned_realized_vol_seed_without_strategy_estimat
     assert_eq!(pricing.current_realized_vol_at(1_002), Some(0.0));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_002),
-        (None, Some(1_002))
+        (Some("zero".to_string()), Some(1_002))
     );
 }
 
@@ -389,6 +456,129 @@ fn taker_pricing_rejects_invalid_source_owned_realized_vol_seed() {
     assert_eq!(pricing.current_realized_vol_at(1_002), Some(2.5));
     assert_eq!(
         pricing.current_realized_vol_source_at(1_002),
-        (None, Some(1_000))
+        (Some("reference".to_string()), Some(1_000))
     );
+}
+
+fn realized_vol_snapshot_for_surface(
+    surface_id: &str,
+    realized_vol: f64,
+    ready_ts_ms: u64,
+) -> RealizedVolSnapshot {
+    RealizedVolSnapshot {
+        surface_id: surface_id.to_string(),
+        as_of_ms: ready_ts_ms,
+        annualized_realized_vol_decimal: Some(realized_vol),
+        measured_annualized_realized_vol_decimal: Some(realized_vol),
+        noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
+        continuous_annualized_realized_vol_decimal: Some(realized_vol),
+        jump_annualized_realized_vol_decimal: Some(0.0),
+        forecast_annualized_realized_vol_decimal: None,
+        pricing_component: RealizedVolPricingComponent::Measured,
+        ready: true,
+        sources_used: Vec::new(),
+        source_diagnostics: Vec::new(),
+        horizon_estimates: Vec::new(),
+        unknown_source_rejections: BTreeMap::new(),
+        blocked_reasons: Vec::new(),
+        aggregate_method: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+        seconds_per_annum: 31_536_000.0,
+        config_fingerprint: String::new(),
+    }
+}
+
+/// Guard against a single unkeyed RV snapshot slot: a newer-timestamp snapshot from a
+/// *foreign* surface must NOT evict the configured surface's snapshot. The shared runtime
+/// routes ticks by instrument, and instrument overlap can publish foreign surfaces, so
+/// per-surface keying is required (subscription scoping alone cannot guarantee isolation).
+#[test]
+fn foreign_surface_snapshot_does_not_clobber_configured_surface_readiness() {
+    let config = pricing_config(); // configured surface "<surface_id>"
+    let mut pricing = TakerPricingState::from_config(&config);
+
+    // Configured surface publishes a ready snapshot.
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<surface_id>",
+        1.5,
+        100,
+    ));
+    // A foreign surface publishes a NEWER snapshot (would have clobbered a single unkeyed
+    // slot).
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<foreign_surface>",
+        9.9,
+        200,
+    ));
+
+    // Configured surface readiness is intact; the foreign snapshot never displaced it.
+    // (A `pub(crate)` field probe isn't visible from this external integration test, so the
+    // behavior is asserted via the public read API — which is the actual contract.)
+    assert_eq!(pricing.current_realized_vol_at(201), Some(1.5));
+    assert_eq!(
+        pricing.current_realized_vol_source_at(201),
+        (None, Some(100))
+    );
+}
+
+/// Per-key monotonic guard: an equal-`as_of_ms` snapshot for the SAME surface replaces
+/// (last-writer-wins, matching the prior `<=` semantics); an older one is rejected.
+#[test]
+fn equal_timestamp_snapshot_replaces_and_older_snapshot_is_rejected_per_surface() {
+    let config = pricing_config();
+    let mut pricing = TakerPricingState::from_config(&config);
+
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<surface_id>",
+        1.5,
+        100,
+    ));
+    // Equal timestamp: replaces (refresh vs event at the same `as_of_ms`).
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<surface_id>",
+        2.0,
+        100,
+    ));
+    assert_eq!(pricing.current_realized_vol_at(100), Some(2.0));
+
+    // Older timestamp for the same surface: rejected, newer value preserved.
+    pricing.observe_realized_vol_snapshot(realized_vol_snapshot_for_surface(
+        "<surface_id>",
+        9.9,
+        50,
+    ));
+    assert_eq!(pricing.current_realized_vol_at(100), Some(2.0));
+}
+
+/// Multi-instance readiness non-interference: two pricing states configured for
+/// different surfaces, both fed by the same shared runtime (so both observe every published
+/// snapshot). Each must read only its own configured surface; one surface's snapshot must not
+/// affect the other instance's readiness, and a newer foreign snapshot must not affect the
+/// configured surface's value.
+#[test]
+fn two_pricing_instances_with_distinct_configured_surfaces_do_not_interfere() {
+    let mut config_a = pricing_config();
+    config_a.realized_volatility_surface_id = "<surface_a>".to_string();
+    let mut config_b = pricing_config();
+    config_b.realized_volatility_surface_id = "<surface_b>".to_string();
+    let mut pricing_a = TakerPricingState::from_config(&config_a);
+    let mut pricing_b = TakerPricingState::from_config(&config_b);
+
+    // Shared runtime publishes surface A's snapshot to BOTH instances.
+    let snap_a = realized_vol_snapshot_for_surface("<surface_a>", 1.5, 100);
+    pricing_a.observe_realized_vol_snapshot(snap_a.clone());
+    pricing_b.observe_realized_vol_snapshot(snap_a);
+
+    // Instance A reads its configured surface; instance B (configured for surface_b) is not
+    // ready yet, and surface A's snapshot does NOT make B ready.
+    assert_eq!(pricing_a.current_realized_vol_at(101), Some(1.5));
+    assert_eq!(pricing_b.current_realized_vol_at(101), None);
+
+    // Shared runtime publishes surface B's snapshot (newer ts) to BOTH. Must not evict A.
+    let snap_b = realized_vol_snapshot_for_surface("<surface_b>", 2.5, 200);
+    pricing_a.observe_realized_vol_snapshot(snap_b.clone());
+    pricing_b.observe_realized_vol_snapshot(snap_b);
+
+    // Each instance reads only its own configured surface; no cross-surface interference.
+    assert_eq!(pricing_a.current_realized_vol_at(201), Some(1.5));
+    assert_eq!(pricing_b.current_realized_vol_at(201), Some(2.5));
 }

@@ -39,7 +39,8 @@ use crate::{
     bolt_v3_config::ClientBlock,
     bolt_v3_config::resolve_root_relative_path,
     bolt_v3_market_families::{
-        MarketIdentityPlan, hyperliquid_instrument, market_identity_plan_from_config, updown,
+        MarketIdentityPlan, hyperliquid_instrument, market_identity_plan_from_config,
+        outcome_group, updown,
     },
     bolt_v3_operator_artifacts::{WrittenOperatorArtifact, is_lowercase_sha256, read_file_bounded},
     bolt_v3_providers::hyperliquid_artifacts::{
@@ -59,8 +60,8 @@ use crate::{
         ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderLiveSubmitArmingPreflight, ProviderLiveSubmitOrderLimits,
         ProviderProductSubmitProofArtifactRequest, ProviderSecretRequirement,
-        ProviderSecretResolveContext, ProviderSsmPathReference, ResolvedClientSecrets,
-        SsmSecretResolver,
+        ProviderSecretResolveContext, ProviderSharedSignerOwnerContext, ProviderSsmPathReference,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     strategies::registry::FeeProvider,
@@ -69,7 +70,8 @@ use crate::{
 use super::hyperliquid_artifacts::HyperliquidLiveSubmitApprovalConsumption;
 
 pub const KEY: &str = "HYPERLIQUID";
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY, hyperliquid_instrument::KEY];
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] =
+    &[updown::KEY, hyperliquid_instrument::KEY, outcome_group::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
     consumer: "Hyperliquid execution client",
@@ -116,6 +118,17 @@ pub struct HyperliquidDataConfig {
     pub transport_backend: TransportBackend,
 }
 
+pub fn metadata_refresh_interval_mins(client: &ClientBlock) -> Result<Option<u64>, String> {
+    let Some(data) = client.data.as_ref() else {
+        return Ok(None);
+    };
+    let data = data
+        .clone()
+        .try_into::<HyperliquidDataConfig>()
+        .map_err(|error| error.to_string())?;
+    Ok(Some(data.update_instruments_interval_mins))
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidExecutionConfig {
@@ -142,6 +155,7 @@ pub struct HyperliquidExecutionConfig {
     pub retry_delay_max_ms: u64,
     pub normalize_prices: bool,
     pub market_order_slippage_bps: u32,
+    pub include_builder_attribution: bool,
     pub transport_backend: TransportBackend,
     pub ws_post_timeout_secs: u64,
     pub outcome_settlement_poll_secs: u64,
@@ -815,6 +829,70 @@ pub fn configured_secret_paths(
     Ok(paths)
 }
 
+pub fn allow_shared_signer_owner(context: ProviderSharedSignerOwnerContext<'_>) -> bool {
+    if context.existing_client_keys.len() != 1 {
+        return false;
+    }
+    let Some(existing_paths) = configured_signer_ssm_paths(
+        context.region,
+        context.existing_client_key,
+        context.existing_client,
+    ) else {
+        return false;
+    };
+    let Some(paths) =
+        configured_signer_ssm_paths(context.region, context.client_key, context.client)
+    else {
+        return false;
+    };
+    if existing_paths != paths {
+        return false;
+    }
+    let Some(existing_surface) = single_product_surface(context.existing_client) else {
+        return false;
+    };
+    let Some(surface) = single_product_surface(context.client) else {
+        return false;
+    };
+    matches!(
+        (existing_surface, surface),
+        (
+            HyperliquidProductSurface::StandardPerps,
+            HyperliquidProductSurface::Spot
+        ) | (
+            HyperliquidProductSurface::Spot,
+            HyperliquidProductSurface::StandardPerps
+        )
+    )
+}
+
+fn configured_signer_ssm_paths(
+    region: &str,
+    client_key: &str,
+    client: &ClientBlock,
+) -> Option<(String, String)> {
+    let context = ProviderSecretResolveContext {
+        client_key,
+        region,
+        client,
+    };
+    parse_secrets_config(&context).ok().map(|secrets| {
+        (
+            secrets.private_key_ssm_path,
+            secrets.account_address_ssm_path,
+        )
+    })
+}
+
+fn single_product_surface(client: &ClientBlock) -> Option<HyperliquidProductSurface> {
+    let execution = client.execution.clone()?;
+    let cfg: HyperliquidExecutionConfig = execution.try_into().ok()?;
+    let [surface] = cfg.product_surfaces.as_slice() else {
+        return None;
+    };
+    Some(*surface)
+}
+
 pub fn load_live_submit_approval(
     context: ProviderLiveSubmitApprovalContext<'_>,
 ) -> Result<Option<ProviderLiveSubmitApproval>, anyhow::Error> {
@@ -1261,7 +1339,7 @@ fn hyperliquid_fee_http_client(
             .vault_address
             .as_ref()
             .map(|vault_address| vault_address.as_str().to_owned()),
-        Some(secrets.account_address.as_str().to_owned()),
+        Some(secrets.account_address.as_str()),
         nt_environment(cfg.environment),
         cfg.http_timeout_secs,
         cfg.proxy_url.clone(),
@@ -1422,6 +1500,7 @@ fn map_execution(
             retry_delay_max_ms: cfg.retry_delay_max_ms,
             normalize_prices: cfg.normalize_prices,
             market_order_slippage_bps: cfg.market_order_slippage_bps,
+            include_builder_attribution: cfg.include_builder_attribution,
             transport_backend: cfg.transport_backend,
             ws_post_timeout_secs: cfg.ws_post_timeout_secs,
             outcome_settlement_poll_secs: cfg.outcome_settlement_poll_secs,
@@ -1468,6 +1547,24 @@ fn validate_target_surfaces(
                     updown::KEY,
                     target.execution_client_id,
                     updown::KEY,
+                    product_surface_name(HyperliquidProductSurface::Hip4Outcomes),
+                    product_surface_name(*configured_surface),
+                ),
+            });
+        }
+    }
+    for target in
+        outcome_group::target_plans(plan).filter(|target| target.execution_client_id == client_key)
+    {
+        if *configured_surface != HyperliquidProductSurface::Hip4Outcomes {
+            return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "strategy.target.rotating_market_family",
+                message: format!(
+                    "configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`",
+                    target.configured_target_id,
+                    outcome_group::KEY,
+                    target.execution_client_id,
                     product_surface_name(HyperliquidProductSurface::Hip4Outcomes),
                     product_surface_name(*configured_surface),
                 ),

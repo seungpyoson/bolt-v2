@@ -401,7 +401,9 @@ mod tests {
         common::enums::{
             BinanceEnvironment as NtBinanceEnvironment, BinanceProductType as NtBinanceProductType,
         },
-        config::BinanceDataClientConfig,
+        config::{
+            BinanceDataClientConfig, BinanceSpotMarketDataMode as NtBinanceSpotMarketDataMode,
+        },
     };
     use nautilus_model::identifiers::{AccountId, TraderId};
     use nautilus_polymarket::{
@@ -410,10 +412,14 @@ mod tests {
     };
 
     use crate::bolt_v3_config::load_bolt_v3_config;
-    use crate::bolt_v3_market_families::updown::{self, UpdownTargetPlan};
+    use crate::bolt_v3_market_families::{
+        static_binary_event::{self, StaticBinaryEventTargetPlan},
+        updown::{self, UpdownTargetPlan},
+    };
     use crate::bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderBinding, ProviderResolvedSecrets,
-        ProviderSecretResolveContext, ResolvedClientSecrets, SsmSecretResolver,
+        DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS, ProviderAdapterMapContext, ProviderBinding,
+        ProviderResolvedSecrets, ProviderSecretResolveContext, ResolvedClientSecrets,
+        SsmSecretResolver,
         binance::{self, ResolvedBoltV3BinanceSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
         polyresearch::ResolvedBoltV3PolyResearchSecrets,
@@ -491,12 +497,15 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[updown::KEY],
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: &[],
         secret_field_names: &[],
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: map_fake_provider_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -509,12 +518,15 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: &[],
         secret_field_names: &[],
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: map_fake_provider_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -527,12 +539,15 @@ mod tests {
         key: FAKE_UPDOWN_PROVIDER_KEY,
         validate_client: validate_fake_provider_client,
         supported_market_families: &[],
+        market_exit_order_constraints: DEFAULT_MARKET_EXIT_ORDER_CONSTRAINTS,
+        metadata_refresh_interval_mins: None,
         required_secret_blocks: &[],
         secret_field_names: &[],
         credential_log_modules: &[],
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
+        allow_shared_signer_owner: None,
         map_adapters: map_fake_no_target_provider_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -677,6 +692,52 @@ mod tests {
             .expect("fake provider client should map");
         assert!(fake.data.is_none());
         assert!(fake.execution.is_none());
+    }
+
+    #[test]
+    fn polymarket_binding_accepts_static_binary_event_target() {
+        let loaded = fixture_loaded_config();
+        let resolved = fixture_resolved_secrets();
+        let mut plan = MarketIdentityPlan::empty();
+        plan.push_target(StaticBinaryEventTargetPlan {
+            strategy_instance_id: "sample-static-event".to_string(),
+            configured_target_id: "sample-static-event-target".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            event_key: "sample_event_2026".to_string(),
+            market_slug: "will-sample-event-resolve-yes".to_string(),
+            condition_id: Some("condition-sample-event".to_string()),
+            yes_outcome: "Yes".to_string(),
+            no_outcome: "No".to_string(),
+        });
+
+        let configs = map_bolt_v3_adapters_with_market_identity(
+            &loaded,
+            &resolved,
+            &plan,
+            Arc::new(|| 1_746_000_000),
+        )
+        .expect("polymarket provider binding should support static_binary_event targets");
+
+        let data = configs
+            .clients
+            .get("polymarket_main")
+            .expect("polymarket_main must map")
+            .data
+            .as_ref()
+            .expect("polymarket data config must map")
+            .config_as::<PolymarketDataClientConfig>()
+            .expect("polymarket data config should downcast to NT config");
+        let slugs = data
+            .filters
+            .iter()
+            .flat_map(|filter| filter.market_slugs().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(slugs, vec!["will-sample-event-resolve-yes".to_string()]);
+        assert!(
+            polymarket::SUPPORTED_MARKET_FAMILIES.contains(&static_binary_event::KEY),
+            "provider allowlist must keep the adapter mapping path reachable"
+        );
     }
 
     #[test]
@@ -825,8 +886,17 @@ mod tests {
         assert_eq!(data.http_timeout_secs, 60);
         assert_eq!(data.ws_timeout_secs, 30);
         assert_eq!(data.ws_max_subscriptions, 200);
-        assert_eq!(data.update_instruments_interval_mins, 60);
+        assert_eq!(data.update_instruments_interval_mins, Some(60));
         assert!(!data.subscribe_new_markets);
+        assert_eq!(
+            data.base_url_rtds.as_deref(),
+            Some("wss://ws-live-data.polymarket.com")
+        );
+        assert_eq!(data.new_market_fetch_max_concurrency, 8);
+        assert!(!data.resolve_poll_enabled);
+        assert_eq!(data.resolve_poll_interval_secs, 30);
+        assert_eq!(data.resolve_poll_grace_secs, 10);
+        assert_eq!(data.resolve_poll_max_wait_secs, 1800);
         assert_eq!(data.filters.len(), 1);
         assert_eq!(
             data.filters[0]
@@ -894,8 +964,9 @@ mod tests {
             .config_as::<BinanceDataClientConfig>()
             .expect("binance data config should downcast to NT config");
 
-        assert_eq!(data.product_types, vec![NtBinanceProductType::Spot]);
+        assert_eq!(data.product_type, NtBinanceProductType::Spot);
         assert_eq!(data.environment, NtBinanceEnvironment::Live);
+        assert_eq!(data.spot_market_data_mode, NtBinanceSpotMarketDataMode::Sbe);
         // base_url_http and base_url_ws are now required bolt-v3
         // fields; the mapper must pass the configured values through to
         // NT as `Some(...)` rather than letting NT fall back to its

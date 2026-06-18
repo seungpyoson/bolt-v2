@@ -54,6 +54,23 @@ fn kill_switch_config_is_optional_and_parses_when_present() {
 }
 
 #[test]
+fn enabled_kill_switch_rejects_active_flatten_until_shared_execution_path_exists() {
+    let block = valid_kill_switch_block().replace(
+        "flatten_open_positions_on_breach = false",
+        "flatten_open_positions_on_breach = true",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(&block)).unwrap();
+
+    let errors = validate_root_only(&root);
+
+    assert!(
+        errors.iter().any(|error| error
+            .contains("risk.kill_switch.flatten_open_positions_on_breach=true is not supported")),
+        "expected active-flatten validation error, got: {errors:?}"
+    );
+}
+
+#[test]
 fn enabled_kill_switch_rejects_invalid_runtime_settings() {
     let root: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(
         r#"

@@ -1664,6 +1664,7 @@ dependencies = [
  "nautilus-execution",
  "nautilus-model",
  "nautilus-persistence",
+ "nautilus-persistence-macros",
  "nautilus-polymarket",
  "nautilus-serialization",
  "nautilus-trading",

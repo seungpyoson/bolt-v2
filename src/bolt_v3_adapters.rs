@@ -505,7 +505,6 @@ mod tests {
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
-        allow_shared_signer_owner: None,
         map_adapters: map_fake_provider_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -526,7 +525,6 @@ mod tests {
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
-        allow_shared_signer_owner: None,
         map_adapters: map_fake_provider_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -547,7 +545,6 @@ mod tests {
         forbidden_env_vars: &[],
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
-        allow_shared_signer_owner: None,
         map_adapters: map_fake_no_target_provider_adapters,
         load_live_submit_approval: None,
         preflight_live_submit_arming: None,
@@ -886,7 +883,7 @@ mod tests {
         assert_eq!(data.http_timeout_secs, 60);
         assert_eq!(data.ws_timeout_secs, 30);
         assert_eq!(data.ws_max_subscriptions, 200);
-        assert_eq!(data.update_instruments_interval_mins, Some(60));
+        assert_eq!(data.update_instruments_interval_mins, Some(1));
         assert!(!data.subscribe_new_markets);
         assert_eq!(
             data.base_url_rtds.as_deref(),

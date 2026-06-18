@@ -1007,6 +1007,8 @@ pub struct BinaryOracleEdgeTaker {
     resolution_strike_subscribe_events: Vec<ResolutionStrikeSubscribeEvent>,
     #[cfg(test)]
     reference_price_subscribe_events: Vec<ReferencePriceSubscribeEvent>,
+    #[cfg(test)]
+    live_input_subscription_retry_events: Vec<LiveInputSubscriptionRetryEvent>,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -1059,6 +1061,8 @@ impl BinaryOracleEdgeTaker {
             resolution_strike_subscribe_events: Vec::new(),
             #[cfg(test)]
             reference_price_subscribe_events: Vec::new(),
+            #[cfg(test)]
+            live_input_subscription_retry_events: Vec::new(),
         }
     }
 
@@ -1205,6 +1209,47 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn retry_missing_live_input_subscriptions_at(&mut self, now_ms: u64) {
+        self.refresh_realized_volatility_snapshot_at(now_ms);
+        let signal_missing = self.pricing.spot_price().is_none();
+        let reference_missing =
+            self.config.reference_current_price.is_some() && self.reference_price_quotes.is_empty();
+        let realized_volatility_missing = self
+            .pricing
+            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
+            .is_none();
+
+        if !(signal_missing || reference_missing || realized_volatility_missing) {
+            return;
+        }
+
+        log::info!(
+            "binary_oracle_edge_taker retrying missing live input subscriptions: strategy_id={} signal_missing={} reference_missing={} realized_volatility_missing={}",
+            self.config.strategy_id,
+            signal_missing,
+            reference_missing,
+            realized_volatility_missing,
+        );
+        self.record_live_input_subscription_retry_event(LiveInputSubscriptionRetryEvent {
+            signal_missing,
+            reference_missing,
+            realized_volatility_missing,
+        });
+
+        if reference_missing {
+            self.unsubscribe_reference_prices();
+            self.subscribe_reference_prices();
+        }
+        if signal_missing {
+            self.unsubscribe_signal_quotes();
+            self.subscribe_signal_quotes();
+        }
+        if realized_volatility_missing {
+            self.unsubscribe_realized_volatility_sources();
+            self.subscribe_realized_volatility_sources();
+        }
+    }
+
     fn refresh_fee_readiness(&mut self) {
         refresh_fee_readiness_for_active(&mut self.active, self.context.fee_provider());
     }
@@ -1323,6 +1368,10 @@ impl BinaryOracleEdgeTaker {
             .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
     }
 
+    fn signal_client_id(&self) -> Option<ClientId> {
+        self.config.signal_venue.as_deref().map(ClientId::from)
+    }
+
     fn resolution_instrument_id(&self) -> Option<InstrumentId> {
         self.config
             .resolution_instrument_id
@@ -1354,10 +1403,11 @@ impl BinaryOracleEdgeTaker {
 
     fn subscribe_signal_quotes(&mut self) {
         if let Some(instrument_id) = self.signal_instrument_id() {
+            let client_id = self.signal_client_id();
             #[cfg(not(test))]
-            self.subscribe_quotes(instrument_id, None, None);
+            self.subscribe_quotes(instrument_id, client_id, None);
             #[cfg(test)]
-            let _ = instrument_id;
+            let _ = (instrument_id, client_id);
         }
     }
 
@@ -1409,10 +1459,11 @@ impl BinaryOracleEdgeTaker {
 
     fn unsubscribe_signal_quotes(&mut self) {
         if let Some(instrument_id) = self.signal_instrument_id() {
+            let client_id = self.signal_client_id();
             #[cfg(not(test))]
-            self.unsubscribe_quotes(instrument_id, None, None);
+            self.unsubscribe_quotes(instrument_id, client_id, None);
             #[cfg(test)]
-            let _ = instrument_id;
+            let _ = (instrument_id, client_id);
         }
     }
 
@@ -5461,7 +5512,9 @@ impl DataActor for BinaryOracleEdgeTaker {
 
     fn on_time_event(&mut self, event: &TimeEvent) -> Result<()> {
         if event.name.as_str() == self.selection_retry_timer_name() {
-            self.refresh_selection_from_cache(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
+            let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+            self.refresh_selection_from_cache(now_ms);
+            self.retry_missing_live_input_subscriptions_at(now_ms);
         }
         Ok(())
     }
@@ -5968,6 +6021,25 @@ impl BinaryOracleEdgeTaker {
     fn record_book_subscription_event(&mut self, event: BookSubscriptionEvent) {
         #[cfg(test)]
         self.book_subscription_events.push(event);
+        #[cfg(not(test))]
+        let _ = event;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiveInputSubscriptionRetryEvent {
+    signal_missing: bool,
+    reference_missing: bool,
+    realized_volatility_missing: bool,
+}
+
+impl BinaryOracleEdgeTaker {
+    fn record_live_input_subscription_retry_event(
+        &mut self,
+        event: LiveInputSubscriptionRetryEvent,
+    ) {
+        #[cfg(test)]
+        self.live_input_subscription_retry_events.push(event);
         #[cfg(not(test))]
         let _ = event;
     }

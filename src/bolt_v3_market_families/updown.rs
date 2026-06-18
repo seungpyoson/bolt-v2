@@ -247,10 +247,10 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
     }
 
     errors.extend(validate_target_cadence(context, block.cadence_secs));
-    if block.cadence_secs > 0 {
-        if let Err(error) = cadence_slug_token_for_secs(block.cadence_secs) {
-            errors.push(format!("{context}: {error}"));
-        }
+    if block.cadence_secs > 0
+        && let Err(error) = cadence_slug_token_for_secs(block.cadence_secs)
+    {
+        errors.push(format!("{context}: {error}"));
     }
 
     if block.retry_interval_secs == 0 {

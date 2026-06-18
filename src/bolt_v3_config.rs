@@ -1051,8 +1051,8 @@ pub fn apply_backtest_config_override(
                 )])
             })?;
         let before = ConfigSignalDataSnapshot::from_data_instrument(signal);
-        signal.data_client_id = override_spec.signal_data_client_id.clone();
-        signal.instrument_id = override_spec.signal_instrument_id.clone();
+        signal.data_client_id = override_spec.signal_data_client_id;
+        signal.instrument_id = override_spec.signal_instrument_id;
         let after = ConfigSignalDataSnapshot::from_data_instrument(signal);
         (before, after)
     };

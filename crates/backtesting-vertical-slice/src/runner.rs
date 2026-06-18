@@ -19,6 +19,7 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use bolt_v2::{
+    ReferencePriceUpdate, ReferenceQuoteProvenance,
     bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
     bolt_v3_config::{
         BacktestConfigOverrideReport, LoadedStrategy, apply_backtest_config_override,
@@ -33,7 +34,6 @@ use bolt_v2::{
     },
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
-    bolt_v3_reference_price::{ReferencePriceUpdate, ReferenceQuoteProvenance},
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::{
         production_strategy_registry,
@@ -809,16 +809,16 @@ fn reconstructed_reference_current_price_data(
         .iter()
         .enumerate()
     {
-        let price = parse_reference_price_float(index, "price", &row.price)?;
+        let price = parse_reconstructed_price_float(index, "price", &row.price)?;
         let bid = row
             .bid
             .as_deref()
-            .map(|value| parse_reference_price_float(index, "bid", value))
+            .map(|value| parse_reconstructed_price_float(index, "bid", value))
             .transpose()?;
         let ask = row
             .ask
             .as_deref()
-            .map(|value| parse_reference_price_float(index, "ask", value))
+            .map(|value| parse_reconstructed_price_float(index, "ask", value))
             .transpose()?;
         let provenance = ReferenceQuoteProvenance::try_from_fields(row.provenance.clone())
             .map_err(|error| anyhow::anyhow!("{error}"))
@@ -849,7 +849,7 @@ fn reconstructed_reference_current_price_data(
     Ok(by_client_id)
 }
 
-fn parse_reference_price_float(index: usize, field: &str, value: &str) -> Result<f64> {
+fn parse_reconstructed_price_float(index: usize, field: &str, value: &str) -> Result<f64> {
     value.trim().parse::<f64>().with_context(|| {
         format!("parse reconstructed_reference_current_price[{index}].{field} {value:?}")
     })

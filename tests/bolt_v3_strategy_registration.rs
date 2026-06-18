@@ -281,6 +281,7 @@ fn realized_volatility_validation_accepts_nt_native_spot_symbols() {
             canonical_quote_asset: "USDT".to_string(),
         });
         insert_realized_volatility_surface(&mut loaded.root, surface);
+        add_root_chainlink_feed_binding(&mut loaded.root, "BTC-USD.CHAINLINK");
         loaded.strategies[0]
             .config
             .target

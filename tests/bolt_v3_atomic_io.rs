@@ -96,6 +96,48 @@ fn runtime_config_atomic_write_is_service_readable() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn runtime_config_mode_is_umask_independent() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+
+    // `libc::umask` mutates process-global state; serialize the umask-sensitive tests and
+    // always restore the previous value so siblings observe the default umask.
+    static UMASK_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = UMASK_LOCK
+        .lock()
+        .expect("umask lock should not be poisoned");
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("live.toml");
+
+    // A restrictive deploy umask (the 077 a hardened host commonly sets) must not downgrade
+    // the service-readable runtime config back to 0600 — that is the #768 stale-deploy class.
+    let previous = unsafe { libc::umask(0o077) };
+    let result =
+        write_atomic_file_with_mode(&path, b"schema_version = 1\n", RUNTIME_CONFIG_FILE_MODE);
+    unsafe {
+        libc::umask(previous);
+    }
+    result.expect("atomic write should succeed under a restrictive umask");
+
+    let mode = fs::metadata(&path)
+        .expect("metadata should read")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, RUNTIME_CONFIG_FILE_MODE,
+        "runtime config mode must be exact regardless of the process umask"
+    );
+    assert_eq!(
+        mode & 0o044,
+        0o044,
+        "runtime config must stay group- and world-readable even under umask 077"
+    );
+}
+
 #[test]
 fn atomic_write_cleans_temp_file_when_rename_fails() {
     let temp = tempfile::tempdir().expect("tempdir should create");

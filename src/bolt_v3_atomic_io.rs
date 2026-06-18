@@ -93,6 +93,11 @@ fn write_synced_temp_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), At
         path: path.to_path_buf(),
         source,
     })?;
+    // `OpenOptionsExt::mode` only requests the create mode; the kernel masks it with the
+    // process umask, so a restrictive deploy umask (e.g. 077) would silently downgrade a
+    // 0644 runtime config to 0600 and lock the `bolt` service user out — the exact #768
+    // failure class. Set the final mode explicitly after create so it is umask-independent.
+    enforce_exact_file_mode(&file, path, mode)?;
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|source| AtomicIoError {
@@ -104,11 +109,32 @@ fn write_synced_temp_file(path: &Path, bytes: &[u8], mode: u32) -> Result<(), At
 #[cfg(unix)]
 fn configure_file_options(options: &mut OpenOptions, mode: u32) {
     use std::os::unix::fs::OpenOptionsExt;
+    // Bound the create-time mode so the brief pre-chmod window is never *more* permissive
+    // than requested; `enforce_exact_file_mode` then pins the exact mode regardless of umask.
     options.mode(mode);
 }
 
 #[cfg(not(unix))]
 fn configure_file_options(_options: &mut OpenOptions, _mode: u32) {}
+
+#[cfg(unix)]
+fn enforce_exact_file_mode(file: &fs::File, path: &Path, mode: u32) -> Result<(), AtomicIoError> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(mode))
+        .map_err(|source| AtomicIoError {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[cfg(not(unix))]
+fn enforce_exact_file_mode(
+    _file: &fs::File,
+    _path: &Path,
+    _mode: u32,
+) -> Result<(), AtomicIoError> {
+    Ok(())
+}
 
 fn sync_parent_dir(path: &Path) -> Result<(), AtomicIoError> {
     let Some(parent) = path.parent() else {

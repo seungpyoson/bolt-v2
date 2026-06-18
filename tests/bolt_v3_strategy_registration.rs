@@ -637,12 +637,12 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
 #[test]
 fn complete_set_runtime_binding_and_production_registry_are_active_after_source_integrity() {
     assert!(
-        bolt_v2::bolt_v3_archetypes::validation_bindings()
+        bolt_v2::strategy_bindings::production_validation_bindings()
             .iter()
             .any(|binding| binding.key == complete_set_arbitrage::KEY),
         "complete-set archetype validation binding should be active after OUTCOME_GROUP_KEY"
     );
-    let runtime = bolt_v2::strategy_runtime_bindings::runtime_bindings()
+    let runtime = bolt_v2::strategy_bindings::production_runtime_bindings()
         .iter()
         .find(|binding| binding.key == complete_set_arbitrage::KEY)
         .expect("complete-set runtime binding should be active");

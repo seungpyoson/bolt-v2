@@ -127,12 +127,14 @@ mod exposure;
 
 use self::exposure::{
     BlindRecoveryReason, BlindRecoveryState, ConfiguredPositionContract, EntryReconcileReason,
-    ExitPendingState, ExposureOccupancy, ExposureState, ForcedFlatInputs, ForcedFlatReason,
-    ManagedPositionOrigin, ManagedPositionState, OpenPositionState, PendingEntryState,
-    PendingExitState, PositionMaterializationSpec, UnsupportedObservedReason,
-    UnsupportedObservedState, evaluate_forced_flat_predicates,
+    ExitPendingState, ExposureOccupancy, ExposureState, ManagedPositionOrigin,
+    ManagedPositionState, OpenPositionState, PendingEntryState, PendingExitState,
+    PositionMaterializationSpec, UnsupportedObservedReason, UnsupportedObservedState,
     infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
     supports_strategy_managed_position,
+};
+use crate::bolt_v3_feed_health::{
+    ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2372,7 +2374,7 @@ impl BinaryOracleEdgeTaker {
 
     fn active_forced_flat_reasons_at(&self, now_ms: u64) -> Vec<ForcedFlatReason> {
         evaluate_forced_flat_predicates(&ForcedFlatInputs {
-            phase: self.active.phase,
+            frozen: self.active.phase == SelectionPhase::Freeze,
             metadata_matches_selection: self.active.books.metadata_matches_selection(),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
             now_ms,
@@ -2391,7 +2393,7 @@ impl BinaryOracleEdgeTaker {
         };
 
         evaluate_forced_flat_predicates(&ForcedFlatInputs {
-            phase: self.active.phase,
+            frozen: self.active.phase == SelectionPhase::Freeze,
             metadata_matches_selection: open_position.book.metadata_matches_selection(),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
             now_ms,

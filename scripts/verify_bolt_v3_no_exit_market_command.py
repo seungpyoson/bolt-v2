@@ -52,6 +52,12 @@ FORBIDDEN_RULES = (
     ),
 )
 
+ALLOWED_CANCEL_ALL_POLICY_PATHS = frozenset(
+    {
+        "src/bolt_v3_order_execution.rs",
+    }
+)
+
 
 def line_number(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
@@ -62,6 +68,12 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
     violations: list[Violation] = []
     for rule in FORBIDDEN_RULES:
         for match in rule.pattern.finditer(scan_text):
+            if (
+                rule.label == "NT venue-mutating lifecycle API"
+                and path in ALLOWED_CANCEL_ALL_POLICY_PATHS
+                and "cancel_all_orders" in match.group(0)
+            ):
+                continue
             line_start = text.rfind("\n", 0, match.start()) + 1
             line_end = text.find("\n", match.end())
             if line_end == -1:

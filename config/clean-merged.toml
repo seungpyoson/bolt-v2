@@ -1,0 +1,61 @@
+# clean-merged runtime configuration.
+# Single source of truth for all clean-merged runtime values (NO HARDCODES).
+# Read by scripts/clean_merged_artifacts.py from the MAIN worktree path
+# (not the current worktree, which may be on a branch predating this config).
+# Missing required keys fail loud; missing optional keys use documented defaults.
+
+schema_version = 1
+
+[clean-merged]
+# Global kill switch. Truthy values per the shared rule (any non-empty value
+# except 0/false/no/off, case-insensitive) — bash hooks and Python agree.
+# Env: CLEAN_MERGED_DISABLED=1
+enabled = true
+# Trunk branch. Falls back to "master" dynamically if "main" is absent.
+# (When fallback engages, Lane R's baseRefName filter accepts either name.)
+trunk_branch = "main"
+# Remote name to consider as origin for upstream/prune purposes.
+remote_name = "origin"
+
+[clean-merged.lane_r]
+# Hard timeout for the gh subprocess call (seconds). Enforced in Python via
+# subprocess.run(timeout=...) — macOS has no `timeout` binary.
+gh_timeout_s = 5
+# In-process cache TTL for gh query results (seconds). Per-branch cache stored
+# at <git-common-dir>/clean-merged-gh-cache.json; written atomically.
+cache_ttl_s = 300
+
+[clean-merged.lane_w]
+# Quarantine directory. Resolved relative to git-common-dir; NEVER inside a
+# worktree (would be removed when that worktree is cleaned).
+quarantine_dir = "<git-common-dir>/clean-merged-quarantine"
+# Days before a quarantined worktree is purgeable. Aligned to the unreachable
+# reflog window (~30d) so the irreversible archive does not outlive its
+# reflog-recoverable companion.
+quarantine_grace_days = 30
+# Refuse removal of worktrees containing ANY ignored content unless overridden.
+discard_ignored = false
+# Refuse removal of worktrees containing a nested .git directory unless overridden.
+remove_nested_repos = false
+# Refuse removal of worktrees with assume-unchanged/skip-worktree index bits
+# unless overridden. These files are invisible to --porcelain and silently
+# destroyed by `git worktree remove`.
+discard_hidden_index_bits = false
+
+[clean-merged.logging]
+# Audit log format. jsonl ensures escaped fields survive shell-sensitive
+# branch names; never use literal shell commands as recovery hints.
+audit_format = "jsonl"
+# Audit log path, resolved under git-common-dir (NOT .git/, which is a file
+# in linked worktrees).
+audit_path = "<git-common-dir>/clean-merged.log"
+# Rotate the audit log above this size (bytes).
+max_log_bytes = 1048576
+# Heartbeat file written on every Lane H run; doctor checks freshness.
+heartbeat_path = "<git-common-dir>/clean-merged.heartbeat"
+
+[clean-merged.backups]
+# Days before a backup ref under refs/clean-merged/ is prunable.
+# Backup refs keep objects reachable, so they do NOT expire via
+# gc.reflogExpireUnreachable; explicit pruning is required.
+prune_after_days = 30

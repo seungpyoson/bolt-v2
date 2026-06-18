@@ -21,7 +21,9 @@
 //! own archetype parameter bounds such as parameter decimal syntax and
 //! root-cap comparison. `validate_strategies` dispatches into the
 //! matching archetype validator via
-//! `crate::bolt_v3_archetypes::validate_strategy_archetype`.
+//! `crate::bolt_v3_archetypes::validate_strategy_archetype_with_bindings`,
+//! passing the production binding list from
+//! `crate::strategy_bindings::production_validation_bindings`.
 //! Per-provider venue-block validation (provider-shaped
 //! `[clients.<id>.{data,execution,secrets}]` rules: typed
 //! deserialization, cross-block presence rules, provider data /
@@ -1729,7 +1731,12 @@ const SECONDS_PER_MINUTE: u64 = 60;
 /// Validates an NT `limit/HH:MM:SS` rate-limit string and returns the parsed
 /// `(limit, interval_seconds)` so callers can reconcile the rate against a
 /// venue REST egress ceiling without re-parsing.
-fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
+///
+/// `pub(crate)` so the maker requote-budget bridge
+/// ([`crate::bolt_v3_maker_rate_budget`]) sources its submit-governor cap and
+/// window from the same single parser the config validator uses, rather than
+/// introducing a second rate-string interpretation.
+pub(crate) fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
     let (limit, interval) = value
         .split_once('/')
         .ok_or_else(|| "expected `limit/HH:MM:SS`".to_string())?;
@@ -2352,12 +2359,15 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         errors.extend(target_errors.into_iter().map(|error| error.to_string()));
 
         errors.extend(validate_reference_current_price(&context, root, strategy));
-        errors.extend(crate::bolt_v3_archetypes::validate_strategy_archetype(
-            &context,
-            root,
-            strategy,
-            default_max_notional_decimal.as_ref(),
-        ));
+        errors.extend(
+            crate::bolt_v3_archetypes::validate_strategy_archetype_with_bindings(
+                &context,
+                root,
+                strategy,
+                default_max_notional_decimal.as_ref(),
+                crate::strategy_bindings::production_validation_bindings(),
+            ),
+        );
     }
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));

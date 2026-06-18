@@ -771,6 +771,19 @@ fn pmxt_one_off_l2_backtest_result_contract_binds_conversion_and_selector_proven
         output.contract.selected_asset_ids_hash.as_deref(),
         Some(PMXT_TEST_SELECTED_ASSET_IDS_HASH)
     );
+    assert_eq!(output.contract.execution_model, manifest.execution_model);
+    assert_eq!(
+        output.contract.venue_queue_position,
+        Some(manifest.venue.queue_position)
+    );
+    assert_eq!(
+        output.contract.catalog_data_types,
+        manifest
+            .catalog_inputs
+            .iter()
+            .map(|input| input.data_type.clone())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         output.contract.nt_result.run_config_id.as_deref(),
         Some("pmxt-one-off-l2-contract-proof")

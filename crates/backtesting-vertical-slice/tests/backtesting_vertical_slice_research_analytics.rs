@@ -153,6 +153,9 @@ fn contract(run_id: &str, result_contract_uri: &str) -> BacktestResultContract {
         selected_asset_ids_hash: None,
         strategy_config_hash: "1111111111111111111111111111111111111111111111111111111111111111"
             .to_string(),
+        execution_model: "nt_backtest_node".to_string(),
+        venue_queue_position: Some(false),
+        catalog_data_types: vec!["TradeTick".to_string()],
         run_purpose: "normal".to_string(),
         market_structure_fixture: "binary option".to_string(),
         fidelity_class: SourceProofFidelityClass::TradeReplay,

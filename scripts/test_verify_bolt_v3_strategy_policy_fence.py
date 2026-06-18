@@ -36,6 +36,15 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             if violation.label == "direct NT venue mutation call"
         ]
 
+    def kill_switch_action_violations_for(
+        self, source: str, path: str = "src/strategies/probe.rs"
+    ) -> list[object]:
+        return [
+            violation
+            for violation in self.violations_for(source, path=path)
+            if violation.label == "direct kill-switch action bypass"
+        ]
+
     def test_detects_removed_policy_hardcodes(self) -> None:
         labels = self.labels_for(
             """
@@ -148,12 +157,13 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             """
             self.submit_order_via_nt(order, context)?;
             self.cancel_order_via_nt(client_order_id, Some(client_id), None)?;
+            self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
             """
         )
 
         self.assertEqual(
             len(direct_violations),
-            2,
+            3,
             "private NT sink wrapper names must still be fenced outside the policy module",
         )
 
@@ -296,10 +306,50 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
         self.assertIn("registered strategy outside strategy module tree", labels)
 
+    def test_maker_strategy_must_not_depend_on_taker_pricing_internals(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                """
+                use crate::bolt_v3_taker_pricing::{TakerPricingConfig, TakerPricingState};
+                use super::super::bolt_v3_taker_pricing::VenueTimingState;
+                """,
+                path="src/strategies/binary_oracle_maker/mod.rs",
+            )
+        }
+
+        self.assertIn("maker dependency on taker pricing internals", labels)
+
+    def test_maker_strategy_can_depend_on_shared_pricing_and_quote_plan(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                """
+                use crate::bolt_v3_fair_value_pricing::FairValuePricingState;
+                use crate::bolt_v3_maker_quote_plan::plan_maker_quote_targets;
+                """,
+                path="src/strategies/binary_oracle_maker/mod.rs",
+            )
+        }
+
+        self.assertNotIn("maker dependency on taker pricing internals", labels)
+
+    def test_taker_strategy_can_depend_on_taker_pricing_internals(self) -> None:
+        labels = {
+            violation.label
+            for violation in self.violations_for(
+                "use crate::bolt_v3_taker_pricing::TakerPricingState;\n",
+                path="src/strategies/binary_oracle_edge_taker/mod.rs",
+            )
+        }
+
+        self.assertNotIn("maker dependency on taker pricing internals", labels)
+
     def test_direct_nt_mutation_allowlist_is_exactly_the_policy_module(self) -> None:
         source = """
         self.submit_order(order, None, Some(client_id), None)?;
         self.submit_order_via_nt(order, context)?;
+        self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
         """
 
         self.assertEqual(
@@ -309,8 +359,27 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
         self.assertEqual(
             len(self.direct_nt_violations_for(source, path="src/strategies/future.rs")),
-            2,
+            3,
             "the same calls must be rejected from strategy code",
+        )
+
+    def test_cancel_all_allowlist_is_exactly_the_policy_module(self) -> None:
+        source = """
+        self.cancel_all_orders(instrument_id, None, Some(client_id), None)?;
+        self.cancel_all_orders_via_nt(instrument_id, None, Some(client_id), None)?;
+        """
+
+        self.assertEqual(
+            self.kill_switch_action_violations_for(
+                source, path="src/bolt_v3_order_execution.rs"
+            ),
+            [],
+            "the policy module is the only cancel-all mutation allowlist path",
+        )
+        self.assertEqual(
+            len(self.kill_switch_action_violations_for(source)),
+            1,
+            "the same cancel-all names must be rejected from strategy code",
         )
 
     def test_mutation_fence_scans_all_production_src_files(self) -> None:
@@ -369,6 +438,20 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             [violation.label for violation in violations],
             ["ungated production strategy source root"],
             "every production strategy source root must be covered by gated source integrity",
+        )
+
+    def test_maker_strategy_source_root_is_recognized_as_gated(self) -> None:
+        # The maker is sealed by its own digest (`MAKER_SOURCE_ROOTS`), a
+        # separate seal from the taker's `STRATEGY_SOURCE_ROOTS`. The policy
+        # fence must still count it as gated; were the gated set derived from the
+        # taker tuple alone, this root would be wrongly flagged as ungated.
+        self.assertIn(
+            "src/strategies/binary_oracle_maker",
+            VERIFIER.gated_strategy_source_root_names(),
+        )
+        self.assertNotIn(
+            "src/strategies/binary_oracle_maker",
+            VERIFIER.ungated_production_strategy_source_roots(),
         )
 
 

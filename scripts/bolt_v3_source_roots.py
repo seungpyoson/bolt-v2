@@ -29,11 +29,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GATED_SOURCE_ROOTS_MANIFEST = REPO_ROOT / "gated_source_roots.manifest"
 
 # Registry keys; must match STRATEGY_KEY / SUBMIT_ADMISSION_KEY /
-# OUTCOME_GROUP_KEY in src/source_canonicalization.rs and the ``[section]``
-# headers in the manifest.
+# OUTCOME_GROUP_KEY / MAKER_KEY in src/source_canonicalization.rs and the
+# ``[section]`` headers in the manifest.
 STRATEGY_KEY = "strategy"
 SUBMIT_ADMISSION_KEY = "submit_admission"
 OUTCOME_GROUP_KEY = "outcome_group"
+MAKER_KEY = "maker"
 
 
 # The exact set of characters Rust ``str::trim()`` strips — the Unicode
@@ -128,11 +129,16 @@ def _parse_manifest_text(
     for key in order:
         if not sections[key]:
             raise ValueError(f"{source_label}: section [{key}] has no roots")
-    # The manifest must declare EXACTLY these three registry keys (mirrors the
+    # The manifest must declare EXACTLY these four registry keys (mirrors the
     # build.rs parser): reject both missing and unexpected sections so a typo'd
     # header fails loudly here and on the Rust side instead of silently dropping
     # roots from the gated set.
-    required_keys = (STRATEGY_KEY, SUBMIT_ADMISSION_KEY, OUTCOME_GROUP_KEY)
+    required_keys = (
+        STRATEGY_KEY,
+        SUBMIT_ADMISSION_KEY,
+        OUTCOME_GROUP_KEY,
+        MAKER_KEY,
+    )
     for required in required_keys:
         if required not in sections:
             raise ValueError(f"{source_label}: required section [{required}] is missing")
@@ -154,6 +160,32 @@ STRATEGY_SOURCE_ROOT = STRATEGY_SOURCE_ROOTS[0]
 SUBMIT_ADMISSION_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[SUBMIT_ADMISSION_KEY]
 SUBMIT_ADMISSION_SOURCE_ROOT = SUBMIT_ADMISSION_SOURCE_ROOTS[0]
 OUTCOME_GROUP_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[OUTCOME_GROUP_KEY]
+MAKER_SOURCE_ROOTS = _GATED_SOURCE_ROOTS[MAKER_KEY]
+# The maker's strategy-source directory, derived from the manifest (the single
+# owner) rather than restated, so a manifest rename cannot silently desync the
+# strategy-policy fence's maker scoping. Exactly one maker root lives under
+# src/strategies/; fail loud at import if that ceases to hold.
+_MAKER_STRATEGY_SOURCE_ROOTS = tuple(
+    root for root in MAKER_SOURCE_ROOTS if root.startswith("src/strategies/")
+)
+if len(_MAKER_STRATEGY_SOURCE_ROOTS) != 1:
+    raise ValueError(
+        "expected exactly one maker root under src/strategies/ in the manifest, "
+        f"got {list(_MAKER_STRATEGY_SOURCE_ROOTS)}"
+    )
+MAKER_SOURCE_ROOT = _MAKER_STRATEGY_SOURCE_ROOTS[0]
+# Union of every gated source set's roots, mirroring the full
+# `GATED_SOURCE_ROOTS` registry in `src/source_canonicalization.rs`. Gates that
+# reason about the set of gated roots — e.g. the strategy-policy fence's
+# ungated-root check — resolve through this aggregate, so a newly sealed
+# strategy is recognized as gated the moment its roots are registered above and
+# no gate hardcodes a per-strategy subset of the seals.
+ALL_GATED_SOURCE_ROOTS = (
+    *STRATEGY_SOURCE_ROOTS,
+    *SUBMIT_ADMISSION_SOURCE_ROOTS,
+    *OUTCOME_GROUP_SOURCE_ROOTS,
+    *MAKER_SOURCE_ROOTS,
+)
 MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 
 

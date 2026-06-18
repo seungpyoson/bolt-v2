@@ -1078,6 +1078,12 @@ fn source_fidelity_supports_claim(
                 | SourceProofFidelityClass::SignalOnly
                 | SourceProofFidelityClass::MetadataOnly
         ),
+        SourceProofFidelityClass::FundingReplay => matches!(
+            requested,
+            SourceProofFidelityClass::FundingReplay
+                | SourceProofFidelityClass::SignalOnly
+                | SourceProofFidelityClass::MetadataOnly
+        ),
         SourceProofFidelityClass::SignalOnly => matches!(
             requested,
             SourceProofFidelityClass::SignalOnly | SourceProofFidelityClass::MetadataOnly
@@ -1113,6 +1119,7 @@ mod tests {
             SourceProofFidelityClass::TradeReplay,
             SourceProofFidelityClass::IndexReplay,
             SourceProofFidelityClass::MarkReplay,
+            SourceProofFidelityClass::FundingReplay,
             SourceProofFidelityClass::L2Replay,
         ] {
             assert!(!source_fidelity_supports_claim(
@@ -1138,6 +1145,7 @@ mod tests {
             SourceProofFidelityClass::TradeReplay,
             SourceProofFidelityClass::QuoteReplay,
             SourceProofFidelityClass::MarkReplay,
+            SourceProofFidelityClass::FundingReplay,
         ] {
             assert!(!source_fidelity_supports_claim(
                 SourceProofFidelityClass::IndexReplay,
@@ -1162,9 +1170,35 @@ mod tests {
             SourceProofFidelityClass::TradeReplay,
             SourceProofFidelityClass::QuoteReplay,
             SourceProofFidelityClass::IndexReplay,
+            SourceProofFidelityClass::FundingReplay,
         ] {
             assert!(!source_fidelity_supports_claim(
                 SourceProofFidelityClass::MarkReplay,
+                requested,
+            ));
+        }
+    }
+
+    #[test]
+    fn funding_replay_supports_self_signal_and_metadata_only() {
+        for requested in [
+            SourceProofFidelityClass::FundingReplay,
+            SourceProofFidelityClass::SignalOnly,
+            SourceProofFidelityClass::MetadataOnly,
+        ] {
+            assert!(source_fidelity_supports_claim(
+                SourceProofFidelityClass::FundingReplay,
+                requested,
+            ));
+        }
+        for requested in [
+            SourceProofFidelityClass::TradeReplay,
+            SourceProofFidelityClass::QuoteReplay,
+            SourceProofFidelityClass::IndexReplay,
+            SourceProofFidelityClass::MarkReplay,
+        ] {
+            assert!(!source_fidelity_supports_claim(
+                SourceProofFidelityClass::FundingReplay,
                 requested,
             ));
         }

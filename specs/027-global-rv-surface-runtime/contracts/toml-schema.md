@@ -32,7 +32,7 @@ Rules:
 
 - `<surface_id>` is opaque, non-empty, trimmed, case-sensitive, and globally unique after trimming; two IDs that differ only by leading/trailing whitespace are duplicates.
 - `canonical_base_asset` must match the referenced strategy target's underlying asset.
-- `canonical_quote_asset` must be a trimmed non-empty asset symbol and must match source quote assets where applicable.
+- `canonical_quote_asset` must be a trimmed non-empty asset symbol and must match each source's declared canonical quote asset.
 - `seconds_per_annum` must be positive finite.
 - `min_ready_sources` must be positive and no greater than enabled quorum-counting sources.
 - `max_cross_source_dispersion` must be non-negative finite.
@@ -49,6 +49,8 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "<BASE_ASSET>"
+canonical_quote_asset = "<QUOTE_ASSET>"
 max_source_age_ms = 5000
 max_receive_lag_ms = 1000
 ```
@@ -66,7 +68,9 @@ Rules:
 - `source_id` is unique within a surface.
 - `data_client_id` must reference a configured public market-data client.
 - `instrument_id` must be valid for the referenced data client.
-- `instrument_id` and `canonical_quote_asset` must resolve to the same canonical base/quote assets as the parent surface for that client/source class.
+- `canonical_base_asset` must be a trimmed non-empty asset symbol and must match the parent surface's `canonical_base_asset`.
+- `canonical_quote_asset` must be a trimmed non-empty asset symbol and must match the parent surface's `canonical_quote_asset`.
+- `instrument_id` must remain venue-native for the referenced data client; validation must not derive canonical base or quote assets from venue-specific symbol text.
 - Disabled sources remain in diagnostics but do not subscribe and never count toward quorum.
 - Enabled `counts_toward_quorum = false` sources may subscribe and produce diagnostics but never contribute to readiness, aggregation, or surface blockers.
 

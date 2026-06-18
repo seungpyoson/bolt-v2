@@ -46,6 +46,7 @@ fn test_realized_volatility_engine_config()
                 sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
                 enabled: true,
                 counts_toward_quorum: true,
+                canonical_base_asset: "<BASE_ASSET>".to_string(),
                 canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
             },
         ],
@@ -105,6 +106,7 @@ fn surfaced_realized_volatility_forwards_duplicate_stream_bindings() {
             sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
             enabled: true,
             counts_toward_quorum: true,
+            canonical_base_asset: "<BASE_ASSET>".to_string(),
             canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
         },
     );
@@ -143,6 +145,7 @@ fn surfaced_realized_volatility_forwards_disabled_source_observations_for_audit(
             sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
             enabled: false,
             counts_toward_quorum: false,
+            canonical_base_asset: "<BASE_ASSET>".to_string(),
             canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
         },
     );
@@ -189,6 +192,7 @@ fn realized_volatility_runtime_keeps_disabled_sources_non_subscribable_for_audit
             sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Midpoint,
             enabled: false,
             counts_toward_quorum: false,
+            canonical_base_asset: "<BASE_ASSET>".to_string(),
             canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
         },
     );
@@ -276,6 +280,7 @@ fn surfaced_realized_volatility_quote_and_trade_sources_can_share_instrument_for
             sample_kind: crate::bolt_v3_realized_volatility::RealizedVolSampleKind::Trade,
             enabled: true,
             counts_toward_quorum: false,
+            canonical_base_asset: "<BASE_ASSET>".to_string(),
             canonical_quote_asset: "<QUOTE_ASSET>".to_string(),
         },
     );

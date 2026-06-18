@@ -59,7 +59,7 @@ provider_id = "resolution_oracle_primary"
 
 [signal_data.primary]
 data_client_id = "binance_spot_data"
-instrument_id = "BTC-USDT.BINANCE"
+instrument_id = "BTCUSDT.BINANCE"
 
 [reference_current_price]
 asset = "BTC"

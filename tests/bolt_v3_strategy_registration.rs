@@ -253,7 +253,6 @@ fn realized_volatility_validation_rejects_padded_surface_base_asset() {
         |loaded| {
             let mut surface = valid_realized_volatility_surface();
             surface.canonical_base_asset = " CONFIGURED_ASSET ".to_string();
-            surface.sources[0].canonical_base_asset = " CONFIGURED_ASSET ".to_string();
             insert_realized_volatility_surface(&mut loaded.root, surface);
             loaded.strategies[0].config.realized_volatility_surface_id =
                 Some("<surface_id>".to_string());
@@ -268,7 +267,6 @@ fn realized_volatility_validation_rejects_padded_surface_quote_asset() {
         |loaded| {
             let mut surface = valid_realized_volatility_surface();
             surface.canonical_quote_asset = " <QUOTE_ASSET> ".to_string();
-            surface.sources[0].canonical_quote_asset = " <QUOTE_ASSET> ".to_string();
             insert_realized_volatility_surface(&mut loaded.root, surface);
             loaded.strategies[0].config.realized_volatility_surface_id =
                 Some("<surface_id>".to_string());

@@ -730,6 +730,8 @@ fn halt_id(state: &KillSwitchState) -> Option<&str> {
     match state {
         KillSwitchState::Halting { halt_id, .. }
         | KillSwitchState::Halted { halt_id, .. }
+        | KillSwitchState::Cancelling { halt_id }
+        | KillSwitchState::Flattening { halt_id }
         | KillSwitchState::Flat { halt_id }
         | KillSwitchState::FailedManualIntervention { halt_id, .. } => Some(halt_id),
         KillSwitchState::Armed => None,

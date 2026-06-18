@@ -1144,7 +1144,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         table
             .get("cadence_slug_token")
             .and_then(|value| value.as_str()),
-        Some("configuredwindow")
+        Some("5m")
     );
     assert_eq!(
         table

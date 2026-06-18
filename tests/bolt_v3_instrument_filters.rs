@@ -135,7 +135,7 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     assert_eq!(target.execution_client_id, "polymarket_main");
     assert_eq!(target.underlying_asset, "CONFIGURED_ASSET");
     assert_eq!(target.cadence_secs, 300);
-    assert_eq!(target.cadence_slug_token, "configuredwindow");
+    assert_eq!(target.cadence_slug_token, "5m");
 }
 
 #[test]
@@ -286,6 +286,41 @@ fn plan_market_identity_rejects_invalid_cadence_slug_token_after_mutation() {
             assert_eq!(cadence_slug_token, "Bad-Token");
         }
         other => panic!("expected InvalidCadenceSlugToken; got {other:?}"),
+    }
+}
+
+#[test]
+fn plan_market_identity_rejects_cadence_slug_token_contract_mismatch_after_mutation() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    set_target_field(
+        &mut loaded.strategies[0],
+        "cadence_slug_token",
+        toml::Value::String("configuredwindow".to_string()),
+    );
+
+    match plan_market_identity(&loaded) {
+        Err(BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
+            strategy_instance_id,
+            configured_target_id,
+            cadence_secs,
+            cadence_slug_token,
+            expected_cadence_slug_token,
+        }) => {
+            assert_eq!(
+                strategy_instance_id.as_deref(),
+                Some("configured_updown_main")
+            );
+            assert_eq!(
+                configured_target_id.as_deref(),
+                Some("configured_updown_target")
+            );
+            assert_eq!(cadence_secs, 300);
+            assert_eq!(cadence_slug_token, "configuredwindow");
+            assert_eq!(expected_cadence_slug_token, "5m");
+        }
+        other => panic!("expected CadenceSlugTokenMismatch; got {other:?}"),
     }
 }
 

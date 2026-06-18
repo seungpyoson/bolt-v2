@@ -1852,8 +1852,8 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     assert_eq!(
         slugs,
         vec![
-            "configured_asset-updown-configuredwindow-600".to_string(),
-            "configured_asset-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-5m-600".to_string(),
+            "configured_asset-updown-5m-900".to_string(),
         ],
         "provider filter slug ordering must be [current, next]"
     );
@@ -2212,8 +2212,8 @@ fn provider_binding_composes_updown_outcome_group_and_static_filters_for_same_cl
     assert_eq!(
         data.filters[0].market_slugs(),
         Some(vec![
-            "configured_asset-updown-configuredwindow-600".to_string(),
-            "configured_asset-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-5m-600".to_string(),
+            "configured_asset-updown-5m-900".to_string(),
         ]),
         "updown filters must stay first"
     );
@@ -2354,8 +2354,8 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     assert_eq!(
         filter.market_slugs(),
         Some(vec![
-            "configured_asset-updown-configuredwindow-600".to_string(),
-            "configured_asset-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-5m-600".to_string(),
+            "configured_asset-updown-5m-900".to_string(),
         ]),
         "first market_slugs() call must reflect counter=601"
     );
@@ -2366,8 +2366,8 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     assert_eq!(
         filter.market_slugs(),
         Some(vec![
-            "configured_asset-updown-configuredwindow-900".to_string(),
-            "configured_asset-updown-configuredwindow-1200".to_string(),
+            "configured_asset-updown-5m-900".to_string(),
+            "configured_asset-updown-5m-1200".to_string(),
         ]),
         "second market_slugs() call must reflect counter=901; \
          caching the slug list would fail this assertion"

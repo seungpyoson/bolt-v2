@@ -144,6 +144,42 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
         self.assertEqual(violations[0].line, 2)
         self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
 
+    def test_chokepoint_exemption_is_exact_match_not_substring(self) -> None:
+        # The chokepoint exemption matches the routed API name EXACTLY, never as a
+        # substring. The exact routed APIs are exempt...
+        self.assertTrue(VERIFIER.is_routed_chokepoint_api("modify_order"))
+        self.assertTrue(VERIFIER.is_routed_chokepoint_api("cancel_all_orders"))
+        # ...but a DIFFERENT, unrouted API that merely embeds an allowed name as a
+        # substring must NOT be exempted. The prior substring check
+        # (`api in match.group(0)`) returned True for `force_modify_order` /
+        # `cancel_all_orders_bypass` and would fail-open the fence the moment a
+        # forbidden API name embedded an allowed one; this guards that regression.
+        for impostor in (
+            "force_modify_order",
+            "modify_order_internal",
+            "cancel_all_orders_bypass",
+            "cancel_orders",
+        ):
+            self.assertFalse(
+                VERIFIER.is_routed_chokepoint_api(impostor),
+                f"{impostor} must not be treated as a routed chokepoint API",
+            )
+
+    def test_policy_module_does_not_exempt_near_miss_api_names(self) -> None:
+        # `cancel_orders` is a different (unrouted) API from the allowed
+        # `cancel_all_orders`; it must still fail even inside the chokepoint file.
+        violations = VERIFIER.find_violations_in_text(
+            "src/bolt_v3_order_execution.rs",
+            """
+            self.cancel_orders(client_order_ids, None)?;
+            """,
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].line, 2)
+        self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
+        self.assertIn("cancel_orders", violations[0].excerpt)
+
     def test_identifier_rules_do_not_match_substrings_or_comments(self) -> None:
         violations = VERIFIER.find_violations_in_text(
             "src/probe.rs",

@@ -46,7 +46,7 @@ FORBIDDEN_RULES = (
         "NT venue-mutating lifecycle API",
         re.compile(
             r"(?:\.|::)\s*(?:r#)?"
-            r"(?:market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_order|exit_market|market_exit)"
+            r"(?P<api>market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_order|exit_market|market_exit)"
             r"(?![A-Za-z0-9_])"
         ),
     ),
@@ -70,6 +70,17 @@ ALLOWED_CHOKEPOINT_APIS = frozenset(
 )
 
 
+def is_routed_chokepoint_api(api: str) -> bool:
+    """Return True only for an EXACT routed-chokepoint API name.
+
+    The decision is exact set membership, never a substring test. A name such as
+    `force_modify_order` or `cancel_all_orders_bypass` embeds an allowed name as a
+    substring but is a DIFFERENT, unrouted API and must NOT be exempted: substring
+    matching would fail-open the moment a forbidden API name embeds an allowed one.
+    """
+    return api in ALLOWED_CHOKEPOINT_APIS
+
+
 def line_number(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
@@ -82,7 +93,7 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
             if (
                 rule.label == "NT venue-mutating lifecycle API"
                 and path == CHOKEPOINT_POLICY_PATH
-                and any(api in match.group(0) for api in ALLOWED_CHOKEPOINT_APIS)
+                and is_routed_chokepoint_api(match.group("api"))
             ):
                 continue
             line_start = text.rfind("\n", 0, match.start()) + 1

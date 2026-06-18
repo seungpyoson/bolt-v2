@@ -586,6 +586,27 @@ pub struct ManifestReferenceCurrentPriceInput {
     pub provenance: BTreeMap<String, String>,
 }
 
+/// Instrument settlement (resolution) side input.
+///
+/// Replayed as an NT `InstrumentClose` (`ContractExpired`) so a held position
+/// redeems to its resolved value (binary outcome: winner `1.0`, loser `0.0`) and
+/// books a realized P/L at end-of-market. The `close_price` is the REAL market
+/// resolution observed in the replayed archive — it is not synthesized.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestInstrumentSettlementInput {
+    /// NT instrument id whose held position settles at resolution.
+    pub nt_instrument_id: String,
+    /// Resolution/redemption price in the instrument's own units (binary `0..=1`).
+    pub close_price: String,
+    /// Price precision (decimal places) the `close_price` is quoted to.
+    pub price_precision: u8,
+    /// UNIX timestamp (nanoseconds) the resolution occurred.
+    pub ts_event_ns: u64,
+    /// UNIX timestamp (nanoseconds) the settlement event was created.
+    pub ts_init_ns: u64,
+}
+
 /// Artifact output store options used for publishing and published-catalog proof.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -673,6 +694,10 @@ pub struct BacktestingRunManifest {
     /// Reconstructed reference-current-price custom data side input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reconstructed_reference_current_price: Vec<ManifestReferenceCurrentPriceInput>,
+    /// Instrument settlement (resolution) side inputs replayed as NT
+    /// `InstrumentClose` so held positions redeem to their resolved value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instrument_settlements: Vec<ManifestInstrumentSettlementInput>,
     /// SHA-256 of the NT catalog consumed by the run.
     pub catalog_hash: String,
     /// Execution model selected for this run, for example `nt_backtest_node`.
@@ -2036,6 +2061,22 @@ impl BacktestingRunManifest {
                 (
                     "reconstructed_reference_current_price.price",
                     input.price.as_str(),
+                ),
+            ] {
+                if value.trim().is_empty() {
+                    return Err(ManifestError::MissingField(name));
+                }
+            }
+        }
+        for input in &self.instrument_settlements {
+            for (name, value) in [
+                (
+                    "instrument_settlements.nt_instrument_id",
+                    input.nt_instrument_id.as_str(),
+                ),
+                (
+                    "instrument_settlements.close_price",
+                    input.close_price.as_str(),
                 ),
             ] {
                 if value.trim().is_empty() {
@@ -3491,6 +3532,7 @@ mod tests {
                 optimize_file_loading: None,
             }],
             reconstructed_reference_current_price: Vec::new(),
+            instrument_settlements: Vec::new(),
             catalog_hash: TEST_SHA256_ONE.to_string(),
             execution_model: "nt_backtest_node".to_string(),
             artifact_root: "s3://bolt-parquet/nt-research-analytics".to_string(),

@@ -43,15 +43,19 @@ use bolt_v2::{
 use futures_util::future::BoxFuture;
 use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, Data, IndexPriceUpdate, MarkPriceUpdate, OrderBookDelta, QuoteTick,
-        TradeTick,
+        Bar, BarSpecification, Data, IndexPriceUpdate, InstrumentClose, MarkPriceUpdate,
+        OrderBookDelta, QuoteTick, TradeTick,
     },
-    enums::{AggregationSource, AggressorSide, BookAction, OrderSide, OrderStatus, PriceType},
+    enums::{
+        AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide, OrderStatus,
+        PriceType,
+    },
     identifiers::{ClientId, InstrumentId, Venue},
     orders::Order,
-    types::Quantity,
+    types::{Price, Quantity},
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -837,6 +841,40 @@ fn parse_reference_price_float(index: usize, field: &str, value: &str) -> Result
     })
 }
 
+/// Builds NT `InstrumentClose` settlement events from the manifest's instrument
+/// settlement inputs. When replayed, each `ContractExpired` close redeems a held
+/// position to its resolved value (binary: winner `1.0`, loser `0.0`) and books a
+/// realized P/L. The `close_price` is the real market resolution carried on the
+/// manifest — it is not synthesized here.
+fn instrument_settlement_data(manifest: &BacktestingRunManifest) -> Result<Vec<Data>> {
+    let mut closes = Vec::with_capacity(manifest.instrument_settlements.len());
+    for (index, row) in manifest.instrument_settlements.iter().enumerate() {
+        let instrument_id = InstrumentId::from_str(row.nt_instrument_id.as_str())
+            .map_err(|error| anyhow::anyhow!("{error}"))
+            .with_context(|| {
+                format!(
+                    "parse instrument_settlements[{index}].nt_instrument_id {:?}",
+                    row.nt_instrument_id
+                )
+            })?;
+        let close_value = row.close_price.trim().parse::<f64>().with_context(|| {
+            format!(
+                "parse instrument_settlements[{index}].close_price {:?}",
+                row.close_price
+            )
+        })?;
+        let close_price = Price::new(close_value, row.price_precision);
+        closes.push(Data::InstrumentClose(InstrumentClose::new(
+            instrument_id,
+            close_price,
+            InstrumentCloseType::ContractExpired,
+            UnixNanos::from(row.ts_event_ns),
+            UnixNanos::from(row.ts_init_ns),
+        )));
+    }
+    Ok(closes)
+}
+
 pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
     let run_config = manifest
         .to_nt_run_config()
@@ -868,6 +906,15 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
                     )
                 })?;
         }
+    }
+    let instrument_settlement_data = instrument_settlement_data(manifest)?;
+    if !instrument_settlement_data.is_empty() {
+        let engine = node
+            .get_engine_mut(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {}", manifest.run_id))?;
+        engine
+            .add_data(instrument_settlement_data, None, false, true)
+            .context("add instrument settlement close events")?;
     }
     let mut results = node.run().context("run BacktestNode")?;
     ensure!(
@@ -1787,10 +1834,11 @@ mod tests {
     use crate::run_manifest::{
         BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE,
         ManifestArtifactStore, ManifestBacktestConfigOverride, ManifestCatalogInput,
-        ManifestRealizedVolatilitySourceSelector, ManifestReferenceCurrentPriceInput,
-        ManifestVenueConfig, MarketStructureFixture, RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
-        STRATEGY_PARAM_FEE_BPS, STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource,
-        StrategySource, StrategySourceKind,
+        ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
+        ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
+        RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_PARAM_FEE_BPS,
+        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
+        StrategySourceKind,
     };
     use crate::seeded_l2_quotes::{
         SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
@@ -2202,6 +2250,42 @@ mod tests {
         )
         .context("project reconstructed Chainlink price-to-beat index updates")?;
 
+        // Faithful settlement: replay the REAL market resolution observed in the
+        // archive. At resolution the winning binary token's order book converges
+        // to ~1.0 and the loser's to ~0.0; redeem the winner at 1.0 and the loser
+        // at 0.0 so a held position books its true realized P/L. The winner is read
+        // from the terminal best-bid of the SAME PMXT rows that drive the backtest
+        // (single source of truth — not synthesized).
+        let up_terminal_bid = issue_789_terminal_best_bid(&pmxt_rows, ISSUE_789_UP_TOKEN)?;
+        let down_terminal_bid = issue_789_terminal_best_bid(&pmxt_rows, ISSUE_789_DOWN_TOKEN)?;
+        ensure!(
+            (up_terminal_bid > 0.5) ^ (down_terminal_bid > 0.5),
+            "ambiguous #789 resolution: up_terminal_bid={up_terminal_bid} down_terminal_bid={down_terminal_bid}"
+        );
+        let (up_close, down_close) = if up_terminal_bid > down_terminal_bid {
+            (1.0_f64, 0.0_f64)
+        } else {
+            (0.0_f64, 1.0_f64)
+        };
+        let up_precision = up_projection.instrument.price_precision();
+        let down_precision = down_projection.instrument.price_precision();
+        let instrument_settlements = vec![
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: up_instrument_id.clone(),
+                close_price: format!("{up_close:.prec$}", prec = up_precision as usize),
+                price_precision: up_precision,
+                ts_event_ns: ISSUE_789_END_NS as u64,
+                ts_init_ns: ISSUE_789_END_NS as u64,
+            },
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: down_instrument_id.clone(),
+                close_price: format!("{down_close:.prec$}", prec = down_precision as usize),
+                price_precision: down_precision,
+                ts_event_ns: ISSUE_789_END_NS as u64,
+                ts_init_ns: ISSUE_789_END_NS as u64,
+            },
+        ];
+
         let manifest = issue_789_manifest(Issue789Catalogs {
             okx_catalog,
             okx_catalog_hash: okx_projection.catalog_hash.clone(),
@@ -2216,6 +2300,7 @@ mod tests {
             down_catalog_hash: down_catalog_report.catalog_hash.clone(),
             down_instrument_id,
             reference_rows: reconstructed_reference_rows_from_okx(&okx_quotes)?,
+            instrument_settlements,
         });
 
         let output = run_nt_backtest_node(&manifest)
@@ -2270,6 +2355,20 @@ mod tests {
         ensure!(
             !output.result.stats_pnls.is_empty(),
             "issue #789 run traded but stats_pnls was empty"
+        );
+        // The held position must redeem at the real resolution and book a realized
+        // P/L. A zero total here means the settlement close did not settle the
+        // position — the first real dollar P/L would be silently lost.
+        let realized_pnl_total: f64 = output
+            .result
+            .stats_pnls
+            .values()
+            .filter_map(|per_currency| per_currency.get("PnL (total)"))
+            .sum();
+        ensure!(
+            realized_pnl_total.abs() > 1e-9,
+            "issue #789 position settled but realized P/L total was 0.0 — instrument settlement did not book a redemption (stats_pnls={:?})",
+            output.result.stats_pnls
         );
         Ok(())
     }
@@ -2460,6 +2559,20 @@ mod tests {
         fee_rate_bps: Option<String>,
         timestamp_ms: String,
         ts_init_ns: u64,
+    }
+
+    /// Terminal (latest-`ts_init`) best-bid for a PMXT token, used to read the
+    /// real binary resolution: the winning outcome's book converges to ~1.0.
+    fn issue_789_terminal_best_bid(rows: &[Issue789PmxtCsvRow], token_id: &str) -> Result<f64> {
+        rows.iter()
+            .filter(|row| row.asset_id == token_id)
+            .filter_map(|row| row.best_bid.as_deref().map(|bid| (row.ts_init_ns, bid)))
+            .max_by_key(|(ts, _)| *ts)
+            .map(|(_, bid)| bid)
+            .with_context(|| format!("no terminal best_bid for token {token_id}"))?
+            .trim()
+            .parse::<f64>()
+            .with_context(|| format!("parse terminal best_bid for token {token_id}"))
     }
 
     fn issue_789_pmxt_rows() -> Result<Vec<Issue789PmxtCsvRow>> {
@@ -2828,6 +2941,7 @@ mod tests {
         down_catalog_hash: String,
         down_instrument_id: String,
         reference_rows: Vec<ManifestReferenceCurrentPriceInput>,
+        instrument_settlements: Vec<ManifestInstrumentSettlementInput>,
     }
 
     fn issue_789_manifest(catalogs: Issue789Catalogs) -> BacktestingRunManifest {
@@ -2946,6 +3060,7 @@ mod tests {
                 ),
             ],
             reconstructed_reference_current_price: catalogs.reference_rows,
+            instrument_settlements: catalogs.instrument_settlements,
             catalog_hash,
             execution_model: "nt_backtest_node".to_string(),
             artifact_root: "memory://issue-789".to_string(),

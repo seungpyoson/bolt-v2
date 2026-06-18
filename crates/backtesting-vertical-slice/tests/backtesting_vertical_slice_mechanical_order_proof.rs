@@ -304,6 +304,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             optimize_file_loading: None,
         }],
         reconstructed_reference_current_price: Vec::new(),
+        instrument_settlements: Vec::new(),
         catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
             .to_string(),
         execution_model: "nt_backtest_node".to_string(),

@@ -519,6 +519,8 @@ JUST_LANE_RE = re.compile(
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
 BINARY_PATH_COMMAND = 'python3 "${{ steps.setup.outputs.rust_verification_owner }}" binary-path --repo "$GITHUB_WORKSPACE" --bin bolt-v2'
+BOLT_V2_BINARY_ARTIFACT_NAME = "bolt-v2-binary"
+BOLT_V2_BINARY_RETENTION_DAYS = "3"
 # taiki-e/install-action must be pinned to a 40-hex commit SHA (mutable tags
 # like @v2 are rejected). The specific SHA is NOT enforced here — Dependabot
 # opens a PR with release notes for every bump and PR review is the human
@@ -8525,6 +8527,18 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
         errors.append(f"{workflow_name} build must copy the managed binary into a staged artifact directory")
     if "steps.managed_artifact.outputs.stage_dir" not in build_text:
         errors.append(f"{workflow_name} build upload must use the staged artifact directory")
+    binary_upload_blocks = [
+        block
+        for block in action_blocks(build, "actions/upload-artifact@")
+        if block_has_input(block, "name", BOLT_V2_BINARY_ARTIFACT_NAME)
+    ]
+    if not binary_upload_blocks or not all(
+        block_has_input(block, "retention-days", BOLT_V2_BINARY_RETENTION_DAYS)
+        for block in binary_upload_blocks
+    ):
+        errors.append(
+            f"{workflow_name} {BOLT_V2_BINARY_ARTIFACT_NAME} retention-days must be {BOLT_V2_BINARY_RETENTION_DAYS}"
+        )
     return errors
 
 

@@ -32,6 +32,15 @@ const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
 const TRACKED_PRODUCTION_BINARY_ORACLE_STRATEGY_FILES: &[&str] =
     &["config/strategies/binary_oracle_btc.toml"];
 const PLACEHOLDER_POLYMARKET_FUNDER: &str = "0x1111111111111111111111111111111111111111";
+const SYNTHETIC_FIXTURE_POLYMARKET_FUNDER: &str = "0xf1c7000000000000000000000000000000000001";
+
+fn polymarket_funder(root: &toml::Value) -> Option<&str> {
+    root.get("clients")
+        .and_then(|value| value.get("polymarket_main"))
+        .and_then(|value| value.get("execution"))
+        .and_then(|value| value.get("funder"))
+        .and_then(toml::Value::as_str)
+}
 
 fn assert_binary_oracle_entry_order_shape_rejected(messages: &[String], case_name: &str) {
     assert!(
@@ -462,6 +471,35 @@ fn shipped_roots_use_polymarket_safe_profile_without_placeholder_collateral() {
             "{relative_path} must not ship placeholder on-chain collateral config"
         );
     }
+}
+
+#[test]
+fn bolt_v3_fixture_uses_synthetic_polymarket_funder() {
+    let live_source = fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("tracked production root should be readable");
+    let fixture_source = fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("Bolt v3 fixture root should be readable");
+    let live_root =
+        toml::from_str::<toml::Value>(&live_source).expect("tracked production root should parse");
+    let fixture_root =
+        toml::from_str::<toml::Value>(&fixture_source).expect("Bolt v3 fixture root should parse");
+
+    let live_funder = polymarket_funder(&live_root).expect("tracked root should declare funder");
+    let fixture_funder =
+        polymarket_funder(&fixture_root).expect("fixture root should declare funder");
+
+    assert!(
+        fixture_funder == SYNTHETIC_FIXTURE_POLYMARKET_FUNDER,
+        "Bolt v3 fixture should use the deliberate synthetic Polymarket funder"
+    );
+    assert!(
+        live_funder != SYNTHETIC_FIXTURE_POLYMARKET_FUNDER,
+        "tracked production root should not use the synthetic fixture Polymarket funder"
+    );
+    assert!(
+        fixture_funder != live_funder,
+        "Bolt v3 fixture funder should not duplicate the tracked production funder"
+    );
 }
 
 #[test]

@@ -270,7 +270,7 @@ def assert_status_mode_posts_failure_without_failing_job() -> None:
     assert status_payload["target_url"] == "https://github.test/owner/repo/actions/runs/12345"
 
 
-def assert_workflow_documents_bootstrap_and_requires_node_id() -> None:
+def assert_workflow_uses_base_script_and_requires_node_id() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "name: reviewer node_id status publisher" in workflow
     assert "name: reviewer node_id approved" not in workflow
@@ -283,11 +283,9 @@ def assert_workflow_documents_bootstrap_and_requires_node_id() -> None:
     assert "Policy identity constant" in workflow
     assert "REQUIRED_REVIEWER_NODE_ID: U_kgDOEZMFhA" in workflow
     assert "REQUIRED_REVIEWER:" not in workflow
-    assert "Bootstrap reviewer gate script" in workflow
-    assert "test -f scripts/require_sp_reviewer.py" in workflow
-    assert "github.event.pull_request.head.sha" in workflow
-    assert "this introducing PR is not protected by this new check" in workflow
-    assert "Remove this block after scripts/require_sp_reviewer.py exists on main" in workflow
+    assert "Bootstrap reviewer gate script" not in workflow
+    assert "test -f scripts/require_sp_reviewer.py" not in workflow
+    assert "Remove this block after scripts/require_sp_reviewer.py exists on main" not in workflow
 
 
 def assert_codeowners_requires_sp_reviewer_for_all_paths() -> None:
@@ -311,7 +309,7 @@ def main() -> int:
     assert_current_head_approval_passes()
     assert_commit_status_payload_is_latest_wins_context()
     assert_status_mode_posts_failure_without_failing_job()
-    assert_workflow_documents_bootstrap_and_requires_node_id()
+    assert_workflow_uses_base_script_and_requires_node_id()
     assert_codeowners_requires_sp_reviewer_for_all_paths()
     print("OK: required reviewer gate self-tests passed.")
     return 0

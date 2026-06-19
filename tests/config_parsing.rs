@@ -788,6 +788,63 @@ fn shipped_chainlink_data_streams_catalog_is_btc_only() {
 }
 
 #[test]
+fn bolt_v3_fixture_chainlink_data_streams_catalog_matches_fixture_strategy() {
+    // The fixture is a generic CONFIGURED_ASSET bundle, not the production BTC
+    // root. It should still pin the one configured Chainlink catalog binding to
+    // the live BTC feed shape so fixture-based adapter tests exercise the same
+    // report schema/scale as the tracked root.
+    let source = fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture root config should be readable");
+    let parsed = toml::from_str::<toml::Value>(&source).expect("fixture root TOML should parse");
+    let feed_bindings = parsed
+        .get("chainlink_data_streams")
+        .and_then(|value| value.get("feed_bindings"))
+        .and_then(toml::Value::as_array)
+        .expect("fixture root config should declare Chainlink Data Streams feed bindings");
+
+    assert_eq!(
+        feed_bindings.len(),
+        1,
+        "fixture Chainlink Data Streams catalog should keep exactly one configured-asset binding"
+    );
+
+    let binding = feed_bindings
+        .first()
+        .expect("fixture Chainlink feed binding should be present");
+    assert_eq!(
+        binding.get("instrument_id").and_then(toml::Value::as_str),
+        Some("CONFIGURED_ASSET-USD.CHAINLINK"),
+        "fixture Chainlink catalog should stay aligned with the fixture strategy target"
+    );
+    assert_eq!(
+        binding.get("feed_id").and_then(toml::Value::as_str),
+        Some(CHAINLINK_BTC_TESTNET_FEED_ID),
+        "fixture Chainlink feed_id should stay pinned to the BTC testnet feed"
+    );
+    assert_eq!(
+        binding
+            .get("report_schema_version")
+            .and_then(toml::Value::as_integer),
+        Some(3),
+        "fixture Chainlink binding should use the Chainlink V3 report schema"
+    );
+    assert_eq!(
+        binding
+            .get("report_decimal_scale")
+            .and_then(toml::Value::as_integer),
+        Some(18),
+        "fixture Chainlink binding should use the 18-decimal Chainlink report scale"
+    );
+    assert_eq!(
+        binding
+            .get("price_precision")
+            .and_then(toml::Value::as_integer),
+        Some(8),
+        "fixture Chainlink binding should use 8dp NT price precision"
+    );
+}
+
+#[test]
 fn bolt_v3_strategy_execution_client_id_uses_nt_typed_identifier() {
     // `BoltV3StrategyConfig.execution_client_id` is typed as
     // `nautilus_model::identifiers::ClientId`. The strategy block is

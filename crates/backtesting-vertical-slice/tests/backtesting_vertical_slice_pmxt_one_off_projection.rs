@@ -1532,6 +1532,7 @@ fn pmxt_l2_manifest(
             typed_config_hash: None,
             experiment_result_uri: None,
             experiment_result_hash: None,
+            config_overlay: None,
         },
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
@@ -1568,6 +1569,7 @@ fn pmxt_l2_manifest(
             fee_model: None,
             settlement_prices: None,
         },
+        additional_venues: Vec::new(),
         catalog_inputs: vec![ManifestCatalogInput {
             catalog_path: catalog_root.display().to_string(),
             catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
@@ -1585,6 +1587,8 @@ fn pmxt_l2_manifest(
             bar_types: None,
             optimize_file_loading: None,
         }],
+        reconstructed_reference_current_price: Vec::new(),
+        instrument_settlements: Vec::new(),
         catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
             .to_string(),
         execution_model: "nt_backtest_node".to_string(),

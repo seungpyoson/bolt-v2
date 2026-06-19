@@ -11,6 +11,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+import github_commit_status
+
 
 REVIEW_THREADS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
@@ -58,6 +60,13 @@ def _env(name: str) -> str:
     return value
 
 
+def _optional_str_env(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return None
+    return value
+
+
 def _read_event_payload() -> dict[str, Any]:
     path = _env("GITHUB_EVENT_PATH")
     with open(path, "r", encoding="utf-8") as handle:
@@ -81,6 +90,16 @@ def _pull_number(payload: dict[str, Any]) -> int:
     return number
 
 
+def _pull_head_sha(payload: dict[str, Any]) -> str:
+    head = _pull_request(payload).get("head")
+    if not isinstance(head, dict):
+        raise ReviewThreadGateError("GitHub event pull_request.head is missing")
+    sha = head.get("sha")
+    if not isinstance(sha, str) or not sha:
+        raise ReviewThreadGateError("GitHub event pull_request.head.sha is missing")
+    return sha
+
+
 def _repo_parts(repository: str) -> tuple[str, str]:
     owner, separator, name = repository.partition("/")
     if not owner or separator != "/" or not name:
@@ -90,6 +109,33 @@ def _repo_parts(repository: str) -> tuple[str, str]:
 
 def _graphql_url() -> str:
     return os.environ.get("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql").rstrip("/")
+
+
+def _api_base() -> str:
+    return os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+
+
+def _post_json(url: str, token: str, payload: dict[str, Any]) -> None:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "bolt-v2-review-thread-gate",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30):
+            return
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ReviewThreadGateError(f"GitHub status update failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise ReviewThreadGateError(f"GitHub status update failed: {exc}") from exc
 
 
 def _request_graphql(
@@ -240,6 +286,7 @@ def fetch_review_threads(
 def run() -> int:
     repository = _env("GITHUB_REPOSITORY")
     token = _env("GITHUB_TOKEN")
+    status_context = _optional_str_env("REVIEW_THREAD_GATE_STATUS_CONTEXT")
     payload = _read_event_payload()
     pull_number = _pull_number(payload)
     owner, name = _repo_parts(repository)
@@ -251,6 +298,24 @@ def run() -> int:
     )
     result = evaluate_review_thread_gate(review_threads=threads)
     print(result.message)
+    if status_context is not None:
+        head_sha = _pull_head_sha(payload)
+        # Publish the verdict as a durable commit status keyed to the PR head.
+        # The required merge context is this status, not this Actions job, so a
+        # cancelled or superseded run cannot leave a terminal "cancelled" check
+        # that blocks the merge. The exit code still mirrors the verdict so the
+        # job check-run stays meaningful for humans.
+        github_commit_status.publish_commit_status(
+            repository=repository,
+            sha=head_sha,
+            token=token,
+            passed=result.passed,
+            description=result.message,
+            context=status_context,
+            post_json=_post_json,
+            api_base=_api_base(),
+            target_url=github_commit_status.run_target_url(),
+        )
     return 0 if result.passed else 1
 
 

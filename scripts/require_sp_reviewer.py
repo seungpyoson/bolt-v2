@@ -12,10 +12,11 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+import github_commit_status
+
 
 DEFAULT_REVIEWER = "sp-reviewer"
 DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
-STATUS_DESCRIPTION_LIMIT = 140
 
 
 class ReviewerGateError(RuntimeError):
@@ -309,41 +310,18 @@ def _pulls_api_url(repository: str, pull_number: int, suffix: str) -> str:
     return f"{_api_base()}/repos/{owner_repo}/pulls/{pull_number}/{suffix}"
 
 
-def _status_api_url(repository: str, sha: str) -> str:
-    owner_repo = "/".join(urllib.parse.quote(part, safe="") for part in repository.split("/", 1))
-    quoted_sha = urllib.parse.quote(sha, safe="")
-    return f"{_api_base()}/repos/{owner_repo}/statuses/{quoted_sha}"
-
-
-def _status_target_url() -> str | None:
-    server_url = os.environ.get("GITHUB_SERVER_URL")
-    repository = os.environ.get("GITHUB_REPOSITORY")
-    run_id = os.environ.get("GITHUB_RUN_ID")
-    if not server_url or not repository or not run_id:
-        return None
-    return f"{server_url.rstrip('/')}/{repository}/actions/runs/{run_id}"
-
-
-def _status_description(message: str) -> str:
-    if len(message) <= STATUS_DESCRIPTION_LIMIT:
-        return message
-    return f"{message[: STATUS_DESCRIPTION_LIMIT - 3]}..."
-
-
 def commit_status_payload(
     *,
     result: GateResult,
     context: str,
     target_url: str | None,
 ) -> dict[str, str]:
-    payload = {
-        "state": "success" if result.passed else "failure",
-        "context": context,
-        "description": _status_description(result.message),
-    }
-    if target_url:
-        payload["target_url"] = target_url
-    return payload
+    return github_commit_status.commit_status_payload(
+        passed=result.passed,
+        context=context,
+        description=result.message,
+        target_url=target_url,
+    )
 
 
 def post_commit_status(
@@ -354,10 +332,16 @@ def post_commit_status(
     result: GateResult,
     context: str,
 ) -> None:
-    _post_json(
-        _status_api_url(repository, sha),
-        token,
-        commit_status_payload(result=result, context=context, target_url=_status_target_url()),
+    github_commit_status.publish_commit_status(
+        repository=repository,
+        sha=sha,
+        token=token,
+        passed=result.passed,
+        description=result.message,
+        context=context,
+        post_json=_post_json,
+        api_base=_api_base(),
+        target_url=github_commit_status.run_target_url(),
     )
 
 

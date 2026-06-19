@@ -12,16 +12,6 @@ const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
     "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
 const CHAINLINK_BTC_TESTNET_FEED_ID: &str =
     "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
-const CHAINLINK_ETH_TESTNET_FEED_ID: &str =
-    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
-const CHAINLINK_SOL_TESTNET_FEED_ID: &str =
-    "0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6";
-const CHAINLINK_BNB_TESTNET_FEED_ID: &str =
-    "0x000387d7c042a9d5c97c15354b531bd01bf6d3a351e190f2394403cf2f79bde9";
-const CHAINLINK_XRP_TESTNET_FEED_ID: &str =
-    "0x00035e3ddda6345c3c8ce45639d4449451f1d5828d7a70845e446f04905937cd";
-const CHAINLINK_DOGE_TESTNET_FEED_ID: &str =
-    "0x00032057c7f224d0266b4311a81cdc3e38145e36442713350d3300fb12e85c99";
 const CHAINLINK_TEST_FEED_ID_PRIMARY: &str =
     "0x1111111111111111111111111111111111111111111111111111111111111111";
 const CHAINLINK_TEST_FEED_ID_SECONDARY: &str =
@@ -681,24 +671,10 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
 }
 
 #[test]
-fn shipped_chainlink_data_streams_pins_each_asset_feed_binding() {
-    // Drift guard for the LIVE strike feed bindings. The validFrom/feed_id/schema
-    // decode checks cannot detect a cross-asset substitution (a feed_id is always
-    // internally consistent with its own report), so a copy-paste swap pointing
-    // e.g. SOL at BTC's feed would silently bind the wrong asset's price as the
-    // strike. Pin every asset -> (feed_id, schema, scale, precision) and reject
-    // any duplicate feed_id, so drift fails CI. Asset<->feed_id correctness itself
-    // is confirmed at #553 testnet deploy (a wrong-asset feed yields a visibly
-    // wrong live strike).
-    let expected: [(&str, &str); 6] = [
-        ("BTC-USD.CHAINLINK", CHAINLINK_BTC_TESTNET_FEED_ID),
-        ("ETH-USD.CHAINLINK", CHAINLINK_ETH_TESTNET_FEED_ID),
-        ("SOL-USD.CHAINLINK", CHAINLINK_SOL_TESTNET_FEED_ID),
-        ("BNB-USD.CHAINLINK", CHAINLINK_BNB_TESTNET_FEED_ID),
-        ("XRP-USD.CHAINLINK", CHAINLINK_XRP_TESTNET_FEED_ID),
-        ("DOGE-USD.CHAINLINK", CHAINLINK_DOGE_TESTNET_FEED_ID),
-    ];
-
+fn shipped_chainlink_data_streams_catalog_is_btc_only() {
+    // The Chainlink reference websocket subscribes to every configured feed_id
+    // in this catalog, so the tracked live root must keep this BTC-only with the
+    // tracked strategy_files/RV surfaces.
     let source = fs::read_to_string(support::repo_path("config/root.toml"))
         .expect("root config should be readable");
     let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
@@ -710,54 +686,50 @@ fn shipped_chainlink_data_streams_pins_each_asset_feed_binding() {
 
     assert_eq!(
         feed_bindings.len(),
-        expected.len(),
-        "the live Chainlink Data Streams catalog must ship exactly one feed binding per supported asset"
+        1,
+        "the tracked live Chainlink Data Streams catalog must subscribe only to BTC"
     );
 
-    let mut seen_feed_ids = std::collections::HashSet::new();
-    for (binding, (instrument_id, feed_id)) in feed_bindings.iter().zip(expected.iter()) {
-        let actual_instrument = binding
-            .get("instrument_id")
-            .and_then(toml::Value::as_str)
-            .expect("feed binding should declare instrument_id");
-        let actual_feed = binding
-            .get("feed_id")
-            .and_then(toml::Value::as_str)
-            .expect("feed binding should declare feed_id");
-        assert_eq!(
-            actual_instrument, *instrument_id,
-            "live Chainlink Data Streams feed bindings must stay in the pinned per-asset order"
-        );
-        assert_eq!(
-            actual_feed, *feed_id,
-            "{instrument_id} strike feed_id drifted from its pinned testnet feed"
-        );
-        assert_eq!(
-            binding
-                .get("report_schema_version")
-                .and_then(toml::Value::as_integer),
-            Some(3),
-            "{instrument_id} must use the Chainlink V3 report schema"
-        );
-        assert_eq!(
-            binding
-                .get("report_decimal_scale")
-                .and_then(toml::Value::as_integer),
-            Some(18),
-            "{instrument_id} must use the 18-decimal Chainlink report scale"
-        );
-        assert_eq!(
-            binding
-                .get("price_precision")
-                .and_then(toml::Value::as_integer),
-            Some(8),
-            "{instrument_id} must use 8dp NT price precision"
-        );
-        assert!(
-            seen_feed_ids.insert(actual_feed),
-            "{instrument_id} reuses another asset's feed_id ({actual_feed}); cross-asset feed collision"
-        );
-    }
+    let binding = feed_bindings
+        .first()
+        .expect("BTC feed binding should be present");
+    let instrument_id = binding
+        .get("instrument_id")
+        .and_then(toml::Value::as_str)
+        .expect("feed binding should declare instrument_id");
+    let feed_id = binding
+        .get("feed_id")
+        .and_then(toml::Value::as_str)
+        .expect("feed binding should declare feed_id");
+    assert_eq!(
+        instrument_id, "BTC-USD.CHAINLINK",
+        "tracked live Chainlink Data Streams catalog must stay BTC-only"
+    );
+    assert_eq!(
+        feed_id, CHAINLINK_BTC_TESTNET_FEED_ID,
+        "BTC strike feed_id drifted from its pinned testnet feed"
+    );
+    assert_eq!(
+        binding
+            .get("report_schema_version")
+            .and_then(toml::Value::as_integer),
+        Some(3),
+        "BTC must use the Chainlink V3 report schema"
+    );
+    assert_eq!(
+        binding
+            .get("report_decimal_scale")
+            .and_then(toml::Value::as_integer),
+        Some(18),
+        "BTC must use the 18-decimal Chainlink report scale"
+    );
+    assert_eq!(
+        binding
+            .get("price_precision")
+            .and_then(toml::Value::as_integer),
+        Some(8),
+        "BTC must use 8dp NT price precision"
+    );
 }
 
 #[test]

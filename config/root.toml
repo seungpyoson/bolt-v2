@@ -189,48 +189,13 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-2"
 
-# Shared Chainlink Data Streams catalog. Client transport config consumes these
-# feed bindings; client-local feed catalogs are rejected.
+# BTC-only Chainlink Data Streams catalog. Client transport config subscribes to
+# every feed binding here; keep this aligned with the tracked live strategy set.
 [chainlink_data_streams]
 
 [[chainlink_data_streams.feed_bindings]]
 feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
 instrument_id = "BTC-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
-instrument_id = "ETH-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6"
-instrument_id = "SOL-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x000387d7c042a9d5c97c15354b531bd01bf6d3a351e190f2394403cf2f79bde9"
-instrument_id = "BNB-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x00035e3ddda6345c3c8ce45639d4449451f1d5828d7a70845e446f04905937cd"
-instrument_id = "XRP-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x00032057c7f224d0266b4311a81cdc3e38145e36442713350d3300fb12e85c99"
-instrument_id = "DOGE-USD.CHAINLINK"
 report_schema_version = 3
 report_decimal_scale = 18
 price_precision = 8

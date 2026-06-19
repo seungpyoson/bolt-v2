@@ -59,6 +59,24 @@ fn stage_runtime_dir(label: &str) -> support::TempCaseDir {
     dir
 }
 
+/// Stage a FULL on-box config tree mirroring `/opt/bolt-v2/config`: the strategies (via
+/// [`stage_runtime_dir`]), a copy of the base `root.toml`, and the overlay under
+/// `profiles/`. In this single-tree layout `--profile` and `--deployed` resolve their
+/// `strategy_files` to the SAME files — the real production topology (the deployed
+/// `live.toml`, the overlay's `base = "../root.toml"`, and the strategies all live in one
+/// dir). Returns the dir and the staged overlay path.
+fn stage_full_config_tree(label: &str) -> (support::TempCaseDir, std::path::PathBuf) {
+    let dir = stage_runtime_dir(label);
+    std::fs::copy(support::repo_path(BASE), dir.path().join("root.toml"))
+        .expect("base root.toml copies into the staged tree");
+    let profiles = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles).expect("staged profiles dir creates");
+    let overlay = profiles.join("prod-btc-5m.overlay.toml");
+    std::fs::copy(support::repo_path(OVERLAY), &overlay)
+        .expect("overlay copies into the staged tree");
+    (dir, overlay)
+}
+
 fn write(path: &Path, text: &str) {
     std::fs::write(path, text).expect("test file should write");
 }
@@ -194,6 +212,88 @@ fn generate_live_config_is_reproducible() {
          overlay ⊕ base byte-for-byte"
     );
     assert_eq!(first.profile_bundle_sha256, second.profile_bundle_sha256);
+}
+
+/// `toml::to_string` emits a table's inline entries (`key = ...`, including empty tables
+/// `{}` and inline arrays) before its header sections (`[key]` / `[[key]]`) — the TOML
+/// format requires inline keys to precede sub-table headers. `sort_toml_value` sorts each
+/// group, so a deterministic emission has, per table, the inline keys in sorted order then
+/// the section keys in sorted order.
+fn is_section_value(value: &toml::Value) -> bool {
+    match value {
+        // An EMPTY table serializes inline as `{}`, so it is not a header section.
+        toml::Value::Table(table) => !table.is_empty(),
+        // A non-empty array whose elements are all tables serializes as `[[key]]` sections;
+        // anything else (scalars, empty array, mixed) serializes inline.
+        toml::Value::Array(items) => {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(|item| matches!(item, toml::Value::Table(_)))
+        }
+        _ => false,
+    }
+}
+
+/// Assert the deterministic key order `sort_toml_value` + TOML serialization guarantee:
+/// within every table the inline keys are sorted and the section keys are sorted. A
+/// randomized-map iteration (e.g. a `HashMap`) leaking into the compose path would break
+/// one of these sorted runs even though a same-process double-generate — which shares one
+/// process's iteration order — would not.
+fn assert_deterministic_key_order(value: &toml::Value, path: &str) {
+    match value {
+        toml::Value::Table(table) => {
+            // `for (key, child) in table` binds `child` as `&Value` unambiguously (avoids
+            // the match-ergonomics surprise of `.filter(|(_, child)| ..)`, which would bind
+            // `&&Value`). Partition by how `toml::to_string` emits each entry.
+            let mut inline: Vec<&str> = Vec::new();
+            let mut sections: Vec<&str> = Vec::new();
+            for (key, child) in table {
+                if is_section_value(child) {
+                    sections.push(key.as_str());
+                } else {
+                    inline.push(key.as_str());
+                }
+            }
+            let mut inline_sorted = inline.clone();
+            inline_sorted.sort_unstable();
+            assert_eq!(
+                inline, inline_sorted,
+                "inline keys of table `{path}` must serialize in sorted order (deterministic composition)"
+            );
+            let mut sections_sorted = sections.clone();
+            sections_sorted.sort_unstable();
+            assert_eq!(
+                sections, sections_sorted,
+                "section keys of table `{path}` must serialize in sorted order (deterministic composition)"
+            );
+            for (key, child) in table {
+                assert_deterministic_key_order(child, &format!("{path}.{key}"));
+            }
+        }
+        toml::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                assert_deterministic_key_order(item, &format!("{path}[{index}]"));
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn generated_live_config_is_fully_key_ordered_for_cross_process_determinism() {
+    // The verify gate proves a deployed config (composed on one box at deploy time) is
+    // byte-identical to a re-composition (on another box at verify time). That
+    // cross-process byte-parity holds only if composition is order-deterministic.
+    // `generate_live_config_is_reproducible` checks two SAME-process calls agree, which
+    // cannot catch a randomized map iteration that differs across processes. Assert the
+    // stronger structural invariant that guarantees determinism: every table in the
+    // emitted config has sorted inline keys and sorted section keys.
+    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
+    // The provenance header is TOML comments, so the whole artifact parses as TOML.
+    let parsed: toml::Value =
+        toml::from_str(&generated.text).expect("generated runtime config must parse as TOML");
+    assert_deterministic_key_order(&parsed, "root");
 }
 
 #[test]
@@ -521,22 +621,36 @@ fn generate_rejects_an_already_generated_file() {
 
 #[test]
 fn verify_rejects_divergent_deployed_strategy_file() {
-    let dir = stage_runtime_dir("prod-overlay-divergent-strategy");
-    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
+    // Production single-tree layout: the overlay, its base, the strategies, and the
+    // deployed live.toml all live in ONE config dir (mirroring /opt/bolt-v2/config), so
+    // `--profile` and `--deployed` resolve strategy paths to the SAME on-box files. A
+    // tampered strategy is still rejected — caught by byte-parity, because `generate`
+    // re-reads the on-box strategy and the provenance header embeds a checksum over every
+    // strategy file's content. This is the genuine differential: with the deployed and
+    // approved strategy resolving to one file, only the regenerated-header checksum — not
+    // a file-vs-file compare — can detect the tamper.
+    let (dir, overlay) = stage_full_config_tree("prod-overlay-divergent-strategy");
+    let generated = generate_live_config(&overlay).expect("generate succeeds");
     let deployed = dir.path().join("live.toml");
     write(&deployed, &generated.text);
-    // The deployed live.toml bytes are unchanged; only the referenced strategy file is
-    // tampered (still valid TOML). The byte-compare cannot see this — only verify's
-    // explicit strategy-content comparison can.
+
+    // Sanity: the freshly generated config verifies in this tree BEFORE any tamper, so a
+    // later rejection is attributable to the tamper, not to the topology.
+    verify_live_config(&overlay, &deployed)
+        .expect("a freshly generated deployed config must verify in the production tree");
+
+    // Tamper the single on-box strategy file (still valid TOML). At re-verify `generate`
+    // re-reads it, recomputes a different bundle checksum, and the regenerated header no
+    // longer matches the deployed bytes.
     let strategy = dir.path().join("strategies").join("binary_oracle_btc.toml");
     let original = std::fs::read_to_string(&strategy).expect("staged strategy readable");
-    write(&strategy, &format!("{original}\n# deployed-side tamper\n"));
+    write(&strategy, &format!("{original}\n# on-box tamper\n"));
 
-    let error = verify_live_config(&support::repo_path(OVERLAY), &deployed)
-        .expect_err("a deployed strategy file diverging from the profile must fail verification");
+    let error = verify_live_config(&overlay, &deployed)
+        .expect_err("a divergent on-box strategy file must fail verification");
     assert!(
         matches!(error, ProfileError::Mismatch(_)),
-        "a divergent deployed strategy file must be rejected as a mismatch, got: {error}"
+        "a divergent on-box strategy file must be rejected as a mismatch, got: {error}"
     );
 }
 

@@ -28,12 +28,14 @@
 //!   selection), and emits a deterministic, provenance-stamped runtime config. Any
 //!   schema, semantic, composition, or invariant error fails generation closed.
 //! * [`verify_live_config`] re-composes from the on-box (overlay ⊕ base) and proves a
-//!   deployed runtime config is (a) byte-identical to the regenerated artifact,
-//!   (b) still loads against this exact binary, and (c) has strategy files whose
-//!   contents match the composed config's (strategy_files are referenced by path, so
-//!   they are not in the byte-compared root body). The independent load in (b) is the
-//!   staleness guard — byte parity alone cannot catch a key the current binary has
-//!   dropped.
+//!   deployed runtime config is (a) byte-identical to the regenerated artifact and
+//!   (b) still loads against this exact binary. The regenerated artifact's provenance
+//!   header embeds `config_bundle_checksum` — a hash over the composed root body PLUS
+//!   every referenced strategy file's content — and generation re-reads the on-box
+//!   strategy files, so (a) also catches a divergent deployed strategy file even though
+//!   strategy_files are referenced by path and their bytes are not otherwise in the
+//!   compared text. The independent load in (b) is the staleness guard — byte parity
+//!   alone cannot catch a key the current binary has dropped.
 //!
 //! `verify_live_config` covers the config-identity half of pre-arm. The full
 //! pre-arm gate chains it with live secret resolution and the arming-gate/readiness
@@ -265,18 +267,6 @@ fn require_table<'a>(
             "{context}: base is missing required table `{key}`"
         ))),
     }
-}
-
-/// Directory the overlay's declared base config resolves into. Strategy files are
-/// referenced relative to this directory (the loaded config's parent), so the
-/// approved strategy CONTENT lives here regardless of where a composed config is
-/// transiently staged for the validation load.
-fn overlay_base_dir(overlay_path: &Path, overlay: &ProdOverlay) -> PathBuf {
-    let base_path = resolve_root_relative_path(overlay_path, &overlay.base);
-    base_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Compose the deterministic composed-config TOML text from the overlay and its
@@ -593,12 +583,10 @@ fn provenance_header(source_profile: &str, profile_bundle_sha256: &str) -> Strin
 }
 
 /// The product of composing + loading an overlay: the composed body text (no
-/// header), the load of that body against this binary, and the stable base config
-/// directory the strategy files are resolved against.
+/// header) and the load of that body against this binary.
 struct ComposedConfig {
     text: String,
     loaded: LoadedBoltV3Config,
-    base_dir: PathBuf,
 }
 
 /// Compose, validate, and produce the runtime config from a tracked overlay,
@@ -615,7 +603,6 @@ fn compose_and_load(overlay_path: &Path) -> Result<ComposedConfig, ProfileError>
     Ok(ComposedConfig {
         text: composed_text,
         loaded,
-        base_dir: overlay_base_dir(overlay_path, &overlay),
     })
 }
 
@@ -644,14 +631,21 @@ pub fn verify_live_config(
     profile_path: &Path,
     deployed_path: &Path,
 ) -> Result<LiveConfigVerification, ProfileError> {
-    // Compose + load once (the composed load + base dir are reused for the
-    // strategy-content comparison below).
-    let composed = compose_and_load(profile_path)?;
-    let composed_loaded = &composed.loaded;
-
     let generated = generate_live_config(profile_path)?;
     let deployed_text = read_config_text(deployed_path)?;
 
+    // Byte-parity against the freshly-composed artifact is the single mechanism that
+    // proves the deployed config has not diverged — INCLUDING the content of every
+    // referenced strategy file. `generate` stamps a provenance header embedding
+    // `config_bundle_checksum`, a hash over the composed root body PLUS every strategy
+    // file's text (see `config_bundle_checksum` in `bolt_v3_config`), and re-reads the
+    // on-box strategy files. So a deployed strategy file that diverges (valid schema,
+    // but different sizing/feeds/stale) recomputes a different checksum, changes the
+    // regenerated header, and fails this check — even though strategy_files are
+    // referenced by path and their bytes are not otherwise in the compared text. A
+    // separate file-vs-file strategy comparison would be redundant with this, and inert
+    // in the production single-tree layout where the overlay base and the deployed
+    // `live.toml` resolve strategy paths to the same on-box files.
     if deployed_text != generated.text {
         return Err(ProfileError::Mismatch(format!(
             "deployed runtime config `{}` does not match the config composed from overlay `{}`; \
@@ -669,48 +663,6 @@ pub fn verify_live_config(
             source,
         })?;
     let invariants = confirm_production_invariants(&deployed_loaded)?;
-
-    // The byte-equality above pins the root body, but strategy_files are referenced
-    // by relative path and resolved at the deploy site — their CONTENTS are not part
-    // of the compared bytes. Compare them explicitly so a divergent deployed strategy
-    // file (valid schema, but different sizing/feeds/stale) cannot pass as approved.
-    if composed_loaded.strategies.len() != deployed_loaded.strategies.len() {
-        return Err(ProfileError::Mismatch(format!(
-            "deployed runtime config references {} strategy file(s) but must match the composed {}",
-            deployed_loaded.strategies.len(),
-            composed_loaded.strategies.len()
-        )));
-    }
-    for (approved, deployed) in composed_loaded
-        .strategies
-        .iter()
-        .zip(deployed_loaded.strategies.iter())
-    {
-        if approved.relative_path != deployed.relative_path {
-            return Err(ProfileError::Mismatch(format!(
-                "deployed strategy path `{}` must match the approved `{}`",
-                deployed.relative_path, approved.relative_path
-            )));
-        }
-        // Read the APPROVED strategy content from the stable base directory
-        // (`approved.config_path` resolved into the transient compose staging dir,
-        // which is already gone). The base dir is where the loader resolves the
-        // composed config's relative strategy_files, i.e. the real source of truth.
-        let approved_strategy_path = if Path::new(&approved.relative_path).is_absolute() {
-            PathBuf::from(&approved.relative_path)
-        } else {
-            composed.base_dir.join(&approved.relative_path)
-        };
-        let approved_text = read_config_text(&approved_strategy_path)?;
-        let deployed_strategy_text = read_config_text(&deployed.config_path)?;
-        if approved_text != deployed_strategy_text {
-            return Err(ProfileError::Mismatch(format!(
-                "deployed strategy `{}` must match the tracked profile's copy; redeploy the \
-                 strategy files alongside the generated runtime config",
-                deployed.relative_path
-            )));
-        }
-    }
 
     Ok(LiveConfigVerification {
         profile_path: profile_path.to_path_buf(),

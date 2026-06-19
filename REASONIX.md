@@ -24,7 +24,7 @@ Rust binary for automated trading on Polymarket via NautilusTrader.
 
 ## Commands
 
-All via `just` (must be installed). The justfile is the single source of truth — CI calls these same recipes.
+All via `just` (must be installed). The justfile is the single source of truth — CI calls these same recipes. `just build`, `just test`, and `just clippy` are CI/operator lanes; the default agent workflow is remote-first Rust verification (`just fmt-check`, `just source-fence-static`, `just verify-remote`) per `AGENTS.md`.
 
 | Command | What it does |
 |---------|-------------|

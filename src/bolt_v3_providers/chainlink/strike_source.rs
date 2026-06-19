@@ -317,6 +317,14 @@ impl DataClient for ChainlinkStrikeSourceClient {
             )
         })?;
         let report_boundary = requested_report_boundary(cmd.params.as_ref(), cmd.instrument_id)?;
+        log::debug!(
+            "Chainlink strike source {} received {} subscribe for {} at {}={}",
+            self.client_id,
+            report_boundary.kind.label(),
+            cmd.instrument_id,
+            report_boundary.kind.param_key(),
+            report_boundary.unix_seconds
+        );
 
         let request = StrikeFetchRequest {
             rest_base_url: self.config.rest_base_url.clone(),
@@ -336,12 +344,23 @@ impl DataClient for ChainlinkStrikeSourceClient {
         // is unbound, so a stalled REST call must not stack concurrent requests.
         if !Self::begin_strike_fetch_if_idle(&self.in_flight, binding.instrument_id) {
             log::debug!(
-                "Chainlink strike source {} skipping strike subscribe for {}: a fetch is already in flight",
+                "Chainlink strike source {} skipping {} subscribe for {} at {}={}: a fetch is already in flight",
                 self.client_id,
-                cmd.instrument_id
+                report_boundary.kind.label(),
+                cmd.instrument_id,
+                report_boundary.kind.param_key(),
+                report_boundary.unix_seconds
             );
             return Ok(());
         }
+        log::info!(
+            "Chainlink strike source {} starting {} fetch for {} at {}={}",
+            self.client_id,
+            report_boundary.kind.label(),
+            cmd.instrument_id,
+            report_boundary.kind.param_key(),
+            report_boundary.unix_seconds
+        );
         let sender = self.data_sender.clone();
         let client_id = self.client_id;
         let in_flight = Arc::clone(&self.in_flight);
@@ -350,6 +369,15 @@ impl DataClient for ChainlinkStrikeSourceClient {
         get_runtime().spawn(async move {
             match fetch_chainlink_report_index_price(&request).await {
                 Ok(index_price) => {
+                    log::info!(
+                        "Chainlink strike source {client_id} fetched {} for {} at {}={}: value={} ts_event={}",
+                        request.report_boundary.kind.label(),
+                        request.instrument_id,
+                        request.report_boundary.kind.param_key(),
+                        request.report_boundary.unix_seconds,
+                        index_price.value,
+                        index_price.ts_event
+                    );
                     if sender
                         .send(DataEvent::Data(Data::IndexPriceUpdate(index_price)))
                         .is_err()
@@ -358,6 +386,14 @@ impl DataClient for ChainlinkStrikeSourceClient {
                             "Chainlink strike source {client_id} could not deliver {} for {}: data channel closed",
                             request.report_boundary.kind.label(),
                             request.instrument_id
+                        );
+                    } else {
+                        log::debug!(
+                            "Chainlink strike source {client_id} delivered {} for {} at {}={}",
+                            request.report_boundary.kind.label(),
+                            request.instrument_id,
+                            request.report_boundary.kind.param_key(),
+                            request.report_boundary.unix_seconds
                         );
                     }
                 }
@@ -372,6 +408,13 @@ impl DataClient for ChainlinkStrikeSourceClient {
                 }
             }
             ChainlinkStrikeSourceClient::finish_strike_fetch(&in_flight, fetch_instrument_id);
+            log::debug!(
+                "Chainlink strike source {client_id} cleared in-flight {} fetch for {} at {}={}",
+                request.report_boundary.kind.label(),
+                request.instrument_id,
+                request.report_boundary.kind.param_key(),
+                request.report_boundary.unix_seconds
+            );
         });
         Ok(())
     }

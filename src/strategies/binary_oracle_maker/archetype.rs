@@ -303,6 +303,51 @@ fn nt_contract_data_type_name<T>() -> &'static str {
     type_name.rsplit(':').next().unwrap_or(type_name)
 }
 
+/// Deserialize the operator `[parameters]` block, first deriving any omitted
+/// updown `cadence_slug_token` per `[[parameters.markets]]` row through the
+/// shared, registry-dispatched family helper. The maker never recomputes the
+/// slug — the derivation lives in exactly one place
+/// ([`crate::bolt_v3_market_families::inject_derived_cadence_slug_token`], the
+/// same seam the updown `[target]` block uses); this surface only plumbs its own
+/// field names (`family_key` + `cadence_seconds`). One seam for all three
+/// `[parameters]` deserialize sites so derivation is identical everywhere a maker
+/// `[parameters]` block is read.
+fn deserialize_parameters_block(parameters: &Value) -> Result<ParametersBlock, String> {
+    parameters_with_derived_market_cadence_slug_tokens(parameters)?
+        .try_into()
+        .map_err(|error: toml::de::Error| error.to_string())
+}
+
+/// Return a copy of the `[parameters]` value with each `[[parameters.markets]]`
+/// row's omitted, derivable `cadence_slug_token` filled in. A row whose family
+/// does not derive a slug from cadence (e.g. a free-form static event market) is
+/// left untouched and still required to supply its own slug. Returns `Err` only
+/// when a contract-defining row omits the slug and its cadence has no contract
+/// token (the shared helper names the offending cadence).
+fn parameters_with_derived_market_cadence_slug_tokens(parameters: &Value) -> Result<Value, String> {
+    let mut value = parameters.clone();
+    let Some(table) = value.as_table_mut() else {
+        return Ok(value);
+    };
+    let Some(markets) = table
+        .get_mut(stringify!(markets))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(value);
+    };
+    for market in markets.iter_mut() {
+        let Some(row) = market.as_table_mut() else {
+            continue;
+        };
+        crate::bolt_v3_market_families::inject_derived_cadence_slug_token(
+            row,
+            stringify!(family_key),
+            stringify!(cadence_seconds),
+        )?;
+    }
+    Ok(value)
+}
+
 /// Bolt-v3 startup validation and **go-live gate** for the maker.
 ///
 /// Confirms the archetype key, then deserializes the operator `[parameters]`
@@ -325,7 +370,7 @@ pub fn validate_strategy(
             strategy.strategy_archetype.as_str()
         )];
     }
-    let parameters = match strategy.parameters.clone().try_into::<ParametersBlock>() {
+    let parameters = match deserialize_parameters_block(&strategy.parameters) {
         Ok(value) => value,
         Err(error) => {
             return vec![format!(
@@ -626,11 +671,7 @@ pub fn declared_markets(strategy: &LoadedStrategy) -> Result<Vec<MakerMarketDecl
             strategy.config.strategy_archetype.as_str()
         ));
     }
-    let parameters: ParametersBlock = strategy
-        .config
-        .parameters
-        .clone()
-        .try_into()
+    let parameters = deserialize_parameters_block(&strategy.config.parameters)
         .map_err(|error| format!("invalid [parameters] block: {error}"))?;
     Ok(parameters
         .markets
@@ -714,10 +755,7 @@ fn raw_maker_config_from_config(strategy: &BoltV3StrategyConfig) -> Result<Value
             strategy.strategy_archetype.as_str()
         ));
     }
-    let parameters: ParametersBlock = strategy
-        .parameters
-        .clone()
-        .try_into()
+    let parameters = deserialize_parameters_block(&strategy.parameters)
         .map_err(|error| format!("invalid [parameters] block: {error}"))?;
     raw_maker_config_from_parts(strategy, &parameters)
 }
@@ -2227,8 +2265,13 @@ mod tests {
 
     #[test]
     fn parameters_block_rejects_unknown_runtime_key() {
+        // Fully valid [parameters] block except ONE unknown [runtime] key, routed
+        // through the production seam (deserialize_parameters_block) with a valid
+        // markets row so the ONLY possible defect is the unknown key. This proves
+        // deny_unknown_fields fires THROUGH the raw-table pre-processing seam, not
+        // because a required block (markets) is absent.
         let toml = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -2240,18 +2283,22 @@ mod tests {
             surprise = 1
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
+            VALID_MARKETS_TOML,
             valid_backtest_toml()
         );
+        let parameters: Value = toml::from_str(&toml).expect("raw [parameters] toml parses");
+        let error = deserialize_parameters_block(&parameters)
+            .expect_err("an unknown [parameters.runtime] key must fail loud through the seam");
         assert!(
-            parameters_from_str(&toml).is_err(),
-            "an unknown [parameters.runtime] key must fail loud"
+            error.contains("surprise"),
+            "the deny_unknown_fields error must name the injected unknown key: {error}"
         );
     }
 
     #[test]
     fn parameters_block_rejects_unknown_backtest_key() {
         let toml = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -2262,6 +2309,7 @@ mod tests {
             requote_min_interval_ms = 500
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
+            VALID_MARKETS_TOML,
             r#"
             [backtest]
             verdict = "pass"
@@ -2305,9 +2353,12 @@ mod tests {
             catalog_data_types = ["OrderBookDelta", "TradeTick"]
             "#
         );
+        let parameters: Value = toml::from_str(&toml).expect("raw [parameters] toml parses");
+        let error = deserialize_parameters_block(&parameters)
+            .expect_err("an unknown [parameters.backtest] key must fail loud through the seam");
         assert!(
-            parameters_from_str(&toml).is_err(),
-            "an unknown [parameters.backtest] key must fail loud"
+            error.contains("surprise"),
+            "the deny_unknown_fields error must name the injected unknown key: {error}"
         );
     }
 
@@ -2343,7 +2394,7 @@ mod tests {
     #[test]
     fn parameters_block_rejects_unknown_market_portfolio_key() {
         let toml = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -2360,11 +2411,16 @@ mod tests {
             min_slot_notional = 100.0
             surprise = true
             "#,
+            VALID_MARKETS_TOML,
             valid_backtest_toml()
         );
+        let parameters: Value = toml::from_str(&toml).expect("raw [parameters] toml parses");
+        let error = deserialize_parameters_block(&parameters).expect_err(
+            "an unknown [parameters.market_portfolio] key must fail loud through the seam",
+        );
         assert!(
-            parameters_from_str(&toml).is_err(),
-            "an unknown [parameters.market_portfolio] key must fail loud"
+            error.contains("surprise"),
+            "the deny_unknown_fields error must name the injected unknown key: {error}"
         );
     }
 
@@ -2498,5 +2554,110 @@ mod tests {
                 "a usize above i64::MAX cannot round-trip through TOML and must fail closed"
             );
         }
+    }
+
+    fn first_market_row_mut(parameters: &mut Value) -> &mut Map<String, Value> {
+        parameters
+            .as_table_mut()
+            .expect("parameters is a table")
+            .get_mut(stringify!(markets))
+            .and_then(Value::as_array_mut)
+            .expect("markets is an array")
+            .first_mut()
+            .expect("at least one market row")
+            .as_table_mut()
+            .expect("market row is a table")
+    }
+
+    fn remove_first_market_slug_token(parameters: &mut Value) {
+        first_market_row_mut(parameters).remove(stringify!(cadence_slug_token));
+    }
+
+    fn set_first_market_cadence_seconds(parameters: &mut Value, cadence_seconds: i64) {
+        first_market_row_mut(parameters).insert(
+            stringify!(cadence_seconds).to_string(),
+            Value::Integer(cadence_seconds),
+        );
+    }
+
+    fn first_market_slug_token(parameters: &Value) -> Option<&str> {
+        parameters
+            .as_table()?
+            .get(stringify!(markets))?
+            .as_array()?
+            .first()?
+            .as_table()?
+            .get(stringify!(cadence_slug_token))?
+            .as_str()
+    }
+
+    #[test]
+    fn deserialize_parameters_block_derives_omitted_updown_market_slug_token() {
+        // Drop the operator-supplied slug from the sole updown market row; the shared
+        // seam must derive it (cadence_seconds = 3600 ⇒ "1h") so the full
+        // [parameters] block still deserializes through the maker's own deny-unknown
+        // path.
+        let mut config = valid_strategy_config_with_hash(TEST_ARTIFACT_SHA256);
+        remove_first_market_slug_token(&mut config.parameters);
+        let parameters = deserialize_parameters_block(&config.parameters)
+            .expect("an omitted updown slug derives and the block deserializes");
+        assert_eq!(parameters.markets[0].cadence_slug_token, "1h");
+    }
+
+    #[test]
+    fn deserialize_parameters_block_rejects_omitted_token_for_non_contract_cadence() {
+        let mut config = valid_strategy_config_with_hash(TEST_ARTIFACT_SHA256);
+        set_first_market_cadence_seconds(&mut config.parameters, 120);
+        remove_first_market_slug_token(&mut config.parameters);
+        let error = deserialize_parameters_block(&config.parameters)
+            .expect_err("a non-contract cadence with no token must fail closed");
+        assert!(
+            error.contains("cadence_seconds=120")
+                && error.contains("cadence_slug_token is required"),
+            "error must name the offending cadence and the maker's field name: {error}"
+        );
+    }
+
+    #[test]
+    fn parameters_derivation_leaves_non_updown_market_untouched() {
+        // A free-form-slug family declares no cadence→slug contract, so an omitted
+        // token is NOT derived and NOT errored here: the maker surface dispatches
+        // through the shared helper, which leaves the missing token for that family's
+        // own required-field validator. (A non-updown row is used precisely because
+        // its registry binding sets `derive_cadence_slug_token: None`.)
+        let parameters: Value = toml::toml! {
+            [[markets]]
+            market_key = "eth-event"
+            family_key = "static_binary_event"
+            underlying_asset = "ETH"
+            cadence_seconds = 3600
+        }
+        .into();
+        let derived = parameters_with_derived_market_cadence_slug_tokens(&parameters)
+            .expect("a free-form family row is left untouched, not errored");
+        assert_eq!(
+            first_market_slug_token(&derived),
+            None,
+            "a free-form-slug family must not receive a derived token"
+        );
+    }
+
+    #[test]
+    fn deserialize_parameters_block_rejects_unknown_market_row_key() {
+        // The maker seam pre-processes each raw [[parameters.markets]] row before
+        // try_into; deny_unknown_fields must still fire on a market row. Inject one
+        // unknown key into an otherwise-valid row so the ONLY defect is that key,
+        // proving the rejection is caused by the unknown field surviving the
+        // raw-table seam, not by a missing or derived field.
+        let mut config = valid_strategy_config_with_hash(TEST_ARTIFACT_SHA256);
+        first_market_row_mut(&mut config.parameters)
+            .insert(stringify!(surprise).to_string(), Value::Boolean(true));
+        let error = deserialize_parameters_block(&config.parameters).expect_err(
+            "an unknown [[parameters.markets]] row key must fail closed through the seam",
+        );
+        assert!(
+            error.contains("surprise"),
+            "the deny_unknown_fields error must name the injected unknown market-row key: {error}"
+        );
     }
 }

@@ -124,6 +124,7 @@ fn startup_check_reports_empty_client_stages_as_satisfied_root_facts() {
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         root: BoltV3RootConfig {
             clients: BTreeMap::new(),
+            reference_live_probe: None,
             ..loaded.root
         },
         strategies: Vec::new(),

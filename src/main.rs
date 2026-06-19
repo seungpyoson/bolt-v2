@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::{
+    collections::BTreeMap,
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
@@ -14,6 +15,7 @@ use std::{
 
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_live_node::{
         build_bolt_v3_live_node, build_bolt_v3_strategy_free_data_client_probe_live_node,
         current_build_head_sha, run_bolt_v3_data_client_census, run_bolt_v3_data_client_probe,
@@ -24,11 +26,12 @@ use bolt_v2::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
         ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
+        reference_live_probe::run_reference_live_probe,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
     bolt_v3_secrets::{
-        check_no_forbidden_credential_env_vars, resolve_bolt_v3_client_secrets,
-        resolve_bolt_v3_secrets,
+        ResolvedBoltV3Secrets, check_no_forbidden_credential_env_vars,
+        resolve_bolt_v3_client_secrets, resolve_bolt_v3_secrets,
     },
     secrets::SsmResolverSession,
 };
@@ -38,6 +41,8 @@ const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
 const CLOB_V2_CACHE_SYNC_EXECUTION_CLIENT_OUTPUT_FIELD: &str = "execution_client_id";
 const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
+const KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: &str = "kill_switch_store_init_completed";
+const KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: &str = "state_path";
 
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
@@ -97,6 +102,14 @@ enum OpsCommand {
         config: PathBuf,
         #[arg(long)]
         client_key: String,
+    },
+    InitKillSwitchStore {
+        #[arg(short, long)]
+        config: PathBuf,
+    },
+    ReferenceLiveProbe {
+        #[arg(short, long)]
+        config: PathBuf,
     },
 }
 
@@ -203,7 +216,56 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::DataClientCensus { config, client_key } => {
             run_data_client_census(&config, &client_key)
         }
+        OpsCommand::InitKillSwitchStore { config } => run_init_kill_switch_store(&config),
+        OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
     }
+}
+
+fn run_init_kill_switch_store(config: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    let kill_switch = loaded
+        .root
+        .risk
+        .kill_switch
+        .as_ref()
+        .ok_or("risk.kill_switch block is required to initialize the kill-switch store")?;
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
+    store.bootstrap_initial_armed_loss_snapshot()?;
+    let output = serde_json::json!({
+        KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: true,
+        KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: store.path().display().to_string(),
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+fn run_reference_live_probe_command(config: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let probe = loaded.root.reference_live_probe.as_ref().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "reference_live_probe must be configured",
+        )
+    })?;
+    let ssm_resolver_session = SsmResolverSession::new()?;
+    let chainlink =
+        resolve_bolt_v3_client_secrets(&ssm_resolver_session, &loaded, &probe.chainlink_client_id)?;
+    let polyresearch = resolve_bolt_v3_client_secrets(
+        &ssm_resolver_session,
+        &loaded,
+        &probe.polyresearch_client_id,
+    )?;
+    let mut clients = BTreeMap::new();
+    clients.extend(chainlink.clients);
+    clients.extend(polyresearch.clients);
+    let resolved = ResolvedBoltV3Secrets { clients };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let report = runtime.block_on(run_reference_live_probe(&loaded, &resolved))?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn run_data_client_probe(
@@ -759,6 +821,27 @@ mod tests {
                 assert_eq!(client_key, "bybit_data");
             }
             _ => panic!("expected ops data-client-census command"),
+        }
+    }
+
+    #[test]
+    fn ops_reference_live_probe_cli_parses_config() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "reference-live-probe",
+            "--config",
+            "config/root.toml",
+        ])
+        .expect("reference live probe command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::ReferenceLiveProbe { config },
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+            }
+            _ => panic!("expected ops reference-live-probe command"),
         }
     }
 

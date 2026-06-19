@@ -207,24 +207,11 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
 
     let mut errors = Vec::new();
 
-    let underlying = block.underlying_asset.as_str();
-    if underlying.is_empty() {
-        errors.push(format!(
-            "{context}: target.underlying_asset must not be empty"
-        ));
-    } else if underlying.chars().count() > 32 {
-        errors.push(format!(
-            "{context}: target.underlying_asset must be 1-32 characters (got {})",
-            underlying.chars().count()
-        ));
-    } else if !underlying
-        .chars()
-        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
-    {
-        errors.push(format!(
-            "{context}: target.underlying_asset must use only uppercase ASCII letters, digits, and underscores (got `{underlying}`)"
-        ));
-    }
+    errors.extend(super::validate_underlying_asset(
+        context,
+        "target.underlying_asset",
+        block.underlying_asset.as_str(),
+    ));
 
     let cadence_errors = validate_target_cadence(context, block.cadence_secs);
     let token_errors = validate_cadence_slug_token(context, block.cadence_slug_token.as_str());
@@ -418,6 +405,41 @@ fn validate_cadence_slug_token(context: &str, cadence_slug_token: &str) -> Vec<S
     {
         errors.push(format!(
             "{context}: target.cadence_slug_token must use only lowercase ASCII letters and digits (got `{cadence_slug_token}`)"
+        ));
+    }
+    errors
+}
+
+/// LOAD-TIME validation of a maker's operator-declared updown market target.
+/// Reuses the family's own underlying/cadence/slug validators (one home per rule),
+/// enforces the cadence->slug contract (a non-canonical slug would silently fail to
+/// resolve at runtime, since selection derives the market from
+/// `expected_cadence_slug_token`), and rejects the static-market override fields —
+/// updown is a rotating-cadence family, so a `static_condition_id` /
+/// `static_yes_outcome` / `static_no_outcome` on an updown declaration is a
+/// misconfiguration that must fail closed at load rather than be silently ignored.
+pub fn validate_maker_market_target(
+    context: &str,
+    target: MarketSelectionTarget<'_>,
+) -> Vec<String> {
+    let mut errors =
+        super::validate_underlying_asset(context, "underlying_asset", target.underlying_asset);
+    errors.extend(validate_target_cadence(context, target.cadence_seconds));
+    errors.extend(validate_cadence_slug_token(
+        context,
+        target.cadence_slug_token,
+    ));
+    errors.extend(validate_cadence_slug_contract(
+        context,
+        target.cadence_seconds,
+        target.cadence_slug_token,
+    ));
+    if target.static_condition_id.is_some()
+        || target.static_yes_outcome.is_some()
+        || target.static_no_outcome.is_some()
+    {
+        errors.push(format!(
+            "{context}: static_condition_id/static_yes_outcome/static_no_outcome are not valid for the rotating-cadence `updown` family"
         ));
     }
     errors

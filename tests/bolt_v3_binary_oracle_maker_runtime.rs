@@ -1125,12 +1125,23 @@ fn runtime_static_declaration() -> MakerMarketDeclaration {
 }
 
 fn runtime_binary_option(instrument_id: &str, outcome: &str) -> InstrumentAny {
-    let market_id = format!("market-{RUNTIME_STATIC_SLUG}");
+    runtime_binary_option_with_market_id(
+        instrument_id,
+        outcome,
+        &format!("market-{RUNTIME_STATIC_SLUG}"),
+    )
+}
+
+fn runtime_binary_option_with_market_id(
+    instrument_id: &str,
+    outcome: &str,
+    market_id: &str,
+) -> InstrumentAny {
     let question_id = format!("question-{RUNTIME_STATIC_SLUG}");
     let mut info = Params::new();
     for (key, value) in [
         ("market_slug", RUNTIME_STATIC_SLUG),
-        ("market_id", market_id.as_str()),
+        ("market_id", market_id),
         ("condition_id", RUNTIME_STATIC_CONDITION_ID),
         ("question_id", question_id.as_str()),
     ] {
@@ -1173,6 +1184,28 @@ fn runtime_static_instruments() -> Vec<InstrumentAny> {
     vec![
         runtime_binary_option(RUNTIME_YES_INSTRUMENT, RUNTIME_STATIC_YES_OUTCOME),
         runtime_binary_option(RUNTIME_NO_INSTRUMENT, RUNTIME_STATIC_NO_OUTCOME),
+    ]
+}
+
+/// The same declared static market resolved on a later cadence window: identical
+/// instrument ids / slug / condition id / outcomes (so it resolves to the same
+/// `market_key`), but a rolled `market_id` — the one field `apply_resolution` keys
+/// the retain-vs-reset decision on. The resolver pairs the two legs by slug +
+/// condition id (not market_id) and requires both legs to agree on market_id, so
+/// the rolled id is applied to both.
+fn runtime_static_instruments_rolled() -> Vec<InstrumentAny> {
+    let rolled_market_id = format!("market-{RUNTIME_STATIC_SLUG}-rolled");
+    vec![
+        runtime_binary_option_with_market_id(
+            RUNTIME_YES_INSTRUMENT,
+            RUNTIME_STATIC_YES_OUTCOME,
+            &rolled_market_id,
+        ),
+        runtime_binary_option_with_market_id(
+            RUNTIME_NO_INSTRUMENT,
+            RUNTIME_STATIC_NO_OUTCOME,
+            &rolled_market_id,
+        ),
     ]
 }
 
@@ -1397,6 +1430,7 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
     let orders = outcome
         .orders
         .expect("a fresh market quote cycle dispatches leg order intent");
+    let no_id = InstrumentId::from(RUNTIME_NO_INSTRUMENT);
     match &orders.yes.dispatch {
         Some(MakerOrderDispatchOutcome::Submitted { instrument_id, .. }) => {
             assert_eq!(
@@ -1406,11 +1440,23 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
         }
         other => panic!("expected a YES submit intent in shadow, got {other:?}"),
     }
+    // Clause (c) is per-leg: the NO leg mints + dispatches its own intent. Asserting
+    // only the YES leg would let a regression that dropped the NO-leg rotation, or
+    // transposed both rotations onto YES, ship green.
+    match &orders.no.dispatch {
+        Some(MakerOrderDispatchOutcome::Submitted { instrument_id, .. }) => {
+            assert_eq!(
+                *instrument_id, no_id,
+                "the NO leg intent must target the resolved NO instrument"
+            );
+        }
+        other => panic!("expected a NO submit intent in shadow, got {other:?}"),
+    }
     // Shadow chokepoint: intent emitted, nothing admitted to the venue.
     assert_eq!(admission.admitted_order_count(), 0);
 
-    // The dispatched identity rotated from `next` to `active`; the next slot is
-    // consumed so the following cycle mints a fresh generation.
+    // The dispatched identity rotated from `next` to `active` on BOTH legs; the next
+    // slot is consumed so the following cycle mints a fresh generation.
     let market_runtime = maker
         .runtime()
         .market(RUNTIME_MARKET_KEY)
@@ -1421,6 +1467,108 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
     );
     assert!(
         market_runtime.leg_binding(Leg::Yes).next_order.is_none(),
-        "the minted next identity is consumed by the submit"
+        "the minted next YES identity is consumed by the submit"
+    );
+    assert!(
+        market_runtime.leg_binding(Leg::No).active_order.is_some(),
+        "a submitted NO intent must rotate the minted identity to active"
+    );
+    assert!(
+        market_runtime.leg_binding(Leg::No).next_order.is_none(),
+        "the minted next NO identity is consumed by the submit"
+    );
+}
+
+#[test]
+fn maker_runtime_retains_identities_on_same_window_and_resets_on_roll() {
+    // Stateful clauses (b)/(c) invariant + the cadence-roll id guard. A second
+    // refresh whose market resolves to the SAME market_id retains the assigned
+    // identities and the monotonic per-leg generation counters; a rolled market_id
+    // (same declared market_key, new cadence window) rebuilds the runtime fresh, and
+    // the post-roll re-mint must never reproduce a pre-roll client order id. The
+    // single-pass suite begins from `MakerRuntime::empty()`, so it never enters the
+    // retain branch — an inverted retain guard, or a client order id missing the
+    // rolled market_id, would otherwise ship green.
+    let mut runtime = MakerRuntime::empty();
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"),
+        "the declared market is active, so minting succeeds"
+    );
+    let pre_roll_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a next YES identity was minted");
+
+    // Second refresh, SAME instruments => SAME market_id => retain.
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert_eq!(
+        runtime
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the market stays active across an unchanged-window refresh")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .as_ref(),
+        Some(&pre_roll_yes),
+        "an unchanged cadence window retains the assigned identity (no reset)"
+    );
+    // The retained generation counter is monotonic: the next mint advances past the
+    // pre-roll id rather than repeating it.
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let advanced_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a fresh YES identity after a retained refresh");
+    assert_ne!(
+        advanced_yes.client_order_id(),
+        pre_roll_yes.client_order_id(),
+        "a retained window advances the generation, never repeats an id"
+    );
+
+    // Third refresh, ROLLED market_id => fresh runtime, generation reset to 0.
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments_rolled(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the rolled market is active")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .is_none(),
+        "a rolled cadence window rebuilds the runtime with unset identities"
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let post_roll_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a YES identity on the rolled window");
+    assert_ne!(
+        post_roll_yes.client_order_id(),
+        pre_roll_yes.client_order_id(),
+        "a post-roll re-mint must never reproduce a pre-roll client order id: the \
+         generation resets to 0, so the rolled market_id must discriminate the id"
     );
 }

@@ -54,21 +54,28 @@ fn leg_tag(leg: Leg) -> &'static str {
 }
 
 /// Mint a fresh per-leg [`OrderIdentity`] for a market generation. The client
-/// order id is `"{order_id_tag}-{market_key}-{yes|no}-{generation}"`, which the
-/// order compiler maps **verbatim** onto the NautilusTrader `ClientOrderId`
-/// (`bolt_v3_maker_order_compile::nt_client_order_id`), so it must be unique per
-/// live order: `order_id_tag` is unique per strategy, `market_key` per declared
-/// market, `leg` distinguishes the two legs, and `generation` is monotonic per
-/// (market, leg) — together globally unique.
+/// order id is `"{order_id_tag}-{market_key}-{market_id}-{yes|no}-{generation}"`,
+/// which the order compiler maps **verbatim** onto the NautilusTrader
+/// `ClientOrderId` (`bolt_v3_maker_order_compile::nt_client_order_id`), so it must
+/// be unique per live order: `order_id_tag` is unique per strategy, `market_key`
+/// per declared market, `market_id` discriminates a cadence-window roll of that
+/// same declared market, `leg` distinguishes the two legs, and `generation` is
+/// monotonic per (market, leg). The `generation` counter lives on
+/// [`MakerMarketRuntime`] and resets to 0 when a roll rebuilds the runtime
+/// ([`MakerRuntime::apply_resolution`]); `market_key` is operator-stable across
+/// that roll, so without `market_id` — the one component that changes on a roll —
+/// the first post-roll re-mint would reproduce a pre-roll id. Together the five
+/// components are globally unique across rolls.
 fn make_leg_identity(
     order_id_tag: &str,
     market_key: &str,
+    market_id: &str,
     leg: Leg,
     generation: u64,
 ) -> OrderIdentity {
     OrderIdentity::new(
         MakerClientOrderId::new(format!(
-            "{order_id_tag}-{market_key}-{}-{generation}",
+            "{order_id_tag}-{market_key}-{market_id}-{}-{generation}",
             leg_tag(leg)
         )),
         generation,
@@ -156,7 +163,13 @@ impl MakerMarketRuntime {
                 self.no_generation
             }
         };
-        let identity = make_leg_identity(order_id_tag, &self.binding.market_key, leg, generation);
+        let identity = make_leg_identity(
+            order_id_tag,
+            &self.binding.market_key,
+            &self.binding.market_id,
+            leg,
+            generation,
+        );
         self.leg_binding_mut(leg).next_order = Some(identity);
     }
 }
@@ -406,16 +419,26 @@ mod tests {
         // (tag, market, leg, generation) must reproduce the same id. A leg_tag
         // collision (e.g. both legs minting "yes") would make the YES and NO ids
         // equal and fail the inequality.
-        let yes = make_leg_identity("001", "eth-hourly", Leg::Yes, 3);
-        let no = make_leg_identity("001", "eth-hourly", Leg::No, 3);
-        assert_eq!(yes.client_order_id().as_str(), "001-eth-hourly-yes-3");
-        assert_eq!(no.client_order_id().as_str(), "001-eth-hourly-no-3");
+        let yes = make_leg_identity("001", "eth-hourly", "market-a", Leg::Yes, 3);
+        let no = make_leg_identity("001", "eth-hourly", "market-a", Leg::No, 3);
+        assert_eq!(yes.client_order_id().as_str(), "001-eth-hourly-market-a-yes-3");
+        assert_eq!(no.client_order_id().as_str(), "001-eth-hourly-market-a-no-3");
         assert_ne!(yes.client_order_id(), no.client_order_id());
         assert_eq!(yes.generation(), 3);
         assert_eq!(
-            make_leg_identity("001", "eth-hourly", Leg::Yes, 3),
+            make_leg_identity("001", "eth-hourly", "market-a", Leg::Yes, 3),
             yes,
             "minting is a pure function of its inputs"
+        );
+        // Cadence-roll guard: a roll keeps (tag, market_key, leg) but rebuilds the
+        // runtime with the generation counter back at 0, so the next generation-3
+        // mint would reproduce this id unless the rolled `market_id` discriminates
+        // it. The same inputs with a different `market_id` must mint a distinct id.
+        let rolled = make_leg_identity("001", "eth-hourly", "market-b", Leg::Yes, 3);
+        assert_ne!(
+            yes.client_order_id(),
+            rolled.client_order_id(),
+            "the rolled market_id must discriminate the client order id"
         );
     }
 
@@ -425,7 +448,7 @@ mod tests {
         // (the order now rests, so a later requote cancels it via active_order). A
         // no-op rotation would leave active_order None, so the assertion fails.
         let mut binding = leg_binding("YES.SIM");
-        let minted = make_leg_identity("001", "m", Leg::Yes, 1);
+        let minted = make_leg_identity("001", "m", "mkt", Leg::Yes, 1);
         binding.next_order = Some(minted.clone());
         rotate_leg_identity(
             &mut binding,
@@ -449,7 +472,7 @@ mod tests {
         // A wind-down/requote cancel clears the resting identity; a no-op rotation
         // would strand active_order set, so the next cancel would target a gone order.
         let mut binding = leg_binding("NO.SIM");
-        binding.active_order = Some(make_leg_identity("001", "m", Leg::No, 2));
+        binding.active_order = Some(make_leg_identity("001", "m", "mkt", Leg::No, 2));
         rotate_leg_identity(
             &mut binding,
             Some(&MakerOrderDispatchOutcome::Canceled {
@@ -464,7 +487,7 @@ mod tests {
     #[test]
     fn cancel_all_dispatch_clears_active_identity() {
         let mut binding = leg_binding("YES.SIM");
-        binding.active_order = Some(make_leg_identity("001", "m", Leg::Yes, 5));
+        binding.active_order = Some(make_leg_identity("001", "m", "mkt", Leg::Yes, 5));
         rotate_leg_identity(
             &mut binding,
             Some(&MakerOrderDispatchOutcome::CanceledAll {
@@ -481,7 +504,7 @@ mod tests {
         // A modify amends in place: the resting identity must survive, otherwise a
         // later cancel could not target it.
         let mut binding = leg_binding("YES.SIM");
-        let resting = make_leg_identity("001", "m", Leg::Yes, 4);
+        let resting = make_leg_identity("001", "m", "mkt", Leg::Yes, 4);
         binding.active_order = Some(resting.clone());
         rotate_leg_identity(
             &mut binding,
@@ -499,7 +522,7 @@ mod tests {
     #[test]
     fn blocked_leg_leaves_identities_untouched() {
         let mut binding = leg_binding("NO.SIM");
-        let next = make_leg_identity("001", "m", Leg::No, 1);
+        let next = make_leg_identity("001", "m", "mkt", Leg::No, 1);
         binding.next_order = Some(next.clone());
         rotate_leg_identity(&mut binding, None);
         assert_eq!(binding.next_order, Some(next));

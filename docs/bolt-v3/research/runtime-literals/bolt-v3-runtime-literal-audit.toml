@@ -17923,10 +17923,10 @@ reason = "Stable per-leg discriminator embedded in the client order id so the YE
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/runtime.rs"
 kind = "string"
-literal = '''"{order_id_tag}-{market_key}-{}-{generation}"'''
-context = '''"{order_id_tag}-{market_key}-{}-{generation}",'''
+literal = '''"{order_id_tag}-{market_key}-{market_id}-{}-{generation}"'''
+context = '''"{order_id_tag}-{market_key}-{market_id}-{}-{generation}",'''
 classification = "maker_runtime_order_identity_template"
-reason = "Client-order-id construction template the order compiler maps verbatim onto the NautilusTrader ClientOrderId; the interpolated parts are runtime values (order-id tag, market key, leg token, generation) and the literal is identity-handle structure, not an operator runtime value."
+reason = "Client-order-id construction template the order compiler maps verbatim onto the NautilusTrader ClientOrderId; the interpolated parts are runtime values (order-id tag, market key, rolled market id, leg token, generation) and the literal is identity-handle structure, not an operator runtime value. The market_id discriminates a cadence-window roll of the same declared market, whose generation counter resets to 0, so a post-roll re-mint can never reproduce a pre-roll id."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/config.rs"

@@ -530,7 +530,7 @@ impl BinaryOracleMaker {
 
     /// Current wall-clock in milliseconds from the NautilusTrader clock.
     fn now_milliseconds(&mut self) -> u64 {
-        self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64
+        self.clock().timestamp_ms()
     }
 
     /// The execution-venue-scoped instrument snapshot the resolver consumes. Mirrors
@@ -540,8 +540,11 @@ impl BinaryOracleMaker {
     fn execution_venue_instruments(&mut self) -> Vec<InstrumentAny> {
         let execution_venue = self.context.execution_venue();
         let cache = self.cache();
+        // Scope the cache read to the execution venue so NT filters before
+        // materialization; the trailing `.filter` is retained as a defensive
+        // assertion of the same fail-closed wrong-venue invariant.
         cache
-            .instrument_ids(None)
+            .instrument_ids(Some(&execution_venue))
             .into_iter()
             .filter_map(|instrument_id| cache.instrument(instrument_id).cloned())
             .filter(|instrument| instrument.id().venue == execution_venue)

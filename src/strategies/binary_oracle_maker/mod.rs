@@ -66,6 +66,7 @@ pub mod archetype;
 pub mod binding;
 mod config;
 pub mod mu;
+pub mod runtime;
 
 pub use config::{
     BinaryOracleMakerBuilder, BinaryOracleMakerConfig, parse_config, validate_config,

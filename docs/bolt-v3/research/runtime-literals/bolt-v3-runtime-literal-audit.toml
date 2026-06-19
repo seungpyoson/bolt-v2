@@ -17519,3 +17519,59 @@ literal = '''32'''
 context = '''const UNDERLYING_ASSET_MAX_CHARS: usize = 32;'''
 classification = "underlying_asset_length_bound"
 reason = "Maximum character length of an underlying-asset symbol; a structural validation bound (named constant), not a runtime trading value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "number"
+literal = '''0'''
+context = '''yes_generation: 0,'''
+classification = "maker_runtime_generation_counter_seed"
+reason = "Initial value of the per-market YES-leg order-generation counter; the first minted identity increments it to generation 1. A structural monotonic-sequence seed, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "number"
+literal = '''0'''
+context = '''no_generation: 0,'''
+classification = "maker_runtime_generation_counter_seed"
+reason = "Initial value of the per-market NO-leg order-generation counter; the first minted identity increments it to generation 1. A structural monotonic-sequence seed, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "number"
+literal = '''1'''
+context = '''self.yes_generation += 1;'''
+classification = "maker_runtime_generation_counter_step"
+reason = "Monotonic step of the per-market YES-leg order-generation counter so each minted client order id is unique per live order. A structural increment, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "number"
+literal = '''1'''
+context = '''self.no_generation += 1;'''
+classification = "maker_runtime_generation_counter_step"
+reason = "Monotonic step of the per-market NO-leg order-generation counter so each minted client order id is unique per live order. A structural increment, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "string"
+literal = '''"yes"'''
+context = '''Leg::Yes => "yes",'''
+classification = "maker_runtime_order_identity_leg_token"
+reason = "Stable per-leg discriminator embedded in the client order id so the YES and NO orders of one generation never collide; identity-handle structure derived from the Leg enum, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "string"
+literal = '''"no"'''
+context = '''Leg::No => "no",'''
+classification = "maker_runtime_order_identity_leg_token"
+reason = "Stable per-leg discriminator embedded in the client order id so the YES and NO orders of one generation never collide; identity-handle structure derived from the Leg enum, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "string"
+literal = '''"{order_id_tag}-{market_key}-{}-{generation}"'''
+context = '''"{order_id_tag}-{market_key}-{}-{generation}",'''
+classification = "maker_runtime_order_identity_template"
+reason = "Client-order-id construction template the order compiler maps verbatim onto the NautilusTrader ClientOrderId; the interpolated parts are runtime values (order-id tag, market key, leg token, generation) and the literal is identity-handle structure, not an operator runtime value."

@@ -1329,8 +1329,7 @@ fn maker_on_start_resolves_declared_markets_from_the_execution_venue_cache() {
     // `on_start` is declared by both `DataActor` and `Strategy` (a subtrait); the
     // actor lifecycle invokes `DataActor::on_start` (the maker's override), so the
     // test drives that exact method.
-    DataActor::on_start(&mut maker)
-        .expect("on_start resolves and subscribes the declared markets");
+    DataActor::on_start(&mut maker).expect("on_start resolves and subscribes the declared markets");
 
     assert_eq!(maker.runtime().active_market_count(), 1);
     let market = maker

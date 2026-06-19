@@ -228,7 +228,7 @@ fn candidates_for_target_yields_current_and_next_configured_slugs() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "window".to_string(),
+        cadence_slug_token: "5m".to_string(),
     };
     let UpdownSlugCandidates {
         current_period_start_unix_secs,
@@ -238,8 +238,8 @@ fn candidates_for_target_yields_current_and_next_configured_slugs() {
     } = candidates_for_target(&target, 601).expect("candidates should succeed for valid input");
     assert_eq!(current_period_start_unix_secs, 600);
     assert_eq!(next_period_start_unix_secs, 900);
-    assert_eq!(current_market_slug, "asset-updown-window-600");
-    assert_eq!(next_market_slug, "asset-updown-window-900");
+    assert_eq!(current_market_slug, "asset-updown-5m-600");
+    assert_eq!(next_market_slug, "asset-updown-5m-900");
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "window".to_string(),
+        cadence_slug_token: "5m".to_string(),
     };
     assert!(matches!(
         candidates_for_target(&target, -1),
@@ -399,8 +399,8 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     //                    [2]=mike_strategy_main / mike_target / MIKE / 3600 / 1h
     //
     //   sort by strategy_instance_id ascending  -> [1, 2, 0]
-    //   sort by configured_target_id ascending  -> [2, 0, 1]
-    //   sort by underlying_asset ascending      -> [2, 0, 1]
+    //   sort by configured_target_id ascending  -> [1, 2, 0]
+    //   sort by underlying_asset ascending      -> [1, 2, 0]
     //   sort by cadence_secs ascending       -> [1, 0, 2]
     //   sort by cadence_secs descending      -> [2, 0, 1]
     //   sort by cadence_slug_token ascending    -> [0, 2, 1]
@@ -577,7 +577,7 @@ fn candidates_for_target_propagates_period_pair_overflow() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "window".to_string(),
+        cadence_slug_token: "5m".to_string(),
     };
     assert!(matches!(
         candidates_for_target(&target, i64::MAX),

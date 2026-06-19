@@ -1,7 +1,7 @@
 # Tracked production OVERLAY — BTC 5m supervised pilot (issue #768).
 #
 # This is a typed, self-describing OVERLAY, not a full config. It declares ONLY
-# the production deltas against the shared multi-asset template `config/root.toml`.
+# the production deltas against the shared template `config/root.toml`.
 # At deploy time `ops generate-live-config` derives the overlay from the profile
 # ID, composes it with `config/root.toml`, and writes the runtime `live.toml`.
 # Root owns all shared infrastructure (runtime, nautilus,

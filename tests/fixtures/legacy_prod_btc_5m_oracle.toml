@@ -31,6 +31,9 @@
 #   the shared base `config/root.toml` by the production kill-switch merge. The
 #   overlay does not touch this block, so the composed prod config inherits it
 #   verbatim. Kept value-equal to root.toml.
+# - 2026-06-20 (#768): absorbed the #855 PolyResearch endpoint/root-shape merge.
+#   The composed prod config inherits the verified endpoint and the BTC-only
+#   Chainlink catalog/gate binding now present in `config/root.toml`.
 #
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
 # `funder` is a public on-chain Safe address.
@@ -244,48 +247,13 @@ rotation_kind = "none"
 [aws]
 region = "eu-west-2"
 
-# Shared Chainlink Data Streams catalog. Client transport config consumes these
-# feed bindings; client-local feed catalogs are rejected.
+# BTC-only Chainlink Data Streams catalog. Client transport config subscribes to
+# every feed binding here; keep this aligned with the tracked live strategy set.
 [chainlink_data_streams]
 
 [[chainlink_data_streams.feed_bindings]]
 feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
 instrument_id = "BTC-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
-instrument_id = "ETH-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6"
-instrument_id = "SOL-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x000387d7c042a9d5c97c15354b531bd01bf6d3a351e190f2394403cf2f79bde9"
-instrument_id = "BNB-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x00035e3ddda6345c3c8ce45639d4449451f1d5828d7a70845e446f04905937cd"
-instrument_id = "XRP-USD.CHAINLINK"
-report_schema_version = 3
-report_decimal_scale = 18
-price_precision = 8
-
-[[chainlink_data_streams.feed_bindings]]
-feed_id = "0x00032057c7f224d0266b4311a81cdc3e38145e36442713350d3300fb12e85c99"
-instrument_id = "DOGE-USD.CHAINLINK"
 report_schema_version = 3
 report_decimal_scale = 18
 price_precision = 8
@@ -309,7 +277,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 [[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
 resolution_identity = "configured-reference-price"
 value_kind = "price"
-feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
 report_schema_version = 3
 report_decimal_scale = 18
 
@@ -615,7 +583,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 venue = "POLYRESEARCH_REFERENCE_PRICE"
 
 [clients.polyresearch_reference.data]
-websocket_endpoint = "wss://ws.polynode.dev/ws"
+websocket_endpoint = "wss://3j5lx6otd8.execute-api.eu-west-1.amazonaws.com/prod"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "{\"action\":\"ping\"}"

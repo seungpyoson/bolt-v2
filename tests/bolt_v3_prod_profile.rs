@@ -16,7 +16,7 @@
 
 mod support;
 
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
@@ -32,7 +32,7 @@ const CONFIG_ROOT: &str = "config";
 const PROFILE_ID: &str = "prod-btc-5m";
 /// The tracked production OVERLAY — the pilot deltas over the shared base template.
 const OVERLAY: &str = "config/profiles/prod-btc-5m.overlay.toml";
-/// The shared multi-asset base template the overlay composes onto.
+/// The shared base template the overlay composes onto.
 const BASE: &str = "config/root.toml";
 /// Frozen pre-refactor standalone production profile, kept ONLY as a regression
 /// oracle for the composition (it is intentionally out of `config/` so deploy
@@ -521,18 +521,30 @@ fn overlay_declares_only_the_allowed_delta_keys() {
 }
 
 #[test]
-fn base_template_is_present_and_multi_asset() {
-    // The composition's base must exist and be the broad multi-asset template, so the
-    // overlay is genuinely a delta over shared infrastructure (not a second full config).
+fn base_template_is_present_and_overlay_prunes_shared_clients() {
+    // The composition's base must exist and contain shared client infrastructure
+    // outside this profile's active subset, so the overlay is genuinely a delta
+    // over shared infrastructure (not a second full config).
     let base: toml::Value =
         toml::from_str(&support::repo_text(BASE)).expect("base root.toml parses");
-    let strategy_files = base
-        .get("strategy_files")
+    let overlay: toml::Value =
+        toml::from_str(&support::repo_text(OVERLAY)).expect("overlay parses");
+    let base_clients = base
+        .get("clients")
+        .and_then(toml::Value::as_table)
+        .expect("base declares clients");
+    let active_clients: BTreeSet<&str> = overlay
+        .get("active_clients")
         .and_then(toml::Value::as_array)
-        .expect("base declares strategy_files");
+        .expect("overlay declares active_clients")
+        .iter()
+        .map(|value| value.as_str().expect("active client names are strings"))
+        .collect();
     assert!(
-        strategy_files.len() > 1,
-        "base template must be multi-asset (more than the single BTC pilot strategy)"
+        base_clients
+            .keys()
+            .any(|name| !active_clients.contains(name.as_str())),
+        "base template must include shared clients outside the profile's active subset"
     );
 }
 

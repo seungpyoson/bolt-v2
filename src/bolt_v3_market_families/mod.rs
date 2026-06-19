@@ -1119,6 +1119,7 @@ mod tests {
             maker_settlement_payout_from_reference_prices:
                 fake_maker_settlement_payout_from_reference_prices,
             maker_binary_fee_curve: fake_maker_binary_fee_curve,
+            derive_cadence_slug_token: None,
         }];
 
     fn fake_plan_strategy_target(

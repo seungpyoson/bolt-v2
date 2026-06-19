@@ -273,6 +273,7 @@ def assert_status_mode_posts_failure_without_failing_job() -> None:
 def assert_workflow_uses_base_script_and_requires_node_id() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "name: publish approval status" in workflow
+    assert "name: required reviewer approved" not in workflow
     assert "name: reviewer node_id status publisher" not in workflow
     assert "statuses: write" in workflow
     assert "required reviewer approved" in workflow

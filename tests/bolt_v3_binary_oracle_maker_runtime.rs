@@ -1079,3 +1079,169 @@ fn reference_quote(
     )
     .expect("reference quote fixture should be valid")
 }
+
+// ---------------------------------------------------------------------------
+// PR-B runtime foundation: the maker consumes PR-A's per-market bindings to
+// resolve its active market set, reconcile trade subscriptions, and track the
+// per-leg order identities the quote cycle mints. These fixtures use the STATIC
+// binary-event family because it identifies a market by a fixed condition id +
+// outcomes (no engine-derived time slug), so the fixtures are self-contained.
+// Mirrors the proven `binding.rs` static resolver fixtures.
+// ---------------------------------------------------------------------------
+
+use bolt_v2::{
+    bolt_v3_maker_market_selection::MakerMarketPortfolioPolicy,
+    strategies::binary_oracle_maker::{binding::MakerMarketDeclaration, runtime::MakerRuntime},
+};
+use nautilus_core::Params;
+use nautilus_model::{
+    enums::AssetClass,
+    identifiers::Symbol,
+    instruments::{BinaryOption, InstrumentAny},
+    types::Currency,
+};
+
+const RUNTIME_NOW_MS: u64 = 1_700_000_000_000;
+const RUNTIME_STATIC_FAMILY: &str = "static_binary_event";
+const RUNTIME_STATIC_SLUG: &str = "will-sample-maker-resolve-yes";
+const RUNTIME_STATIC_CONDITION_ID: &str = "condition-sample-maker";
+const RUNTIME_STATIC_YES_OUTCOME: &str = "Yes";
+const RUNTIME_STATIC_NO_OUTCOME: &str = "No";
+const RUNTIME_MARKET_KEY: &str = "eth-static-event";
+const RUNTIME_YES_INSTRUMENT: &str = "MAKER-RT-YES.SIM";
+const RUNTIME_NO_INSTRUMENT: &str = "MAKER-RT-NO.SIM";
+
+fn runtime_static_declaration() -> MakerMarketDeclaration {
+    MakerMarketDeclaration {
+        market_key: RUNTIME_MARKET_KEY.to_string(),
+        family_key: RUNTIME_STATIC_FAMILY.to_string(),
+        underlying_asset: "ETH".to_string(),
+        cadence_seconds: 3_600,
+        cadence_slug_token: RUNTIME_STATIC_SLUG.to_string(),
+        static_condition_id: Some(RUNTIME_STATIC_CONDITION_ID.to_string()),
+        static_yes_outcome: Some(RUNTIME_STATIC_YES_OUTCOME.to_string()),
+        static_no_outcome: Some(RUNTIME_STATIC_NO_OUTCOME.to_string()),
+    }
+}
+
+fn runtime_binary_option(instrument_id: &str, outcome: &str) -> InstrumentAny {
+    let market_id = format!("market-{RUNTIME_STATIC_SLUG}");
+    let question_id = format!("question-{RUNTIME_STATIC_SLUG}");
+    let mut info = Params::new();
+    for (key, value) in [
+        ("market_slug", RUNTIME_STATIC_SLUG),
+        ("market_id", market_id.as_str()),
+        ("condition_id", RUNTIME_STATIC_CONDITION_ID),
+        ("question_id", question_id.as_str()),
+    ] {
+        info.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+    InstrumentAny::BinaryOption(BinaryOption::new(
+        InstrumentId::from(instrument_id),
+        Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
+        AssetClass::Alternative,
+        Currency::USDC(),
+        ((RUNTIME_NOW_MS - 1_000).saturating_mul(1_000_000)).into(),
+        ((RUNTIME_NOW_MS + 30_000).saturating_mul(1_000_000)).into(),
+        3,
+        2,
+        Price::from("0.001"),
+        Quantity::from("0.01"),
+        Some(ustr::Ustr::from(outcome)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(info),
+        1.into(),
+        1.into(),
+    ))
+}
+
+fn runtime_static_instruments() -> Vec<InstrumentAny> {
+    vec![
+        runtime_binary_option(RUNTIME_YES_INSTRUMENT, RUNTIME_STATIC_YES_OUTCOME),
+        runtime_binary_option(RUNTIME_NO_INSTRUMENT, RUNTIME_STATIC_NO_OUTCOME),
+    ]
+}
+
+fn runtime_portfolio_policy() -> MakerMarketPortfolioPolicy {
+    MakerMarketPortfolioPolicy {
+        max_active_markets: 3,
+        total_bankroll_notional: 1_500.0,
+        min_slot_notional: 100.0,
+    }
+}
+
+#[test]
+fn maker_runtime_refresh_resolves_declared_market_and_emits_subscription_delta() {
+    // PR-B consumes PR-A's declared markets: a declared static market whose
+    // YES/NO instruments are discoverable resolves to one active market, both leg
+    // instruments become the newly-active trade-subscription delta, and the active
+    // market carries leg bindings whose order identities are UNSET — the quote
+    // cycle mints them per cycle, not at resolution. A resolver that silently
+    // dropped the market would leave the runtime empty (the pre-PR-B state).
+    let mut runtime = MakerRuntime::empty();
+    let yes_id = InstrumentId::from(RUNTIME_YES_INSTRUMENT);
+    let no_id = InstrumentId::from(RUNTIME_NO_INSTRUMENT);
+
+    let refresh = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+
+    assert_eq!(runtime.active_market_count(), 1);
+    assert!(
+        refresh.misses.is_empty(),
+        "a discoverable market must not miss: {:?}",
+        refresh.misses
+    );
+    assert!(refresh.subscribe.contains(&yes_id));
+    assert!(refresh.subscribe.contains(&no_id));
+    assert!(refresh.unsubscribe.is_empty());
+    let market = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the resolved declared market is active");
+    assert_eq!(market.leg_binding(Leg::Yes).instrument_id, yes_id);
+    assert_eq!(market.leg_binding(Leg::No).instrument_id, no_id);
+    assert!(
+        market.leg_binding(Leg::Yes).active_order.is_none(),
+        "resolution must not assign an active order identity"
+    );
+    assert!(
+        market.leg_binding(Leg::Yes).next_order.is_none(),
+        "resolution must not assign a next order identity"
+    );
+}
+
+#[test]
+fn maker_runtime_refresh_reports_miss_for_undiscoverable_market_not_silent_drop() {
+    // Fail-closed: a declared market with no matching instruments surfaces as a
+    // miss and produces no active market and no subscription — never a silent idle.
+    let mut runtime = MakerRuntime::empty();
+
+    let refresh = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &[],
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+
+    assert_eq!(runtime.active_market_count(), 0);
+    assert_eq!(refresh.misses.len(), 1);
+    assert!(refresh.subscribe.is_empty());
+    assert!(refresh.unsubscribe.is_empty());
+}

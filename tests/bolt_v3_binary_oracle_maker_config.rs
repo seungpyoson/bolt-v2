@@ -15,10 +15,18 @@ fn valid_raw() -> toml::Value {
         mu_stale_window_ms = 60000
         mu_min_floor = 0.05
         requote_min_interval_ms = 500
+        quote_interval_ms = 1000
         market_portfolio_max_active_markets = 3
         market_portfolio_total_bankroll_notional = 1500.0
         market_portfolio_min_slot_notional = 100.0
         markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+        [[markets]]
+        market_key = "eth-hourly"
+        family_key = "updown"
+        underlying_asset = "ETH"
+        cadence_seconds = 3600
+        cadence_slug_token = "1h"
     }
     .into()
 }

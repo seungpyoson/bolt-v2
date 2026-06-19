@@ -12,10 +12,11 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+import github_commit_status
+
 
 DEFAULT_REVIEWER = "sp-reviewer"
 DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
-STATUS_DESCRIPTION_LIMIT = 140
 
 
 class ReviewerGateError(RuntimeError):
@@ -195,8 +196,11 @@ def _optional_str_env(name: str) -> str | None:
 
 def _read_event_payload() -> dict[str, Any]:
     path = _env("GITHUB_EVENT_PATH")
-    with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ReviewerGateError("GitHub event payload was not valid JSON") from exc
     if not isinstance(payload, dict):
         raise ReviewerGateError("GitHub event payload must be a JSON object")
     return payload
@@ -245,6 +249,8 @@ def _request_json(url: str, token: str) -> tuple[Any, str | None]:
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.load(response), response.headers.get("Link")
+    except json.JSONDecodeError as exc:
+        raise ReviewerGateError("GitHub API response was not valid JSON") from exc
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise ReviewerGateError(f"GitHub API request failed with HTTP {exc.code}: {detail}") from exc
@@ -309,41 +315,40 @@ def _pulls_api_url(repository: str, pull_number: int, suffix: str) -> str:
     return f"{_api_base()}/repos/{owner_repo}/pulls/{pull_number}/{suffix}"
 
 
-def _status_api_url(repository: str, sha: str) -> str:
-    owner_repo = "/".join(urllib.parse.quote(part, safe="") for part in repository.split("/", 1))
-    quoted_sha = urllib.parse.quote(sha, safe="")
-    return f"{_api_base()}/repos/{owner_repo}/statuses/{quoted_sha}"
-
-
-def _status_target_url() -> str | None:
-    server_url = os.environ.get("GITHUB_SERVER_URL")
-    repository = os.environ.get("GITHUB_REPOSITORY")
-    run_id = os.environ.get("GITHUB_RUN_ID")
-    if not server_url or not repository or not run_id:
-        return None
-    return f"{server_url.rstrip('/')}/{repository}/actions/runs/{run_id}"
-
-
-def _status_description(message: str) -> str:
-    if len(message) <= STATUS_DESCRIPTION_LIMIT:
-        return message
-    return f"{message[: STATUS_DESCRIPTION_LIMIT - 3]}..."
-
-
 def commit_status_payload(
     *,
     result: GateResult,
     context: str,
     target_url: str | None,
 ) -> dict[str, str]:
-    payload = {
-        "state": "success" if result.passed else "failure",
-        "context": context,
-        "description": _status_description(result.message),
-    }
-    if target_url:
-        payload["target_url"] = target_url
-    return payload
+    return github_commit_status.commit_status_payload(
+        state=github_commit_status.state_for_passed(result.passed),
+        context=context,
+        description=result.message,
+        target_url=target_url,
+    )
+
+
+def post_status(
+    *,
+    repository: str,
+    sha: str,
+    token: str,
+    state: github_commit_status.CommitStatusState,
+    description: str,
+    context: str,
+) -> None:
+    github_commit_status.publish_commit_status(
+        repository=repository,
+        sha=sha,
+        token=token,
+        state=state,
+        description=description,
+        context=context,
+        post_json=_post_json,
+        api_base=_api_base(),
+        target_url=github_commit_status.run_target_url(),
+    )
 
 
 def post_commit_status(
@@ -354,10 +359,13 @@ def post_commit_status(
     result: GateResult,
     context: str,
 ) -> None:
-    _post_json(
-        _status_api_url(repository, sha),
-        token,
-        commit_status_payload(result=result, context=context, target_url=_status_target_url()),
+    post_status(
+        repository=repository,
+        sha=sha,
+        token=token,
+        state=github_commit_status.state_for_passed(result.passed),
+        description=result.message,
+        context=context,
     )
 
 
@@ -373,19 +381,40 @@ def run() -> int:
     payload = _read_event_payload()
     pull_number = _pull_number(payload)
     head_sha = _pull_head_sha(payload)
+    if status_context is not None:
+        post_status(
+            repository=repository,
+            sha=head_sha,
+            token=token,
+            state="pending",
+            description="Reviewer gate is inspecting required reviewer approval",
+            context=status_context,
+        )
 
-    requested = _get_json(_pulls_api_url(repository, pull_number, "requested_reviewers"), token)
-    if not isinstance(requested, dict):
-        raise ReviewerGateError("requested reviewers payload must be a JSON object")
-    reviews = _paginate_json_list(_pulls_api_url(repository, pull_number, "reviews?per_page=100"), token)
-    result = evaluate_reviewer_gate(
-        requested_reviewers=requested,
-        reviews=reviews,
-        reviewer=reviewer,
-        reviewer_id=reviewer_id,
-        reviewer_node_id=reviewer_node_id,
-        head_sha=head_sha,
-    )
+    try:
+        requested = _get_json(_pulls_api_url(repository, pull_number, "requested_reviewers"), token)
+        if not isinstance(requested, dict):
+            raise ReviewerGateError("requested reviewers payload must be a JSON object")
+        reviews = _paginate_json_list(_pulls_api_url(repository, pull_number, "reviews?per_page=100"), token)
+        result = evaluate_reviewer_gate(
+            requested_reviewers=requested,
+            reviews=reviews,
+            reviewer=reviewer,
+            reviewer_id=reviewer_id,
+            reviewer_node_id=reviewer_node_id,
+            head_sha=head_sha,
+        )
+    except ReviewerGateError as exc:
+        if status_context is not None:
+            post_status(
+                repository=repository,
+                sha=head_sha,
+                token=token,
+                state="failure",
+                description=f"Reviewer gate failed: {exc}",
+                context=status_context,
+            )
+        raise
     print(result.message)
     if status_context is not None:
         post_commit_status(

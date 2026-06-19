@@ -147,7 +147,6 @@ You **MUST** consider the user input before proceeding (if not empty).
 
 7. Implementation execution rules:
    - **Setup first**: Initialize project structure, dependencies, configuration
-   - **Evidence-driven verification before code**: Use the evidence class selected for the task. If the task explicitly requires test-first/TDD, run tests before implementation; otherwise use the evidence-driven verification workflow defined in `AGENTS.md` (tests, static checks, source-fence results, remote CI, or user-approved risk acceptance).
    - **Core development**: Implement models, services, CLI commands, endpoints
    - **Integration work**: Database connections, middleware, logging, external services
    - **Polish and validation**: Unit tests, performance optimization, documentation

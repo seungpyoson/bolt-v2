@@ -757,11 +757,20 @@ fn raw_maker_config_from_parts(
     );
     insert_runtime_knobs(&mut table, runtime)?;
     insert_market_portfolio_knobs(&mut table, market_portfolio)?;
+    // Canonicalize the declared set by `market_key` so neither the embedded
+    // `[[markets]]` array nor the strategy_config_hash (computed over this whole
+    // table) depends on operator TOML ordering: two operators declaring the same
+    // set in different orders produce a byte-identical config and an identical
+    // hash. `markets_config_digest` canonicalizes the same way internally, so the
+    // digest field and the array agree on one ordering, and the runtime's
+    // market resolution is order-agnostic regardless.
+    let mut canonical_markets = parameters.markets.clone();
+    canonical_markets.sort_by(|a, b| a.market_key.cmp(&b.market_key));
     table.insert(
         super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
-        Value::String(markets_config_digest(&parameters.markets)?),
+        Value::String(markets_config_digest(&canonical_markets)?),
     );
-    insert_markets(&mut table, &parameters.markets)?;
+    insert_markets(&mut table, &canonical_markets)?;
     Ok(Value::Table(table))
 }
 
@@ -2559,6 +2568,10 @@ mod tests {
             super::super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
             Value::String(expected_digest.clone()),
         );
+        // Mirror the production raw-config builder, which always threads the
+        // declared `[[markets]]` array alongside the digest; the consumer config
+        // requires the `markets` field, so omitting it would fail the parse.
+        insert_markets(&mut table, &valid_markets()).expect("declared markets thread");
         let config =
             parse_config(&Value::Table(table)).expect("flat table parses into the consumer config");
         assert_eq!(config.client_id, "maker_execution_client");
@@ -2572,6 +2585,8 @@ mod tests {
         assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
         assert_eq!(config.market_portfolio_min_slot_notional, 100.0);
         assert_eq!(config.markets_config_digest, expected_digest);
+        assert_eq!(config.markets.len(), 1);
+        assert_eq!(config.markets[0].market_key, "eth-hourly");
     }
 
     #[test]

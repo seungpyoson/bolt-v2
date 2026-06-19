@@ -27,19 +27,19 @@ fn first_live_updown_slugs(
 
 #[test]
 fn first_live_updown_slug_rule_matches_expected_shape() {
-    let slugs = first_live_updown_slugs("CONFIGURED_ASSET", 300, "configuredwindow", 1_800);
+    let slugs = first_live_updown_slugs("CONFIGURED_ASSET", 300, "5m", 1_800);
     assert_eq!(
         slugs,
         vec![
-            "configured_asset-updown-configuredwindow-1800".to_string(),
-            "configured_asset-updown-configuredwindow-2100".to_string(),
+            "configured_asset-updown-5m-1800".to_string(),
+            "configured_asset-updown-5m-2100".to_string(),
         ]
     );
 }
 
 #[test]
 fn pinned_polymarket_provider_accepts_market_slug_filters() {
-    let slugs = first_live_updown_slugs("CONFIGURED_ASSET", 300, "configuredwindow", 1_800);
+    let slugs = first_live_updown_slugs("CONFIGURED_ASSET", 300, "5m", 1_800);
     let filter = MarketSlugFilter::from_slugs(slugs);
     let http_client = PolymarketGammaHttpClient::new(
         Some("https://gamma.test.invalid".to_string()),

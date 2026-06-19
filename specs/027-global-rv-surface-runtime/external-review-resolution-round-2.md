@@ -118,7 +118,7 @@ Resolution:
 
 Resolution:
 
-- `contracts/toml-schema.md` now requires source instruments to resolve to the same canonical base asset as the parent surface.
+- `contracts/toml-schema.md` now requires each source's declared canonical base and quote assets to match the parent surface while keeping `instrument_id` venue-native.
 - `tasks.md` T034 now names the surface/source asset mismatch validation test.
 - `tasks.md` T112 now names trim-equivalent duplicate surface ID tests.
 

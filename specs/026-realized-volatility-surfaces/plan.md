@@ -1002,6 +1002,7 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "<BASE_ASSET>"
 canonical_quote_asset = "<QUOTE_ASSET>"
 "#;
 
@@ -1074,6 +1075,7 @@ pub struct RealizedVolatilitySourceBlock {
     pub sample_kind: RealizedVolatilitySampleKindBlock,
     pub enabled: bool,
     pub counts_toward_quorum: bool,
+    pub canonical_base_asset: String,
     pub canonical_quote_asset: String,
 }
 
@@ -1124,6 +1126,8 @@ In `src/bolt_v3_validate.rs`, add a validation pass that:
 
 - checks every source data client exists and has a `[data]` block
 - checks `source_id` values are unique within a surface
+- checks each source `canonical_base_asset` matches the surface
+  `canonical_base_asset`
 - checks each source `canonical_quote_asset` matches the surface
   `canonical_quote_asset`
 - checks source list is non-empty

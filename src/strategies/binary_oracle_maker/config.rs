@@ -63,6 +63,16 @@ pub struct BinaryOracleMakerConfig {
     pub market_portfolio_total_bankroll_notional: f64,
     /// Minimum per-market slot notional after the bankroll split.
     pub market_portfolio_min_slot_notional: f64,
+    /// Deterministic digest of the operator-declared `[[parameters.markets]]` set
+    /// (canonical, sorted by `market_key`, all fields). It is threaded into this
+    /// flat config by `archetype::raw_maker_config` PRECISELY so the declared
+    /// market set is covered by the strategy-config hash the go-live gate binds:
+    /// changing any declared market's family/underlying/cadence/slug/static field
+    /// or the market count changes this digest, which changes the
+    /// `strategy_config_hash`, which invalidates a backtest run captured for a
+    /// DIFFERENT market set. Without it the gate would accept stale evidence for
+    /// an untested market set.
+    pub markets_config_digest: String,
 }
 
 /// Zero-sized factory the `StrategyBuilder` trait is implemented for (in
@@ -92,6 +102,8 @@ const MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD: &str = "market_portfolio_max_ac
 const MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD: &str =
     "market_portfolio_total_bankroll_notional";
 const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slot_notional";
+pub(crate) const MARKETS_CONFIG_DIGEST_FIELD: &str = "markets_config_digest";
+const MISSING_MARKETS_CONFIG_DIGEST_CODE: &str = "missing_markets_config_digest";
 
 /// Deserialize the maker config from its TOML table. Fails loud if the table is
 /// missing required envelope fields or carries unknown keys (via
@@ -136,6 +148,7 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
                 | MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD
                 | MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD
                 | MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD
+                | MARKETS_CONFIG_DIGEST_FIELD
         ) {
             errors.push(ValidationError {
                 field: format!("{field_prefix}.{key}"),
@@ -171,6 +184,13 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         field_prefix,
         CLIENT_ID_FIELD,
         MISSING_CLIENT_ID_CODE,
+        errors,
+    );
+    validate_string_field(
+        table,
+        field_prefix,
+        MARKETS_CONFIG_DIGEST_FIELD,
+        MISSING_MARKETS_CONFIG_DIGEST_CODE,
         errors,
     );
     validate_oms_type_parses(table, field_prefix, errors);
@@ -243,6 +263,7 @@ mod tests {
             market_portfolio_max_active_markets = 3
             market_portfolio_total_bankroll_notional = 1500.0
             market_portfolio_min_slot_notional = 100.0
+            markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         }
         .into()
     }
@@ -263,6 +284,10 @@ mod tests {
         assert_eq!(config.market_portfolio_max_active_markets, 3);
         assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
         assert_eq!(config.market_portfolio_min_slot_notional, 100.0);
+        assert_eq!(
+            config.markets_config_digest,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
     }
 
     #[test]

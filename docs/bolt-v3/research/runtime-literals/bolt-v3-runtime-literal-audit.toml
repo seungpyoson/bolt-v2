@@ -1032,14 +1032,6 @@ reason = "This is the market-complete outcome count for binary-option updown sel
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''32'''
-context = '''} else if underlying.chars().count() > 32 {'''
-classification = "market_identity_shape_bound"
-reason = "This is the accepted updown underlying_asset identifier length bound documented by the market-family validation contract."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = '''32'''
 context = '''} else if cadence_slug_token.chars().count() > 32 {'''
 classification = "market_identity_shape_bound"
 reason = "This is the accepted updown cadence_slug_token identifier length bound; the token value itself is TOML-owned."
@@ -17503,3 +17495,83 @@ literal = '''"strategy_instance_id"'''
 context = '''"strategy_instance_id",'''
 classification = "backtest_config_override_validation_field"
 reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''validate_non_empty(context, "static_yes_outcome", yes, &mut errors);'''
+classification = "maker_target_field_label"
+reason = "Validation field-label for the static-event yes-outcome maker declaration field; structural identifier in a load-time error, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''validate_non_empty(context, "static_no_outcome", no, &mut errors);'''
+classification = "maker_target_field_label"
+reason = "Validation field-label for the static-event no-outcome maker declaration field; structural identifier in a load-time error, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"static_condition_id"'''
+context = '''validate_non_empty(context, "static_condition_id", condition_id, &mut errors);'''
+classification = "maker_target_field_label"
+reason = "Validation field-label for the static-event condition-id maker declaration field; structural identifier in a load-time error, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"target.underlying_asset"'''
+context = '''"target.underlying_asset",'''
+classification = "target_field_label"
+reason = "Validation field-label for the envelope target underlying-asset field; preexisting structural identifier relocated into the shared validate_underlying_asset helper, not a runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"{context}: parameters.markets entry `{}`"'''
+context = '''"{context}: parameters.markets entry `{}`",'''
+classification = "maker_validation_context_prefix"
+reason = "Diagnostic context-prefix naming which declared market a validation error belongs to; assembled into fail-closed error messages, not a runtime trading value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"markets_config_digest"'''
+context = '''pub(crate) const MARKETS_CONFIG_DIGEST_FIELD: &str = "markets_config_digest";'''
+classification = "maker_config_field_name"
+reason = "Flat-config field NAME constant for the declared-market-set digest (mirrors the other *_FIELD field-name constants); a config key identifier, not a runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"missing_markets_config_digest"'''
+context = '''const MISSING_MARKETS_CONFIG_DIGEST_CODE: &str = "missing_markets_config_digest";'''
+classification = "maker_config_validation_code"
+reason = "Validation error-CODE constant for a missing markets_config_digest field (mirrors the other MISSING_*_CODE constants); a stable diagnostic code, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"underlying_asset"'''
+context = '''super::validate_underlying_asset(context, "underlying_asset", target.underlying_asset);'''
+classification = "maker_target_field_label"
+reason = "Validation field-label for the maker per-market underlying-asset declaration field, passed to the shared registry-parent validator; structural identifier in a load-time error, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/static_binary_event.rs"
+kind = "string"
+literal = '''"underlying_asset"'''
+context = '''super::validate_underlying_asset(context, "underlying_asset", target.underlying_asset);'''
+classification = "maker_target_field_label"
+reason = "Validation field-label for the maker per-market underlying-asset declaration field, passed to the shared registry-parent validator; structural identifier in a load-time error, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "number"
+literal = '''32'''
+context = '''const UNDERLYING_ASSET_MAX_CHARS: usize = 32;'''
+classification = "underlying_asset_length_bound"
+reason = "Maximum character length of an underlying-asset symbol; a structural validation bound (named constant), not a runtime trading value."

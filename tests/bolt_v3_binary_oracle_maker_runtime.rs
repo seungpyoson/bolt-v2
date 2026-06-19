@@ -847,6 +847,8 @@ fn maker_config() -> BinaryOracleMakerConfig {
         market_portfolio_max_active_markets: 3,
         market_portfolio_total_bankroll_notional: 1500.0,
         market_portfolio_min_slot_notional: 100.0,
+        markets_config_digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            .to_string(),
     }
 }
 

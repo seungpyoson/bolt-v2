@@ -1100,6 +1100,14 @@ def block_has_input(block: list[str], name: str, value: str | None = None) -> bo
     return False
 
 
+def block_input_values(block: list[str], name: str) -> list[str]:
+    return [
+        unquote_yaml_scalar(item_value)
+        for item_name, item_value in block_input_items(block)
+        if item_name == name
+    ]
+
+
 def block_has_scalar(block: list[str], name: str, value: str) -> bool:
     expected = f"{name}: {value}"
     return any(strip_comment(line).strip() == expected for line in block)
@@ -8532,8 +8540,8 @@ def verify_build_artifacts(workflow_text: str, workflow_name: str) -> list[str]:
         for block in action_blocks(build, "actions/upload-artifact@")
         if block_has_input(block, "name", BOLT_V2_BINARY_ARTIFACT_NAME)
     ]
-    if not binary_upload_blocks or not all(
-        block_has_input(block, "retention-days", BOLT_V2_BINARY_RETENTION_DAYS)
+    if not binary_upload_blocks or any(
+        block_input_values(block, "retention-days") != [BOLT_V2_BINARY_RETENTION_DAYS]
         for block in binary_upload_blocks
     ):
         errors.append(

@@ -317,10 +317,32 @@ def commit_status_payload(
     target_url: str | None,
 ) -> dict[str, str]:
     return github_commit_status.commit_status_payload(
-        passed=result.passed,
+        state=github_commit_status.state_for_passed(result.passed),
         context=context,
         description=result.message,
         target_url=target_url,
+    )
+
+
+def post_status(
+    *,
+    repository: str,
+    sha: str,
+    token: str,
+    state: github_commit_status.CommitStatusState,
+    description: str,
+    context: str,
+) -> None:
+    github_commit_status.publish_commit_status(
+        repository=repository,
+        sha=sha,
+        token=token,
+        state=state,
+        description=description,
+        context=context,
+        post_json=_post_json,
+        api_base=_api_base(),
+        target_url=github_commit_status.run_target_url(),
     )
 
 
@@ -332,16 +354,13 @@ def post_commit_status(
     result: GateResult,
     context: str,
 ) -> None:
-    github_commit_status.publish_commit_status(
+    post_status(
         repository=repository,
         sha=sha,
         token=token,
-        passed=result.passed,
+        state=github_commit_status.state_for_passed(result.passed),
         description=result.message,
         context=context,
-        post_json=_post_json,
-        api_base=_api_base(),
-        target_url=github_commit_status.run_target_url(),
     )
 
 
@@ -357,6 +376,15 @@ def run() -> int:
     payload = _read_event_payload()
     pull_number = _pull_number(payload)
     head_sha = _pull_head_sha(payload)
+    if status_context is not None:
+        post_status(
+            repository=repository,
+            sha=head_sha,
+            token=token,
+            state="pending",
+            description="Reviewer gate is inspecting required reviewer approval",
+            context=status_context,
+        )
 
     requested = _get_json(_pulls_api_url(repository, pull_number, "requested_reviewers"), token)
     if not isinstance(requested, dict):

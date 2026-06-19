@@ -5,8 +5,8 @@ A required merge check that is the Actions *job* can be left in a terminal
 ``cancelled`` state by a superseded or duplicate run, which blocks the merge
 with no real failure. Publishing the verdict as a *commit status* decouples it
 from the run lifecycle: the required context becomes the status (only ever
-written ``success``/``failure`` by the gate), so a cancelled run can never
-poison it.
+written as ``pending`` at start and then ``success``/``failure`` by the gate),
+so a cancelled run can never poison it with a terminal check-run state.
 
 This module owns the status payload/URL logic so every gate publishes the same
 way. The network POST is injected by the caller (``post_json``) so each gate
@@ -17,10 +17,11 @@ from __future__ import annotations
 
 import os
 import urllib.parse
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 
 STATUS_DESCRIPTION_LIMIT = 140
+CommitStatusState = Literal["error", "failure", "pending", "success"]
 
 
 def clamp_description(message: str) -> str:
@@ -52,13 +53,13 @@ def run_target_url(env: Mapping[str, str] | None = None) -> str | None:
 
 def commit_status_payload(
     *,
-    passed: bool,
+    state: CommitStatusState,
     context: str,
     description: str,
     target_url: str | None,
 ) -> dict[str, str]:
     payload = {
-        "state": "success" if passed else "failure",
+        "state": state,
         "context": context,
         "description": clamp_description(description),
     }
@@ -67,24 +68,28 @@ def commit_status_payload(
     return payload
 
 
+def state_for_passed(passed: bool) -> CommitStatusState:
+    return "success" if passed else "failure"
+
+
 def publish_commit_status(
     *,
     repository: str,
     sha: str,
     token: str,
-    passed: bool,
+    state: CommitStatusState,
     description: str,
     context: str,
     post_json: Callable[[str, str, dict[str, Any]], None],
     api_base: str,
     target_url: str | None,
 ) -> None:
-    """Post ``success``/``failure`` for ``context`` onto the head ``sha``."""
+    """Post ``state`` for ``context`` onto the head ``sha``."""
     post_json(
         status_api_url(api_base=api_base, repository=repository, sha=sha),
         token,
         commit_status_payload(
-            passed=passed,
+            state=state,
             context=context,
             description=description,
             target_url=target_url,

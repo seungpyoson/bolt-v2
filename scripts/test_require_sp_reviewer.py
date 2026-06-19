@@ -235,6 +235,8 @@ def assert_status_mode_posts_failure_without_failing_job() -> None:
     posted: list[tuple[str, dict[str, object]]] = []
 
     def fake_get_json(_url: str, _token: str) -> dict[str, object]:
+        assert len(posted) == 1
+        assert posted[0][1]["state"] == "pending"
         return {"users": [requested_user("sp-reviewer", node_id="U_kgDOEZMFhA")], "teams": []}
 
     def fake_paginate_json_list(_url: str, _token: str) -> list[dict[str, object]]:
@@ -275,12 +277,56 @@ def assert_status_mode_posts_failure_without_failing_job() -> None:
             os.environ.clear()
             os.environ.update(old_env)
 
-    assert len(posted) == 1
-    status_url, status_payload = posted[0]
+    assert len(posted) == 2
+    status_url, status_payload = posted[1]
     assert status_url == "https://api.github.test/repos/owner/repo/statuses/current-head"
     assert status_payload["state"] == "failure"
     assert status_payload["context"] == "required reviewer approved"
     assert status_payload["target_url"] == "https://github.test/owner/repo/actions/runs/12345"
+
+
+def assert_status_mode_marks_pending_before_reviewer_fetch_error() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_get_json(_url: str, _token: str) -> dict[str, object]:
+        raise module.ReviewerGateError("requested reviewers unavailable")
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_get_json = module._get_json
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 839, "head": {"sha": "current-head"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                    "REQUIRED_REVIEWER_NODE_ID": "U_kgDOEZMFhA",
+                    "REVIEWER_GATE_STATUS_CONTEXT": "required reviewer approved",
+                }
+            )
+            module._get_json = fake_get_json
+            module._post_json = fake_post_json
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                assert module.main() == 1
+        finally:
+            module._get_json = original_get_json
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert len(posted) == 1
+    status_url, status_payload = posted[0]
+    assert status_url == "https://api.github.test/repos/owner/repo/statuses/current-head"
+    assert status_payload["state"] == "pending"
+    assert status_payload["context"] == "required reviewer approved"
 
 
 def assert_workflow_uses_base_script_and_requires_node_id() -> None:
@@ -323,6 +369,7 @@ def main() -> int:
     assert_current_head_approval_passes()
     assert_commit_status_payload_is_latest_wins_context()
     assert_status_mode_posts_failure_without_failing_job()
+    assert_status_mode_marks_pending_before_reviewer_fetch_error()
     assert_workflow_uses_base_script_and_requires_node_id()
     assert_codeowners_requires_sp_reviewer_for_all_paths()
     print("OK: required reviewer gate self-tests passed.")

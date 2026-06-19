@@ -159,6 +159,8 @@ def _request_graphql(
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             payload = json.load(response)
+    except json.JSONDecodeError as exc:
+        raise ReviewThreadGateError("GitHub GraphQL response was not valid JSON") from exc
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise ReviewThreadGateError(f"GitHub GraphQL request failed with HTTP {exc.code}: {detail}") from exc
@@ -288,7 +290,7 @@ def _publish_gate_status(
     repository: str,
     sha: str,
     token: str,
-    passed: bool,
+    state: github_commit_status.CommitStatusState,
     description: str,
     context: str,
 ) -> None:
@@ -296,7 +298,7 @@ def _publish_gate_status(
         repository=repository,
         sha=sha,
         token=token,
-        passed=passed,
+        state=state,
         description=description,
         context=context,
         post_json=_post_json,
@@ -313,6 +315,15 @@ def run() -> int:
     pull_number = _pull_number(payload)
     owner, name = _repo_parts(repository)
     head_sha = _pull_head_sha(payload) if status_context is not None else None
+    if status_context is not None and head_sha is not None:
+        _publish_gate_status(
+            repository=repository,
+            sha=head_sha,
+            token=token,
+            state="pending",
+            description="Review-thread gate is inspecting review threads",
+            context=status_context,
+        )
     try:
         threads = fetch_review_threads(
             owner=owner,
@@ -327,7 +338,7 @@ def run() -> int:
                 repository=repository,
                 sha=head_sha,
                 token=token,
-                passed=False,
+                state="failure",
                 description=f"Review-thread gate failed: {exc}",
                 context=status_context,
             )
@@ -343,7 +354,7 @@ def run() -> int:
             repository=repository,
             sha=head_sha,
             token=token,
-            passed=result.passed,
+            state=github_commit_status.state_for_passed(result.passed),
             description=result.message,
             context=status_context,
         )

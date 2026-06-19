@@ -80,6 +80,56 @@ fn bootstrap_initial_armed_loss_snapshot_refuses_to_overwrite_existing_store() {
 }
 
 #[test]
+fn bootstrap_initial_armed_loss_snapshot_rejects_oversized_initial_state_before_write() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("state/kill-switch.json");
+    let store = KillSwitchStore::new(path.clone(), 1);
+
+    let error = store
+        .bootstrap_initial_armed_loss_snapshot()
+        .expect_err("bootstrap must enforce the configured state size limit before writing");
+
+    assert!(matches!(
+        error,
+        KillSwitchStoreError::StateTooLarge {
+            path: error_path,
+            bytes,
+            max_bytes: 1
+        } if error_path == path && bytes > 1
+    ));
+    assert!(
+        !path.exists(),
+        "oversized bootstrap state must not create partial evidence"
+    );
+}
+
+#[test]
+fn bootstrap_initial_armed_loss_snapshot_preserves_blocking_parent_file_on_path_error() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let parent = temp.path().join("state");
+    fs::write(&parent, b"not-a-directory").expect("blocking parent file should write");
+    let path = parent.join("kill-switch.json");
+    let store = KillSwitchStore::new(path.clone(), 65_536);
+
+    let error = store
+        .bootstrap_initial_armed_loss_snapshot()
+        .expect_err("bootstrap must surface path errors without replacing existing files");
+
+    assert!(
+        matches!(error, KillSwitchStoreError::Io { .. }),
+        "expected path error, got: {error:?}"
+    );
+    assert_eq!(
+        fs::read(&parent).expect("blocking parent file should remain"),
+        b"not-a-directory"
+    );
+    assert!(
+        !path.exists(),
+        "path-error bootstrap must not create store evidence"
+    );
+}
+
+#[test]
 fn missing_corrupt_or_unresolved_evidence_recovers_fail_closed() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("kill-switch-state.json");

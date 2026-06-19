@@ -60,12 +60,15 @@ pub fn write_private_new_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoE
         path: path.to_path_buf(),
         source,
     })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|source| AtomicIoError {
+
+    if let Err(source) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        let _ = fs::remove_file(path);
+        return Err(AtomicIoError {
             path: path.to_path_buf(),
             source,
-        })?;
+        });
+    }
+
     sync_parent_dir(path)?;
     Ok(())
 }

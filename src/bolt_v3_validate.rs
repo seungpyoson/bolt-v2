@@ -1642,26 +1642,11 @@ fn is_lowercase_sha256_hex(value: &str) -> bool {
 }
 
 fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
+    let mut errors = validate_kill_switch_store_bootstrap_fields(block);
     if !block.enabled {
-        return Vec::new();
+        return errors;
     }
 
-    let mut errors = Vec::new();
-    let state_path = Path::new(block.state_path.trim());
-    if state_path.as_os_str().is_empty()
-        || state_path.is_absolute()
-        || state_path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        errors.push(
-            "risk.kill_switch.state_path must be a non-empty relative path under the configured root"
-                .to_string(),
-        );
-    }
-    if block.max_state_file_bytes == 0 {
-        errors.push("risk.kill_switch.max_state_file_bytes must be positive".to_string());
-    }
     match parse_decimal_string(&block.max_utc_daily_realized_loss) {
         Ok(limit) if limit > Decimal::ZERO => {}
         Ok(_) => {
@@ -1771,6 +1756,26 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
             block.forced_reduction_max_live_order_count,
             &block.forced_reduction_max_notional_per_order,
         ));
+    }
+    errors
+}
+
+fn validate_kill_switch_store_bootstrap_fields(block: &KillSwitchConfigBlock) -> Vec<String> {
+    let mut errors = Vec::new();
+    let state_path = Path::new(block.state_path.trim());
+    if state_path.as_os_str().is_empty()
+        || state_path.is_absolute()
+        || state_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        errors.push(
+            "risk.kill_switch.state_path must be a non-empty relative path under the configured root"
+                .to_string(),
+        );
+    }
+    if block.max_state_file_bytes == 0 {
+        errors.push("risk.kill_switch.max_state_file_bytes must be positive".to_string());
     }
     errors
 }

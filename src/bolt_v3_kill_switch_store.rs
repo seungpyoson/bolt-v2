@@ -114,13 +114,7 @@ impl KillSwitchStore {
         loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
     ) -> Result<(), KillSwitchStoreError> {
         let bytes = serialize_state_with_loss_snapshot(state, loss_protection)?;
-        if bytes.len() as u64 > self.max_state_file_bytes {
-            return Err(KillSwitchStoreError::StateTooLarge {
-                path: self.path.clone(),
-                bytes: bytes.len() as u64,
-                max_bytes: self.max_state_file_bytes,
-            });
-        }
+        self.ensure_state_bytes_within_limit(&bytes)?;
         write_private_atomic_file(&self.path, &bytes)?;
         Ok(())
     }
@@ -128,6 +122,20 @@ impl KillSwitchStore {
     pub fn bootstrap_initial_armed_loss_snapshot(&self) -> Result<(), KillSwitchStoreError> {
         let snapshot = initial_armed_loss_protection_snapshot();
         let bytes = serialize_state_with_loss_snapshot(&KillSwitchState::Armed, Some(&snapshot))?;
+        self.ensure_state_bytes_within_limit(&bytes)?;
+        match write_private_new_file(&self.path, &bytes) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if error.source.kind() == io::ErrorKind::AlreadyExists && error.path == self.path {
+                    Err(KillSwitchStoreError::StateAlreadyExists { path: error.path })
+                } else {
+                    Err(KillSwitchStoreError::from(error))
+                }
+            }
+        }
+    }
+
+    fn ensure_state_bytes_within_limit(&self, bytes: &[u8]) -> Result<(), KillSwitchStoreError> {
         if bytes.len() as u64 > self.max_state_file_bytes {
             return Err(KillSwitchStoreError::StateTooLarge {
                 path: self.path.clone(),
@@ -135,13 +143,7 @@ impl KillSwitchStore {
                 max_bytes: self.max_state_file_bytes,
             });
         }
-        match write_private_new_file(&self.path, &bytes) {
-            Ok(()) => Ok(()),
-            Err(error) if error.source.kind() == io::ErrorKind::AlreadyExists => {
-                Err(KillSwitchStoreError::StateAlreadyExists { path: error.path })
-            }
-            Err(error) => Err(KillSwitchStoreError::from(error)),
-        }
+        Ok(())
     }
 
     pub fn invalidate(&self) -> Result<(), KillSwitchStoreError> {

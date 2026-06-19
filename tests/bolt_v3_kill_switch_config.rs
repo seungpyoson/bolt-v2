@@ -203,6 +203,30 @@ instrument_ids = ["not-an-instrument"]
 }
 
 #[test]
+fn disabled_kill_switch_still_rejects_invalid_bootstrap_store_fields() {
+    let block = valid_kill_switch_block_without_cancel()
+        .replace("enabled = true", "enabled = false")
+        .replace(
+            "state_path = \"state/kill-switch.json\"",
+            "state_path = \"\"",
+        )
+        .replace("max_state_file_bytes = 65536", "max_state_file_bytes = 0");
+    let root: BoltV3RootConfig = toml::from_str(&root_with_kill_switch(&block)).unwrap();
+
+    let errors = validate_root_only(&root);
+
+    assert_eq!(
+        errors,
+        vec![
+            "risk.kill_switch.state_path must be a non-empty relative path under the configured root"
+                .to_string(),
+            "risk.kill_switch.max_state_file_bytes must be positive".to_string(),
+        ],
+        "disabled kill-switch validation must only require bootstrap store fields"
+    );
+}
+
+#[test]
 fn enabled_kill_switch_cancel_requires_policy_fields_at_parse_time() {
     for (missing_field, cancel_block) in [
         (

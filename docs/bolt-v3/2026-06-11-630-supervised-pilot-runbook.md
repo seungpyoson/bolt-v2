@@ -32,9 +32,10 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
       (signal/pricing role split). Build THIS sha: `just build` (aarch64 cross-build).
 - [ ] `sha256sum` the binary; record for the deploy evidence file.
 - [ ] `just live-check` and `just live-resolve` pass against the tracked production
-      profile `config/prod-btc-5m.toml` (the recipes generate the runtime config from it
-      first, then check secret completeness / SSM resolution).
-- [ ] Confirm `config/prod-btc-5m.toml` strategy selection points at the BTC strategy
+      overlay `config/profiles/prod-btc-5m.overlay.toml` (the recipes compose the runtime
+      config from the overlay + base `config/root.toml` first, then check secret
+      completeness / SSM resolution).
+- [ ] Confirm the overlay's `strategy_files` selection points at the BTC strategy
       from `config/strategies/binary_oracle_btc.toml` (its `strategy_instance_id` is
       `binary_oracle_btc`). Historical note: the Jun-6 smoke ran the OLD on-box
       config's id `bitcoin_updown_main` — expect the instance id (and the evidence
@@ -42,12 +43,12 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
 
 ## Phase 1 — deploy (operator present)
 
-- [ ] Stop the service. Install binary per `deploy/README.md`, then generate + verify
-      the runtime config from the tracked profile on the box, using the same absolute
-      paths the systemd unit runs:
-      `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --output /opt/bolt-v2/config/live.toml`,
+- [ ] Stop the service. Install binary per `deploy/README.md`, ship the overlay, the base
+      `config/root.toml`, and `config/strategies/`, then generate + verify the runtime config
+      from the tracked overlay on the box, using the same absolute paths the systemd unit runs:
+      `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile /opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml --output /opt/bolt-v2/config/live.toml`,
       then
-      `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --deployed /opt/bolt-v2/config/live.toml`;
+      `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml --deployed /opt/bolt-v2/config/live.toml`;
       config `/opt/bolt-v2/config/live.toml` root:bolt 0640.
 - [ ] Record a `deploy/<date>-<shortsha>/deploy.txt` evidence entry (existing
       convention): binary sha256, config sha256, git SHA, operator id, date.

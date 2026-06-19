@@ -1,4 +1,4 @@
-//! Tracked production-profile → runtime `live.toml` generation and verification (issue #768).
+//! Tracked production-overlay → runtime `live.toml` composition and verification (issue #768).
 //!
 //! ## Problem this closes
 //!
@@ -11,31 +11,36 @@
 //! hash parity between local and EC2 did not catch it, because both copies were
 //! equally stale.
 //!
-//! ## Single, fail-closed path
+//! ## Single, fail-closed, composed path
 //!
-//! The fix makes the production config a *tracked* artifact (`config/prod-btc-5m
-//! .toml`) and gives it one generation + verification path:
+//! The fix makes the production config a *tracked* artifact and gives it one
+//! generation + verification path. To avoid duplicating ~580 lines of shared
+//! infrastructure, the production config is expressed as a typed OVERLAY
+//! (`config/profiles/prod-btc-5m.overlay.toml`) over the shared multi-asset base
+//! template (`config/root.toml`). The overlay declares ONLY the pilot deltas
+//! ([`ProdOverlay`]); generation composes (base ⊕ overlay) into the runtime config.
 //!
-//! * [`generate_live_config`] loads the tracked profile through the SAME
-//!   [`load_bolt_v3_config`] the binary uses at startup, enforces the production
-//!   invariants a live deploy requires (loss rails present AND enabled — disabled
-//!   rails are inert at runtime — and a non-empty strategy selection), and emits a
-//!   deterministic, provenance-stamped runtime config. Any schema, semantic, or
-//!   invariant error fails the generation closed.
-//! * [`verify_live_config`] re-generates from the on-box profile and proves a
+//! * [`generate_live_config`] parses the overlay, composes it onto its declared
+//!   base, serializes the result deterministically, loads the composed config
+//!   through the SAME [`load_bolt_v3_config`] the binary uses at startup, enforces
+//!   the production invariants a live deploy requires (loss rails present AND
+//!   enabled — disabled rails are inert at runtime — and a non-empty strategy
+//!   selection), and emits a deterministic, provenance-stamped runtime config. Any
+//!   schema, semantic, composition, or invariant error fails generation closed.
+//! * [`verify_live_config`] re-composes from the on-box (overlay ⊕ base) and proves a
 //!   deployed runtime config is (a) byte-identical to the regenerated artifact,
 //!   (b) still loads against this exact binary, and (c) has strategy files whose
-//!   contents match the profile's (strategy_files are referenced by path, so they
-//!   are not in the byte-compared root body). The independent load in (b) is the
+//!   contents match the composed config's (strategy_files are referenced by path, so
+//!   they are not in the byte-compared root body). The independent load in (b) is the
 //!   staleness guard — byte parity alone cannot catch a key the current binary has
 //!   dropped.
 //!
 //! `verify_live_config` covers the config-identity half of pre-arm. The full
 //! pre-arm gate chains it with live secret resolution and the no-submit/readiness
 //! check: `generate-live-config` → `verify-live-config` → `secrets resolve` →
-//! `ops prestart-check` (see `deploy/README.md`). The single source of truth is
-//! the tracked profile; `config/root.toml` is the multi-asset template and owns
-//! the shared infrastructure blocks (a test fails CI if the profile drifts from it).
+//! `ops prestart-check` (see `deploy/README.md`). The single source of truth is the
+//! base template plus the tracked overlay; the base owns the shared infrastructure
+//! blocks and the overlay owns the pilot deltas, so neither is duplicated.
 //! The production systemd unit runs `verify-live-config` as `ExecStartPre`, so the
 //! load-against-this-binary check runs on the bytes actually present on the box at
 //! the live entry point, not advisory.
@@ -43,22 +48,30 @@
 //! ## What ties the deployed config to the reviewed revision
 //!
 //! The deployed config is bound to the PR-reviewed Git revision *procedurally*:
-//! deploy tooling regenerates `live.toml` from the tracked profile rather than
+//! deploy tooling regenerates `live.toml` from the tracked overlay+base rather than
 //! hand-editing the deployed file, and `verify` proves the deployed bytes are
-//! exactly what the on-box profile generates and still load against this binary.
-//! No profile is baked into the binary — a binary-embedded release anchor does not
-//! scale to a multi-strategy/venue fleet and is superseded by arming bound to the
-//! deployed config checksum plus a signed release manifest (#768 follow-up).
+//! exactly what the on-box overlay+base compose to and still load against this
+//! binary. No profile is baked into the binary — a binary-embedded release anchor
+//! does not scale to a multi-strategy/venue fleet and is superseded by arming bound
+//! to the deployed config checksum plus a signed release manifest (#768 follow-up).
 //!
-//! The profile is itself a complete [`BoltV3RootConfig`], so schema currency is
+//! The composed config is a complete [`BoltV3RootConfig`], so schema currency is
 //! enforced by the real parser (`#[serde(deny_unknown_fields)]`), not a parallel
-//! one — there is no second config format and no second code path. The
-//! provenance header is emitted as TOML *comments* for exactly this reason:
-//! a non-comment metadata key would be rejected by `deny_unknown_fields`.
+//! one — there is no second config format and no second code path. The overlay
+//! itself is typed with `#[serde(deny_unknown_fields)]`, so an overlay typo fails
+//! loudly. The provenance header is emitted as TOML *comments*: a non-comment
+//! metadata key would be rejected by `deny_unknown_fields`.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
 
-use crate::bolt_v3_config::{BoltV3ConfigError, LoadedBoltV3Config, load_bolt_v3_config};
+use serde::Deserialize;
+
+use crate::bolt_v3_config::{
+    BoltV3ConfigError, LoadedBoltV3Config, load_bolt_v3_config, resolve_root_relative_path,
+};
 
 /// Bump when the provenance header format changes in a way that alters the
 /// generated bytes. The version is part of the header so a deployed artifact
@@ -70,21 +83,57 @@ pub const GENERATOR_FORMAT_VERSION: u32 = 1;
 /// `generate` guard match on this exact prefix.
 pub const GENERATED_MARKER_PREFIX: &str = "# bolt-v2:generated-live-config format=";
 
-/// Outcome of generating a runtime config from a tracked profile.
+/// Typed production overlay: the ONLY production deltas against the shared base
+/// template. Everything not named here is single-sourced in the base config. The
+/// `#[serde(deny_unknown_fields)]` makes a typo (or a stale/removed field) fail
+/// loudly at parse time rather than silently widening the deployed config.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ProdOverlay {
+    /// Path to the base root config, resolved RELATIVE TO THIS OVERLAY FILE's
+    /// directory (e.g. `"../root.toml"`).
+    pub base: String,
+    /// REPLACES `base.strategy_files` wholesale.
+    pub strategy_files: Vec<String>,
+    /// The subset of `base.clients` to KEEP in the composed config; every other
+    /// client block in the base is dropped. Composition errors if any name here
+    /// is absent from `base.clients`.
+    pub active_clients: Vec<String>,
+    /// The subset of `base.realized_volatility_surfaces` to KEEP. Composition
+    /// errors if any name here is absent from the base surfaces.
+    pub active_rv_surfaces: Vec<String>,
+    /// Per-surface scalar overrides merged into that surface's `[policy]` table.
+    /// Each key MUST appear in `active_rv_surfaces`.
+    #[serde(default)]
+    pub rv_policy_overrides: BTreeMap<String, toml::Table>,
+    /// The full `[risk.loss_governor]` block, inserted at `risk.loss_governor` in
+    /// the composed config. Absent from the base (the template carries no live
+    /// loss rails); the overlay owns them.
+    pub loss_governor: toml::Table,
+    /// Per-client FULL replacement of `[clients.<name>.execution]`. Each key MUST
+    /// appear in `active_clients`. A full replace lets the overlay both override
+    /// values (funder, signature_type) and DROP placeholder sub-tables
+    /// (e.g. `on_chain_collateral`) without an explicit delete directive.
+    #[serde(default)]
+    pub client_execution: BTreeMap<String, toml::Table>,
+}
+
+/// Outcome of generating a runtime config from a tracked overlay.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GeneratedLiveConfig {
-    /// Relative file name of the source profile (e.g. `prod-btc-5m.toml`).
+    /// Relative file name of the source overlay (e.g. `prod-btc-5m.overlay.toml`).
     pub source_profile: String,
-    /// `config_bundle_checksum` of the loaded profile (root text + strategy
-    /// files). Recorded in the header and reproducible from the profile alone.
+    /// `config_bundle_checksum` of the COMPOSED config (composed root text +
+    /// strategy files). Recorded in the header and reproducible from
+    /// overlay ⊕ base alone.
     pub profile_bundle_sha256: String,
     /// Production invariants confirmed before generation.
     pub invariants: ProductionInvariants,
-    /// Full runtime config text: provenance header (comments) + profile body.
+    /// Full runtime config text: provenance header (comments) + composed body.
     pub text: String,
 }
 
-/// Result of verifying a deployed runtime config against its source profile.
+/// Result of verifying a deployed runtime config against its source overlay+base.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LiveConfigVerification {
     pub profile_path: PathBuf,
@@ -99,7 +148,7 @@ pub struct LiveConfigVerification {
 
 /// The production-readiness facts `generate`/`verify` confirm and report. Values
 /// (e.g. the loss-rail amounts, which strategy is selected) are decided by the
-/// profile and the pilot-config issues, not by this module — it only proves the
+/// overlay and the pilot-config issues, not by this module — it only proves the
 /// rails and selection are present and fails closed when they are not.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProductionInvariants {
@@ -117,20 +166,25 @@ pub struct ProductionInvariants {
 /// generation and verification only succeed when every check passes.
 #[derive(Debug)]
 pub enum ProfileError {
-    /// The profile (or deployed file) did not load against this binary's schema
-    /// + semantic validation. This is the staleness guard.
+    /// The composed config (or deployed file) did not load against this binary's
+    /// schema + semantic validation. This is the staleness guard.
     Load {
         path: PathBuf,
         source: BoltV3ConfigError,
     },
-    /// Filesystem error reading a profile or deployed file.
+    /// Filesystem error reading or writing an overlay, base, or deployed file.
     Io { path: PathBuf, message: String },
+    /// The overlay text was not valid TOML / not a valid [`ProdOverlay`].
+    Overlay { path: PathBuf, message: String },
+    /// The overlay referenced a base/client/surface that the composition could not
+    /// satisfy (e.g. an `active_clients` name absent from the base).
+    Composition(String),
     /// A required production invariant was missing (e.g. no loss rails).
     Invariant(String),
-    /// A deployed file did not match the config regenerated from the profile.
+    /// A deployed file did not match the config regenerated from the overlay+base.
     Mismatch(String),
     /// `generate` was pointed at a file that is itself already a generated
-    /// runtime config rather than a source profile.
+    /// runtime config rather than a source overlay.
     AlreadyGenerated(PathBuf),
 }
 
@@ -147,11 +201,15 @@ impl std::fmt::Display for ProfileError {
             ProfileError::Io { path, message } => {
                 write!(f, "failed to read `{}`: {message}", path.display())
             }
+            ProfileError::Overlay { path, message } => {
+                write!(f, "overlay `{}` is invalid: {message}", path.display())
+            }
+            ProfileError::Composition(message) => write!(f, "{message}"),
             ProfileError::Invariant(message) => write!(f, "{message}"),
             ProfileError::Mismatch(message) => write!(f, "{message}"),
             ProfileError::AlreadyGenerated(path) => write!(
                 f,
-                "`{}` is already a generated runtime config; pass the source profile instead",
+                "`{}` is already a generated runtime config; pass the source overlay instead",
                 path.display()
             ),
         }
@@ -180,8 +238,287 @@ fn profile_basename(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
+/// Parse and validate the overlay text into a [`ProdOverlay`].
+fn parse_overlay(overlay_path: &Path, overlay_text: &str) -> Result<ProdOverlay, ProfileError> {
+    toml::from_str(overlay_text).map_err(|error| ProfileError::Overlay {
+        path: overlay_path.to_path_buf(),
+        message: error.to_string(),
+    })
+}
+
+/// Borrow the `[table]` named `key` inside `parent`, erroring if it is missing or
+/// not a table. Used to navigate the base config during composition.
+fn require_table<'a>(
+    parent: &'a toml::Table,
+    key: &str,
+    context: &str,
+) -> Result<&'a toml::Table, ProfileError> {
+    match parent.get(key) {
+        Some(toml::Value::Table(table)) => Ok(table),
+        Some(_) => Err(ProfileError::Composition(format!(
+            "{context}: base key `{key}` must be a table"
+        ))),
+        None => Err(ProfileError::Composition(format!(
+            "{context}: base is missing required table `{key}`"
+        ))),
+    }
+}
+
+/// Directory the overlay's declared base config resolves into. Strategy files are
+/// referenced relative to this directory (the loaded config's parent), so the
+/// approved strategy CONTENT lives here regardless of where a composed config is
+/// transiently staged for the validation load.
+fn overlay_base_dir(overlay_path: &Path, overlay: &ProdOverlay) -> PathBuf {
+    let base_path = resolve_root_relative_path(overlay_path, &overlay.base);
+    base_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Compose the deterministic composed-config TOML text from the overlay and its
+/// declared base. Pure function of the on-disk bytes — identical input ⇒ identical
+/// output, so the deployed artifact is reproducible and byte-comparable.
+fn compose_config_text(overlay_path: &Path, overlay: &ProdOverlay) -> Result<String, ProfileError> {
+    let base_path = resolve_root_relative_path(overlay_path, &overlay.base);
+    let base_text = read_config_text(&base_path)?;
+    let mut root: toml::Table = toml::from_str(&base_text).map_err(|error| {
+        ProfileError::Composition(format!(
+            "base config `{}` is not valid TOML: {error}",
+            base_path.display()
+        ))
+    })?;
+
+    // (b) strategy_files: wholesale replace.
+    root.insert(
+        "strategy_files".to_string(),
+        toml::Value::Array(
+            overlay
+                .strategy_files
+                .iter()
+                .map(|path| toml::Value::String(path.clone()))
+                .collect(),
+        ),
+    );
+
+    // (c) clients: retain only active_clients, then full-replace each named
+    // [clients.<name>.execution].
+    let base_clients = require_table(&root, "clients", "active_clients").map(Clone::clone)?;
+    let mut retained_clients = toml::Table::new();
+    for name in &overlay.active_clients {
+        let client = base_clients.get(name).ok_or_else(|| {
+            ProfileError::Composition(format!(
+                "active_clients references `{name}`, which is not present in base.clients"
+            ))
+        })?;
+        retained_clients.insert(name.clone(), client.clone());
+    }
+    for (name, execution) in &overlay.client_execution {
+        let client = retained_clients.get_mut(name).ok_or_else(|| {
+            ProfileError::Composition(format!(
+                "client_execution references `{name}`, which is not in active_clients"
+            ))
+        })?;
+        let client_table = client.as_table_mut().ok_or_else(|| {
+            ProfileError::Composition(format!("base client `{name}` must be a table"))
+        })?;
+        client_table.insert(
+            "execution".to_string(),
+            toml::Value::Table(execution.clone()),
+        );
+    }
+    root.insert("clients".to_string(), toml::Value::Table(retained_clients));
+
+    // (d) realized_volatility_surfaces: retain only active_rv_surfaces, then merge
+    // per-surface rv_policy_overrides into that surface's [policy].
+    let base_surfaces = require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")
+        .map(Clone::clone)?;
+    let active_surface_names: BTreeSet<&str> = overlay
+        .active_rv_surfaces
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut retained_surfaces = toml::Table::new();
+    for name in &overlay.active_rv_surfaces {
+        let surface = base_surfaces.get(name).ok_or_else(|| {
+            ProfileError::Composition(format!(
+                "active_rv_surfaces references `{name}`, which is not present in \
+                 base.realized_volatility_surfaces"
+            ))
+        })?;
+        retained_surfaces.insert(name.clone(), surface.clone());
+    }
+    for (name, overrides) in &overlay.rv_policy_overrides {
+        if !active_surface_names.contains(name.as_str()) {
+            return Err(ProfileError::Composition(format!(
+                "rv_policy_overrides references surface `{name}`, which is not in active_rv_surfaces"
+            )));
+        }
+        let surface = retained_surfaces
+            .get_mut(name)
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| {
+                ProfileError::Composition(format!("retained surface `{name}` must be a table"))
+            })?;
+        let policy = surface
+            .entry("policy".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| {
+                ProfileError::Composition(format!("surface `{name}` [policy] must be a table"))
+            })?;
+        for (override_key, override_value) in overrides {
+            policy.insert(override_key.clone(), override_value.clone());
+        }
+    }
+    root.insert(
+        "realized_volatility_surfaces".to_string(),
+        toml::Value::Table(retained_surfaces),
+    );
+
+    // (e) risk.loss_governor: insert the overlay's full block.
+    let risk = root
+        .get_mut("risk")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| {
+            ProfileError::Composition("base is missing required table `risk`".to_string())
+        })?;
+    risk.insert(
+        "loss_governor".to_string(),
+        toml::Value::Table(overlay.loss_governor.clone()),
+    );
+
+    // (f) serialize deterministically: rebuild every table with keys inserted in
+    // sorted order so the emitted bytes are identical regardless of the `toml`
+    // crate's map backing (`preserve_order` on or off).
+    let sorted = sort_toml_value(toml::Value::Table(root));
+    toml::to_string(&sorted).map_err(|error| {
+        ProfileError::Composition(format!("composed config failed to serialize: {error}"))
+    })
+}
+
+/// Recursively rebuild a [`toml::Value`] so every table's keys are in sorted
+/// order. With insertion-ordered map backing this yields deterministic output;
+/// with `BTreeMap` backing the keys are already sorted, so the result is identical
+/// either way. The serializer's own table-vs-scalar ordering is a deterministic
+/// function of this input, so the emitted bytes are stable run-to-run.
+fn sort_toml_value(value: toml::Value) -> toml::Value {
+    match value {
+        toml::Value::Table(table) => {
+            let mut sorted = toml::Table::new();
+            let mut entries: Vec<(String, toml::Value)> = table.into_iter().collect();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            for (key, child) in entries {
+                sorted.insert(key, sort_toml_value(child));
+            }
+            toml::Value::Table(sorted)
+        }
+        toml::Value::Array(items) => {
+            toml::Value::Array(items.into_iter().map(sort_toml_value).collect())
+        }
+        scalar => scalar,
+    }
+}
+
+/// Load the composed config text through the binary's real loader, WITHOUT
+/// mutating the repo tree. The composed text is written into a fresh private temp
+/// directory whose `strategy_files` parent directories are symlinked back to the
+/// base config's directory, so the loader resolves strategy files exactly as the
+/// deployed `live.toml`'s do (relative to the loaded file's parent) while leaving
+/// `config/` untouched. The temp directory is removed before returning, on success
+/// and on error alike.
+fn load_composed_against_binary(
+    overlay_path: &Path,
+    overlay: &ProdOverlay,
+    composed_text: &str,
+) -> Result<LoadedBoltV3Config, ProfileError> {
+    let base_path = resolve_root_relative_path(overlay_path, &overlay.base);
+    let base_dir = base_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+
+    let temp_dir = ComposeTempDir::create()?;
+    // Mirror each distinct first path component referenced by strategy_files into the
+    // temp dir as a symlink back to the base dir's matching child, so relative
+    // strategy paths (e.g. `strategies/binary_oracle_btc.toml`) resolve there.
+    let mut linked: BTreeSet<String> = BTreeSet::new();
+    for relative in &overlay.strategy_files {
+        let mut components = Path::new(relative).components();
+        if let Some(std::path::Component::Normal(first)) = components.next() {
+            let first = first.to_string_lossy().into_owned();
+            if linked.insert(first.clone()) {
+                let target = base_dir.join(&first);
+                let link = temp_dir.path().join(&first);
+                symlink_dir(&target, &link).map_err(|source| ProfileError::Io {
+                    path: link,
+                    message: source.to_string(),
+                })?;
+            }
+        }
+    }
+
+    let composed_path = temp_dir.path().join("composed-live.toml");
+    crate::bolt_v3_atomic_io::write_atomic_file_with_mode(
+        &composed_path,
+        composed_text.as_bytes(),
+        crate::bolt_v3_atomic_io::RUNTIME_CONFIG_FILE_MODE,
+    )
+    .map_err(|error| ProfileError::Io {
+        path: error.path,
+        message: error.source.to_string(),
+    })?;
+
+    load_bolt_v3_config(&composed_path).map_err(|source| ProfileError::Load {
+        path: overlay_path.to_path_buf(),
+        source,
+    })
+    // `temp_dir` drops here, removing the staged directory on success and error alike.
+}
+
+#[cfg(unix)]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(not(unix))]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+/// A uniquely-named private temp directory for staging the composed config during
+/// the validation load. Removed on drop so neither `config/` nor the temp root is
+/// left littered, even if the load errors. The unique path identity is owned by
+/// [`crate::bolt_v3_atomic_io::unique_temp_path`] (one counter for all temp paths).
+struct ComposeTempDir {
+    path: PathBuf,
+}
+
+impl ComposeTempDir {
+    fn create() -> Result<Self, ProfileError> {
+        let path = crate::bolt_v3_atomic_io::unique_temp_path(COMPOSE_TEMP_DIR_PREFIX);
+        std::fs::create_dir_all(&path).map_err(|source| ProfileError::Io {
+            path: path.clone(),
+            message: source.to_string(),
+        })?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+const COMPOSE_TEMP_DIR_PREFIX: &str = "bolt-v2-compose";
+
+impl Drop for ComposeTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// Confirm the production invariants the live deploy depends on, failing closed
-/// when any is absent. Reused by both generation (on the profile) and
+/// when any is absent. Reused by both generation (on the composed config) and
 /// verification (on the deployed file).
 fn confirm_production_invariants(
     loaded: &LoadedBoltV3Config,
@@ -247,57 +584,74 @@ fn provenance_header(source_profile: &str, profile_bundle_sha256: &str) -> Strin
          # source_profile={source_profile}\n\
          # profile_bundle_sha256={profile_bundle_sha256}\n\
          # Generated by `bolt-v2 ops generate-live-config`; DO NOT EDIT.\n\
-         # Edit the tracked source profile in a reviewed PR, then regenerate (issue #768).\n\
+         # Edit the tracked source overlay (or base root.toml) in a reviewed PR, then regenerate (issue #768).\n\
          \n"
     )
 }
 
-/// Generate a deterministic, provenance-stamped runtime config from a tracked
-/// production profile. Fails closed on any schema, semantic, or
-/// production-invariant problem in the profile.
-pub fn generate_live_config(profile_path: &Path) -> Result<GeneratedLiveConfig, ProfileError> {
-    let profile_text = read_config_text(profile_path)?;
-    if profile_text.contains(GENERATED_MARKER_PREFIX) {
-        return Err(ProfileError::AlreadyGenerated(profile_path.to_path_buf()));
-    }
+/// The product of composing + loading an overlay: the composed body text (no
+/// header), the load of that body against this binary, and the stable base config
+/// directory the strategy files are resolved against.
+struct ComposedConfig {
+    text: String,
+    loaded: LoadedBoltV3Config,
+    base_dir: PathBuf,
+}
 
-    let loaded = load_bolt_v3_config(profile_path).map_err(|source| ProfileError::Load {
-        path: profile_path.to_path_buf(),
-        source,
-    })?;
-    let invariants = confirm_production_invariants(&loaded)?;
+/// Compose, validate, and produce the runtime config from a tracked overlay,
+/// without stamping the provenance header. Shared by [`generate_live_config`] and
+/// [`verify_live_config`] so both compose identically.
+fn compose_and_load(overlay_path: &Path) -> Result<ComposedConfig, ProfileError> {
+    let overlay_text = read_config_text(overlay_path)?;
+    if overlay_text.contains(GENERATED_MARKER_PREFIX) {
+        return Err(ProfileError::AlreadyGenerated(overlay_path.to_path_buf()));
+    }
+    let overlay = parse_overlay(overlay_path, &overlay_text)?;
+    let composed_text = compose_config_text(overlay_path, &overlay)?;
+    let loaded = load_composed_against_binary(overlay_path, &overlay, &composed_text)?;
+    Ok(ComposedConfig {
+        text: composed_text,
+        loaded,
+        base_dir: overlay_base_dir(overlay_path, &overlay),
+    })
+}
+
+/// Generate a deterministic, provenance-stamped runtime config from a tracked
+/// production overlay composed onto its declared base. Fails closed on any TOML,
+/// schema, semantic, composition, or production-invariant problem.
+pub fn generate_live_config(profile_path: &Path) -> Result<GeneratedLiveConfig, ProfileError> {
+    let composed = compose_and_load(profile_path)?;
+    let invariants = confirm_production_invariants(&composed.loaded)?;
 
     let source_profile = profile_basename(profile_path);
-    let header = provenance_header(&source_profile, &loaded.config_bundle_checksum);
-    let text = format!("{header}{profile_text}");
+    let header = provenance_header(&source_profile, &composed.loaded.config_bundle_checksum);
+    let text = format!("{header}{}", composed.text);
 
     Ok(GeneratedLiveConfig {
         source_profile,
-        profile_bundle_sha256: loaded.config_bundle_checksum,
+        profile_bundle_sha256: composed.loaded.config_bundle_checksum,
         invariants,
         text,
     })
 }
 
-/// Verify that a deployed runtime config is exactly what the approved profile
-/// generates AND still loads against this binary. Both must hold.
+/// Verify that a deployed runtime config is exactly what the approved overlay+base
+/// compose to AND still loads against this binary. Both must hold.
 pub fn verify_live_config(
     profile_path: &Path,
     deployed_path: &Path,
 ) -> Result<LiveConfigVerification, ProfileError> {
-    // Load the on-box profile once (reused below for the strategy-content comparison).
-    let profile_loaded =
-        load_bolt_v3_config(profile_path).map_err(|source| ProfileError::Load {
-            path: profile_path.to_path_buf(),
-            source,
-        })?;
+    // Compose + load once (the composed load + base dir are reused for the
+    // strategy-content comparison below).
+    let composed = compose_and_load(profile_path)?;
+    let composed_loaded = &composed.loaded;
 
     let generated = generate_live_config(profile_path)?;
     let deployed_text = read_config_text(deployed_path)?;
 
     if deployed_text != generated.text {
         return Err(ProfileError::Mismatch(format!(
-            "deployed runtime config `{}` does not match the config generated from profile `{}`; \
+            "deployed runtime config `{}` does not match the config composed from overlay `{}`; \
              re-run `ops generate-live-config` and redeploy rather than hand-editing",
             deployed_path.display(),
             profile_path.display()
@@ -317,14 +671,14 @@ pub fn verify_live_config(
     // by relative path and resolved at the deploy site — their CONTENTS are not part
     // of the compared bytes. Compare them explicitly so a divergent deployed strategy
     // file (valid schema, but different sizing/feeds/stale) cannot pass as approved.
-    if profile_loaded.strategies.len() != deployed_loaded.strategies.len() {
+    if composed_loaded.strategies.len() != deployed_loaded.strategies.len() {
         return Err(ProfileError::Mismatch(format!(
-            "deployed runtime config references {} strategy file(s) but must match the profile's {}",
+            "deployed runtime config references {} strategy file(s) but must match the composed {}",
             deployed_loaded.strategies.len(),
-            profile_loaded.strategies.len()
+            composed_loaded.strategies.len()
         )));
     }
-    for (approved, deployed) in profile_loaded
+    for (approved, deployed) in composed_loaded
         .strategies
         .iter()
         .zip(deployed_loaded.strategies.iter())
@@ -335,7 +689,16 @@ pub fn verify_live_config(
                 deployed.relative_path, approved.relative_path
             )));
         }
-        let approved_text = read_config_text(&approved.config_path)?;
+        // Read the APPROVED strategy content from the stable base directory
+        // (`approved.config_path` resolved into the transient compose staging dir,
+        // which is already gone). The base dir is where the loader resolves the
+        // composed config's relative strategy_files, i.e. the real source of truth.
+        let approved_strategy_path = if Path::new(&approved.relative_path).is_absolute() {
+            PathBuf::from(&approved.relative_path)
+        } else {
+            composed.base_dir.join(&approved.relative_path)
+        };
+        let approved_text = read_config_text(&approved_strategy_path)?;
         let deployed_strategy_text = read_config_text(&deployed.config_path)?;
         if approved_text != deployed_strategy_text {
             return Err(ProfileError::Mismatch(format!(

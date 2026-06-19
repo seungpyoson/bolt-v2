@@ -67,16 +67,19 @@ install -d -m 0755 "${BOLT_INSTALL_ROOT}"
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${BOLT_INSTALL_ROOT}/config"
 
 # The bolt service user runs verify-live-config / prestart-check / run (ExecStartPre +
-# ExecStart) and must read the ENTIRE deployed config bundle: the tracked profile, the
-# generated live.toml, AND every referenced strategy file. Files/dirs copied by root under
-# a restrictive umask (e.g. 077) can land 0600/0700 root:root and lock the service user out
-# before start (issue #768) — the same lockout class the atomic writer fixes for live.toml.
-# Repair the whole bundle to root:bolt with group-readable modes regardless of how it was
-# copied, so readability does not depend on the deploy shell's umask.
-if [[ -d "${BOLT_INSTALL_ROOT}/config/strategies" ]]; then
-    chown root:"${BOLT_GROUP}" "${BOLT_INSTALL_ROOT}/config/strategies"
-    chmod 0750 "${BOLT_INSTALL_ROOT}/config/strategies"
-fi
+# ExecStart) and must read the ENTIRE deployed config bundle: the tracked overlay (under
+# config/profiles/), its base root.toml, the generated live.toml, AND every referenced
+# strategy file. Files/dirs copied by root under a restrictive umask (e.g. 077) can land
+# 0600/0700 root:root and lock the service user out before start (issue #768) — the same
+# lockout class the atomic writer fixes for live.toml. Repair the whole bundle to root:bolt
+# with group-readable modes regardless of how it was copied, so readability does not depend
+# on the deploy shell's umask.
+for config_subdir in strategies profiles; do
+    if [[ -d "${BOLT_INSTALL_ROOT}/config/${config_subdir}" ]]; then
+        chown root:"${BOLT_GROUP}" "${BOLT_INSTALL_ROOT}/config/${config_subdir}"
+        chmod 0750 "${BOLT_INSTALL_ROOT}/config/${config_subdir}"
+    fi
+done
 find "${BOLT_INSTALL_ROOT}/config" -type f -name '*.toml' -exec chown root:"${BOLT_GROUP}" {} +
 find "${BOLT_INSTALL_ROOT}/config" -type f -name '*.toml' -exec chmod 0640 {} +
 

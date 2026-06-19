@@ -10,8 +10,9 @@ zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"
 worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
-# Tracked production profile = the single source of truth for live config (#768).
-live_root := "config/prod-btc-5m.toml"
+# Tracked production overlay = the pilot deltas over config/root.toml (the shared
+# base template). Composed onto its base into the runtime config at deploy (#768).
+live_root := "config/profiles/prod-btc-5m.overlay.toml"
 # Generated, gitignored runtime config the binary actually runs.
 live_runtime := "config/live.toml"
 repo_root := justfile_directory()
@@ -402,9 +403,10 @@ source-fence: source-fence-static
 cargo-shim-tests:
     python3 -m pytest scripts/test_cargo_shim.py -q
 
-# Generate the runtime config from the tracked production profile. The single,
-# fail-closed path from `config/prod-btc-5m.toml` to a deployable runtime config;
-# operators never hand-edit the runtime config (issue #768).
+# Generate the runtime config by composing the tracked production overlay onto its
+# base template. The single, fail-closed path from
+# `config/profiles/prod-btc-5m.overlay.toml` (⊕ `config/root.toml`) to a deployable
+# runtime config; operators never hand-edit the runtime config (issue #768).
 live-generate: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops generate-live-config --profile {{live_root}} --output {{live_runtime}}
 

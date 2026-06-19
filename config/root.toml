@@ -672,7 +672,6 @@ book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
-min_observed_targets = 10
 
 [clients.coinbase_data]
 venue = "COINBASE"

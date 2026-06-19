@@ -8,15 +8,18 @@ Recommended sequence:
 
 1. Copy the prebuilt binary to `/opt/bolt-v2/bolt-v2` with mode `0755`; do not use the EC2
    instance as a Rust build/cache host for the live service.
-2. Copy the tracked production profile and its strategy files to the instance, for example
-   `/opt/bolt-v2/config/prod-btc-5m.toml` and `/opt/bolt-v2/config/strategies/`. The runtime config
-   references its strategy files by relative path, so they must sit alongside it.
-3. Generate the runtime config from the profile — never hand-edit `live.toml` (issue #768):
-   `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --output /opt/bolt-v2/config/live.toml`
-4. Verify it regenerates from the approved profile and still loads against the deployed binary
+2. Copy the tracked production overlay, its base template, and the strategy files to the instance:
+   `/opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml`, `/opt/bolt-v2/config/root.toml`, and
+   `/opt/bolt-v2/config/strategies/`. The overlay's `base = "../root.toml"` resolves relative to the
+   overlay, and both the generated runtime config and the overlay reference strategy files by relative
+   path, so the base and `strategies/` must sit under `/opt/bolt-v2/config/` alongside the deployed config.
+3. Generate the runtime config by composing the overlay onto its base — never hand-edit `live.toml`
+   (issue #768):
+   `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile /opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml --output /opt/bolt-v2/config/live.toml`
+4. Verify it re-composes from the approved overlay+base and still loads against the deployed binary
    before any start (byte parity + independent schema load — catches stale-key drift that hash
    parity alone does not):
-   `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --deployed /opt/bolt-v2/config/live.toml`
+   `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml --deployed /opt/bolt-v2/config/live.toml`
 5. Keep the config readable by the service user, for example `root:bolt` with mode `0640`.
 6. Run `sudo BOLT_DATA_DEVICE=/dev/<data-volume-device> ./deploy/install.sh`.
 7. Enable and start the service after the binary and config are in place.
@@ -25,10 +28,10 @@ Recommended sequence:
 
 The full pre-arm verification runs in order; the service must not start until all pass:
 
-1. `bolt-v2 ops generate-live-config --profile config/prod-btc-5m.toml --output /opt/bolt-v2/config/live.toml`
-   — produce the runtime config from the tracked profile (fail-closed on schema/invariant errors).
-2. `bolt-v2 ops verify-live-config --profile config/prod-btc-5m.toml --deployed /opt/bolt-v2/config/live.toml`
-   — byte parity vs the regenerated config + independent schema load + strategy-file content match.
+1. `bolt-v2 ops generate-live-config --profile config/profiles/prod-btc-5m.overlay.toml --output /opt/bolt-v2/config/live.toml`
+   — compose the overlay onto its base into the runtime config (fail-closed on TOML/schema/composition/invariant errors).
+2. `bolt-v2 ops verify-live-config --profile config/profiles/prod-btc-5m.overlay.toml --deployed /opt/bolt-v2/config/live.toml`
+   — byte parity vs the re-composed config + independent schema load + strategy-file content match.
 3. `bolt-v2 secrets resolve --config /opt/bolt-v2/config/live.toml` — confirm every SSM credential
    resolves without printing values (#768 step 3c).
 4. `bolt-v2 ops prestart-check --config /opt/bolt-v2/config/live.toml` — loads the config through the
@@ -46,18 +49,21 @@ secret-resolution and exact-binary config-load/storage checks that cannot run of
 
 The systemd unit **enforces** step 2 at every start: `ExecStartPre` runs `ops verify-live-config` (then
 `ops prestart-check`) before `run`, so a hand-edited or stale `/opt/bolt-v2/config/live.toml` — including
-one with loss rails disabled — fails service start instead of trading. `verify` also enforces a **release
-anchor**: the on-box profile and its strategy files must be byte-identical to the reviewed copy baked into
-the deployed binary at build time (`include_str!`), so a stale or hand-edited on-box profile that is
-merely self-consistent with its own generated `live.toml` is rejected too. Because the binary is the
-CI-built release artifact, this ties the deployed config to the PR-reviewed Git revision — deploy the
-binary and config from the same reviewed release.
+one with loss rails disabled — fails service start instead of trading. The deployed config is bound to the
+PR-reviewed Git revision **procedurally**, not by a binary-embedded anchor: `verify` re-composes the
+runtime config from the on-box overlay+base, requires the deployed bytes to be byte-identical to that
+re-composition, and independently loads them against the deployed binary's schema. No profile is baked
+into the binary (a binary-embedded `include_str!` anchor does not scale to a multi-strategy/venue fleet and
+is superseded by arming bound to the deployed config checksum plus a signed release manifest — #768
+follow-up). Deploy the binary, the overlay, the base `root.toml`, and the strategy files from the same
+reviewed release so the on-box bytes are exactly what CI loaded.
 
-`deploy/install.sh` repairs the **entire** deployed config bundle — the tracked profile, the generated
-`live.toml`, and every `config/strategies/*.toml` — to `root:bolt` with group-readable modes (config and
-strategies dirs `0750`, TOML files `0640`). The service user runs `ops verify-live-config` /
-`prestart-check` / `run`, so this keeps the bundle readable regardless of the umask under which it was
-copied (a restrictive umask would otherwise leave root-copied files `0600 root:root` and fail start).
+`deploy/install.sh` repairs the **entire** deployed config bundle — the tracked overlay, its base
+`root.toml`, the generated `live.toml`, and every `config/strategies/*.toml` — to `root:bolt` with
+group-readable modes (config and strategies dirs `0750`, TOML files `0640`). The service user runs
+`ops verify-live-config` / `prestart-check` / `run`, so this keeps the bundle readable regardless of the
+umask under which it was copied (a restrictive umask would otherwise leave root-copied files
+`0600 root:root` and fail start).
 
 The systemd unit refuses to start unless `/srv/bolt-v2` is mounted and the Rust prestart check
 passes against `/opt/bolt-v2/config/live.toml`. That prestart check requires

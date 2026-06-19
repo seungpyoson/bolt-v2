@@ -46,9 +46,9 @@ fn systemd_unit_verifies_live_config_against_profile_before_start() {
 
     assert!(
         unit.contains(
-            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/prod-btc-5m.toml --deployed /opt/bolt-v2/config/live.toml"
+            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml --deployed /opt/bolt-v2/config/live.toml"
         ),
-        "systemd unit must verify the deployed live.toml against the tracked profile before start, \
+        "systemd unit must verify the deployed live.toml against the tracked overlay before start, \
          so the fail-closed gate (incl. enabled loss rails) is enforced at the prod entry point, not advisory (#768)"
     );
 

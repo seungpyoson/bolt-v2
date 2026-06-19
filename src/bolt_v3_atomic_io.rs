@@ -65,6 +65,22 @@ pub fn private_atomic_temp_path(path: &Path) -> PathBuf {
     private_atomic_temp_path_with_suffix(path, "tmp")
 }
 
+/// A process-unique path under the system temp directory, named
+/// `<prefix>.<pid>.<timestamp_ns>.<counter>`. Reuses the same atomic counter as
+/// the atomic-write temp files so temp-path identity is owned in ONE place. The
+/// caller creates and removes the entry; this only computes the name.
+pub fn unique_temp_path(prefix: &str) -> PathBuf {
+    let counter = PRIVATE_ATOMIC_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "{prefix}.{}.{timestamp_ns}.{counter}",
+        std::process::id()
+    ))
+}
+
 fn private_atomic_temp_path_for_write(path: &Path) -> PathBuf {
     let counter = PRIVATE_ATOMIC_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let timestamp_ns = SystemTime::now()

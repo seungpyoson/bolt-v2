@@ -4923,8 +4923,8 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
     let justfile = std::fs::read_to_string(support::repo_path("justfile"))
         .expect("justfile should be readable");
     assert!(
-        justfile.contains("live_root := \"config/prod-btc-5m.toml\""),
-        "live recipes should source the tracked production profile (single source of truth, #768)"
+        justfile.contains("live_root := \"config/profiles/prod-btc-5m.overlay.toml\""),
+        "live recipes should source the tracked production overlay (single source of truth over the base template, #768)"
     );
     assert!(
         !justfile.contains("live_root := \"config/live.local.toml\""),

@@ -1,26 +1,20 @@
-# Tracked production profile — BTC 5m supervised pilot (issue #768).
+# FROZEN REGRESSION ORACLE — DO NOT DEPLOY, DO NOT EDIT THE BODY (issue #768).
 #
-# This is the SINGLE source of truth for live runtime config. It is a complete,
-# schema-valid bolt-v3 root config (no overlay, no placeholders). CI loads it
-# through the exact deployed binary, so it cannot silently drift against the
-# schema the way the former gitignored config/live.toml did.
+# This is the pre-refactor standalone BTC 5m production profile, kept verbatim ONLY
+# as a behavior-preservation oracle. The test
+# `composed_config_matches_frozen_legacy_oracle` proves that composing the tracked
+# overlay `config/profiles/prod-btc-5m.overlay.toml` onto its base `config/root.toml`
+# loads to the SAME effective `BoltV3RootConfig` as this file — i.e. the base+overlay
+# refactor changed the config's shape, not its meaning.
+#
+# It lives under tests/fixtures/ (NOT config/) on purpose: deploy tooling must never
+# pick it up as a runtime config. The live production config is now
+# `config/profiles/prod-btc-5m.overlay.toml` composed onto `config/root.toml`. Edit
+# those (in a reviewed PR), not this oracle. Touch the body below only if you have a
+# deliberate, reviewed reason to re-baseline the equivalence target.
 #
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
-# `funder` is a public on-chain Safe address. NEVER put secret values here.
-#
-# Relationship to config/root.toml: root.toml is the multi-asset TEMPLATE (it carries
-# placeholder execution values); this profile is the PRODUCTION source for the BTC 5m
-# pilot. Shared infrastructure (runtime, nautilus, persistence, aws, logging,
-# gate_providers, and each venue's [data]/[secrets]) is single-sourced — CI
-# (prod_profile_does_not_drift_from_root_shared_blocks) fails if it drifts from root.
-# This profile owns only the pilot deltas: strategy/RV selection, the loss_governor
-# rails, and the Polymarket execution funder/signature_type.
-#
-# Deploy/run: `bolt-v2 ops generate-live-config --profile config/prod-btc-5m.toml
-# --output <live.toml>` stamps a provenance header onto this file and writes the
-# runtime config; `ops verify-live-config` proves the deployed file regenerates
-# from this profile and still loads against the running binary. Do NOT hand-edit
-# the deployed live.toml — edit this profile in a reviewed PR instead.
+# `funder` is a public on-chain Safe address.
 schema_version = 1
 trader_id = "BOLT-001"
 

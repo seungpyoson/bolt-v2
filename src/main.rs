@@ -837,7 +837,7 @@ mod tests {
             "ops",
             "generate-live-config",
             "--profile",
-            "config/prod-btc-5m.toml",
+            "config/profiles/prod-btc-5m.overlay.toml",
             "--output",
             "config/live.toml",
         ])
@@ -847,7 +847,10 @@ mod tests {
             Command::Ops {
                 command: OpsCommand::GenerateLiveConfig { profile, output },
             } => {
-                assert_eq!(profile, PathBuf::from("config/prod-btc-5m.toml"));
+                assert_eq!(
+                    profile,
+                    PathBuf::from("config/profiles/prod-btc-5m.overlay.toml")
+                );
                 assert_eq!(output, PathBuf::from("config/live.toml"));
             }
             _ => panic!("expected ops generate-live-config command"),
@@ -861,7 +864,7 @@ mod tests {
             "ops",
             "verify-live-config",
             "--profile",
-            "config/prod-btc-5m.toml",
+            "config/profiles/prod-btc-5m.overlay.toml",
             "--deployed",
             "/opt/bolt-v2/config/live.toml",
         ])
@@ -871,7 +874,10 @@ mod tests {
             Command::Ops {
                 command: OpsCommand::VerifyLiveConfig { profile, deployed },
             } => {
-                assert_eq!(profile, PathBuf::from("config/prod-btc-5m.toml"));
+                assert_eq!(
+                    profile,
+                    PathBuf::from("config/profiles/prod-btc-5m.overlay.toml")
+                );
                 assert_eq!(deployed, PathBuf::from("/opt/bolt-v2/config/live.toml"));
             }
             _ => panic!("expected ops verify-live-config command"),

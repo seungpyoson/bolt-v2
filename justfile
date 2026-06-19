@@ -446,6 +446,8 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
 
     [ -f .github/workflows/ci.yml ] && workflow_files+=(.github/workflows/ci.yml)
     [ -f .github/workflows/ci-docs-pass-stub.yml ] && workflow_files+=(.github/workflows/ci-docs-pass-stub.yml)
+    [ -f .github/workflows/require-reviewer-node.yml ] && workflow_files+=(.github/workflows/require-reviewer-node.yml)
+    [ -f .github/workflows/require-resolved-review-threads.yml ] && workflow_files+=(.github/workflows/require-resolved-review-threads.yml)
     [ -f .github/workflows/advisory.yml ] && workflow_files+=(.github/workflows/advisory.yml)
     [ -f .github/actions/setup-environment/action.yml ] && action_files+=(.github/actions/setup-environment/action.yml)
     github_script_files=(.github/scripts/*.sh)
@@ -483,6 +485,12 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
         failed=1
     fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_require_sp_reviewer.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_require_resolved_review_threads.py; then
         failed=1
     fi
     if ! python3 scripts/test_ubicloud_runner_minutes.py; then

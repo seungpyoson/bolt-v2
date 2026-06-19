@@ -61,6 +61,35 @@ if "__main__" == __name__:
     raise SystemExit(main())
 '''
 
+COMPLIANT_RELEASED_HANDLE = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lock_handle = lane_governor.acquire()
+    try:
+        raise SystemExit(main())
+    finally:
+        lane_governor.release(lock_handle)
+'''
+
+RELEASED_HANDLE_WITH_WORK_AFTER_RELEASE = '''
+def main():
+    return 0
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lock_handle = lane_governor.acquire()
+    try:
+        print("only setup is locked")
+    finally:
+        lane_governor.release(lock_handle)
+    raise SystemExit(main())
+'''
+
 MISSING_ACQUIRE = '''
 def main():
     return 0
@@ -210,6 +239,15 @@ def test_reversed_main_guard_passes() -> None:
     assert _violations({"verify_sample.py": COMPLIANT_REVERSED_MAIN_GUARD}) == []
 
 
+def test_released_acquire_handle_passes() -> None:
+    assert _violations({"test_sample.py": COMPLIANT_RELEASED_HANDLE}) == []
+
+
+def test_released_acquire_handle_with_work_after_release_is_flagged() -> None:
+    violations = _violations({"test_sample.py": RELEASED_HANDLE_WITH_WORK_AFTER_RELEASE})
+    assert len(violations) == 1 and "released acquire handle" in violations[0]
+
+
 def test_missing_acquire_flagged() -> None:
     violations = _violations({"verify_sample.py": MISSING_ACQUIRE})
     assert len(violations) == 1 and "verify_sample.py" in violations[0]
@@ -291,6 +329,8 @@ def main() -> int:
         test_compliant_file_passes,
         test_all_existing_entry_tail_shapes_pass,
         test_reversed_main_guard_passes,
+        test_released_acquire_handle_passes,
+        test_released_acquire_handle_with_work_after_release_is_flagged,
         test_missing_acquire_flagged,
         test_missing_lane_governor_import_flagged,
         test_import_before_lane_governor_is_flagged,

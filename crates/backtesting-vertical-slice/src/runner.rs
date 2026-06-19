@@ -883,24 +883,20 @@ fn instrument_settlement_data(manifest: &BacktestingRunManifest) -> Result<Vec<D
                     row.nt_instrument_id
                 )
             })?;
-        // If the settlement currency is declared, the holding venue MUST be funded
-        // in it. NT's multi-currency portfolio silently drops a realized PnL booked
-        // in a currency the account was never funded in (the loss vanishes from
+        // The holding venue MUST be funded in the settlement currency. NT's
+        // multi-currency portfolio silently drops a realized PnL booked in a
+        // currency the account was never funded in (the loss vanishes from
         // stats_pnls), so this binding is the difference between a real P/L and a
-        // green run that lost the number.
-        if let Some(currency) = row.settlement_currency.as_deref() {
-            let funded = venue_config.starting_balances.iter().any(|balance| {
-                balance
-                    .split_whitespace()
-                    .last()
-                    .is_some_and(|funded_currency| funded_currency == currency)
-            });
-            ensure!(
-                funded,
-                "instrument_settlements[{index}] {} settles in {currency} but venue {settlement_venue} is not funded in it; NautilusTrader would silently drop the realized PnL",
-                row.nt_instrument_id
-            );
-        }
+        // green run that lost the number. settlement_currency is a required
+        // manifest field, so this check is unconditional — it can never be
+        // skipped by omitting it.
+        ensure_settlement_currency_funded(
+            index,
+            &row.nt_instrument_id,
+            &settlement_venue,
+            &row.settlement_currency,
+            &venue_config.starting_balances,
+        )?;
         let close_value = row.close_price.trim().parse::<f64>().with_context(|| {
             format!(
                 "parse instrument_settlements[{index}].close_price {:?}",
@@ -929,6 +925,32 @@ fn instrument_settlement_data(manifest: &BacktestingRunManifest) -> Result<Vec<D
         )));
     }
     Ok(closes)
+}
+
+/// The holding venue MUST be funded in the settlement currency, else NT's
+/// multi-currency portfolio silently drops the realized PnL booked in a currency
+/// the account was never funded in — turning a real loss into a green run that
+/// lost the number. `settlement_currency` is a required manifest field, so the
+/// settlement builder calls this for every injected settlement: the funded-venue
+/// check is unconditional and cannot be skipped by omitting the field.
+fn ensure_settlement_currency_funded(
+    index: usize,
+    nt_instrument_id: &str,
+    settlement_venue: &str,
+    settlement_currency: &str,
+    starting_balances: &[String],
+) -> Result<()> {
+    let funded = starting_balances.iter().any(|balance| {
+        balance
+            .split_whitespace()
+            .last()
+            .is_some_and(|funded_currency| funded_currency == settlement_currency)
+    });
+    ensure!(
+        funded,
+        "instrument_settlements[{index}] {nt_instrument_id} settles in {settlement_currency} but venue {settlement_venue} is not funded in it; NautilusTrader would silently drop the realized PnL"
+    );
+    Ok(())
 }
 
 pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
@@ -1876,8 +1898,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BacktestSelectorProvenance, assert_read_back_matches, expected_iterations,
-        iterations_mismatch, run_nt_backtest_node, selector_provenance_hashes,
+        BacktestSelectorProvenance, assert_read_back_matches, ensure_settlement_currency_funded,
+        expected_iterations, iterations_mismatch, run_nt_backtest_node, selector_provenance_hashes,
         time_window_excludes_all_data,
     };
     use crate::canonical_market_data::{
@@ -2045,6 +2067,38 @@ mod tests {
     #[test]
     fn iterations_matching_expected_is_admitted() {
         assert!(iterations_mismatch(3, 3).is_none());
+    }
+
+    #[test]
+    fn settlement_currency_must_be_funded_at_holding_venue() -> Result<()> {
+        // A settlement in the funded collateral currency passes: the realized PnL
+        // has an account to book against.
+        ensure_settlement_currency_funded(
+            0,
+            "BTC-up.POLYMARKET",
+            "POLYMARKET",
+            "pUSD",
+            &["1000 pUSD".to_string()],
+        )?;
+
+        // Differential: settle in a currency the venue was NEVER funded in. NT
+        // would silently drop the realized PnL (the loss vanishes from
+        // stats_pnls); the guard must instead fail loud so the green run can't
+        // hide the lost number.
+        let err = ensure_settlement_currency_funded(
+            1,
+            "BTC-up.POLYMARKET",
+            "POLYMARKET",
+            "pUSD",
+            &["1000 USDC".to_string()],
+        )
+        .expect_err("a settlement in an unfunded currency must fail loud, not drop the PnL");
+        let message = err.to_string();
+        ensure!(
+            message.contains("is not funded in it"),
+            "unexpected error message: {message}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -2358,7 +2412,7 @@ mod tests {
                 ts_init_ns: ISSUE_789_END_NS as u64,
                 // The binary settles in pUSD (NT Polymarket collateral); bind it so a
                 // mis-funded venue fails loud instead of silently dropping the loss.
-                settlement_currency: Some("pUSD".to_string()),
+                settlement_currency: "pUSD".to_string(),
             },
             ManifestInstrumentSettlementInput {
                 nt_instrument_id: down_instrument_id.clone(),
@@ -2366,7 +2420,7 @@ mod tests {
                 price_precision: down_precision,
                 ts_event_ns: ISSUE_789_END_NS as u64,
                 ts_init_ns: ISSUE_789_END_NS as u64,
-                settlement_currency: Some("pUSD".to_string()),
+                settlement_currency: "pUSD".to_string(),
             },
         ];
 

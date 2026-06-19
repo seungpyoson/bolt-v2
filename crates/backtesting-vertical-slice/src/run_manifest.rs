@@ -605,13 +605,14 @@ pub struct ManifestInstrumentSettlementInput {
     pub ts_event_ns: u64,
     /// UNIX timestamp (nanoseconds) the settlement event was created.
     pub ts_init_ns: u64,
-    /// Settlement (collateral) currency the held position redeems in. When set,
-    /// the settlement builder binds it to the holding venue's funded
+    /// Settlement (collateral) currency the held position redeems in. The
+    /// settlement builder binds it to the holding venue's funded
     /// `starting_balances` so NautilusTrader cannot silently drop a realized PnL
-    /// booked in a currency the account was never funded in. Optional +
-    /// skip-serialized so manifests without it keep their existing hashes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settlement_currency: Option<String>,
+    /// booked in a currency the account was never funded in. Required (not
+    /// optional): a settlement cannot be injected without declaring its currency,
+    /// so the funded-venue check is unconditional and can never be skipped by
+    /// omitting the field.
+    pub settlement_currency: String,
 }
 
 /// Artifact output store options used for publishing and published-catalog proof.
@@ -2084,6 +2085,10 @@ impl BacktestingRunManifest {
                 (
                     "instrument_settlements.close_price",
                     input.close_price.as_str(),
+                ),
+                (
+                    "instrument_settlements.settlement_currency",
+                    input.settlement_currency.as_str(),
                 ),
             ] {
                 if value.trim().is_empty() {

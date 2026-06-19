@@ -98,16 +98,26 @@ fn install_script_provisions_runtime_catalog_on_srv_volume() {
 #[test]
 fn install_script_repairs_whole_config_bundle_for_service_user() {
     // ExecStartPre runs `ops verify-live-config` as User=bolt and must read the tracked
-    // profile AND every referenced strategy file, not just live.toml. Files copied by root
-    // under a restrictive umask can land 0600 root:root; the installer must repair the whole
-    // bundle (strategies dir + all *.toml) to root:bolt group-readable so verification does
-    // not fail with a service-user lockout regardless of the deploy shell's umask (#768).
+    // overlay (under config/profiles/) AND every referenced strategy file (under
+    // config/strategies/), not just live.toml. Files/dirs copied by root under a restrictive
+    // umask can land 0600/0700 root:root; the installer must repair the whole bundle — BOTH
+    // required config subdirs (strategies + the #768 overlay dir profiles) and all *.toml — to
+    // root:bolt group-readable so verification does not fail with a service-user lockout
+    // regardless of the deploy shell's umask (#768).
     let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
     let install = fs::read_to_string(&install_path).expect("install script should exist");
 
     assert!(
-        install.contains("chmod 0750 \"${BOLT_INSTALL_ROOT}/config/strategies\""),
-        "installer must make the strategies dir traversable by the bolt group"
+        install.contains("for config_subdir in strategies profiles; do"),
+        "installer must repair BOTH required config subdirs — strategies AND the #768 overlay dir profiles"
+    );
+    assert!(
+        install.contains("chmod 0750 \"${BOLT_INSTALL_ROOT}/config/${config_subdir}\""),
+        "installer must make each config subdir (strategies, profiles) traversable by the bolt group (0750)"
+    );
+    assert!(
+        install.contains("chown root:\"${BOLT_GROUP}\" \"${BOLT_INSTALL_ROOT}/config/${config_subdir}\""),
+        "installer must own each config subdir (strategies, profiles) as root:bolt for the service user"
     );
     assert!(
         install.contains(

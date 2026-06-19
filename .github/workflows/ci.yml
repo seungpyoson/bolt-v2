@@ -621,7 +621,7 @@ jobs:
           path: |
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
-          retention-days: 30
+          retention-days: 3
 
   ci-provenance-emit:
     name: ci-provenance-emit

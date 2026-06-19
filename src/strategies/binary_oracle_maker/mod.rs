@@ -547,6 +547,7 @@ mod tests {
     const TEST_STALE_WINDOW_MS: u64 = 60_000;
     const TEST_MU_FLOOR: f64 = 0.05;
     const TEST_REQUOTE_MIN_INTERVAL_MS: u64 = 500;
+    const TEST_QUOTE_INTERVAL_MS: u64 = 1_000;
 
     #[derive(Debug)]
     struct NoopFeeProvider;
@@ -639,11 +640,16 @@ mod tests {
             mu_stale_window_ms: TEST_STALE_WINDOW_MS,
             mu_min_floor: TEST_MU_FLOOR,
             requote_min_interval_ms: TEST_REQUOTE_MIN_INTERVAL_MS,
+            quote_interval_ms: TEST_QUOTE_INTERVAL_MS,
             market_portfolio_max_active_markets: 3,
             market_portfolio_total_bankroll_notional: 1500.0,
             market_portfolio_min_slot_notional: 100.0,
             markets_config_digest:
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            // The μ-focused unit tests here drive `on_trade` only; market resolution
+            // is exercised in the integration suite, so an empty declared set is the
+            // right fixture (the non-empty bounds gate is an archetype concern).
+            markets: Vec::new(),
         }
     }
 

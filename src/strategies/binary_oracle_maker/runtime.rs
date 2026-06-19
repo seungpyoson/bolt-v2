@@ -276,19 +276,19 @@ impl MakerRuntime {
             })
             .collect();
 
-        let planned: Vec<(String, f64)> = {
-            let decision =
-                plan_portfolio_from_bindings(policy, &resolution.bindings, &active_slots);
-            decision
-                .plan
-                .map(|plan| {
-                    plan.slots
-                        .into_iter()
-                        .map(|slot| (slot.market_key.to_string(), slot.allocation_notional))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        let planned: Vec<(String, f64)> =
+            match plan_portfolio_from_bindings(policy, &resolution.bindings, &active_slots).plan {
+                // No eligible markets (empty/blocked candidate set) drops the active
+                // set to empty — an explicit `Vec::new()` rather than `unwrap_or_default`
+                // (the bolt-v3 legacy-default fence forbids the latter on the production
+                // surface).
+                None => Vec::new(),
+                Some(plan) => plan
+                    .slots
+                    .into_iter()
+                    .map(|slot| (slot.market_key.to_string(), slot.allocation_notional))
+                    .collect(),
+            };
 
         let mut next: BTreeMap<String, MakerMarketRuntime> = BTreeMap::new();
         for (market_key, allocation_notional) in planned {

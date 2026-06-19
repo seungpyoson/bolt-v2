@@ -131,6 +131,7 @@ struct RuntimeParametersBlock {
     mu_stale_window_ms: u64,
     mu_min_floor: f64,
     requote_min_interval_ms: u64,
+    quote_interval_ms: u64,
 }
 
 /// Operator policy for generic Slice 9 market portfolio selection. Discovery and
@@ -405,6 +406,11 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
     if runtime.requote_min_interval_ms == 0 {
         errors.push(format!(
             "{context}: parameters.runtime.requote_min_interval_ms must be > 0 (a zero requote interval disables the same-tick throttle the requote budget relies on, so the budget rejects construction)"
+        ));
+    }
+    if runtime.quote_interval_ms == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.quote_interval_ms must be > 0 (a zero quote-loop interval would schedule a degenerate timer that never advances the runtime's market resolution and requote cadence)"
         ));
     }
     validate_market_portfolio_policy(context, market_portfolio, &mut errors);
@@ -755,7 +761,64 @@ fn raw_maker_config_from_parts(
         super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
         Value::String(markets_config_digest(&parameters.markets)?),
     );
+    insert_markets(&mut table, &parameters.markets)?;
     Ok(Value::Table(table))
+}
+
+/// Thread the operator-declared `[[parameters.markets]]` set into the flat config
+/// table as a TOML array-of-tables under `markets`, so the strategy parses them
+/// back into `MakerMarketDeclaration`s at build and the runtime
+/// (`runtime::MakerRuntime`) can resolve them at `on_start`. Built field-by-field
+/// rather than via derive `Serialize` so a `None` static-market override is omitted
+/// (TOML has no null) and an out-of-range `cadence_seconds` fails closed here
+/// rather than silently wrapping. `markets_config_digest` (inserted above) binds
+/// the same set into the go-live hash; this carries the data it summarizes.
+fn insert_markets(
+    table: &mut Map<String, Value>,
+    markets: &[MarketBindingParametersBlock],
+) -> Result<(), String> {
+    let mut rows = Vec::with_capacity(markets.len());
+    for market in markets {
+        let mut row = Map::new();
+        row.insert(
+            "market_key".to_string(),
+            Value::String(market.market_key.clone()),
+        );
+        row.insert(
+            "family_key".to_string(),
+            Value::String(market.family_key.clone()),
+        );
+        row.insert(
+            "underlying_asset".to_string(),
+            Value::String(market.underlying_asset.clone()),
+        );
+        insert_u64_field(&mut row, "cadence_seconds", market.cadence_seconds)?;
+        row.insert(
+            "cadence_slug_token".to_string(),
+            Value::String(market.cadence_slug_token.clone()),
+        );
+        if let Some(value) = &market.static_condition_id {
+            row.insert(
+                "static_condition_id".to_string(),
+                Value::String(value.clone()),
+            );
+        }
+        if let Some(value) = &market.static_yes_outcome {
+            row.insert(
+                "static_yes_outcome".to_string(),
+                Value::String(value.clone()),
+            );
+        }
+        if let Some(value) = &market.static_no_outcome {
+            row.insert(
+                "static_no_outcome".to_string(),
+                Value::String(value.clone()),
+            );
+        }
+        rows.push(Value::Table(row));
+    }
+    table.insert("markets".to_string(), Value::Array(rows));
+    Ok(())
 }
 
 /// Compute a deterministic digest of the operator-declared market set so the
@@ -812,6 +875,7 @@ fn insert_runtime_knobs(
         "requote_min_interval_ms",
         runtime.requote_min_interval_ms,
     )?;
+    insert_u64_field(table, "quote_interval_ms", runtime.quote_interval_ms)?;
     Ok(())
 }
 
@@ -896,6 +960,7 @@ mod tests {
             mu_stale_window_ms: 60_000,
             mu_min_floor: 0.05,
             requote_min_interval_ms: 500,
+            quote_interval_ms: 1000,
         }
     }
 
@@ -1123,6 +1188,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
 
             [parameters.market_portfolio]
             max_active_markets = 3
@@ -1177,6 +1243,31 @@ mod tests {
                 backtest: valid_backtest(),
             },
         )
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_zero_quote_interval() {
+        // A zero quote-loop interval would schedule a degenerate timer that never
+        // advances the runtime's market resolution / requote cadence, so it must
+        // fail closed at load like the other runtime knobs. A valid runtime (with
+        // quote_interval_ms = 1000) produces no such error; only the zero override
+        // does, so this fails on a missing or mis-wired bound check.
+        let errors = bounds_errors(RuntimeParametersBlock {
+            quote_interval_ms: 0,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.runtime.quote_interval_ms must be > 0")),
+            "expected quote_interval_ms bound error, got: {errors:?}"
+        );
+        assert!(
+            !bounds_errors(valid_runtime())
+                .iter()
+                .any(|error| error.contains("quote_interval_ms")),
+            "a valid runtime must not flag quote_interval_ms"
+        );
     }
 
     fn market_portfolio_errors(market_portfolio: MarketPortfolioParametersBlock) -> Vec<String> {

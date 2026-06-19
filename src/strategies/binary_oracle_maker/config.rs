@@ -19,6 +19,7 @@ use nautilus_model::enums::OmsType;
 use serde::Deserialize;
 use toml::Value;
 
+use super::binding::MakerMarketDeclaration;
 use crate::strategies::registry::ValidationError;
 
 /// Flat NautilusTrader config the maker consumes at build. The `StrategyConfig`
@@ -57,6 +58,11 @@ pub struct BinaryOracleMakerConfig {
     /// submit-rate and venue REST caps are NOT config knobs — they come from
     /// `risk.nautilus.max_order_submit_rate` and the venue egress model.
     pub requote_min_interval_ms: u64,
+    /// Interval (ms) of the maker's autonomous quote/refresh timer — how often the
+    /// runtime re-resolves its active markets and (in later slices) requotes. The
+    /// loop cadence; distinct from `requote_min_interval_ms`, which is a per-leg
+    /// throttle floor inside a cycle, not the scheduling period.
+    pub quote_interval_ms: u64,
     /// Maximum number of markets the portfolio selector may quote concurrently.
     pub market_portfolio_max_active_markets: u64,
     /// Total bankroll notional allocated to the market-selection portfolio.
@@ -73,6 +79,12 @@ pub struct BinaryOracleMakerConfig {
     /// DIFFERENT market set. Without it the gate would accept stale evidence for
     /// an untested market set.
     pub markets_config_digest: String,
+    /// The operator-declared markets the maker quotes, threaded verbatim from the
+    /// `[[parameters.markets]]` block by `archetype::raw_maker_config` so the
+    /// runtime (`runtime::MakerRuntime`) can resolve them at `on_start` against the
+    /// live instrument snapshot. `markets_config_digest` above binds the same set
+    /// into the go-live hash; this carries the data the digest summarizes.
+    pub markets: Vec<MakerMarketDeclaration>,
 }
 
 /// Zero-sized factory the `StrategyBuilder` trait is implemented for (in
@@ -98,6 +110,8 @@ const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";
 const MU_STALE_WINDOW_MS_FIELD: &str = "mu_stale_window_ms";
 const MU_MIN_FLOOR_FIELD: &str = "mu_min_floor";
 const REQUOTE_MIN_INTERVAL_MS_FIELD: &str = "requote_min_interval_ms";
+const QUOTE_INTERVAL_MS_FIELD: &str = "quote_interval_ms";
+const MARKETS_FIELD: &str = "markets";
 const MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD: &str = "market_portfolio_max_active_markets";
 const MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD: &str =
     "market_portfolio_total_bankroll_notional";
@@ -145,10 +159,12 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
                 | MU_STALE_WINDOW_MS_FIELD
                 | MU_MIN_FLOOR_FIELD
                 | REQUOTE_MIN_INTERVAL_MS_FIELD
+                | QUOTE_INTERVAL_MS_FIELD
                 | MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD
                 | MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD
                 | MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD
                 | MARKETS_CONFIG_DIGEST_FIELD
+                | MARKETS_FIELD
         ) {
             errors.push(ValidationError {
                 field: format!("{field_prefix}.{key}"),
@@ -260,10 +276,18 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             market_portfolio_max_active_markets = 3
             market_portfolio_total_bankroll_notional = 1500.0
             market_portfolio_min_slot_notional = 100.0
             markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+            [[markets]]
+            market_key = "eth-hourly"
+            family_key = "updown"
+            underlying_asset = "ETH"
+            cadence_seconds = 3600
+            cadence_slug_token = "1h"
         }
         .into()
     }
@@ -281,6 +305,7 @@ mod tests {
         assert_eq!(config.mu_stale_window_ms, 60_000);
         assert_eq!(config.mu_min_floor, 0.05);
         assert_eq!(config.requote_min_interval_ms, 500);
+        assert_eq!(config.quote_interval_ms, 1000);
         assert_eq!(config.market_portfolio_max_active_markets, 3);
         assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
         assert_eq!(config.market_portfolio_min_slot_notional, 100.0);
@@ -288,6 +313,13 @@ mod tests {
             config.markets_config_digest,
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
+        assert_eq!(config.markets.len(), 1);
+        assert_eq!(config.markets[0].market_key, "eth-hourly");
+        assert_eq!(config.markets[0].family_key, "updown");
+        assert_eq!(config.markets[0].underlying_asset, "ETH");
+        assert_eq!(config.markets[0].cadence_seconds, 3600);
+        assert_eq!(config.markets[0].cadence_slug_token, "1h");
+        assert_eq!(config.markets[0].static_condition_id, None);
     }
 
     #[test]

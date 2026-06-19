@@ -17575,3 +17575,99 @@ literal = '''"{order_id_tag}-{market_key}-{}-{generation}"'''
 context = '''"{order_id_tag}-{market_key}-{}-{generation}",'''
 classification = "maker_runtime_order_identity_template"
 reason = "Client-order-id construction template the order compiler maps verbatim onto the NautilusTrader ClientOrderId; the interpolated parts are runtime values (order-id tag, market key, leg token, generation) and the literal is identity-handle structure, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"markets"'''
+context = '''const MARKETS_FIELD: &str = "markets";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker flat-config field label for the declared `[[parameters.markets]]` set, used by the validation whitelist; the declared markets remain TOML-owned in the operator [parameters] block."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"quote_interval_ms"'''
+context = '''const QUOTE_INTERVAL_MS_FIELD: &str = "quote_interval_ms";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker flat-config field label for the quote-loop interval, used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"quote_interval_ms"'''
+context = '''insert_u64_field(table, "quote_interval_ms", runtime.quote_interval_ms)?;'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker flat-config schema field name under which the operator [parameters.runtime].quote_interval_ms is threaded into the flat NT config; the runtime value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"markets"'''
+context = '''table.insert("markets".to_string(), Value::Array(rows));'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker flat-config schema key under which the declared market set is threaded as an array-of-tables into the flat NT config; the declared markets come from the operator [[parameters.markets]] block."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"market_key"'''
+context = '''"market_key".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared market_key value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"family_key"'''
+context = '''"family_key".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared family_key value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"underlying_asset"'''
+context = '''"underlying_asset".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared underlying_asset value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"cadence_seconds"'''
+context = '''insert_u64_field(&mut row, "cadence_seconds", market.cadence_seconds)?;'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared cadence_seconds value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"cadence_slug_token"'''
+context = '''"cadence_slug_token".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared cadence_slug_token value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"static_condition_id"'''
+context = '''"static_condition_id".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded (when present) into each markets array row; the operator-declared static_condition_id value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''"static_yes_outcome".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded (when present) into each markets array row; the operator-declared static_yes_outcome value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''"static_no_outcome".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded (when present) into each markets array row; the operator-declared static_no_outcome value comes from bolt-v3 TOML."

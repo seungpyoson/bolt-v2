@@ -356,6 +356,39 @@ fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
 }
 
 #[test]
+fn shipped_polyresearch_reference_config_uses_verified_gateway_endpoint() {
+    const VERIFIED_ENDPOINT: &str = "wss://3j5lx6otd8.execute-api.eu-west-1.amazonaws.com/prod";
+    const RETIRED_ENDPOINT: &str = "wss://ws.polynode.dev/ws";
+
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let parsed = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let endpoint = parsed
+            .get("clients")
+            .and_then(|value| value.get("polyresearch_reference"))
+            .and_then(|value| value.get("data"))
+            .and_then(|value| value.get("websocket_endpoint"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{relative_path} should declare clients.polyresearch_reference.data.websocket_endpoint"
+                )
+            });
+
+        assert_eq!(
+            endpoint, VERIFIED_ENDPOINT,
+            "{relative_path} PolyResearch endpoint must match the verified apiKey gateway"
+        );
+        assert_ne!(
+            endpoint, RETIRED_ENDPOINT,
+            "{relative_path} must not point PolyResearch at the retired endpoint that returns 401"
+        );
+    }
+}
+
+#[test]
 fn shipped_reference_live_probe_config_points_to_reference_clients() {
     for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = fs::read_to_string(support::repo_path(relative_path))

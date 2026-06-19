@@ -926,7 +926,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 venue = "POLYRESEARCH_REFERENCE_PRICE"
 
 [clients.polyresearch_reference.data]
-websocket_endpoint = "wss://ws.polynode.dev/ws"
+websocket_endpoint = "wss://3j5lx6otd8.execute-api.eu-west-1.amazonaws.com/prod"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "{\"action\":\"ping\"}"

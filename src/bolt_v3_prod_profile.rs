@@ -599,7 +599,7 @@ fn load_composed_against_binary(
     overlay_path: &Path,
     overlay: &ProdOverlay,
     composed_text: &str,
-) -> Result<LoadedBoltV3Config, ProfileError> {
+) -> Result<(LoadedBoltV3Config, ProductionInvariants), ProfileError> {
     let temp_dir = ComposeTempDir::create()?;
     // Mirror each distinct first path component referenced by strategy_files into the
     // temp dir as a symlink back to config root's matching child, so relative
@@ -631,10 +631,12 @@ fn load_composed_against_binary(
         message: error.source.to_string(),
     })?;
 
-    load_bolt_v3_config(&composed_path).map_err(|source| ProfileError::Load {
+    let loaded = load_bolt_v3_config(&composed_path).map_err(|source| ProfileError::Load {
         path: overlay_path.to_path_buf(),
         source,
-    })
+    })?;
+    let invariants = confirm_production_invariants(&loaded)?;
+    Ok((loaded, invariants))
     // `temp_dir` drops here, removing the staged directory on success and error alike.
 }
 
@@ -763,6 +765,7 @@ fn provenance_header(source_profile: &str, profile_bundle_sha256: &str) -> Strin
 struct ComposedConfig {
     text: String,
     loaded: LoadedBoltV3Config,
+    invariants: ProductionInvariants,
 }
 
 /// Compose, validate, and produce the runtime config from a tracked overlay,
@@ -780,11 +783,12 @@ fn compose_and_load(
     }
     let overlay = parse_overlay(&overlay_path, &overlay_text)?;
     let composed_text = compose_config_text(config_root, &overlay)?;
-    let loaded =
+    let (loaded, invariants) =
         load_composed_against_binary(config_root, &overlay_path, &overlay, &composed_text)?;
     Ok(ComposedConfig {
         text: composed_text,
         loaded,
+        invariants,
     })
 }
 
@@ -797,7 +801,6 @@ pub fn generate_live_config(
 ) -> Result<GeneratedLiveConfig, ProfileError> {
     let profile_id = ProfileId::parse(raw_profile_id)?;
     let composed = compose_and_load(config_root, profile_id.as_str())?;
-    let invariants = confirm_production_invariants(&composed.loaded)?;
 
     let header = provenance_header(profile_id.as_str(), &composed.loaded.config_bundle_checksum);
     let text = format!("{header}{}", composed.text);
@@ -805,7 +808,7 @@ pub fn generate_live_config(
     Ok(GeneratedLiveConfig {
         source_profile: profile_id.as_str().to_string(),
         profile_bundle_sha256: composed.loaded.config_bundle_checksum,
-        invariants,
+        invariants: composed.invariants,
         text,
     })
 }

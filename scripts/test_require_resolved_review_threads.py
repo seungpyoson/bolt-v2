@@ -289,6 +289,54 @@ def assert_status_disabled_does_not_require_head_sha() -> None:
             os.environ.update(old_env)
 
 
+def assert_status_mode_fails_closed_when_review_thread_fetch_errors() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        raise module.ReviewThreadGateError("GraphQL unavailable")
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333, "head": {"sha": "head-sha"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_RUN_ID": "12345",
+                    "GITHUB_SERVER_URL": "https://github.test",
+                    "GITHUB_TOKEN": "token",
+                    "REVIEW_THREAD_GATE_STATUS_CONTEXT": "required review threads resolved",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = module.main()
+            assert rc == 1
+            assert len(posted) == 1
+            fail_url, fail_payload = posted[0]
+            assert fail_url == "https://api.github.test/repos/owner/repo/statuses/head-sha"
+            assert fail_payload["state"] == "failure"
+            assert fail_payload["context"] == "required review threads resolved"
+            assert fail_payload["target_url"] == "https://github.test/owner/repo/actions/runs/12345"
+            assert "GraphQL unavailable" in str(fail_payload["description"])
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+
 def main() -> int:
     assert_no_threads_passes()
     assert_resolved_threads_pass()
@@ -303,6 +351,7 @@ def main() -> int:
     assert_thread_url_uses_real_graphql_shape()
     assert_status_mode_publishes_verdict_without_disabling_job()
     assert_status_disabled_does_not_require_head_sha()
+    assert_status_mode_fails_closed_when_review_thread_fetch_errors()
     print("OK: required resolved review-thread gate self-tests passed.")
     return 0
 

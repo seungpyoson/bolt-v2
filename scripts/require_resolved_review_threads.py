@@ -283,6 +283,28 @@ def fetch_review_threads(
             return threads
 
 
+def _publish_gate_status(
+    *,
+    repository: str,
+    sha: str,
+    token: str,
+    passed: bool,
+    description: str,
+    context: str,
+) -> None:
+    github_commit_status.publish_commit_status(
+        repository=repository,
+        sha=sha,
+        token=token,
+        passed=passed,
+        description=description,
+        context=context,
+        post_json=_post_json,
+        api_base=_api_base(),
+        target_url=github_commit_status.run_target_url(),
+    )
+
+
 def run() -> int:
     repository = _env("GITHUB_REPOSITORY")
     token = _env("GITHUB_TOKEN")
@@ -290,31 +312,40 @@ def run() -> int:
     payload = _read_event_payload()
     pull_number = _pull_number(payload)
     owner, name = _repo_parts(repository)
-    threads = fetch_review_threads(
-        owner=owner,
-        name=name,
-        pull_number=pull_number,
-        token=token,
-    )
-    result = evaluate_review_thread_gate(review_threads=threads)
+    head_sha = _pull_head_sha(payload) if status_context is not None else None
+    try:
+        threads = fetch_review_threads(
+            owner=owner,
+            name=name,
+            pull_number=pull_number,
+            token=token,
+        )
+        result = evaluate_review_thread_gate(review_threads=threads)
+    except ReviewThreadGateError as exc:
+        if status_context is not None and head_sha is not None:
+            _publish_gate_status(
+                repository=repository,
+                sha=head_sha,
+                token=token,
+                passed=False,
+                description=f"Review-thread gate failed: {exc}",
+                context=status_context,
+            )
+        raise
     print(result.message)
-    if status_context is not None:
-        head_sha = _pull_head_sha(payload)
+    if status_context is not None and head_sha is not None:
         # Publish the verdict as a durable commit status keyed to the PR head.
         # The required merge context is this status, not this Actions job, so a
         # cancelled or superseded run cannot leave a terminal "cancelled" check
         # that blocks the merge. The exit code still mirrors the verdict so the
         # job check-run stays meaningful for humans.
-        github_commit_status.publish_commit_status(
+        _publish_gate_status(
             repository=repository,
             sha=head_sha,
             token=token,
             passed=result.passed,
             description=result.message,
             context=status_context,
-            post_json=_post_json,
-            api_base=_api_base(),
-            target_url=github_commit_status.run_target_url(),
         )
     return 0 if result.passed else 1
 

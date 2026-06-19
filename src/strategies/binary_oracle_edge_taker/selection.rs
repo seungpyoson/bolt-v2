@@ -225,9 +225,7 @@ pub(super) fn select_configured_market_from_instruments(
         family_key: &config.rotating_market_family,
         underlying_asset: &config.underlying_asset,
         cadence_seconds,
-        // Static binary-event compatibility: updown derives its slug
-        // token from cadence_seconds inside the family binding.
-        cadence_slug_token: config.static_market_slug.as_deref().unwrap_or(""),
+        cadence_slug_token: &config.cadence_slug_token,
         static_condition_id: config.static_condition_id.as_deref(),
         static_yes_outcome: config.static_yes_outcome.as_deref(),
         static_no_outcome: config.static_no_outcome.as_deref(),

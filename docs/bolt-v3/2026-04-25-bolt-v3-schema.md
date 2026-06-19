@@ -1081,7 +1081,7 @@ kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
-# cadence_slug_token is derived from cadence_secs by the runtime (e.g. 300 -> "5m"); it is no longer a TOML field (setting it now fails deny_unknown_fields)
+cadence_slug_token = "5m"
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
@@ -1810,7 +1810,7 @@ kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
-# cadence_slug_token is derived from cadence_secs by the runtime (e.g. 300 -> "5m"); it is no longer a TOML field (setting it now fails deny_unknown_fields)
+cadence_slug_token = "5m"
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60

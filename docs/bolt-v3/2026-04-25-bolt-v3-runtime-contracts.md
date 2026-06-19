@@ -277,7 +277,7 @@ Current Polymarket loading contract:
 Current `updown` slug derivation rule:
 
 - slug format: `"{underlying_asset_lowercase}-updown-{cadence_slug_token}-{period_start_unix_secs}"`
-- `cadence_slug_token` is a runtime-contract-defined token DERIVED from `cadence_secs` (not a TOML field; setting it in config now fails `deny_unknown_fields`)
+- `cadence_slug_token` is a runtime-contract-defined token for `cadence_secs`
 - currently defined explicit contract mappings:
   - `60` -> `1m`
   - `300` -> `5m`

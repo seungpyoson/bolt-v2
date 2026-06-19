@@ -46,6 +46,7 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             rotating_market_family: String => String;
             underlying_asset: String => String;
             cadence_seconds: u64 => Integer;
+            cadence_slug_token: String => String;
             market_selection_rule: String => String;
             retry_interval_seconds: u64 => Integer;
             blocked_after_seconds: u64 => Integer;
@@ -158,7 +159,6 @@ macro_rules! define_config_struct {
             pub(super) resolution_instrument_id: Option<String>,
             pub(super) reference_current_price: Option<ReferencePriceBlock>,
             pub(super) realized_volatility_surface_id: String,
-            pub(super) static_market_slug: Option<String>,
             pub(super) static_condition_id: Option<String>,
             pub(super) static_yes_outcome: Option<String>,
             pub(super) static_no_outcome: Option<String>,
@@ -460,7 +460,6 @@ impl BinaryOracleEdgeTakerBuilder {
                     | "resolution_instrument_id"
                     | "reference_current_price"
                     | REALIZED_VOLATILITY_SURFACE_ID_FIELD
-                    | "static_market_slug"
                     | "static_condition_id"
                     | "static_yes_outcome"
                     | "static_no_outcome"
@@ -512,7 +511,6 @@ impl BinaryOracleEdgeTakerBuilder {
             REALIZED_VOLATILITY_SURFACE_ID_FIELD,
             errors,
         );
-        Self::validate_optional_string_field(table, field_prefix, "static_market_slug", errors);
         Self::validate_optional_string_field(table, field_prefix, "static_condition_id", errors);
         Self::validate_optional_string_field(table, field_prefix, "static_yes_outcome", errors);
         Self::validate_optional_string_field(table, field_prefix, "static_no_outcome", errors);
@@ -790,7 +788,6 @@ impl BinaryOracleEdgeTakerBuilder {
             .get(stringify!(rotating_market_family))
             .and_then(Value::as_str);
         let static_fields = [
-            "static_market_slug",
             "static_condition_id",
             "static_yes_outcome",
             "static_no_outcome",
@@ -815,7 +812,6 @@ impl BinaryOracleEdgeTakerBuilder {
         for (field_name, code) in [
             ("static_yes_outcome", "missing_static_yes_outcome"),
             ("static_no_outcome", "missing_static_no_outcome"),
-            ("static_market_slug", "missing_static_market_slug"),
             (
                 "static_fair_probability_source",
                 "missing_static_fair_probability_source",

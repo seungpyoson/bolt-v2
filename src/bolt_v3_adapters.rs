@@ -660,6 +660,7 @@ mod tests {
             execution_client_id: "polymarket_main".to_string(),
             underlying_asset: "ASSET".to_string(),
             cadence_secs: 300,
+            cadence_slug_token: "window".to_string(),
         });
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
@@ -757,6 +758,7 @@ mod tests {
             execution_client_id: "polymarket_main".to_string(),
             underlying_asset: "ASSET".to_string(),
             cadence_secs: 300,
+            cadence_slug_token: "window".to_string(),
         });
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),

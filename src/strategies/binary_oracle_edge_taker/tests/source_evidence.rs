@@ -8,18 +8,6 @@ const TEST_SOURCE_ID_B: &str = "<SOURCE_ID_B>";
 const TEST_TRADE_SOURCE_ID: &str = "<SOURCE_ID_TRADE>";
 const TEST_RV_INSTRUMENT_ID: &str = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>";
 
-fn expected_updown_market_slug(strategy: &BinaryOracleEdgeTaker, period_start: i64) -> String {
-    let token = crate::bolt_v3_market_families::updown::cadence_slug_token_for_secs(
-        strategy.config.cadence_seconds as i64,
-    )
-    .expect("test strategy cadence should be in the updown runtime contract table");
-    crate::bolt_v3_market_families::updown::updown_market_slug(
-        &strategy.config.underlying_asset,
-        token,
-        period_start,
-    )
-}
-
 fn test_realized_volatility_engine_config()
 -> crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
     crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
@@ -437,7 +425,11 @@ fn strike_fetch_reissues_at_interval_open_for_future_next_selection() {
     let next_period_start = current_period_start + cadence_seconds;
     let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
     let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
-    let market_slug = expected_updown_market_slug(&strategy, next_period_start);
+    let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+        &strategy.config.underlying_asset,
+        &strategy.config.cadence_slug_token,
+        next_period_start,
+    );
     let instruments = [
         updown_binary_option(
             "token-up.POLYMARKET",
@@ -538,7 +530,11 @@ fn strike_fetch_retries_each_open_tick_until_price_to_beat_binds() {
     let next_period_start = current_period_start + cadence_seconds;
     let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
     let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
-    let market_slug = expected_updown_market_slug(&strategy, next_period_start);
+    let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+        &strategy.config.underlying_asset,
+        &strategy.config.cadence_slug_token,
+        next_period_start,
+    );
     let instruments = [
         updown_binary_option(
             "token-up.POLYMARKET",
@@ -622,7 +618,11 @@ fn resolution_strike_reissue_unsubscribes_before_each_subscribe_to_defeat_nt_ded
     let next_period_start = current_period_start + cadence_seconds;
     let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
     let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
-    let market_slug = expected_updown_market_slug(&strategy, next_period_start);
+    let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+        &strategy.config.underlying_asset,
+        &strategy.config.cadence_slug_token,
+        next_period_start,
+    );
     let instruments = [
         updown_binary_option(
             "token-up.POLYMARKET",

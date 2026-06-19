@@ -1140,9 +1140,11 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
             .and_then(|value| value.as_str()),
         Some("CONFIGURED_ASSET")
     );
-    assert!(
-        !table.contains_key("cadence_slug_token"),
-        "updown cadence_slug_token is derived from target.cadence_secs at runtime"
+    assert_eq!(
+        table
+            .get("cadence_slug_token")
+            .and_then(|value| value.as_str()),
+        Some("5m")
     );
     assert_eq!(
         table

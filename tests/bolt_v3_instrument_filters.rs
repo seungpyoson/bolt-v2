@@ -5,10 +5,10 @@
 //!      `MarketIdentityPlan` derived from validated config alone.
 //!   2. The current and next updown period start values are computed
 //!      from `cadence_secs` and an injected `now_unix_secs`, and
-//!      match the derived slug-token on the boundary, one second
+//!      match the configured slug-token on the boundary, one second
 //!      before, and one second after.
 //!   3. The updown market-slug formatter lowercases the underlying
-//!      asset, uses the supplied token, and trails the
+//!      asset, uses the configured cadence slug-token, and trails the
 //!      period-start unix seconds value.
 //!   4. Direct struct mutation of cadence fields into invalid values
 //!      still fails cleanly through `plan_market_identity` rather than
@@ -69,6 +69,7 @@ fn market_identity_plan_accepts_hyperliquid_static_instrument_target() {
         for key in [
             "underlying_asset",
             "cadence_secs",
+            "cadence_slug_token",
             "market_selection_rule",
             "retry_interval_secs",
             "blocked_after_secs",
@@ -134,22 +135,7 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     assert_eq!(target.execution_client_id, "polymarket_main");
     assert_eq!(target.underlying_asset, "CONFIGURED_ASSET");
     assert_eq!(target.cadence_secs, 300);
-}
-
-#[test]
-fn production_btc_config_derives_five_minute_updown_slug_from_cadence_secs() {
-    let root_path = support::repo_path("config/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("production v3 config should load");
-
-    let plan = plan_market_identity(&loaded).expect("planner should derive cadence token");
-    let btc_target = target_plans(&plan)
-        .find(|target| target.strategy_instance_id == "binary_oracle_btc")
-        .expect("BTC strategy should produce an updown target plan");
-    let candidates = candidates_for_target(btc_target, 1_776_909_000)
-        .expect("BTC target should derive candidate slugs");
-
-    assert_eq!(candidates.current_market_slug, "btc-updown-5m-1776909000");
-    assert_eq!(candidates.next_market_slug, "btc-updown-5m-1776909300");
+    assert_eq!(target.cadence_slug_token, "5m");
 }
 
 #[test]
@@ -242,6 +228,7 @@ fn candidates_for_target_yields_current_and_next_configured_slugs() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
+        cadence_slug_token: "5m".to_string(),
     };
     let UpdownSlugCandidates {
         current_period_start_unix_secs,
@@ -263,6 +250,7 @@ fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
+        cadence_slug_token: "5m".to_string(),
     };
     assert!(matches!(
         candidates_for_target(&target, -1),
@@ -271,21 +259,21 @@ fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
 }
 
 #[test]
-fn plan_market_identity_rejects_unsupported_cadence_after_mutation() {
+fn plan_market_identity_rejects_invalid_cadence_slug_token_after_mutation() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
     set_target_field(
         &mut loaded.strategies[0],
-        "cadence_secs",
-        toml::Value::Integer(301),
+        "cadence_slug_token",
+        toml::Value::String("Bad-Token".to_string()),
     );
 
     match plan_market_identity(&loaded) {
-        Err(BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
+        Err(BoltV3MarketIdentityError::InvalidCadenceSlugToken {
             strategy_instance_id,
             configured_target_id,
-            cadence_secs,
+            cadence_slug_token,
         }) => {
             assert_eq!(
                 strategy_instance_id.as_deref(),
@@ -295,9 +283,44 @@ fn plan_market_identity_rejects_unsupported_cadence_after_mutation() {
                 configured_target_id.as_deref(),
                 Some("configured_updown_target")
             );
-            assert_eq!(cadence_secs, 301);
+            assert_eq!(cadence_slug_token, "Bad-Token");
         }
-        other => panic!("expected UnsupportedCadenceSeconds; got {other:?}"),
+        other => panic!("expected InvalidCadenceSlugToken; got {other:?}"),
+    }
+}
+
+#[test]
+fn plan_market_identity_rejects_cadence_slug_token_contract_mismatch_after_mutation() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    set_target_field(
+        &mut loaded.strategies[0],
+        "cadence_slug_token",
+        toml::Value::String("configuredwindow".to_string()),
+    );
+
+    match plan_market_identity(&loaded) {
+        Err(BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
+            strategy_instance_id,
+            configured_target_id,
+            cadence_secs,
+            cadence_slug_token,
+            expected_cadence_slug_token,
+        }) => {
+            assert_eq!(
+                strategy_instance_id.as_deref(),
+                Some("configured_updown_main")
+            );
+            assert_eq!(
+                configured_target_id.as_deref(),
+                Some("configured_updown_target")
+            );
+            assert_eq!(cadence_secs, 300);
+            assert_eq!(cadence_slug_token, "configuredwindow");
+            assert_eq!(expected_cadence_slug_token, "5m");
+        }
+        other => panic!("expected CadenceSlugTokenMismatch; got {other:?}"),
     }
 }
 
@@ -365,21 +388,22 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     // Construct three strategies whose declaration order is
     // deliberately NON-MONOTONIC across every likely accidental sort
     // key: strategy_instance_id, configured_target_id,
-    // underlying_asset, and cadence_secs. Each
+    // underlying_asset, cadence_secs, and cadence_slug_token. Each
     // natural ordering produces a different permutation than the
     // declaration order [zeta, alpha, mike], so an accidental
     // `sort_by` on any of these keys would re-order at least one
     // index and fail the per-index assertions below.
     //
-    //   declared order : [0]=zeta_strategy_main / zeta_target / ZETA / 900
-    //                    [1]=alpha_strategy_main / alpha_target / ALPHA / 300
-    //                    [2]=mike_strategy_main / mike_target / MIKE / 3600
+    //   declared order : [0]=zeta_strategy_main / zeta_target / ZETA / 900  / 15m
+    //                    [1]=alpha_strategy_main / alpha_target / ALPHA / 300 / 5m
+    //                    [2]=mike_strategy_main / mike_target / MIKE / 3600 / 1h
     //
     //   sort by strategy_instance_id ascending  -> [1, 2, 0]
-    //   sort by configured_target_id ascending  -> [2, 0, 1]
-    //   sort by underlying_asset ascending      -> [2, 0, 1]
+    //   sort by configured_target_id ascending  -> [1, 2, 0]
+    //   sort by underlying_asset ascending      -> [1, 2, 0]
     //   sort by cadence_secs ascending       -> [1, 0, 2]
     //   sort by cadence_secs descending      -> [2, 0, 1]
+    //   sort by cadence_slug_token ascending    -> [0, 2, 1]
 
     let mut second = loaded.strategies[0].clone();
     let mut third = loaded.strategies[0].clone();
@@ -398,6 +422,11 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
             toml::Value::String("ZETA".to_string()),
         );
         set_target_field(first, "cadence_secs", toml::Value::Integer(900));
+        set_target_field(
+            first,
+            "cadence_slug_token",
+            toml::Value::String("15m".to_string()),
+        );
     }
 
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
@@ -412,6 +441,11 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
         toml::Value::String("ALPHA".to_string()),
     );
     set_target_field(&mut second, "cadence_secs", toml::Value::Integer(300));
+    set_target_field(
+        &mut second,
+        "cadence_slug_token",
+        toml::Value::String("5m".to_string()),
+    );
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
     set_target_field(
@@ -425,6 +459,11 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
         toml::Value::String("MIKE".to_string()),
     );
     set_target_field(&mut third, "cadence_secs", toml::Value::Integer(3600));
+    set_target_field(
+        &mut third,
+        "cadence_slug_token",
+        toml::Value::String("1h".to_string()),
+    );
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);
@@ -439,6 +478,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     assert_eq!(zero.execution_client_id, "polymarket_main");
     assert_eq!(zero.underlying_asset, "ZETA");
     assert_eq!(zero.cadence_secs, 900);
+    assert_eq!(zero.cadence_slug_token, "15m");
 
     let one = targets[1];
     assert_eq!(one.strategy_instance_id, "alpha_strategy_main");
@@ -446,6 +486,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     assert_eq!(one.execution_client_id, "polymarket_main");
     assert_eq!(one.underlying_asset, "ALPHA");
     assert_eq!(one.cadence_secs, 300);
+    assert_eq!(one.cadence_slug_token, "5m");
 
     let two = targets[2];
     assert_eq!(two.strategy_instance_id, "mike_strategy_main");
@@ -453,6 +494,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     assert_eq!(two.execution_client_id, "polymarket_main");
     assert_eq!(two.underlying_asset, "MIKE");
     assert_eq!(two.cadence_secs, 3600);
+    assert_eq!(two.cadence_slug_token, "1h");
 }
 
 #[test]
@@ -478,12 +520,12 @@ fn period_pair_overflow_display_includes_now_and_cadence_context() {
 
 #[test]
 fn cadence_error_display_includes_strategy_and_target_context() {
-    let unsupported_cadence = BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
+    let invalid_slug = BoltV3MarketIdentityError::InvalidCadenceSlugToken {
         strategy_instance_id: Some("configured_updown_main".to_string()),
         configured_target_id: Some("configured_updown_target".to_string()),
-        cadence_secs: 301,
+        cadence_slug_token: "Bad-Token".to_string(),
     };
-    let display = unsupported_cadence.to_string();
+    let display = invalid_slug.to_string();
     assert!(
         display.contains("configured_updown_main"),
         "Display should include strategy_instance_id: {display}"
@@ -493,8 +535,8 @@ fn cadence_error_display_includes_strategy_and_target_context() {
         "Display should include configured_target_id: {display}"
     );
     assert!(
-        display.contains("301"),
-        "Display should include cadence_secs value: {display}"
+        display.contains("Bad-Token"),
+        "Display should include cadence_slug_token value: {display}"
     );
 
     let non_positive = BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
@@ -535,6 +577,7 @@ fn candidates_for_target_propagates_period_pair_overflow() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
+        cadence_slug_token: "5m".to_string(),
     };
     assert!(matches!(
         candidates_for_target(&target, i64::MAX),

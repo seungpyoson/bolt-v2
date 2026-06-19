@@ -10,7 +10,7 @@ use nautilus_polymarket::{
 // Pin-surface test: drive the production slug formatter so a future
 // change to `updown_market_slug` or `updown_period_pair` fails this
 // test loudly. The helper takes `cadence_slug_token` explicitly so the
-// caller owns the token supplied to the pure formatter.
+// caller — not the helper — owns the TOML-derived token (T060).
 fn first_live_updown_slugs(
     underlying_asset: &str,
     cadence_seconds: i64,
@@ -27,19 +27,19 @@ fn first_live_updown_slugs(
 
 #[test]
 fn first_live_updown_slug_rule_matches_expected_shape() {
-    let slugs = first_live_updown_slugs("CONFIGURED_ASSET", 300, "samplewindow", 1_800);
+    let slugs = first_live_updown_slugs("CONFIGURED_ASSET", 300, "5m", 1_800);
     assert_eq!(
         slugs,
         vec![
-            "configured_asset-updown-samplewindow-1800".to_string(),
-            "configured_asset-updown-samplewindow-2100".to_string(),
+            "configured_asset-updown-5m-1800".to_string(),
+            "configured_asset-updown-5m-2100".to_string(),
         ]
     );
 }
 
 #[test]
 fn pinned_polymarket_provider_accepts_market_slug_filters() {
-    let slugs = first_live_updown_slugs("CONFIGURED_ASSET", 300, "samplewindow", 1_800);
+    let slugs = first_live_updown_slugs("CONFIGURED_ASSET", 300, "5m", 1_800);
     let filter = MarketSlugFilter::from_slugs(slugs);
     let http_client = PolymarketGammaHttpClient::new(
         Some("https://gamma.test.invalid".to_string()),

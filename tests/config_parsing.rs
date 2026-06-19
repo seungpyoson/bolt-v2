@@ -5759,6 +5759,39 @@ fn shipped_binary_oracle_config_uses_supported_strategy_schema_version() {
 }
 
 #[test]
+fn shipped_binary_oracle_configs_use_runtime_contract_updown_cadence_slug() {
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+
+    for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
+        let strategy: BoltV3StrategyConfig = toml::from_str(
+            &std::fs::read_to_string(support::repo_path(relative_path))
+                .expect("canonical strategy config should be readable"),
+        )
+        .expect("canonical strategy config should parse");
+        let target = strategy
+            .target
+            .as_table()
+            .unwrap_or_else(|| panic!("{relative_path} target should be a table"));
+        let cadence_secs = target
+            .get("cadence_secs")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or_else(|| panic!("{relative_path} target.cadence_secs should be present"));
+        let cadence_slug_token = target
+            .get("cadence_slug_token")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!("{relative_path} target.cadence_slug_token should be present")
+            });
+
+        assert_eq!(
+            (cadence_secs, cadence_slug_token),
+            (300, "5m"),
+            "{relative_path} must use the updown runtime-contract pair 300/5m"
+        );
+    }
+}
+
+#[test]
 fn shipped_binary_oracle_config_rejects_legacy_price_to_beat_feed_id_under_runtime() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},

@@ -3,18 +3,6 @@
 use super::*;
 use nautilus_trading::Strategy;
 
-fn expected_updown_market_slug(strategy: &BinaryOracleEdgeTaker, period_start: i64) -> String {
-    let token = crate::bolt_v3_market_families::updown::cadence_slug_token_for_secs(
-        strategy.config.cadence_seconds as i64,
-    )
-    .expect("test strategy cadence should be in the updown runtime contract table");
-    crate::bolt_v3_market_families::updown::updown_market_slug(
-        &strategy.config.underlying_asset,
-        token,
-        period_start,
-    )
-}
-
 #[test]
 fn switch_resets_only_active_market_state() {
     let mut strategy = test_strategy();
@@ -334,7 +322,11 @@ fn freeze_continues_reference_preparation_without_opening_entries() {
 fn strategy_selects_configured_updown_target_from_nt_binary_option_metadata() {
     let strategy = test_strategy();
     let current_start = 1_746_000_000_i64;
-    let market_slug = expected_updown_market_slug(&strategy, current_start);
+    let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+        &strategy.config.underlying_asset,
+        &strategy.config.cadence_slug_token,
+        current_start,
+    );
     let instruments = vec![
         updown_binary_option(
             "token-up.POLYMARKET",
@@ -378,7 +370,7 @@ fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadat
         crate::bolt_v3_market_families::static_binary_event::KEY.to_string();
     strategy.config.underlying_asset = "sample_event_2026".to_string();
     strategy.config.cadence_seconds = 1;
-    strategy.config.static_market_slug = Some("will-sample-event-resolve-yes".to_string());
+    strategy.config.cadence_slug_token = "will-sample-event-resolve-yes".to_string();
     strategy.config.market_selection_rule = "configured_static".to_string();
     strategy.config.static_condition_id = Some("condition-sample-event-yes-no".to_string());
     strategy.config.static_yes_outcome = Some("Yes".to_string());
@@ -386,7 +378,7 @@ fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadat
     let instruments = vec![
         updown_binary_option(
             "sample-event-no.POLYMARKET",
-            strategy.config.static_market_slug.as_deref().unwrap(),
+            &strategy.config.cadence_slug_token,
             "sample-event-yes-no",
             "No",
             1_000,
@@ -394,7 +386,7 @@ fn strategy_selects_configured_static_binary_event_from_nt_binary_option_metadat
         ),
         updown_binary_option(
             "sample-event-yes.POLYMARKET",
-            strategy.config.static_market_slug.as_deref().unwrap(),
+            &strategy.config.cadence_slug_token,
             "sample-event-yes-no",
             "Yes",
             1_000,
@@ -427,7 +419,11 @@ fn strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target() {
     let strategy = test_strategy();
     let current_start = 1_746_000_000_i64;
     let now_ms = current_start as u64 * MILLIS_PER_SECOND_U64 + 1;
-    let market_slug = expected_updown_market_slug(&strategy, current_start);
+    let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+        &strategy.config.underlying_asset,
+        &strategy.config.cadence_slug_token,
+        current_start,
+    );
     let start_ms = current_start as u64 * MILLIS_PER_SECOND_U64;
     let end_ms = start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
     let execution_venue = fixture_execution_venue();
@@ -535,7 +531,11 @@ fn refresh_selection_from_cache_filters_foreign_venue_in_production_path() {
 
     let current_start = 1_746_000_000_i64;
     let now_ms = current_start as u64 * MILLIS_PER_SECOND_U64 + 1;
-    let market_slug = expected_updown_market_slug(&strategy, current_start);
+    let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+        &strategy.config.underlying_asset,
+        &strategy.config.cadence_slug_token,
+        current_start,
+    );
     let start_ms = current_start as u64 * MILLIS_PER_SECOND_U64;
     let end_ms = start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
 
@@ -618,7 +618,11 @@ fn strategy_selects_next_updown_target_outcome_from_nt_binary_option_metadata() 
     let strategy = test_strategy();
     let current_start = 1_746_000_000_i64;
     let next_start = current_start + strategy.config.cadence_seconds as i64;
-    let market_slug = expected_updown_market_slug(&strategy, next_start);
+    let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+        &strategy.config.underlying_asset,
+        &strategy.config.cadence_slug_token,
+        next_start,
+    );
     let instruments = vec![
         updown_binary_option(
             "token-up.POLYMARKET",

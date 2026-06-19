@@ -901,18 +901,16 @@ fn build_market_slug_filter(
     clock: BoltV3MarketClockFn,
 ) -> Arc<dyn InstrumentFilter> {
     let asset = target.underlying_asset.clone();
+    let token = target.cadence_slug_token.clone();
     let cadence = target.cadence_secs;
     Arc::new(MarketSlugFilter::new(move || {
         let now = (clock)();
-        match (
-            updown_period_pair(cadence, now),
-            crate::bolt_v3_market_families::updown::cadence_slug_token_for_secs(cadence),
-        ) {
-            (Ok((current, next)), Ok(token)) => vec![
-                updown_market_slug(&asset, token, current),
-                updown_market_slug(&asset, token, next),
+        match updown_period_pair(cadence, now) {
+            Ok((current, next)) => vec![
+                updown_market_slug(&asset, &token, current),
+                updown_market_slug(&asset, &token, next),
             ],
-            (Err(error), _) | (_, Err(error)) => {
+            Err(error) => {
                 // Fail closed: returning an empty slug set narrows the
                 // Polymarket instrument universe to zero for this cycle, which
                 // starves the strategy of tradeable instruments. That is the

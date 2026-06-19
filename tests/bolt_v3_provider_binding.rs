@@ -1867,7 +1867,7 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     // Build three strategies whose declaration sequence is deliberately
     // NON-MONOTONIC across every likely accidental sort key
     // (strategy_instance_id, configured_target_id, underlying_asset,
-    // cadence_secs). Any accidental `sort_by`
+    // cadence_secs, cadence_slug_token). Any accidental `sort_by`
     // inside the binding layer would re-order at least one index and
     // trip a per-index slug assertion below.
     let mut second = loaded.strategies[0].clone();
@@ -1886,6 +1886,11 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
             toml::Value::String("ZETA".to_string()),
         );
         set_target_field(first, "cadence_secs", toml::Value::Integer(900));
+        set_target_field(
+            first,
+            "cadence_slug_token",
+            toml::Value::String("15m".to_string()),
+        );
     }
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
     set_target_field(
@@ -1899,6 +1904,11 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         toml::Value::String("ALPHA".to_string()),
     );
     set_target_field(&mut second, "cadence_secs", toml::Value::Integer(300));
+    set_target_field(
+        &mut second,
+        "cadence_slug_token",
+        toml::Value::String("5m".to_string()),
+    );
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
     set_target_field(
@@ -1912,6 +1922,11 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         toml::Value::String("MIKE".to_string()),
     );
     set_target_field(&mut third, "cadence_secs", toml::Value::Integer(3600));
+    set_target_field(
+        &mut third,
+        "cadence_slug_token",
+        toml::Value::String("1h".to_string()),
+    );
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);

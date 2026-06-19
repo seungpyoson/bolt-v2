@@ -873,7 +873,7 @@ mod tests {
             "ops",
             "generate-live-config",
             "--profile",
-            "config/profiles/prod-btc-5m.overlay.toml",
+            "config/profiles/example.overlay.toml",
             "--output",
             "config/live.toml",
         ])
@@ -885,7 +885,7 @@ mod tests {
             } => {
                 assert_eq!(
                     profile,
-                    PathBuf::from("config/profiles/prod-btc-5m.overlay.toml")
+                    PathBuf::from("config/profiles/example.overlay.toml")
                 );
                 assert_eq!(output, PathBuf::from("config/live.toml"));
             }
@@ -900,7 +900,7 @@ mod tests {
             "ops",
             "verify-live-config",
             "--profile",
-            "config/profiles/prod-btc-5m.overlay.toml",
+            "config/profiles/example.overlay.toml",
             "--deployed",
             "/opt/bolt-v2/config/live.toml",
         ])
@@ -912,7 +912,7 @@ mod tests {
             } => {
                 assert_eq!(
                     profile,
-                    PathBuf::from("config/profiles/prod-btc-5m.overlay.toml")
+                    PathBuf::from("config/profiles/example.overlay.toml")
                 );
                 assert_eq!(deployed, PathBuf::from("/opt/bolt-v2/config/live.toml"));
             }

@@ -5084,12 +5084,24 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
     let justfile = std::fs::read_to_string(support::repo_path("justfile"))
         .expect("justfile should be readable");
     assert!(
-        justfile.contains("live_root := \"config/profiles/prod-btc-5m.overlay.toml\""),
-        "live recipes should source the tracked production overlay (single source of truth over the base template, #768)"
+        justfile.contains("live_profile := env_var_or_default('BOLT_LIVE_PROFILE', '')"),
+        "live recipes should source the operator-selected tracked overlay (single source of truth over the base template, #768)"
+    );
+    assert!(
+        justfile.contains("ERROR: set BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml"),
+        "live recipes must fail closed instead of using a venue/market/strategy profile default"
+    );
+    assert!(
+        justfile.contains("BOLT_LIVE_PROFILE must be config/profiles/<profile>.overlay.toml"),
+        "live recipes must reject legacy live.toml/live.local.toml paths as profile inputs"
     );
     assert!(
         !justfile.contains("live_root := \"config/live.local.toml\""),
         "live recipes must no longer source the gitignored operator root"
+    );
+    assert!(
+        !justfile.contains("live_root := \"config/profiles/prod-btc-5m.overlay.toml\""),
+        "live recipes must not hardcode a BTC 5m production profile"
     );
     assert!(
         !justfile.contains("live_root_example"),

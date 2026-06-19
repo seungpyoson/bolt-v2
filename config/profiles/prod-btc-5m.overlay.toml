@@ -13,11 +13,12 @@
 # Polymarket `funder` below is a public on-chain Safe address. NEVER put secret
 # values in this file.
 #
-# Deploy/run: `bolt-v2 ops generate-live-config --profile
-# config/profiles/prod-btc-5m.overlay.toml --output <live.toml>` composes this
-# overlay onto its declared `base`, stamps a provenance header, and writes the
-# runtime config; `ops verify-live-config` proves the deployed file re-composes
-# from (base ⊕ overlay) and still loads against the running binary. Do NOT
+# Deploy/run: select this file through BOLT_LIVE_PROFILE, then run
+# `bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --output
+# <live.toml>`. Generation composes this overlay onto its declared `base`,
+# stamps a provenance header, and writes the runtime config; `ops
+# verify-live-config` proves the deployed file re-composes from (base ⊕ overlay)
+# and still loads against the running binary. Do NOT
 # hand-edit the deployed live.toml — edit this overlay (or root.toml) in a
 # reviewed PR and regenerate.
 

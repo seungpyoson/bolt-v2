@@ -16,7 +16,7 @@
 //! The fix makes the production config a *tracked* artifact and gives it one
 //! generation + verification path. To avoid duplicating ~580 lines of shared
 //! infrastructure, the production config is expressed as a typed OVERLAY
-//! (`config/profiles/prod-btc-5m.overlay.toml`) over the shared multi-asset base
+//! (`config/profiles/<profile>.overlay.toml`) over the shared multi-asset base
 //! template (`config/root.toml`). The overlay declares ONLY the pilot deltas
 //! ([`ProdOverlay`]); generation composes (base ⊕ overlay) into the runtime config.
 //!
@@ -126,7 +126,7 @@ pub struct ProdOverlay {
 /// Outcome of generating a runtime config from a tracked overlay.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GeneratedLiveConfig {
-    /// Relative file name of the source overlay (e.g. `prod-btc-5m.overlay.toml`).
+    /// Relative file name of the source overlay (e.g. `<profile>.overlay.toml`).
     pub source_profile: String,
     /// `config_bundle_checksum` of the COMPOSED config (composed root text +
     /// strategy files). Recorded in the header and reproducible from

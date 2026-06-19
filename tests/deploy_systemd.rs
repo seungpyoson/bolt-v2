@@ -58,10 +58,18 @@ fn systemd_unit_verifies_live_config_against_profile_before_start() {
 
     assert!(
         unit.contains(
-            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml --deployed /opt/bolt-v2/config/live.toml"
+            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile ${BOLT_LIVE_PROFILE} --deployed /opt/bolt-v2/config/live.toml"
         ),
-        "systemd unit must verify the deployed live.toml against the tracked overlay before start, \
+        "systemd unit must verify the deployed live.toml against the operator-selected tracked overlay before start, \
          so the fail-closed gate (incl. enabled loss rails) is enforced at the prod entry point, not advisory (#768)"
+    );
+    assert!(
+        unit.contains("EnvironmentFile=/etc/bolt-v2/live.env"),
+        "systemd unit must load live profile selection from operator config, not hardcode a venue/market/strategy profile"
+    );
+    assert!(
+        unit.contains("ExecStartPre=/usr/bin/test -r ${BOLT_LIVE_PROFILE}"),
+        "systemd unit must fail closed when BOLT_LIVE_PROFILE is missing or unreadable"
     );
 
     let verify_at = unit
@@ -158,6 +166,26 @@ fn install_script_repairs_whole_config_bundle_for_service_user() {
             "find \"${BOLT_INSTALL_ROOT}/config\" -type f -name '*.toml' -exec chmod 0640 {} +"
         ),
         "installer must make every deployed config/strategy TOML group-readable (0640) for the service user"
+    );
+}
+
+#[test]
+fn install_script_provisions_live_env_directory_without_profile_default() {
+    let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
+    let install = fs::read_to_string(&install_path).expect("install script should exist");
+
+    assert!(
+        install.contains("LIVE_ENV_DIR=\"/etc/bolt-v2\""),
+        "install script must provision the systemd environment directory for live profile selection"
+    );
+    assert!(
+        install.contains("install -d -o root -g \"${BOLT_GROUP}\" -m 0750 \"${LIVE_ENV_DIR}\""),
+        "live environment directory must be readable by the service group"
+    );
+    assert!(
+        !install
+            .contains("BOLT_LIVE_PROFILE=/opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml"),
+        "installer must not silently choose a venue/market/strategy profile"
     );
 }
 

@@ -10,9 +10,9 @@ zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"
 worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
-# Tracked production overlay = the pilot deltas over config/root.toml (the shared
-# base template). Composed onto its base into the runtime config at deploy (#768).
-live_root := "config/profiles/prod-btc-5m.overlay.toml"
+# Tracked live overlay selected by the operator. This must point at a reviewed
+# config/profiles/*.overlay.toml; there is no venue/market/strategy default.
+live_profile := env_var_or_default('BOLT_LIVE_PROFILE', '')
 # Generated, gitignored runtime config the binary actually runs.
 live_runtime := "config/live.toml"
 repo_root := justfile_directory()
@@ -53,6 +53,25 @@ require-local-verification-gate:
     #!/usr/bin/env bash
     if [ "${BOLT_LOCAL_VERIFICATION_GATE:-}" != "1" ]; then
         echo "ERROR: run the public local verification recipe so scripts/local_verification_gate.py owns the lane"
+        exit 2
+    fi
+
+[private]
+require-live-profile:
+    #!/usr/bin/env bash
+    if [ -z "${BOLT_LIVE_PROFILE:-}" ]; then
+        echo "ERROR: set BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml"
+        exit 2
+    fi
+    case "${BOLT_LIVE_PROFILE}" in
+        config/profiles/*.overlay.toml) ;;
+        *)
+            echo "ERROR: BOLT_LIVE_PROFILE must be config/profiles/<profile>.overlay.toml"
+            exit 2
+            ;;
+    esac
+    if [ ! -f "${BOLT_LIVE_PROFILE}" ]; then
+        echo "ERROR: BOLT_LIVE_PROFILE does not name a tracked overlay file: ${BOLT_LIVE_PROFILE}"
         exit 2
     fi
 
@@ -409,17 +428,17 @@ source-fence: source-fence-static
 cargo-shim-tests:
     python3 -m pytest scripts/test_cargo_shim.py -q
 
-# Generate the runtime config by composing the tracked production overlay onto its
-# base template. The single, fail-closed path from
-# `config/profiles/prod-btc-5m.overlay.toml` (⊕ `config/root.toml`) to a deployable
-# runtime config; operators never hand-edit the runtime config (issue #768).
-live-generate: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops generate-live-config --profile {{live_root}} --output {{live_runtime}}
+# Generate the runtime config by composing the operator-selected tracked overlay
+# onto its base template. The single, fail-closed path from a reviewed
+# config/profiles/*.overlay.toml to a deployable runtime config; operators never
+# hand-edit the runtime config (issue #768).
+live-generate: check-workspace require-live-profile require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops generate-live-config --profile "{{live_profile}}" --output {{live_runtime}}
 
 # Prove a deployed runtime config regenerates from the tracked profile and still
 # loads against this exact binary (byte parity + independent schema load).
-live-verify: check-workspace require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops verify-live-config --profile {{live_root}} --deployed {{live_runtime}}
+live-verify: check-workspace require-live-profile require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops verify-live-config --profile "{{live_profile}}" --deployed {{live_runtime}}
 
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
 live: live-generate

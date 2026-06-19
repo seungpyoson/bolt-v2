@@ -12,6 +12,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SYSTEMD_SRC_DIR="${SCRIPT_DIR}/systemd"
 UNIT_DST="/etc/systemd/system/bolt-v2.service"
 JOURNALD_DST="/etc/systemd/journald.conf.d/journald-bolt-v2.conf"
+LIVE_ENV_DIR="/etc/bolt-v2"
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "deploy/install.sh must run as root" >&2
@@ -84,6 +85,7 @@ find "${BOLT_INSTALL_ROOT}/config" -type f -name '*.toml' -exec chown root:"${BO
 find "${BOLT_INSTALL_ROOT}/config" -type f -name '*.toml' -exec chmod 0640 {} +
 
 install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d
+install -d -o root -g "${BOLT_GROUP}" -m 0750 "${LIVE_ENV_DIR}"
 install -m 0644 "${SYSTEMD_SRC_DIR}/bolt-v2.service" "${UNIT_DST}"
 install -m 0644 "${SYSTEMD_SRC_DIR}/journald-bolt-v2.conf" "${JOURNALD_DST}"
 

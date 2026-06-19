@@ -8,29 +8,34 @@ Recommended sequence:
 
 1. Copy the prebuilt binary to `/opt/bolt-v2/bolt-v2` with mode `0755`; do not use the EC2
    instance as a Rust build/cache host for the live service.
-2. Copy the tracked production overlay, its base template, and the strategy files to the instance:
-   `/opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml`, `/opt/bolt-v2/config/root.toml`, and
+2. Copy the selected tracked production overlay, its base template, and the strategy files to the instance:
+   `/opt/bolt-v2/config/profiles/<profile>.overlay.toml`, `/opt/bolt-v2/config/root.toml`, and
    `/opt/bolt-v2/config/strategies/`. The overlay's `base = "../root.toml"` resolves relative to the
    overlay, and both the generated runtime config and the overlay reference strategy files by relative
    path, so the base and `strategies/` must sit under `/opt/bolt-v2/config/` alongside the deployed config.
-3. Generate the runtime config by composing the overlay onto its base — never hand-edit `live.toml`
+3. Export the selected tracked overlay path for the deploy shell:
+   `BOLT_LIVE_PROFILE=/opt/bolt-v2/config/profiles/<profile>.overlay.toml`.
+4. Generate the runtime config by composing the overlay onto its base — never hand-edit `live.toml`
    (issue #768):
-   `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile /opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml --output /opt/bolt-v2/config/live.toml`
-4. Verify it re-composes from the approved overlay+base and still loads against the deployed binary
+   `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --output /opt/bolt-v2/config/live.toml`
+5. Verify it re-composes from the approved overlay+base and still loads against the deployed binary
    before any start (byte parity + independent schema load — catches stale-key drift that hash
    parity alone does not):
-   `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile /opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml --deployed /opt/bolt-v2/config/live.toml`
-5. Keep the config readable by the service user, for example `root:bolt` with mode `0640`.
-6. Run `sudo BOLT_DATA_DEVICE=/dev/<data-volume-device> ./deploy/install.sh`.
-7. Enable and start the service after the binary and config are in place.
+   `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile "${BOLT_LIVE_PROFILE}" --deployed /opt/bolt-v2/config/live.toml`
+6. Keep the config readable by the service user, for example `root:bolt` with mode `0640`.
+7. Run `sudo BOLT_DATA_DEVICE=/dev/<data-volume-device> ./deploy/install.sh`.
+8. Write `/etc/bolt-v2/live.env` with the same selected overlay:
+   `BOLT_LIVE_PROFILE=/opt/bolt-v2/config/profiles/<profile>.overlay.toml`. The systemd unit fails closed
+   if this file is missing or the selected overlay is unreadable.
+9. Enable and start the service after the binary and config are in place.
 
 ## Pre-arm gate (issue #768)
 
 The full pre-arm verification runs in order; the service must not start until all pass:
 
-1. `bolt-v2 ops generate-live-config --profile config/profiles/prod-btc-5m.overlay.toml --output /opt/bolt-v2/config/live.toml`
+1. `bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --output /opt/bolt-v2/config/live.toml`
    — compose the overlay onto its base into the runtime config (fail-closed on TOML/schema/composition/invariant errors).
-2. `bolt-v2 ops verify-live-config --profile config/profiles/prod-btc-5m.overlay.toml --deployed /opt/bolt-v2/config/live.toml`
+2. `bolt-v2 ops verify-live-config --profile "${BOLT_LIVE_PROFILE}" --deployed /opt/bolt-v2/config/live.toml`
    — byte parity vs the re-composed config + independent schema load + strategy-file content match.
 3. `bolt-v2 secrets resolve --config /opt/bolt-v2/config/live.toml` — confirm every SSM credential
    resolves without printing values (#768 step 3c).

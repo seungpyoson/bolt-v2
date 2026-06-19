@@ -5920,8 +5920,19 @@ fn shipped_binary_oracle_config_uses_supported_strategy_schema_version() {
 }
 
 #[test]
-fn shipped_binary_oracle_configs_use_runtime_contract_updown_cadence_slug() {
-    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+fn shipped_binary_oracle_configs_omit_cadence_slug_token_and_derive_it() {
+    // The updown cadence_slug_token is 100% determined by cadence_secs, so the
+    // shipped operator configs OMIT it and rely on the shared derivation seam --
+    // the redundant token lives nowhere in production config. This guards that
+    // single-source contract end to end: every shipped config (a) carries no raw
+    // cadence_slug_token, and (b) derives the contract token ("5m" for the 300s
+    // cadence) through target_runtime_fields_from_target, the exact dispatcher
+    // raw_taker_config uses. A config that re-introduces the redundant token, or
+    // whose cadence drifts off the contract, breaks here.
+    use bolt_v2::{
+        bolt_v3_config::BoltV3StrategyConfig,
+        bolt_v3_market_families::target_runtime_fields_from_target,
+    };
 
     for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
         let strategy: BoltV3StrategyConfig = toml::from_str(
@@ -5933,21 +5944,24 @@ fn shipped_binary_oracle_configs_use_runtime_contract_updown_cadence_slug() {
             .target
             .as_table()
             .unwrap_or_else(|| panic!("{relative_path} target should be a table"));
-        let cadence_secs = target
-            .get("cadence_secs")
-            .and_then(toml::Value::as_integer)
-            .unwrap_or_else(|| panic!("{relative_path} target.cadence_secs should be present"));
-        let cadence_slug_token = target
-            .get("cadence_slug_token")
-            .and_then(toml::Value::as_str)
-            .unwrap_or_else(|| {
-                panic!("{relative_path} target.cadence_slug_token should be present")
-            });
 
+        assert!(
+            !target.contains_key("cadence_slug_token"),
+            "{relative_path} must OMIT cadence_slug_token and rely on derivation, \
+             not restate the redundant token"
+        );
         assert_eq!(
-            (cadence_secs, cadence_slug_token),
-            (300, "5m"),
-            "{relative_path} must use the updown runtime-contract pair 300/5m"
+            target.get("cadence_secs").and_then(toml::Value::as_integer),
+            Some(300),
+            "{relative_path} target.cadence_secs should be the 300s updown cadence"
+        );
+
+        let runtime = target_runtime_fields_from_target(&strategy.target).unwrap_or_else(|error| {
+            panic!("{relative_path} target must derive its runtime fields: {error}")
+        });
+        assert_eq!(
+            runtime.cadence_slug_token, "5m",
+            "{relative_path} must derive the updown runtime-contract token 5m from cadence_secs=300"
         );
     }
 }

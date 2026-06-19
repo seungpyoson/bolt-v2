@@ -1131,7 +1131,9 @@ kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
-cadence_slug_token = "5m"
+# cadence_slug_token is derived from cadence_secs by the updown runtime contract
+# (300 -> "5m"); omit it -- shipped configs do. A supplied token is validated
+# against the contract, never trusted blindly.
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
@@ -1877,7 +1879,9 @@ kind = "rotating_market"
 rotating_market_family = "updown"
 underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
-cadence_slug_token = "5m"
+# cadence_slug_token is derived from cadence_secs by the updown runtime contract
+# (300 -> "5m"); omit it -- shipped configs do. A supplied token is validated
+# against the contract, never trusted blindly.
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60

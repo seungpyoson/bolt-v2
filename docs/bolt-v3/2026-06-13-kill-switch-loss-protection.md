@@ -25,6 +25,7 @@ Config validation rejects `flatten_open_positions_on_breach = true` until a shar
 
 - current UTC day bucket
 - same-day realized PnL accumulator
+- settlement currency bound to the realized PnL accumulator
 - per-position cumulative realized PnL baselines
 - closed-position replay guards
 - adjusted-position replay guards

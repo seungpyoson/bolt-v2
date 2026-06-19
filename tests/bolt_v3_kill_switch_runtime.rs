@@ -117,11 +117,11 @@ fn enabled_kill_switch_corrupt_durable_state_fails_closed_before_live_node_build
 fn enabled_kill_switch_unknown_or_unsupported_durable_state_fails_closed_before_live_node_build() {
     let cases = [
         (
-            r#"{"schema_version":1,"state":{"Mystery":{"halt_id":"halt-runtime-1"}}}"#,
+            r#"{"schema_version":2,"state":{"Mystery":{"halt_id":"halt-runtime-1"}}}"#,
             KillSwitchRecoveryReason::CorruptEvidence,
         ),
         (
-            r#"{"schema_version":2,"state":{"Flat":{"halt_id":"halt-runtime-1"}}}"#,
+            r#"{"schema_version":3,"state":{"Flat":{"halt_id":"halt-runtime-1"}}}"#,
             KillSwitchRecoveryReason::UnsupportedSchemaVersion,
         ),
     ];
@@ -155,6 +155,7 @@ fn armed_zero_loss_snapshot() -> KillSwitchLossProtectionSnapshot {
     KillSwitchLossProtectionSnapshot {
         daily_bucket: None,
         daily_realized_pnl: Decimal::ZERO,
+        settlement_currency: None,
         cumulative_position_pnl: BTreeMap::new(),
         closed_position_pnl: BTreeMap::new(),
         adjusted_position_pnl: BTreeMap::new(),

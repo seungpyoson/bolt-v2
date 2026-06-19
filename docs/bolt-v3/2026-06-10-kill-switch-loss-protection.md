@@ -23,6 +23,7 @@ The current accepted boundary does not call `Trader::market_exit_strategy`, dire
 
 - current UTC day bucket
 - UTC-daily realized PnL accumulator
+- settlement currency bound to the realized PnL accumulator
 - per-position cumulative realized PnL baselines
 - closed-position and adjusted-position replay guards
 - pending halt-action retry schedule, when proof/action recording has not completed

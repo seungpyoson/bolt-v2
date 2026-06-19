@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 
 use anyhow::anyhow;
-use nautilus_model::{events::PositionEvent, types::Money};
+use nautilus_model::{
+    events::PositionEvent,
+    types::{Currency, Money},
+};
 use rust_decimal::Decimal;
 
 use crate::{
@@ -24,6 +27,8 @@ const LOSS_TRIGGER_REASON: &str = "max_utc_daily_realized_loss";
 const HALT_ACTION_RETRY_TIMEOUT_REASON: &str = "halt_action_retry_timeout";
 const FLATTEN_ACTION_ID: &str = "flatten-positions";
 const SNAPSHOT_PERSISTENCE_FAILED_REASON: &str = "loss_protection_snapshot_persistence_failed";
+const MIXED_SETTLEMENT_CURRENCY_REASON: &str = "mixed_settlement_currency";
+const RECOVERY_LOSS_TRIGGER_SOURCE: &str = "kill_switch_recovery";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KillSwitchLossProtectionConfig {
@@ -39,6 +44,7 @@ pub struct RealizedPnlObservation {
     pub source: &'static str,
     pub observed_at_unix_nanos: u64,
     pub realized_pnl: Decimal,
+    pub settlement_currency: Currency,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +101,7 @@ pub struct KillSwitchLossProtection {
     closed_position_pnl: BTreeMap<String, CumulativePositionPnl>,
     adjusted_position_pnl: BTreeMap<String, CumulativePositionPnl>,
     pending_halt_actions: Option<PendingHaltActions>,
+    settlement_currency: Option<Currency>,
 }
 
 impl KillSwitchLossProtection {
@@ -116,6 +123,7 @@ impl KillSwitchLossProtection {
             closed_position_pnl: BTreeMap::new(),
             adjusted_position_pnl: BTreeMap::new(),
             pending_halt_actions: None,
+            settlement_currency: None,
         })
     }
 
@@ -154,6 +162,18 @@ impl KillSwitchLossProtection {
                 return Ok(state);
             };
             self.apply_loss_snapshot(snapshot);
+            if self.realized_loss_breached() {
+                let Some(latched) = self.halt_for_realized_loss_breach(
+                    RECOVERY_LOSS_TRIGGER_SOURCE,
+                    recovery_action_clock_unix_nanos,
+                )?
+                else {
+                    return Err(anyhow!(
+                        "recovered daily realized loss breach did not latch the kill switch"
+                    ));
+                };
+                state = latched;
+            }
         } else if let Some(snapshot) = record.loss_protection {
             self.apply_loss_snapshot(snapshot);
         }
@@ -212,13 +232,14 @@ impl KillSwitchLossProtection {
         if !self.accept_observation_bucket(observation.observed.observed_at_unix_nanos) {
             return Ok(None);
         }
+        self.guard_settlement_currency(observation.observed.settlement_currency)?;
         let observed = if observation.cumulative_realized_pnl {
             let Some(observed) = self.record_cumulative_position_observation(&observation)? else {
                 return Ok(None);
             };
             observed
         } else {
-            if self.is_duplicate_adjusted_position_observation(&observation) {
+            if self.is_duplicate_adjusted_position_observation(&observation)? {
                 return Ok(None);
             }
             observation.observed
@@ -235,7 +256,11 @@ impl KillSwitchLossProtection {
         }
 
         if let Some(closed) = self.closed_position_pnl.get(&observation.position_id) {
-            if observation.observed.observed_at_unix_nanos <= closed.last_observed_at_unix_nanos {
+            if observation.observed.observed_at_unix_nanos < closed.last_observed_at_unix_nanos
+                || (observation.observed.observed_at_unix_nanos
+                    == closed.last_observed_at_unix_nanos
+                    && observation.observed.realized_pnl == closed.realized_pnl)
+            {
                 return Ok(None);
             }
             self.closed_position_pnl.remove(&observation.position_id);
@@ -341,13 +366,22 @@ impl KillSwitchLossProtection {
     fn is_duplicate_adjusted_position_observation(
         &mut self,
         observation: &PositionRealizedPnlObservation,
-    ) -> bool {
-        let dedupe_key = observation
-            .event_id
-            .as_deref()
-            .unwrap_or(&observation.position_id);
+    ) -> anyhow::Result<bool> {
+        let Some(dedupe_key) = observation.event_id.as_deref() else {
+            let reason = "adjusted position realized-PnL observation missing event_id".to_string();
+            let failed = KillSwitchState::FailedManualIntervention {
+                halt_id: halt_id(&self.state)
+                    .unwrap_or(FAIL_CLOSED_RECOVERY_HALT_ID)
+                    .to_string(),
+                reason: reason.clone(),
+            };
+            self.admission.replace_kill_switch_state(failed.clone());
+            self.state = failed.clone();
+            self.persist_failed_state_or_invalidate(&failed)?;
+            return Err(anyhow!(reason));
+        };
         if self.adjusted_position_pnl.contains_key(dedupe_key) {
-            return true;
+            return Ok(true);
         }
         self.adjusted_position_pnl.insert(
             dedupe_key.to_string(),
@@ -356,7 +390,7 @@ impl KillSwitchLossProtection {
                 last_observed_at_unix_nanos: observation.observed.observed_at_unix_nanos,
             },
         );
-        false
+        Ok(false)
     }
 
     pub fn record_realized_pnl(
@@ -371,6 +405,7 @@ impl KillSwitchLossProtection {
         if !self.accept_observation_bucket(observation.observed_at_unix_nanos) {
             return Ok(None);
         }
+        self.guard_settlement_currency(observation.settlement_currency)?;
         self.record_current_bucket_realized_pnl(observation)
     }
 
@@ -380,16 +415,27 @@ impl KillSwitchLossProtection {
     ) -> anyhow::Result<Option<KillSwitchState>> {
         self.daily_realized_pnl += observation.realized_pnl;
 
-        if self.daily_realized_pnl >= Decimal::ZERO
-            || -self.daily_realized_pnl < self.config.max_utc_daily_realized_loss
-        {
+        if !self.realized_loss_breached() {
             self.persist_runtime_snapshot_or_fail_closed()?;
             return Ok(None);
         }
 
+        self.halt_for_realized_loss_breach(observation.source, observation.observed_at_unix_nanos)
+    }
+
+    fn realized_loss_breached(&self) -> bool {
+        self.daily_realized_pnl < Decimal::ZERO
+            && -self.daily_realized_pnl >= self.config.max_utc_daily_realized_loss
+    }
+
+    fn halt_for_realized_loss_breach(
+        &mut self,
+        source: &'static str,
+        observed_at_unix_nanos: u64,
+    ) -> anyhow::Result<Option<KillSwitchState>> {
         let trigger = KillSwitchHaltTrigger::loss_governor_breach(
-            observation.source,
-            observation.observed_at_unix_nanos,
+            source,
+            observed_at_unix_nanos,
             LOSS_TRIGGER_REASON,
         );
         let halting = transition_kill_switch_state(
@@ -426,11 +472,11 @@ impl KillSwitchLossProtection {
             self.pending_halt_actions = Some(PendingHaltActions {
                 state: halting,
                 next_retry_at_unix_nanos: add_millis(
-                    observation.observed_at_unix_nanos,
+                    observed_at_unix_nanos,
                     self.config.action_retry_interval_ms,
                 ),
                 retry_deadline_unix_nanos: add_millis(
-                    observation.observed_at_unix_nanos,
+                    observed_at_unix_nanos,
                     self.config.action_retry_timeout_ms,
                 ),
             });
@@ -551,6 +597,9 @@ impl KillSwitchLossProtection {
         KillSwitchLossProtectionSnapshot {
             daily_bucket: self.daily_bucket,
             daily_realized_pnl: self.daily_realized_pnl,
+            settlement_currency: self
+                .settlement_currency
+                .map(|currency| currency.code.as_str().to_string()),
             cumulative_position_pnl: self
                 .cumulative_position_pnl
                 .iter()
@@ -602,6 +651,7 @@ impl KillSwitchLossProtection {
     fn apply_loss_snapshot(&mut self, snapshot: KillSwitchLossProtectionSnapshot) {
         self.daily_bucket = snapshot.daily_bucket;
         self.daily_realized_pnl = snapshot.daily_realized_pnl;
+        self.settlement_currency = snapshot.settlement_currency.as_deref().map(Currency::from);
         self.cumulative_position_pnl = snapshot
             .cumulative_position_pnl
             .into_iter()
@@ -682,6 +732,45 @@ impl KillSwitchLossProtection {
             })?;
         }
         Ok(())
+    }
+
+    /// Establishes the settlement currency of the realized-PnL stream from the
+    /// first observation and fails closed if any later observation reports a
+    /// different currency. Raw decimals from different settlement currencies
+    /// cannot be summed into one daily realized-loss figure: doing so could halt
+    /// the kill switch early or — the unsafe direction — fail to halt at all. A
+    /// mismatch is therefore an integrity failure that latches
+    /// `FailedManualIntervention` (mirrors the mixed-currency fail-closed
+    /// handling in `bolt_v3_loss_runtime_feed`).
+    ///
+    /// The established currency is persisted with the loss snapshot so restart
+    /// cannot silently forget the unit attached to the restored daily total and
+    /// position baselines.
+    fn guard_settlement_currency(&mut self, currency: Currency) -> anyhow::Result<()> {
+        match self.settlement_currency {
+            None => {
+                self.settlement_currency = Some(currency);
+                Ok(())
+            }
+            Some(existing) if existing == currency => Ok(()),
+            Some(existing) => {
+                let reason = format!(
+                    "{MIXED_SETTLEMENT_CURRENCY_REASON}: expected {}, observed {}",
+                    existing.code.as_str(),
+                    currency.code.as_str(),
+                );
+                let failed = KillSwitchState::FailedManualIntervention {
+                    halt_id: halt_id(&self.state)
+                        .unwrap_or(FAIL_CLOSED_RECOVERY_HALT_ID)
+                        .to_string(),
+                    reason: reason.clone(),
+                };
+                self.admission.replace_kill_switch_state(failed.clone());
+                self.state = failed.clone();
+                self.persist_failed_state_or_invalidate(&failed)?;
+                Err(anyhow!(reason))
+            }
+        }
     }
 }
 
@@ -770,7 +859,9 @@ fn position_realized_pnl_observation(
     match event {
         PositionEvent::PositionOpened(_) => None,
         PositionEvent::PositionChanged(changed) => {
-            let realized_pnl = money_decimal(changed.realized_pnl?);
+            let realized_pnl = changed.realized_pnl?;
+            let settlement_currency = realized_pnl.currency;
+            let realized_pnl = money_decimal(realized_pnl);
             Some(PositionRealizedPnlObservation {
                 account_id: changed.account_id.to_string(),
                 instrument_id: changed.instrument_id.to_string(),
@@ -780,13 +871,16 @@ fn position_realized_pnl_observation(
                     source: "nt_position_changed",
                     observed_at_unix_nanos: changed.ts_event.as_u64(),
                     realized_pnl,
+                    settlement_currency,
                 },
                 cumulative_realized_pnl: true,
                 closes_position: false,
             })
         }
         PositionEvent::PositionClosed(closed) => {
-            let realized_pnl = money_decimal(closed.realized_pnl?);
+            let realized_pnl = closed.realized_pnl?;
+            let settlement_currency = realized_pnl.currency;
+            let realized_pnl = money_decimal(realized_pnl);
             Some(PositionRealizedPnlObservation {
                 account_id: closed.account_id.to_string(),
                 instrument_id: closed.instrument_id.to_string(),
@@ -796,13 +890,16 @@ fn position_realized_pnl_observation(
                     source: "nt_position_closed",
                     observed_at_unix_nanos: closed.ts_event.as_u64(),
                     realized_pnl,
+                    settlement_currency,
                 },
                 cumulative_realized_pnl: true,
                 closes_position: true,
             })
         }
         PositionEvent::PositionAdjusted(adjusted) => {
-            let pnl_change = money_decimal(adjusted.pnl_change?);
+            let pnl_change = adjusted.pnl_change?;
+            let settlement_currency = pnl_change.currency;
+            let pnl_change = money_decimal(pnl_change);
             Some(PositionRealizedPnlObservation {
                 account_id: adjusted.account_id.to_string(),
                 instrument_id: adjusted.instrument_id.to_string(),
@@ -812,6 +909,7 @@ fn position_realized_pnl_observation(
                     source: "nt_position_adjusted",
                     observed_at_unix_nanos: adjusted.ts_event.as_u64(),
                     realized_pnl: pnl_change,
+                    settlement_currency,
                 },
                 cumulative_realized_pnl: false,
                 closes_position: false,

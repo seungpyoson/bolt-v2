@@ -4,7 +4,8 @@ use bolt_v2::{
     bolt_v3_config::BoltV3RootConfig,
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_kill_switch_store::{
-        KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore,
+        KILL_SWITCH_STORE_SCHEMA_VERSION, KillSwitchRecoveryReason, KillSwitchRecoveryState,
+        KillSwitchStore,
     },
 };
 
@@ -70,6 +71,120 @@ fn missing_corrupt_or_unresolved_evidence_recovers_fail_closed() {
 }
 
 #[test]
+fn overlapping_loss_snapshot_position_maps_recover_corrupt_fail_closed() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    let store = KillSwitchStore::new(path.clone(), 65_536);
+
+    let persisted = serde_json::json!({
+        "schema_version": KILL_SWITCH_STORE_SCHEMA_VERSION,
+        "state": "Armed",
+        "loss_protection": {
+            "daily_bucket": 19_875,
+            "daily_realized_pnl": "-10",
+            "settlement_currency": "USDC",
+            "cumulative_position_pnl": {
+                "P-001": {
+                    "realized_pnl": "-10",
+                    "last_observed_at_unix_nanos": 1_717_200_000_000_000_000_u64
+                }
+            },
+            "closed_position_pnl": {
+                "P-001": {
+                    "realized_pnl": "-10",
+                    "last_observed_at_unix_nanos": 1_717_200_000_000_000_000_u64
+                }
+            },
+            "adjusted_position_pnl": {}
+        }
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&persisted).expect("test json should serialize"),
+    )
+    .expect("corrupt semantic state should write");
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("overlapping snapshot maps should classify"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::CorruptEvidence,
+            state: Some(KillSwitchState::Armed),
+        }
+    );
+}
+
+#[test]
+fn loss_snapshot_missing_settlement_currency_recovers_corrupt_fail_closed() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    let store = KillSwitchStore::new(path.clone(), 65_536);
+
+    let persisted = serde_json::json!({
+        "schema_version": KILL_SWITCH_STORE_SCHEMA_VERSION,
+        "state": "Armed",
+        "loss_protection": {
+            "daily_bucket": 19_875,
+            "daily_realized_pnl": "-10",
+            "cumulative_position_pnl": {},
+            "closed_position_pnl": {},
+            "adjusted_position_pnl": {}
+        }
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&persisted).expect("test json should serialize"),
+    )
+    .expect("corrupt semantic state should write");
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("missing settlement currency should classify"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::CorruptEvidence,
+            state: Some(KillSwitchState::Armed),
+        }
+    );
+}
+
+#[test]
+fn loss_snapshot_unknown_settlement_currency_recovers_corrupt_fail_closed() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("kill-switch-state.json");
+    let store = KillSwitchStore::new(path.clone(), 65_536);
+
+    let persisted = serde_json::json!({
+        "schema_version": KILL_SWITCH_STORE_SCHEMA_VERSION,
+        "state": "Armed",
+        "loss_protection": {
+            "daily_bucket": 19_875,
+            "daily_realized_pnl": "-10",
+            "settlement_currency": "NOT_A_REGISTERED_CURRENCY",
+            "cumulative_position_pnl": {},
+            "closed_position_pnl": {},
+            "adjusted_position_pnl": {}
+        }
+    });
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&persisted).expect("test json should serialize"),
+    )
+    .expect("corrupt semantic state should write");
+
+    assert_eq!(
+        store
+            .load_recovery_state()
+            .expect("unknown settlement currency should classify"),
+        KillSwitchRecoveryState::FailClosed {
+            reason: KillSwitchRecoveryReason::CorruptEvidence,
+            state: Some(KillSwitchState::Armed),
+        }
+    );
+}
+
+#[test]
 fn persisted_state_round_trips_with_schema_version() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("kill-switch-state.json");
@@ -88,7 +203,10 @@ fn persisted_state_round_trips_with_schema_version() {
     let persisted: serde_json::Value =
         serde_json::from_slice(&fs::read(path).expect("state file should read"))
             .expect("state file should be json");
-    assert_eq!(persisted["schema_version"], 1);
+    assert_eq!(
+        persisted["schema_version"],
+        KILL_SWITCH_STORE_SCHEMA_VERSION
+    );
 }
 
 #[test]

@@ -6,6 +6,7 @@ use std::{
     str::FromStr,
 };
 
+use nautilus_model::types::Currency;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -15,7 +16,7 @@ use crate::{
     bolt_v3_kill_switch::KillSwitchState,
 };
 
-pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 1;
+pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KillSwitchRecoveryState {
@@ -59,6 +60,7 @@ pub struct KillSwitchRecoveryRecord {
 pub struct KillSwitchLossProtectionSnapshot {
     pub daily_bucket: Option<u64>,
     pub daily_realized_pnl: Decimal,
+    pub settlement_currency: Option<String>,
     pub cumulative_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
     pub closed_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
     pub adjusted_position_pnl: BTreeMap<String, KillSwitchCumulativePositionPnlSnapshot>,
@@ -248,6 +250,8 @@ struct PersistedKillSwitchState {
 struct PersistedKillSwitchLossProtectionSnapshot {
     daily_bucket: Option<u64>,
     daily_realized_pnl: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settlement_currency: Option<String>,
     cumulative_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
     closed_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
     adjusted_position_pnl: BTreeMap<String, PersistedCumulativePositionPnlSnapshot>,
@@ -298,6 +302,7 @@ impl From<&KillSwitchLossProtectionSnapshot> for PersistedKillSwitchLossProtecti
         Self {
             daily_bucket: snapshot.daily_bucket,
             daily_realized_pnl: snapshot.daily_realized_pnl.to_string(),
+            settlement_currency: snapshot.settlement_currency.clone(),
             cumulative_position_pnl: persist_pnl_map(&snapshot.cumulative_position_pnl),
             closed_position_pnl: persist_pnl_map(&snapshot.closed_position_pnl),
             adjusted_position_pnl: persist_pnl_map(&snapshot.adjusted_position_pnl),
@@ -310,12 +315,38 @@ impl TryFrom<PersistedKillSwitchLossProtectionSnapshot> for KillSwitchLossProtec
     type Error = ();
 
     fn try_from(snapshot: PersistedKillSwitchLossProtectionSnapshot) -> Result<Self, Self::Error> {
+        let daily_realized_pnl = Decimal::from_str(&snapshot.daily_realized_pnl).map_err(|_| ())?;
+        let cumulative_position_pnl = restore_pnl_map(snapshot.cumulative_position_pnl)?;
+        let closed_position_pnl = restore_pnl_map(snapshot.closed_position_pnl)?;
+        if cumulative_position_pnl
+            .keys()
+            .any(|position_id| closed_position_pnl.contains_key(position_id))
+        {
+            return Err(());
+        }
+        let adjusted_position_pnl = restore_pnl_map(snapshot.adjusted_position_pnl)?;
+        let has_loss_evidence = daily_realized_pnl != Decimal::ZERO
+            || !cumulative_position_pnl.is_empty()
+            || !closed_position_pnl.is_empty()
+            || !adjusted_position_pnl.is_empty();
+        let settlement_currency = match snapshot.settlement_currency {
+            Some(currency) if currency.trim().is_empty() || currency.trim() != currency => {
+                return Err(());
+            }
+            Some(currency) if Currency::try_from_str(&currency).is_none() => {
+                return Err(());
+            }
+            Some(currency) => Some(currency),
+            None if has_loss_evidence => return Err(()),
+            None => None,
+        };
         Ok(Self {
             daily_bucket: snapshot.daily_bucket,
-            daily_realized_pnl: Decimal::from_str(&snapshot.daily_realized_pnl).map_err(|_| ())?,
-            cumulative_position_pnl: restore_pnl_map(snapshot.cumulative_position_pnl)?,
-            closed_position_pnl: restore_pnl_map(snapshot.closed_position_pnl)?,
-            adjusted_position_pnl: restore_pnl_map(snapshot.adjusted_position_pnl)?,
+            daily_realized_pnl,
+            settlement_currency,
+            cumulative_position_pnl,
+            closed_position_pnl,
+            adjusted_position_pnl,
             pending_halt_actions: snapshot.pending_halt_actions,
         })
     }

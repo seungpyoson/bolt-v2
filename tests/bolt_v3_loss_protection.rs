@@ -60,6 +60,7 @@ fn realized_loss_breach_latches_persists_and_emits_flatten_actions() {
             source: "nt_position_event",
             observed_at_unix_nanos: 1_717_200_000_000_000_000,
             realized_pnl: Decimal::new(-25, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect("first loss should record below the limit");
     let latched = protection
@@ -67,6 +68,7 @@ fn realized_loss_breach_latches_persists_and_emits_flatten_actions() {
             source: "nt_position_event",
             observed_at_unix_nanos: 1_717_200_000_000_000_100,
             realized_pnl: Decimal::new(-26, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect("second loss should breach the daily limit")
         .expect("breach should return the latched state");
@@ -201,6 +203,74 @@ fn position_event_filter_requires_configured_account_and_instrument() {
 }
 
 #[test]
+fn mixed_settlement_currency_realized_pnl_fails_closed() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-mixed-currency");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    // A high daily limit so neither single realized loss can breach on its own:
+    // this isolates the mixed-currency integrity guard from the loss-breach path.
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(1_000, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    // First realized loss settled in USDC, comfortably below the daily limit.
+    assert!(
+        protection
+            .record_position_event(&changed_position_event_with_currency(
+                "POLYMARKET-001",
+                "BTC-USD.BINANCE",
+                -10.0,
+                Currency::USDC(),
+                1_717_200_000_000_000_000,
+            ))
+            .expect("first settlement-currency event should record")
+            .is_none()
+    );
+    assert!(admission.admit(&entry_request()).is_ok());
+
+    // A second realized loss settled in a DIFFERENT currency cannot be combined
+    // into one daily realized-loss figure. Summing raw decimals across currencies
+    // would let the kill switch halt early or — worse — fail to halt, so the
+    // accumulator must fail closed instead of silently mixing currencies
+    // (mirrors the mixed-currency handling in bolt_v3_loss_runtime_feed).
+    let error = protection
+        .record_position_event(&changed_position_event_with_currency(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            Currency::USD(),
+            1_717_200_000_000_000_100,
+        ))
+        .expect_err("mixed settlement currency must fail closed");
+
+    assert!(
+        error.to_string().contains("mixed_settlement_currency"),
+        "error should name the settlement-currency integrity failure: {error}"
+    );
+    // Admission is latched into FailedManualIntervention: an integrity failure is
+    // not a recoverable loss breach, it requires manual operator intervention.
+    assert!(matches!(
+        admission.admit(&entry_request()),
+        Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
+            state: KillSwitchStateKind::FailedManualIntervention
+        })
+    ));
+    // No flatten action is emitted: this path fails closed via the latch, it does
+    // not run the loss-breach halt-action dispatch.
+    assert!(actions.actions().is_empty());
+}
+
+#[test]
 fn persistence_failure_fails_closed_before_returning_error() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-persist-failure");
     let parent_path = temp.path().join("state");
@@ -226,6 +296,7 @@ fn persistence_failure_fails_closed_before_returning_error() {
             source: "nt_position_event",
             observed_at_unix_nanos: 1_717_200_000_000_000_000,
             realized_pnl: Decimal::new(-2, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect_err("failed persistence should return an error");
 
@@ -326,6 +397,7 @@ fn record_realized_pnl_resets_accumulator_on_utc_day_rollover() {
                 source: "nt_position_event",
                 observed_at_unix_nanos: NANOS_PER_UTC_DAY,
                 realized_pnl: Decimal::new(-40, 0),
+                settlement_currency: Currency::USDC(),
             })
             .expect("day-1 loss should record below the limit")
             .is_none()
@@ -340,6 +412,7 @@ fn record_realized_pnl_resets_accumulator_on_utc_day_rollover() {
                 source: "nt_position_event",
                 observed_at_unix_nanos: NANOS_PER_UTC_DAY * 2,
                 realized_pnl: Decimal::new(-40, 0),
+                settlement_currency: Currency::USDC(),
             })
             .expect("day-2 loss should reset the accumulator and stay below the limit")
             .is_none()
@@ -354,6 +427,7 @@ fn record_realized_pnl_resets_accumulator_on_utc_day_rollover() {
                 source: "nt_position_event",
                 observed_at_unix_nanos: NANOS_PER_UTC_DAY * 2 + 1,
                 realized_pnl: Decimal::new(-5, 0),
+                settlement_currency: Currency::USDC(),
             })
             .expect("second day-2 loss should not phantom-breach from the prior day")
             .is_none()
@@ -387,6 +461,7 @@ fn failed_halt_actions_retry_after_configured_interval_until_success() {
             source: "nt_position_event",
             observed_at_unix_nanos: 1_717_200_000_000_000_000,
             realized_pnl: Decimal::new(-2, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect_err("first flatten dispatch should fail");
     assert_eq!(actions.flatten_attempts(), 1);
@@ -403,6 +478,7 @@ fn failed_halt_actions_retry_after_configured_interval_until_success() {
             observed_at_unix_nanos: 1_717_200_000_000_000_000
                 + (TEST_ACTION_RETRY_INTERVAL_MS * NANOS_PER_MILLISECOND),
             realized_pnl: Decimal::ZERO,
+            settlement_currency: Currency::USDC(),
         })
         .expect("configured action retry should succeed");
 
@@ -446,6 +522,7 @@ fn daily_realized_pnl_survives_restart_until_utc_bucket_rolls_forward() {
             source: "nt_position_event",
             observed_at_unix_nanos: 1_717_200_000_000_000_000,
             realized_pnl: Decimal::new(-40, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect("below-limit loss should persist the runtime accumulator");
 
@@ -475,11 +552,68 @@ fn daily_realized_pnl_survives_restart_until_utc_bucket_rolls_forward() {
             source: "nt_position_event",
             observed_at_unix_nanos: 1_717_200_000_000_000_100,
             realized_pnl: Decimal::new(-15, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect("post-restart loss should breach with persisted daily total")
         .expect("persisted daily total should latch the kill switch");
 
     assert!(matches!(latched, KillSwitchState::Halted { .. }));
+    assert!(matches!(
+        restart_admission.admit(&entry_request()),
+        Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
+            state: KillSwitchStateKind::Halted
+        })
+    ));
+}
+
+#[test]
+fn recovered_armed_loss_snapshot_rechecks_lowered_daily_limit() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-restart-lowered-limit");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut first = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(100, 0)),
+        admission,
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    first
+        .record_position_event(&changed_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -75.0,
+            1_717_200_000_000_000_000,
+        ))
+        .expect("below old limit loss should persist an armed snapshot");
+
+    let restart_admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let restart_store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let mut restarted = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(50, 0)),
+        restart_admission.clone(),
+        restart_store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize with lowered limit");
+
+    let recovered = restarted
+        .seed_from_store(1_717_200_000_000_000_100)
+        .expect("restart should recover and re-evaluate the lowered limit");
+
+    assert!(matches!(recovered, KillSwitchState::Halted { .. }));
     assert!(matches!(
         restart_admission.admit(&entry_request()),
         Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
@@ -573,6 +707,7 @@ fn stale_utc_bucket_events_do_not_clear_current_day_loss_accumulator() {
             source: "nt_position_event",
             observed_at_unix_nanos: NANOS_PER_UTC_DAY * 2,
             realized_pnl: Decimal::new(-40, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect("current-day loss should record");
     protection
@@ -580,6 +715,7 @@ fn stale_utc_bucket_events_do_not_clear_current_day_loss_accumulator() {
             source: "nt_position_event",
             observed_at_unix_nanos: NANOS_PER_UTC_DAY,
             realized_pnl: Decimal::ZERO,
+            settlement_currency: Currency::USDC(),
         })
         .expect("stale prior-day event should not reset current-day loss");
 
@@ -588,6 +724,7 @@ fn stale_utc_bucket_events_do_not_clear_current_day_loss_accumulator() {
             source: "nt_position_event",
             observed_at_unix_nanos: NANOS_PER_UTC_DAY * 2 + 1,
             realized_pnl: Decimal::new(-15, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect("current-day loss should still breach after stale event")
         .expect("current-day accumulator should not have been cleared");
@@ -649,6 +786,7 @@ fn utc_day_rollover_prunes_completed_position_dedup_snapshots() {
             source: "nt_position_event",
             observed_at_unix_nanos: NANOS_PER_UTC_DAY,
             realized_pnl: Decimal::ZERO,
+            settlement_currency: Currency::USDC(),
         })
         .expect("first next-day observation should roll the bucket forward");
 
@@ -770,6 +908,55 @@ fn duplicate_closed_position_event_still_prunes_cumulative_baseline() {
 }
 
 #[test]
+fn same_timestamp_reopen_with_distinct_pnl_counts_fresh_cycle() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-reopen-same-ts");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(25, 0)),
+        admission,
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_position_event(&changed_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -20.0,
+            10,
+        ))
+        .expect("initial cumulative pnl should record");
+    protection
+        .record_position_event(&closed_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -20.0,
+            10,
+        ))
+        .expect("same-timestamp duplicate close should prune cumulative baseline");
+
+    let latched = protection
+        .record_position_event(&changed_position_event(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            10,
+        ))
+        .expect("same-timestamp reopen with distinct pnl should be fresh")
+        .expect("fresh cycle should count toward the daily limit");
+
+    assert!(matches!(latched, KillSwitchState::Halted { .. }));
+}
+
+#[test]
 fn pending_halt_actions_retry_from_timer_without_new_position_events() {
     let temp = support::TempCaseDir::new("bolt-v3-loss-protection-timer-retry");
     let store = KillSwitchStore::new(
@@ -794,6 +981,7 @@ fn pending_halt_actions_retry_from_timer_without_new_position_events() {
             source: "nt_position_event",
             observed_at_unix_nanos: breach_time,
             realized_pnl: Decimal::new(-2, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect_err("first flatten dispatch should fail");
     assert_eq!(actions.flatten_attempts(), 1);
@@ -832,6 +1020,7 @@ fn pending_halt_action_timeout_persists_failed_manual_intervention() {
             source: "nt_position_event",
             observed_at_unix_nanos: breach_time,
             realized_pnl: Decimal::new(-2, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect_err("first flatten dispatch should fail");
     protection
@@ -883,6 +1072,7 @@ fn halt_persistence_failure_invalidates_preexisting_permissive_store() {
             source: "nt_position_event",
             observed_at_unix_nanos: 1_717_200_000_000_000_000,
             realized_pnl: Decimal::new(-2, 0),
+            settlement_currency: Currency::USDC(),
         })
         .expect_err("oversized halt evidence should fail persistence");
 
@@ -1001,6 +1191,57 @@ fn duplicate_adjusted_position_replay_counts_delta_once() {
 
     assert!(matches!(latched, KillSwitchState::Halted { .. }));
     assert_eq!(actions.actions().len(), 1);
+}
+
+#[test]
+fn mixed_settlement_currency_adjusted_pnl_fails_closed() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-mixed-adjusted-currency");
+    let store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut protection = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(1_000, 0)),
+        admission.clone(),
+        store,
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    protection
+        .record_position_event(&changed_position_event_with_currency(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -10.0,
+            Currency::USDC(),
+            1_717_200_000_000_000_000,
+        ))
+        .expect("first currency should establish the accumulator currency");
+
+    let error = protection
+        .record_position_event(&adjusted_position_event_with_currency(
+            "POLYMARKET-001",
+            "BTC-USD.BINANCE",
+            -5.0,
+            Currency::USD(),
+            1_717_200_000_000_000_100,
+        ))
+        .expect_err("adjusted pnl in another currency must fail closed");
+
+    assert!(
+        error.to_string().contains("mixed_settlement_currency"),
+        "error should name the settlement-currency integrity failure: {error}"
+    );
+    assert!(matches!(
+        admission.admit(&entry_request()),
+        Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
+            state: KillSwitchStateKind::FailedManualIntervention
+        })
+    ));
 }
 
 #[test]
@@ -1194,10 +1435,45 @@ fn adjusted_position_event(
     adjusted_position_event_with_id(account_id, instrument_id, pnl, ts_event, UUID4::new())
 }
 
+fn adjusted_position_event_with_currency(
+    account_id: &str,
+    instrument_id: &str,
+    pnl: f64,
+    settlement_currency: Currency,
+    ts_event: u64,
+) -> PositionEvent {
+    adjusted_position_event_with_id_and_currency(
+        account_id,
+        instrument_id,
+        pnl,
+        settlement_currency,
+        ts_event,
+        UUID4::new(),
+    )
+}
+
 fn adjusted_position_event_with_id(
     account_id: &str,
     instrument_id: &str,
     pnl: f64,
+    ts_event: u64,
+    event_id: UUID4,
+) -> PositionEvent {
+    adjusted_position_event_with_id_and_currency(
+        account_id,
+        instrument_id,
+        pnl,
+        Currency::USDC(),
+        ts_event,
+        event_id,
+    )
+}
+
+fn adjusted_position_event_with_id_and_currency(
+    account_id: &str,
+    instrument_id: &str,
+    pnl: f64,
+    settlement_currency: Currency,
     ts_event: u64,
     event_id: UUID4,
 ) -> PositionEvent {
@@ -1209,7 +1485,7 @@ fn adjusted_position_event_with_id(
         AccountId::from(account_id),
         PositionAdjustmentType::Commission,
         None,
-        Some(Money::new(pnl, Currency::USDC())),
+        Some(Money::new(pnl, settlement_currency)),
         None,
         event_id,
         ts_event.into(),
@@ -1221,6 +1497,22 @@ fn changed_position_event(
     account_id: &str,
     instrument_id: &str,
     cumulative_pnl: f64,
+    ts_event: u64,
+) -> PositionEvent {
+    changed_position_event_with_currency(
+        account_id,
+        instrument_id,
+        cumulative_pnl,
+        Currency::USDC(),
+        ts_event,
+    )
+}
+
+fn changed_position_event_with_currency(
+    account_id: &str,
+    instrument_id: &str,
+    cumulative_pnl: f64,
+    settlement_currency: Currency,
     ts_event: u64,
 ) -> PositionEvent {
     PositionEvent::PositionChanged(PositionChanged {
@@ -1237,12 +1529,12 @@ fn changed_position_event(
         peak_quantity: Quantity::from("1"),
         last_qty: Quantity::from("1"),
         last_px: Price::from("1.0"),
-        currency: Currency::USDC(),
+        currency: settlement_currency,
         avg_px_open: 1.0,
         avg_px_close: None,
         realized_return: 0.0,
-        realized_pnl: Some(Money::new(cumulative_pnl, Currency::USDC())),
-        unrealized_pnl: Money::new(0.0, Currency::USDC()),
+        realized_pnl: Some(Money::new(cumulative_pnl, settlement_currency)),
+        unrealized_pnl: Money::new(0.0, settlement_currency),
         event_id: UUID4::default(),
         ts_opened: ts_event.into(),
         ts_event: ts_event.into(),

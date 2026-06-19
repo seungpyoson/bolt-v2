@@ -240,8 +240,8 @@ transport_backend = "sockudo"
 
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
-signature_type = "poly_proxy"
-funder = "0x1111111111111111111111111111111111111111"
+signature_type = "poly_gnosis_safe"
+funder = "0xA3a5E9c062331237E5f1403b2bba7A184e5de983"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"

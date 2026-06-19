@@ -27,9 +27,8 @@ const CHAINLINK_TEST_FEED_ID_PRIMARY: &str =
 const CHAINLINK_TEST_FEED_ID_SECONDARY: &str =
     "0x2222222222222222222222222222222222222222222222222222222222222222";
 
-/// Shipped per-asset binary-oracle strategy files. One strategy instance per
-/// underlying asset, each subscribing its own Chainlink resolution feed via
-/// `[resolution_data]`.
+/// Shipped per-asset binary-oracle strategy files. The tracked production root
+/// may enable only a subset, but every shipped strategy must keep validating.
 const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
     "config/strategies/binary_oracle_btc.toml",
     "config/strategies/binary_oracle_eth.toml",
@@ -38,6 +37,9 @@ const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
     "config/strategies/binary_oracle_xrp.toml",
     "config/strategies/binary_oracle_doge.toml",
 ];
+const TRACKED_PRODUCTION_BINARY_ORACLE_STRATEGY_FILES: &[&str] =
+    &["config/strategies/binary_oracle_btc.toml"];
+const PLACEHOLDER_POLYMARKET_FUNDER: &str = "0x1111111111111111111111111111111111111111";
 
 fn assert_binary_oracle_entry_order_shape_rejected(messages: &[String], case_name: &str) {
     assert!(
@@ -384,6 +386,73 @@ fn shipped_polyresearch_reference_config_uses_verified_gateway_endpoint() {
         assert_ne!(
             endpoint, RETIRED_ENDPOINT,
             "{relative_path} must not point PolyResearch at the retired endpoint that returns 401"
+        );
+    }
+}
+
+#[test]
+fn tracked_root_is_btc_only_live_profile() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("tracked root should load");
+
+    assert_eq!(
+        loaded.root.strategy_files,
+        vec!["strategies/binary_oracle_btc.toml".to_string()],
+        "tracked production root must enable only the BTC live strategy"
+    );
+    let surfaces = loaded
+        .root
+        .realized_volatility_surfaces
+        .as_ref()
+        .expect("tracked root must declare realized volatility surfaces");
+    assert_eq!(
+        surfaces.keys().cloned().collect::<Vec<_>>(),
+        vec!["btc_usdt_midpoint_rv".to_string()],
+        "tracked production root must carry only the BTC RV surface"
+    );
+}
+
+#[test]
+fn shipped_roots_use_polymarket_safe_profile_without_placeholder_collateral() {
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let parsed = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let execution = parsed
+            .get("clients")
+            .and_then(|value| value.get("polymarket_main"))
+            .and_then(|value| value.get("execution"))
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| {
+                panic!("{relative_path} should declare clients.polymarket_main.execution")
+            });
+        let funder = execution
+            .get("funder")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("{relative_path} Polymarket execution must declare funder"));
+
+        assert_eq!(
+            execution
+                .get("signature_type")
+                .and_then(toml::Value::as_str),
+            Some("poly_gnosis_safe"),
+            "{relative_path} must use the live Polymarket safe signature type"
+        );
+        assert_eq!(
+            funder.len(),
+            42,
+            "{relative_path} Polymarket funder must be an EVM address"
+        );
+        assert_ne!(
+            funder, PLACEHOLDER_POLYMARKET_FUNDER,
+            "{relative_path} must not ship the placeholder Polymarket funder"
+        );
+        assert!(
+            !execution.contains_key("on_chain_collateral"),
+            "{relative_path} must not ship placeholder on-chain collateral config"
         );
     }
 }
@@ -806,8 +875,8 @@ fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_voc
         bolt_v3_validate::validate_strategies,
     };
 
-    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\nfee_cache_ttl_secs = 300\ntransport_backend = \"sockudo\"\n\n";
-    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(execution_block, ""))
+    let execution_block = fixture_polymarket_execution_block();
+    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(&execution_block, ""))
         .expect("data-only polymarket fixture should parse");
     let strategy: BoltV3StrategyConfig = toml::from_str(
         &std::fs::read_to_string(support::repo_path(
@@ -5100,13 +5169,15 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
             support::repo_path(relative_path).exists(),
             "tracked per-asset strategy config should live at {relative_path}"
         );
+    }
+    for relative_path in TRACKED_PRODUCTION_BINARY_ORACLE_STRATEGY_FILES {
         // Strip the `config/` prefix to the root-relative `strategy_files` form.
         let root_relative = relative_path
             .strip_prefix("config/")
             .expect("shipped strategy path should be under config/");
         assert!(
             root.contains(&format!("\"{root_relative}\"")),
-            "root config should load the per-asset strategy path {root_relative}"
+            "root config should load the tracked production strategy path {root_relative}"
         );
     }
     assert!(
@@ -6587,6 +6658,42 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
         "fixture must contain `{needle}` for this validation test to mutate"
     );
     fixture.replace(needle, replacement)
+}
+
+fn fixture_polymarket_execution_block() -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let start = fixture
+        .find("[clients.polymarket_main.execution]\n")
+        .expect("fixture should contain Polymarket execution block");
+    let rest = &fixture[start..];
+    let end = rest
+        .find("\n[clients.polymarket_main.secrets]")
+        .expect("fixture should contain Polymarket secrets block after execution");
+    rest[..end + 1].to_string()
+}
+
+fn replace_fixture_root_line_with_prefix(prefix: &str, replacement: Option<&str>) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mut hits = 0usize;
+    let rewritten = fixture
+        .lines()
+        .filter_map(|line| {
+            if line.trim_start().starts_with(prefix) {
+                hits += 1;
+                replacement.map(str::to_string)
+            } else {
+                Some(line.to_string())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        hits, 1,
+        "fixture must contain exactly one line starting with `{prefix}`"
+    );
+    rewritten
 }
 
 fn fixture_root_with_order_execution_mode(mode: &str) -> String {
@@ -8316,9 +8423,9 @@ fn rejects_ssm_paths_with_leading_or_trailing_whitespace() {
 fn rejects_polymarket_funder_with_invalid_evm_syntax() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "funder = \"0x1111111111111111111111111111111111111111\"",
-        "funder = \"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\"",
+    let mutated = replace_fixture_root_line_with_prefix(
+        "funder = ",
+        Some("funder = \"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\""),
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("invalid-funder fixture should parse");
@@ -8335,9 +8442,9 @@ fn rejects_polymarket_funder_with_invalid_evm_syntax() {
 fn rejects_polymarket_funder_zero_address() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "funder = \"0x1111111111111111111111111111111111111111\"",
-        "funder = \"0x0000000000000000000000000000000000000000\"",
+    let mutated = replace_fixture_root_line_with_prefix(
+        "funder = ",
+        Some("funder = \"0x0000000000000000000000000000000000000000\""),
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("zero-funder fixture should parse");
@@ -8351,13 +8458,10 @@ fn rejects_polymarket_funder_zero_address() {
 }
 
 #[test]
-fn rejects_missing_funder_for_poly_proxy_signature_type() {
+fn rejects_missing_funder_for_proxy_or_safe_signature_type() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "funder = \"0x1111111111111111111111111111111111111111\"\n",
-        "",
-    );
+    let mutated = replace_fixture_root_line_with_prefix("funder = ", None);
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("missing-funder fixture should parse");
     let messages = validate_root_only(&root);
@@ -8373,12 +8477,9 @@ fn rejects_missing_funder_for_poly_proxy_signature_type() {
 fn allows_missing_funder_for_eoa_signature_type() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let without_funder = replace_in_fixture_root(
-        "funder = \"0x1111111111111111111111111111111111111111\"\n",
-        "",
-    );
+    let without_funder = replace_fixture_root_line_with_prefix("funder = ", None);
     let with_eoa = without_funder.replace(
-        "signature_type = \"poly_proxy\"",
+        "signature_type = \"poly_gnosis_safe\"",
         "signature_type = \"eoa\"",
     );
     let root: BoltV3RootConfig =
@@ -8413,8 +8514,8 @@ fn rejects_binance_data_zero_instrument_status_poll_secs() {
 fn rejects_polymarket_data_only_client_with_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\nfee_cache_ttl_secs = 300\ntransport_backend = \"sockudo\"\n\n";
-    let mutated = replace_in_fixture_root(execution_block, "");
+    let execution_block = fixture_polymarket_execution_block();
+    let mutated = replace_in_fixture_root(&execution_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
     let messages = validate_root_only(&root);

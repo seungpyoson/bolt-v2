@@ -421,8 +421,14 @@ mod tests {
         // equal and fail the inequality.
         let yes = make_leg_identity("001", "eth-hourly", "market-a", Leg::Yes, 3);
         let no = make_leg_identity("001", "eth-hourly", "market-a", Leg::No, 3);
-        assert_eq!(yes.client_order_id().as_str(), "001-eth-hourly-market-a-yes-3");
-        assert_eq!(no.client_order_id().as_str(), "001-eth-hourly-market-a-no-3");
+        assert_eq!(
+            yes.client_order_id().as_str(),
+            "001-eth-hourly-market-a-yes-3"
+        );
+        assert_eq!(
+            no.client_order_id().as_str(),
+            "001-eth-hourly-market-a-no-3"
+        );
         assert_ne!(yes.client_order_id(), no.client_order_id());
         assert_eq!(yes.generation(), 3);
         assert_eq!(

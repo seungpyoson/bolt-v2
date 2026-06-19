@@ -225,7 +225,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 [[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
 resolution_identity = "configured-reference-price"
 value_kind = "price"
-feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
 report_schema_version = 3
 report_decimal_scale = 18
 
@@ -257,8 +257,9 @@ transport_backend = "sockudo"
 
 [clients.polymarket_main.execution]
 account_id = "POLYMARKET-001"
-signature_type = "poly_proxy"
-funder = "0x1111111111111111111111111111111111111111"
+signature_type = "poly_gnosis_safe"
+# Synthetic fixture-only address; the live root carries the production Safe funder.
+funder = "0xf1c7000000000000000000000000000000000001"
 base_url_http = "https://clob.polymarket.com"
 base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
 base_url_data_api = "https://data-api.polymarket.com"
@@ -324,7 +325,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 venue = "POLYRESEARCH_REFERENCE_PRICE"
 
 [clients.polyresearch_reference.data]
-websocket_endpoint = "wss://ws.polynode.dev/ws"
+websocket_endpoint = "wss://3j5lx6otd8.execute-api.eu-west-1.amazonaws.com/prod"
 transport_backend = "sockudo"
 heartbeat_secs = 5
 heartbeat_message = "{\"action\":\"ping\"}"

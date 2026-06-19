@@ -1,4 +1,4 @@
-name: Require reviewer node
+name: Required reviewer approval gate
 
 on:
   pull_request:
@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   require-reviewer-node:
-    name: reviewer node_id status publisher
+    name: publish approval status
     if: >-
       ${{ github.event.pull_request.base.ref == 'main'
           && github.event.pull_request.draft == false }}
@@ -52,7 +52,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           # Required merge context. This is a commit status, not the Actions job
           # name, so newer approval events replace older failed approval states.
-          REVIEWER_GATE_STATUS_CONTEXT: reviewer node_id approved
+          REVIEWER_GATE_STATUS_CONTEXT: required reviewer approved
           # Policy identity constant: the required human reviewer. Hardcoded
           # intentionally because PR-editable config must not select the reviewer.
           REQUIRED_REVIEWER_NODE_ID: U_kgDOEZMFhA

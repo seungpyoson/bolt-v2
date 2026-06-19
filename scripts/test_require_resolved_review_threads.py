@@ -162,8 +162,9 @@ def assert_graphql_errors_fail_closed_at_extract_boundary() -> None:
 
 def assert_workflow_uses_base_script_and_review_thread_events() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "Require resolved review threads" in workflow
-    assert "review threads resolved" in workflow
+    assert "Required reviewer resolution gate" in workflow
+    assert "verify review threads are resolved" in workflow
+    assert "Require resolved review threads" not in workflow
     assert "pull_request_review_comment" in workflow
     assert "GitHub Actions does not expose review-thread resolved or reopened events" in workflow
     assert "Native conversation resolution is authoritative at merge" in workflow

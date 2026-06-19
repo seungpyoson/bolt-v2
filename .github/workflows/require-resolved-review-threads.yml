@@ -1,4 +1,4 @@
-name: Require resolved review threads
+name: Required reviewer resolution gate
 
 on:
   pull_request:
@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   require-resolved-review-threads:
-    name: review threads resolved
+    name: verify review threads are resolved
     if: >-
       ${{ github.event.pull_request.base.ref == 'main'
           && github.event.pull_request.draft == false }}

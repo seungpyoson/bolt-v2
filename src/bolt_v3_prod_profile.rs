@@ -251,15 +251,16 @@ fn profile_basename(path: &Path) -> String {
 }
 
 fn validate_profile_path_shape(path: &Path) -> Result<(), ProfileError> {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    let parent_name = path
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err(ProfileError::InvalidProfilePath(path.to_path_buf()));
+    };
+    let Some(parent_name) = path
         .parent()
         .and_then(Path::file_name)
         .and_then(|name| name.to_str())
-        .unwrap_or_default();
+    else {
+        return Err(ProfileError::InvalidProfilePath(path.to_path_buf()));
+    };
     if parent_name == "profiles" && file_name.ends_with(".overlay.toml") {
         Ok(())
     } else {

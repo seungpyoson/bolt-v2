@@ -196,11 +196,11 @@ def assert_commit_status_payload_is_latest_wins_context() -> None:
     failed = decision([requested_user("sp-reviewer")], [])
     failed_payload = module.commit_status_payload(
         result=failed,
-        context="reviewer node_id approved",
+        context="required reviewer approved",
         target_url="https://github.test/run",
     )
     assert failed_payload["state"] == "failure"
-    assert failed_payload["context"] == "reviewer node_id approved"
+    assert failed_payload["context"] == "required reviewer approved"
     assert failed_payload["target_url"] == "https://github.test/run"
     assert "approval" in failed_payload["description"]
     assert len(failed_payload["description"]) <= 140
@@ -208,11 +208,11 @@ def assert_commit_status_payload_is_latest_wins_context() -> None:
     approved = decision([], [review("sp-reviewer", "APPROVED", 10)])
     approved_payload = module.commit_status_payload(
         result=approved,
-        context="reviewer node_id approved",
+        context="required reviewer approved",
         target_url=None,
     )
     assert approved_payload["state"] == "success"
-    assert approved_payload["context"] == "reviewer node_id approved"
+    assert approved_payload["context"] == "required reviewer approved"
     assert "target_url" not in approved_payload
     assert "approved" in approved_payload["description"]
 
@@ -247,7 +247,7 @@ def assert_status_mode_posts_failure_without_failing_job() -> None:
                     "GITHUB_SERVER_URL": "https://github.test",
                     "GITHUB_TOKEN": "token",
                     "REQUIRED_REVIEWER_NODE_ID": "U_kgDOEZMFhA",
-                    "REVIEWER_GATE_STATUS_CONTEXT": "reviewer node_id approved",
+                    "REVIEWER_GATE_STATUS_CONTEXT": "required reviewer approved",
                 }
             )
             module._get_json = fake_get_json
@@ -266,28 +266,27 @@ def assert_status_mode_posts_failure_without_failing_job() -> None:
     status_url, status_payload = posted[0]
     assert status_url == "https://api.github.test/repos/owner/repo/statuses/current-head"
     assert status_payload["state"] == "failure"
-    assert status_payload["context"] == "reviewer node_id approved"
+    assert status_payload["context"] == "required reviewer approved"
     assert status_payload["target_url"] == "https://github.test/owner/repo/actions/runs/12345"
 
 
-def assert_workflow_documents_bootstrap_and_requires_node_id() -> None:
+def assert_workflow_uses_base_script_and_requires_node_id() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "name: reviewer node_id status publisher" in workflow
-    assert "name: reviewer node_id approved" not in workflow
+    assert "name: publish approval status" in workflow
+    assert "name: required reviewer approved" not in workflow
+    assert "name: reviewer node_id status publisher" not in workflow
     assert "statuses: write" in workflow
-    assert "reviewer node_id approved" in workflow
+    assert "required reviewer approved" in workflow
     assert "reviewer node_id requested or approved" not in workflow
-    assert "REVIEWER_GATE_STATUS_CONTEXT: reviewer node_id approved" in workflow
+    assert "REVIEWER_GATE_STATUS_CONTEXT: required reviewer approved" in workflow
     assert "Run the reviewer gate from the protected base branch" in workflow
     assert "github.event.pull_request.base.sha" in workflow
     assert "Policy identity constant" in workflow
     assert "REQUIRED_REVIEWER_NODE_ID: U_kgDOEZMFhA" in workflow
     assert "REQUIRED_REVIEWER:" not in workflow
-    assert "Bootstrap reviewer gate script" in workflow
-    assert "test -f scripts/require_sp_reviewer.py" in workflow
-    assert "github.event.pull_request.head.sha" in workflow
-    assert "this introducing PR is not protected by this new check" in workflow
-    assert "Remove this block after scripts/require_sp_reviewer.py exists on main" in workflow
+    assert "Bootstrap reviewer gate script" not in workflow
+    assert "test -f scripts/require_sp_reviewer.py" not in workflow
+    assert "Remove this block after scripts/require_sp_reviewer.py exists on main" not in workflow
 
 
 def assert_codeowners_requires_sp_reviewer_for_all_paths() -> None:
@@ -311,7 +310,7 @@ def main() -> int:
     assert_current_head_approval_passes()
     assert_commit_status_payload_is_latest_wins_context()
     assert_status_mode_posts_failure_without_failing_job()
-    assert_workflow_documents_bootstrap_and_requires_node_id()
+    assert_workflow_uses_base_script_and_requires_node_id()
     assert_codeowners_requires_sp_reviewer_for_all_paths()
     print("OK: required reviewer gate self-tests passed.")
     return 0

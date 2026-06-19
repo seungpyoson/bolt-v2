@@ -1,4 +1,4 @@
-name: Require resolved review threads
+name: Required reviewer resolution gate
 
 on:
   pull_request:
@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   require-resolved-review-threads:
-    name: review threads resolved
+    name: verify review threads are resolved
     if: >-
       ${{ github.event.pull_request.base.ref == 'main'
           && github.event.pull_request.draft == false }}
@@ -45,21 +45,6 @@ jobs:
           # the main ruleset must require sp-reviewer approval for workflow edits.
           repository: ${{ github.event.pull_request.base.repo.full_name }}
           ref: ${{ github.event.pull_request.base.sha }}
-
-      - name: Bootstrap review-thread gate script
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if test -f scripts/require_resolved_review_threads.py; then
-            exit 0
-          fi
-
-          # Bootstrap-only path for the PR that first introduces this workflow.
-          # Trust model: this introducing PR is not protected by this new check;
-          # normal branch protection and human review remain the merge gate.
-          # Remove this block after scripts/require_resolved_review_threads.py exists on main.
-          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
-          git checkout --force FETCH_HEAD -- scripts/require_resolved_review_threads.py
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:

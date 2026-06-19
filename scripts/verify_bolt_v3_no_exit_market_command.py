@@ -46,17 +46,53 @@ FORBIDDEN_RULES = (
         "NT venue-mutating lifecycle API",
         re.compile(
             r"(?:\.|::)\s*(?:r#)?"
-            r"(?:market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_order|exit_market|market_exit)"
+            r"(?P<api>market_exit_strategy|submit_order_list|close_all_positions|cancel_all_orders|close_position|cancel_orders|modify_order|exit_market|market_exit)"
             r"(?![A-Za-z0-9_])"
         ),
     ),
 )
 
-ALLOWED_CANCEL_ALL_POLICY_PATHS = frozenset(
+# The shared execution-policy module IS Bolt's venue-mutation chokepoint: every
+# call here is routed through the shadow-mode `BoltV3OrderExecutionPolicy` gate
+# (Live -> NT, Shadow -> suppressed), so a venue-mutating lifecycle API used here
+# is enforced BY shadow mode, not a bypass of it. Only the specific APIs Bolt
+# routes through that gate are exempt, and only in this one file; every other
+# forbidden API (close_position, market_exit, ...) still fails even here, and any
+# of these APIs anywhere else still fails. Keyed by the routed-API name so adding
+# a new routed mutation (e.g. modify_order alongside cancel_all_orders) is an
+# explicit one-line allowlist entry, never a blanket file exemption.
+CHOKEPOINT_POLICY_PATH = "src/bolt_v3_order_execution.rs"
+ALLOWED_CHOKEPOINT_APIS = frozenset(
     {
-        "src/bolt_v3_order_execution.rs",
+        "cancel_all_orders",
+        "modify_order",
     }
 )
+
+
+def is_routed_chokepoint_api(api: str) -> bool:
+    """Return True only for an EXACT routed-chokepoint API name.
+
+    The decision is exact set membership, never a substring test. A name such as
+    `force_modify_order` or `cancel_all_orders_bypass` embeds an allowed name as a
+    substring but is a DIFFERENT, unrouted API; this returns False for it so the
+    chokepoint exemption stays per-API.
+
+    Scope of what this guards: this exact-match form is FORWARD-PROOFING of the
+    chokepoint-exemption contract, not a fix for a currently-reachable bypass. In
+    `find_violations_in_text`, `match.group("api")` is supplied by the forbidden
+    lifecycle regex, whose `(?:\\.|::)` prefix and `(?![A-Za-z0-9_])` suffix make the
+    capture ALWAYS exactly one of the listed API tokens — an impostor name like
+    `force_modify_order` can never reach this function through the real pipeline
+    (the regex boundary already rejects it; that path is covered by the
+    substring/comment boundary test). So a prior substring form was not exploitable
+    via the pipeline. What this function adds is a directly unit-tested,
+    self-contained exemption contract: `is_routed_chokepoint_api` is asserted on its
+    own (the impostor cases below document and forward-proof the contract), so the
+    chokepoint allowlist can't silently widen to a near-miss name if the regex ever
+    changes.
+    """
+    return api in ALLOWED_CHOKEPOINT_APIS
 
 
 def line_number(text: str, pos: int) -> int:
@@ -70,8 +106,8 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
         for match in rule.pattern.finditer(scan_text):
             if (
                 rule.label == "NT venue-mutating lifecycle API"
-                and path in ALLOWED_CANCEL_ALL_POLICY_PATHS
-                and "cancel_all_orders" in match.group(0)
+                and path == CHOKEPOINT_POLICY_PATH
+                and is_routed_chokepoint_api(match.group("api"))
             ):
                 continue
             line_start = text.rfind("\n", 0, match.start()) + 1

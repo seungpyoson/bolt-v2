@@ -189,10 +189,13 @@ pub struct MakerRuntime {
 }
 
 impl MakerRuntime {
-    /// A runtime with no active markets. Explicit (no `Default`) per the bolt-v3
-    /// legacy-default fence.
+    /// A runtime with no active markets. Named `empty` rather than `new` because
+    /// the bolt-v3 legacy-default fence forbids a `Default` impl on the production
+    /// surface, so a no-argument `new` would trip `clippy::new_without_default`
+    /// with no sanctioned way to satisfy it; an explicit named constructor is the
+    /// repo idiom.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn empty() -> Self {
         Self {
             markets: BTreeMap::new(),
         }

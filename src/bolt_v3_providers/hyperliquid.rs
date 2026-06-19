@@ -6,6 +6,7 @@
 
 use std::{
     any::Any,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     str::FromStr,
     sync::{Arc, Mutex},
@@ -60,8 +61,8 @@ use crate::{
         ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderLiveSubmitArmingPreflight, ProviderLiveSubmitOrderLimits,
         ProviderProductSubmitProofArtifactRequest, ProviderSecretRequirement,
-        ProviderSecretResolveContext, ProviderSharedSignerOwnerContext, ProviderSsmPathReference,
-        ResolvedClientSecrets, SsmSecretResolver,
+        ProviderSecretResolveContext, ProviderSsmPathReference, ResolvedClientSecrets,
+        SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     strategies::registry::FeeProvider,
@@ -137,14 +138,7 @@ pub struct HyperliquidExecutionConfig {
     pub environment: HyperliquidEnvironment,
     pub execution_mode: HyperliquidExecutionMode,
     pub product_surfaces: Vec<HyperliquidProductSurface>,
-    pub live_submit_approval_id: Option<String>,
-    pub live_submit_approval_artifact_path: Option<String>,
-    pub live_submit_approval_artifact_max_bytes: Option<u64>,
-    pub live_submit_max_order_count: Option<u32>,
-    pub live_submit_max_order_notional: Option<String>,
-    pub live_submit_product_proof_artifact_path: Option<String>,
-    pub live_submit_product_proof_artifact_sha256: Option<String>,
-    pub live_submit_product_proof_artifact_max_bytes: Option<u64>,
+    pub live_submit: Option<BTreeMap<HyperliquidProductSurface, HyperliquidLiveSubmitConfig>>,
     pub base_url_ws: String,
     pub base_url_http: String,
     pub base_url_exchange: String,
@@ -162,6 +156,19 @@ pub struct HyperliquidExecutionConfig {
     pub latency_profile: Option<HyperliquidLatencyProfileConfig>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HyperliquidLiveSubmitConfig {
+    pub approval_id: String,
+    pub approval_artifact_path: String,
+    pub approval_artifact_max_bytes: u64,
+    pub max_order_count: u32,
+    pub max_order_notional: String,
+    pub product_proof_artifact_path: String,
+    pub product_proof_artifact_sha256: String,
+    pub product_proof_artifact_max_bytes: u64,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidLatencyProfileConfig {
@@ -170,14 +177,14 @@ pub struct HyperliquidLatencyProfileConfig {
     pub measurement_artifact_path: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum HyperliquidEnvironment {
     Mainnet,
     Testnet,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum HyperliquidExecutionMode {
     DirectAccount,
@@ -186,7 +193,7 @@ pub enum HyperliquidExecutionMode {
     SubaccountApiWallet,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum HyperliquidProductSurface {
     StandardPerps,
@@ -572,20 +579,26 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
             "clients.{key}.execution.product_surfaces must select at least one Hyperliquid product surface"
         ));
     }
-    if let Some(approval_id) = &execution.live_submit_approval_id
-        && approval_id.trim().is_empty()
-    {
-        errors.push(format!(
-            "clients.{key}.execution.live_submit_approval_id must be non-empty when configured"
-        ));
-    }
-    if execution.live_submit_approval_id.is_some() {
-        if execution.product_surfaces.len() != 1 {
+    if let Some(live_submit) = &execution.live_submit {
+        if live_submit.is_empty() {
             errors.push(format!(
-                "clients.{key}.execution.product_surfaces must select exactly one Hyperliquid product surface when live_submit_approval_id is configured"
+                "clients.{key}.execution.live_submit must configure at least one Hyperliquid product surface when present"
             ));
         }
-        errors.extend(validate_live_submit_approval_config(key, execution));
+        for (surface, live_submit) in live_submit {
+            if !execution.product_surfaces.contains(surface) {
+                errors.push(format!(
+                    "clients.{key}.execution.live_submit.{} requires execution.product_surfaces to include {}",
+                    product_surface_name(*surface),
+                    product_surface_name(*surface),
+                ));
+            }
+            errors.extend(validate_live_submit_approval_config(
+                key,
+                *surface,
+                live_submit,
+            ));
+        }
         errors.extend(validate_user_fees_request_weight_policy(key));
     }
     let positive_fields: &[(&str, u64)] = &[
@@ -625,54 +638,61 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
 
 fn validate_live_submit_approval_config(
     key: &str,
-    execution: &HyperliquidExecutionConfig,
+    surface: HyperliquidProductSurface,
+    live_submit: &HyperliquidLiveSubmitConfig,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    match execution.live_submit_approval_artifact_path.as_deref() {
+    let surface = product_surface_name(surface);
+    if live_submit.approval_id.trim().is_empty() {
+        errors.push(format!(
+            "clients.{key}.execution.live_submit.{surface}.approval_id must be non-empty"
+        ));
+    }
+    match Some(live_submit.approval_artifact_path.as_str()) {
         Some(path) if !path.trim().is_empty() => {}
         _ => errors.push(format!(
-            "clients.{key}.execution.live_submit_approval_artifact_path is required when live_submit_approval_id is configured"
+            "clients.{key}.execution.live_submit.{surface}.approval_artifact_path is required"
         )),
     }
-    match execution.live_submit_approval_artifact_max_bytes {
-        Some(value) if value > 0 => {}
+    match live_submit.approval_artifact_max_bytes {
+        value if value > 0 => {}
         _ => errors.push(format!(
-            "clients.{key}.execution.live_submit_approval_artifact_max_bytes must be positive when live_submit_approval_id is configured"
+            "clients.{key}.execution.live_submit.{surface}.approval_artifact_max_bytes must be positive"
         )),
     }
-    match execution.live_submit_max_order_count {
-        Some(value) if value > 0 => {}
+    match live_submit.max_order_count {
+        value if value > 0 => {}
         _ => errors.push(format!(
-            "clients.{key}.execution.live_submit_max_order_count must be positive when live_submit_approval_id is configured"
+            "clients.{key}.execution.live_submit.{surface}.max_order_count must be positive"
         )),
     }
-    match execution.live_submit_max_order_notional.as_deref() {
+    match Some(live_submit.max_order_notional.as_str()) {
         Some(value) => match Decimal::from_str(value.trim()) {
             Ok(value) if value > Decimal::ZERO => {}
             _ => errors.push(format!(
-                "clients.{key}.execution.live_submit_max_order_notional must be positive decimal text when live_submit_approval_id is configured"
+                "clients.{key}.execution.live_submit.{surface}.max_order_notional must be positive decimal text"
             )),
         },
         None => errors.push(format!(
-            "clients.{key}.execution.live_submit_max_order_notional is required when live_submit_approval_id is configured"
+            "clients.{key}.execution.live_submit.{surface}.max_order_notional is required"
         )),
     }
-    match execution.live_submit_product_proof_artifact_path.as_deref() {
+    match Some(live_submit.product_proof_artifact_path.as_str()) {
         Some(path) if !path.trim().is_empty() => {}
         _ => errors.push(format!(
-            "clients.{key}.execution.live_submit_product_proof_artifact_path is required when live_submit_approval_id is configured"
+            "clients.{key}.execution.live_submit.{surface}.product_proof_artifact_path is required"
         )),
     }
-    match execution.live_submit_product_proof_artifact_sha256.as_deref() {
+    match Some(live_submit.product_proof_artifact_sha256.as_str()) {
         Some(value) if is_lowercase_sha256(value) => {}
         _ => errors.push(format!(
-            "clients.{key}.execution.live_submit_product_proof_artifact_sha256 must be lowercase sha256 when live_submit_approval_id is configured"
+            "clients.{key}.execution.live_submit.{surface}.product_proof_artifact_sha256 must be lowercase sha256"
         )),
     }
-    match execution.live_submit_product_proof_artifact_max_bytes {
-        Some(value) if value > 0 => {}
+    match live_submit.product_proof_artifact_max_bytes {
+        value if value > 0 => {}
         _ => errors.push(format!(
-            "clients.{key}.execution.live_submit_product_proof_artifact_max_bytes must be positive when live_submit_approval_id is configured"
+            "clients.{key}.execution.live_submit.{surface}.product_proof_artifact_max_bytes must be positive"
         )),
     }
     errors
@@ -686,7 +706,7 @@ fn validate_user_fees_request_weight_policy(key: &str) -> Vec<String> {
             Vec::new()
         }
         HyperliquidUserFeesRequestWeightStatus::FailClosedPinnedNtWeightMismatch => vec![format!(
-            "clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",
+            "clients.{key}.execution.live_submit cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",
             policy.request_type,
             policy.pinned_nt_info_base_weight,
             policy.official_info_request_weight
@@ -829,68 +849,128 @@ pub fn configured_secret_paths(
     Ok(paths)
 }
 
-pub fn allow_shared_signer_owner(context: ProviderSharedSignerOwnerContext<'_>) -> bool {
-    if context.existing_client_keys.len() != 1 {
-        return false;
-    }
-    let Some(existing_paths) = configured_signer_ssm_paths(
-        context.region,
-        context.existing_client_key,
-        context.existing_client,
-    ) else {
-        return false;
-    };
-    let Some(paths) =
-        configured_signer_ssm_paths(context.region, context.client_key, context.client)
-    else {
-        return false;
-    };
-    if existing_paths != paths {
-        return false;
-    }
-    let Some(existing_surface) = single_product_surface(context.existing_client) else {
-        return false;
-    };
-    let Some(surface) = single_product_surface(context.client) else {
-        return false;
-    };
-    matches!(
-        (existing_surface, surface),
-        (
-            HyperliquidProductSurface::StandardPerps,
-            HyperliquidProductSurface::Spot
-        ) | (
-            HyperliquidProductSurface::Spot,
-            HyperliquidProductSurface::StandardPerps
-        )
-    )
+struct SelectedLiveSubmitConfig<'a> {
+    surface: HyperliquidProductSurface,
+    live_submit: &'a HyperliquidLiveSubmitConfig,
 }
 
-fn configured_signer_ssm_paths(
-    region: &str,
+fn selected_live_submit_config_for_context<'a>(
+    context: &ProviderLiveSubmitApprovalContext<'_>,
+    cfg: &'a HyperliquidExecutionConfig,
+) -> Result<Option<SelectedLiveSubmitConfig<'a>>, anyhow::Error> {
+    let Some(surface) = selected_live_submit_surface_for_context(context, cfg)? else {
+        return Ok(None);
+    };
+    let Some(live_submit) = cfg.live_submit.as_ref() else {
+        return Ok(None);
+    };
+    let Some(live_submit) = live_submit.get(&surface) else {
+        return Err(hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.live_submit",
+            format!(
+                "Hyperliquid live submit surface `{}` is selected but no matching execution.live_submit block is configured",
+                product_surface_name(surface),
+            ),
+        ));
+    };
+    Ok(Some(SelectedLiveSubmitConfig {
+        surface,
+        live_submit,
+    }))
+}
+
+fn selected_live_submit_surface_for_context(
+    context: &ProviderLiveSubmitApprovalContext<'_>,
+    cfg: &HyperliquidExecutionConfig,
+) -> Result<Option<HyperliquidProductSurface>, anyhow::Error> {
+    if let Some(raw_surface) = context.product_surface {
+        let surface = parse_product_surface_name(raw_surface).ok_or_else(|| {
+            hyperliquid_adapter_validation_error(
+                context.client_key,
+                "product_surface",
+                format!("unsupported Hyperliquid product surface `{raw_surface}`"),
+            )
+        })?;
+        if !cfg.product_surfaces.contains(&surface) {
+            return Err(hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.product_surfaces",
+                format!(
+                    "selected Hyperliquid product surface `{}` is not enabled by execution.product_surfaces",
+                    product_surface_name(surface),
+                ),
+            ));
+        }
+        return Ok(Some(surface));
+    }
+
+    let plan = market_identity_plan_from_config(context.loaded).map_err(|source| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "strategy.target",
+            format!("Hyperliquid target routing is invalid: {source}"),
+        )
+    })?;
+    selected_live_submit_surface_for_plan(context.client_key, cfg, &plan)
+        .map_err(anyhow::Error::new)
+}
+
+fn selected_live_submit_surface_for_plan(
     client_key: &str,
-    client: &ClientBlock,
-) -> Option<(String, String)> {
-    let context = ProviderSecretResolveContext {
-        client_key,
-        region,
-        client,
-    };
-    parse_secrets_config(&context).ok().map(|secrets| {
-        (
-            secrets.private_key_ssm_path,
-            secrets.account_address_ssm_path,
-        )
-    })
+    cfg: &HyperliquidExecutionConfig,
+    plan: &MarketIdentityPlan,
+) -> Result<Option<HyperliquidProductSurface>, BoltV3AdapterMappingError> {
+    let surfaces = active_target_surfaces_for_client(client_key, plan);
+    if surfaces.len() > 1 {
+        let names = surfaces
+            .iter()
+            .map(|surface| product_surface_name(*surface))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "strategy.target.product_surface",
+            message: format!(
+                "Hyperliquid execution client has multiple active product surfaces ({names}); one live node may arm only one Hyperliquid product surface per execution client"
+            ),
+        });
+    }
+    if let Some(surface) = surfaces.into_iter().next() {
+        if !cfg.product_surfaces.contains(&surface) {
+            return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "execution.product_surfaces",
+                message: format!(
+                    "active Hyperliquid product surface `{}` is not enabled by execution.product_surfaces",
+                    product_surface_name(surface),
+                ),
+            });
+        }
+        return Ok(Some(surface));
+    }
+    Ok(None)
 }
 
-fn single_product_surface(client: &ClientBlock) -> Option<HyperliquidProductSurface> {
-    let execution = client.execution.clone()?;
-    let cfg: HyperliquidExecutionConfig = execution.try_into().ok()?;
-    let [surface] = cfg.product_surfaces.as_slice() else {
-        return None;
-    };
-    Some(*surface)
+fn active_target_surfaces_for_client(
+    client_key: &str,
+    plan: &MarketIdentityPlan,
+) -> BTreeSet<HyperliquidProductSurface> {
+    let mut surfaces = BTreeSet::new();
+    for target in hyperliquid_instrument::target_plans(plan)
+        .filter(|target| target.execution_client_id == client_key)
+    {
+        surfaces.insert(hyperliquid_static_instrument_surface(
+            target.product_surface,
+        ));
+    }
+    if updown::target_plans(plan).any(|target| target.execution_client_id == client_key) {
+        surfaces.insert(HyperliquidProductSurface::Hip4Outcomes);
+    }
+    if outcome_group::target_plans(plan).any(|target| target.execution_client_id == client_key) {
+        surfaces.insert(HyperliquidProductSurface::Hip4Outcomes);
+    }
+    surfaces
 }
 
 pub fn load_live_submit_approval(
@@ -906,50 +986,27 @@ pub fn load_live_submit_approval(
             format!("Hyperliquid execution config is invalid: {source}"),
         )
     })?;
-    let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
+    let Some(selected) = selected_live_submit_config_for_context(&context, &cfg)? else {
         return Ok(None);
     };
     validate_target_surfaces_for_live_submit_approval(&context, &cfg)?;
-    let approval_path = cfg
-        .live_submit_approval_artifact_path
-        .as_deref()
-        .ok_or_else(|| {
-            hyperliquid_adapter_validation_error(
-                context.client_key,
-                "execution.live_submit_approval_artifact_path",
-                "Hyperliquid live submit requires a configured approval artifact path",
-            )
-        })?;
-    let approval_max_bytes = cfg.live_submit_approval_artifact_max_bytes.ok_or_else(|| {
-        hyperliquid_adapter_validation_error(
-            context.client_key,
-            "execution.live_submit_approval_artifact_max_bytes",
-            "Hyperliquid live submit requires a configured approval artifact byte cap",
-        )
-    })?;
-    let product_proof_max_bytes = cfg
-        .live_submit_product_proof_artifact_max_bytes
-        .ok_or_else(|| {
-            hyperliquid_adapter_validation_error(
-                context.client_key,
-                "execution.live_submit_product_proof_artifact_max_bytes",
-                "Hyperliquid live submit requires a configured product proof artifact byte cap",
-            )
-        })?;
+    let approval_path = selected.live_submit.approval_artifact_path.as_str();
     let resolved_path = resolve_root_relative_path(&context.loaded.root_path, approval_path);
-    let binding = live_submit_approval_binding(&context, &cfg)?;
+    let binding = live_submit_approval_binding(&context, selected.surface, selected.live_submit)?;
     validate_product_submit_proof_artifact(
         context.client_key,
         &context.loaded.root_path,
         &binding,
-        product_proof_max_bytes,
+        selected.live_submit.product_proof_artifact_max_bytes,
     )?;
-    let mut approval =
-        read_hyperliquid_live_submit_approval_artifact(&resolved_path, approval_max_bytes)?;
+    let mut approval = read_hyperliquid_live_submit_approval_artifact(
+        &resolved_path,
+        selected.live_submit.approval_artifact_max_bytes,
+    )?;
     let consumed = consume_hyperliquid_live_submit_approval_artifact(
         &mut approval,
         &binding,
-        expected_approval_id,
+        &selected.live_submit.approval_id,
         context.now_unix_seconds,
     )?;
     persist_consumed_hyperliquid_live_submit_approval_artifact(&resolved_path, &approval)?;
@@ -979,56 +1036,33 @@ pub fn preflight_live_submit_arming(
             format!("Hyperliquid execution config is invalid: {source}"),
         )
     })?;
-    let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
+    let Some(selected) = selected_live_submit_config_for_context(&context, &cfg)? else {
         return Ok(None);
     };
     validate_target_surfaces_for_live_submit_approval(&context, &cfg)?;
-    let approval_path = cfg
-        .live_submit_approval_artifact_path
-        .as_deref()
-        .ok_or_else(|| {
-            hyperliquid_adapter_validation_error(
-                context.client_key,
-                "execution.live_submit_approval_artifact_path",
-                "Hyperliquid live submit requires a configured approval artifact path",
-            )
-        })?;
-    let approval_max_bytes = cfg.live_submit_approval_artifact_max_bytes.ok_or_else(|| {
-        hyperliquid_adapter_validation_error(
-            context.client_key,
-            "execution.live_submit_approval_artifact_max_bytes",
-            "Hyperliquid live submit requires a configured approval artifact byte cap",
-        )
-    })?;
-    let product_proof_max_bytes = cfg
-        .live_submit_product_proof_artifact_max_bytes
-        .ok_or_else(|| {
-            hyperliquid_adapter_validation_error(
-                context.client_key,
-                "execution.live_submit_product_proof_artifact_max_bytes",
-                "Hyperliquid live submit requires a configured product proof artifact byte cap",
-            )
-        })?;
+    let approval_path = selected.live_submit.approval_artifact_path.as_str();
     let resolved_path = resolve_root_relative_path(&context.loaded.root_path, approval_path);
-    let binding = live_submit_approval_binding(&context, &cfg)?;
+    let binding = live_submit_approval_binding(&context, selected.surface, selected.live_submit)?;
     validate_product_submit_proof_artifact(
         context.client_key,
         &context.loaded.root_path,
         &binding,
-        product_proof_max_bytes,
+        selected.live_submit.product_proof_artifact_max_bytes,
     )?;
-    let approval =
-        read_hyperliquid_live_submit_approval_artifact(&resolved_path, approval_max_bytes)?;
+    let approval = read_hyperliquid_live_submit_approval_artifact(
+        &resolved_path,
+        selected.live_submit.approval_artifact_max_bytes,
+    )?;
     validate_hyperliquid_live_submit_approval_artifact(
         Some(&approval),
         &binding,
         context.now_unix_seconds,
     )
     .map_err(anyhow::Error::new)?;
-    if approval.approval_id != expected_approval_id {
+    if approval.approval_id != selected.live_submit.approval_id {
         return Err(hyperliquid_adapter_validation_error(
             context.client_key,
-            "execution.live_submit_approval_id",
+            "execution.live_submit.approval_id",
             "Hyperliquid live-submit approval artifact id does not match configured approval id",
         ));
     }
@@ -1061,45 +1095,27 @@ pub fn write_configured_live_submit_approval_artifact(
             format!("Hyperliquid execution config is invalid: {source}"),
         )
     })?;
-    let approval_id = cfg.live_submit_approval_id.as_deref().ok_or_else(|| {
+    let selected = selected_live_submit_config_for_context(&context, &cfg)?.ok_or_else(|| {
         hyperliquid_adapter_validation_error(
             context.client_key,
-            "execution.live_submit_approval_id",
-            "Hyperliquid approval materialization requires configured live_submit_approval_id",
+            "execution.live_submit",
+            "Hyperliquid approval materialization requires a selected live-submit product surface",
         )
     })?;
-    let approval_path = cfg
-        .live_submit_approval_artifact_path
-        .as_deref()
-        .ok_or_else(|| {
-            hyperliquid_adapter_validation_error(
-                context.client_key,
-                "execution.live_submit_approval_artifact_path",
-                "Hyperliquid approval materialization requires configured approval artifact path",
-            )
-        })?;
-    match cfg.live_submit_approval_artifact_max_bytes {
-        Some(value) if value > 0 => {}
-        _ => {
-            return Err(hyperliquid_adapter_validation_error(
-                context.client_key,
-                "execution.live_submit_approval_artifact_max_bytes",
-                "Hyperliquid approval materialization requires configured approval artifact byte cap",
-            ));
-        }
-    }
+    validate_target_surfaces_for_live_submit_approval(&context, &cfg)?;
+    let approval_path = selected.live_submit.approval_artifact_path.as_str();
     if expires_at_unix_seconds <= context.now_unix_seconds {
         return Err(hyperliquid_adapter_validation_error(
             context.client_key,
-            "execution.live_submit_approval_id",
+            "execution.live_submit.approval_id",
             "Hyperliquid approval materialization requires expires_at_unix_seconds after the current time",
         ));
     }
     let resolved_path = resolve_root_relative_path(&context.loaded.root_path, approval_path);
-    let binding = live_submit_approval_binding(&context, &cfg)?;
+    let binding = live_submit_approval_binding(&context, selected.surface, selected.live_submit)?;
     write_hyperliquid_live_submit_approval_artifact(
         HyperliquidLiveSubmitApprovalInput {
-            approval_id: approval_id.to_string(),
+            approval_id: selected.live_submit.approval_id.clone(),
             base_sha: binding.base_sha,
             provider_id: binding.provider_id,
             product_surface: binding.product_surface,
@@ -1150,65 +1166,25 @@ fn product_submit_proof_evidence_ref(
 
 fn live_submit_approval_binding(
     context: &ProviderLiveSubmitApprovalContext<'_>,
-    cfg: &HyperliquidExecutionConfig,
+    product_surface: HyperliquidProductSurface,
+    live_submit: &HyperliquidLiveSubmitConfig,
 ) -> Result<HyperliquidLiveSubmitApprovalBinding, anyhow::Error> {
-    let [product_surface] = cfg.product_surfaces.as_slice() else {
-        return Err(hyperliquid_adapter_validation_error(
-            context.client_key,
-            "execution.product_surfaces",
-            "Hyperliquid live submit requires exactly one product surface per execution client",
-        ));
-    };
     let secrets = secrets_for(context.client_key, context.resolved)?;
-    let max_order_count = cfg.live_submit_max_order_count.ok_or_else(|| {
-        hyperliquid_adapter_validation_error(
-            context.client_key,
-            "execution.live_submit_max_order_count",
-            "Hyperliquid live submit requires configured max order count",
-        )
-    })?;
-    let max_order_notional = cfg.live_submit_max_order_notional.clone().ok_or_else(|| {
-        hyperliquid_adapter_validation_error(
-            context.client_key,
-            "execution.live_submit_max_order_notional",
-            "Hyperliquid live submit requires configured max order notional",
-        )
-    })?;
-    let product_proof_artifact_path = cfg
-        .live_submit_product_proof_artifact_path
-        .clone()
-        .ok_or_else(|| {
-            hyperliquid_adapter_validation_error(
-                context.client_key,
-                "execution.live_submit_product_proof_artifact_path",
-                "Hyperliquid live submit requires configured product proof artifact path",
-            )
-        })?;
-    let product_proof_artifact_sha256 = cfg
-        .live_submit_product_proof_artifact_sha256
-        .clone()
-        .ok_or_else(|| {
-            hyperliquid_adapter_validation_error(
-                context.client_key,
-                "execution.live_submit_product_proof_artifact_sha256",
-                "Hyperliquid live submit requires configured product proof artifact sha256",
-            )
-        })?;
     Ok(HyperliquidLiveSubmitApprovalBinding {
         base_sha: context.build_head_sha.to_string(),
         provider_id: context.client_key.to_string(),
-        product_surface: *product_surface,
+        product_surface,
         toml_checksum: context.loaded.config_bundle_checksum.clone(),
         signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(
             secrets.private_key.as_str(),
         ),
         order_limits: HyperliquidLiveSubmitOrderLimits {
-            max_order_count,
-            max_order_notional,
+            max_order_count: live_submit.max_order_count,
+            max_order_notional: live_submit.max_order_notional.clone(),
         },
         product_submit_proof: HyperliquidProductSubmitProofBinding {
-            artifact_path: product_proof_artifact_path,
-            artifact_sha256: product_proof_artifact_sha256,
+            artifact_path: live_submit.product_proof_artifact_path.clone(),
+            artifact_sha256: live_submit.product_proof_artifact_sha256.clone(),
         },
     })
 }
@@ -1513,23 +1489,19 @@ fn validate_target_surfaces(
     cfg: &HyperliquidExecutionConfig,
     plan: &MarketIdentityPlan,
 ) -> Result<(), BoltV3AdapterMappingError> {
-    let [configured_surface] = cfg.product_surfaces.as_slice() else {
-        return Ok(());
-    };
     for target in hyperliquid_instrument::target_plans(plan)
         .filter(|target| target.execution_client_id == client_key)
     {
         let target_surface = hyperliquid_static_instrument_surface(target.product_surface);
-        if target_surface != *configured_surface {
+        if !cfg.product_surfaces.contains(&target_surface) {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
                 client_key: client_key.to_string(),
                 field: "strategy.target.product_surface",
                 message: format!(
-                    "configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",
+                    "configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces does not include it",
                     target.configured_target_id,
                     hyperliquid_static_instrument_surface_name(target.product_surface),
                     target.execution_client_id,
-                    product_surface_name(*configured_surface),
                 ),
             });
         }
@@ -1537,18 +1509,20 @@ fn validate_target_surfaces(
     for target in
         updown::target_plans(plan).filter(|target| target.execution_client_id == client_key)
     {
-        if *configured_surface != HyperliquidProductSurface::Hip4Outcomes {
+        if !cfg
+            .product_surfaces
+            .contains(&HyperliquidProductSurface::Hip4Outcomes)
+        {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
                 client_key: client_key.to_string(),
                 field: "strategy.target.rotating_market_family",
                 message: format!(
-                    "configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`",
+                    "configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}`",
                     target.configured_target_id,
                     updown::KEY,
                     target.execution_client_id,
                     updown::KEY,
                     product_surface_name(HyperliquidProductSurface::Hip4Outcomes),
-                    product_surface_name(*configured_surface),
                 ),
             });
         }
@@ -1556,17 +1530,19 @@ fn validate_target_surfaces(
     for target in
         outcome_group::target_plans(plan).filter(|target| target.execution_client_id == client_key)
     {
-        if *configured_surface != HyperliquidProductSurface::Hip4Outcomes {
+        if !cfg
+            .product_surfaces
+            .contains(&HyperliquidProductSurface::Hip4Outcomes)
+        {
             return Err(BoltV3AdapterMappingError::ValidationInvariant {
                 client_key: client_key.to_string(),
                 field: "strategy.target.rotating_market_family",
                 message: format!(
-                    "configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`",
+                    "configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}`",
                     target.configured_target_id,
                     outcome_group::KEY,
                     target.execution_client_id,
                     product_surface_name(HyperliquidProductSurface::Hip4Outcomes),
-                    product_surface_name(*configured_surface),
                 ),
             });
         }
@@ -1616,16 +1592,16 @@ fn validate_surface_live_submit_approval(
     cfg: &HyperliquidExecutionConfig,
     context: &ProviderAdapterMapContext<'_>,
 ) -> Result<(), BoltV3AdapterMappingError> {
-    let [configured_surface] = cfg.product_surfaces.as_slice() else {
+    let Some(configured_surface) =
+        selected_live_submit_surface_for_plan(client_key, cfg, context.plan)?
+    else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.product_surfaces",
-            message:
-                "Hyperliquid live submit requires exactly one product surface per execution client"
-                    .to_string(),
+            message: "Hyperliquid live submit requires exactly one active or selected product surface per execution client".to_string(),
         });
     };
-    if *configured_surface == HyperliquidProductSurface::Hip4Outcomes
+    if configured_surface == HyperliquidProductSurface::Hip4Outcomes
         && cfg.outcome_settlement_poll_secs == 0
     {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
@@ -1634,23 +1610,26 @@ fn validate_surface_live_submit_approval(
             message: "HIP-4 outcomes live submit requires positive settlement polling".to_string(),
         });
     }
-    let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
-        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+    let expected_approval_id = cfg
+        .live_submit
+        .as_ref()
+        .and_then(|live_submit| live_submit.get(&configured_surface))
+        .map(|live_submit| live_submit.approval_id.as_str())
+        .ok_or_else(|| BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
-            field: "execution.live_submit_approval_id",
+            field: "execution.live_submit",
             message: format!(
-                "{} live submit requires a configured consumed live-submit approval id",
-                product_surface_name(*configured_surface)
+                "{} live submit requires a configured execution.live_submit block",
+                product_surface_name(configured_surface)
             ),
-        });
-    };
+        })?;
     let Some(consumed_payload) = context.runtime_approvals.live_submit else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
-            field: "execution.live_submit_approval_id",
+            field: "execution.live_submit.approval_id",
             message: format!(
                 "{} live submit requires a consumed live-submit approval",
-                product_surface_name(*configured_surface)
+                product_surface_name(configured_surface)
             ),
         });
     };
@@ -1663,14 +1642,14 @@ fn validate_surface_live_submit_approval(
             .get_as::<HyperliquidLiveSubmitApprovalConsumption>(client_key)
             .ok_or_else(|| BoltV3AdapterMappingError::ValidationInvariant {
                 client_key: client_key.to_string(),
-                field: "execution.live_submit_approval_id",
+                field: "execution.live_submit.approval_id",
                 message: "consumed live-submit approval bundle does not contain this client"
                     .to_string(),
             })?
     } else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
-            field: "execution.live_submit_approval_id",
+            field: "execution.live_submit.approval_id",
             message: "consumed live-submit approval has an unsupported provider payload"
                 .to_string(),
         });
@@ -1678,12 +1657,12 @@ fn validate_surface_live_submit_approval(
     if consumed.approval_id() != expected_approval_id {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
-            field: "execution.live_submit_approval_id",
+            field: "execution.live_submit.approval_id",
             message: "consumed live-submit approval id does not match configured approval id"
                 .to_string(),
         });
     }
-    if consumed.product_surface() != *configured_surface {
+    if consumed.product_surface() != configured_surface {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.product_surfaces",

@@ -42,26 +42,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
 source_id = "binance_btc_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "BTC-USDT.BINANCE"
+instrument_id = "BTCUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
 source_id = "bybit_btc_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "BTC-USDT.BYBIT"
+instrument_id = "BTCUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.eth_usdt_midpoint_rv]
@@ -96,26 +99,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "ETH"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.eth_usdt_midpoint_rv.sources]]
 source_id = "binance_eth_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "ETH-USDT.BINANCE"
+instrument_id = "ETHUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "ETH"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.eth_usdt_midpoint_rv.sources]]
 source_id = "bybit_eth_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "ETH-USDT.BYBIT"
+instrument_id = "ETHUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "ETH"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.sol_usdt_midpoint_rv]
@@ -150,26 +156,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "SOL"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.sol_usdt_midpoint_rv.sources]]
 source_id = "binance_sol_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "SOL-USDT.BINANCE"
+instrument_id = "SOLUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "SOL"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.sol_usdt_midpoint_rv.sources]]
 source_id = "bybit_sol_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "SOL-USDT.BYBIT"
+instrument_id = "SOLUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "SOL"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.bnb_usdt_midpoint_rv]
@@ -204,26 +213,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BNB"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.bnb_usdt_midpoint_rv.sources]]
 source_id = "binance_bnb_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "BNB-USDT.BINANCE"
+instrument_id = "BNBUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BNB"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.bnb_usdt_midpoint_rv.sources]]
 source_id = "bybit_bnb_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "BNB-USDT.BYBIT"
+instrument_id = "BNBUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BNB"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.xrp_usdt_midpoint_rv]
@@ -258,26 +270,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "XRP"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.xrp_usdt_midpoint_rv.sources]]
 source_id = "binance_xrp_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "XRP-USDT.BINANCE"
+instrument_id = "XRPUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "XRP"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.xrp_usdt_midpoint_rv.sources]]
 source_id = "bybit_xrp_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "XRP-USDT.BYBIT"
+instrument_id = "XRPUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "XRP"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.doge_usdt_midpoint_rv]
@@ -312,26 +327,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "DOGE"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.doge_usdt_midpoint_rv.sources]]
 source_id = "binance_doge_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "DOGE-USDT.BINANCE"
+instrument_id = "DOGEUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "DOGE"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.doge_usdt_midpoint_rv.sources]]
 source_id = "bybit_doge_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "DOGE-USDT.BYBIT"
+instrument_id = "DOGEUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "DOGE"
 canonical_quote_asset = "USDT"
 
 [runtime]
@@ -529,7 +547,7 @@ resolve_poll_enabled = false
 resolve_poll_interval_secs = 30
 resolve_poll_grace_secs = 10
 resolve_poll_max_wait_secs = 1800
-update_instruments_interval_mins = 60
+update_instruments_interval_mins = 1
 ws_max_subscriptions = 200
 transport_backend = "sockudo"
 
@@ -789,128 +807,14 @@ max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
 min_observed_targets = 10
 
-[clients.hyperliquid_standard_perps_execution]
+[clients.hyperliquid_execution]
 venue = "HYPERLIQUID"
 
-[clients.hyperliquid_standard_perps_execution.execution]
+[clients.hyperliquid_execution.execution]
 account_id = "HYPERLIQUID-001"
 environment = "mainnet"
 execution_mode = "master_account_api_wallet"
-product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-mainnet-001"
-live_submit_approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json"
-live_submit_approval_artifact_max_bytes = 65536
-live_submit_max_order_count = 1
-live_submit_max_order_notional = "10.00"
-live_submit_product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-live_submit_product_proof_artifact_max_bytes = 65536
-base_url_ws = "wss://api.hyperliquid.xyz/ws"
-base_url_http = "https://api.hyperliquid.xyz/info"
-base_url_exchange = "https://api.hyperliquid.xyz/exchange"
-http_timeout_secs = 60
-max_retries = 3
-retry_delay_initial_ms = 250
-retry_delay_max_ms = 2000
-normalize_prices = true
-market_order_slippage_bps = 50
-include_builder_attribution = false
-transport_backend = "sockudo"
-ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
-
-[clients.hyperliquid_standard_perps_execution.secrets]
-# Shared Hyperliquid spot/perp API wallet: keep this private-key path identical
-# to hyperliquid_spot_execution and do not reuse it for HIP-3/HIP-4.
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/spotperp/private_key"
-account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
-
-[clients.hyperliquid_spot_execution]
-venue = "HYPERLIQUID"
-
-[clients.hyperliquid_spot_execution.execution]
-account_id = "HYPERLIQUID-001"
-environment = "mainnet"
-execution_mode = "master_account_api_wallet"
-product_surfaces = ["spot"]
-live_submit_approval_id = "hl-spot-mainnet-001"
-live_submit_approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json"
-live_submit_approval_artifact_max_bytes = 65536
-live_submit_max_order_count = 1
-live_submit_max_order_notional = "10.00"
-live_submit_product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-live_submit_product_proof_artifact_max_bytes = 65536
-base_url_ws = "wss://api.hyperliquid.xyz/ws"
-base_url_http = "https://api.hyperliquid.xyz/info"
-base_url_exchange = "https://api.hyperliquid.xyz/exchange"
-http_timeout_secs = 60
-max_retries = 3
-retry_delay_initial_ms = 250
-retry_delay_max_ms = 2000
-normalize_prices = true
-market_order_slippage_bps = 50
-include_builder_attribution = false
-transport_backend = "sockudo"
-ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
-
-[clients.hyperliquid_spot_execution.secrets]
-# Shared Hyperliquid spot/perp API wallet: keep this private-key path identical
-# to hyperliquid_standard_perps_execution and do not reuse it for HIP-3/HIP-4.
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/spotperp/private_key"
-account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
-
-[clients.hyperliquid_hip3_execution]
-venue = "HYPERLIQUID"
-
-[clients.hyperliquid_hip3_execution.execution]
-account_id = "HYPERLIQUID-001"
-environment = "mainnet"
-execution_mode = "master_account_api_wallet"
-product_surfaces = ["hip3_builder_perps"]
-live_submit_approval_id = "hl-hip3-builder-perps-mainnet-001"
-live_submit_approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json"
-live_submit_approval_artifact_max_bytes = 65536
-live_submit_max_order_count = 1
-live_submit_max_order_notional = "10.00"
-live_submit_product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-live_submit_product_proof_artifact_max_bytes = 65536
-base_url_ws = "wss://api.hyperliquid.xyz/ws"
-base_url_http = "https://api.hyperliquid.xyz/info"
-base_url_exchange = "https://api.hyperliquid.xyz/exchange"
-http_timeout_secs = 60
-max_retries = 3
-retry_delay_initial_ms = 250
-retry_delay_max_ms = 2000
-normalize_prices = true
-market_order_slippage_bps = 50
-include_builder_attribution = false
-transport_backend = "sockudo"
-ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
-
-[clients.hyperliquid_hip3_execution.secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/hip3/private_key"
-account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
-
-[clients.hyperliquid_hip4_execution]
-venue = "HYPERLIQUID"
-
-[clients.hyperliquid_hip4_execution.execution]
-account_id = "HYPERLIQUID-001"
-environment = "mainnet"
-execution_mode = "master_account_api_wallet"
-product_surfaces = ["hip4_outcomes"]
-live_submit_approval_id = "hl-hip4-outcomes-mainnet-001"
-live_submit_approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json"
-live_submit_approval_artifact_max_bytes = 65536
-live_submit_max_order_count = 1
-live_submit_max_order_notional = "10.00"
-live_submit_product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-live_submit_product_proof_artifact_max_bytes = 65536
+product_surfaces = ["standard_perps", "spot", "hip3_builder_perps", "hip4_outcomes"]
 base_url_ws = "wss://api.hyperliquid.xyz/ws"
 base_url_http = "https://api.hyperliquid.xyz/info"
 base_url_exchange = "https://api.hyperliquid.xyz/exchange"
@@ -925,8 +829,48 @@ transport_backend = "sockudo"
 ws_post_timeout_secs = 10
 outcome_settlement_poll_secs = 30
 
-[clients.hyperliquid_hip4_execution.secrets]
-private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/hip4/private_key"
+[clients.hyperliquid_execution.execution.live_submit.standard_perps]
+approval_id = "hl-standard-perps-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-standard-perps-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.spot]
+approval_id = "hl-spot-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-spot-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.hip3_builder_perps]
+approval_id = "hl-hip3-builder-perps-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip3-builder-perps-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.execution.live_submit.hip4_outcomes]
+approval_id = "hl-hip4-outcomes-mainnet-001"
+approval_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-live-submit-approval.json"
+approval_artifact_max_bytes = 65536
+max_order_count = 1
+max_order_notional = "10.00"
+product_proof_artifact_path = "/srv/bolt-v2/var/bolt-v3-live/operator/hyperliquid-hip4-outcomes-product-submit-proof.json"
+product_proof_artifact_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+product_proof_artifact_max_bytes = 65536
+
+[clients.hyperliquid_execution.secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 
 # Live Chainlink Data Streams resolution-strike (price-to-beat) source. One
@@ -958,7 +902,6 @@ websocket_endpoint = "wss://ws.testnet-dataengine.chain.link"
 websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
-heartbeat_message = "ping"
 reconnect_timeout_ms = 5000
 reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000

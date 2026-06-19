@@ -213,6 +213,14 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT trailing-stop offset type field projected from TOML into the runtime strategy config."
 
 [[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"bolt-v3 in-place modify is fail-closed in Live (not admission-gated; see #835): refusing un-admitted venue mutation for client_order_id={client_order_id}"'''
+context = '''"bolt-v3 in-place modify is fail-closed in Live (not admission-gated; see #835): refusing un-admitted venue mutation for client_order_id={client_order_id}"'''
+classification = "order_execution_live_modify_fail_closed_diagnostic"
+reason = "Fail-loud diagnostic refusing a live in-place venue modify that does not pass submit admission/reservation/fee checks (Option A for #835); error-message template, not a runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_order_intent.rs"
 kind = "number"
 literal = '''0'''
@@ -5399,50 +5407,26 @@ reason = "This labels parsing for the TOML-owned Hyperliquid execution block bef
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"execution.live_submit_approval_id"'''
-context = '''"execution.live_submit_approval_id",'''
+literal = '''"execution.live_submit"'''
+context = '''"execution.live_submit",'''
 classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit approval id during approval artifact materialization; the approval id value itself remains TOML-owned."
+reason = "This labels validation for the TOML-owned Hyperliquid per-surface live-submit table; the approval/proof/order-limit values themselves remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"execution.live_submit_approval_artifact_max_bytes"'''
-context = '''"execution.live_submit_approval_artifact_max_bytes",'''
+literal = '''"execution.live_submit.approval_id"'''
+context = '''"execution.live_submit.approval_id",'''
 classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit approval artifact byte cap; the cap value itself remains TOML-owned."
+reason = "This labels validation for the TOML-owned Hyperliquid per-surface live-submit approval id during approval artifact materialization; the approval id value itself remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"execution.live_submit_approval_artifact_path"'''
-context = '''"execution.live_submit_approval_artifact_path",'''
+literal = '''"product_surface"'''
+context = '''"product_surface",'''
 classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit approval artifact path; the path value itself remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_product_proof_artifact_path"'''
-context = '''"execution.live_submit_product_proof_artifact_path",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact path; the path value itself remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_product_proof_artifact_sha256"'''
-context = '''"execution.live_submit_product_proof_artifact_sha256",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact checksum; the checksum value itself remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_product_proof_artifact_max_bytes"'''
-context = '''"execution.live_submit_product_proof_artifact_max_bytes",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact byte cap; the cap value itself remains TOML-owned."
+reason = "This labels the explicit operator-selected Hyperliquid product surface for live-submit artifact commands; the selected surface value remains CLI/config-owned and validated against provider surfaces."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
@@ -5459,22 +5443,6 @@ literal = '''"product_submit_proof.artifact_sha256"'''
 context = '''"product_submit_proof.artifact_sha256",'''
 classification = "hyperliquid_live_submit_approval_field_label"
 reason = "This labels runtime validation for the TOML/evidence-owned Hyperliquid product proof artifact checksum before one-time approval consumption; the checksum value itself remains TOML/evidence-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_max_order_count"'''
-context = '''"execution.live_submit_max_order_count",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit max order count bound; the bound value itself remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/hyperliquid.rs"
-kind = "string"
-literal = '''"execution.live_submit_max_order_notional"'''
-context = '''"execution.live_submit_max_order_notional",'''
-classification = "hyperliquid_live_submit_approval_field_label"
-reason = "This labels validation for the TOML-owned Hyperliquid live-submit max order notional bound; the bound value itself remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
@@ -5655,8 +5623,8 @@ reason = "This label explains the provider-owned credential-consuming block cove
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit"'''
-context = '''"clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",'''
+literal = '''"clients.{key}.execution.live_submit cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit"'''
+context = '''"clients.{key}.execution.live_submit cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",'''
 classification = "hyperliquid_fail_closed_rate_limit_diagnostic"
 reason = "This is the provider validation diagnostic emitted when a TOML live-submit approval is configured while the pinned NT Hyperliquid userFees request weight undercounts the official protocol weight; the request weights themselves are fixed evidence values, not operator-tunable runtime inputs."
 
@@ -5671,18 +5639,34 @@ reason = "This names the strategy target block in the provider-owned pre-consump
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`"'''
-context = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",'''
-classification = "hyperliquid_static_target_surface_diagnostic"
-reason = "This is the provider fail-closed diagnostic when a static Hyperliquid target's TOML product_surface differs from the execution client's configured and approved product surface."
+literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}`"'''
+context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}`",'''
+classification = "hyperliquid_updown_surface_diagnostic"
+reason = "This is the provider fail-closed diagnostic when an updown target is routed to a Hyperliquid execution client that does not include the HIP-4 outcomes surface; the target and surface values remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`"'''
-context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`",'''
-classification = "hyperliquid_updown_surface_diagnostic"
-reason = "This is the provider fail-closed diagnostic when an updown target is routed to a Hyperliquid execution client whose TOML product surface is not HIP-4 outcomes; the target and surface values remain TOML-owned."
+literal = '''", "'''
+context = '''.join(", ");'''
+classification = "hyperliquid_surface_selection_diagnostic_separator"
+reason = "This joins TOML-owned active Hyperliquid product surface labels in a fail-closed diagnostic; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"Hyperliquid execution client has multiple active product surfaces ({names}); one live node may arm only one Hyperliquid product surface per execution client"'''
+context = '''"Hyperliquid execution client has multiple active product surfaces ({names}); one live node may arm only one Hyperliquid product surface per execution client"'''
+classification = "hyperliquid_surface_selection_diagnostic"
+reason = "This is the provider fail-closed diagnostic when strategy routing would require one Hyperliquid execution client to arm approvals for multiple active product surfaces."
+
+[[allowed]]
+path = "src/bolt_v3_providers/hyperliquid.rs"
+kind = "string"
+literal = '''"Hyperliquid live submit surface `{}` is selected but no matching execution.live_submit block is configured"'''
+context = '''"Hyperliquid live submit surface `{}` is selected but no matching execution.live_submit block is configured",'''
+classification = "hyperliquid_surface_selection_diagnostic"
+reason = "This is the provider fail-closed diagnostic when an explicit or inferred Hyperliquid product surface lacks its TOML-owned live-submit gate block."
 
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
@@ -10493,6 +10477,14 @@ reason = "Stable canonical source field label used only inside the realized-vola
 [[allowed]]
 path = "src/bolt_v3_realized_volatility.rs"
 kind = "string"
+literal = '''"source.canonical_base_asset={}"'''
+context = '''"source.canonical_base_asset={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
 literal = '''"source.canonical_quote_asset={}"'''
 context = '''"source.canonical_quote_asset={}",'''
 classification = "realized_volatility_config_fingerprint_field_label"
@@ -13292,10 +13284,10 @@ reason = "Increment-by-one step in a saturating strategy event-forwarding counte
 [[allowed]]
 path = "src/bolt_v3_providers/hyperliquid.rs"
 kind = "string"
-literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`"'''
-context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}` and this client selects `{}`",'''
+literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}`"'''
+context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid outcome-group targets require execution.product_surfaces `{}`",'''
 classification = "hyperliquid_outcome_group_surface_diagnostic"
-reason = "Provider fail-closed diagnostic when an outcome_group target is routed to a Hyperliquid execution client whose TOML product surface is not HIP-4 outcomes; target and surface values remain TOML-owned."
+reason = "Provider fail-closed diagnostic when an outcome_group target is routed to a Hyperliquid execution client that does not include the HIP-4 outcomes surface; target and surface values remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_outcome_group_hyperliquid.rs"
@@ -14312,6 +14304,22 @@ literal = '''"; "'''
 context = '''iv_client_errors.join("; ")'''
 classification = "live_node_fail_closed_diagnostic_template"
 reason = "The live-node IV client validator joins fail-closed config diagnostics; the referenced profile/source/client identifiers are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue"'''
+context = '''"multiple execution clients share venue `{}` in the live transport scope: {}; only one execution client may be active per venue",'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "Fail-closed live transport diagnostic for multiple strategy-referenced execution clients on one NT venue; venue and client identifiers are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''", "'''
+context = '''client_keys.join(", ")'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "Diagnostic separator for listing TOML-owned execution client identifiers that share one NT venue in the live transport scope."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"

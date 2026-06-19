@@ -25,7 +25,7 @@
     },
     "acceptance_contract": {
       "path": "repo://crates/backtesting-vertical-slice/src/source_proof.rs",
-      "sha256": "4ae656aadc60dff4c4e466dac5d73e0aa8ba2a94cb224664c78a4fd33e4ee573"
+      "sha256": "8494cee838fa7e01ffb6099030d6d1982e60cb5293701f6b0c9d23a299a94b2b"
     },
     "current_contract_deserializes": true,
     "expected_record_status": "current_contract_rejected",

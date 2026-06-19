@@ -3,9 +3,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
+import os
 import pathlib
 import sys
+import tempfile
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -160,6 +165,50 @@ def assert_graphql_errors_fail_closed_at_extract_boundary() -> None:
         raise AssertionError("GraphQL errors should fail closed at extract boundary")
 
 
+def assert_graphql_invalid_json_fails_closed_at_request_boundary() -> None:
+    module = load_script()
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def fake_urlopen(_request, timeout: int):
+        assert timeout == 30
+        return FakeResponse(b"not-json")
+
+    original_urlopen = module.urllib.request.urlopen
+    try:
+        module.urllib.request.urlopen = fake_urlopen
+        module._request_graphql(token="token", query="query", variables={})
+    except module.ReviewThreadGateError as exc:
+        assert "valid JSON" in str(exc)
+    else:
+        raise AssertionError("invalid GraphQL JSON should fail closed at request boundary")
+    finally:
+        module.urllib.request.urlopen = original_urlopen
+
+
+def assert_invalid_review_thread_event_json_raises_gate_error() -> None:
+    module = load_script()
+    old_env = os.environ.copy()
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        event_file.write("not-json")
+        event_file.flush()
+        try:
+            os.environ.update({"GITHUB_EVENT_PATH": event_file.name})
+            module._read_event_payload()
+        except module.ReviewThreadGateError as exc:
+            assert "valid JSON" in str(exc)
+        else:
+            raise AssertionError("invalid review-thread event JSON should raise ReviewThreadGateError")
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+
 def assert_workflow_uses_base_script_and_review_thread_events() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "Required reviewer resolution gate" in workflow
@@ -173,11 +222,294 @@ def assert_workflow_uses_base_script_and_review_thread_events() -> None:
     assert "test -f scripts/require_resolved_review_threads.py" not in workflow
     assert "Remove this block after scripts/require_resolved_review_threads.py exists on main" not in workflow
     assert "python3 scripts/require_resolved_review_threads.py" in workflow
+    assert "statuses: write" in workflow
+    assert "REVIEW_THREAD_GATE_STATUS_CONTEXT: required review threads resolved" in workflow
 
 
 def assert_thread_url_uses_real_graphql_shape() -> None:
     source = SCRIPT_PATH.read_text(encoding="utf-8")
     assert 'thread.get("url")' not in source
+
+
+def assert_status_mode_publishes_verdict_without_disabling_job() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        return fake_fetch.threads  # type: ignore[attr-defined]
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333, "head": {"sha": "head-sha"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_RUN_ID": "12345",
+                    "GITHUB_SERVER_URL": "https://github.test",
+                    "GITHUB_TOKEN": "token",
+                    "REVIEW_THREAD_GATE_STATUS_CONTEXT": "required review threads resolved",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            # Unresolved threads -> publish failure, job still exits non-zero so
+            # the (currently required) job-name check stays meaningful pre-swap.
+            fake_fetch.threads = [{"id": "T1", "isResolved": False}]  # type: ignore[attr-defined]
+            posted.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc_fail = module.run()
+            assert rc_fail == 1
+            assert len(posted) == 2
+            assert posted[0][1]["state"] == "pending"
+            fail_url, fail_payload = posted[1]
+            assert fail_url == "https://api.github.test/repos/owner/repo/statuses/head-sha"
+            assert fail_payload["state"] == "failure"
+            assert fail_payload["context"] == "required review threads resolved"
+            assert fail_payload["target_url"] == "https://github.test/owner/repo/actions/runs/12345"
+
+            # Resolved threads -> publish success and exit 0.
+            fake_fetch.threads = [{"id": "T1", "isResolved": True}]  # type: ignore[attr-defined]
+            posted.clear()
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc_ok = module.run()
+            assert rc_ok == 0
+            assert len(posted) == 2
+            assert posted[0][1]["state"] == "pending"
+            ok_url, ok_payload = posted[1]
+            assert ok_url == "https://api.github.test/repos/owner/repo/statuses/head-sha"
+            assert ok_payload["state"] == "success"
+            assert ok_payload["context"] == "required review threads resolved"
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+
+def assert_status_mode_marks_pending_before_review_thread_fetch() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        assert len(posted) == 1
+        assert posted[0][1]["state"] == "pending"
+        return [{"id": "T1", "isResolved": True}]
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333, "head": {"sha": "head-sha"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                    "REVIEW_THREAD_GATE_STATUS_CONTEXT": "required review threads resolved",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = module.run()
+            assert rc == 0
+            assert [payload["state"] for _url, payload in posted] == ["pending", "success"]
+            assert posted[0][1]["description"] == "Review-thread gate is inspecting review threads"
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+
+def assert_status_disabled_does_not_require_head_sha() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        return [{"id": "T1", "isResolved": True}]
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.clear()
+            os.environ.update(
+                {
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc_ok = module.run()
+            assert rc_ok == 0
+            assert posted == []
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+
+def assert_status_mode_remains_non_success_when_failure_status_post_errors() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        raise module.ReviewThreadGateError("GraphQL unavailable")
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+        if len(posted) == 2:
+            raise module.ReviewThreadGateError("status write failed")
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333, "head": {"sha": "head-sha"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                    "REVIEW_THREAD_GATE_STATUS_CONTEXT": "required review threads resolved",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = module.main()
+            assert rc == 1
+            assert [payload["state"] for _url, payload in posted] == ["pending", "failure"]
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+
+def assert_status_mode_marks_pending_before_unexpected_fetch_error() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        raise RuntimeError("unexpected fetch error")
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333, "head": {"sha": "head-sha"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                    "REVIEW_THREAD_GATE_STATUS_CONTEXT": "required review threads resolved",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            try:
+                module.run()
+            except RuntimeError as exc:
+                assert "unexpected fetch error" in str(exc)
+            else:
+                raise AssertionError("unexpected fetch errors should still fail the job")
+            assert [payload["state"] for _url, payload in posted] == ["pending"]
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+
+def assert_status_mode_fails_closed_when_review_thread_fetch_errors() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        raise module.ReviewThreadGateError("GraphQL unavailable")
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333, "head": {"sha": "head-sha"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_RUN_ID": "12345",
+                    "GITHUB_SERVER_URL": "https://github.test",
+                    "GITHUB_TOKEN": "token",
+                    "REVIEW_THREAD_GATE_STATUS_CONTEXT": "required review threads resolved",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                rc = module.main()
+            assert rc == 1
+            assert len(posted) == 2
+            assert posted[0][1]["state"] == "pending"
+            fail_url, fail_payload = posted[1]
+            assert fail_url == "https://api.github.test/repos/owner/repo/statuses/head-sha"
+            assert fail_payload["state"] == "failure"
+            assert fail_payload["context"] == "required review threads resolved"
+            assert fail_payload["target_url"] == "https://github.test/owner/repo/actions/runs/12345"
+            assert "GraphQL unavailable" in str(fail_payload["description"])
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
 
 
 def main() -> int:
@@ -190,8 +522,16 @@ def main() -> int:
     assert_graphql_non_object_nodes_fail_closed()
     assert_graphql_next_page_without_cursor_fails_closed()
     assert_graphql_errors_fail_closed_at_extract_boundary()
+    assert_graphql_invalid_json_fails_closed_at_request_boundary()
+    assert_invalid_review_thread_event_json_raises_gate_error()
     assert_workflow_uses_base_script_and_review_thread_events()
     assert_thread_url_uses_real_graphql_shape()
+    assert_status_mode_publishes_verdict_without_disabling_job()
+    assert_status_mode_marks_pending_before_review_thread_fetch()
+    assert_status_disabled_does_not_require_head_sha()
+    assert_status_mode_fails_closed_when_review_thread_fetch_errors()
+    assert_status_mode_remains_non_success_when_failure_status_post_errors()
+    assert_status_mode_marks_pending_before_unexpected_fetch_error()
     print("OK: required resolved review-thread gate self-tests passed.")
     return 0
 

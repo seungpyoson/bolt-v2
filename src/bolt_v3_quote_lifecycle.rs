@@ -925,4 +925,44 @@ mod tests {
         // The NO leg is untouched — still resting (leg isolation holds for fills).
         assert_eq!(market.leg_state(Leg::No), LegState::Resting);
     }
+
+    #[test]
+    fn requote_path_selection_follows_the_supports_modify_capability_at_market_level() {
+        // DISPATCH-1 structural guard at the controller the maker drives: the SAME
+        // requote trigger on a resting market yields a Modify on a modify-capable
+        // venue and a Cancel on a no-modify venue, selected purely by the
+        // `supports_modify` capability fact threaded into `MarketQuote::new` — never
+        // by a venue name. This is the leg-level path choice that DISPATCH-1's NT
+        // modify route depends on: a no-modify venue must produce a Cancel that
+        // routes through the cancel path, and only a modify-capable venue produces a
+        // Modify that reaches the new NT modify route. Differential by construction:
+        // the two arms emit different actions from identical input, so a regression
+        // that ignored `supports_modify` (always Cancel, or always Modify) fails one
+        // arm.
+        let trigger = LegEvent::QuoteTrigger {
+            requote_needed: true,
+        };
+
+        let mut modify_capable = resting_market(true);
+        assert_eq!(
+            modify_capable.on_leg_event(Leg::Yes, trigger),
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Modify,
+            }),
+            "a modify-capable venue amends in place"
+        );
+        assert_eq!(modify_capable.leg_state(Leg::Yes), LegState::ModifyPending);
+
+        let mut no_modify = resting_market(false);
+        assert_eq!(
+            no_modify.on_leg_event(Leg::Yes, trigger),
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Cancel,
+            }),
+            "a no-modify venue cancels then resubmits, never a Modify"
+        );
+        assert_eq!(no_modify.leg_state(Leg::Yes), LegState::RequotePending);
+    }
 }

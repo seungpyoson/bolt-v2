@@ -29,7 +29,7 @@ pub(super) fn valid_raw_config() -> Value {
         rotating_market_family = "updown"
         underlying_asset = "CONFIGURED_ASSET"
         cadence_seconds = 300
-        cadence_slug_token = "configuredwindow"
+        cadence_slug_token = "5m"
         market_selection_rule = "active_or_next"
         retry_interval_seconds = 5
         blocked_after_seconds = 60
@@ -528,7 +528,7 @@ pub(super) fn test_strategy_with_fee_provider_decision_evidence_and_submit_admis
             rotating_market_family: "updown".to_string(),
             underlying_asset: "CONFIGURED_ASSET".to_string(),
             cadence_seconds: 300,
-            cadence_slug_token: "configuredwindow".to_string(),
+            cadence_slug_token: "5m".to_string(),
             market_selection_rule: "active_or_next".to_string(),
             retry_interval_seconds: 5,
             blocked_after_seconds: 60,

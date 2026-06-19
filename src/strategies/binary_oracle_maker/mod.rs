@@ -520,7 +520,7 @@ mod tests {
             BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
-        bolt_v3_maker_mu_estimator::MuHealthReason,
+        bolt_v3_maker_mu_estimator::{MuHealthReason, UsableMu},
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
         bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
@@ -675,7 +675,12 @@ mod tests {
         let mut state = build_mu_state(&maker_config(600, 1000, 4));
         let instrument = InstrumentId::from("MAKER.SIM");
         observe_sides(&mut state, instrument, &[AggressorSide::Buyer; 4]);
-        assert_eq!(state.usable_mu_for(&instrument, QUERY_NOW_MS), Ok(1.0));
+        assert_eq!(
+            state
+                .usable_mu_for(&instrument, QUERY_NOW_MS)
+                .map(UsableMu::get),
+            Ok(1.0)
+        );
     }
 
     #[test]
@@ -715,7 +720,12 @@ mod tests {
                 AggressorSide::Buyer,
             ],
         );
-        assert_eq!(state.usable_mu_for(&instrument, QUERY_NOW_MS), Ok(1.0));
+        assert_eq!(
+            state
+                .usable_mu_for(&instrument, QUERY_NOW_MS)
+                .map(UsableMu::get),
+            Ok(1.0)
+        );
     }
 
     #[test]
@@ -749,7 +759,10 @@ mod tests {
                 .expect("maker on_trade should process");
         }
         assert_eq!(
-            maker.mu.usable_mu_for(&instrument, QUERY_NOW_MS),
+            maker
+                .mu
+                .usable_mu_for(&instrument, QUERY_NOW_MS)
+                .map(UsableMu::get),
             Ok(1.0),
             "on_trade must route each tick into the per-instrument μ buffer"
         );

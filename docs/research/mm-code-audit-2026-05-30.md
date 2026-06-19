@@ -1,14 +1,14 @@
 # Market-Making Repo **Actual-Code** Audit — 2026-05-30
 
-> **Status: authoritative.** This document supersedes the repo-by-repo robustness verdicts in
-> [`mm-multi-venue-survey.md`](./mm-multi-venue-survey.md). That survey labelled itself
-> "adversarially verified, all 16" and named `joaquinbejar/market-maker-rs` the **primary candidate /
-> base**. Those conclusions were drawn largely from READMEs + repo structure, **not** from reading the
-> implementation source. This audit reads the actual `.rs`/`.c`/`.cpp` source of all 16 repos, grades
-> every claimed algorithm with a `file:line` anchor, then **adversarially re-verifies** every module
-> proposed for porting. The headline conclusion changed: **market-maker-rs is a port-source, not a
-> base; GLFT must be reimplemented (every port is buggy); VPIN is NT-owned; the single highest-value
-> artifact (tikr's FillSim) was not in the prior plan.**
+> **Status: authoritative.** This document supersedes the repo-by-repo robustness verdicts in the
+> historical `mm-multi-venue-survey.md` (deleted from the live tree; preserved in git history). That
+> survey labelled itself "adversarially verified, all 16" and named `joaquinbejar/market-maker-rs` the
+> **primary candidate / base**. Those conclusions were drawn largely from READMEs + repo structure,
+> **not** from reading the implementation source. This audit reads the actual `.rs`/`.c`/`.cpp` source
+> of all 16 repos, grades every claimed algorithm with a `file:line` anchor, then **adversarially
+> re-verifies** every module proposed for porting. The headline conclusion changed:
+> **market-maker-rs is a port-source, not a base; GLFT must be reimplemented (every port is buggy);
+> VPIN is NT-owned; the single highest-value artifact (tikr's FillSim) was not in the prior plan.**
 
 ---
 
@@ -212,7 +212,7 @@ implied-vol, position/notional limits.
 
 ---
 
-## 8. Corrections to the prior survey / #488 port table
+## 8. Corrections to the prior survey (historical `mm-multi-venue-survey.md`) / #488 port table
 
 | Item | Prior (README-based) | This audit (actual code) |
 |---|---|---|

@@ -10,6 +10,9 @@
 //! [`BacktestResultContract::assert_objective`], which rejects promotion language
 //! in any free-text field.
 
+use std::collections::BTreeMap;
+
+use bolt_v2::bolt_v3_config::BacktestConfigOverrideReport;
 use nautilus_backtest::result::BacktestResult;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -66,8 +69,7 @@ fn nautilus_revision_from_manifest(manifest: &str) -> Option<String> {
     }
 }
 
-/// Lowercase SHA-256 hex over the canonical strategy config (registry key plus
-/// sorted parameters).
+/// Lowercase SHA-256 hex over the canonical strategy config source.
 #[must_use]
 pub fn strategy_config_hash(strategy: &StrategySource) -> String {
     let mut hasher = Sha256::new();
@@ -77,6 +79,13 @@ pub fn strategy_config_hash(strategy: &StrategySource) -> String {
         hasher.update(key.as_bytes());
         hasher.update([1u8]);
         hasher.update(value.as_bytes());
+    }
+    if let Some(config_overlay) = &strategy.config_overlay {
+        hasher.update([2u8]);
+        hasher.update(
+            serde_json::to_vec(config_overlay)
+                .expect("strategy config overlay JSON serialization must be infallible"),
+        );
     }
     hex::encode(hasher.finalize())
 }
@@ -97,6 +106,10 @@ pub struct NautilusResultPointer {
     pub total_events: u64,
     pub total_orders: u64,
     pub total_positions: u64,
+    #[serde(default)]
+    pub stats_pnls: BTreeMap<String, BTreeMap<String, f64>>,
+    #[serde(default)]
+    pub stats_returns: BTreeMap<String, f64>,
 }
 
 impl NautilusResultPointer {
@@ -115,8 +128,67 @@ impl NautilusResultPointer {
             total_events: result.total_events as u64,
             total_orders: result.total_orders as u64,
             total_positions: result.total_positions as u64,
+            stats_pnls: result
+                .stats_pnls
+                .iter()
+                .map(|(currency, stats)| {
+                    (
+                        currency.clone(),
+                        stats
+                            .iter()
+                            .filter(|(_, value)| value.is_finite())
+                            .map(|(name, value)| (name.clone(), *value))
+                            .collect(),
+                    )
+                })
+                .collect(),
+            stats_returns: result
+                .stats_returns
+                .iter()
+                .filter(|(_, value)| value.is_finite())
+                .map(|(name, value)| (name.clone(), *value))
+                .collect(),
         }
     }
+}
+
+/// Guard values used to reject a degenerate zero-result interpretation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BacktestRunGuardReport {
+    pub strategy_input_snapshot_count: u64,
+    pub order_intent_count: u64,
+    pub admission_decision_count: u64,
+    pub admitted_order_count: u64,
+    pub submit_reservation_count: u64,
+    pub submit_fill_count: u64,
+    pub signal_quote_received: bool,
+    pub realized_volatility_ready: bool,
+    pub price_to_beat_received: bool,
+    pub reference_fresh: bool,
+    pub armed: bool,
+    pub traded: bool,
+    pub latest_market_id: Option<String>,
+    pub latest_spot_price: Option<String>,
+    pub latest_reference_current_price: Option<String>,
+    pub latest_reference_current_price_source_id: Option<String>,
+    pub latest_price_to_beat_value: Option<String>,
+    pub latest_realized_volatility_as_of_ms: Option<u64>,
+    pub latest_realized_volatility_sources_used: Vec<String>,
+    pub latest_realized_volatility_blockers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did_not_arm_reason: Option<String>,
+}
+
+/// Per-feed fidelity label for result interpretation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BacktestFeedLabel {
+    pub feed_id: String,
+    pub source_class: String,
+    pub data_type: String,
+    pub instrument_id: String,
+    pub label: String,
 }
 
 /// Artifact URIs recorded by the contract.
@@ -170,6 +242,12 @@ pub struct BacktestResultContract {
     pub claim_limits: Vec<String>,
     pub warnings: Vec<String>,
     pub mechanical_blockers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_override_report: Option<BacktestConfigOverrideReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_guard_report: Option<BacktestRunGuardReport>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feed_labels: Vec<BacktestFeedLabel>,
     pub nt_result: NautilusResultPointer,
     pub artifact_uris: ResultArtifactUris,
     pub created_at: String,
@@ -426,6 +504,9 @@ pub struct ResultContractInputs<'a> {
     pub claim_limits: Vec<String>,
     pub warnings: Vec<String>,
     pub mechanical_blockers: Vec<String>,
+    pub config_override_report: Option<&'a BacktestConfigOverrideReport>,
+    pub run_guard_report: Option<&'a BacktestRunGuardReport>,
+    pub feed_labels: Vec<BacktestFeedLabel>,
     pub nt_result: &'a BacktestResult,
     pub artifact_uris: ResultArtifactUris,
     pub created_at: &'a str,
@@ -472,6 +553,9 @@ pub fn build_result_contract(
         claim_limits: inputs.claim_limits,
         warnings: inputs.warnings,
         mechanical_blockers: inputs.mechanical_blockers,
+        config_override_report: inputs.config_override_report.cloned(),
+        run_guard_report: inputs.run_guard_report.cloned(),
+        feed_labels: inputs.feed_labels,
         nt_result: NautilusResultPointer::from_backtest_result(inputs.nt_result),
         artifact_uris: inputs.artifact_uris,
         created_at: inputs.created_at.to_string(),
@@ -497,6 +581,8 @@ mod tests {
             total_events: 937,
             total_orders: 0,
             total_positions: 0,
+            stats_pnls: BTreeMap::new(),
+            stats_returns: BTreeMap::new(),
         }
     }
 
@@ -548,6 +634,9 @@ mod tests {
                     .to_string(),
             ],
             mechanical_blockers: vec![],
+            config_override_report: None,
+            run_guard_report: None,
+            feed_labels: vec![],
             nt_result: pointer(),
             artifact_uris: ResultArtifactUris {
                 source_proof_uri: "s3://.../source-proofs/p.json".to_string(),
@@ -584,6 +673,45 @@ features = ["streaming", "examples"]
     #[test]
     fn objective_contract_validates() {
         contract().validate().expect("objective contract is valid");
+    }
+
+    #[test]
+    fn strategy_config_hash_covers_config_overlay_delta() {
+        let mut strategy = crate::run_manifest::StrategySource {
+            source_kind: crate::run_manifest::StrategySourceKind::CompiledRustRegistry,
+            registry_key: "binary_oracle_edge_taker".to_string(),
+            parameters: BTreeMap::new(),
+            typed_config_uri: None,
+            typed_config_hash: None,
+            experiment_result_uri: None,
+            experiment_result_hash: None,
+            config_overlay: Some(crate::run_manifest::StrategyConfigOverlaySource {
+                production_root_config_path: "config/root.toml".to_string(),
+                override_delta: crate::run_manifest::ManifestBacktestConfigOverride {
+                    label: "production config + documented OKX/Bybit override".to_string(),
+                    strategy_instance_id: "binary_oracle_btc".to_string(),
+                    signal_role: "primary".to_string(),
+                    signal_data_client_id: "okx_data".to_string(),
+                    signal_instrument_id: "BTC-USDT.OKX".to_string(),
+                    realized_volatility_surface_id: "btc_usdt_midpoint_rv".to_string(),
+                    keep_realized_volatility_sources: vec![
+                        crate::run_manifest::ManifestRealizedVolatilitySourceSelector {
+                            data_client_id: "okx_data".to_string(),
+                            instrument_id: "BTC-USDT.OKX".to_string(),
+                        },
+                    ],
+                },
+            }),
+        };
+        let base = strategy_config_hash(&strategy);
+        strategy
+            .config_overlay
+            .as_mut()
+            .expect("overlay")
+            .override_delta
+            .signal_instrument_id = "BTC-USDT.BYBIT".to_string();
+
+        assert_ne!(base, strategy_config_hash(&strategy));
     }
 
     #[test]

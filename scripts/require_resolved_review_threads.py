@@ -176,6 +176,9 @@ def evaluate_review_thread_gate(
 
 
 def _extract_review_threads(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], bool, str | None]:
+    errors = payload.get("errors")
+    if errors:
+        raise ReviewThreadGateError(f"GitHub GraphQL returned errors: {errors}")
     data = payload.get("data")
     if not isinstance(data, dict):
         raise ReviewThreadGateError("GitHub GraphQL response is missing data")

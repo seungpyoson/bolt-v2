@@ -17553,6 +17553,22 @@ classification = "prod_profile_generation_marker"
 reason = "Fixed provenance-marker prefix stamped onto, and matched in, the generated runtime config; it is a code constant, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"profiles"'''
+context = '''if parent_name == "profiles" && file_name.ends_with(".overlay.toml") {'''
+classification = "prod_profile_source_path_shape"
+reason = "Required parent directory name for reviewed deploy profile overlays; this is a structural source-path guard that prevents generated/live-local files from entering the profile generation path, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''".overlay.toml"'''
+context = '''if parent_name == "profiles" && file_name.ends_with(".overlay.toml") {'''
+classification = "prod_profile_source_path_shape"
+reason = "Required suffix for reviewed deploy profile overlays; this is a structural source-path guard that prevents generated/live-local files from entering the profile generation path, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_atomic_io.rs"
 kind = "number"
 literal = '''0o644'''

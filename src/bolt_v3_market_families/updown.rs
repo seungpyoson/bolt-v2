@@ -41,7 +41,7 @@ use std::{
 };
 
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::OutcomeSide;
 
@@ -119,8 +119,7 @@ pub fn maker_binary_fee_curve(fee_rate: f64, price: f64) -> Option<f64> {
 /// BoltV3StrategyConfig`) keeps the TOML field name `[target]` as a
 /// generic `toml::Value`; the updown family deserializes that raw
 /// envelope into this typed shape during validation and planning.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetBlock {
     pub configured_target_id: String,
     pub kind: TargetKind,
@@ -132,6 +131,54 @@ pub struct TargetBlock {
     pub retry_interval_secs: u64,
     pub blocked_after_secs: u64,
     pub gate_subscriptions: Option<BTreeMap<String, TargetGateSubscription>>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TargetBlockWire {
+    configured_target_id: String,
+    kind: TargetKind,
+    rotating_market_family: RotatingMarketFamily,
+    underlying_asset: String,
+    cadence_secs: i64,
+    cadence_slug_token: Option<String>,
+    market_selection_rule: MarketSelectionRule,
+    retry_interval_secs: u64,
+    blocked_after_secs: u64,
+    gate_subscriptions: Option<BTreeMap<String, TargetGateSubscription>>,
+}
+
+impl<'de> Deserialize<'de> for TargetBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = TargetBlockWire::deserialize(deserializer)?;
+        let cadence_slug_token = match wire.cadence_slug_token {
+            Some(value) => value,
+            None => expected_cadence_slug_token(wire.cadence_secs)
+                .ok_or_else(|| {
+                    de::Error::custom(format!(
+                        "cadence_slug_token is required when cadence_secs={} because no updown runtime-contract token can be derived",
+                        wire.cadence_secs
+                    ))
+                })?
+                .to_string(),
+        };
+
+        Ok(Self {
+            configured_target_id: wire.configured_target_id,
+            kind: wire.kind,
+            rotating_market_family: wire.rotating_market_family,
+            underlying_asset: wire.underlying_asset,
+            cadence_secs: wire.cadence_secs,
+            cadence_slug_token,
+            market_selection_rule: wire.market_selection_rule,
+            retry_interval_secs: wire.retry_interval_secs,
+            blocked_after_secs: wire.blocked_after_secs,
+            gate_subscriptions: wire.gate_subscriptions,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -461,7 +508,7 @@ fn validate_cadence_slug_contract(
     errors
 }
 
-fn expected_cadence_slug_token(cadence_secs: i64) -> Option<&'static str> {
+pub(crate) fn expected_cadence_slug_token(cadence_secs: i64) -> Option<&'static str> {
     match cadence_secs {
         60 => Some("1m"),
         300 => Some("5m"),

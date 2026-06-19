@@ -1978,20 +1978,6 @@ mod tests {
         }
     }
 
-    /// The updown family's `(cadence_secs, cadence_slug_token)` runtime contract,
-    /// restated independently of the production source so the seam test below
-    /// derives a known-good token for each supported cadence. This is a seam
-    /// fixture, not the closed-set guard: that the production contract holds
-    /// exactly these pairs (no added, removed, or changed cadence) is enforced at
-    /// the source by `updown::tests::cadence_slug_contract_matches_independent_pins`.
-    const UPDOWN_CADENCE_SLUG_PINS: &[(i64, &str)] = &[
-        (60, "1m"),
-        (300, "5m"),
-        (900, "15m"),
-        (3600, "1h"),
-        (14400, "4h"),
-    ];
-
     fn updown_row(cadence_secs: i64) -> toml::Table {
         let mut row = toml::Table::new();
         row.insert(
@@ -2015,7 +2001,13 @@ mod tests {
 
     #[test]
     fn inject_derives_updown_slug_for_every_contract_cadence() {
-        for &(cadence_secs, expected) in UPDOWN_CADENCE_SLUG_PINS {
+        // Iterate the single production source directly (not a restated copy), so
+        // this seam test covers exactly the cadences the contract defines and picks
+        // up any future cadence automatically. The closed-set guard -- that the
+        // contract holds exactly these pairs with none added, removed, or changed --
+        // lives at the source in
+        // `updown::tests::cadence_slug_contract_matches_independent_pins`.
+        for &(cadence_secs, expected) in updown::CADENCE_SLUG_CONTRACT {
             let mut row = updown_row(cadence_secs);
             inject_updown(&mut row)
                 .unwrap_or_else(|error| panic!("cadence {cadence_secs} must derive: {error}"));

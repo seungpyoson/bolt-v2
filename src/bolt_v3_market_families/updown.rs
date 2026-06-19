@@ -480,8 +480,12 @@ fn validate_cadence_slug_contract(
 /// pairs. Single source for slug derivation (`expected_cadence_slug_token`,
 /// wired into the family registry binding) AND the valid-cadence diagnostics
 /// (`cadence_contract_values`); no caller restates the pairs or the list, so the
-/// derivation and the "must be one of …" error can never drift apart.
-const CADENCE_SLUG_CONTRACT: &[(i64, &str)] = &[
+/// derivation and the "must be one of …" error can never drift apart. Exposed
+/// `pub(crate)` so the family-registry seam test iterates these exact pairs rather
+/// than a restated copy; the closed-set drift guard
+/// (`tests::cadence_slug_contract_matches_independent_pins`) keeps the one
+/// deliberate independent restatement that fails closed on any added/removed pair.
+pub(crate) const CADENCE_SLUG_CONTRACT: &[(i64, &str)] = &[
     (60, "1m"),
     (300, "5m"),
     (900, "15m"),

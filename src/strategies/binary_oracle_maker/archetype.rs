@@ -2265,8 +2265,13 @@ mod tests {
 
     #[test]
     fn parameters_block_rejects_unknown_runtime_key() {
+        // Fully valid [parameters] block except ONE unknown [runtime] key, routed
+        // through the production seam (deserialize_parameters_block) with a valid
+        // markets row so the ONLY possible defect is the unknown key. This proves
+        // deny_unknown_fields fires THROUGH the raw-table pre-processing seam, not
+        // because a required block (markets) is absent.
         let toml = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -2278,18 +2283,22 @@ mod tests {
             surprise = 1
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
+            VALID_MARKETS_TOML,
             valid_backtest_toml()
         );
+        let parameters: Value = toml::from_str(&toml).expect("raw [parameters] toml parses");
+        let error = deserialize_parameters_block(&parameters)
+            .expect_err("an unknown [parameters.runtime] key must fail loud through the seam");
         assert!(
-            parameters_from_str(&toml).is_err(),
-            "an unknown [parameters.runtime] key must fail loud"
+            error.contains("surprise"),
+            "the deny_unknown_fields error must name the injected unknown key: {error}"
         );
     }
 
     #[test]
     fn parameters_block_rejects_unknown_backtest_key() {
         let toml = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -2300,6 +2309,7 @@ mod tests {
             requote_min_interval_ms = 500
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
+            VALID_MARKETS_TOML,
             r#"
             [backtest]
             verdict = "pass"
@@ -2343,9 +2353,12 @@ mod tests {
             catalog_data_types = ["OrderBookDelta", "TradeTick"]
             "#
         );
+        let parameters: Value = toml::from_str(&toml).expect("raw [parameters] toml parses");
+        let error = deserialize_parameters_block(&parameters)
+            .expect_err("an unknown [parameters.backtest] key must fail loud through the seam");
         assert!(
-            parameters_from_str(&toml).is_err(),
-            "an unknown [parameters.backtest] key must fail loud"
+            error.contains("surprise"),
+            "the deny_unknown_fields error must name the injected unknown key: {error}"
         );
     }
 
@@ -2381,7 +2394,7 @@ mod tests {
     #[test]
     fn parameters_block_rejects_unknown_market_portfolio_key() {
         let toml = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             r#"
             [runtime]
             trade_flow_window_secs = 600
@@ -2398,11 +2411,16 @@ mod tests {
             min_slot_notional = 100.0
             surprise = true
             "#,
+            VALID_MARKETS_TOML,
             valid_backtest_toml()
         );
+        let parameters: Value = toml::from_str(&toml).expect("raw [parameters] toml parses");
+        let error = deserialize_parameters_block(&parameters).expect_err(
+            "an unknown [parameters.market_portfolio] key must fail loud through the seam",
+        );
         assert!(
-            parameters_from_str(&toml).is_err(),
-            "an unknown [parameters.market_portfolio] key must fail loud"
+            error.contains("surprise"),
+            "the deny_unknown_fields error must name the injected unknown key: {error}"
         );
     }
 
@@ -2621,6 +2639,25 @@ mod tests {
             first_market_slug_token(&derived),
             None,
             "a free-form-slug family must not receive a derived token"
+        );
+    }
+
+    #[test]
+    fn deserialize_parameters_block_rejects_unknown_market_row_key() {
+        // The maker seam pre-processes each raw [[parameters.markets]] row before
+        // try_into; deny_unknown_fields must still fire on a market row. Inject one
+        // unknown key into an otherwise-valid row so the ONLY defect is that key,
+        // proving the rejection is caused by the unknown field surviving the
+        // raw-table seam, not by a missing or derived field.
+        let mut config = valid_strategy_config_with_hash(TEST_ARTIFACT_SHA256);
+        first_market_row_mut(&mut config.parameters)
+            .insert(stringify!(surprise).to_string(), Value::Boolean(true));
+        let error = deserialize_parameters_block(&config.parameters).expect_err(
+            "an unknown [[parameters.markets]] row key must fail closed through the seam",
+        );
+        assert!(
+            error.contains("surprise"),
+            "the deny_unknown_fields error must name the injected unknown market-row key: {error}"
         );
     }
 }

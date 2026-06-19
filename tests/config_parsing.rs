@@ -16,6 +16,8 @@ const CHAINLINK_TEST_FEED_ID_PRIMARY: &str =
     "0x1111111111111111111111111111111111111111111111111111111111111111";
 const CHAINLINK_TEST_FEED_ID_SECONDARY: &str =
     "0x2222222222222222222222222222222222222222222222222222222222222222";
+const ZERO_CHAINLINK_FEED_ID: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Shipped per-asset binary-oracle strategy files. The tracked production root
 /// may enable only a subset, but every shipped strategy must keep validating.
@@ -642,12 +644,9 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
             1,
             "{relative_path} should not ship unused canonical Chainlink feed bindings"
         );
-        // The OFFLINE `resolution_oracle_primary` gate-provider mapping must stay
-        // a single generic placeholder (#551 removes it). The new live
-        // Root `chainlink_data_streams.feed_bindings` carries the real
-        // asset-specific feeds, so these checks are scoped to the gate-provider binding's
-        // `feed_id`, not a whole-file substring (which now legitimately contains
-        // the BTC feed under the root feed catalog).
+        // The strategy mapping uses `configured-reference-price`, but the
+        // report fetch/decode path still needs the real BTC feed id for the
+        // tracked BTC-only live profile.
         let gate_feed_id = feed_bindings[0]
             .get("feed_id")
             .and_then(toml::Value::as_str)
@@ -657,8 +656,26 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
             "{relative_path} gate-provider mapping should not ship the old generic Chainlink fixture feed"
         );
         assert_ne!(
+            gate_feed_id, ZERO_CHAINLINK_FEED_ID,
+            "{relative_path} gate-provider mapping should not ship the placeholder zero Chainlink feed"
+        );
+        assert_eq!(
             gate_feed_id, CHAINLINK_BTC_TESTNET_FEED_ID,
-            "{relative_path} gate-provider mapping should not ship a BTC-specific Chainlink feed"
+            "{relative_path} gate-provider mapping should use the pinned BTC Chainlink feed"
+        );
+        assert_eq!(
+            feed_bindings[0]
+                .get("report_schema_version")
+                .and_then(toml::Value::as_integer),
+            Some(3),
+            "{relative_path} gate-provider mapping should use the Chainlink V3 report schema"
+        );
+        assert_eq!(
+            feed_bindings[0]
+                .get("report_decimal_scale")
+                .and_then(toml::Value::as_integer),
+            Some(18),
+            "{relative_path} gate-provider mapping should use the 18-decimal Chainlink report scale"
         );
         assert_eq!(
             feed_bindings[0]

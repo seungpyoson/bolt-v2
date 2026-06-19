@@ -219,7 +219,7 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 [[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
 resolution_identity = "configured-reference-price"
 value_kind = "price"
-feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
 report_schema_version = 3
 report_decimal_scale = 18
 

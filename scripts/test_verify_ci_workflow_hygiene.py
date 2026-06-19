@@ -618,6 +618,7 @@ jobs:
           path: |
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2
             ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256
+          retention-days: 3
 
   ci-provenance-emit:
     name: ci-provenance-emit
@@ -6810,6 +6811,30 @@ def main() -> int:
     assert_error(
         "ci.yml build upload must use the staged artifact directory",
         BASE_WORKFLOW.replace("${{ steps.managed_artifact.outputs.stage_dir }}", "$RUNNER_TEMP/bolt-v2-binary"),
+    )
+    assert_error(
+        "ci.yml bolt-v2-binary retention-days must be 3",
+        replace_once(
+            BASE_WORKFLOW,
+            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
+            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 30",
+        ),
+    )
+    assert_error(
+        "ci.yml bolt-v2-binary retention-days must be 3",
+        replace_once(
+            BASE_WORKFLOW,
+            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
+            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256",
+        ),
+    )
+    assert_error(
+        "ci.yml bolt-v2-binary retention-days must be 3",
+        replace_once(
+            BASE_WORKFLOW,
+            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3",
+            "          name: bolt-v2-binary\n          path: |\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2\n            ${{ steps.managed_artifact.outputs.stage_dir }}/bolt-v2.sha256\n          retention-days: 3\n          retention-days: 30",
+        ),
     )
     assert_workflows_error(
         "advisory.yml advisories must include deny version",

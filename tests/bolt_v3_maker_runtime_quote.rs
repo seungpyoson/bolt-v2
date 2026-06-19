@@ -2,6 +2,7 @@ use anyhow::Result;
 use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
+    bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
     bolt_v3_maker_order_dispatch::{MakerOrderCommandSink, MakerOrderDispatchOutcome},
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, MakerOrderIntent,
@@ -26,14 +27,18 @@ use bolt_v2::{
         RealizedVolSnapshot,
     },
     bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
+    bolt_v3_trade_flow::SignedTradeFlowConfig,
+    strategies::binary_oracle_maker::mu::MakerMuState,
 };
 use nautilus_common::{
     clock::{Clock, TestClock},
     factories::OrderFactory,
 };
+use nautilus_core::UnixNanos;
 use nautilus_model::{
-    enums::{OrderSide, OrderType, TimeInForce},
-    identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
+    data::TradeTick,
+    enums::{AggressorSide, OrderSide, OrderType, TimeInForce},
+    identifiers::{ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId},
     orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
@@ -757,7 +762,7 @@ fn quote_plan_inputs_with_fair(
     MakerQuotePlanInputs {
         family_key,
         oracle_fair_probability_up,
-        informed_fraction: 0.10,
+        informed_fraction: gate_cleared_informed_fraction(),
         top_of_book: None,
         microprice_weight: 0.0,
         net_position: 0.0,
@@ -772,6 +777,64 @@ fn quote_plan_inputs_with_fair(
         order_notional_target: 10.0,
         maximum_position_notional: 20.0,
     }
+}
+
+/// Mint the toxicity μ these quote-plan fixtures use (0.10) the only way a
+/// `UsableMu` can be obtained: through the fail-closed μ gate. `UsableMu` has no
+/// public constructor — the newtype's whole purpose is that nothing but
+/// [`MakerMuState::usable_mu_for`] can produce one — so this helper drives a real
+/// `MakerMuState` with a deterministic warmup flow (11 buyer + 9 seller unit
+/// trades → |11 − 9| / 20 = 0.10) and reads the gate, exactly as the runtime will.
+fn gate_cleared_informed_fraction() -> UsableMu {
+    const BUYS: u64 = 11;
+    const SELLS: u64 = 9;
+    const STEP_MS: u64 = 1_000;
+    // The SI millisecond → nanosecond factor (the crate's NANOS_PER_MILLI_U64 is
+    // pub(crate) and unreachable from this integration-test crate).
+    const NANOS_PER_MILLI: u64 = 1_000_000;
+    let mut state = MakerMuState::new(
+        MuEstimatorConfig {
+            min_classified_samples: 4,
+        },
+        MuHealthConfig {
+            stale_window_ms: 600_000,
+            mu_min_floor: 0.05,
+        },
+        SignedTradeFlowConfig {
+            window_secs: 600,
+            max_samples: 1_000,
+        },
+    );
+    let instrument = InstrumentId::from("MUFIXTURE.SIM");
+    let mut ts_ms = STEP_MS;
+    let mut observe = |state: &mut MakerMuState, aggressor: AggressorSide, ts_ms: u64| {
+        let ts_ns = ts_ms * NANOS_PER_MILLI;
+        let trade = TradeTick::new_checked(
+            instrument,
+            Price::new(0.50, 2),
+            Quantity::new(1.0, 0),
+            aggressor,
+            TradeId::from(format!("MUFIX{ts_ns}").as_str()),
+            UnixNanos::from(ts_ns),
+            UnixNanos::from(ts_ns),
+        )
+        .expect("valid fixture trade tick");
+        state.observe(&trade);
+    };
+    for _ in 0..BUYS {
+        observe(&mut state, AggressorSide::Buyer, ts_ms);
+        ts_ms += STEP_MS;
+    }
+    for _ in 0..SELLS {
+        observe(&mut state, AggressorSide::Seller, ts_ms);
+        ts_ms += STEP_MS;
+    }
+    // `now_ms` == the newest trade's timestamp, so the flow is fresh and the gate
+    // clears, yielding the 0.10 imbalance magnitude.
+    let now_ms = ts_ms - STEP_MS;
+    state
+        .usable_mu_for(&instrument, now_ms)
+        .expect("warmup flow clears the μ gate")
 }
 
 fn quote_targets() -> bolt_v2::bolt_v3_quoting::QuoteTargets {

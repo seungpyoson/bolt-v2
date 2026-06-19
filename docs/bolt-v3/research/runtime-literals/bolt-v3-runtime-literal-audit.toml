@@ -213,6 +213,14 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT trailing-stop offset type field projected from TOML into the runtime strategy config."
 
 [[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"bolt-v3 in-place modify is fail-closed in Live (not admission-gated; see #835): refusing un-admitted venue mutation for client_order_id={client_order_id}"'''
+context = '''"bolt-v3 in-place modify is fail-closed in Live (not admission-gated; see #835): refusing un-admitted venue mutation for client_order_id={client_order_id}"'''
+classification = "order_execution_live_modify_fail_closed_diagnostic"
+reason = "Fail-loud diagnostic refusing a live in-place venue modify that does not pass submit admission/reservation/fee checks (Option A for #835); error-message template, not a runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_order_intent.rs"
 kind = "number"
 literal = '''0'''

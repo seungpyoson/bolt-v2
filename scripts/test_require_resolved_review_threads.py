@@ -137,16 +137,41 @@ def assert_graphql_next_page_without_cursor_fails_closed() -> None:
         raise AssertionError("hasNextPage without endCursor should fail closed")
 
 
+def assert_graphql_errors_fail_closed_at_extract_boundary() -> None:
+    module = load_script()
+    payload = {
+        "errors": [{"message": "rate limited"}],
+        "data": {
+            "repository": {
+                "pullRequest": {
+                    "reviewThreads": {
+                        "nodes": [],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    }
+                }
+            }
+        },
+    }
+    try:
+        module._extract_review_threads(payload)
+    except module.ReviewThreadGateError as exc:
+        assert "GraphQL returned errors" in str(exc)
+    else:
+        raise AssertionError("GraphQL errors should fail closed at extract boundary")
+
+
 def assert_workflow_uses_base_script_and_review_thread_events() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "Require resolved review threads" in workflow
-    assert "review threads resolved" in workflow
+    assert "Required reviewer resolution gate" in workflow
+    assert "verify review threads are resolved" in workflow
+    assert "Require resolved review threads" not in workflow
     assert "pull_request_review_comment" in workflow
     assert "GitHub Actions does not expose review-thread resolved or reopened events" in workflow
     assert "Native conversation resolution is authoritative at merge" in workflow
     assert "github.event.pull_request.base.sha" in workflow
-    assert "test -f scripts/require_resolved_review_threads.py" in workflow
-    assert "Remove this block after scripts/require_resolved_review_threads.py exists on main" in workflow
+    assert "Bootstrap review-thread gate script" not in workflow
+    assert "test -f scripts/require_resolved_review_threads.py" not in workflow
+    assert "Remove this block after scripts/require_resolved_review_threads.py exists on main" not in workflow
     assert "python3 scripts/require_resolved_review_threads.py" in workflow
 
 
@@ -164,6 +189,7 @@ def main() -> int:
     assert_non_thread_payload_is_rejected()
     assert_graphql_non_object_nodes_fail_closed()
     assert_graphql_next_page_without_cursor_fails_closed()
+    assert_graphql_errors_fail_closed_at_extract_boundary()
     assert_workflow_uses_base_script_and_review_thread_events()
     assert_thread_url_uses_real_graphql_shape()
     print("OK: required resolved review-thread gate self-tests passed.")

@@ -26,7 +26,6 @@ websocket_endpoint = "wss://streams.chain.link"
 websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
-heartbeat_message = "ping"
 reconnect_timeout_ms = 5000
 reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
@@ -54,7 +53,6 @@ websocket_endpoint = "wss://streams.chain.link"
 websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
-heartbeat_message = "ping"
 reconnect_timeout_ms = 5000
 reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
@@ -90,7 +88,6 @@ websocket_endpoint = "wss://streams.chain.link"
 websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
-heartbeat_message = "ping"
 reconnect_timeout_ms = 5000
 reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
@@ -121,7 +118,6 @@ websocket_endpoint = "wss://streams.chain.link"
 websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
-heartbeat_message = "ping"
 reconnect_timeout_ms = 5000
 reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
@@ -142,6 +138,42 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
             .any(|message| message.contains("reconnect_max_attempts")
                 && message.contains("must be explicitly set to 0")),
         "enabled Chainlink internal reconnect should fail validation, got: {errors:#?}"
+    );
+}
+
+#[test]
+fn chainlink_reference_rejects_text_heartbeat_message() {
+    let client = client_from_toml(
+        r#"
+venue = "CHAINLINK_REFERENCE_PRICE"
+
+[data]
+websocket_endpoint = "wss://streams.chain.link"
+websocket_path = "/api/v1/ws"
+transport_backend = "sockudo"
+heartbeat_secs = 5
+heartbeat_message = "ping"
+reconnect_timeout_ms = 5000
+reconnect_delay_initial_ms = 250
+reconnect_delay_max_ms = 5000
+reconnect_backoff_factor = 1.5
+reconnect_jitter_ms = 100
+reconnect_max_attempts = 0
+idle_timeout_ms = 10000
+
+[secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+"#,
+    );
+    let errors = validate_client_block("chainlink_reference", &client);
+    assert!(
+        errors.iter().any(|message| {
+            message.contains("heartbeat_message")
+                && message.contains("must be omitted")
+                && message.contains("protocol Ping")
+        }),
+        "Chainlink text heartbeat should fail validation, got: {errors:#?}"
     );
 }
 

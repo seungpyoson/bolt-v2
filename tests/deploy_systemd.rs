@@ -25,6 +25,18 @@ fn systemd_unit_requires_srv_mountpoint() {
 }
 
 #[test]
+fn systemd_unit_allows_reference_live_probe_startup_window() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
+
+    assert!(
+        unit.contains("TimeoutStartSec=180"),
+        "systemd unit must allow the TOML-owned reference_live_probe duration plus connect/SSM overhead"
+    );
+}
+
+#[test]
 fn systemd_unit_runs_rust_prestart_storage_check() {
     let unit_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
@@ -35,6 +47,20 @@ fn systemd_unit_runs_rust_prestart_storage_check() {
             "ExecStartPre=/opt/bolt-v2/bolt-v2 ops prestart-check --config /opt/bolt-v2/config/live.toml"
         ),
         "systemd unit must reject wrong-disk or low-space live config before starting"
+    );
+}
+
+#[test]
+fn systemd_unit_runs_reference_live_probe_before_start() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
+
+    assert!(
+        unit.contains(
+            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops reference-live-probe --config /opt/bolt-v2/config/live.toml"
+        ),
+        "systemd unit must prove Chainlink and PolyResearch reference streams before starting"
     );
 }
 

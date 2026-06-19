@@ -1,7 +1,7 @@
 //! PolyResearch reference-price WebSocket authentication helpers and provider
 //! binding.
 //!
-//! PRR auth is a query parameter named `key`. Bolt keeps the endpoint and
+//! PRR auth is a query parameter named `apiKey`. Bolt keeps the endpoint and
 //! credential as separate SSM values, then constructs the credentialed URL once
 //! at the provider edge.
 
@@ -63,8 +63,7 @@ use crate::{
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
 
-const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";
-const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";
+const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";
 const POLYRESEARCH_PRICE_FEED_FRAME_TYPE: &str = "price_feed";
 const POLYRESEARCH_SUBSCRIBED_FRAME_TYPE: &str = "subscribed";
 const POLYRESEARCH_SUBSCRIBE_ACTION: &str = "subscribe";
@@ -1277,7 +1276,7 @@ fn polyresearch_reference_message_handler(
     })
 }
 
-fn polyresearch_websocket_client_config(
+pub(crate) fn polyresearch_websocket_client_config(
     config: &PolyResearchReferencePriceClientConfig,
     url: Url,
 ) -> WebSocketConfig {
@@ -1414,9 +1413,6 @@ fn polyresearch_credential_query_field(url: &Url) -> Option<&'static str> {
         if field.eq_ignore_ascii_case(POLYRESEARCH_API_KEY_QUERY_FIELD) {
             return Some(POLYRESEARCH_API_KEY_QUERY_FIELD);
         }
-        if field.eq_ignore_ascii_case(POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD) {
-            return Some(POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD);
-        }
     }
     None
 }
@@ -1512,6 +1508,34 @@ pub fn map_adapters(
     })
 }
 
+pub(crate) fn reference_price_client_config(
+    client_key: &str,
+    client: &ClientBlock,
+    resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Result<PolyResearchReferencePriceClientConfig, BoltV3AdapterMappingError> {
+    let value =
+        client
+            .data
+            .as_ref()
+            .ok_or_else(|| BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "data",
+                message: format!("clients.{client_key}.data must be configured"),
+            })?;
+    let secrets = secrets_for(client_key, resolved)?;
+    map_data(client_key, value, secrets)
+}
+
+pub(crate) fn reference_price_websocket_config(
+    config: &PolyResearchReferencePriceClientConfig,
+) -> Result<WebSocketConfig, String> {
+    let url = polyresearch_websocket_url(&PolyResearchAuthConfig {
+        websocket_endpoint: config.websocket_endpoint.clone(),
+        api_key: config.api_key.as_str().to_string(),
+    })?;
+    Ok(polyresearch_websocket_client_config(config, url))
+}
+
 fn map_data(
     client_key: &str,
     value: &toml::Value,
@@ -1596,7 +1620,7 @@ mod tests {
         config.reconnect_max_attempts = PolyResearchReconnectMaxAttempts::Limited(3);
         let websocket = polyresearch_websocket_client_config(
             &config,
-            Url::parse("wss://ws.polyresearch.xyz/reference?key=test")
+            Url::parse("wss://ws.polyresearch.xyz/reference?apiKey=test")
                 .expect("fixture URL should parse"),
         );
         assert_eq!(websocket.reconnect_max_attempts, Some(3));
@@ -1604,7 +1628,7 @@ mod tests {
         config.reconnect_max_attempts = PolyResearchReconnectMaxAttempts::Unlimited;
         let websocket = polyresearch_websocket_client_config(
             &config,
-            Url::parse("wss://ws.polyresearch.xyz/reference?key=test")
+            Url::parse("wss://ws.polyresearch.xyz/reference?apiKey=test")
                 .expect("fixture URL should parse"),
         );
         assert_eq!(websocket.reconnect_max_attempts, None);

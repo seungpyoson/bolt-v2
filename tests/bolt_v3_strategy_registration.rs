@@ -2066,7 +2066,6 @@ websocket_endpoint = "wss://streams.chain.link"
 websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
-heartbeat_message = "ping"
 reconnect_timeout_ms = 5000
 reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000

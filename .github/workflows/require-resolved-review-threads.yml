@@ -1,4 +1,4 @@
-name: Require resolved review threads
+name: Required reviewer resolution gate
 
 on:
   pull_request:
@@ -29,10 +29,11 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 jobs:
   require-resolved-review-threads:
-    name: review threads resolved
+    name: verify review threads are resolved
     if: >-
       ${{ github.event.pull_request.base.ref == 'main'
           && github.event.pull_request.draft == false }}
@@ -46,21 +47,6 @@ jobs:
           repository: ${{ github.event.pull_request.base.repo.full_name }}
           ref: ${{ github.event.pull_request.base.sha }}
 
-      - name: Bootstrap review-thread gate script
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if test -f scripts/require_resolved_review_threads.py; then
-            exit 0
-          fi
-
-          # Bootstrap-only path for the PR that first introduces this workflow.
-          # Trust model: this introducing PR is not protected by this new check;
-          # normal branch protection and human review remain the merge gate.
-          # Remove this block after scripts/require_resolved_review_threads.py exists on main.
-          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
-          git checkout --force FETCH_HEAD -- scripts/require_resolved_review_threads.py
-
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
@@ -71,4 +57,10 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_GRAPHQL_URL: ${{ github.graphql_url }}
+          # Required merge context: a commit status, not this Actions job name,
+          # so a cancelled or superseded run cannot leave a terminal "cancelled"
+          # required check that blocks the merge. The main ruleset must require
+          # this status context ("required review threads resolved") in place of
+          # the "verify review threads are resolved" job name.
+          REVIEW_THREAD_GATE_STATUS_CONTEXT: required review threads resolved
         run: python3 scripts/require_resolved_review_threads.py

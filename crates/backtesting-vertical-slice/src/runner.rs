@@ -871,12 +871,50 @@ fn instrument_settlement_data(manifest: &BacktestingRunManifest) -> Result<Vec<D
                     row.nt_instrument_id
                 )
             })?;
+        // The settlement close must route to a declared backtest venue, else NT
+        // sends it to no exchange and the held position silently never redeems.
+        let settlement_venue = instrument_id.venue.to_string();
+        let venue_config = std::iter::once(&manifest.venue)
+            .chain(manifest.additional_venues.iter())
+            .find(|venue| venue.nt_venue == settlement_venue)
+            .with_context(|| {
+                format!(
+                    "instrument_settlements[{index}] {} settles on venue {settlement_venue}, which is not a declared backtest venue",
+                    row.nt_instrument_id
+                )
+            })?;
+        // If the settlement currency is declared, the holding venue MUST be funded
+        // in it. NT's multi-currency portfolio silently drops a realized PnL booked
+        // in a currency the account was never funded in (the loss vanishes from
+        // stats_pnls), so this binding is the difference between a real P/L and a
+        // green run that lost the number.
+        if let Some(currency) = row.settlement_currency.as_deref() {
+            let funded = venue_config.starting_balances.iter().any(|balance| {
+                balance
+                    .split_whitespace()
+                    .last()
+                    .is_some_and(|funded_currency| funded_currency == currency)
+            });
+            ensure!(
+                funded,
+                "instrument_settlements[{index}] {} settles in {currency} but venue {settlement_venue} is not funded in it; NautilusTrader would silently drop the realized PnL",
+                row.nt_instrument_id
+            );
+        }
         let close_value = row.close_price.trim().parse::<f64>().with_context(|| {
             format!(
                 "parse instrument_settlements[{index}].close_price {:?}",
                 row.close_price
             )
         })?;
+        // Binary options redeem at a payoff in [0,1]; a value outside that range is
+        // a malformed resolution that would book a nonsensical multiple-of-stake P/L
+        // while still passing as the "real market resolution".
+        ensure!(
+            (0.0..=1.0).contains(&close_value),
+            "instrument_settlements[{index}] {} close_price {close_value} is outside the binary [0,1] redemption range",
+            row.nt_instrument_id
+        );
         let close_price = Price::new_checked(close_value, row.price_precision)
             .map_err(|error| anyhow::anyhow!("{error}"))
             .with_context(|| {
@@ -2180,9 +2218,13 @@ mod tests {
     fn issue_789_first_real_free_data_taker_pl() -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create issue #789 temp catalog root")?;
         let okx_quotes = seeded_quote_table(
-            &gunzip_fixture(include_bytes!(
-                "../tests/fixtures/issue_789_first_pl/okx_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
-            ))?,
+            &gunzip_pinned_fixture(
+                include_bytes!(
+                    "../tests/fixtures/issue_789_first_pl/okx_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
+                ),
+                ISSUE_789_OKX_FIXTURE_SHA256,
+                "okx",
+            )?,
             okx_seeded_l2_mapping(),
             QuoteTableSpec {
                 source_binding: "okx-official-historical-l2-400lv",
@@ -2194,9 +2236,13 @@ mod tests {
             },
         )?;
         let bybit_quotes = seeded_quote_table(
-            &gunzip_fixture(include_bytes!(
-                "../tests/fixtures/issue_789_first_pl/bybit_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
-            ))?,
+            &gunzip_pinned_fixture(
+                include_bytes!(
+                    "../tests/fixtures/issue_789_first_pl/bybit_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
+                ),
+                ISSUE_789_BYBIT_FIXTURE_SHA256,
+                "bybit",
+            )?,
             bybit_seeded_l2_mapping(),
             QuoteTableSpec {
                 source_binding: "bybit-quote-saver-ob200",
@@ -2310,6 +2356,9 @@ mod tests {
                 price_precision: up_precision,
                 ts_event_ns: ISSUE_789_END_NS as u64,
                 ts_init_ns: ISSUE_789_END_NS as u64,
+                // The binary settles in pUSD (NT Polymarket collateral); bind it so a
+                // mis-funded venue fails loud instead of silently dropping the loss.
+                settlement_currency: Some("pUSD".to_string()),
             },
             ManifestInstrumentSettlementInput {
                 nt_instrument_id: down_instrument_id.clone(),
@@ -2317,6 +2366,7 @@ mod tests {
                 price_precision: down_precision,
                 ts_event_ns: ISSUE_789_END_NS as u64,
                 ts_init_ns: ISSUE_789_END_NS as u64,
+                settlement_currency: Some("pUSD".to_string()),
             },
         ];
 
@@ -2355,7 +2405,7 @@ mod tests {
             output.config_override_report
         );
         println!(
-            "issue_789_feed_labels=signal:OKX real snapshot-seeded L2 BBO; rv:OKX real snapshot-seeded L2 BBO; rv:Bybit real snapshot-seeded L2 BBO; tradable:PMXT real R2 archive book/price_change/trades; strike/reference:reconstructed-from-spot not raw Chainlink"
+            "issue_789_feed_labels=signal:OKX real snapshot-seeded L2 BBO; rv:OKX real snapshot-seeded L2 BBO; rv:Bybit real snapshot-seeded L2 BBO; tradable:PMXT real R2 archive book/price_change/trades WITH converter-synthesized uncross deltas (not byte-faithful); strike/reference:reconstructed-from-spot not raw Chainlink; fidelity:ZERO-LATENCY single-clock replay (spot/reference on exchange event-time, fast-venue age pinned 0; ~120ms live spot->PM lead NOT modeled) — the P/L is a reconstructed-replay figure, not latency-aware"
         );
         println!(
             "issue_789_guard total_orders={} total_positions={} armed={} traded={} signal_quote_received={} rv_ready={} price_to_beat_received={} reference_fresh={} latest_market_id={:?} latest_spot_price={:?} latest_price_to_beat={:?} latest_reference={:?} rv_sources={:?} rv_blockers={:?}",
@@ -2386,22 +2436,52 @@ mod tests {
         ensure!(output.result.total_orders > 0, "{}", did_not_arm());
         ensure!(output.result.total_positions > 0, "{}", did_not_arm());
         ensure!(guard.traded, "{}", did_not_arm());
+        // The override keeps OKX + Bybit RV sources, but min_ready_sources=1 means
+        // OKX alone satisfies readiness — so rv_ready does NOT prove Bybit fed the
+        // surface. Assert Bybit actually contributed, else a silent Bybit routing
+        // drop (e.g. an instrument-id drift) would still report "OKX+Bybit RV".
+        ensure!(
+            guard
+                .latest_realized_volatility_sources_used
+                .iter()
+                .any(|source| source.to_ascii_lowercase().contains("bybit")),
+            "issue #789 RV claims OKX+Bybit but the Bybit source never contributed (likely a routing/id drift); sources_used={:?}",
+            guard.latest_realized_volatility_sources_used
+        );
         ensure!(
             !output.result.stats_pnls.is_empty(),
             "issue #789 run traded but stats_pnls was empty"
         );
         // The held position must redeem at the real resolution and book a realized
-        // P/L. A zero total here means the settlement close did not settle the
-        // position — the first real dollar P/L would be silently lost.
-        let realized_pnl_total: f64 = output
+        // LOSS in the binary's settlement currency (pUSD). Assert the pUSD leg
+        // specifically, with sign and magnitude: a cross-currency sum can hide a
+        // silently-dropped pUSD leg (NT drops PnL booked in an unfunded currency)
+        // behind a small non-zero P/L in another currency, and a bare `!= 0` also
+        // passes a direction flip or a fill mis-scale. Pinning the proven value
+        // makes any drift fail loud for re-confirmation rather than silently
+        // re-baselining the headline first real P/L.
+        const ISSUE_789_EXPECTED_PUSD_PNL: f64 = -0.9462;
+        const ISSUE_789_PUSD_PNL_TOLERANCE: f64 = 0.05;
+        let pusd_pnl = output
             .result
             .stats_pnls
-            .values()
-            .filter_map(|per_currency| per_currency.get("PnL (total)"))
-            .sum();
+            .get("pUSD")
+            .and_then(|per_stat| per_stat.get("PnL (total)"))
+            .copied()
+            .with_context(|| {
+                format!(
+                    "issue #789 settled but no pUSD realized P/L leg is present — the loss was dropped (the settlement currency was likely not funded); stats_pnls={:?}",
+                    output.result.stats_pnls
+                )
+            })?;
         ensure!(
-            realized_pnl_total.abs() > 1e-9,
-            "issue #789 position settled but realized P/L total was 0.0 — instrument settlement did not book a redemption (stats_pnls={:?})",
+            pusd_pnl < 0.0,
+            "issue #789 first real P/L must be a loss (taker pays the spread); got pUSD P/L {pusd_pnl} (stats_pnls={:?})",
+            output.result.stats_pnls
+        );
+        ensure!(
+            (pusd_pnl - ISSUE_789_EXPECTED_PUSD_PNL).abs() < ISSUE_789_PUSD_PNL_TOLERANCE,
+            "issue #789 realized pUSD P/L {pusd_pnl} drifted beyond tolerance from the proven {ISSUE_789_EXPECTED_PUSD_PNL}; re-confirm the result before updating this anchor (stats_pnls={:?})",
             output.result.stats_pnls
         );
         Ok(())
@@ -2425,9 +2505,15 @@ mod tests {
                 "signal": "OKX real snapshot-seeded L2 BBO",
                 "rv_okx": "OKX real snapshot-seeded L2 BBO",
                 "rv_bybit": "Bybit real snapshot-seeded L2 BBO",
-                "tradable": "PMXT real R2 archive book/price_change/trades",
+                "tradable": "PMXT real R2 archive book/price_change/trades, with converter-synthesized uncross deltas (not byte-faithful)",
                 "strike": "reconstructed-from-spot, not raw Chainlink",
                 "reference": "reconstructed-from-spot, not raw Chainlink"
+            },
+            "fidelity": {
+                "inter_feed_latency_collapsed": true,
+                "clock_model": "single-clock zero-latency replay: spot/reference/strike on exchange event-time, fast-venue age pinned to 0; the ~120ms live spot->PM lead is NOT modeled",
+                "tradable_book": "real R2 archive with converter-synthesized uncross Delete deltas (pruned crossings the archive omitted), not a byte-faithful raw replay",
+                "note": "the realized P/L is a zero-latency reconstructed-replay figure, not a latency-aware live-faithful P/L"
             },
             "total_orders": output.result.total_orders,
             "total_positions": output.result.total_positions,
@@ -2483,6 +2569,32 @@ mod tests {
         flate2::read::GzDecoder::new(bytes)
             .read_to_string(&mut text)
             .context("gunzip issue #789 fixture")?;
+        Ok(text)
+    }
+
+    /// sha256 of each issue #789 fixture's DECOMPRESSED content, pinning the
+    /// committed `.gz` bytes to the exact rows replayed. The whole −$0.95 P/L
+    /// derives from these three archives; without a pin a single edited price or
+    /// size would change the result undetectably (the gzip CRC only catches
+    /// accidental corruption, not a deliberate edit). On intentional regeneration
+    /// from the public archives named in each `payload_id`, recompute with
+    /// `gunzip -c <fixture>.gz | shasum -a 256` and update the matching constant.
+    const ISSUE_789_OKX_FIXTURE_SHA256: &str =
+        "36f749da9e40ff88cbdabff2b070c8086102d5f136168e3c648f1ec7dd8651d0";
+    const ISSUE_789_BYBIT_FIXTURE_SHA256: &str =
+        "4df60a46aaf424222c42a2fb2ea42b43b599065c0709854f8e89c9b92646dfea";
+    const ISSUE_789_PMXT_FIXTURE_SHA256: &str =
+        "5b108b1fb82701173a05aac734089f3cddf6f133fbadc4abad47fda40b92dffb";
+
+    /// Decompress a committed fixture and fail loud unless its content hash matches
+    /// the pinned value, so any post-commit edit to the replayed data is caught.
+    fn gunzip_pinned_fixture(bytes: &[u8], expected_sha256: &str, name: &str) -> Result<String> {
+        let text = gunzip_fixture(bytes)?;
+        let actual = sha256_hex(text.as_bytes());
+        ensure!(
+            actual == expected_sha256,
+            "issue #789 fixture {name} content hash {actual} != pinned {expected_sha256}: the committed bytes were altered or regenerated. Re-confirm provenance against the documented public archive before trusting any P/L derived from it."
+        );
         Ok(text)
     }
 
@@ -2595,24 +2707,43 @@ mod tests {
         ts_init_ns: u64,
     }
 
+    /// The binary resolves AT market end; its outcome is read from the terminal
+    /// best-bid of the same PMXT rows that drive the backtest (single source of
+    /// truth). The terminal tick lands just after the half-open window end — the
+    /// resolution is observed at the close — so the read is BOUNDED to this
+    /// immediate post-close window rather than accepting an arbitrary future row.
+    const ISSUE_789_RESOLUTION_OBSERVATION_TOLERANCE_NS: i64 = 1_000_000_000;
+
     /// Terminal (latest-`ts_init`) best-bid for a PMXT token, used to read the
     /// real binary resolution: the winning outcome's book converges to ~1.0.
     fn issue_789_terminal_best_bid(rows: &[Issue789PmxtCsvRow], token_id: &str) -> Result<f64> {
-        rows.iter()
+        let (terminal_ts, terminal_bid) = rows
+            .iter()
             .filter(|row| row.asset_id == token_id)
             .filter_map(|row| row.best_bid.as_deref().map(|bid| (row.ts_init_ns, bid)))
             .max_by_key(|(ts, _)| *ts)
-            .map(|(_, bid)| bid)
-            .with_context(|| format!("no terminal best_bid for token {token_id}"))?
+            .with_context(|| format!("no terminal best_bid for token {token_id}"))?;
+        let end_ns = ISSUE_789_END_NS as u64;
+        let max_resolution_ns =
+            end_ns.saturating_add(ISSUE_789_RESOLUTION_OBSERVATION_TOLERANCE_NS as u64);
+        ensure!(
+            (end_ns..=max_resolution_ns).contains(&terminal_ts),
+            "issue #789 resolution read for token {token_id} at ts {terminal_ts} is outside the post-close resolution bound [{end_ns}, {max_resolution_ns}]; the terminal tick must be the immediate at-/post-close observation, not arbitrary future data"
+        );
+        terminal_bid
             .trim()
             .parse::<f64>()
             .with_context(|| format!("parse terminal best_bid for token {token_id}"))
     }
 
     fn issue_789_pmxt_rows() -> Result<Vec<Issue789PmxtCsvRow>> {
-        let csv_text = gunzip_fixture(include_bytes!(
-            "../tests/fixtures/issue_789_first_pl/pmxt_btc_updown_5m_1776816000_rows.csv.gz"
-        ))?;
+        let csv_text = gunzip_pinned_fixture(
+            include_bytes!(
+                "../tests/fixtures/issue_789_first_pl/pmxt_btc_updown_5m_1776816000_rows.csv.gz"
+            ),
+            ISSUE_789_PMXT_FIXTURE_SHA256,
+            "pmxt",
+        )?;
         csv::Reader::from_reader(csv_text.as_bytes())
             .deserialize()
             .collect::<std::result::Result<Vec<Issue789PmxtCsvRow>, csv::Error>>()

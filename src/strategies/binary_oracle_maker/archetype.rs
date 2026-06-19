@@ -1589,6 +1589,32 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_updown_noncanonical_cadence_slug_pair() {
+        // GLM F3 (PR #822): the #841 cadence->slug contract is wired into the maker
+        // LOAD gate (updown::validate_maker_market_target -> validate_cadence_slug_contract).
+        // No existing maker-gate test exercised it: a VALID-charset but NON-canonical
+        // slug on a VALID cadence clears every other check (underlying/cadence/charset/
+        // static), so deleting the contract call would go uncaught. Differential guard:
+        // cadence_seconds=3600 with slug "2h" (lowercase + digit, non-empty, != the
+        // canonical "1h") is rejected ONLY by the contract rule. A non-canonical slug
+        // silently fails to resolve at runtime (selection derives the market from
+        // expected_cadence_slug_token), so it must fail CLOSED at load. Removing the
+        // contract call empties this error channel and fails the test.
+        let markets = vec![MarketBindingParametersBlock {
+            cadence_seconds: 3_600,
+            cadence_slug_token: "2h".to_string(),
+            ..market_declaration("eth-hourly")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("when target.cadence_secs is 3600")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_market_with_empty_underlying_asset() {
         // PR #822 review (gemini-code-assist): underlying_asset should be validated
         // non-empty at LOAD. It already is — the per-family maker-target validator

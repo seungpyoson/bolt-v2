@@ -71,12 +71,13 @@ pub fn write_private_new_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoE
 
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
-    configure_private_file_options(&mut options);
+    configure_file_options(&mut options, PRIVATE_ATOMIC_FILE_MODE);
 
     let mut file = options.open(path).map_err(|source| AtomicIoError {
         path: path.to_path_buf(),
         source,
     })?;
+    enforce_exact_file_mode(&file, path, PRIVATE_ATOMIC_FILE_MODE)?;
 
     if let Err(source) = file.write_all(bytes).and_then(|()| file.sync_all()) {
         let _ = fs::remove_file(path);

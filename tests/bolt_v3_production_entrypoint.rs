@@ -5,6 +5,33 @@
 //! `LiveNode::run` call. This is a best-effort textual guard; it is not
 //! a compile-time proof.
 
+fn top_level_function_body<'a>(source: &'a str, marker: &str) -> &'a str {
+    let marker_start = source
+        .find(marker)
+        .unwrap_or_else(|| panic!("source must contain `{marker}`"));
+    let after_marker = &source[marker_start + marker.len()..];
+    let open_offset = after_marker
+        .find('{')
+        .unwrap_or_else(|| panic!("`{marker}` must have a function body"));
+    let body_start = marker_start + marker.len() + open_offset;
+    let mut depth = 0usize;
+    for (offset, character) in source[body_start..].char_indices() {
+        match character {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth
+                    .checked_sub(1)
+                    .unwrap_or_else(|| panic!("`{marker}` has unbalanced braces"));
+                if depth == 0 {
+                    return &source[body_start..=body_start + offset];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{marker}` function body must close");
+}
+
 #[test]
 fn main_uses_bolt_v3_runner_wrapper_only() {
     let source = include_str!("../src/main.rs");
@@ -100,6 +127,29 @@ fn data_client_census_builds_node_before_entering_tokio_runtime() {
     assert!(
         !census_fn.contains("run_bolt_v3_data_client_census(&loaded"),
         "data-client census must not build SSM-backed runtime state from inside LocalSet::run_until"
+    );
+}
+
+#[test]
+fn ops_exposes_no_overwrite_kill_switch_store_bootstrap() {
+    let source = include_str!("../src/main.rs");
+    let init_fn = top_level_function_body(source, "fn run_init_kill_switch_store");
+
+    assert!(
+        source.contains("InitKillSwitchStore"),
+        "ops CLI must expose an explicit kill-switch store bootstrap command"
+    );
+    assert!(
+        init_fn.contains("KillSwitchStore::from_root_config_path"),
+        "bootstrap command must derive the store path from risk.kill_switch.state_path"
+    );
+    assert!(
+        init_fn.contains("bootstrap_initial_armed_loss_snapshot()"),
+        "bootstrap command must use the no-overwrite Armed+zero-loss store writer"
+    );
+    assert!(
+        !init_fn.contains("write_state_with_loss_snapshot"),
+        "bootstrap command must not bypass the no-overwrite helper"
     );
 }
 

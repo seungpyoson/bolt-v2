@@ -14,7 +14,7 @@ use std::{
 
 use nautilus_common::enums::{Environment, LogLevel};
 use nautilus_model::{
-    enums::OmsType,
+    enums::{OmsType, OrderType, TimeInForce},
     identifiers::{AccountId, ClientId, InstrumentId, TraderId, Venue},
 };
 use serde::{Deserialize, Serialize};
@@ -281,6 +281,8 @@ pub struct KillSwitchConfigBlock {
     pub enabled: bool,
     pub state_path: String,
     pub max_state_file_bytes: u64,
+    pub max_utc_daily_realized_loss: String,
+    pub flatten_open_positions_on_breach: bool,
     pub action_retry_interval_ms: u64,
     pub action_retry_timeout_ms: u64,
     pub mandatory_proof_max_age_ms: u64,
@@ -291,6 +293,45 @@ pub struct KillSwitchConfigBlock {
     pub authorized_operator_ids: Vec<String>,
     pub account_ids: Vec<String>,
     pub instrument_ids: Vec<String>,
+    pub cancel: Option<KillSwitchCancelConfigBlock>,
+    pub flatten: Option<KillSwitchFlattenConfigBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KillSwitchCancelConfigBlock {
+    pub enabled: bool,
+    pub retry_max_attempts: u32,
+    pub retry_timeout_ms: u64,
+    pub retry_backoff_ms: u64,
+    pub source_freshness_max_age_ms: u64,
+    pub mandatory_surfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KillSwitchFlattenConfigBlock {
+    pub enabled: bool,
+    pub retry_max_attempts: u32,
+    pub retry_timeout_ms: u64,
+    pub retry_backoff_ms: u64,
+    pub source_freshness_max_age_ms: u64,
+    pub max_position_proof_age_ms: u64,
+    pub route_kind: KillSwitchFlattenRouteKindConfig,
+    pub max_live_order_count: u32,
+    pub max_notional_per_order: String,
+    pub order_type: OrderType,
+    pub time_in_force: TimeInForce,
+    pub is_post_only: bool,
+    pub is_reduce_only: bool,
+    pub is_quote_quantity: bool,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KillSwitchFlattenRouteKindConfig {
+    PerStrategyActionPort,
+    LiveNodeCommandRouter,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

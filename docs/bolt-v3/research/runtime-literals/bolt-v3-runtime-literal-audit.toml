@@ -4317,6 +4317,30 @@ classification = "operator_artifact_cli_output_schema"
 reason = "This is the redacted CLI output field for the hash of the configured Polymarket HTTP base URL."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"kill_switch_store_init_completed"'''
+context = '''const KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: &str = "kill_switch_store_init_completed";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field reporting that the kill-switch initial Armed store bootstrap completed."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"state_path"'''
+context = '''const KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: &str = "state_path";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the configured kill-switch state_path that was initialized."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"{}"'''
+context = '''println!("{}", serde_json::to_string_pretty(&output)?);'''
+classification = "operator_artifact_cli_output_format"
+reason = "This is the CLI print format string for already-serialized redacted operator JSON output; no runtime value is hardcoded."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = '''"http://"'''
@@ -6845,12 +6869,196 @@ classification = "kill_switch_trigger_kind_hash_label"
 reason = "Stable trigger-kind label included in halt-id derivation for loss-governor breaches; not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
+literal = '''64'''
+context = '''pub(crate) const SHA256_HEX_DIGEST_LEN: usize = 64;'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Shared SHA-256 hex digest length constant; single source for the digest-shape guards across the kill-switch action-router/cancel/flatten modules and loss-governor recovery validation. Not an operator runtime value.'''
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "number"
+literal = '''2'''
+context = '''pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 2;'''
+classification = "kill_switch_store_schema_version"
+reason = "Durable state-file schema version for currency-aware loss snapshot recovery; not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_kill_switch_store.rs"
 kind = "number"
 literal = '''1'''
-context = '''pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 1;'''
-classification = "kill_switch_store_schema_version"
-reason = "Durable state-file schema version for forward-compatible recovery; not an operator runtime value."
+context = '''let read_limit = self.max_state_file_bytes.saturating_add(1);'''
+classification = "kill_switch_store_oversize_read_sentinel"
+reason = "One-byte oversize sentinel used to distinguish exactly-at-limit reads from oversized durable state files; the limit itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "string"
+literal = '''"kill-switch state file {} is {bytes} bytes, exceeding the {max_bytes} byte limit"'''
+context = '''"kill-switch state file {} is {bytes} bytes, exceeding the {max_bytes} byte limit",'''
+classification = "kill_switch_store_oversize_error_template"
+reason = "Operator-facing error template for the TOML-owned max_state_file_bytes guard; not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_kill_switch_store.rs"
+kind = "string"
+literal = '''b"!"'''
+context = '''write_private_atomic_file(&self.path, b"!")?;'''
+classification = "kill_switch_store_invalid_sentinel"
+reason = "Single-byte invalid durable-state marker used to force fail-closed recovery after write failure; not operator configurable."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "number"
+literal = '''1_000_000'''
+context = '''const NANOS_PER_MILLISECOND: u64 = 1_000_000;'''
+classification = "kill_switch_loss_protection_time_unit_conversion"
+reason = "Fixed nanoseconds-per-millisecond unit conversion used with TOML-owned retry intervals; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "number"
+literal = '''86_400_000_000_000'''
+context = '''const NANOS_PER_UTC_DAY: u64 = 86_400_000_000_000;'''
+classification = "kill_switch_loss_protection_utc_day_unit"
+reason = "Fixed UTC day nanosecond unit used to bucket realized PnL; the loss threshold is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"corrupt_evidence"'''
+context = '''KillSwitchRecoveryReason::CorruptEvidence => "corrupt_evidence",'''
+classification = "kill_switch_recovery_reason_label"
+reason = "Stable durable-recovery reason label persisted in kill-switch state; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"daily realized loss halt action retry timeout"'''
+context = '''return Err(anyhow!("daily realized loss halt action retry timeout"));'''
+classification = "kill_switch_halt_retry_timeout_error"
+reason = "Operator-facing error message for the TOML-owned halt action retry timeout; not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"flatten-positions"'''
+context = '''const FLATTEN_ACTION_ID: &str = "flatten-positions";'''
+classification = "kill_switch_flatten_action_kind_label"
+reason = "Stable internal action-kind label for the only shared loss-protection action sink; enablement and targets remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"halt_action_retry_timeout"'''
+context = '''const HALT_ACTION_RETRY_TIMEOUT_REASON: &str = "halt_action_retry_timeout";'''
+classification = "kill_switch_halt_retry_timeout_reason_label"
+reason = "Stable state-machine reason label emitted when TOML-owned retry timeout expires; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"kill-switch-recovery-fail-closed"'''
+context = '''const FAIL_CLOSED_RECOVERY_HALT_ID: &str = "kill-switch-recovery-fail-closed";'''
+classification = "kill_switch_fail_closed_recovery_synthetic_halt_id"
+reason = "Stable synthetic halt identifier used only when corrupted or missing durable evidence lacks an existing halt id."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"kill_switch_recovery"'''
+context = '''const RECOVERY_LOSS_TRIGGER_SOURCE: &str = "kill_switch_recovery";'''
+classification = "kill_switch_recovery_trigger_source_label"
+reason = "Stable synthetic source label for re-evaluating restored daily realized loss against the current TOML-owned threshold at restart."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"loss_protection_snapshot_persistence_failed"'''
+context = '''const SNAPSHOT_PERSISTENCE_FAILED_REASON: &str = "loss_protection_snapshot_persistence_failed";'''
+classification = "kill_switch_snapshot_persistence_failure_reason_label"
+reason = "Stable state-machine reason label for durable loss snapshot write failure; not operator configurable."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"max_utc_daily_realized_loss"'''
+context = '''const LOSS_TRIGGER_REASON: &str = "max_utc_daily_realized_loss";'''
+classification = "kill_switch_loss_trigger_reason_label"
+reason = "Stable reason label for the TOML-owned max_utc_daily_realized_loss breach trigger."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"mixed_settlement_currency"'''
+context = '''const MIXED_SETTLEMENT_CURRENCY_REASON: &str = "mixed_settlement_currency";'''
+classification = "kill_switch_mixed_settlement_currency_reason_label"
+reason = "Stable state-machine reason label emitted when realized-PnL observations span multiple settlement currencies and the accumulator fails closed; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"missing_evidence"'''
+context = '''KillSwitchRecoveryReason::MissingEvidence => "missing_evidence",'''
+classification = "kill_switch_recovery_reason_label"
+reason = "Stable durable-recovery reason label persisted in kill-switch state; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"missing_loss_protection_snapshot"'''
+context = '''"missing_loss_protection_snapshot"'''
+classification = "kill_switch_recovery_reason_label"
+reason = "Stable fail-closed recovery label for armed durable state missing its loss-protection snapshot."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"nt_position_adjusted"'''
+context = '''source: "nt_position_adjusted",'''
+classification = "kill_switch_loss_observation_source_label"
+reason = "Stable source label for NT PositionAdjusted realized-PnL observations; not operator configurable."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"nt_position_changed"'''
+context = '''source: "nt_position_changed",'''
+classification = "kill_switch_loss_observation_source_label"
+reason = "Stable source label for NT PositionChanged realized-PnL observations; not operator configurable."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"nt_position_closed"'''
+context = '''source: "nt_position_closed",'''
+classification = "kill_switch_loss_observation_source_label"
+reason = "Stable source label for NT PositionClosed realized-PnL observations; not operator configurable."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"oversized_evidence"'''
+context = '''KillSwitchRecoveryReason::OversizedEvidence => "oversized_evidence",'''
+classification = "kill_switch_recovery_reason_label"
+reason = "Stable durable-recovery reason label persisted in kill-switch state; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"unresolved_halt"'''
+context = '''KillSwitchRecoveryReason::UnresolvedHalt => "unresolved_halt",'''
+classification = "kill_switch_recovery_reason_label"
+reason = "Stable durable-recovery reason label persisted in kill-switch state; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_protection.rs"
+kind = "string"
+literal = '''"unsupported_schema_version"'''
+context = '''KillSwitchRecoveryReason::UnsupportedSchemaVersion => "unsupported_schema_version",'''
+classification = "kill_switch_recovery_reason_label"
+reason = "Stable durable-recovery reason label persisted in kill-switch state; not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_atomic_io.rs"
@@ -6939,14 +7147,6 @@ literal = '''"kill-switch forced reduction is evaluated before normal admission"
 context = '''unreachable!("kill-switch forced reduction is evaluated before normal admission")'''
 classification = "diagnostic_template"
 reason = "Internal invariant diagnostic for a typed submit-admission branch that is evaluated before the normal admission path; it carries no operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "number"
-literal = '''64'''
-context = '''if block.forced_reduction_policy_sha256.len() != 64'''
-classification = "sha256_hex_digest_length_guard"
-reason = "Fixed SHA-256 hex digest length used to validate the TOML-owned forced-reduction policy hash; not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
@@ -17671,3 +17871,75 @@ literal = '''32'''
 context = '''const UNDERLYING_ASSET_MAX_CHARS: usize = 32;'''
 classification = "underlying_asset_length_bound"
 reason = "Maximum character length of an underlying-asset symbol; a structural validation bound (named constant), not a runtime trading value."
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"open"'''
+context = '''"open" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Open),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"inflight"'''
+context = '''"inflight" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Inflight),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"pending-cancel"'''
+context = '''"pending-cancel" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"emulated"'''
+context = '''"emulated" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Emulated),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"algorithm-managed"'''
+context = '''"algorithm-managed" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::AlgorithmManaged),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"contingent"'''
+context = '''"contingent" => Some(BoltV3KillSwitchOutstandingOrderRiskSurface::Contingent),'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"accepted-but-not-terminal"'''
+context = '''"accepted-but-not-terminal" => {'''
+classification = '''kill_switch_cancel_surface_config_token'''
+reason = '''Accepted TOML vocabulary for a mandatory outstanding-order-risk surface; the configured mandatory surface set remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_flatten.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''for right in candidates.iter().skip(index + 1) {'''
+classification = '''kill_switch_flatten_pairwise_scan_offset'''
+reason = '''Loop offset used to compare each NT position-proof candidate pair exactly once when detecting conflicting cache/report evidence; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"order_template"'''
+context = '''"order_template",'''
+classification = '''kill_switch_flatten_order_template_diagnostic_field'''
+reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''

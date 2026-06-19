@@ -345,7 +345,7 @@ fn validate_production_strategy_file(
     if !matches!(
         components.first(),
         Some(std::path::Component::Normal(first))
-            if first == std::ffi::OsStr::new(STRATEGIES_DIR_NAME)
+            if *first == std::ffi::OsStr::new(STRATEGIES_DIR_NAME)
     ) {
         return Err(strategy_file_error(
             configured,

@@ -196,8 +196,11 @@ def _optional_str_env(name: str) -> str | None:
 
 def _read_event_payload() -> dict[str, Any]:
     path = _env("GITHUB_EVENT_PATH")
-    with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ReviewerGateError("GitHub event payload was not valid JSON") from exc
     if not isinstance(payload, dict):
         raise ReviewerGateError("GitHub event payload must be a JSON object")
     return payload
@@ -246,6 +249,8 @@ def _request_json(url: str, token: str) -> tuple[Any, str | None]:
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             return json.load(response), response.headers.get("Link")
+    except json.JSONDecodeError as exc:
+        raise ReviewerGateError("GitHub API response was not valid JSON") from exc
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise ReviewerGateError(f"GitHub API request failed with HTTP {exc.code}: {detail}") from exc
@@ -386,18 +391,30 @@ def run() -> int:
             context=status_context,
         )
 
-    requested = _get_json(_pulls_api_url(repository, pull_number, "requested_reviewers"), token)
-    if not isinstance(requested, dict):
-        raise ReviewerGateError("requested reviewers payload must be a JSON object")
-    reviews = _paginate_json_list(_pulls_api_url(repository, pull_number, "reviews?per_page=100"), token)
-    result = evaluate_reviewer_gate(
-        requested_reviewers=requested,
-        reviews=reviews,
-        reviewer=reviewer,
-        reviewer_id=reviewer_id,
-        reviewer_node_id=reviewer_node_id,
-        head_sha=head_sha,
-    )
+    try:
+        requested = _get_json(_pulls_api_url(repository, pull_number, "requested_reviewers"), token)
+        if not isinstance(requested, dict):
+            raise ReviewerGateError("requested reviewers payload must be a JSON object")
+        reviews = _paginate_json_list(_pulls_api_url(repository, pull_number, "reviews?per_page=100"), token)
+        result = evaluate_reviewer_gate(
+            requested_reviewers=requested,
+            reviews=reviews,
+            reviewer=reviewer,
+            reviewer_id=reviewer_id,
+            reviewer_node_id=reviewer_node_id,
+            head_sha=head_sha,
+        )
+    except ReviewerGateError as exc:
+        if status_context is not None:
+            post_status(
+                repository=repository,
+                sha=head_sha,
+                token=token,
+                state="failure",
+                description=f"Reviewer gate failed: {exc}",
+                context=status_context,
+            )
+        raise
     print(result.message)
     if status_context is not None:
         post_commit_status(

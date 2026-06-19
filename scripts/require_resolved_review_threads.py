@@ -69,8 +69,11 @@ def _optional_str_env(name: str) -> str | None:
 
 def _read_event_payload() -> dict[str, Any]:
     path = _env("GITHUB_EVENT_PATH")
-    with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ReviewThreadGateError("GitHub event payload was not valid JSON") from exc
     if not isinstance(payload, dict):
         raise ReviewThreadGateError("GitHub event payload must be a JSON object")
     return payload

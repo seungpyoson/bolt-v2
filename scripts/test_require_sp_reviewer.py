@@ -322,11 +322,59 @@ def assert_status_mode_marks_pending_before_reviewer_fetch_error() -> None:
             os.environ.clear()
             os.environ.update(old_env)
 
-    assert len(posted) == 1
-    status_url, status_payload = posted[0]
+    assert len(posted) == 2
+    assert posted[0][1]["state"] == "pending"
+    status_url, status_payload = posted[1]
     assert status_url == "https://api.github.test/repos/owner/repo/statuses/current-head"
-    assert status_payload["state"] == "pending"
+    assert status_payload["state"] == "failure"
     assert status_payload["context"] == "required reviewer approved"
+    assert "requested reviewers unavailable" in str(status_payload["description"])
+
+
+def assert_reviewer_api_invalid_json_fails_closed_at_request_boundary() -> None:
+    module = load_script()
+
+    class FakeResponse(io.BytesIO):
+        headers: dict[str, str] = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    def fake_urlopen(_request, timeout: int):
+        assert timeout == 30
+        return FakeResponse(b"not-json")
+
+    original_urlopen = module.urllib.request.urlopen
+    try:
+        module.urllib.request.urlopen = fake_urlopen
+        module._request_json("https://api.github.test/resource", "token")
+    except module.ReviewerGateError as exc:
+        assert "valid JSON" in str(exc)
+    else:
+        raise AssertionError("invalid GitHub REST JSON should fail closed at request boundary")
+    finally:
+        module.urllib.request.urlopen = original_urlopen
+
+
+def assert_invalid_reviewer_event_json_raises_reviewer_gate_error() -> None:
+    module = load_script()
+    old_env = os.environ.copy()
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        event_file.write("not-json")
+        event_file.flush()
+        try:
+            os.environ.update({"GITHUB_EVENT_PATH": event_file.name})
+            module._read_event_payload()
+        except module.ReviewerGateError as exc:
+            assert "valid JSON" in str(exc)
+        else:
+            raise AssertionError("invalid reviewer event JSON should raise ReviewerGateError")
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
 
 
 def assert_workflow_uses_base_script_and_requires_node_id() -> None:
@@ -370,6 +418,8 @@ def main() -> int:
     assert_commit_status_payload_is_latest_wins_context()
     assert_status_mode_posts_failure_without_failing_job()
     assert_status_mode_marks_pending_before_reviewer_fetch_error()
+    assert_reviewer_api_invalid_json_fails_closed_at_request_boundary()
+    assert_invalid_reviewer_event_json_raises_reviewer_gate_error()
     assert_workflow_uses_base_script_and_requires_node_id()
     assert_codeowners_requires_sp_reviewer_for_all_paths()
     print("OK: required reviewer gate self-tests passed.")

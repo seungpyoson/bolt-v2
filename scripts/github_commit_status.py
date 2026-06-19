@@ -21,7 +21,7 @@ from typing import Any, Callable, Literal, Mapping
 
 
 STATUS_DESCRIPTION_LIMIT = 140
-CommitStatusState = Literal["error", "failure", "pending", "success"]
+CommitStatusState = Literal["failure", "pending", "success"]
 
 
 def clamp_description(message: str) -> str:

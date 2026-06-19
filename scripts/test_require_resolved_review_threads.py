@@ -191,6 +191,24 @@ def assert_graphql_invalid_json_fails_closed_at_request_boundary() -> None:
         module.urllib.request.urlopen = original_urlopen
 
 
+def assert_invalid_review_thread_event_json_raises_gate_error() -> None:
+    module = load_script()
+    old_env = os.environ.copy()
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        event_file.write("not-json")
+        event_file.flush()
+        try:
+            os.environ.update({"GITHUB_EVENT_PATH": event_file.name})
+            module._read_event_payload()
+        except module.ReviewThreadGateError as exc:
+            assert "valid JSON" in str(exc)
+        else:
+            raise AssertionError("invalid review-thread event JSON should raise ReviewThreadGateError")
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+
 def assert_workflow_uses_base_script_and_review_thread_events() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "Required reviewer resolution gate" in workflow
@@ -505,6 +523,7 @@ def main() -> int:
     assert_graphql_next_page_without_cursor_fails_closed()
     assert_graphql_errors_fail_closed_at_extract_boundary()
     assert_graphql_invalid_json_fails_closed_at_request_boundary()
+    assert_invalid_review_thread_event_json_raises_gate_error()
     assert_workflow_uses_base_script_and_review_thread_events()
     assert_thread_url_uses_real_graphql_shape()
     assert_status_mode_publishes_verdict_without_disabling_job()

@@ -39,7 +39,7 @@ The full pre-arm verification runs in order; the service must not start until al
    catalog dir, write probe, free space ≥ `min_free_bytes`). The systemd unit also runs this as
    `ExecStartPre`.
 
-No-submit/readiness (#768 step 3d) is structural, not a `prestart-check` duty: the bot starts disarmed
+Arming-gate/readiness (#768 step 3d) is structural, not a `prestart-check` duty: the bot starts disarmed
 and will not submit orders until explicitly armed via the operator arming gate
 (`bolt-v2 provider-artifacts preflight-live-submit-arming` / `generate-live-submit-approval`). Data-client
 readiness is exercised at live-node startup and can be probed with `bolt-v2 ops data-client-probe`.

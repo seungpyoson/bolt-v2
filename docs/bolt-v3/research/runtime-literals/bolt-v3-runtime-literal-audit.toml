@@ -17492,7 +17492,7 @@ reason = "TOML root-config key the overlay composition replaces in the base tabl
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"clients"'''
-context = '''let base_clients = require_table(&root, "clients", "active_clients").map(Clone::clone)?;'''
+context = '''let base_clients = require_table(&root, "clients", "active_clients")?.clone();'''
 classification = "prod_profile_compose_root_key"
 reason = "TOML root-config key the composition reads/retains from the base table (mirrors BoltV3RootConfig.clients); a structural schema key navigating the config tree, not an operator runtime value."
 
@@ -17500,7 +17500,7 @@ reason = "TOML root-config key the composition reads/retains from the base table
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"active_clients"'''
-context = '''let base_clients = require_table(&root, "clients", "active_clients").map(Clone::clone)?;'''
+context = '''let base_clients = require_table(&root, "clients", "active_clients")?.clone();'''
 classification = "prod_profile_compose_diagnostic_context"
 reason = "Context label naming the overlay field driving the client-retention step in a composition error message; it is a diagnostic anchor, not an operator runtime value."
 
@@ -17524,7 +17524,7 @@ reason = "TOML root-config key the composition writes the retained client set ba
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"realized_volatility_surfaces"'''
-context = '''let base_surfaces = require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")'''
+context = '''require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")?.clone();'''
 classification = "prod_profile_compose_root_key"
 reason = "TOML root-config key the composition reads/retains from the base table (mirrors BoltV3RootConfig.realized_volatility_surfaces); a structural schema key navigating the config tree, not an operator runtime value."
 
@@ -17532,7 +17532,7 @@ reason = "TOML root-config key the composition reads/retains from the base table
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"active_rv_surfaces"'''
-context = '''let base_surfaces = require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")'''
+context = '''require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")?.clone();'''
 classification = "prod_profile_compose_diagnostic_context"
 reason = "Context label naming the overlay field driving the RV-surface-retention step in a composition error message; it is a diagnostic anchor, not an operator runtime value."
 

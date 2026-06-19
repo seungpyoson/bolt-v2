@@ -36,7 +36,7 @@
 //!   dropped.
 //!
 //! `verify_live_config` covers the config-identity half of pre-arm. The full
-//! pre-arm gate chains it with live secret resolution and the no-submit/readiness
+//! pre-arm gate chains it with live secret resolution and the arming-gate/readiness
 //! check: `generate-live-config` → `verify-live-config` → `secrets resolve` →
 //! `ops prestart-check` (see `deploy/README.md`). The single source of truth is the
 //! base template plus the tracked overlay; the base owns the shared infrastructure
@@ -103,8 +103,9 @@ pub struct ProdOverlay {
     /// errors if any name here is absent from the base surfaces.
     pub active_rv_surfaces: Vec<String>,
     /// Per-surface scalar overrides merged into that surface's `[policy]` table.
-    /// Each key MUST appear in `active_rv_surfaces`.
-    #[serde(default)]
+    /// Each key MUST appear in `active_rv_surfaces`. Required (no serde default):
+    /// an overlay that overrides no RV policy must declare `rv_policy_overrides = {}`
+    /// explicitly — a silent default on a production surface is forbidden (fail loud).
     pub rv_policy_overrides: BTreeMap<String, toml::Table>,
     /// The full `[risk.loss_governor]` block, inserted at `risk.loss_governor` in
     /// the composed config. Absent from the base (the template carries no live
@@ -113,8 +114,10 @@ pub struct ProdOverlay {
     /// Per-client FULL replacement of `[clients.<name>.execution]`. Each key MUST
     /// appear in `active_clients`. A full replace lets the overlay both override
     /// values (funder, signature_type) and DROP placeholder sub-tables
-    /// (e.g. `on_chain_collateral`) without an explicit delete directive.
-    #[serde(default)]
+    /// (e.g. `on_chain_collateral`) without an explicit delete directive. Required
+    /// (no serde default): an overlay that replaces no client execution must declare
+    /// `client_execution = {}` explicitly — a silent default on a production surface
+    /// is forbidden (fail loud).
     pub client_execution: BTreeMap<String, toml::Table>,
 }
 
@@ -303,7 +306,7 @@ fn compose_config_text(overlay_path: &Path, overlay: &ProdOverlay) -> Result<Str
 
     // (c) clients: retain only active_clients, then full-replace each named
     // [clients.<name>.execution].
-    let base_clients = require_table(&root, "clients", "active_clients").map(Clone::clone)?;
+    let base_clients = require_table(&root, "clients", "active_clients")?.clone();
     let mut retained_clients = toml::Table::new();
     for name in &overlay.active_clients {
         let client = base_clients.get(name).ok_or_else(|| {
@@ -331,8 +334,8 @@ fn compose_config_text(overlay_path: &Path, overlay: &ProdOverlay) -> Result<Str
 
     // (d) realized_volatility_surfaces: retain only active_rv_surfaces, then merge
     // per-surface rv_policy_overrides into that surface's [policy].
-    let base_surfaces = require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")
-        .map(Clone::clone)?;
+    let base_surfaces =
+        require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")?.clone();
     let active_surface_names: BTreeSet<&str> = overlay
         .active_rv_surfaces
         .iter()

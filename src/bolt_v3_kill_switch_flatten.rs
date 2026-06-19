@@ -219,6 +219,8 @@ impl BoltV3KillSwitchFlattenPolicy {
             let Some(source_age_unix_nanos) =
                 observed_at_unix_nanos.checked_sub(candidate.source_timestamp_unix_nanos())
             else {
+                // Candidate construction cannot know the observation clock, so future-source
+                // evidence is rejected at the snapshot policy boundary.
                 return Err(BoltV3KillSwitchFlattenError::StaleSourceTimestamp);
             };
             if source_age_unix_nanos > self.max_source_age_unix_nanos {
@@ -745,7 +747,7 @@ impl BoltV3KillSwitchFlattenOutcomeAggregation {
         for outcome in outcomes {
             let identity = outcome.identity();
             if !expected_identities.contains_key(&identity) {
-                continue;
+                return Err(BoltV3KillSwitchFlattenError::UnknownOutcomeCommand);
             }
             outcomes_by_identity
                 .entry(identity)
@@ -911,5 +913,6 @@ pub enum BoltV3KillSwitchFlattenError {
     OrderTemplateNotReduceOnly,
     OrderTemplateUsesQuoteQuantity,
     StaleSourceTimestamp,
+    UnknownOutcomeCommand,
     UnsupportedRouteProof,
 }

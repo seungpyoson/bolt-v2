@@ -237,6 +237,21 @@ fn flatten_policy_rejects_empty_and_stale_position_proof() {
             .expect_err("stale position proof should fail closed"),
         BoltV3KillSwitchFlattenError::StaleSourceTimestamp
     );
+
+    let future_snapshot = BoltV3KillSwitchFlattenSnapshot::new(vec![flatten_candidate_at(
+        BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+        "position-future-1",
+        PositionSide::Long,
+        Quantity::from("1.00"),
+        OBSERVED_AT_UNIX_NANOS + 1,
+    )])
+    .expect("future-dated position proof should preserve evidence for policy validation");
+    assert_eq!(
+        policy
+            .validate_snapshot(&future_snapshot, OBSERVED_AT_UNIX_NANOS)
+            .expect_err("future-dated position proof should fail closed"),
+        BoltV3KillSwitchFlattenError::StaleSourceTimestamp
+    );
 }
 
 #[test]
@@ -749,6 +764,44 @@ fn flatten_outcome_aggregation_requires_evidence_for_every_planned_command() {
 }
 
 #[test]
+fn flatten_outcome_aggregation_rejects_out_of_plan_evidence() {
+    let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(flatten_plan_request(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+    ))
+    .expect("valid flatten request should plan commands");
+
+    let mut other_request = flatten_plan_request(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+    );
+    other_request.action_id = "flatten-action-2".to_string();
+    other_request.forced_reduction_claim =
+        BoltV3KillSwitchForcedReductionClaim::new(HALT_ID, "flatten-action-2", POLICY_SHA256)
+            .expect("test forced-reduction claim should be valid");
+    let other_plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(other_request)
+        .expect("valid alternate flatten request should plan commands");
+    let out_of_plan = BoltV3KillSwitchFlattenOutcomeEvidence::from_command(
+        &other_plan.commands()[0],
+        BoltV3KillSwitchFlattenAttemptOutcome::flat_position_observed(
+            PositionSide::Flat,
+            SOURCE_TIMESTAMP_UNIX_NANOS,
+        )
+        .expect("flat position proof should construct"),
+    );
+
+    assert_eq!(
+        BoltV3KillSwitchFlattenOutcomeAggregation::from_plan_outcomes(&plan, vec![out_of_plan])
+            .expect_err("out-of-plan outcome evidence must fail closed"),
+        BoltV3KillSwitchFlattenError::UnknownOutcomeCommand
+    );
+}
+
+#[test]
 fn flatten_outcome_aggregation_keys_evidence_by_full_scoped_position_identity() {
     let shared_position_id = "position-reused-by-scope-1";
     let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(flatten_plan_request_with_snapshot(
@@ -922,17 +975,16 @@ fn flatten_candidate_at(
     quantity: Quantity,
     source_timestamp_unix_nanos: u64,
 ) -> BoltV3KillSwitchFlattenCandidate {
-    BoltV3KillSwitchFlattenCandidate::from_nt_position_state(BoltV3KillSwitchFlattenPositionState {
+    flatten_candidate_with_identity_at(
         evidence_kind,
-        account_id: account_id(),
-        instrument_id: instrument_id(),
-        strategy_id: strategy_id("binary-oracle-edge-taker-001"),
-        position_id: PositionId::from(position_id),
+        "GENERIC-001",
+        "BTC-2026-06-02-UP.GENERIC",
+        "binary-oracle-edge-taker-001",
+        position_id,
         position_side,
         quantity,
         source_timestamp_unix_nanos,
-    })
-    .expect("NT-backed flatten candidate should be valid")
+    )
 }
 
 fn flatten_candidate_with_identity(
@@ -944,6 +996,28 @@ fn flatten_candidate_with_identity(
     position_side: PositionSide,
     quantity: Quantity,
 ) -> BoltV3KillSwitchFlattenCandidate {
+    flatten_candidate_with_identity_at(
+        evidence_kind,
+        account_id_value,
+        instrument_id_value,
+        strategy_id_value,
+        position_id,
+        position_side,
+        quantity,
+        SOURCE_TIMESTAMP_UNIX_NANOS,
+    )
+}
+
+fn flatten_candidate_with_identity_at(
+    evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind,
+    account_id_value: &str,
+    instrument_id_value: &str,
+    strategy_id_value: &str,
+    position_id: &str,
+    position_side: PositionSide,
+    quantity: Quantity,
+    source_timestamp_unix_nanos: u64,
+) -> BoltV3KillSwitchFlattenCandidate {
     BoltV3KillSwitchFlattenCandidate::from_nt_position_state(BoltV3KillSwitchFlattenPositionState {
         evidence_kind,
         account_id: AccountId::new(account_id_value),
@@ -953,7 +1027,7 @@ fn flatten_candidate_with_identity(
         position_id: PositionId::from(position_id),
         position_side,
         quantity,
-        source_timestamp_unix_nanos: SOURCE_TIMESTAMP_UNIX_NANOS,
+        source_timestamp_unix_nanos,
     })
     .expect("NT-backed flatten candidate should be valid")
 }

@@ -1,0 +1,3 @@
+# GitHub CODEOWNERS is login-based. Keep this login aligned with the current
+# login for required reviewer node ID U_kgDOEZMFhA.
+* @sp-reviewer

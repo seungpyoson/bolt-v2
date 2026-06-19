@@ -1,0 +1,74 @@
+name: Require resolved review threads
+
+on:
+  pull_request:
+    branches: [main]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  pull_request_review:
+    types:
+      - submitted
+      - dismissed
+  pull_request_review_comment:
+    # GitHub Actions does not expose review-thread resolved or reopened events.
+    # Native conversation resolution is authoritative at merge; this check is
+    # visibility for every push. If UI thread changes do not rerun it, manually
+    # rerun the workflow or create another review/comment event.
+    types:
+      - created
+      - edited
+      - deleted
+
+concurrency:
+  group: review-threads-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  require-resolved-review-threads:
+    name: review threads resolved
+    if: >-
+      ${{ github.event.pull_request.base.ref == 'main'
+          && github.event.pull_request.draft == false }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Run the review-thread gate from the protected base branch, not from PR code.
+          # The pull_request workflow YAML is still PR-controlled; CODEOWNERS plus
+          # the main ruleset must require sp-reviewer approval for workflow edits.
+          repository: ${{ github.event.pull_request.base.repo.full_name }}
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Bootstrap review-thread gate script
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if test -f scripts/require_resolved_review_threads.py; then
+            exit 0
+          fi
+
+          # Bootstrap-only path for the PR that first introduces this workflow.
+          # Trust model: this introducing PR is not protected by this new check;
+          # normal branch protection and human review remain the merge gate.
+          # Remove this block after scripts/require_resolved_review_threads.py exists on main.
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA"
+          git checkout --force FETCH_HEAD -- scripts/require_resolved_review_threads.py
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Check resolved review threads
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_GRAPHQL_URL: ${{ github.graphql_url }}
+        run: python3 scripts/require_resolved_review_threads.py

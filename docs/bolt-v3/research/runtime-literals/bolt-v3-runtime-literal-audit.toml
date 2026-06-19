@@ -213,6 +213,14 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the NT trailing-stop offset type field projected from TOML into the runtime strategy config."
 
 [[allowed]]
+path = "src/bolt_v3_order_execution.rs"
+kind = "string"
+literal = '''"bolt-v3 in-place modify is fail-closed in Live (not admission-gated; see #835): refusing un-admitted venue mutation for client_order_id={client_order_id}"'''
+context = '''"bolt-v3 in-place modify is fail-closed in Live (not admission-gated; see #835): refusing un-admitted venue mutation for client_order_id={client_order_id}"'''
+classification = "order_execution_live_modify_fail_closed_diagnostic"
+reason = "Fail-loud diagnostic refusing a live in-place venue modify that does not pass submit admission/reservation/fee checks (Option A for #835); error-message template, not a runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_order_intent.rs"
 kind = "number"
 literal = '''0'''
@@ -1043,6 +1051,86 @@ literal = '''60'''
 context = '''} else if cadence_secs % 60 != 0 {'''
 classification = "runtime_contract_cadence_alignment"
 reason = "The updown cadence validator requires minute-aligned periods; the market slug token paired with the cadence is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''60'''
+context = '''60 => Some("1m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"1m"'''
+context = '''60 => Some("1m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''300'''
+context = '''300 => Some("5m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"5m"'''
+context = '''300 => Some("5m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''900'''
+context = '''900 => Some("15m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"15m"'''
+context = '''900 => Some("15m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''3600'''
+context = '''3600 => Some("1h"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"1h"'''
+context = '''3600 => Some("1h"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''14400'''
+context = '''14400 => Some("4h"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"4h"'''
+context = '''14400 => Some("4h"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -10471,6 +10559,14 @@ path = "src/bolt_v3_realized_volatility.rs"
 kind = "string"
 literal = '''"source.counts_toward_quorum={}"'''
 context = '''"source.counts_toward_quorum={}",'''
+classification = "realized_volatility_config_fingerprint_field_label"
+reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
+
+[[allowed]]
+path = "src/bolt_v3_realized_volatility.rs"
+kind = "string"
+literal = '''"source.canonical_base_asset={}"'''
+context = '''"source.canonical_base_asset={}",'''
 classification = "realized_volatility_config_fingerprint_field_label"
 reason = "Stable canonical source field label used only inside the realized-volatility config fingerprint payload; the value comes from TOML and this label does not configure runtime behavior."
 

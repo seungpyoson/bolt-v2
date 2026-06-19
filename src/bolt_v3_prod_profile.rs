@@ -22,15 +22,13 @@
 //!   rails are inert at runtime — and a non-empty strategy selection), and emits a
 //!   deterministic, provenance-stamped runtime config. Any schema, semantic, or
 //!   invariant error fails the generation closed.
-//! * [`verify_live_config`] re-generates from the approved profile and proves a
+//! * [`verify_live_config`] re-generates from the on-box profile and proves a
 //!   deployed runtime config is (a) byte-identical to the regenerated artifact,
-//!   (b) still loads against this exact binary, (c) has strategy files whose
-//!   contents match the approved profile's (strategy_files are referenced by path,
-//!   so they are not in the byte-compared root body), and (d) — the release anchor —
-//!   that the on-box profile and its strategy files are byte-identical to the
-//!   reviewed copy baked into this binary at build time. Byte parity alone is
-//!   insufficient — the independent load catches schema staleness, and the anchor
-//!   catches a stale/hand-edited but internally consistent on-box profile.
+//!   (b) still loads against this exact binary, and (c) has strategy files whose
+//!   contents match the profile's (strategy_files are referenced by path, so they
+//!   are not in the byte-compared root body). The independent load in (b) is the
+//!   staleness guard — byte parity alone cannot catch a key the current binary has
+//!   dropped.
 //!
 //! `verify_live_config` covers the config-identity half of pre-arm. The full
 //! pre-arm gate chains it with live secret resolution and the no-submit/readiness
@@ -39,13 +37,18 @@
 //! the tracked profile; `config/root.toml` is the multi-asset template and owns
 //! the shared infrastructure blocks (a test fails CI if the profile drifts from it).
 //! The production systemd unit runs `verify-live-config` as `ExecStartPre`, so the
-//! gate is enforced at the live entry point, not advisory. `verify` proves the
-//! deployed config regenerates from the on-box profile, that the production
-//! invariants hold, AND that the on-box profile equals the reviewed copy baked into
-//! this binary (the release anchor): the binary is the release artifact, so byte
-//! equality against its embedded profile ties the deployed config to the PR-reviewed
-//! Git revision the binary was built from — closing the stale/hand-edited on-box
-//! profile gap rather than leaving it to deploy-process discipline.
+//! load-against-this-binary check runs on the bytes actually present on the box at
+//! the live entry point, not advisory.
+//!
+//! ## What ties the deployed config to the reviewed revision
+//!
+//! The deployed config is bound to the PR-reviewed Git revision *procedurally*:
+//! deploy tooling regenerates `live.toml` from the tracked profile rather than
+//! hand-editing the deployed file, and `verify` proves the deployed bytes are
+//! exactly what the on-box profile generates and still load against this binary.
+//! No profile is baked into the binary — a binary-embedded release anchor does not
+//! scale to a multi-strategy/venue fleet and is superseded by arming bound to the
+//! deployed config checksum plus a signed release manifest (#768 follow-up).
 //!
 //! The profile is itself a complete [`BoltV3RootConfig`], so schema currency is
 //! enforced by the real parser (`#[serde(deny_unknown_fields)]`), not a parallel
@@ -66,35 +69,6 @@ pub const GENERATOR_FORMAT_VERSION: u32 = 1;
 /// First line of every generated runtime config. `verify_live_config` and the
 /// `generate` guard match on this exact prefix.
 pub const GENERATED_MARKER_PREFIX: &str = "# bolt-v2:generated-live-config format=";
-
-/// A production profile baked into this binary at build time from its tracked source.
-/// `verify_live_config` proves the on-box profile (and every strategy file it references)
-/// is byte-identical to this reviewed copy, so the deployed config is anchored to the
-/// PR-reviewed Git revision the binary was built from — not merely self-consistent with
-/// its own generated `live.toml`, which a stale or hand-edited profile would satisfy. This
-/// uses the same `include_str!` self-anchoring the crate's source-integrity checks use.
-struct ReleaseProfile {
-    /// File basename the deploy/systemd unit passes as `--profile`.
-    name: &'static str,
-    /// Byte-exact reviewed profile text.
-    text: &'static str,
-    /// Each referenced strategy file by its profile-relative path → reviewed bytes. A test
-    /// asserts this set exactly matches the profile's resolved `strategy_files`, so adding
-    /// or removing a strategy without updating the embed fails CI rather than the anchor.
-    strategies: &'static [(&'static str, &'static str)],
-}
-
-/// The set of release-reviewed production profiles this binary will verify against. Today
-/// the only production profile is the BTC 5m pilot; new profiles are added here and the
-/// embed test pins each one's strategy set.
-const RELEASE_PROFILES: &[ReleaseProfile] = &[ReleaseProfile {
-    name: "prod-btc-5m.toml",
-    text: include_str!("../config/prod-btc-5m.toml"),
-    strategies: &[(
-        "strategies/binary_oracle_btc.toml",
-        include_str!("../config/strategies/binary_oracle_btc.toml"),
-    )],
-}];
 
 /// Outcome of generating a runtime config from a tracked profile.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -155,11 +129,6 @@ pub enum ProfileError {
     Invariant(String),
     /// A deployed file did not match the config regenerated from the profile.
     Mismatch(String),
-    /// The supplied profile (or one of its strategy files) is not byte-identical to
-    /// the release-reviewed copy baked into this binary. This is the anchor that ties
-    /// the deployed config to the PR-reviewed Git revision the binary was built from;
-    /// a stale or hand-edited but internally consistent profile fails here.
-    ReleaseMismatch(String),
     /// `generate` was pointed at a file that is itself already a generated
     /// runtime config rather than a source profile.
     AlreadyGenerated(PathBuf),
@@ -180,7 +149,6 @@ impl std::fmt::Display for ProfileError {
             }
             ProfileError::Invariant(message) => write!(f, "{message}"),
             ProfileError::Mismatch(message) => write!(f, "{message}"),
-            ProfileError::ReleaseMismatch(message) => write!(f, "{message}"),
             ProfileError::AlreadyGenerated(path) => write!(
                 f,
                 "`{}` is already a generated runtime config; pass the source profile instead",
@@ -273,72 +241,6 @@ fn confirm_production_invariants(
     })
 }
 
-/// Fail closed unless `loaded` (the supplied profile) and every strategy file it
-/// references are byte-identical to a release-reviewed copy baked into this binary.
-/// Without this anchor, `verify_live_config` only proves the deployed `live.toml` is
-/// self-consistent with whatever profile is on the host — a stale or hand-edited but
-/// internally consistent on-box profile would still pass. The binary is the release
-/// artifact, so equality against its embedded copy proves the on-box profile is the
-/// PR-reviewed revision.
-fn assert_profile_matches_release(
-    loaded: &LoadedBoltV3Config,
-    profile_text: &str,
-) -> Result<(), ProfileError> {
-    let name = profile_basename(&loaded.root_path);
-    let release = RELEASE_PROFILES
-        .iter()
-        .find(|candidate| candidate.name == name)
-        .ok_or_else(|| {
-            ProfileError::ReleaseMismatch(format!(
-                "profile `{name}` is not a release-reviewed profile baked into this binary; \
-                 deploy a profile from the reviewed release"
-            ))
-        })?;
-
-    if profile_text != release.text {
-        return Err(ProfileError::ReleaseMismatch(format!(
-            "profile `{}` does not match the release-reviewed `{}` baked into this binary; \
-             deploy the profile from the reviewed release rather than hand-editing it on the host",
-            loaded.root_path.display(),
-            release.name
-        )));
-    }
-
-    // Strategy files are referenced by path and resolved on the host, so their CONTENTS are
-    // not part of `text`; pin them to the reviewed copies and require the exact same set.
-    if loaded.strategies.len() != release.strategies.len() {
-        return Err(ProfileError::ReleaseMismatch(format!(
-            "profile `{}` references {} strategy file(s) but the release-reviewed `{}` requires {}",
-            loaded.root_path.display(),
-            loaded.strategies.len(),
-            release.name,
-            release.strategies.len()
-        )));
-    }
-    for strategy in &loaded.strategies {
-        let reviewed = release
-            .strategies
-            .iter()
-            .find(|(path, _)| *path == strategy.relative_path.as_str())
-            .map(|(_, text)| *text)
-            .ok_or_else(|| {
-                ProfileError::ReleaseMismatch(format!(
-                    "profile references strategy `{}` missing from the release-reviewed `{}`",
-                    strategy.relative_path, release.name
-                ))
-            })?;
-        let on_disk = read_config_text(&strategy.config_path)?;
-        if on_disk != reviewed {
-            return Err(ProfileError::ReleaseMismatch(format!(
-                "strategy `{}` does not match the release-reviewed copy baked into this binary; \
-                 deploy strategy files from the reviewed release",
-                strategy.relative_path
-            )));
-        }
-    }
-    Ok(())
-}
-
 fn provenance_header(source_profile: &str, profile_bundle_sha256: &str) -> String {
     format!(
         "{GENERATED_MARKER_PREFIX}{GENERATOR_FORMAT_VERSION}\n\
@@ -383,17 +285,12 @@ pub fn verify_live_config(
     profile_path: &Path,
     deployed_path: &Path,
 ) -> Result<LiveConfigVerification, ProfileError> {
-    // Anchor first: the supplied profile (and its strategy files) must be byte-identical
-    // to the release-reviewed copy baked into this binary. Without this a stale or
-    // hand-edited but internally consistent on-box profile would pass, since the deployed
-    // live.toml would still regenerate from it. `profile_loaded` is reused below.
-    let profile_text = read_config_text(profile_path)?;
+    // Load the on-box profile once (reused below for the strategy-content comparison).
     let profile_loaded =
         load_bolt_v3_config(profile_path).map_err(|source| ProfileError::Load {
             path: profile_path.to_path_buf(),
             source,
         })?;
-    assert_profile_matches_release(&profile_loaded, &profile_text)?;
 
     let generated = generate_live_config(profile_path)?;
     let deployed_text = read_config_text(deployed_path)?;

@@ -64,7 +64,10 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             let _ = KillSwitchState::Armed;
             self.kill_switch = true;
             self.forced_reduction_submit(order);
+            self.cancel_orders(vec![order_id]);
             self.cancel_all_orders();
+            self.close_position(position_id, None, None);
+            self.close_all_positions(None, None);
             self.flatten_all_positions();
             """
         )
@@ -487,6 +490,73 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
 
         self.assertEqual(labels, set())
+
+    def test_detects_nt_batch_cancel_and_close_position_bypass_helpers(self) -> None:
+        labels = self.labels_for(
+            """
+            self.cancel_orders(vec![order_id]);
+            self.close_position(position_id, None, None);
+            self.close_all_positions(None, None);
+            """
+        )
+
+        self.assertIn("direct kill-switch action bypass", labels)
+
+    def test_detects_global_flatten_supervisor_imports_and_calls(self) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenSupervisor;
+            let flatten_supervisor = BoltV3KillSwitchFlattenSupervisor;
+            let plan = flatten_supervisor.plan_flatten(request);
+            """
+        )
+
+        self.assertIn("global kill-switch flatten supervisor policy", labels)
+
+    def test_detects_global_cancel_supervisor_imports_and_calls(self) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchCancelSupervisor;
+            let cancel_supervisor = BoltV3KillSwitchCancelSupervisor;
+            let plan = cancel_supervisor.plan_cancel(request);
+            """
+        )
+
+        self.assertIn("global kill-switch cancel supervisor policy", labels)
+
+    def test_code_rules_ignore_banned_tokens_inside_strings_and_comments(self) -> None:
+        # An error/doc string or comment that *names* a banned action is not a code
+        # bypass. This mirrors the production archetype validation message that
+        # references `close_all_positions` to explain a config rule.
+        labels = self.labels_for(
+            """
+            let _ = make_error(
+                "manage_stop=true uses Strategy::close_all_positions market orders; set manage_stop=false to route a non-market forced_exit_order through the forced-flat path",
+            );
+            // cancel_all_orders and flatten_all_positions live in the supervisor module
+            let note = "cancel_orders and close_position are documented helpers";
+            """
+        )
+
+        self.assertEqual(labels, set())
+
+    def test_string_mention_does_not_mask_adjacent_real_call(self) -> None:
+        # A literal mention must not blank out a genuine adjacent code call.
+        labels = self.labels_for(
+            """
+            let msg = "close_all_positions is the NT market-exit path";
+            self.close_all_positions(None, None);
+            """
+        )
+
+        self.assertIn("direct kill-switch action bypass", labels)
+
+    def test_literal_targeting_rule_still_matches_inside_strings(self) -> None:
+        # Stripping literals for code rules must not disable the one rule that
+        # deliberately targets hardcoded NT metadata string content.
+        labels = self.labels_for('let slug = info.get_str("market_slug");')
+
+        self.assertIn("inline updown NT metadata interpretation", labels)
 
     def test_current_strategy_has_no_policy_hardcode_violations(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])

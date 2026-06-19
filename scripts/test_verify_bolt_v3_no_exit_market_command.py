@@ -111,18 +111,80 @@ class NoExitMarketCommandFenceTests(unittest.TestCase):
 
         self.assertEqual({violation.line for violation in violations}, {2, 3, 4, 5})
 
-    def test_policy_module_allows_only_cancel_all_chokepoint(self) -> None:
+    def test_policy_module_allows_only_routed_chokepoint_apis(self) -> None:
+        # The chokepoint file exempts ONLY the APIs Bolt routes through the
+        # shadow-mode execution-policy gate (cancel_all_orders and the newly-added
+        # modify_order). Every other venue-mutating API (close_position, ...) still
+        # fails even here, so the exemption is per-API, never a blanket file pass.
         violations = VERIFIER.find_violations_in_text(
             "src/bolt_v3_order_execution.rs",
             """
             self.cancel_all_orders(instrument_id, None, Some(client_id), None)?;
+            self.modify_order(client_order_id, qty, price, None, client_id, None)?;
             self.close_position(position_id, Some(client_id), None)?;
             """,
         )
 
         self.assertEqual(len(violations), 1)
-        self.assertEqual(violations[0].line, 3)
+        self.assertEqual(violations[0].line, 4)
         self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
+        self.assertIn("close_position", violations[0].excerpt)
+
+    def test_policy_module_modify_order_exemption_is_scoped_to_chokepoint(self) -> None:
+        # modify_order is exempt ONLY in the chokepoint file; the same call in any
+        # other module is still a bypass and must fail.
+        violations = VERIFIER.find_violations_in_text(
+            "src/strategies/binary_oracle_maker/mod.rs",
+            """
+            self.modify_order(client_order_id, qty, price, None, client_id, None)?;
+            """,
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].line, 2)
+        self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
+
+    def test_chokepoint_exemption_is_exact_match_not_substring(self) -> None:
+        # Unit-tests the `is_routed_chokepoint_api` exemption contract directly:
+        # exact set membership, never a substring test. The exact routed APIs are
+        # exempt...
+        self.assertTrue(VERIFIER.is_routed_chokepoint_api("modify_order"))
+        self.assertTrue(VERIFIER.is_routed_chokepoint_api("cancel_all_orders"))
+        # ...but a DIFFERENT, unrouted API that merely embeds an allowed name as a
+        # substring is NOT exempted. NOTE: this is a forward-proofing contract test,
+        # not a guard against a currently-reachable integration bypass. Through the
+        # real pipeline `match.group("api")` is always exactly one listed token (the
+        # forbidden regex's `(?:\.|::)` / `(?![A-Za-z0-9_])` boundary rejects
+        # impostor names like `force_modify_order` before they reach this function —
+        # that boundary is covered by `test_identifier_rules_do_not_match_substrings
+        # _or_comments`). A prior substring form was therefore not exploitable via
+        # the pipeline; pinning the exemption to exact membership keeps the allowlist
+        # from silently widening to a near-miss name if the regex ever changes.
+        for impostor in (
+            "force_modify_order",
+            "modify_order_internal",
+            "cancel_all_orders_bypass",
+            "cancel_orders",
+        ):
+            self.assertFalse(
+                VERIFIER.is_routed_chokepoint_api(impostor),
+                f"{impostor} must not be treated as a routed chokepoint API",
+            )
+
+    def test_policy_module_does_not_exempt_near_miss_api_names(self) -> None:
+        # `cancel_orders` is a different (unrouted) API from the allowed
+        # `cancel_all_orders`; it must still fail even inside the chokepoint file.
+        violations = VERIFIER.find_violations_in_text(
+            "src/bolt_v3_order_execution.rs",
+            """
+            self.cancel_orders(client_order_ids, None)?;
+            """,
+        )
+
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].line, 2)
+        self.assertEqual(violations[0].label, "NT venue-mutating lifecycle API")
+        self.assertIn("cancel_orders", violations[0].excerpt)
 
     def test_identifier_rules_do_not_match_substrings_or_comments(self) -> None:
         violations = VERIFIER.find_violations_in_text(

@@ -188,6 +188,10 @@ verify-bolt-v3-no-exit-market-command: check-workspace
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
 
+verify-bolt-v3-usable-mu-sole-mint: check-workspace
+    python3 scripts/test_verify_bolt_v3_usable_mu_sole_mint.py
+    python3 scripts/verify_bolt_v3_usable_mu_sole_mint.py
+
 verify-bolt-v3-no-venue-name-branch: check-workspace
     python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
     python3 scripts/verify_bolt_v3_no_venue_name_branch.py
@@ -373,6 +377,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_outcome_group_nt_reuse.py
     python3 scripts/test_verify_bolt_v3_no_exit_market_command.py
     python3 scripts/verify_bolt_v3_no_exit_market_command.py
+    python3 scripts/test_verify_bolt_v3_usable_mu_sole_mint.py
+    python3 scripts/verify_bolt_v3_usable_mu_sole_mint.py
     python3 scripts/test_verify_bolt_v3_no_venue_name_branch.py
     python3 scripts/verify_bolt_v3_no_venue_name_branch.py
     python3 scripts/test_verify_bolt_v3_requote_construction.py

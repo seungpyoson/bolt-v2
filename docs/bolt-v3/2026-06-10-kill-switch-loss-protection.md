@@ -29,6 +29,7 @@ The current accepted boundary does not call `Trader::market_exit_strategy`, dire
 - pending halt-action retry schedule, when proof/action recording has not completed
 
 The controller persists the runtime snapshot with the durable kill-switch state so restart recovery cannot silently discard daily loss evidence.
+The first realized-PnL observation establishes the settlement currency, and any later mismatch fails closed to `FailedManualIntervention` with `mixed_settlement_currency` instead of netting values across units.
 
 ## Restart Recovery
 
@@ -41,7 +42,7 @@ Startup loads `state_path` before the NT runner loop starts.
 
 Deleting the store file is not a reset path. A missing store is treated as missing evidence.
 
-On a fresh install, initialize the first store file before setting `enabled = true`:
+On a fresh install, keep `enabled = false`, replace placeholder scopes such as `instrument_ids = []` with deployment values, and initialize the first store file before setting `enabled = true`:
 
 ```bash
 bolt-v2 ops init-kill-switch-store --config config/root.toml

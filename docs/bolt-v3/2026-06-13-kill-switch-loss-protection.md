@@ -31,6 +31,11 @@ Config validation rejects `flatten_open_positions_on_breach = true` until a shar
 - adjusted-position replay guards
 - pending halt-action retry schedule, when a halt action has not completed
 
+The first realized-PnL observation establishes the accumulator's settlement currency.
+Later `PositionChanged`, `PositionClosed`, or `PositionAdjusted` observations must use the same currency.
+A mismatch is not netted or ignored: the controller latches `FailedManualIntervention`, replaces submit-admission state so entries remain blocked, persists or invalidates the store, and returns the `mixed_settlement_currency` failure reason.
+The established currency is persisted with the snapshot, so restart recovery cannot silently re-bind a restored daily total or position baseline to a different unit.
+
 The accumulator rotates only when an observed event moves to a later UTC day bucket.
 Older out-of-order events for prior UTC day buckets are ignored and cannot clear same-day losses.
 
@@ -51,7 +56,8 @@ Startup loads `state_path` before the NT runner loop starts.
 
 Deleting the store file is not a reset. A missing store is treated as missing evidence.
 
-For a fresh install, initialize the store before enabling the controller:
+For a fresh install, keep `enabled = false`, replace the shipped placeholder scopes with deployment values, then initialize the store before enabling the controller.
+`authorized_operator_ids`, `account_ids`, and `instrument_ids` must all be non-empty when `enabled = true`; the shipped `instrument_ids = []` is a disabled-template placeholder and is rejected at enable time.
 
 ```bash
 bolt-v2 ops init-kill-switch-store --config config/root.toml

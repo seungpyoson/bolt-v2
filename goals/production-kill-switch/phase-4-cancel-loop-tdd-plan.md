@@ -1,5 +1,8 @@
 # #517 Phase 4 TDD Plan: Cancel Loop Proof Model
 
+Historical note: this is the original stacked Phase 4 planning record.
+PR #738 consolidates the accepted proof-only implementation on current `main`; stacked-PR language below is retained for chronology, not as the current review path.
+
 ## Current Base
 
 - Issue: https://github.com/seungpyoson/bolt-v2/issues/517

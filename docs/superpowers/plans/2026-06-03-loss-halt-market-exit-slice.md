@@ -1,5 +1,9 @@
 # Loss Halt Market Exit Boundary
 
+Historical note: this plan predates the #738 durable kill-switch consolidation.
+#738 intentionally keeps active market exit unwired and rejects direct NT market-exit / live-flatten paths until the shared execution-policy path is designed.
+Treat the original wording below as a historical boundary note for the older loss-halt slice, not operator guidance for #738.
+
 ## Objective
 
 Do not add Bolt-owned market-exit policy, config, latch, or dispatch scaffolding. If active loss-halt market exit is needed, call NautilusTrader's owned `Trader::market_exit_strategy` primitive directly from a real live boundary.

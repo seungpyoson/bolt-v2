@@ -172,6 +172,26 @@ mod tests {
     }
 
     #[test]
+    fn configured_per_trade_limit_with_missing_per_trade_pnl_fails_closed() {
+        // A configured per-trade limit must fail closed when the snapshot has no
+        // per-trade PnL, rather than admit on a missing field.
+        let policy = policy();
+        assert!(policy.max_per_trade_loss.is_some());
+
+        let mut snapshot = snapshot();
+        snapshot.per_trade_pnl = None;
+
+        let decision = evaluate_loss_admission(&policy, Some(&snapshot), 10_100);
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.halt_reasons,
+            vec![LossHaltReason::StaleLossSnapshot]
+        );
+        assert_eq!(decision.halt_reasons[0].as_str(), "stale_loss_snapshot");
+    }
+
+    #[test]
     fn daily_loss_breach_rejects_admission() {
         let mut policy = policy();
         policy.max_per_trade_loss = None;

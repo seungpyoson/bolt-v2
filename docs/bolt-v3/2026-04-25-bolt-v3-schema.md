@@ -160,6 +160,23 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 
+[risk.kill_switch]
+enabled = false
+state_path = "state/kill-switch.json"
+max_state_file_bytes = 65536
+max_utc_daily_realized_loss = "250.00"
+flatten_open_positions_on_breach = false
+action_retry_interval_ms = 250
+action_retry_timeout_ms = 5000
+mandatory_proof_max_age_ms = 1000
+manual_reset_evidence_max_age_ms = 60000
+forced_reduction_policy_sha256 = "65170d6e1b2ed7154668ed976a0dc77576dd676843b5b6e6048377811d90d2ec"
+forced_reduction_max_live_order_count = 6
+forced_reduction_max_notional_per_order = "10.00"
+authorized_operator_ids = ["operator-primary"]
+account_ids = ["POLYMARKET-001"]
+instrument_ids = []
+
 [risk.nautilus]
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
@@ -483,6 +500,39 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - root-level entity per-order notional cap
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
 - not automatically expanded into NautilusTrader per-instrument maps; `risk.nautilus.max_notional_per_order` is the explicit NT map when instrument-level caps are intentionally configured
+
+#### `[risk.kill_switch]`
+
+- required: no; shipped as `enabled = false` so the operator surface is visible without wiring durable halt recovery or loss-protection runtime behavior
+- when absent or disabled, no durable kill-switch loss controller is wired and no state file is required
+- when enabled, startup loads `state_path` before live-node construction and fails closed on missing, corrupt, oversized, unsupported, or unresolved halt evidence
+- `state_path` is a non-empty root-relative path with no `..` components; `max_state_file_bytes` is positive and bounds both startup reads and writes, so oversized evidence fails closed instead of being read unbounded
+- before setting `enabled = true` on a fresh install, keep the block disabled, replace placeholder scopes with deployment values, run `bolt-v2 ops init-kill-switch-store --config <root.toml>`, then enable; the command creates the initial `Armed` + zero-loss snapshot at `state_path` and refuses to overwrite any existing store
+- `max_utc_daily_realized_loss` is a positive decimal string for the durable UTC-daily realized-loss accumulator; the first realized-PnL observation binds the accumulator to one settlement currency, and later mixed-currency observations fail closed to `FailedManualIntervention` with `mixed_settlement_currency` instead of being netted
+- `flatten_open_positions_on_breach` must currently be `false`; live flatten/market-exit side effects remain rejected until the shared execution-policy flatten path exists
+- `action_retry_interval_ms` and `action_retry_timeout_ms` are positive retry timing values for proof-only halt action persistence/retry bookkeeping; interval must be `<=` timeout
+- `mandatory_proof_max_age_ms` and `manual_reset_evidence_max_age_ms` bound operator reset proof freshness
+- `forced_reduction_policy_sha256` must be a 64-character SHA-256 hex digest; forced-reduction claims must match it
+- `forced_reduction_max_live_order_count` and `forced_reduction_max_notional_per_order` own the global forced-reduction admission caps
+- `authorized_operator_ids` scopes manual reset evidence; `account_ids` and `instrument_ids` scope loss-protection position-event PnL when enabled, and all three arrays must be non-empty at enable time; the shipped `instrument_ids = []` is a disabled-template placeholder
+
+##### `[risk.kill_switch.cancel]`
+
+- required: no; when absent or `enabled = false`, no cancel-supervisor proof model is enabled
+- `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, and `source_freshness_max_age_ms` must be positive when enabled
+- `mandatory_surfaces` must include every mandatory outstanding-order risk surface: `open`, `inflight`, `pending-cancel`, `emulated`, `algorithm-managed`, `contingent`, and `accepted-but-not-terminal`
+- still proof-only: this block configures cancel-supervisor evidence and retry classification, not direct NT cancel calls
+
+##### `[risk.kill_switch.flatten]`
+
+- required: no; when absent or `enabled = false`, no flatten-supervisor proof model is enabled
+- `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, `source_freshness_max_age_ms`, `max_position_proof_age_ms`, and `max_live_order_count` must be positive when enabled
+- `route_kind` must be `per_strategy_action_port` or `live_node_command_router`
+- `max_live_order_count` must be `<= risk.kill_switch.forced_reduction_max_live_order_count`
+- `max_notional_per_order` is a positive decimal string and must be `<= risk.kill_switch.forced_reduction_max_notional_per_order`
+- `order_type`, `time_in_force`, and `is_post_only` are the proof order-template fields checked by the shared NT order-template validator
+- `is_reduce_only` must be `true` and `is_quote_quantity` must be `false`
+- still proof-only: this block configures flatten-supervisor evidence, retry classification, and reduce-only proof records, not live submit/close/market-exit calls
 
 #### NautilusTrader risk-engine bypass (removed config field)
 
@@ -1688,6 +1738,23 @@ manage_own_order_books = false
 
 [risk]
 default_max_notional_per_order = "10.00"
+
+[risk.kill_switch]
+enabled = false
+state_path = "state/kill-switch.json"
+max_state_file_bytes = 65536
+max_utc_daily_realized_loss = "250.00"
+flatten_open_positions_on_breach = false
+action_retry_interval_ms = 250
+action_retry_timeout_ms = 5000
+mandatory_proof_max_age_ms = 1000
+manual_reset_evidence_max_age_ms = 60000
+forced_reduction_policy_sha256 = "65170d6e1b2ed7154668ed976a0dc77576dd676843b5b6e6048377811d90d2ec"
+forced_reduction_max_live_order_count = 6
+forced_reduction_max_notional_per_order = "10.00"
+authorized_operator_ids = ["operator-primary"]
+account_ids = ["POLYMARKET-001"]
+instrument_ids = []
 
 [risk.nautilus]
 max_order_submit_rate = "40/00:01:00"

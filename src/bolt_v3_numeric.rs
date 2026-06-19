@@ -25,6 +25,21 @@ pub(crate) const CENTS_PER_SHARE: f64 = 100.0;
 pub(crate) const MIDPOINT_DIVISOR_F64: f64 = 2.0;
 pub(crate) const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
 pub(crate) const NOTIONAL_FLOAT_TOLERANCE_EPSILON_MULTIPLIER: f64 = 10_000.0;
+/// Length of a SHA-256 digest rendered as lowercase hex (32 bytes -> 64 chars).
+/// Single source for every digest-shape guard so no module recomputes it.
+pub(crate) const SHA256_HEX_DIGEST_LEN: usize = 64;
+
+/// The single digest-shape guard for SHA-256 hex strings: exactly
+/// `SHA256_HEX_DIGEST_LEN` lowercase-hex chars. Every digest producer in the
+/// crate (`hex::encode(Sha256::digest(..))`) emits lowercase, so uppercase
+/// `A-F` is never a legitimate digest and is rejected fail-closed. Lives here
+/// (no `crate::` deps) so every validator delegates instead of re-implementing.
+pub(crate) fn is_sha256_hex_digest(value: &str) -> bool {
+    value.len() == SHA256_HEX_DIGEST_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
 
 pub(crate) fn is_positive_finite(value: f64) -> bool {
     value.is_finite() && value > ZERO_F64

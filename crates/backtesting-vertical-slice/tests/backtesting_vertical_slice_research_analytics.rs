@@ -162,6 +162,9 @@ fn contract(run_id: &str, result_contract_uri: &str) -> BacktestResultContract {
         claim_limits: vec!["trade replay only".to_string()],
         warnings: Vec::new(),
         mechanical_blockers: Vec::new(),
+        config_override_report: None,
+        run_guard_report: None,
+        feed_labels: vec![],
         nt_result: NautilusResultPointer {
             trader_id: "TRADER-001".to_string(),
             machine_id: "machine".to_string(),
@@ -174,6 +177,8 @@ fn contract(run_id: &str, result_contract_uri: &str) -> BacktestResultContract {
             total_events: 4,
             total_orders: 5,
             total_positions: 6,
+            stats_pnls: Default::default(),
+            stats_returns: Default::default(),
         },
         artifact_uris: ResultArtifactUris {
             source_proof_uri: "s3://example-bucket/source-proof.json".to_string(),

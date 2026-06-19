@@ -5096,6 +5096,11 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
         "live recipes must reject legacy live.toml/live.local.toml paths as profile inputs"
     );
     assert!(
+        support::repo_text("src/bolt_v3_prod_profile.rs")
+            .contains("ProfileError::InvalidProfilePath"),
+        "generate/verify must also reject non-overlay profile paths for systemd/direct CLI callers"
+    );
+    assert!(
         !justfile.contains("live_root := \"config/live.local.toml\""),
         "live recipes must no longer source the gitignored operator root"
     );

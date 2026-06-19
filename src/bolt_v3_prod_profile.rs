@@ -181,6 +181,8 @@ pub enum ProfileError {
     Io { path: PathBuf, message: String },
     /// The overlay text was not valid TOML / not a valid [`ProdOverlay`].
     Overlay { path: PathBuf, message: String },
+    /// The profile path is not a tracked overlay-shaped source path.
+    InvalidProfilePath(PathBuf),
     /// The overlay referenced a base/client/surface that the composition could not
     /// satisfy (e.g. an `active_clients` name absent from the base).
     Composition(String),
@@ -209,6 +211,11 @@ impl std::fmt::Display for ProfileError {
             ProfileError::Overlay { path, message } => {
                 write!(f, "overlay `{}` is invalid: {message}", path.display())
             }
+            ProfileError::InvalidProfilePath(path) => write!(
+                f,
+                "profile `{}` must be a config/profiles/*.overlay.toml-style source overlay",
+                path.display()
+            ),
             ProfileError::Composition(message) => write!(f, "{message}"),
             ProfileError::Invariant(message) => write!(f, "{message}"),
             ProfileError::Mismatch(message) => write!(f, "{message}"),
@@ -241,6 +248,23 @@ fn profile_basename(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn validate_profile_path_shape(path: &Path) -> Result<(), ProfileError> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let parent_name = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if parent_name == "profiles" && file_name.ends_with(".overlay.toml") {
+        Ok(())
+    } else {
+        Err(ProfileError::InvalidProfilePath(path.to_path_buf()))
+    }
 }
 
 /// Parse and validate the overlay text into a [`ProdOverlay`].
@@ -597,6 +621,7 @@ fn compose_and_load(overlay_path: &Path) -> Result<ComposedConfig, ProfileError>
     if overlay_text.contains(GENERATED_MARKER_PREFIX) {
         return Err(ProfileError::AlreadyGenerated(overlay_path.to_path_buf()));
     }
+    validate_profile_path_shape(overlay_path)?;
     let overlay = parse_overlay(overlay_path, &overlay_text)?;
     let composed_text = compose_config_text(overlay_path, &overlay)?;
     let loaded = load_composed_against_binary(overlay_path, &overlay, &composed_text)?;

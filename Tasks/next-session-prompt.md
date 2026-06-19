@@ -1,12 +1,13 @@
 # bolt-v2 Next Session: SSM Secrets + Deploy to EC2
 
 > Historical handoff. Current operator-config workflow:
-> - `config/live.local.toml` is the human-edited local source of truth.
-> - `config/live.local.example.toml` is the tracked template.
-> - `config/live.toml` is the generated runtime artifact.
+> - `config/root.toml` is the shared base.
+> - `config/profiles/*.overlay.toml` are reviewed deploy profiles.
+> - Set `BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml`.
+> - `config/live.toml` is generated; never hand-edit it or source it from `config/live.local.toml`.
 > - `just live-check` validates secret-config completeness only.
 > - `just live-resolve` performs actual secret resolution.
-> - `just live` generates `config/live.toml` and runs with it.
+> - `just live` generates `config/live.toml` from `BOLT_LIVE_PROFILE` and runs with it.
 
 ## Context
 
@@ -41,7 +42,7 @@ bolt-v2 is a Polymarket trading system built on NautilusTrader's Rust `LiveNode`
 
 ### Working
 - `cargo build --release` succeeds, zero warnings
-- `just live` generates `config/live.toml` from `config/live.local.toml` and then runs the runtime config against Polymarket
+- `just live` generates `config/live.toml` from `BOLT_LIVE_PROFILE` and then runs the generated runtime config.
 - `just live-resolve` generates `config/live.toml` and then resolves the configured secrets for real
 - Tested on macOS M4 natively (no Docker needed for Rust path)
 
@@ -52,10 +53,10 @@ bolt-v2/
   Cargo.lock           # Pinned deps
   src/main.rs          # Entry point — CLI with `run` and `secrets` subcommands
   src/config.rs        # Config parsing + secret resolution (SSM only after Task 1)
-  config/live.local.example.toml  # Tracked operator template
-  config/live.local.toml          # Human-edited local source (gitignored)
+  config/root.toml                # Shared base
+  config/profiles/*.overlay.toml  # Reviewed deploy profiles
   config/live.toml                # Generated runtime artifact (gitignored)
-  .gitignore                      # target/, config/live.local.toml, config/live.toml, *.log, .omx/
+  .gitignore                      # target/, generated live.toml, local-only files, logs
   tests/verify_build.sh # Compilation + CLI verification
 ```
 
@@ -95,7 +96,7 @@ Three secret sources = three paths to maintain. SSM works everywhere: EC2 reads 
 - OR keep it as a diagnostic tool (resolve from SSM, print to verify)
 - Decision: keep it. Useful for verifying SSM connectivity.
 
-**`config/live.local.example.toml`:**
+**`config/profiles/<profile>.overlay.toml`:**
 - Remove `source` field from `[secrets]`
 - Field values are SSM parameter paths directly:
 ```toml

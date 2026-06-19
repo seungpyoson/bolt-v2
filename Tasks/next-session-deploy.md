@@ -1,10 +1,11 @@
 # bolt-v2 Next Session: Deploy to EC2
 
 > Historical handoff. Current operator-config workflow:
-> - `config/live.local.toml` is the human-edited local source of truth.
-> - `config/live.local.example.toml` is the tracked template.
-> - `config/live.toml` is the generated runtime artifact.
-> - Generate before deploy, upload, check, resolve, or run.
+> - `config/root.toml` is the shared base.
+> - `config/profiles/*.overlay.toml` are reviewed deploy profiles.
+> - Set `BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml`.
+> - `config/live.toml` is generated; never hand-edit it or source it from `config/live.local.toml`.
+> - Generate and verify before deploy, upload, check, resolve, or run.
 
 ## What Was Done
 

@@ -1,9 +1,9 @@
 # bolt-v2 Next Session: Wire Up FeatherWriter
 
 > Historical handoff. Current operator-config workflow:
-> - Set operator values in `config/live.local.toml`.
-> - Keep the tracked template in `config/live.local.example.toml`.
-> - Regenerate `config/live.toml` before any run, check, resolve, or deploy step.
+> - Put reviewed operator deltas in `config/profiles/*.overlay.toml`.
+> - Set `BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml`.
+> - Regenerate and verify `config/live.toml` before any run, check, resolve, or deploy step.
 
 ## Context
 
@@ -52,7 +52,7 @@ flush_interval_ms = 1000
 replace_existing = false
 ```
 
-This section belongs in `config/live.local.toml` and is currently ignored by serde during materialization. Need to either:
+This section belongs in the selected tracked overlay and is currently ignored by serde during materialization. Need to either:
 1. Add `StreamingConfig` to our `Config` struct and parse it
 2. Or hardcode the values (violates NO HARDCODES rule)
 
@@ -70,8 +70,8 @@ Add streaming config struct to parse `[streaming]` section from TOML.
 ### src/main.rs
 After building the node, create FeatherWriter and subscribe to message bus.
 
-### `config/live.local.toml` and generated `config/live.toml`
-Set `catalog_path` in `config/live.local.toml`, then regenerate `config/live.toml`. The runtime path should be `/opt/bolt-v2/data/catalog` (not `/data/catalog`, which is the old v1 path).
+### Tracked profile overlay and generated `config/live.toml`
+Set `catalog_path` in the selected tracked overlay, then regenerate `config/live.toml`. The runtime path should be `/opt/bolt-v2/data/catalog` (not `/data/catalog`, which is the old v1 path).
 
 ### EC2 instance
 Create `/opt/bolt-v2/data/catalog` directory on the instance.

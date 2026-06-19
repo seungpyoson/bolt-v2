@@ -485,6 +485,8 @@ fn base_template_is_present_and_multi_asset() {
 #[test]
 fn generate_rejects_overlay_with_unknown_field() {
     let dir = stage_runtime_dir("prod-overlay-unknown-field");
+    let profiles = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles).expect("profiles dir creates");
     let overlay_text = support::repo_text(OVERLAY);
     let invalid = overlay_text.replace(
         "base = \"../root.toml\"\n",
@@ -494,7 +496,7 @@ fn generate_rejects_overlay_with_unknown_field() {
         invalid, overlay_text,
         "the unknown key must have been injected"
     );
-    let invalid_path = dir.path().join("prod-bad.overlay.toml");
+    let invalid_path = profiles.join("prod-bad.overlay.toml");
     write(&invalid_path, &invalid);
 
     let error = generate_live_config(&invalid_path)
@@ -546,13 +548,15 @@ fn generate_rejects_overlay_without_loss_rails() {
     // Removing the overlay's [loss_governor] block makes it fail typed parse
     // (loss_governor is a required ProdOverlay field), failing generation closed.
     let dir = stage_runtime_dir("prod-overlay-no-rails");
+    let profiles = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles).expect("profiles dir creates");
     let overlay_text = support::repo_text(OVERLAY);
     let without_rails = without_overlay_loss_governor(&overlay_text);
     assert!(
         !without_rails.contains("[loss_governor]"),
         "the loss_governor block must have been removed for this negative case"
     );
-    let path = dir.path().join("prod-no-rails.overlay.toml");
+    let path = profiles.join("prod-no-rails.overlay.toml");
     write(&path, &without_rails);
 
     let error =
@@ -602,6 +606,20 @@ fn generate_rejects_overlay_with_disabled_loss_rails() {
         ),
         other => panic!("expected an invariant error, got: {other}"),
     }
+}
+
+#[test]
+fn generate_rejects_live_local_path_as_profile_source() {
+    let dir = stage_runtime_dir("prod-overlay-live-local-rejected");
+    let path = dir.path().join("live.local.toml");
+    write(&path, &support::repo_text(OVERLAY));
+
+    let error = generate_live_config(&path)
+        .expect_err("live.local.toml must not be accepted as a profile source");
+    assert!(
+        matches!(error, ProfileError::InvalidProfilePath(_)),
+        "legacy live.local.toml path must fail before it can enter generation, got: {error}"
+    );
 }
 
 #[test]

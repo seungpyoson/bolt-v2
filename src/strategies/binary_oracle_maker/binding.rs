@@ -237,7 +237,7 @@ mod tests {
     const NOW_MS: u64 = 1_700_000_000_000;
     const ASSET: &str = "ETH";
     const CADENCE_SECONDS: u64 = 3_600;
-    const CADENCE_SLUG_TOKEN: &str = "hourly";
+    const CADENCE_SLUG_TOKEN: &str = "1h";
     const UPDOWN_FAMILY: &str = "updown";
 
     fn declaration(market_key: &str) -> MakerMarketDeclaration {

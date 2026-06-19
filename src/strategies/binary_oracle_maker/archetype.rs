@@ -913,7 +913,7 @@ mod tests {
             family_key: "updown".to_string(),
             underlying_asset: "ETH".to_string(),
             cadence_seconds: 3_600,
-            cadence_slug_token: "hourly".to_string(),
+            cadence_slug_token: "1h".to_string(),
             static_condition_id: None,
             static_yes_outcome: None,
             static_no_outcome: None,
@@ -1085,7 +1085,7 @@ mod tests {
             family_key = "updown"
             underlying_asset = "ETH"
             cadence_seconds = 3600
-            cadence_slug_token = "hourly"
+            cadence_slug_token = "1h"
             "#;
 
     fn valid_strategy_toml(strategy_config_hash: &str) -> String {
@@ -1134,7 +1134,7 @@ mod tests {
             family_key = "updown"
             underlying_asset = "ETH"
             cadence_seconds = 3600
-            cadence_slug_token = "hourly"
+            cadence_slug_token = "1h"
 
             {}
             "#,
@@ -1760,7 +1760,7 @@ mod tests {
                 family_key: "updown".to_string(),
                 underlying_asset: "ETH".to_string(),
                 cadence_seconds: 3_600,
-                cadence_slug_token: "hourly".to_string(),
+                cadence_slug_token: "1h".to_string(),
                 static_condition_id: None,
                 static_yes_outcome: None,
                 static_no_outcome: None,

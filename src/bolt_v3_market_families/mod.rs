@@ -1825,7 +1825,7 @@ mod tests {
             rotating_market_family = "updown"
             underlying_asset = "CONFIGURED_ASSET"
             cadence_secs = -1
-            cadence_slug_token = "configuredwindow"
+            cadence_slug_token = "5m"
             market_selection_rule = "active_or_next"
             retry_interval_secs = 1
             blocked_after_secs = 1

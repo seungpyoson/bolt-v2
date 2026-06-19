@@ -13,6 +13,15 @@
 # those (in a reviewed PR), not this oracle. Touch the body below only if you have a
 # deliberate, reviewed reason to re-baseline the equivalence target.
 #
+# Re-baseline log:
+# - 2026-06-19 (#768): absorbed the RV-source-validation fix ("Fix RV source asset
+#   validation", merged into the branch from main) into the BTC surface sources —
+#   added per-source `canonical_base_asset` and corrected the Binance/Bybit
+#   `instrument_id`s (BTC-USDT.BINANCE -> BTCUSDT.BINANCE, BTC-USDT.BYBIT ->
+#   BTCUSDT-SPOT.BYBIT). The composed prod config must adopt that upstream
+#   correctness fix, so the oracle's BTC sources are kept value-equal to
+#   config/root.toml's `btc_usdt_midpoint_rv` sources.
+#
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
 # `funder` is a public on-chain Safe address.
 schema_version = 1
@@ -54,26 +63,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
 source_id = "binance_btc_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "BTC-USDT.BINANCE"
+instrument_id = "BTCUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
 source_id = "bybit_btc_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "BTC-USDT.BYBIT"
+instrument_id = "BTCUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 

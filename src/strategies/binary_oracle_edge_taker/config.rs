@@ -270,8 +270,8 @@ const POSITION_SIDE_LONG_VALUE: &str = stringify!(long);
 
 impl BinaryOracleEdgeTakerBuilder {
     pub(super) fn parse_config(raw: &Value) -> Result<BinaryOracleEdgeTakerConfig> {
-        let normalized = Self::config_with_derived_cadence_slug_token(raw);
-        let config: BinaryOracleEdgeTakerConfig = normalized
+        let config: BinaryOracleEdgeTakerConfig = raw
+            .clone()
             .try_into()
             .context("binary_oracle_edge_taker builder requires a valid config table")?;
         // Fail loud at load: a non-positive spike_guard_return_threshold makes the
@@ -317,39 +317,6 @@ impl BinaryOracleEdgeTakerBuilder {
         Self::ensure_executable_entry_order_shape(&config)?;
         Self::ensure_configured_instrument_id_fields_parse(&config)?;
         Ok(config)
-    }
-
-    fn config_with_derived_cadence_slug_token(raw: &Value) -> Value {
-        let Some(table) = raw.as_table() else {
-            return raw.clone();
-        };
-        Self::table_with_derived_cadence_slug_token(table)
-            .map(Value::Table)
-            .unwrap_or_else(|| raw.clone())
-    }
-
-    fn table_with_derived_cadence_slug_token(
-        table: &toml::map::Map<String, Value>,
-    ) -> Option<toml::map::Map<String, Value>> {
-        if table.contains_key(stringify!(cadence_slug_token)) {
-            return None;
-        }
-        let family = table
-            .get(stringify!(rotating_market_family))
-            .and_then(Value::as_str)?;
-        if family != bolt_v3_market_families::updown::KEY {
-            return None;
-        }
-        let cadence_seconds = table
-            .get(stringify!(cadence_seconds))
-            .and_then(Value::as_integer)?;
-        let token = bolt_v3_market_families::updown::expected_cadence_slug_token(cadence_seconds)?;
-        let mut normalized = table.clone();
-        normalized.insert(
-            stringify!(cadence_slug_token).to_string(),
-            Value::String(token.to_string()),
-        );
-        Some(normalized)
     }
 
     pub fn build_strategy(
@@ -481,14 +448,6 @@ impl BinaryOracleEdgeTakerBuilder {
         field_prefix: &str,
         errors: &mut Vec<ValidationError>,
     ) {
-        let normalized_table;
-        let table = if let Some(value) = Self::table_with_derived_cadence_slug_token(table) {
-            normalized_table = value;
-            &normalized_table
-        } else {
-            table
-        };
-
         for key in table.keys() {
             if !matches!(
                 key.as_str(),

@@ -106,6 +106,14 @@ pub struct MarketFamilyValidationBinding {
     pub maker_settlement_payout_from_reference_prices:
         fn(f64, f64) -> Option<BinarySettlementPayout>,
     pub maker_binary_fee_curve: fn(f64, f64) -> Option<f64>,
+    /// Optional family-owned cadence→slug derivation. `Some(fn)` means the family
+    /// defines a runtime-contract token fully determined by `cadence_secs`, so an
+    /// omitted `cadence_slug_token` can be derived from cadence (the inner `None`
+    /// means that cadence has no contract token). `None` means the family uses a
+    /// free-form operator-supplied slug and nothing is derived. This is the single
+    /// dispatch point for [`inject_derived_cadence_slug_token`], so there is one
+    /// home per family for "is my slug derivable from cadence, and to what".
+    pub derive_cadence_slug_token: Option<fn(i64) -> Option<&'static str>>,
 }
 
 /// Shared pricing contract handed to a family's fair-value model.
@@ -316,6 +324,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         maker_settlement_payout_from_reference_prices:
             updown::maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: updown::maker_binary_fee_curve,
+        derive_cadence_slug_token: Some(updown::expected_cadence_slug_token),
     },
     MarketFamilyValidationBinding {
         key: outcome_group::KEY,
@@ -332,6 +341,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         maker_settlement_payout_from_reference_prices:
             unsupported_maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
+        derive_cadence_slug_token: None,
     },
     MarketFamilyValidationBinding {
         key: static_binary_event::KEY,
@@ -348,6 +358,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         maker_settlement_payout_from_reference_prices:
             unsupported_maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: static_binary_event::maker_binary_fee_curve,
+        derive_cadence_slug_token: None,
     },
     MarketFamilyValidationBinding {
         key: hyperliquid_instrument::KEY,
@@ -365,6 +376,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
         maker_settlement_payout_from_reference_prices:
             unsupported_maker_settlement_payout_from_reference_prices,
         maker_binary_fee_curve: unsupported_maker_binary_fee_curve,
+        derive_cadence_slug_token: None,
     },
 ];
 
@@ -590,6 +602,76 @@ pub fn validate_maker_market_target_from_target_with_bindings(
         )];
     };
     (binding.validate_maker_market_target)(context, target)
+}
+
+/// Single source of truth for deriving an omitted `cadence_slug_token` on one
+/// operator-facing rotating-market config row, *before* typed deserialization.
+///
+/// For a family that defines a cadence→slug runtime contract (its registry
+/// binding sets `derive_cadence_slug_token`), the slug is a pure function of
+/// cadence, so forcing operators to restate it is redundant. This fills it in
+/// when omitted. Free-form-slug families (no deriver) are left untouched and keep
+/// requiring an explicit slug via their own validators. The function operates on
+/// the raw `toml` row so every operator-facing surface (`updown [target]`, maker
+/// `[[parameters.markets]]`) shares exactly one derivation path and no surface
+/// recomputes the mapping; `family_field` / `cadence_field` name each surface's
+/// own keys (e.g. `rotating_market_family` + `cadence_secs` for the updown
+/// `[target]`, `family_key` + `cadence_seconds` for a maker market row).
+///
+/// Returns `Err` only when a contract-defining family's row omits the slug *and*
+/// its cadence has no contract token, so the failure names the offending cadence
+/// instead of degrading to a generic serde "missing field" error.
+pub fn inject_derived_cadence_slug_token(
+    row: &mut toml::Table,
+    family_field: &str,
+    cadence_field: &str,
+) -> Result<(), String> {
+    inject_derived_cadence_slug_token_with_bindings(
+        row,
+        family_field,
+        cadence_field,
+        validation_bindings(),
+    )
+}
+
+pub fn inject_derived_cadence_slug_token_with_bindings(
+    row: &mut toml::Table,
+    family_field: &str,
+    cadence_field: &str,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Result<(), String> {
+    // Operator already supplied it: leave it verbatim. A provided token is still
+    // checked against the family contract by that family's own validators.
+    if row.contains_key(stringify!(cadence_slug_token)) {
+        return Ok(());
+    }
+    // Missing/blank or unregistered family: leave it for typed deserialization and
+    // the family-registry validators to report; there is nothing to derive here.
+    let Some(family) = row.get(family_field).and_then(toml::Value::as_str) else {
+        return Ok(());
+    };
+    let Some(binding) = bindings.iter().find(|binding| binding.key == family) else {
+        return Ok(());
+    };
+    // Free-form-slug family (no cadence→slug contract): the slug is operator-owned
+    // and required; that family's own validator enforces presence and shape.
+    let Some(derive) = binding.derive_cadence_slug_token else {
+        return Ok(());
+    };
+    // Missing/non-integer cadence: typed deserialization reports the shape error.
+    let Some(cadence_secs) = row.get(cadence_field).and_then(toml::Value::as_integer) else {
+        return Ok(());
+    };
+    let token = derive(cadence_secs).ok_or_else(|| {
+        format!(
+            "cadence_slug_token is required when {cadence_field}={cadence_secs} because no `{family}` runtime-contract token can be derived"
+        )
+    })?;
+    row.insert(
+        stringify!(cadence_slug_token).to_string(),
+        toml::Value::String(token.to_string()),
+    );
+    Ok(())
 }
 
 pub fn fair_probability_up_for_family(
@@ -1893,5 +1975,147 @@ mod tests {
             }
             other => panic!("expected UnsupportedFamily, got {other:?}"),
         }
+    }
+
+    /// The updown family's `(cadence_secs, cadence_slug_token)` runtime contract,
+    /// restated independently of the production source so a drift in the derivation
+    /// table is caught here. These are the only cadences for which a slug derives.
+    const UPDOWN_CADENCE_SLUG_PINS: &[(i64, &str)] = &[
+        (60, "1m"),
+        (300, "5m"),
+        (900, "15m"),
+        (3600, "1h"),
+        (14400, "4h"),
+    ];
+
+    fn updown_row(cadence_secs: i64) -> toml::Table {
+        let mut row = toml::Table::new();
+        row.insert(
+            stringify!(rotating_market_family).to_string(),
+            toml::Value::String(updown::KEY.to_string()),
+        );
+        row.insert(
+            stringify!(cadence_secs).to_string(),
+            toml::Value::Integer(cadence_secs),
+        );
+        row
+    }
+
+    fn inject_updown(row: &mut toml::Table) -> Result<(), String> {
+        inject_derived_cadence_slug_token(
+            row,
+            stringify!(rotating_market_family),
+            stringify!(cadence_secs),
+        )
+    }
+
+    #[test]
+    fn inject_derives_updown_slug_for_every_contract_cadence() {
+        for &(cadence_secs, expected) in UPDOWN_CADENCE_SLUG_PINS {
+            let mut row = updown_row(cadence_secs);
+            inject_updown(&mut row)
+                .unwrap_or_else(|error| panic!("cadence {cadence_secs} must derive: {error}"));
+            assert_eq!(
+                row.get(stringify!(cadence_slug_token))
+                    .and_then(toml::Value::as_str),
+                Some(expected),
+                "cadence {cadence_secs} must derive slug `{expected}`"
+            );
+        }
+    }
+
+    #[test]
+    fn inject_errors_when_updown_cadence_has_no_contract_token() {
+        let mut row = updown_row(120);
+        let error = inject_updown(&mut row).expect_err(
+            "a cadence with no contract token must fail closed when the slug is omitted",
+        );
+        assert!(
+            error.contains("cadence_secs=120") && error.contains("cadence_slug_token is required"),
+            "error must name the offending cadence: {error}"
+        );
+        assert!(
+            !row.contains_key(stringify!(cadence_slug_token)),
+            "no token may be injected on the error path"
+        );
+    }
+
+    #[test]
+    fn inject_preserves_an_operator_supplied_slug_verbatim() {
+        // A present token short-circuits derivation and is never overwritten;
+        // contract mismatch is a separate downstream validation concern.
+        let mut row = updown_row(300);
+        row.insert(
+            stringify!(cadence_slug_token).to_string(),
+            toml::Value::String("operator_choice".to_string()),
+        );
+        inject_updown(&mut row).expect("a present token short-circuits derivation");
+        assert_eq!(
+            row.get(stringify!(cadence_slug_token))
+                .and_then(toml::Value::as_str),
+            Some("operator_choice"),
+            "an operator-supplied token must be preserved verbatim"
+        );
+    }
+
+    #[test]
+    fn inject_leaves_free_form_slug_families_untouched() {
+        // Every family whose registry binding declines cadence→slug derivation keeps
+        // its operator-owned slug requirement; the seam injects nothing and the set
+        // is read from the registry so a newly-added free-form family is covered.
+        let free_form: Vec<&str> = validation_bindings()
+            .iter()
+            .filter(|binding| binding.derive_cadence_slug_token.is_none())
+            .map(|binding| binding.key)
+            .collect();
+        assert!(
+            !free_form.is_empty(),
+            "registry must contain at least one free-form-slug family for this test to bind"
+        );
+        for family in free_form {
+            let mut row = toml::Table::new();
+            row.insert(
+                stringify!(rotating_market_family).to_string(),
+                toml::Value::String(family.to_string()),
+            );
+            row.insert(
+                stringify!(cadence_secs).to_string(),
+                toml::Value::Integer(3600),
+            );
+            inject_updown(&mut row).unwrap_or_else(|error| {
+                panic!("free-form family `{family}` must not error: {error}")
+            });
+            assert!(
+                !row.contains_key(stringify!(cadence_slug_token)),
+                "free-form-slug family `{family}` must not receive a derived token"
+            );
+        }
+    }
+
+    #[test]
+    fn inject_defers_unregistered_family_and_missing_cadence_to_typed_deser() {
+        // Unregistered family: nothing to dispatch on; leave it for typed
+        // deserialization / registry validators to reject, do not error here.
+        let mut unregistered = toml::Table::new();
+        unregistered.insert(
+            stringify!(rotating_market_family).to_string(),
+            toml::Value::String("not_a_registered_family".to_string()),
+        );
+        unregistered.insert(
+            stringify!(cadence_secs).to_string(),
+            toml::Value::Integer(300),
+        );
+        inject_updown(&mut unregistered).expect("an unregistered family is left untouched");
+        assert!(!unregistered.contains_key(stringify!(cadence_slug_token)));
+
+        // Registered deriving family but cadence absent: the shape error belongs to
+        // typed deserialization, so the seam injects nothing and does not error.
+        let mut no_cadence = toml::Table::new();
+        no_cadence.insert(
+            stringify!(rotating_market_family).to_string(),
+            toml::Value::String(updown::KEY.to_string()),
+        );
+        inject_updown(&mut no_cadence).expect("a missing cadence is deferred, not errored");
+        assert!(!no_cadence.contains_key(stringify!(cadence_slug_token)));
     }
 }

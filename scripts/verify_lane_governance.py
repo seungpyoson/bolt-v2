@@ -2,8 +2,10 @@
 """Meta-check: every governed lane entry point acquires the lane lock (#653).
 
 Rule: every scripts/verify_*.py and scripts/test_*.py file must have a
-module-level ``if __name__ == "__main__":`` block whose first two statements are
-``import lane_governor`` and a bare ``lane_governor.acquire()`` call. This makes
+module-level ``if __name__ == "__main__":`` block whose first statement is
+``import lane_governor`` and whose next statement acquires the lane lock. The
+lock may be a bare ``lane_governor.acquire()`` call, or a captured handle that
+is released in the immediately following ``try/finally`` block. This makes
 lane-coverage drift a CI failure instead of a convention.
 
 This is an entrypoint-governance check, not a general module side-effect
@@ -43,16 +45,13 @@ def _is_main_guard(node: ast.stmt) -> bool:
     )
 
 
-def _is_acquire_call(node: ast.stmt) -> bool:
+def _is_lane_governor_call(node: ast.AST, name: str) -> bool:
     return (
-        isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Attribute)
-        and node.value.func.attr == "acquire"
-        and isinstance(node.value.func.value, ast.Name)
-        and node.value.func.value.id == "lane_governor"
-        and not node.value.args
-        and not node.value.keywords
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == name
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "lane_governor"
     )
 
 
@@ -62,6 +61,58 @@ def _is_lane_governor_import(node: ast.stmt) -> bool:
         and len(node.names) == 1
         and node.names[0].name == "lane_governor"
         and node.names[0].asname is None
+    )
+
+
+def _is_bare_acquire_call(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and _is_lane_governor_call(node.value, "acquire")
+        and not node.value.args
+        and not node.value.keywords
+    )
+
+
+def _acquire_handle_name(node: ast.stmt) -> str | None:
+    if not (
+        isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and _is_lane_governor_call(node.value, "acquire")
+        and not node.value.args
+        and not node.value.keywords
+    ):
+        return None
+    return node.targets[0].id
+
+
+def _is_release_call(node: ast.stmt, handle_name: str) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and _is_lane_governor_call(node.value, "release")
+        and len(node.value.args) == 1
+        and isinstance(node.value.args[0], ast.Name)
+        and node.value.args[0].id == handle_name
+        and not node.value.keywords
+    )
+
+
+def _has_immediate_acquire(guard_body: list[ast.stmt]) -> bool:
+    if len(guard_body) < 2:
+        return False
+    if _is_bare_acquire_call(guard_body[1]):
+        return True
+
+    handle_name = _acquire_handle_name(guard_body[1])
+    return (
+        handle_name is not None
+        and len(guard_body) == 3
+        and isinstance(guard_body[2], ast.Try)
+        and bool(guard_body[2].body)
+        and not guard_body[2].handlers
+        and not guard_body[2].orelse
+        and len(guard_body[2].finalbody) == 1
+        and _is_release_call(guard_body[2].finalbody[0], handle_name)
     )
 
 
@@ -85,10 +136,10 @@ def lane_governance_violations(scripts_dir: Path) -> list[str]:
                     "must be import lane_governor"
                 )
                 continue
-            if len(guard.body) < 2 or not _is_acquire_call(guard.body[1]):
+            if not _has_immediate_acquire(guard.body):
                 violations.append(
                     f"{path.name}: second statement in the __main__ block "
-                    "must be lane_governor.acquire()"
+                    "must be lane_governor.acquire() or a released acquire handle"
                 )
     return violations
 

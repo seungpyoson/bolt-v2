@@ -1,7 +1,6 @@
 # Loss Halt Market Exit Boundary
 
-Historical note: this plan predates the #738 durable kill-switch consolidation.
-#738 intentionally keeps active market exit unwired and rejects direct NT market-exit / live-flatten paths until the shared execution-policy path is designed.
+Historical note: this plan predates the #738 durable kill-switch consolidation. The #738 scope intentionally keeps active market exit unwired and rejects direct NT market-exit / live-flatten paths until the shared execution-policy path is designed.
 Treat the original wording below as a historical boundary note for the older loss-halt slice, not operator guidance for #738.
 
 ## Objective

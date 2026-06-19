@@ -78,6 +78,7 @@ pub struct BoltV3RootConfig {
     pub logging: LoggingBlock,
     pub persistence: PersistenceBlock,
     pub aws: AwsBlock,
+    pub reference_live_probe: Option<ReferenceLiveProbeBlock>,
     pub chainlink_data_streams: Option<RootFeedBindingCatalog>,
     pub clients: BTreeMap<String, ClientBlock>,
     pub realized_volatility_surfaces: Option<BTreeMap<String, RealizedVolatilitySurfaceBlock>>,
@@ -90,6 +91,15 @@ pub struct BoltV3RootConfig {
 #[serde(deny_unknown_fields)]
 pub struct RootFeedBindingCatalog {
     pub feed_bindings: Vec<toml::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceLiveProbeBlock {
+    pub chainlink_client_id: String,
+    pub polyresearch_client_id: String,
+    pub duration_secs: u64,
+    pub min_chainlink_data_frames: u64,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit

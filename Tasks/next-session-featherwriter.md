@@ -2,7 +2,7 @@
 
 > Historical handoff. Current operator-config workflow:
 > - Put reviewed operator deltas in `config/profiles/*.overlay.toml`.
-> - Set `BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml`.
+> - Set `BOLT_LIVE_PROFILE=<profile-id>`.
 > - Regenerate and verify `config/live.toml` before any run, check, resolve, or deploy step.
 
 ## Context

@@ -3,7 +3,7 @@
 > Historical handoff. Current operator-config workflow:
 > - `config/root.toml` is the shared base.
 > - `config/profiles/*.overlay.toml` are reviewed deploy profiles.
-> - Set `BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml`.
+> - Set `BOLT_LIVE_PROFILE=<profile-id>`.
 > - `config/live.toml` is generated; never hand-edit it or source it from `config/live.local.toml`.
 > - Generate and verify before deploy, upload, check, resolve, or run.
 

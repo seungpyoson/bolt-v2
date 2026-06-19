@@ -21,11 +21,15 @@ use std::path::Path;
 use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_prod_profile::{
-        GENERATED_MARKER_PREFIX, ProdOverlay, ProfileError, generate_live_config,
-        verify_live_config,
+        GENERATED_MARKER_PREFIX, ProdOverlay, ProfileError, ProfileId, generate_live_config,
+        live_config_path, profile_overlay_path, verify_live_config,
     },
 };
 
+/// Repo-local config root used by generation/verification.
+const CONFIG_ROOT: &str = "config";
+/// Opaque profile ID for the tracked production overlay.
+const PROFILE_ID: &str = "prod-btc-5m";
 /// The tracked production OVERLAY — the pilot deltas over the shared base template.
 const OVERLAY: &str = "config/profiles/prod-btc-5m.overlay.toml";
 /// The shared multi-asset base template the overlay composes onto.
@@ -59,13 +63,11 @@ fn stage_runtime_dir(label: &str) -> support::TempCaseDir {
     dir
 }
 
-/// Stage a FULL on-box config tree mirroring `/opt/bolt-v2/config`: the strategies (via
-/// [`stage_runtime_dir`]), a copy of the base `root.toml`, and the overlay under
-/// `profiles/`. In this single-tree layout `--profile` and `--deployed` resolve their
-/// `strategy_files` to the SAME files — the real production topology (the deployed
-/// `live.toml`, the overlay's `base = "../root.toml"`, and the strategies all live in one
-/// dir). Returns the dir and the staged overlay path.
-fn stage_full_config_tree(label: &str) -> (support::TempCaseDir, std::path::PathBuf) {
+/// Stage a FULL on-box config tree mirroring `/opt/bolt-v2/config`: the strategies
+/// (via [`stage_runtime_dir`]), a copy of the base `root.toml`, and the overlay
+/// under `profiles/`. In this single-tree layout the derived overlay, derived
+/// `live.toml`, and strategies all live under one config root.
+fn stage_full_config_tree(label: &str) -> support::TempCaseDir {
     let dir = stage_runtime_dir(label);
     std::fs::copy(support::repo_path(BASE), dir.path().join("root.toml"))
         .expect("base root.toml copies into the staged tree");
@@ -74,7 +76,7 @@ fn stage_full_config_tree(label: &str) -> (support::TempCaseDir, std::path::Path
     let overlay = profiles.join("prod-btc-5m.overlay.toml");
     std::fs::copy(support::repo_path(OVERLAY), &overlay)
         .expect("overlay copies into the staged tree");
-    (dir, overlay)
+    dir
 }
 
 fn write(path: &Path, text: &str) {
@@ -90,12 +92,68 @@ fn load_text_in_staged_dir(label: &str, text: &str) -> LoadedBoltV3Config {
     load_bolt_v3_config(&path).expect("staged config text must load against the binary")
 }
 
+fn repo_config_root() -> std::path::PathBuf {
+    support::repo_path(CONFIG_ROOT)
+}
+
+#[test]
+fn profile_id_validator_accepts_only_opaque_ids() {
+    let max_len_id = format!("p{}", "a".repeat(62));
+    for accepted in [PROFILE_ID, "a", "a123", "profile_1", max_len_id.as_str()] {
+        assert!(
+            ProfileId::parse(accepted).is_ok(),
+            "profile id `{accepted}` should be accepted"
+        );
+    }
+
+    let too_long_id = format!("p{}", "a".repeat(63));
+    for rejected in [
+        "",
+        ".",
+        "..",
+        "Prod",
+        "a/b",
+        "a\\b",
+        "a..b",
+        "live.local",
+        "-leading",
+        "_leading",
+        "live",
+        "local",
+        "root",
+        "profiles",
+        "config/profiles/prod-btc-5m.overlay.toml",
+        too_long_id.as_str(),
+    ] {
+        assert!(
+            matches!(
+                ProfileId::parse(rejected),
+                Err(ProfileError::InvalidProfileId(_))
+            ),
+            "profile id `{rejected}` should be rejected"
+        );
+    }
+}
+
+#[test]
+fn profile_id_derives_overlay_path_under_config_root() {
+    let dir = support::TempCaseDir::new("prod-profile-id-derived-path");
+    let profile_id = ProfileId::parse(PROFILE_ID).expect("repo profile id is valid");
+    assert_eq!(
+        profile_overlay_path(dir.path(), &profile_id),
+        dir.path()
+            .join("profiles")
+            .join(format!("{PROFILE_ID}.overlay.toml"))
+    );
+    assert_eq!(live_config_path(dir.path()), dir.path().join("live.toml"));
+}
+
 // --- Core CI gate: composition loads against THIS binary ---------------------
 
 #[test]
 fn composed_prod_config_loads_against_this_binary() {
     let generated =
-        generate_live_config(&support::repo_path(OVERLAY)).expect("composition must succeed");
+        generate_live_config(&repo_config_root(), PROFILE_ID).expect("composition must succeed");
     let loaded = load_text_in_staged_dir("prod-overlay-loads", &generated.text);
     assert!(
         !loaded.config_bundle_checksum.is_empty(),
@@ -106,7 +164,7 @@ fn composed_prod_config_loads_against_this_binary() {
 #[test]
 fn composed_prod_config_is_btc_only_with_loss_rails() {
     let generated =
-        generate_live_config(&support::repo_path(OVERLAY)).expect("composition must succeed");
+        generate_live_config(&repo_config_root(), PROFILE_ID).expect("composition must succeed");
     let loaded = load_text_in_staged_dir("prod-overlay-btc-only", &generated.text);
 
     assert_eq!(
@@ -139,7 +197,7 @@ fn composed_prod_config_references_only_ssm_secret_paths() {
     // Every credential must be an SSM reference; no inline secret values. Scan the
     // COMPOSED runtime config (what actually deploys), not just the overlay.
     let generated =
-        generate_live_config(&support::repo_path(OVERLAY)).expect("composition must succeed");
+        generate_live_config(&repo_config_root(), PROFILE_ID).expect("composition must succeed");
     for line in generated.text.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') {
@@ -168,7 +226,7 @@ fn composed_config_matches_frozen_legacy_oracle() {
     // NOTHING the runtime sees. Prove the composed config and the frozen pre-refactor
     // standalone profile load to byte-for-byte identical effective `BoltV3RootConfig`s.
     let generated =
-        generate_live_config(&support::repo_path(OVERLAY)).expect("composition must succeed");
+        generate_live_config(&repo_config_root(), PROFILE_ID).expect("composition must succeed");
     let composed = load_text_in_staged_dir("prod-overlay-equiv-composed", &generated.text);
 
     let oracle_text = support::repo_text(LEGACY_ORACLE);
@@ -204,8 +262,8 @@ fn composed_config_matches_frozen_legacy_oracle() {
 
 #[test]
 fn generate_live_config_is_reproducible() {
-    let first = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
-    let second = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
+    let first = generate_live_config(&repo_config_root(), PROFILE_ID).expect("generate succeeds");
+    let second = generate_live_config(&repo_config_root(), PROFILE_ID).expect("generate succeeds");
     assert_eq!(
         first.text, second.text,
         "composition must be deterministic so the deployed artifact is reproducible from \
@@ -289,7 +347,8 @@ fn generated_live_config_is_fully_key_ordered_for_cross_process_determinism() {
     // cannot catch a randomized map iteration that differs across processes. Assert the
     // stronger structural invariant that guarantees determinism: every table in the
     // emitted config has sorted inline keys and sorted section keys.
-    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
+    let generated =
+        generate_live_config(&repo_config_root(), PROFILE_ID).expect("generate succeeds");
     // The provenance header is TOML comments, so the whole artifact parses as TOML.
     let parsed: toml::Value =
         toml::from_str(&generated.text).expect("generated runtime config must parse as TOML");
@@ -299,7 +358,8 @@ fn generated_live_config_is_fully_key_ordered_for_cross_process_determinism() {
 #[test]
 fn generated_live_config_carries_provenance_and_loads() {
     let dir = stage_runtime_dir("prod-overlay-provenance");
-    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
+    let generated =
+        generate_live_config(&repo_config_root(), PROFILE_ID).expect("generate succeeds");
 
     assert!(
         generated.text.starts_with(GENERATED_MARKER_PREFIX),
@@ -320,12 +380,12 @@ fn generated_live_config_carries_provenance_and_loads() {
 
 #[test]
 fn verify_passes_for_freshly_generated_deployed_config() {
-    let dir = stage_runtime_dir("prod-overlay-verify-ok");
-    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
-    let deployed = dir.path().join("live.toml");
+    let dir = stage_full_config_tree("prod-overlay-verify-ok");
+    let generated = generate_live_config(dir.path(), PROFILE_ID).expect("generate succeeds");
+    let deployed = live_config_path(dir.path());
     write(&deployed, &generated.text);
 
-    let verification = verify_live_config(&support::repo_path(OVERLAY), &deployed)
+    let verification = verify_live_config(dir.path(), PROFILE_ID)
         .expect("a freshly generated deployed config must verify");
     assert!(verification.matches_profile);
     assert!(verification.loads_against_binary);
@@ -337,9 +397,9 @@ fn verify_passes_for_freshly_generated_deployed_config() {
 
 #[test]
 fn verify_rejects_tampered_deployed_body() {
-    let dir = stage_runtime_dir("prod-overlay-tampered");
-    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
-    let deployed = dir.path().join("live.toml");
+    let dir = stage_full_config_tree("prod-overlay-tampered");
+    let generated = generate_live_config(dir.path(), PROFILE_ID).expect("generate succeeds");
+    let deployed = live_config_path(dir.path());
     // Flip a real value (sizing notional) — still valid TOML, but not what the
     // approved overlay composes to.
     let tampered = generated.text.replace(
@@ -349,7 +409,7 @@ fn verify_rejects_tampered_deployed_body() {
     assert_ne!(tampered, generated.text, "the tamper must change the bytes");
     write(&deployed, &tampered);
 
-    let error = verify_live_config(&support::repo_path(OVERLAY), &deployed)
+    let error = verify_live_config(dir.path(), PROFILE_ID)
         .expect_err("a hand-edited deployed config must fail verification");
     assert!(
         matches!(error, ProfileError::Mismatch(_)),
@@ -362,8 +422,8 @@ fn verify_rejects_a_stale_keyed_deployed_config_as_a_mismatch() {
     // A deployed config carrying the 2026-06-18 stale key differs from the approved
     // bytes, so verify rejects it at the byte-equality check as a profile mismatch.
     // The loader-level staleness proof is binary_rejects_the_2026_06_18_stale_key_directly.
-    let dir = stage_runtime_dir("prod-overlay-stale");
-    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
+    let dir = stage_full_config_tree("prod-overlay-stale");
+    let generated = generate_live_config(dir.path(), PROFILE_ID).expect("generate succeeds");
     let stale = generated.text.replace(
         "[nautilus.data_engine]\n",
         &format!("[nautilus.data_engine]\n{STALE_DEPLOY_KEY} = true\n"),
@@ -373,10 +433,10 @@ fn verify_rejects_a_stale_keyed_deployed_config_as_a_mismatch() {
         "the stale key must have been injected"
     );
     assert_ne!(stale, generated.text, "the injection must change the bytes");
-    let deployed = dir.path().join("live.toml");
+    let deployed = live_config_path(dir.path());
     write(&deployed, &stale);
 
-    let error = verify_live_config(&support::repo_path(OVERLAY), &deployed)
+    let error = verify_live_config(dir.path(), PROFILE_ID)
         .expect_err("a stale-keyed deployed config must fail verification");
     assert!(
         matches!(error, ProfileError::Mismatch(_)),
@@ -390,7 +450,8 @@ fn binary_rejects_the_2026_06_18_stale_key_directly() {
     // The foundational guarantee #768 relies on: the loader itself rejects the
     // exact stale key, independent of generate/verify. Inject it into the COMPOSED
     // config (the overlay has no [nautilus.data_engine]; the base template owns it).
-    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
+    let generated =
+        generate_live_config(&repo_config_root(), PROFILE_ID).expect("generate succeeds");
     let stale = generated.text.replace(
         "[nautilus.data_engine]\n",
         &format!("[nautilus.data_engine]\n{STALE_DEPLOY_KEY} = true\n"),
@@ -433,7 +494,6 @@ fn overlay_declares_only_the_allowed_delta_keys() {
         vec![
             "active_clients",
             "active_rv_surfaces",
-            "base",
             "client_execution",
             "loss_governor",
             "rv_policy_overrides",
@@ -446,10 +506,6 @@ fn overlay_declares_only_the_allowed_delta_keys() {
     // And it must round-trip into the typed `ProdOverlay` (deny_unknown_fields).
     let overlay: ProdOverlay =
         toml::from_str(&support::repo_text(OVERLAY)).expect("overlay deserializes as ProdOverlay");
-    assert_eq!(
-        overlay.base, "../root.toml",
-        "overlay base must point at the shared template relative to the overlay dir"
-    );
     assert_eq!(overlay.strategy_files, vec![BTC_STRATEGY.to_string()]);
     assert!(
         overlay
@@ -484,22 +540,21 @@ fn base_template_is_present_and_multi_asset() {
 
 #[test]
 fn generate_rejects_overlay_with_unknown_field() {
-    let dir = stage_runtime_dir("prod-overlay-unknown-field");
-    let profiles = dir.path().join("profiles");
-    std::fs::create_dir_all(&profiles).expect("profiles dir creates");
+    let dir = stage_full_config_tree("prod-overlay-unknown-field");
     let overlay_text = support::repo_text(OVERLAY);
     let invalid = overlay_text.replace(
-        "base = \"../root.toml\"\n",
-        "base = \"../root.toml\"\nbogus_unknown_overlay_key = 1\n",
+        "strategy_files =",
+        "bogus_unknown_overlay_key = 1\nstrategy_files =",
     );
     assert_ne!(
         invalid, overlay_text,
         "the unknown key must have been injected"
     );
-    let invalid_path = profiles.join("prod-bad.overlay.toml");
+    let profile_id = ProfileId::parse("prod-bad").expect("test profile id is valid");
+    let invalid_path = profile_overlay_path(dir.path(), &profile_id);
     write(&invalid_path, &invalid);
 
-    let error = generate_live_config(&invalid_path)
+    let error = generate_live_config(dir.path(), profile_id.as_str())
         .expect_err("an unknown overlay field must fail generation closed");
     assert!(
         matches!(error, ProfileError::Overlay { .. }),
@@ -511,7 +566,7 @@ fn generate_rejects_overlay_with_unknown_field() {
 fn generate_rejects_overlay_with_unknown_active_client() {
     // An active_clients name that is not in base.clients must fail composition,
     // never silently drop — fail-closed against a typo selecting a phantom client.
-    let dir = stage_runtime_dir("prod-overlay-phantom-client");
+    let dir = stage_full_config_tree("prod-overlay-phantom-client");
     let overlay_text = support::repo_text(OVERLAY);
     let invalid = overlay_text.replace(
         "  \"polymarket_main\",\n",
@@ -521,46 +576,35 @@ fn generate_rejects_overlay_with_unknown_active_client() {
         invalid, overlay_text,
         "the phantom client must have been injected"
     );
-    // Write into a dir that still resolves the base (the overlay base is `../root.toml`,
-    // so the overlay must sit one level under a dir whose parent has root.toml).
-    let composed_dir = stage_runtime_dir("prod-overlay-phantom-client-base");
-    std::fs::copy(
-        support::repo_path(BASE),
-        composed_dir.path().join("root.toml"),
-    )
-    .expect("base copies next to the overlay's resolved base");
-    let profiles = composed_dir.path().join("profiles");
-    std::fs::create_dir_all(&profiles).expect("overlay profiles dir creates");
-    let invalid_path = profiles.join("prod-phantom.overlay.toml");
+    let profile_id = ProfileId::parse("prod-phantom").expect("test profile id is valid");
+    let invalid_path = profile_overlay_path(dir.path(), &profile_id);
     write(&invalid_path, &invalid);
 
-    let error = generate_live_config(&invalid_path)
+    let error = generate_live_config(dir.path(), profile_id.as_str())
         .expect_err("an active_clients name absent from base must fail composition closed");
     assert!(
         matches!(error, ProfileError::Composition(_)),
         "phantom active_clients name must fail at composition, got: {error}"
     );
-    let _ = dir;
 }
 
 #[test]
 fn generate_rejects_overlay_without_loss_rails() {
     // Removing the overlay's [loss_governor] block makes it fail typed parse
     // (loss_governor is a required ProdOverlay field), failing generation closed.
-    let dir = stage_runtime_dir("prod-overlay-no-rails");
-    let profiles = dir.path().join("profiles");
-    std::fs::create_dir_all(&profiles).expect("profiles dir creates");
+    let dir = stage_full_config_tree("prod-overlay-no-rails");
     let overlay_text = support::repo_text(OVERLAY);
     let without_rails = without_overlay_loss_governor(&overlay_text);
     assert!(
         !without_rails.contains("[loss_governor]"),
         "the loss_governor block must have been removed for this negative case"
     );
-    let path = profiles.join("prod-no-rails.overlay.toml");
+    let profile_id = ProfileId::parse("prod-no-rails").expect("test profile id is valid");
+    let path = profile_overlay_path(dir.path(), &profile_id);
     write(&path, &without_rails);
 
-    let error =
-        generate_live_config(&path).expect_err("an overlay without loss rails must fail closed");
+    let error = generate_live_config(dir.path(), profile_id.as_str())
+        .expect_err("an overlay without loss rails must fail closed");
     assert!(
         matches!(error, ProfileError::Overlay { .. }),
         "overlay missing the required loss_governor must fail at overlay parse, got: {error}"
@@ -571,33 +615,18 @@ fn generate_rejects_overlay_without_loss_rails() {
 fn generate_rejects_overlay_with_disabled_loss_rails() {
     // Present-but-disabled rails parse fine but are inert at runtime, so the
     // production invariant on the COMPOSED config must reject them.
-    let dir = stage_runtime_dir("prod-overlay-disabled-rails");
-    // Compose onto a base copied next to the overlay so the disabled overlay still resolves.
-    let base_root = dir.path().join("root.toml");
-    std::fs::copy(support::repo_path(BASE), &base_root)
-        .expect("base copies for disabled-rails case");
-    let strategies = dir.path().join("strategies");
-    std::fs::create_dir_all(&strategies).expect("staged strategies dir");
-    for entry in std::fs::read_dir(support::repo_path("config/strategies")).expect("strategies dir")
-    {
-        let path = entry.expect("strategy dir entry").path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
-            let name = path.file_name().expect("strategy name");
-            std::fs::copy(&path, strategies.join(name)).expect("strategy copies");
-        }
-    }
-    let profiles = dir.path().join("profiles");
-    std::fs::create_dir_all(&profiles).expect("profiles dir");
+    let dir = stage_full_config_tree("prod-overlay-disabled-rails");
     let overlay_text = support::repo_text(OVERLAY);
     let disabled = overlay_text.replace("enabled = true\n", "enabled = false\n");
     assert_ne!(
         disabled, overlay_text,
         "the enabled flag must have been flipped to false"
     );
-    let path = profiles.join("prod-disabled.overlay.toml");
+    let profile_id = ProfileId::parse("prod-disabled").expect("test profile id is valid");
+    let path = profile_overlay_path(dir.path(), &profile_id);
     write(&path, &disabled);
 
-    let error = generate_live_config(&path)
+    let error = generate_live_config(dir.path(), profile_id.as_str())
         .expect_err("an overlay with present-but-disabled loss rails must fail closed");
     match error {
         ProfileError::Invariant(message) => assert!(
@@ -611,25 +640,25 @@ fn generate_rejects_overlay_with_disabled_loss_rails() {
 #[test]
 fn generate_rejects_live_local_path_as_profile_source() {
     let dir = stage_runtime_dir("prod-overlay-live-local-rejected");
-    let path = dir.path().join("live.local.toml");
-    write(&path, &support::repo_text(OVERLAY));
 
-    let error = generate_live_config(&path)
+    let error = generate_live_config(dir.path(), "config/live.local.toml")
         .expect_err("live.local.toml must not be accepted as a profile source");
     assert!(
-        matches!(error, ProfileError::InvalidProfilePath(_)),
-        "legacy live.local.toml path must fail before it can enter generation, got: {error}"
+        matches!(error, ProfileError::InvalidProfileId(_)),
+        "legacy live.local.toml path-shaped input must fail before filesystem access, got: {error}"
     );
 }
 
 #[test]
 fn generate_rejects_an_already_generated_file() {
-    let dir = stage_runtime_dir("prod-overlay-double-generate");
-    let generated = generate_live_config(&support::repo_path(OVERLAY)).expect("generate succeeds");
-    let already = dir.path().join("live.toml");
+    let dir = stage_full_config_tree("prod-overlay-double-generate");
+    let generated =
+        generate_live_config(&repo_config_root(), PROFILE_ID).expect("generate succeeds");
+    let profile_id = ProfileId::parse(PROFILE_ID).expect("repo profile id is valid");
+    let already = profile_overlay_path(dir.path(), &profile_id);
     write(&already, &generated.text);
 
-    let error = generate_live_config(&already)
+    let error = generate_live_config(dir.path(), PROFILE_ID)
         .expect_err("generating from an already-generated file must fail closed");
     assert!(
         matches!(error, ProfileError::AlreadyGenerated(_)),
@@ -639,22 +668,22 @@ fn generate_rejects_an_already_generated_file() {
 
 #[test]
 fn verify_rejects_divergent_deployed_strategy_file() {
-    // Production single-tree layout: the overlay, its base, the strategies, and the
+    // Production single-tree layout: the overlay, root, the strategies, and the
     // deployed live.toml all live in ONE config dir (mirroring /opt/bolt-v2/config), so
-    // `--profile` and `--deployed` resolve strategy paths to the SAME on-box files. A
+    // generate and verify resolve strategy paths to the SAME on-box files. A
     // tampered strategy is still rejected — caught by byte-parity, because `generate`
     // re-reads the on-box strategy and the provenance header embeds a checksum over every
     // strategy file's content. This is the genuine differential: with the deployed and
     // approved strategy resolving to one file, only the regenerated-header checksum — not
     // a file-vs-file compare — can detect the tamper.
-    let (dir, overlay) = stage_full_config_tree("prod-overlay-divergent-strategy");
-    let generated = generate_live_config(&overlay).expect("generate succeeds");
-    let deployed = dir.path().join("live.toml");
+    let dir = stage_full_config_tree("prod-overlay-divergent-strategy");
+    let generated = generate_live_config(dir.path(), PROFILE_ID).expect("generate succeeds");
+    let deployed = live_config_path(dir.path());
     write(&deployed, &generated.text);
 
     // Sanity: the freshly generated config verifies in this tree BEFORE any tamper, so a
     // later rejection is attributable to the tamper, not to the topology.
-    verify_live_config(&overlay, &deployed)
+    verify_live_config(dir.path(), PROFILE_ID)
         .expect("a freshly generated deployed config must verify in the production tree");
 
     // Tamper the single on-box strategy file (still valid TOML). At re-verify `generate`
@@ -664,7 +693,7 @@ fn verify_rejects_divergent_deployed_strategy_file() {
     let original = std::fs::read_to_string(&strategy).expect("staged strategy readable");
     write(&strategy, &format!("{original}\n# on-box tamper\n"));
 
-    let error = verify_live_config(&overlay, &deployed)
+    let error = verify_live_config(dir.path(), PROFILE_ID)
         .expect_err("a divergent on-box strategy file must fail verification");
     assert!(
         matches!(error, ProfileError::Mismatch(_)),

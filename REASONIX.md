@@ -38,7 +38,7 @@ All via `just` (must be installed). The justfile is the single source of truth �
 | `just deny-advisories` | `cargo deny check advisories`. |
 | `just check-aarch64` | `cargo check --target aarch64-unknown-linux-gnu`. |
 | `just setup` | Install pinned `cargo-nextest`, `cargo-deny`, `cargo-zigbuild`; verify Zig 0.15.2 is installed. |
-| `just live` | Require `BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml`, compose that tracked overlay onto its base `config/root.toml` → `config/live.toml`, then run. |
+| `just live` | Require `BOLT_LIVE_PROFILE=<profile-id>`, derive `config/profiles/<profile-id>.overlay.toml`, compose it with `config/root.toml` → `config/live.toml`, then run. |
 | `just live-verify` | Prove a deployed runtime config re-composes from the tracked overlay+base and still loads against this binary. |
 | `just ci-lint-workflow` | Verify CI workflow topology, gate/deploy semantics, managed target-dir opt-ins, nextest LiveNode serialization config, prebuilt CI build-tool installs, and shell-script cargo invocation hygiene. |
 
@@ -57,5 +57,5 @@ All via `just` (must be installed). The justfile is the single source of truth �
 - **Remote-first Rust verification** — agent sessions use the workflow in `AGENTS.md`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, whose source and installer are tracked at `scripts/cargo-shim` and `scripts/install-cargo-shim`; `ci/rust-verification.toml` remains the policy source.
 - **Release builds require Zig** — `cargo-zigbuild` + Zig 0.15.2 are needed for cross-compilation to `aarch64-unknown-linux-gnu`.
 - **Python verification layer** — several lint/check commands go through `rust_verification.py` which wraps cargo; absolute-path cargo, cross-repo `--manifest-path` / `-C` invocations, daemon-managed PATHs without the shim directory, and toolchain-manager bypasses remain outside the accidental-use guard.
-- **`config/live.toml` is a generated, gitignored runtime artifact** — set `BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml`, compose that tracked overlay over the base template `config/root.toml` via `just live` / `bolt-v2 ops generate-live-config`, and never hand-edit it (#768). The legacy gitignored `config/live.local.toml` is no longer a source of truth.
+- **`config/live.toml` is a generated, gitignored runtime artifact** — set `BOLT_LIVE_PROFILE=<profile-id>`, derive `config/profiles/<profile-id>.overlay.toml`, compose that tracked overlay over the base template `config/root.toml` via `just live` / `bolt-v2 ops generate-live-config`, and never hand-edit it (#768). The legacy gitignored `config/live.local.toml` is no longer a source of truth.
 - **Reasonix context** — `REASONIX.md` is repo-shared agent context at the same level as `AGENTS.md` / `CLAUDE.md`; local AI tool config dirs (`.claude/`, `.gemini/`, `.opencode/`, `.codex/`, `.pi/`, `.agents/`, `.factory/`, etc.) are local state, not project docs.

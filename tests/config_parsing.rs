@@ -5085,20 +5085,29 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
         .expect("justfile should be readable");
     assert!(
         justfile.contains("live_profile := env_var_or_default('BOLT_LIVE_PROFILE', '')"),
-        "live recipes should source the operator-selected tracked overlay (single source of truth over the base template, #768)"
+        "live recipes should source the operator-selected profile ID (single source of truth over the base template, #768)"
     );
     assert!(
-        justfile.contains("ERROR: set BOLT_LIVE_PROFILE=config/profiles/<profile>.overlay.toml"),
+        justfile.contains("ERROR: set BOLT_LIVE_PROFILE to an opaque profile ID"),
         "live recipes must fail closed instead of using a venue/market/strategy profile default"
     );
     assert!(
-        justfile.contains("BOLT_LIVE_PROFILE must be config/profiles/<profile>.overlay.toml"),
-        "live recipes must reject legacy live.toml/live.local.toml paths as profile inputs"
+        justfile.contains("--profile \"{{live_profile}}\" --config-root config"),
+        "live recipes must pass an opaque profile ID plus structural config root to the binary"
     );
     assert!(
         support::repo_text("src/bolt_v3_prod_profile.rs")
-            .contains("ProfileError::InvalidProfilePath"),
-        "generate/verify must also reject non-overlay profile paths for systemd/direct CLI callers"
+            .contains("ProfileError::InvalidProfileId"),
+        "generate/verify must reject path-shaped profile inputs for systemd/direct CLI callers"
+    );
+    assert!(
+        !justfile.contains("config/profiles/<profile>.overlay.toml"),
+        "live recipes must not teach operators to put paths in BOLT_LIVE_PROFILE"
+    );
+    assert!(
+        !justfile.contains("--output {{live_runtime}}")
+            && !justfile.contains("--deployed {{live_runtime}}"),
+        "live recipes must derive config/live.toml instead of accepting output/deployed path overrides"
     );
     assert!(
         !justfile.contains("live_root := \"config/live.local.toml\""),

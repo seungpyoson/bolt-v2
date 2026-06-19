@@ -2,8 +2,9 @@
 #
 # This is a typed, self-describing OVERLAY, not a full config. It declares ONLY
 # the production deltas against the shared multi-asset template `config/root.toml`.
-# At deploy time `ops generate-live-config` composes (base ⊕ overlay) into the
-# runtime `live.toml`. Root owns all shared infrastructure (runtime, nautilus,
+# At deploy time `ops generate-live-config` derives the overlay from the profile
+# ID, composes it with `config/root.toml`, and writes the runtime `live.toml`.
+# Root owns all shared infrastructure (runtime, nautilus,
 # persistence, aws, logging, gate_providers, chainlink_data_streams, and every
 # venue's [data]/[secrets]); this overlay owns the pilot-specific selections and
 # the live execution identity. There is no duplicated infrastructure here — change
@@ -13,17 +14,13 @@
 # Polymarket `funder` below is a public on-chain Safe address. NEVER put secret
 # values in this file.
 #
-# Deploy/run: select this file through BOLT_LIVE_PROFILE, then run
-# `bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --output
-# <live.toml>`. Generation composes this overlay onto its declared `base`,
-# stamps a provenance header, and writes the runtime config; `ops
-# verify-live-config` proves the deployed file re-composes from (base ⊕ overlay)
-# and still loads against the running binary. Do NOT
-# hand-edit the deployed live.toml — edit this overlay (or root.toml) in a
-# reviewed PR and regenerate.
-
-# Path to the base root config, resolved RELATIVE TO THIS OVERLAY FILE's directory.
-base = "../root.toml"
+# Deploy/run: set `BOLT_LIVE_PROFILE` to this profile's opaque ID, then run
+# `bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}"`.
+# Generation composes this overlay with the derived `root.toml`, stamps a
+# provenance header, and writes the runtime config; `ops verify-live-config`
+# proves the deployed file re-composes from (root ⊕ overlay) and still loads
+# against the running binary. Do NOT hand-edit the deployed live.toml — edit this
+# overlay (or root.toml) in a reviewed PR and regenerate.
 
 # REPLACES base.strategy_files: the BTC-only pilot selection.
 strategy_files = ["strategies/binary_oracle_btc.toml"]

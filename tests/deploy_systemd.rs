@@ -58,9 +58,9 @@ fn systemd_unit_verifies_live_config_against_profile_before_start() {
 
     assert!(
         unit.contains(
-            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile ${BOLT_LIVE_PROFILE} --deployed /opt/bolt-v2/config/live.toml"
+            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
         ),
-        "systemd unit must verify the deployed live.toml against the operator-selected tracked overlay before start, \
+        "systemd unit must verify the deployed live.toml against the operator-selected tracked profile before start, \
          so the fail-closed gate (incl. enabled loss rails) is enforced at the prod entry point, not advisory (#768)"
     );
     assert!(
@@ -68,8 +68,16 @@ fn systemd_unit_verifies_live_config_against_profile_before_start() {
         "systemd unit must load live profile selection from operator config, not hardcode a venue/market/strategy profile"
     );
     assert!(
-        unit.contains("ExecStartPre=/usr/bin/test -r ${BOLT_LIVE_PROFILE}"),
-        "systemd unit must fail closed when BOLT_LIVE_PROFILE is missing or unreadable"
+        unit.contains("ExecStartPre=/usr/bin/test -n \"${BOLT_LIVE_PROFILE}\""),
+        "systemd unit must fail closed when BOLT_LIVE_PROFILE is missing or empty"
+    );
+    assert!(
+        !unit.contains("BOLT_CONFIG_ROOT"),
+        "systemd must keep /opt/bolt-v2/config structural instead of accepting a config-root env escape"
+    );
+    assert!(
+        !unit.contains("--deployed"),
+        "systemd verify must derive /opt/bolt-v2/config/live.toml from the structural config root"
     );
 
     let verify_at = unit
@@ -183,9 +191,12 @@ fn install_script_provisions_live_env_directory_without_profile_default() {
         "live environment directory must be readable by the service group"
     );
     assert!(
-        !install
-            .contains("BOLT_LIVE_PROFILE=/opt/bolt-v2/config/profiles/prod-btc-5m.overlay.toml"),
-        "installer must not silently choose a venue/market/strategy profile"
+        !install.contains("BOLT_LIVE_PROFILE="),
+        "installer must not silently choose any venue/market/strategy profile"
+    );
+    assert!(
+        !install.contains("BOLT_CONFIG_ROOT"),
+        "installer must not introduce a production config-root env override"
     );
 }
 

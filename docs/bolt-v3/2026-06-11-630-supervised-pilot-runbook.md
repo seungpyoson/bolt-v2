@@ -31,9 +31,9 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
 - [ ] `git fetch && git log -1 origin/main` — record the SHA; must contain 7c3dedf25
       (signal/pricing role split). Build THIS sha: `just build` (aarch64 cross-build).
 - [ ] `sha256sum` the binary; record for the deploy evidence file.
-- [ ] Set `BOLT_LIVE_PROFILE` to the reviewed tracked production overlay for this pilot.
-      `just live-check` and `just live-resolve` must pass against that overlay (the recipes compose the runtime
-      config from the overlay + base `config/root.toml` first, then check secret
+- [ ] Set `BOLT_LIVE_PROFILE` to the reviewed tracked production profile ID for this pilot.
+      `just live-check` and `just live-resolve` must pass against that profile (the recipes derive the overlay,
+      compose the runtime config from the overlay + base `config/root.toml` first, then check secret
       completeness / SSM resolution).
 - [ ] Confirm the overlay's `strategy_files` selection points at the BTC strategy
       from `config/strategies/binary_oracle_btc.toml` (its `strategy_instance_id` is
@@ -45,10 +45,10 @@ and individually approved. Read-only probes (`ls`/`cat`/log greps via SSM) need 
 
 - [ ] Stop the service. Install binary per `deploy/README.md`, ship the overlay, the base
       `config/root.toml`, and `config/strategies/`, then generate + verify the runtime config
-      from the selected tracked overlay on the box, using the same absolute paths the systemd unit runs:
-      `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --output /opt/bolt-v2/config/live.toml`,
+      from the selected tracked profile ID on the box, using the same structural config root the systemd unit runs:
+      `/opt/bolt-v2/bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config`,
       then
-      `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile "${BOLT_LIVE_PROFILE}" --deployed /opt/bolt-v2/config/live.toml`;
+      `/opt/bolt-v2/bolt-v2 ops verify-live-config --profile "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config`;
       config `/opt/bolt-v2/config/live.toml` root:bolt 0640, and write `/etc/bolt-v2/live.env`
       with the same `BOLT_LIVE_PROFILE` before enabling the systemd unit.
 - [ ] Record a `deploy/<date>-<shortsha>/deploy.txt` evidence entry (existing

@@ -17554,19 +17554,75 @@ reason = "Fixed provenance-marker prefix stamped onto, and matched in, the gener
 
 [[allowed]]
 path = "src/bolt_v3_prod_profile.rs"
+kind = "number"
+literal = '''63'''
+context = '''const MAX_PROFILE_ID_LEN: usize = 63;'''
+classification = "prod_profile_id_shape_limit"
+reason = "Maximum opaque profile ID length accepted before deriving a profile overlay path; this is a structural input-shape bound, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''"profiles"'''
-context = '''if parent_name == "profiles" && file_name.ends_with(".overlay.toml") {'''
-classification = "prod_profile_source_path_shape"
-reason = "Required parent directory name for reviewed deploy profile overlays; this is a structural source-path guard that prevents generated/live-local files from entering the profile generation path, not an operator runtime value."
+context = '''const PROFILES_DIR_NAME: &str = "profiles";'''
+classification = "prod_profile_source_path_derivation"
+reason = "Structural directory name under config root for reviewed deploy profile overlays; the operator supplies only an opaque profile ID, not this path."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"root.toml"'''
+context = '''const ROOT_CONFIG_FILE_NAME: &str = "root.toml";'''
+classification = "prod_profile_source_path_derivation"
+reason = "Structural base config filename derived from config root; it removes the overlay-owned base redirect and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"live.toml"'''
+context = '''pub const LIVE_CONFIG_FILE_NAME: &str = "live.toml";'''
+classification = "prod_profile_runtime_path_derivation"
+reason = "Structural generated runtime config filename derived from config root; generate/verify use it to avoid output/deployed path overrides."
 
 [[allowed]]
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
 literal = '''".overlay.toml"'''
-context = '''if parent_name == "profiles" && file_name.ends_with(".overlay.toml") {'''
-classification = "prod_profile_source_path_shape"
-reason = "Required suffix for reviewed deploy profile overlays; this is a structural source-path guard that prevents generated/live-local files from entering the profile generation path, not an operator runtime value."
+context = '''const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";'''
+classification = "prod_profile_source_path_derivation"
+reason = "Structural profile overlay filename suffix appended after profile ID validation; this is code-owned layout, not a trading runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"live"'''
+context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
+classification = "prod_profile_reserved_id"
+reason = "Reserved opaque profile ID that avoids confusing a profile selector with the generated live.toml artifact."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"local"'''
+context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
+classification = "prod_profile_reserved_id"
+reason = "Reserved opaque profile ID that avoids confusing a profile selector with legacy live.local.toml operator drift."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"root"'''
+context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
+classification = "prod_profile_reserved_id"
+reason = "Reserved opaque profile ID that avoids confusing a profile selector with the structural root.toml base."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"profiles"'''
+context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
+classification = "prod_profile_reserved_id"
+reason = "Reserved opaque profile ID that avoids confusing a profile selector with the structural profiles directory."
 
 [[allowed]]
 path = "src/bolt_v3_atomic_io.rs"
@@ -17679,14 +17735,6 @@ literal = '''0'''
 context = '''entries.sort_by(|left, right| left.0.cmp(&right.0));'''
 classification = "prod_profile_compose_tuple_sort_index"
 reason = "Tuple field index selecting the (key, value) entry's key for deterministic key-sorted serialization (mirrors the identical config_bundle_checksum sort in bolt_v3_config.rs); it is a tuple accessor, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_prod_profile.rs"
-kind = "string"
-literal = '''"."'''
-context = '''.unwrap_or_else(|| Path::new("."))'''
-classification = "prod_profile_compose_path_fallback"
-reason = "Current-directory fallback when the resolved base config path has no parent; it is filesystem plumbing for resolving strategy paths, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_prod_profile.rs"

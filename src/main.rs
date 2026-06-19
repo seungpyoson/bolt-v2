@@ -23,7 +23,9 @@ use bolt_v2::{
     },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_prod_profile::{
-        GENERATOR_FORMAT_VERSION, ProductionInvariants, generate_live_config, verify_live_config,
+        GENERATED_MARKER_PREFIX, GENERATOR_FORMAT_VERSION, LIVE_CONFIG_FILE_NAME,
+        ProductionInvariants, confirm_production_invariants, generate_live_config,
+        live_config_path, verify_live_config,
     },
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
@@ -106,15 +108,15 @@ enum OpsCommand {
     },
     GenerateLiveConfig {
         #[arg(long)]
-        profile: PathBuf,
+        profile: String,
         #[arg(long)]
-        output: PathBuf,
+        config_root: PathBuf,
     },
     VerifyLiveConfig {
         #[arg(long)]
-        profile: PathBuf,
+        profile: String,
         #[arg(long)]
-        deployed: PathBuf,
+        config_root: PathBuf,
     },
     ReferenceLiveProbe {
         #[arg(short, long)]
@@ -199,7 +201,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    require_generated_marker_for_live_config(&config)?;
     let loaded = load_bolt_v3_config(&config)?;
+    confirm_production_invariants(&loaded)?;
     run_loaded_prestart_check(&loaded, None)?;
     let mut node = build_bolt_v3_live_node(&loaded)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -211,6 +215,33 @@ fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     };
     runtime.block_on(local.run_until(app))
+}
+
+fn require_generated_marker_for_live_config(
+    config: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if config.file_name().and_then(|name| name.to_str()) != Some(LIVE_CONFIG_FILE_NAME) {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(config).map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "runtime config `{}` is not readable before live start: {source}",
+                config.display()
+            ),
+        )
+    })?;
+    if !text.starts_with(GENERATED_MARKER_PREFIX) {
+        return Err(format!(
+            "runtime config `{}` is named live.toml but is not a generated live config; \
+             run `bolt-v2 ops generate-live-config` from a reviewed profile ID instead of \
+             hand-editing or using live.local.toml",
+            config.display()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -225,12 +256,14 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::DataClientCensus { config, client_key } => {
             run_data_client_census(&config, &client_key)
         }
-        OpsCommand::GenerateLiveConfig { profile, output } => {
-            run_generate_live_config(&profile, &output)
-        }
-        OpsCommand::VerifyLiveConfig { profile, deployed } => {
-            run_verify_live_config(&profile, &deployed)
-        }
+        OpsCommand::GenerateLiveConfig {
+            profile,
+            config_root,
+        } => run_generate_live_config(&config_root, &profile),
+        OpsCommand::VerifyLiveConfig {
+            profile,
+            config_root,
+        } => run_verify_live_config(&config_root, &profile),
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
     }
 }
@@ -325,14 +358,15 @@ struct VerifyLiveConfigReport {
 }
 
 fn run_generate_live_config(
-    profile: &Path,
-    output: &Path,
+    config_root: &Path,
+    profile: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let generated = generate_live_config(profile)?;
+    let output = live_config_path(config_root);
+    let generated = generate_live_config(config_root, profile)?;
     // Non-secret runtime config (SSM refs + public addresses only) — written
     // group/world-readable so the `bolt` service user can read it (the deploy may
     // tighten ownership/mode to root:bolt 0640). NOT the private 0600 secret mode.
-    write_atomic_file_with_mode(output, generated.text.as_bytes(), RUNTIME_CONFIG_FILE_MODE)
+    write_atomic_file_with_mode(&output, generated.text.as_bytes(), RUNTIME_CONFIG_FILE_MODE)
         .map_err(|error| {
             format!(
                 "failed to write generated runtime config `{}`: {}",
@@ -353,14 +387,14 @@ fn run_generate_live_config(
 }
 
 fn run_verify_live_config(
-    profile: &Path,
-    deployed: &Path,
+    config_root: &Path,
+    profile: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let verification = verify_live_config(profile, deployed)?;
+    let verification = verify_live_config(config_root, profile)?;
     let report = VerifyLiveConfigReport {
         verified_live_config: true,
-        profile: profile.display().to_string(),
-        deployed: deployed.display().to_string(),
+        profile: verification.profile_id,
+        deployed: verification.deployed_path.display().to_string(),
         profile_bundle_sha256: verification.profile_bundle_sha256,
         matches_profile: verification.matches_profile,
         loads_against_binary: verification.loads_against_binary,
@@ -867,57 +901,93 @@ mod tests {
     }
 
     #[test]
-    fn ops_generate_live_config_cli_parses_profile_and_output() {
+    fn ops_generate_live_config_cli_parses_profile_id_and_config_root() {
         let cli = Cli::try_parse_from([
             "bolt-v2",
             "ops",
             "generate-live-config",
             "--profile",
-            "config/profiles/example.overlay.toml",
-            "--output",
-            "config/live.toml",
+            "example",
+            "--config-root",
+            "config",
         ])
         .expect("generate-live-config command should parse");
 
         match cli.command {
             Command::Ops {
-                command: OpsCommand::GenerateLiveConfig { profile, output },
+                command:
+                    OpsCommand::GenerateLiveConfig {
+                        profile,
+                        config_root,
+                    },
             } => {
-                assert_eq!(
-                    profile,
-                    PathBuf::from("config/profiles/example.overlay.toml")
-                );
-                assert_eq!(output, PathBuf::from("config/live.toml"));
+                assert_eq!(profile, "example");
+                assert_eq!(config_root, PathBuf::from("config"));
             }
             _ => panic!("expected ops generate-live-config command"),
         }
     }
 
     #[test]
-    fn ops_verify_live_config_cli_parses_profile_and_deployed() {
+    fn ops_verify_live_config_cli_parses_profile_id_and_config_root() {
         let cli = Cli::try_parse_from([
             "bolt-v2",
             "ops",
             "verify-live-config",
             "--profile",
-            "config/profiles/example.overlay.toml",
-            "--deployed",
-            "/opt/bolt-v2/config/live.toml",
+            "example",
+            "--config-root",
+            "/opt/bolt-v2/config",
         ])
         .expect("verify-live-config command should parse");
 
         match cli.command {
             Command::Ops {
-                command: OpsCommand::VerifyLiveConfig { profile, deployed },
+                command:
+                    OpsCommand::VerifyLiveConfig {
+                        profile,
+                        config_root,
+                    },
             } => {
-                assert_eq!(
-                    profile,
-                    PathBuf::from("config/profiles/example.overlay.toml")
-                );
-                assert_eq!(deployed, PathBuf::from("/opt/bolt-v2/config/live.toml"));
+                assert_eq!(profile, "example");
+                assert_eq!(config_root, PathBuf::from("/opt/bolt-v2/config"));
             }
             _ => panic!("expected ops verify-live-config command"),
         }
+    }
+
+    #[test]
+    fn live_config_run_guard_requires_generated_marker() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("bolt-v2-live-marker-test-{suffix}"));
+        fs::create_dir_all(&dir).expect("test temp dir should create");
+        let live = dir.join("live.toml");
+        fs::write(&live, "[runtime]\n").expect("hand-edited live.toml should write");
+
+        let error = require_generated_marker_for_live_config(&live)
+            .expect_err("live.toml without generated marker must be rejected");
+        assert!(
+            error.to_string().contains("is not a generated live config"),
+            "error should explain the generated-marker requirement, got: {error}"
+        );
+
+        fs::write(
+            &live,
+            format!("{GENERATED_MARKER_PREFIX}{GENERATOR_FORMAT_VERSION}\n"),
+        )
+        .expect("generated marker should write");
+        require_generated_marker_for_live_config(&live)
+            .expect("live.toml with generated marker should pass");
+
+        let root = dir.join("root.toml");
+        fs::write(&root, "[runtime]\n").expect("non-live config should write");
+        require_generated_marker_for_live_config(&root)
+            .expect("non-live config paths should not require the live marker");
+
+        fs::remove_dir_all(&dir).expect("test temp dir should clean up");
     }
 
     #[test]

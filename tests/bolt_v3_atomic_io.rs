@@ -9,6 +9,8 @@ use bolt_v2::{
     bolt_v3_kill_switch_store::{KillSwitchRecoveryState, KillSwitchStore},
 };
 
+const TEST_MAX_STATE_FILE_BYTES: u64 = 65_536;
+
 fn atomic_temp_leftovers(path: &Path) -> Vec<String> {
     let Some(parent) = path.parent() else {
         return Vec::new();
@@ -177,7 +179,7 @@ fn atomic_write_fails_before_temp_when_parent_is_file() {
 fn kill_switch_store_round_trips_through_shared_atomic_writer() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("kill-switch-state.json");
-    let store = KillSwitchStore::new(path.clone());
+    let store = KillSwitchStore::new(path.clone(), TEST_MAX_STATE_FILE_BYTES);
     let state = KillSwitchState::Flat {
         halt_id: "halt-atomic".to_string(),
     };

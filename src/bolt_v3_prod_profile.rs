@@ -89,6 +89,8 @@ const PROFILES_DIR_NAME: &str = "profiles";
 const ROOT_CONFIG_FILE_NAME: &str = "root.toml";
 pub const LIVE_CONFIG_FILE_NAME: &str = "live.toml";
 const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";
+const STRATEGIES_DIR_NAME: &str = "strategies";
+const STRATEGY_CONFIG_EXTENSION: &str = "toml";
 
 /// Opaque production profile selector. This is not a path: it is the only
 /// operator-controlled input that derives a tracked overlay path.
@@ -285,6 +287,121 @@ fn is_valid_profile_id(raw: &str) -> bool {
     })
 }
 
+fn validate_production_strategy_files(
+    config_root: &Path,
+    strategy_files: &[String],
+) -> Result<(), ProfileError> {
+    let strategies_dir = config_root.join(STRATEGIES_DIR_NAME);
+    let canonical_strategies_dir = std::fs::canonicalize(&strategies_dir).map_err(|source| {
+        ProfileError::Composition(format!(
+            "strategy_files requires `{}` to exist and be readable: {source}",
+            strategies_dir.display()
+        ))
+    })?;
+
+    for configured in strategy_files {
+        validate_production_strategy_file(
+            config_root,
+            &canonical_strategies_dir,
+            configured.as_str(),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_production_strategy_file(
+    config_root: &Path,
+    canonical_strategies_dir: &Path,
+    configured: &str,
+) -> Result<(), ProfileError> {
+    if configured.is_empty() || configured.trim() != configured {
+        return Err(strategy_file_error(
+            configured,
+            "must be a non-empty trimmed relative path under `strategies/`",
+        ));
+    }
+    if configured.contains('\\') {
+        return Err(strategy_file_error(
+            configured,
+            "must use `/` path separators and stay under `strategies/`",
+        ));
+    }
+
+    let path = Path::new(configured);
+    if path.is_absolute() {
+        return Err(strategy_file_error(
+            configured,
+            "must be relative and stay under `strategies/`",
+        ));
+    }
+
+    let components: Vec<std::path::Component<'_>> = path.components().collect();
+    if components.len() < 2 {
+        return Err(strategy_file_error(
+            configured,
+            "must name a TOML file under `strategies/`",
+        ));
+    }
+    if !matches!(
+        components.first(),
+        Some(std::path::Component::Normal(first))
+            if first == std::ffi::OsStr::new(STRATEGIES_DIR_NAME)
+    ) {
+        return Err(strategy_file_error(
+            configured,
+            "must start with `strategies/`",
+        ));
+    }
+    if components
+        .iter()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(strategy_file_error(
+            configured,
+            "must not contain `.`, `..`, root, or prefix components",
+        ));
+    }
+    if path.extension().and_then(|extension| extension.to_str()) != Some(STRATEGY_CONFIG_EXTENSION)
+    {
+        return Err(strategy_file_error(
+            configured,
+            "must name a `.toml` strategy config",
+        ));
+    }
+
+    let candidate = config_root.join(path);
+    let canonical_candidate = std::fs::canonicalize(&candidate).map_err(|source| {
+        strategy_file_error(
+            configured,
+            &format!("must resolve to an existing readable file: {source}"),
+        )
+    })?;
+    if !canonical_candidate.starts_with(canonical_strategies_dir) {
+        return Err(strategy_file_error(
+            configured,
+            "must resolve inside the configured `strategies/` directory",
+        ));
+    }
+    let metadata = std::fs::metadata(&canonical_candidate).map_err(|source| {
+        strategy_file_error(
+            configured,
+            &format!("must resolve to a readable regular file: {source}"),
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(strategy_file_error(
+            configured,
+            "must resolve to a regular file",
+        ));
+    }
+
+    Ok(())
+}
+
+fn strategy_file_error(configured: &str, message: &str) -> ProfileError {
+    ProfileError::Composition(format!("strategy_files entry `{configured}` {message}"))
+}
+
 pub fn profile_overlay_path(config_root: &Path, profile_id: &ProfileId) -> PathBuf {
     let mut file_name = profile_id.as_str().to_string();
     file_name.push_str(PROFILE_OVERLAY_SUFFIX);
@@ -338,7 +455,8 @@ fn compose_config_text(config_root: &Path, overlay: &ProdOverlay) -> Result<Stri
         ))
     })?;
 
-    // (b) strategy_files: wholesale replace.
+    // (b) strategy_files: wholesale replace, fenced to the reviewed strategy bundle.
+    validate_production_strategy_files(config_root, &overlay.strategy_files)?;
     root.insert(
         "strategy_files".to_string(),
         toml::Value::Array(
@@ -572,6 +690,13 @@ pub fn confirm_production_invariants(
             "production profile declares no strategy_files".to_string(),
         ));
     }
+    let config_root = loaded.root_path.parent().ok_or_else(|| {
+        ProfileError::Invariant(format!(
+            "production config `{}` must have a parent config root",
+            loaded.root_path.display()
+        ))
+    })?;
+    validate_production_strategy_files(config_root, &loaded.root.strategy_files)?;
 
     let governor = loaded.root.risk.loss_governor.as_ref().ok_or_else(|| {
         ProfileError::Invariant(

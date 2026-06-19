@@ -17795,6 +17795,30 @@ reason = "Structural profile overlay filename suffix appended after profile ID v
 [[allowed]]
 path = "src/bolt_v3_prod_profile.rs"
 kind = "string"
+literal = '''"strategies"'''
+context = '''const STRATEGIES_DIR_NAME: &str = "strategies";'''
+classification = "prod_profile_strategy_bundle_path_derivation"
+reason = "Structural strategy-config directory under config root used to fence production profile strategy_files to the reviewed config bundle; not a strategy, venue, market, or runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"toml"'''
+context = '''const STRATEGY_CONFIG_EXTENSION: &str = "toml";'''
+classification = "prod_profile_strategy_bundle_path_derivation"
+reason = "Structural file-extension guard for strategy config files selected by production overlays; the strategy contents remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "number"
+literal = '''2'''
+context = '''if components.len() < 2 {'''
+classification = "prod_profile_strategy_bundle_path_shape"
+reason = "Minimum path-component count for a strategy file under strategies/<file>.toml; this is path-shape validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
 literal = '''"live"'''
 context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
 classification = "prod_profile_reserved_id"

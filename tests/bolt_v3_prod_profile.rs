@@ -601,6 +601,94 @@ fn generate_rejects_overlay_with_unknown_active_client() {
 }
 
 #[test]
+fn generate_rejects_strategy_file_parent_escape_even_when_target_exists() {
+    // The selected strategy must come from the reviewed config bundle. A valid
+    // TOML file outside <config-root>/strategies must not become a production
+    // source just because the overlay and generated live.toml are self-consistent.
+    let dir = stage_full_config_tree("prod-overlay-strategy-parent-escape");
+    let external_strategy = dir
+        .path()
+        .parent()
+        .expect("staged config root has a parent")
+        .join("external-strategy.toml");
+    write(&external_strategy, &support::repo_text(BTC_STRATEGY));
+    let overlay_text = support::repo_text(OVERLAY);
+    let escaped = overlay_text.replace(BTC_STRATEGY, "../external-strategy.toml");
+    assert_ne!(escaped, overlay_text, "the strategy path must be replaced");
+    let profile_id = ProfileId::parse("prod-escape").expect("test profile id is valid");
+    let path = profile_overlay_path(dir.path(), &profile_id);
+    write(&path, &escaped);
+
+    let error = generate_live_config(dir.path(), profile_id.as_str())
+        .expect_err("strategy_files parent-directory escape must fail generation closed");
+    match error {
+        ProfileError::Composition(message) => assert!(
+            message.contains("strategy_files"),
+            "composition error must identify strategy_files, got: {message}"
+        ),
+        other => panic!("expected a strategy_files composition error, got: {other}"),
+    }
+}
+
+#[test]
+fn generate_rejects_strategy_file_absolute_escape_even_when_target_exists() {
+    let dir = stage_full_config_tree("prod-overlay-strategy-absolute-escape");
+    let external_strategy = dir
+        .path()
+        .parent()
+        .expect("staged config root has a parent")
+        .join("absolute-strategy.toml");
+    write(&external_strategy, &support::repo_text(BTC_STRATEGY));
+    let overlay_text = support::repo_text(OVERLAY);
+    let escaped = overlay_text.replace(BTC_STRATEGY, &external_strategy.display().to_string());
+    assert_ne!(escaped, overlay_text, "the strategy path must be replaced");
+    let profile_id = ProfileId::parse("prod-absolute").expect("test profile id is valid");
+    let path = profile_overlay_path(dir.path(), &profile_id);
+    write(&path, &escaped);
+
+    let error = generate_live_config(dir.path(), profile_id.as_str())
+        .expect_err("strategy_files absolute path must fail generation closed");
+    match error {
+        ProfileError::Composition(message) => assert!(
+            message.contains("strategy_files"),
+            "composition error must identify strategy_files, got: {message}"
+        ),
+        other => panic!("expected a strategy_files composition error, got: {other}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn generate_rejects_strategy_file_symlink_escape_even_when_entry_is_under_strategies() {
+    let dir = stage_full_config_tree("prod-overlay-strategy-symlink-escape");
+    let external_strategy = dir
+        .path()
+        .parent()
+        .expect("staged config root has a parent")
+        .join("symlink-target-strategy.toml");
+    write(&external_strategy, &support::repo_text(BTC_STRATEGY));
+    let symlink_strategy = dir.path().join("strategies").join("symlinked.toml");
+    std::os::unix::fs::symlink(&external_strategy, &symlink_strategy)
+        .expect("strategy symlink should be created");
+    let overlay_text = support::repo_text(OVERLAY);
+    let escaped = overlay_text.replace(BTC_STRATEGY, "strategies/symlinked.toml");
+    assert_ne!(escaped, overlay_text, "the strategy path must be replaced");
+    let profile_id = ProfileId::parse("prod-symlink").expect("test profile id is valid");
+    let path = profile_overlay_path(dir.path(), &profile_id);
+    write(&path, &escaped);
+
+    let error = generate_live_config(dir.path(), profile_id.as_str())
+        .expect_err("strategy_files symlink escape must fail generation closed");
+    match error {
+        ProfileError::Composition(message) => assert!(
+            message.contains("strategy_files"),
+            "composition error must identify strategy_files, got: {message}"
+        ),
+        other => panic!("expected a strategy_files composition error, got: {other}"),
+    }
+}
+
+#[test]
 fn generate_rejects_overlay_without_loss_rails() {
     // Removing the overlay's [loss_governor] block makes it fail typed parse
     // (loss_governor is a required ProdOverlay field), failing generation closed.

@@ -84,6 +84,9 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Every unique substantive issue counts as a finding regardless of severity. Do not downgrade real issues into “just notes” or treat “tracked” as “resolved” unless the finding is actually fixed or the user explicitly waives it.
 - Before marking coding work complete or attempting to merge, coding agents must open a PR and request review from the GitHub account with node ID `U_kgDOEZMFhA`.
 - GitHub review requests are login-based; resolve node ID `U_kgDOEZMFhA` to the account's current login before requesting review.
+- The required reviewer node ID is an intentional hardcoded policy constant in the approval gate because PR-editable config must not select the required reviewer.
+- `.github/CODEOWNERS` is login-based; keep it aligned with the current login for node ID `U_kgDOEZMFhA`.
+- The `main` ruleset must require the `reviewer node_id approved` status check, code-owner review, stale-review dismissal, last-push approval, and native review-thread resolution. If those controls are missing, stop and report the blocker instead of treating the CI checks as merge controls.
 - Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval from GitHub node ID `U_kgDOEZMFhA`.
 - If review from GitHub node ID `U_kgDOEZMFhA` cannot be requested, stop and report the blocker.
 - Before marking review feedback addressed, coding agents must reply to and resolve every applicable GitHub review thread. If a thread is not applicable, reply with the technical reason before marking work complete.

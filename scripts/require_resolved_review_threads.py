@@ -127,9 +127,6 @@ def _request_graphql(
 
 
 def _thread_url(thread: dict[str, Any]) -> str:
-    url = thread.get("url")
-    if isinstance(url, str) and url:
-        return url
     comments = thread.get("comments")
     if isinstance(comments, dict):
         nodes = comments.get("nodes")

@@ -13,10 +13,10 @@ on:
       - submitted
       - dismissed
   pull_request_review_comment:
-    # GitHub Actions does not expose a review-thread-resolved event.
-    # If resolving a thread in the UI does not rerun this check, manually rerun
-    # the workflow or create another review/comment event before marking review
-    # feedback addressed.
+    # GitHub Actions does not expose review-thread resolved or reopened events.
+    # Native conversation resolution is authoritative at merge; this check is
+    # visibility for every push. If UI thread changes do not rerun it, manually
+    # rerun the workflow or create another review/comment event.
     types:
       - created
       - edited
@@ -41,6 +41,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           # Run the review-thread gate from the protected base branch, not from PR code.
+          # The pull_request workflow YAML is still PR-controlled; CODEOWNERS plus
+          # the main ruleset must require sp-reviewer approval for workflow edits.
           repository: ${{ github.event.pull_request.base.repo.full_name }}
           ref: ${{ github.event.pull_request.base.sha }}
 

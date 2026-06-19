@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-tests for the required PR reviewer gate."""
+"""Self-tests for the required PR reviewer approval gate."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import sys
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "require_sp_reviewer.py"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "require-reviewer-node.yml"
+CODEOWNERS_PATH = REPO_ROOT / ".github" / "CODEOWNERS"
 
 
 def load_script():
@@ -76,11 +77,12 @@ def decision(
     )
 
 
-def assert_requested_reviewer_passes() -> None:
+def assert_requested_reviewer_requires_approval() -> None:
     result = decision([requested_user("sp-reviewer")], [])
-    assert result.passed is True
+    assert result.passed is False
     assert result.requested is True
     assert result.latest_decisive_state is None
+    assert "approval" in result.message
 
 
 def assert_approved_reviewer_passes_after_request_is_consumed() -> None:
@@ -122,13 +124,13 @@ def assert_later_comment_does_not_override_approval() -> None:
 
 def assert_logins_are_case_insensitive() -> None:
     result = decision([requested_user("SP-Reviewer")], [], reviewer="sp-reviewer")
-    assert result.passed is True
+    assert result.passed is False
     assert result.requested is True
 
 
 def assert_numeric_user_id_survives_login_rename() -> None:
     result = decision([requested_user("renamed-reviewer", 294847876)], [], reviewer_id=294847876)
-    assert result.passed is True
+    assert result.passed is False
     assert result.requested is True
 
 
@@ -138,8 +140,19 @@ def assert_node_id_survives_login_rename() -> None:
         [],
         reviewer_node_id="U_kgDOEZMFhA",
     )
-    assert result.passed is True
+    assert result.passed is False
     assert result.requested is True
+
+
+def assert_node_id_approval_survives_login_rename() -> None:
+    result = decision(
+        [],
+        [review("renamed-reviewer", "APPROVED", 10, node_id="U_kgDOEZMFhA")],
+        reviewer_node_id="U_kgDOEZMFhA",
+    )
+    assert result.passed is True
+    assert result.requested is False
+    assert result.latest_decisive_state == "APPROVED"
 
 
 def assert_configured_node_id_ignores_login_collision() -> None:
@@ -175,8 +188,11 @@ def assert_current_head_approval_passes() -> None:
 
 def assert_workflow_documents_bootstrap_and_requires_node_id() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "reviewer node_id approved" in workflow
+    assert "reviewer node_id requested or approved" not in workflow
     assert "Run the reviewer gate from the protected base branch" in workflow
     assert "github.event.pull_request.base.sha" in workflow
+    assert "Policy identity constant" in workflow
     assert "REQUIRED_REVIEWER_NODE_ID: U_kgDOEZMFhA" in workflow
     assert "REQUIRED_REVIEWER:" not in workflow
     assert "Bootstrap reviewer gate script" in workflow
@@ -186,8 +202,14 @@ def assert_workflow_documents_bootstrap_and_requires_node_id() -> None:
     assert "Remove this block after scripts/require_sp_reviewer.py exists on main" in workflow
 
 
+def assert_codeowners_requires_sp_reviewer_for_all_paths() -> None:
+    codeowners = CODEOWNERS_PATH.read_text(encoding="utf-8")
+    assert "GitHub CODEOWNERS is login-based" in codeowners
+    assert "* @sp-reviewer" in codeowners
+
+
 def main() -> int:
-    assert_requested_reviewer_passes()
+    assert_requested_reviewer_requires_approval()
     assert_approved_reviewer_passes_after_request_is_consumed()
     assert_missing_reviewer_fails()
     assert_later_changes_requested_overrides_approval()
@@ -195,10 +217,12 @@ def main() -> int:
     assert_logins_are_case_insensitive()
     assert_numeric_user_id_survives_login_rename()
     assert_node_id_survives_login_rename()
+    assert_node_id_approval_survives_login_rename()
     assert_configured_node_id_ignores_login_collision()
     assert_stale_approval_does_not_pass_for_new_head_sha()
     assert_current_head_approval_passes()
     assert_workflow_documents_bootstrap_and_requires_node_id()
+    assert_codeowners_requires_sp_reviewer_for_all_paths()
     print("OK: required reviewer gate self-tests passed.")
     return 0
 

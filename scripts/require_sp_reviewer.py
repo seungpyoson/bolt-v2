@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail a PR check unless the required reviewer is requested or approved."""
+"""Fail a PR check unless the required reviewer approved the PR head."""
 
 from __future__ import annotations
 
@@ -140,12 +140,12 @@ def evaluate_reviewer_gate(
     approved = latest_state == "APPROVED" and (
         head_sha is None or latest_review.commit_id == head_sha
     )
-    passed = requested or approved
+    passed = approved
 
-    if requested:
-        message = f"{display} is currently requested for review."
-    elif approved:
+    if approved:
         message = f"{display} has approved this PR."
+    elif requested:
+        message = f"{display} is currently requested for review, but approval on the current PR head is required."
     elif latest_state == "APPROVED" and head_sha is not None:
         message = (
             f"{display} approved {latest_review.commit_id or 'unknown commit'}, "
@@ -153,11 +153,11 @@ def evaluate_reviewer_gate(
         )
     elif latest_state:
         message = (
-            f"{display} is neither requested nor approved; "
+            f"{display} has not approved the current PR head; "
             f"latest decisive review state is {latest_state}."
         )
     else:
-        message = f"PR must request review from {display} or have their approval."
+        message = f"PR must have approval from {display}."
 
     return GateResult(
         passed=passed,

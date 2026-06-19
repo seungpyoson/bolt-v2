@@ -1589,6 +1589,64 @@ mod tests {
     }
 
     #[test]
+    fn validate_parameter_bounds_rejects_market_with_empty_underlying_asset() {
+        // PR #822 review (gemini-code-assist): underlying_asset should be validated
+        // non-empty at LOAD. It already is — the per-family maker-target validator
+        // reuses the shared `validate_underlying_asset` rule rather than
+        // re-implementing field checks inline, so an empty underlying fails CLOSED at
+        // the gate. Pin that channel so the shared-engine wiring can't silently drop.
+        let markets = vec![MarketBindingParametersBlock {
+            underlying_asset: String::new(),
+            ..market_declaration("eth-hourly")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("underlying_asset must not be empty")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_market_with_empty_cadence_slug_token() {
+        // PR #822 review (gemini-code-assist): cadence_slug_token should be non-empty
+        // at LOAD. The per-family validator reuses updown's validate_cadence_slug_token
+        // (is-empty branch), so an empty slug fails CLOSED at the gate — distinct from
+        // the malformed (uppercase) case already covered above.
+        let markets = vec![MarketBindingParametersBlock {
+            cadence_slug_token: String::new(),
+            ..market_declaration("eth-hourly")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("cadence_slug_token must not be empty")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_market_with_cadence_seconds_exceeding_i64() {
+        // PR #822 review (gemini-code-assist): cadence_seconds must fit a signed
+        // 64-bit integer. The operator-facing u64 is range-checked at the archetype
+        // gate before the discovery target is built, so a value past i64::MAX fails
+        // CLOSED rather than wrapping to a negative cadence at runtime.
+        let markets = vec![MarketBindingParametersBlock {
+            cadence_seconds: u64::MAX,
+            ..market_declaration("eth-hourly")
+        }];
+        let errors = market_declaration_errors(markets);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("exceeds the supported signed-integer cadence range")),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn validate_parameter_bounds_rejects_updown_with_static_fields() {
         // FINDING B: static-market override fields on a rotating-cadence family are
         // a misconfiguration; the validator must reject them at load.

@@ -156,13 +156,8 @@ impl MakerMarketRuntime {
                 self.no_generation
             }
         };
-        let market_key = self.binding.market_key.clone();
-        self.leg_binding_mut(leg).next_order = Some(make_leg_identity(
-            order_id_tag,
-            &market_key,
-            leg,
-            generation,
-        ));
+        let identity = make_leg_identity(order_id_tag, &self.binding.market_key, leg, generation);
+        self.leg_binding_mut(leg).next_order = Some(identity);
     }
 }
 
@@ -266,9 +261,9 @@ impl MakerRuntime {
         // planner retains them when still discoverable. Per-market health/kill
         // predicates are a later slice (X4); the foundation treats every active
         // market as healthy and clear.
-        let active_keys: Vec<String> = self.markets.keys().cloned().collect();
-        let active_slots: Vec<MakerMarketSlotState> = active_keys
-            .iter()
+        let active_slots: Vec<MakerMarketSlotState> = self
+            .markets
+            .keys()
             .map(|market_key| MakerMarketSlotState {
                 market_key: market_key.as_str(),
                 health: MakerPerMarketHealth::Healthy,
@@ -296,7 +291,6 @@ impl MakerRuntime {
                 .bindings
                 .iter()
                 .find(|binding| binding.market_key == market_key)
-                .cloned()
             else {
                 // The planner only ever returns keys present in `bindings`; this is
                 // a defensive guard, never expected to fire.
@@ -308,8 +302,9 @@ impl MakerRuntime {
                     prior.allocation_notional = allocation_notional;
                     prior
                 }
-                // New or rolled window: fresh identities.
-                _ => MakerMarketRuntime::new(binding, allocation_notional),
+                // New or rolled window: fresh identities — clone only here, never on
+                // the common retain path.
+                _ => MakerMarketRuntime::new(binding.clone(), allocation_notional),
             };
             next.insert(market_key, runtime);
         }

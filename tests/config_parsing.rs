@@ -233,7 +233,9 @@ transport_backend = "sockudo"
 fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
     use bolt_v2::{
         bolt_v3_config::BoltV3RootConfig,
-        bolt_v3_providers::polymarket::{PolymarketDataConfig, PolymarketExecutionConfig},
+        bolt_v3_providers::polymarket::{
+            PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSignatureType,
+        },
     };
 
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
@@ -272,8 +274,21 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
         .try_into()
         .expect("polymarket execution block should parse with NT names");
     assert_eq!(
-        execution.funder.as_deref(),
-        Some("0x1111111111111111111111111111111111111111")
+        execution.signature_type,
+        PolymarketSignatureType::PolyGnosisSafe
+    );
+    let funder = execution
+        .funder
+        .as_deref()
+        .expect("fixture Polymarket execution should declare a funder");
+    assert_eq!(
+        funder.len(),
+        42,
+        "fixture Polymarket funder should have EVM address length"
+    );
+    assert!(
+        funder != PLACEHOLDER_POLYMARKET_FUNDER,
+        "fixture Polymarket funder must not use the placeholder value"
     );
     assert_eq!(parsed.nautilus.timeout_shutdown_secs, 10);
 
@@ -8458,7 +8473,7 @@ fn rejects_polymarket_funder_zero_address() {
 }
 
 #[test]
-fn rejects_missing_funder_for_proxy_or_safe_signature_type() {
+fn rejects_missing_funder_for_poly_gnosis_safe_signature_type() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_fixture_root_line_with_prefix("funder = ", None);
@@ -8470,6 +8485,26 @@ fn rejects_missing_funder_for_proxy_or_safe_signature_type() {
             && m.contains("funder")
             && m.contains("required when signature_type is `poly_proxy` or `poly_gnosis_safe`")),
         "expected required-funder validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_missing_funder_for_poly_proxy_signature_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let without_funder = replace_fixture_root_line_with_prefix("funder = ", None);
+    let with_proxy = without_funder.replace(
+        "signature_type = \"poly_gnosis_safe\"",
+        "signature_type = \"poly_proxy\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&with_proxy).expect("poly-proxy missing-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("funder")
+            && m.contains("required when signature_type is `poly_proxy` or `poly_gnosis_safe`")),
+        "expected required-funder validation error for poly_proxy, got: {messages:#?}"
     );
 }
 

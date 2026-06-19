@@ -99,8 +99,12 @@ RUNNER_ARM_PATTERNS = (
         "manifest venue normalization",
         r"\bVenue\s*::\s*from\s*\(\s*manifest\s*\.\s*venue\s*\.\s*nt_venue\s*\.\s*as_str\s*\(\s*\)\s*\)",
     ),
-    ("binary-oracle builder constructor", r"\bBinaryOracleEdgeTakerBuilder\s*::\s*build_strategy\s*\("),
-    ("engine strategy registration", r"\bengine\s*\.\s*add_strategy\s*\(\s*strategy\s*\)"),
+    ("production strategy registry", r"\bproduction_strategy_registry\s*\("),
+    ("registry strategy registration", r"\bregistry\s*\.\s*register_strategy\s*\("),
+    (
+        "engine trader registration handle",
+        r"\bengine\s*\.\s*kernel\s*\(\s*\)\s*\.\s*trader\s*\(\s*\)",
+    ),
 )
 
 

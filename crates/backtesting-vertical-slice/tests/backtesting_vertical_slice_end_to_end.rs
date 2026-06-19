@@ -71,6 +71,7 @@ fn converter_config() -> ConverterConfig {
         jsonl_bars: None,
         deltas: None,
         quotes: None,
+        seeded_l2_quotes: None,
     }
 }
 
@@ -244,6 +245,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             typed_config_hash: None,
             experiment_result_uri: None,
             experiment_result_hash: None,
+            config_overlay: None,
         },
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
@@ -280,6 +282,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             fee_model: None,
             settlement_prices: None,
         },
+        additional_venues: Vec::new(),
         catalog_inputs: vec![ManifestCatalogInput {
             catalog_path: catalog_path.to_string(),
             catalog_fs_protocol: "NONE".to_string(),
@@ -297,6 +300,8 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             bar_types: None,
             optimize_file_loading: None,
         }],
+        reconstructed_reference_current_price: Vec::new(),
+        instrument_settlements: Vec::new(),
         catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
             .to_string(),
         execution_model: "nt_backtest_node".to_string(),

@@ -205,6 +205,19 @@ def assert_commit_status_payload_is_latest_wins_context() -> None:
     assert "approval" in failed_payload["description"]
     assert len(failed_payload["description"]) <= 140
 
+    multiline_payload = module.commit_status_payload(
+        result=module.GateResult(
+            passed=False,
+            reviewer="sp-reviewer",
+            requested=True,
+            latest_decisive_state=None,
+            message="needs approval\n  on this head",
+        ),
+        context="required reviewer approved",
+        target_url=None,
+    )
+    assert multiline_payload["description"] == "needs approval on this head"
+
     approved = decision([], [review("sp-reviewer", "APPROVED", 10)])
     approved_payload = module.commit_status_payload(
         result=approved,

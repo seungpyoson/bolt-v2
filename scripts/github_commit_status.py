@@ -25,9 +25,10 @@ STATUS_DESCRIPTION_LIMIT = 140
 
 def clamp_description(message: str) -> str:
     """GitHub rejects commit-status descriptions longer than 140 chars."""
-    if len(message) <= STATUS_DESCRIPTION_LIMIT:
-        return message
-    return f"{message[: STATUS_DESCRIPTION_LIMIT - 3]}..."
+    normalized = " ".join(message.split())
+    if len(normalized) <= STATUS_DESCRIPTION_LIMIT:
+        return normalized
+    return f"{normalized[: STATUS_DESCRIPTION_LIMIT - 3]}..."
 
 
 def status_api_url(*, api_base: str, repository: str, sha: str) -> str:

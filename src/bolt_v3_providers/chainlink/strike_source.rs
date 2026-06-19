@@ -317,7 +317,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
             )
         })?;
         let report_boundary = requested_report_boundary(cmd.params.as_ref(), cmd.instrument_id)?;
-        log::info!(
+        log::debug!(
             "Chainlink strike source {} received {} subscribe for {} at {}={}",
             self.client_id,
             report_boundary.kind.label(),
@@ -343,7 +343,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
         // strategy re-issues this subscribe on every retry tick while the strike
         // is unbound, so a stalled REST call must not stack concurrent requests.
         if !Self::begin_strike_fetch_if_idle(&self.in_flight, binding.instrument_id) {
-            log::warn!(
+            log::debug!(
                 "Chainlink strike source {} skipping {} subscribe for {} at {}={}: a fetch is already in flight",
                 self.client_id,
                 report_boundary.kind.label(),
@@ -388,7 +388,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
                             request.instrument_id
                         );
                     } else {
-                        log::info!(
+                        log::debug!(
                             "Chainlink strike source {client_id} delivered {} for {} at {}={}",
                             request.report_boundary.kind.label(),
                             request.instrument_id,
@@ -408,7 +408,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
                 }
             }
             ChainlinkStrikeSourceClient::finish_strike_fetch(&in_flight, fetch_instrument_id);
-            log::info!(
+            log::debug!(
                 "Chainlink strike source {client_id} cleared in-flight {} fetch for {} at {}={}",
                 request.report_boundary.kind.label(),
                 request.instrument_id,
@@ -422,7 +422,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
     fn unsubscribe_index_prices(&mut self, cmd: &UnsubscribeIndexPrices) -> anyhow::Result<()> {
         // Point-in-time source: each subscribe emits one strike and nothing
         // persists, so unsubscribe is a no-op beyond acknowledging.
-        log::info!(
+        log::debug!(
             "Chainlink strike source {} unsubscribed index prices for {}",
             self.client_id,
             cmd.instrument_id

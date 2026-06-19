@@ -626,7 +626,7 @@ idle_timeout_ms = 10000
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
-# Live PolyResearch/PolyNode current-price websocket source. This is an
+# Live PolyResearch current-price websocket source. This is an
 # alternate continuous reference-price stream for [reference_current_price].
 [clients.polyresearch_reference]
 venue = "POLYRESEARCH_REFERENCE_PRICE"

@@ -1326,8 +1326,10 @@ fn maker_on_start_resolves_declared_markets_from_the_execution_venue_cache() {
             .expect("seeding the venue cache with a maker instrument");
     }
 
-    maker
-        .on_start()
+    // `on_start` is declared by both `DataActor` and `Strategy` (a subtrait); the
+    // actor lifecycle invokes `DataActor::on_start` (the maker's override), so the
+    // test drives that exact method.
+    DataActor::on_start(&mut maker)
         .expect("on_start resolves and subscribes the declared markets");
 
     assert_eq!(maker.runtime().active_market_count(), 1);
@@ -1365,9 +1367,7 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
             .add_instrument(instrument)
             .expect("seeding the venue cache with a maker instrument");
     }
-    maker
-        .on_start()
-        .expect("on_start resolves the declared market");
+    DataActor::on_start(&mut maker).expect("on_start resolves the declared market");
     assert_eq!(maker.runtime().active_market_count(), 1);
 
     let yes_id = InstrumentId::from(RUNTIME_YES_INSTRUMENT);

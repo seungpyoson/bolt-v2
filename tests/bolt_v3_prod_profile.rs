@@ -96,6 +96,10 @@ fn repo_config_root() -> std::path::PathBuf {
     support::repo_path(CONFIG_ROOT)
 }
 
+fn repo_config_text(relative: &str) -> String {
+    support::repo_text(&format!("{CONFIG_ROOT}/{relative}"))
+}
+
 #[test]
 fn profile_id_validator_accepts_only_opaque_ids() {
     let max_len_id = format!("p{}", "a".repeat(62));
@@ -611,7 +615,7 @@ fn generate_rejects_strategy_file_parent_escape_even_when_target_exists() {
         .parent()
         .expect("staged config root has a parent")
         .join("external-strategy.toml");
-    write(&external_strategy, &support::repo_text(BTC_STRATEGY));
+    write(&external_strategy, &repo_config_text(BTC_STRATEGY));
     let overlay_text = support::repo_text(OVERLAY);
     let escaped = overlay_text.replace(BTC_STRATEGY, "../external-strategy.toml");
     assert_ne!(escaped, overlay_text, "the strategy path must be replaced");
@@ -638,7 +642,7 @@ fn generate_rejects_strategy_file_absolute_escape_even_when_target_exists() {
         .parent()
         .expect("staged config root has a parent")
         .join("absolute-strategy.toml");
-    write(&external_strategy, &support::repo_text(BTC_STRATEGY));
+    write(&external_strategy, &repo_config_text(BTC_STRATEGY));
     let overlay_text = support::repo_text(OVERLAY);
     let escaped = overlay_text.replace(BTC_STRATEGY, &external_strategy.display().to_string());
     assert_ne!(escaped, overlay_text, "the strategy path must be replaced");
@@ -666,7 +670,7 @@ fn generate_rejects_strategy_file_symlink_escape_even_when_entry_is_under_strate
         .parent()
         .expect("staged config root has a parent")
         .join("symlink-target-strategy.toml");
-    write(&external_strategy, &support::repo_text(BTC_STRATEGY));
+    write(&external_strategy, &repo_config_text(BTC_STRATEGY));
     let symlink_strategy = dir.path().join("strategies").join("symlinked.toml");
     std::os::unix::fs::symlink(&external_strategy, &symlink_strategy)
         .expect("strategy symlink should be created");

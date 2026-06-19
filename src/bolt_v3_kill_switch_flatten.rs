@@ -65,6 +65,9 @@ impl BoltV3KillSwitchFlattenCandidate {
         {
             return Err(BoltV3KillSwitchFlattenError::InconsistentPositionProof);
         }
+        if position_state.source_timestamp_unix_nanos == 0 {
+            return Err(BoltV3KillSwitchFlattenError::MissingSourceTimestamp);
+        }
         Ok(Self {
             evidence_kind: position_state.evidence_kind,
             account_id: position_state.account_id,
@@ -687,6 +690,9 @@ impl From<BoltV3KillSwitchFlattenAggregateOutcome> for BoltV3KillSwitchFlattenRe
 pub struct BoltV3KillSwitchFlattenOutcomeEvidence {
     halt_id: String,
     action_id: String,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    strategy_id: StrategyId,
     position_id: PositionId,
     outcome: BoltV3KillSwitchFlattenAttemptOutcome,
 }
@@ -699,6 +705,9 @@ impl BoltV3KillSwitchFlattenOutcomeEvidence {
         Self {
             halt_id: command.halt_id.clone(),
             action_id: command.action_id.clone(),
+            account_id: command.account_id,
+            instrument_id: command.instrument_id,
+            strategy_id: command.strategy_id,
             position_id: command.position_id,
             outcome,
         }
@@ -708,6 +717,9 @@ impl BoltV3KillSwitchFlattenOutcomeEvidence {
         (
             self.halt_id.clone(),
             self.action_id.clone(),
+            self.account_id,
+            self.instrument_id,
+            self.strategy_id,
             self.position_id,
         )
     }
@@ -764,7 +776,14 @@ impl BoltV3KillSwitchFlattenOutcomeAggregation {
     }
 }
 
-type BoltV3KillSwitchFlattenOutcomeIdentity = (String, String, PositionId);
+type BoltV3KillSwitchFlattenOutcomeIdentity = (
+    String,
+    String,
+    AccountId,
+    InstrumentId,
+    StrategyId,
+    PositionId,
+);
 
 fn flatten_outcome_identity(
     command: &BoltV3KillSwitchFlattenCommand,
@@ -772,6 +791,9 @@ fn flatten_outcome_identity(
     (
         command.halt_id().to_string(),
         command.action_id().to_string(),
+        command.account_id(),
+        command.instrument_id(),
+        command.strategy_id(),
         command.position_id(),
     )
 }

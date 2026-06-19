@@ -393,6 +393,130 @@ fn shipped_reference_live_probe_config_points_to_reference_clients() {
 }
 
 #[test]
+fn reference_live_probe_rejects_zero_duration() {
+    let mut root = fixture_root_config();
+    root.reference_live_probe
+        .as_mut()
+        .expect("fixture should configure reference_live_probe")
+        .duration_secs = 0;
+
+    let messages = bolt_v2::bolt_v3_validate::validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(
+            |message| message.contains("reference_live_probe.duration_secs")
+                && message.contains("must be positive")
+        ),
+        "zero reference_live_probe.duration_secs should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_live_probe_rejects_zero_chainlink_frame_floor() {
+    let mut root = fixture_root_config();
+    root.reference_live_probe
+        .as_mut()
+        .expect("fixture should configure reference_live_probe")
+        .min_chainlink_data_frames = 0;
+
+    let messages = bolt_v2::bolt_v3_validate::validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_live_probe.min_chainlink_data_frames")
+                && message.contains("must be positive")
+        }),
+        "zero reference_live_probe.min_chainlink_data_frames should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_live_probe_rejects_whitespace_client_id() {
+    let mut root = fixture_root_config();
+    root.reference_live_probe
+        .as_mut()
+        .expect("fixture should configure reference_live_probe")
+        .chainlink_client_id = " chainlink_reference ".to_string();
+
+    let messages = bolt_v2::bolt_v3_validate::validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_live_probe.chainlink_client_id")
+                && message.contains("must be non-empty without surrounding whitespace")
+        }),
+        "whitespace reference_live_probe.chainlink_client_id should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_live_probe_rejects_unconfigured_client_id() {
+    let mut root = fixture_root_config();
+    root.reference_live_probe
+        .as_mut()
+        .expect("fixture should configure reference_live_probe")
+        .chainlink_client_id = "missing_chainlink_reference".to_string();
+
+    let messages = bolt_v2::bolt_v3_validate::validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_live_probe.chainlink_client_id")
+                && message.contains("must reference a configured client")
+        }),
+        "unconfigured reference_live_probe.chainlink_client_id should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_live_probe_rejects_wrong_provider_client() {
+    let mut root = fixture_root_config();
+    root.reference_live_probe
+        .as_mut()
+        .expect("fixture should configure reference_live_probe")
+        .chainlink_client_id = "polymarket_main".to_string();
+
+    let messages = bolt_v2::bolt_v3_validate::validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_live_probe.chainlink_client_id")
+                && message.contains("must reference provider `CHAINLINK_REFERENCE_PRICE`")
+                && message.contains("got `POLYMARKET`")
+        }),
+        "wrong-provider reference_live_probe.chainlink_client_id should fail validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn reference_live_probe_rejects_client_missing_data_or_secrets() {
+    let mut root = fixture_root_config();
+    let client = root
+        .clients
+        .get_mut("chainlink_reference")
+        .expect("fixture should configure chainlink_reference");
+    client.data = None;
+    client.secrets = None;
+
+    let messages = bolt_v2::bolt_v3_validate::validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_live_probe.chainlink_client_id")
+                && message.contains("must reference a client with [data]")
+        }),
+        "missing data block should fail reference_live_probe validation, got: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("reference_live_probe.chainlink_client_id")
+                && message.contains("must reference a client with [secrets]")
+        }),
+        "missing secrets block should fail reference_live_probe validation, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() {
     for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = std::fs::read_to_string(support::repo_path(relative_path))
@@ -7420,6 +7544,12 @@ fn target_gate_subscription_messages(gate_subscriptions_toml: &str) -> Vec<Strin
         &strategy.target,
     );
     errors.into_iter().map(|error| error.to_string()).collect()
+}
+
+fn fixture_root_config() -> bolt_v2::bolt_v3_config::BoltV3RootConfig {
+    let root_toml = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("root fixture should be readable");
+    toml::from_str(&root_toml).expect("root fixture should parse")
 }
 
 fn strategy_validation_messages_for_toml(strategy_toml: &str) -> Vec<String> {

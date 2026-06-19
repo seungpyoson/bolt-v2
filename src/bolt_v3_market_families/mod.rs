@@ -1979,8 +1979,11 @@ mod tests {
     }
 
     /// The updown family's `(cadence_secs, cadence_slug_token)` runtime contract,
-    /// restated independently of the production source so a drift in the derivation
-    /// table is caught here. These are the only cadences for which a slug derives.
+    /// restated independently of the production source so the seam test below
+    /// derives a known-good token for each supported cadence. This is a seam
+    /// fixture, not the closed-set guard: that the production contract holds
+    /// exactly these pairs (no added, removed, or changed cadence) is enforced at
+    /// the source by `updown::tests::cadence_slug_contract_matches_independent_pins`.
     const UPDOWN_CADENCE_SLUG_PINS: &[(i64, &str)] = &[
         (60, "1m"),
         (300, "5m"),

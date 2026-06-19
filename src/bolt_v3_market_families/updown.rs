@@ -2167,4 +2167,40 @@ mod tests {
             "deny_unknown_fields must reject stray keys: {error}"
         );
     }
+
+    #[test]
+    fn cadence_slug_contract_matches_independent_pins() {
+        // Authoritative bidirectional drift guard, colocated with the single
+        // source it protects. The seam tests in the parent module iterate a
+        // pinned list, so they catch a CHANGED or REMOVED pair but cannot catch
+        // an ADDED cadence. Comparing the whole slice against an independent
+        // restatement fails closed in every direction: a changed token, an added
+        // cadence, or a removed cadence all break this.
+        const PINS: &[(i64, &str)] = &[
+            (60, "1m"),
+            (300, "5m"),
+            (900, "15m"),
+            (3600, "1h"),
+            (14400, "4h"),
+        ];
+        assert_eq!(
+            CADENCE_SLUG_CONTRACT, PINS,
+            "updown cadence->slug contract drifted from its pinned expectation"
+        );
+    }
+
+    #[test]
+    fn target_runtime_fields_from_target_inherits_derived_cadence_slug_token() {
+        // The taker holds no cadence_slug_token derivation of its own; it inherits
+        // the derived value through `target_runtime_fields_from_target` -- the exact
+        // dispatcher `raw_taker_config` calls -- which routes the updown family
+        // through `deserialize_target_block`'s shared seam. Omitting the operator
+        // token must still surface the derived slug in the runtime fields the taker
+        // copies into its config, so deleting the taker's old per-config derivation
+        // stays safe.
+        let target = target_without_cadence_slug_token();
+        let runtime = crate::bolt_v3_market_families::target_runtime_fields_from_target(&target)
+            .expect("dispatcher must derive the omitted cadence_slug_token for the updown family");
+        assert_eq!(runtime.cadence_slug_token, TEST_CADENCE_SLUG_TOKEN);
+    }
 }

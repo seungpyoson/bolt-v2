@@ -12,24 +12,15 @@ const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
     "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
 const CHAINLINK_BTC_TESTNET_FEED_ID: &str =
     "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
-const CHAINLINK_ETH_TESTNET_FEED_ID: &str =
-    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
-const CHAINLINK_SOL_TESTNET_FEED_ID: &str =
-    "0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6";
-const CHAINLINK_BNB_TESTNET_FEED_ID: &str =
-    "0x000387d7c042a9d5c97c15354b531bd01bf6d3a351e190f2394403cf2f79bde9";
-const CHAINLINK_XRP_TESTNET_FEED_ID: &str =
-    "0x00035e3ddda6345c3c8ce45639d4449451f1d5828d7a70845e446f04905937cd";
-const CHAINLINK_DOGE_TESTNET_FEED_ID: &str =
-    "0x00032057c7f224d0266b4311a81cdc3e38145e36442713350d3300fb12e85c99";
 const CHAINLINK_TEST_FEED_ID_PRIMARY: &str =
     "0x1111111111111111111111111111111111111111111111111111111111111111";
 const CHAINLINK_TEST_FEED_ID_SECONDARY: &str =
     "0x2222222222222222222222222222222222222222222222222222222222222222";
+const ZERO_CHAINLINK_FEED_ID: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-/// Shipped per-asset binary-oracle strategy files. One strategy instance per
-/// underlying asset, each subscribing its own Chainlink resolution feed via
-/// `[resolution_data]`.
+/// Shipped per-asset binary-oracle strategy files. The tracked production root
+/// may enable only a subset, but every shipped strategy must keep validating.
 const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
     "config/strategies/binary_oracle_btc.toml",
     "config/strategies/binary_oracle_eth.toml",
@@ -38,6 +29,18 @@ const SHIPPED_BINARY_ORACLE_STRATEGY_FILES: &[&str] = &[
     "config/strategies/binary_oracle_xrp.toml",
     "config/strategies/binary_oracle_doge.toml",
 ];
+const TRACKED_PRODUCTION_BINARY_ORACLE_STRATEGY_FILES: &[&str] =
+    &["config/strategies/binary_oracle_btc.toml"];
+const PLACEHOLDER_POLYMARKET_FUNDER: &str = "0x1111111111111111111111111111111111111111";
+const SYNTHETIC_FIXTURE_POLYMARKET_FUNDER: &str = "0xf1c7000000000000000000000000000000000001";
+
+fn polymarket_funder(root: &toml::Value) -> Option<&str> {
+    root.get("clients")
+        .and_then(|value| value.get("polymarket_main"))
+        .and_then(|value| value.get("execution"))
+        .and_then(|value| value.get("funder"))
+        .and_then(toml::Value::as_str)
+}
 
 fn assert_binary_oracle_entry_order_shape_rejected(messages: &[String], case_name: &str) {
     assert!(
@@ -231,7 +234,9 @@ transport_backend = "sockudo"
 fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
     use bolt_v2::{
         bolt_v3_config::BoltV3RootConfig,
-        bolt_v3_providers::polymarket::{PolymarketDataConfig, PolymarketExecutionConfig},
+        bolt_v3_providers::polymarket::{
+            PolymarketDataConfig, PolymarketExecutionConfig, PolymarketSignatureType,
+        },
     };
 
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
@@ -270,8 +275,21 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
         .try_into()
         .expect("polymarket execution block should parse with NT names");
     assert_eq!(
-        execution.funder.as_deref(),
-        Some("0x1111111111111111111111111111111111111111")
+        execution.signature_type,
+        PolymarketSignatureType::PolyGnosisSafe
+    );
+    let funder = execution
+        .funder
+        .as_deref()
+        .expect("fixture Polymarket execution should declare a funder");
+    assert_eq!(
+        funder.len(),
+        42,
+        "fixture Polymarket funder should have EVM address length"
+    );
+    assert!(
+        funder != PLACEHOLDER_POLYMARKET_FUNDER,
+        "fixture Polymarket funder must not use the placeholder value"
     );
     assert_eq!(parsed.nautilus.timeout_shutdown_secs, 10);
 
@@ -353,6 +371,135 @@ fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
             "{relative_path} parsed Chainlink reference config must use protocol Ping frames"
         );
     }
+}
+
+#[test]
+fn shipped_polyresearch_reference_config_uses_verified_gateway_endpoint() {
+    const VERIFIED_ENDPOINT: &str = "wss://3j5lx6otd8.execute-api.eu-west-1.amazonaws.com/prod";
+    const RETIRED_ENDPOINT: &str = "wss://ws.polynode.dev/ws";
+
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let parsed = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let endpoint = parsed
+            .get("clients")
+            .and_then(|value| value.get("polyresearch_reference"))
+            .and_then(|value| value.get("data"))
+            .and_then(|value| value.get("websocket_endpoint"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{relative_path} should declare clients.polyresearch_reference.data.websocket_endpoint"
+                )
+            });
+
+        assert_eq!(
+            endpoint, VERIFIED_ENDPOINT,
+            "{relative_path} PolyResearch endpoint must match the verified apiKey gateway"
+        );
+        assert_ne!(
+            endpoint, RETIRED_ENDPOINT,
+            "{relative_path} must not point PolyResearch at the retired endpoint that returns 401"
+        );
+    }
+}
+
+#[test]
+fn tracked_root_is_btc_only_live_profile() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("tracked root should load");
+
+    assert_eq!(
+        loaded.root.strategy_files,
+        vec!["strategies/binary_oracle_btc.toml".to_string()],
+        "tracked production root must enable only the BTC live strategy"
+    );
+    let surfaces = loaded
+        .root
+        .realized_volatility_surfaces
+        .as_ref()
+        .expect("tracked root must declare realized volatility surfaces");
+    assert_eq!(
+        surfaces.keys().cloned().collect::<Vec<_>>(),
+        vec!["btc_usdt_midpoint_rv".to_string()],
+        "tracked production root must carry only the BTC RV surface"
+    );
+}
+
+#[test]
+fn shipped_roots_use_polymarket_safe_profile_without_placeholder_collateral() {
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let parsed = toml::from_str::<toml::Value>(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
+        let execution = parsed
+            .get("clients")
+            .and_then(|value| value.get("polymarket_main"))
+            .and_then(|value| value.get("execution"))
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| {
+                panic!("{relative_path} should declare clients.polymarket_main.execution")
+            });
+        let funder = execution
+            .get("funder")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_else(|| panic!("{relative_path} Polymarket execution must declare funder"));
+
+        assert_eq!(
+            execution
+                .get("signature_type")
+                .and_then(toml::Value::as_str),
+            Some("poly_gnosis_safe"),
+            "{relative_path} must use the live Polymarket safe signature type"
+        );
+        assert_eq!(
+            funder.len(),
+            42,
+            "{relative_path} Polymarket funder must be an EVM address"
+        );
+        assert_ne!(
+            funder, PLACEHOLDER_POLYMARKET_FUNDER,
+            "{relative_path} must not ship the placeholder Polymarket funder"
+        );
+        assert!(
+            !execution.contains_key("on_chain_collateral"),
+            "{relative_path} must not ship placeholder on-chain collateral config"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_fixture_uses_synthetic_polymarket_funder() {
+    let live_source = fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("tracked production root should be readable");
+    let fixture_source = fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("Bolt v3 fixture root should be readable");
+    let live_root =
+        toml::from_str::<toml::Value>(&live_source).expect("tracked production root should parse");
+    let fixture_root =
+        toml::from_str::<toml::Value>(&fixture_source).expect("Bolt v3 fixture root should parse");
+
+    let live_funder = polymarket_funder(&live_root).expect("tracked root should declare funder");
+    let fixture_funder =
+        polymarket_funder(&fixture_root).expect("fixture root should declare funder");
+
+    assert!(
+        fixture_funder == SYNTHETIC_FIXTURE_POLYMARKET_FUNDER,
+        "Bolt v3 fixture should use the deliberate synthetic Polymarket funder"
+    );
+    assert!(
+        live_funder != SYNTHETIC_FIXTURE_POLYMARKET_FUNDER,
+        "tracked production root should not use the synthetic fixture Polymarket funder"
+    );
+    assert!(
+        fixture_funder != live_funder,
+        "Bolt v3 fixture funder should not duplicate the tracked production funder"
+    );
 }
 
 #[test]
@@ -535,12 +682,9 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
             1,
             "{relative_path} should not ship unused canonical Chainlink feed bindings"
         );
-        // The OFFLINE `resolution_oracle_primary` gate-provider mapping must stay
-        // a single generic placeholder (#551 removes it). The new live
-        // Root `chainlink_data_streams.feed_bindings` carries the real
-        // asset-specific feeds, so these checks are scoped to the gate-provider binding's
-        // `feed_id`, not a whole-file substring (which now legitimately contains
-        // the BTC feed under the root feed catalog).
+        // The strategy mapping uses `configured-reference-price`, but the
+        // report fetch/decode path still needs the real BTC feed id for the
+        // tracked BTC-only live profile.
         let gate_feed_id = feed_bindings[0]
             .get("feed_id")
             .and_then(toml::Value::as_str)
@@ -550,8 +694,26 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
             "{relative_path} gate-provider mapping should not ship the old generic Chainlink fixture feed"
         );
         assert_ne!(
+            gate_feed_id, ZERO_CHAINLINK_FEED_ID,
+            "{relative_path} gate-provider mapping should not ship the placeholder zero Chainlink feed"
+        );
+        assert_eq!(
             gate_feed_id, CHAINLINK_BTC_TESTNET_FEED_ID,
-            "{relative_path} gate-provider mapping should not ship a BTC-specific Chainlink feed"
+            "{relative_path} gate-provider mapping should use the pinned BTC Chainlink feed"
+        );
+        assert_eq!(
+            feed_bindings[0]
+                .get("report_schema_version")
+                .and_then(toml::Value::as_integer),
+            Some(3),
+            "{relative_path} gate-provider mapping should use the Chainlink V3 report schema"
+        );
+        assert_eq!(
+            feed_bindings[0]
+                .get("report_decimal_scale")
+                .and_then(toml::Value::as_integer),
+            Some(18),
+            "{relative_path} gate-provider mapping should use the 18-decimal Chainlink report scale"
         );
         assert_eq!(
             feed_bindings[0]
@@ -564,24 +726,10 @@ fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() 
 }
 
 #[test]
-fn shipped_chainlink_data_streams_pins_each_asset_feed_binding() {
-    // Drift guard for the LIVE strike feed bindings. The validFrom/feed_id/schema
-    // decode checks cannot detect a cross-asset substitution (a feed_id is always
-    // internally consistent with its own report), so a copy-paste swap pointing
-    // e.g. SOL at BTC's feed would silently bind the wrong asset's price as the
-    // strike. Pin every asset -> (feed_id, schema, scale, precision) and reject
-    // any duplicate feed_id, so drift fails CI. Asset<->feed_id correctness itself
-    // is confirmed at #553 testnet deploy (a wrong-asset feed yields a visibly
-    // wrong live strike).
-    let expected: [(&str, &str); 6] = [
-        ("BTC-USD.CHAINLINK", CHAINLINK_BTC_TESTNET_FEED_ID),
-        ("ETH-USD.CHAINLINK", CHAINLINK_ETH_TESTNET_FEED_ID),
-        ("SOL-USD.CHAINLINK", CHAINLINK_SOL_TESTNET_FEED_ID),
-        ("BNB-USD.CHAINLINK", CHAINLINK_BNB_TESTNET_FEED_ID),
-        ("XRP-USD.CHAINLINK", CHAINLINK_XRP_TESTNET_FEED_ID),
-        ("DOGE-USD.CHAINLINK", CHAINLINK_DOGE_TESTNET_FEED_ID),
-    ];
-
+fn shipped_chainlink_data_streams_catalog_is_btc_only() {
+    // The Chainlink reference websocket subscribes to every configured feed_id
+    // in this catalog, so the tracked live root must keep this BTC-only with the
+    // tracked strategy_files/RV surfaces.
     let source = fs::read_to_string(support::repo_path("config/root.toml"))
         .expect("root config should be readable");
     let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
@@ -593,54 +741,107 @@ fn shipped_chainlink_data_streams_pins_each_asset_feed_binding() {
 
     assert_eq!(
         feed_bindings.len(),
-        expected.len(),
-        "the live Chainlink Data Streams catalog must ship exactly one feed binding per supported asset"
+        1,
+        "the tracked live Chainlink Data Streams catalog must subscribe only to BTC"
     );
 
-    let mut seen_feed_ids = std::collections::HashSet::new();
-    for (binding, (instrument_id, feed_id)) in feed_bindings.iter().zip(expected.iter()) {
-        let actual_instrument = binding
-            .get("instrument_id")
-            .and_then(toml::Value::as_str)
-            .expect("feed binding should declare instrument_id");
-        let actual_feed = binding
-            .get("feed_id")
-            .and_then(toml::Value::as_str)
-            .expect("feed binding should declare feed_id");
-        assert_eq!(
-            actual_instrument, *instrument_id,
-            "live Chainlink Data Streams feed bindings must stay in the pinned per-asset order"
-        );
-        assert_eq!(
-            actual_feed, *feed_id,
-            "{instrument_id} strike feed_id drifted from its pinned testnet feed"
-        );
-        assert_eq!(
-            binding
-                .get("report_schema_version")
-                .and_then(toml::Value::as_integer),
-            Some(3),
-            "{instrument_id} must use the Chainlink V3 report schema"
-        );
-        assert_eq!(
-            binding
-                .get("report_decimal_scale")
-                .and_then(toml::Value::as_integer),
-            Some(18),
-            "{instrument_id} must use the 18-decimal Chainlink report scale"
-        );
-        assert_eq!(
-            binding
-                .get("price_precision")
-                .and_then(toml::Value::as_integer),
-            Some(8),
-            "{instrument_id} must use 8dp NT price precision"
-        );
-        assert!(
-            seen_feed_ids.insert(actual_feed),
-            "{instrument_id} reuses another asset's feed_id ({actual_feed}); cross-asset feed collision"
-        );
-    }
+    let binding = feed_bindings
+        .first()
+        .expect("BTC feed binding should be present");
+    let instrument_id = binding
+        .get("instrument_id")
+        .and_then(toml::Value::as_str)
+        .expect("feed binding should declare instrument_id");
+    let feed_id = binding
+        .get("feed_id")
+        .and_then(toml::Value::as_str)
+        .expect("feed binding should declare feed_id");
+    assert_eq!(
+        instrument_id, "BTC-USD.CHAINLINK",
+        "tracked live Chainlink Data Streams catalog must stay BTC-only"
+    );
+    assert_eq!(
+        feed_id, CHAINLINK_BTC_TESTNET_FEED_ID,
+        "BTC strike feed_id drifted from its pinned testnet feed"
+    );
+    assert_eq!(
+        binding
+            .get("report_schema_version")
+            .and_then(toml::Value::as_integer),
+        Some(3),
+        "BTC must use the Chainlink V3 report schema"
+    );
+    assert_eq!(
+        binding
+            .get("report_decimal_scale")
+            .and_then(toml::Value::as_integer),
+        Some(18),
+        "BTC must use the 18-decimal Chainlink report scale"
+    );
+    assert_eq!(
+        binding
+            .get("price_precision")
+            .and_then(toml::Value::as_integer),
+        Some(8),
+        "BTC must use 8dp NT price precision"
+    );
+}
+
+#[test]
+fn bolt_v3_fixture_chainlink_data_streams_catalog_matches_fixture_strategy() {
+    // The fixture is a generic CONFIGURED_ASSET bundle, not the production BTC
+    // root. It should still pin the one configured Chainlink catalog binding to
+    // the live BTC feed shape so fixture-based adapter tests exercise the same
+    // report schema/scale as the tracked root.
+    let source = fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture root config should be readable");
+    let parsed = toml::from_str::<toml::Value>(&source).expect("fixture root TOML should parse");
+    let feed_bindings = parsed
+        .get("chainlink_data_streams")
+        .and_then(|value| value.get("feed_bindings"))
+        .and_then(toml::Value::as_array)
+        .expect("fixture root config should declare Chainlink Data Streams feed bindings");
+
+    assert_eq!(
+        feed_bindings.len(),
+        1,
+        "fixture Chainlink Data Streams catalog should keep exactly one configured-asset binding"
+    );
+
+    let binding = feed_bindings
+        .first()
+        .expect("fixture Chainlink feed binding should be present");
+    assert_eq!(
+        binding.get("instrument_id").and_then(toml::Value::as_str),
+        Some("CONFIGURED_ASSET-USD.CHAINLINK"),
+        "fixture Chainlink catalog should stay aligned with the fixture strategy target"
+    );
+    assert_eq!(
+        binding.get("feed_id").and_then(toml::Value::as_str),
+        Some(CHAINLINK_BTC_TESTNET_FEED_ID),
+        "fixture Chainlink feed_id should stay pinned to the BTC testnet feed"
+    );
+    assert_eq!(
+        binding
+            .get("report_schema_version")
+            .and_then(toml::Value::as_integer),
+        Some(3),
+        "fixture Chainlink binding should use the Chainlink V3 report schema"
+    );
+    assert_eq!(
+        binding
+            .get("report_decimal_scale")
+            .and_then(toml::Value::as_integer),
+        Some(18),
+        "fixture Chainlink binding should use the 18-decimal Chainlink report scale"
+    );
+    assert_eq!(
+        binding
+            .get("price_precision")
+            .and_then(toml::Value::as_integer),
+        Some(8),
+        "fixture Chainlink binding should use 8dp NT price precision"
+    );
 }
 
 #[test]
@@ -773,8 +974,8 @@ fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_voc
         bolt_v3_validate::validate_strategies,
     };
 
-    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\nfee_cache_ttl_secs = 300\ntransport_backend = \"sockudo\"\n\n";
-    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(execution_block, ""))
+    let execution_block = fixture_polymarket_execution_block();
+    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(&execution_block, ""))
         .expect("data-only polymarket fixture should parse");
     let strategy: BoltV3StrategyConfig = toml::from_str(
         &std::fs::read_to_string(support::repo_path(
@@ -5067,13 +5268,15 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
             support::repo_path(relative_path).exists(),
             "tracked per-asset strategy config should live at {relative_path}"
         );
+    }
+    for relative_path in TRACKED_PRODUCTION_BINARY_ORACLE_STRATEGY_FILES {
         // Strip the `config/` prefix to the root-relative `strategy_files` form.
         let root_relative = relative_path
             .strip_prefix("config/")
             .expect("shipped strategy path should be under config/");
         assert!(
             root.contains(&format!("\"{root_relative}\"")),
-            "root config should load the per-asset strategy path {root_relative}"
+            "root config should load the tracked production strategy path {root_relative}"
         );
     }
     assert!(
@@ -5950,8 +6153,19 @@ fn shipped_binary_oracle_config_uses_supported_strategy_schema_version() {
 }
 
 #[test]
-fn shipped_binary_oracle_configs_use_runtime_contract_updown_cadence_slug() {
-    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
+fn shipped_binary_oracle_configs_omit_cadence_slug_token_and_derive_it() {
+    // The updown cadence_slug_token is 100% determined by cadence_secs, so the
+    // shipped operator configs OMIT it and rely on the shared derivation seam --
+    // the redundant token lives nowhere in production config. This guards that
+    // single-source contract end to end: every shipped config (a) carries no raw
+    // cadence_slug_token, and (b) derives the contract token ("5m" for the 300s
+    // cadence) through target_runtime_fields_from_target, the exact dispatcher
+    // raw_taker_config uses. A config that re-introduces the redundant token, or
+    // whose cadence drifts off the contract, breaks here.
+    use bolt_v2::{
+        bolt_v3_config::BoltV3StrategyConfig,
+        bolt_v3_market_families::target_runtime_fields_from_target,
+    };
 
     for relative_path in SHIPPED_BINARY_ORACLE_STRATEGY_FILES {
         let strategy: BoltV3StrategyConfig = toml::from_str(
@@ -5963,21 +6177,24 @@ fn shipped_binary_oracle_configs_use_runtime_contract_updown_cadence_slug() {
             .target
             .as_table()
             .unwrap_or_else(|| panic!("{relative_path} target should be a table"));
-        let cadence_secs = target
-            .get("cadence_secs")
-            .and_then(toml::Value::as_integer)
-            .unwrap_or_else(|| panic!("{relative_path} target.cadence_secs should be present"));
-        let cadence_slug_token = target
-            .get("cadence_slug_token")
-            .and_then(toml::Value::as_str)
-            .unwrap_or_else(|| {
-                panic!("{relative_path} target.cadence_slug_token should be present")
-            });
 
+        assert!(
+            !target.contains_key("cadence_slug_token"),
+            "{relative_path} must OMIT cadence_slug_token and rely on derivation, \
+             not restate the redundant token"
+        );
         assert_eq!(
-            (cadence_secs, cadence_slug_token),
-            (300, "5m"),
-            "{relative_path} must use the updown runtime-contract pair 300/5m"
+            target.get("cadence_secs").and_then(toml::Value::as_integer),
+            Some(300),
+            "{relative_path} target.cadence_secs should be the 300s updown cadence"
+        );
+
+        let runtime = target_runtime_fields_from_target(&strategy.target).unwrap_or_else(|error| {
+            panic!("{relative_path} target must derive its runtime fields: {error}")
+        });
+        assert_eq!(
+            runtime.cadence_slug_token, "5m",
+            "{relative_path} must derive the updown runtime-contract token 5m from cadence_secs=300"
         );
     }
 }
@@ -6584,6 +6801,42 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
         "fixture must contain `{needle}` for this validation test to mutate"
     );
     fixture.replace(needle, replacement)
+}
+
+fn fixture_polymarket_execution_block() -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let start = fixture
+        .find("[clients.polymarket_main.execution]\n")
+        .expect("fixture should contain Polymarket execution block");
+    let rest = &fixture[start..];
+    let end = rest
+        .find("\n[clients.polymarket_main.secrets]")
+        .expect("fixture should contain Polymarket secrets block after execution");
+    rest[..end + 1].to_string()
+}
+
+fn replace_fixture_root_line_with_prefix(prefix: &str, replacement: Option<&str>) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mut hits = 0usize;
+    let rewritten = fixture
+        .lines()
+        .filter_map(|line| {
+            if line.trim_start().starts_with(prefix) {
+                hits += 1;
+                replacement.map(str::to_string)
+            } else {
+                Some(line.to_string())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        hits, 1,
+        "fixture must contain exactly one line starting with `{prefix}`"
+    );
+    rewritten
 }
 
 fn fixture_root_with_order_execution_mode(mode: &str) -> String {
@@ -8313,9 +8566,9 @@ fn rejects_ssm_paths_with_leading_or_trailing_whitespace() {
 fn rejects_polymarket_funder_with_invalid_evm_syntax() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "funder = \"0x1111111111111111111111111111111111111111\"",
-        "funder = \"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\"",
+    let mutated = replace_fixture_root_line_with_prefix(
+        "funder = ",
+        Some("funder = \"0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ\""),
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("invalid-funder fixture should parse");
@@ -8332,9 +8585,9 @@ fn rejects_polymarket_funder_with_invalid_evm_syntax() {
 fn rejects_polymarket_funder_zero_address() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "funder = \"0x1111111111111111111111111111111111111111\"",
-        "funder = \"0x0000000000000000000000000000000000000000\"",
+    let mutated = replace_fixture_root_line_with_prefix(
+        "funder = ",
+        Some("funder = \"0x0000000000000000000000000000000000000000\""),
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("zero-funder fixture should parse");
@@ -8348,13 +8601,10 @@ fn rejects_polymarket_funder_zero_address() {
 }
 
 #[test]
-fn rejects_missing_funder_for_poly_proxy_signature_type() {
+fn rejects_missing_funder_for_poly_gnosis_safe_signature_type() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "funder = \"0x1111111111111111111111111111111111111111\"\n",
-        "",
-    );
+    let mutated = replace_fixture_root_line_with_prefix("funder = ", None);
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("missing-funder fixture should parse");
     let messages = validate_root_only(&root);
@@ -8367,15 +8617,32 @@ fn rejects_missing_funder_for_poly_proxy_signature_type() {
 }
 
 #[test]
+fn rejects_missing_funder_for_poly_proxy_signature_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let without_funder = replace_fixture_root_line_with_prefix("funder = ", None);
+    let with_proxy = without_funder.replace(
+        "signature_type = \"poly_gnosis_safe\"",
+        "signature_type = \"poly_proxy\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&with_proxy).expect("poly-proxy missing-funder fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("funder")
+            && m.contains("required when signature_type is `poly_proxy` or `poly_gnosis_safe`")),
+        "expected required-funder validation error for poly_proxy, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn allows_missing_funder_for_eoa_signature_type() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let without_funder = replace_in_fixture_root(
-        "funder = \"0x1111111111111111111111111111111111111111\"\n",
-        "",
-    );
+    let without_funder = replace_fixture_root_line_with_prefix("funder = ", None);
     let with_eoa = without_funder.replace(
-        "signature_type = \"poly_proxy\"",
+        "signature_type = \"poly_gnosis_safe\"",
         "signature_type = \"eoa\"",
     );
     let root: BoltV3RootConfig =
@@ -8410,8 +8677,8 @@ fn rejects_binance_data_zero_instrument_status_poll_secs() {
 fn rejects_polymarket_data_only_client_with_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let execution_block = "[clients.polymarket_main.execution]\naccount_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"\nfunder = \"0x1111111111111111111111111111111111111111\"\nbase_url_http = \"https://clob.polymarket.com\"\nbase_url_ws = \"wss://ws-subscriptions-clob.polymarket.com/ws/user\"\nbase_url_data_api = \"https://data-api.polymarket.com\"\nhttp_timeout_secs = 60\nmax_retries = 3\nretry_delay_initial_ms = 250\nretry_delay_max_ms = 2000\nack_timeout_secs = 5\nfee_cache_ttl_secs = 300\ntransport_backend = \"sockudo\"\n\n";
-    let mutated = replace_in_fixture_root(execution_block, "");
+    let execution_block = fixture_polymarket_execution_block();
+    let mutated = replace_in_fixture_root(&execution_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("polymarket data-only secrets fixture should parse");
     let messages = validate_root_only(&root);

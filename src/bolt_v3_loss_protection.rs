@@ -921,3 +921,140 @@ fn position_realized_pnl_observation(
 fn money_decimal(money: Money) -> Decimal {
     money.as_decimal()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{rc::Rc, sync::Arc};
+
+    use anyhow::Result;
+    use nautilus_model::types::Currency;
+    use rust_decimal::Decimal;
+
+    use super::*;
+    use crate::{
+        bolt_v3_decision_evidence::{
+            BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
+            BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+            BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        },
+        bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    };
+
+    #[test]
+    fn adjusted_observation_missing_event_id_fails_closed() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+            NoopDecisionEvidenceWriter,
+        )));
+        let store = KillSwitchStore::new(temp.path().join("kill-switch.json"), 65_536);
+        let mut protection = KillSwitchLossProtection::new(
+            KillSwitchLossProtectionConfig {
+                max_utc_daily_realized_loss: Decimal::new(10, 0),
+                action_retry_interval_ms: 250,
+                action_retry_timeout_ms: 5_000,
+                account_ids: vec!["POLYMARKET-001".to_string()],
+                instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+            },
+            admission,
+            store,
+            Rc::new(NoopLossActionSink),
+        )
+        .expect("loss protection should initialize");
+        let observation = PositionRealizedPnlObservation {
+            account_id: "POLYMARKET-001".to_string(),
+            instrument_id: "BTC-USD.BINANCE".to_string(),
+            position_id: "P-001".to_string(),
+            event_id: None,
+            observed: RealizedPnlObservation {
+                source: "nt_position_adjusted",
+                observed_at_unix_nanos: 1_717_200_000_000_000_000,
+                realized_pnl: Decimal::new(-1, 0),
+                settlement_currency: Currency::USDC(),
+            },
+            cumulative_realized_pnl: false,
+            closes_position: false,
+        };
+
+        let error = protection
+            .is_duplicate_adjusted_position_observation(&observation)
+            .expect_err("missing adjusted event id should fail closed");
+
+        assert!(error.to_string().contains("missing event_id"));
+        assert!(matches!(
+            protection.state(),
+            KillSwitchState::FailedManualIntervention { reason, .. }
+                if reason.contains("missing event_id")
+        ));
+        assert!(matches!(
+            protection
+                .store()
+                .load_recovery_state()
+                .expect("failed state should persist"),
+            KillSwitchRecoveryState::FailClosed {
+                reason: KillSwitchRecoveryReason::UnresolvedHalt,
+                state: Some(KillSwitchState::FailedManualIntervention { .. })
+            }
+        ));
+    }
+
+    #[derive(Debug)]
+    struct NoopLossActionSink;
+
+    impl KillSwitchLossActionSink for NoopLossActionSink {
+        fn emit(&self, _action: KillSwitchLossAction) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopDecisionEvidenceWriter;
+
+    impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &BoltV3BasketAdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+}

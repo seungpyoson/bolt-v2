@@ -9,7 +9,8 @@ use std::{
 use bolt_v2::{
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind},
     bolt_v3_kill_switch_store::{
-        KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore,
+        KillSwitchPendingHaltActionsSnapshot, KillSwitchRecoveryReason, KillSwitchRecoveryState,
+        KillSwitchStore,
     },
     bolt_v3_loss_protection::{
         KillSwitchLossAction, KillSwitchLossActionKind, KillSwitchLossActionSink,
@@ -993,6 +994,67 @@ fn pending_halt_actions_retry_from_timer_without_new_position_events() {
         .expect("timer-driven retry should succeed without a position event");
 
     assert_eq!(actions.flatten_attempts(), 2);
+}
+
+#[test]
+fn recovered_pending_halt_actions_retry_from_persisted_schedule() {
+    let temp = support::TempCaseDir::new("bolt-v3-loss-protection-recovered-pending-retry");
+    let path = temp.path().join("kill-switch.json");
+    let store = KillSwitchStore::new(path.clone(), TEST_MAX_STATE_FILE_BYTES);
+    let pending_time = 1_717_200_000_000_000_000;
+    let halting = KillSwitchState::Halting {
+        halt_id: "halt-recovered-pending".to_string(),
+        trigger: KillSwitchHaltTrigger::loss_governor_breach(
+            "nt_position_event",
+            pending_time,
+            "max_utc_daily_realized_loss",
+        ),
+    };
+    let mut snapshot = bolt_v2::bolt_v3_kill_switch_store::initial_armed_loss_protection_snapshot();
+    snapshot.pending_halt_actions = Some(KillSwitchPendingHaltActionsSnapshot {
+        next_retry_at_unix_nanos: pending_time + NANOS_PER_MILLISECOND,
+        retry_deadline_unix_nanos: pending_time
+            + ((TEST_ACTION_RETRY_TIMEOUT_MS + 1) * NANOS_PER_MILLISECOND),
+    });
+    store
+        .write_state_with_loss_snapshot(&halting, Some(&snapshot))
+        .expect("halting state with pending halt actions should persist");
+
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    )));
+    let actions = Rc::new(RecordingLossActionSink::default());
+    let mut restarted = KillSwitchLossProtection::new(
+        loss_config(Decimal::new(1, 0)),
+        admission,
+        KillSwitchStore::new(path, TEST_MAX_STATE_FILE_BYTES),
+        actions.clone(),
+    )
+    .expect("loss protection should initialize");
+
+    let recovered = restarted
+        .seed_from_store(pending_time)
+        .expect("restart should recover pending halt-action schedule");
+    assert!(matches!(recovered, KillSwitchState::Halting { .. }));
+    assert!(actions.actions().is_empty());
+
+    restarted
+        .poll_pending_halt_actions(pending_time)
+        .expect("timer before next retry should not dispatch");
+    assert!(actions.actions().is_empty());
+
+    restarted
+        .poll_pending_halt_actions(pending_time + NANOS_PER_MILLISECOND)
+        .expect("persisted retry schedule should dispatch at next retry");
+
+    assert_eq!(actions.actions().len(), 1);
+    assert!(matches!(
+        restarted
+            .store()
+            .load_recovery_state()
+            .expect("recovered pending retry should persist halted state"),
+        KillSwitchRecoveryState::Recovered(KillSwitchState::Halted { .. })
+    ));
 }
 
 #[test]

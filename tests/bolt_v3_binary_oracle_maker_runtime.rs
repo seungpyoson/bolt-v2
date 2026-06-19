@@ -1245,3 +1245,183 @@ fn maker_runtime_refresh_reports_miss_for_undiscoverable_market_not_silent_drop(
     assert!(refresh.subscribe.is_empty());
     assert!(refresh.unsubscribe.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// PR-B NT shell: on_start resolves the declared markets against the
+// execution-venue-scoped instrument cache and populates the runtime, and one
+// intent-only quote cycle mints + assigns + rotates leg order identities while
+// the global shadow chokepoint suppresses every venue mutation.
+// ---------------------------------------------------------------------------
+
+use bolt_v2::strategies::binary_oracle_maker::BinaryOracleMakerQuoteCycleInput;
+use nautilus_common::actor::DataActor;
+
+fn maker_config_with_static_market() -> BinaryOracleMakerConfig {
+    BinaryOracleMakerConfig {
+        markets: vec![runtime_static_declaration()],
+        ..maker_config()
+    }
+}
+
+/// A build context whose execution venue is a single-token `SIM`, so the static
+/// instruments (`*.SIM`) pass the maker's execution-venue cache filter. (The
+/// other maker fixtures use a dotted `MAKER.TEST` venue, which never matches an
+/// `InstrumentId`'s parsed venue and so is unsuitable for the cache-read path.)
+fn maker_sim_context(
+    writer: Arc<support::RecordingDecisionEvidenceWriter>,
+    admission: Arc<BoltV3SubmitAdmissionState>,
+) -> StrategyBuildContext {
+    StrategyBuildContext::new(
+        Arc::new(NoopFeeProvider),
+        writer,
+        admission,
+        BoltV3OrderExecutionPolicy::shadow(),
+        Venue::from("SIM"),
+    )
+}
+
+/// Register the maker with a real NT core whose clock reads `RUNTIME_NOW_MS`, so
+/// the static instruments (whose activation/expiration bracket `RUNTIME_NOW_MS`)
+/// are selectable at `on_start`. Returns the cache so the test can seed it.
+fn register_maker_at_runtime_now(maker: &mut BinaryOracleMaker) -> Rc<RefCell<Cache>> {
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(
+        cache.clone(),
+        clock.clone(),
+        None,
+    )));
+    maker
+        .core_mut()
+        .register(
+            TraderId::from("TRADER-001"),
+            clock,
+            cache.clone(),
+            portfolio,
+        )
+        .expect("maker test strategy should register with NT core");
+    cache
+}
+
+#[test]
+fn maker_on_start_resolves_declared_markets_from_the_execution_venue_cache() {
+    // The NT shell wiring: on_start reads the execution-venue-scoped instrument
+    // cache, resolves the declared markets through the shared engine, and tracks
+    // them in the runtime. With both leg instruments cached on the maker's venue,
+    // the declared market becomes active (an empty cache would leave it idle).
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config_with_static_market(),
+        maker_sim_context(writer, admission),
+    );
+    let cache = register_maker_at_runtime_now(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    maker
+        .on_start()
+        .expect("on_start resolves and subscribes the declared markets");
+
+    assert_eq!(maker.runtime().active_market_count(), 1);
+    let market = maker
+        .runtime()
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active after on_start");
+    assert_eq!(
+        market.leg_binding(Leg::Yes).instrument_id,
+        InstrumentId::from(RUNTIME_YES_INSTRUMENT)
+    );
+    assert_eq!(
+        market.leg_binding(Leg::No).instrument_id,
+        InstrumentId::from(RUNTIME_NO_INSTRUMENT)
+    );
+}
+
+#[test]
+fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
+    // The keystone PR-B behavior: once a market is active, one quote cycle mints
+    // fresh leg order identities, emits order INTENT through the shared execution
+    // context, and rotates the dispatched identity from `next` to `active`. The
+    // global shadow chokepoint suppresses every venue mutation, so the intent is
+    // produced but nothing is admitted.
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config_with_static_market(),
+        maker_sim_context(writer, admission.clone()),
+    );
+    let cache = register_maker_at_runtime_now(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+    maker
+        .on_start()
+        .expect("on_start resolves the declared market");
+    assert_eq!(maker.runtime().active_market_count(), 1);
+
+    let yes_id = InstrumentId::from(RUNTIME_YES_INSTRUMENT);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let submit_template = maker_limit_post_only_template();
+
+    let outcome = maker
+        .run_quote_cycle(
+            RUNTIME_MARKET_KEY,
+            &mut market,
+            &mut budget,
+            BinaryOracleMakerQuoteCycleInput {
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set: quote_set_inputs(),
+                submit_template: &submit_template,
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            },
+        )
+        .expect("run_quote_cycle routes an active market")
+        .expect("an active market yields a quote-cycle outcome");
+
+    let orders = outcome
+        .orders
+        .expect("a fresh market quote cycle dispatches leg order intent");
+    match &orders.yes.dispatch {
+        Some(MakerOrderDispatchOutcome::Submitted { instrument_id, .. }) => {
+            assert_eq!(
+                *instrument_id, yes_id,
+                "the YES leg intent must target the resolved YES instrument"
+            );
+        }
+        other => panic!("expected a YES submit intent in shadow, got {other:?}"),
+    }
+    // Shadow chokepoint: intent emitted, nothing admitted to the venue.
+    assert_eq!(admission.admitted_order_count(), 0);
+
+    // The dispatched identity rotated from `next` to `active`; the next slot is
+    // consumed so the following cycle mints a fresh generation.
+    let market_runtime = maker
+        .runtime()
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the market is still active after the cycle");
+    assert!(
+        market_runtime.leg_binding(Leg::Yes).active_order.is_some(),
+        "a submitted YES intent must rotate the minted identity to active"
+    );
+    assert!(
+        market_runtime.leg_binding(Leg::Yes).next_order.is_none(),
+        "the minted next identity is consumed by the submit"
+    );
+}

@@ -1054,6 +1054,86 @@ reason = "The updown cadence validator requires minute-aligned periods; the mark
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''60'''
+context = '''60 => Some("1m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"1m"'''
+context = '''60 => Some("1m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''300'''
+context = '''300 => Some("5m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"5m"'''
+context = '''300 => Some("5m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''900'''
+context = '''900 => Some("15m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"15m"'''
+context = '''900 => Some("15m"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''3600'''
+context = '''3600 => Some("1h"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"1h"'''
+context = '''3600 => Some("1h"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''14400'''
+context = '''14400 => Some("4h"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"4h"'''
+context = '''14400 => Some("4h"),'''
+classification = "runtime_contract_cadence_slug_mapping"
+reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = '''"binary_option"'''
 context = '''const BINARY_OPTION_MARKET_CLASS: &str = "binary_option";'''

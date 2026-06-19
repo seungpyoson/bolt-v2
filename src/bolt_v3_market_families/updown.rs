@@ -226,11 +226,17 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
         ));
     }
 
-    errors.extend(validate_target_cadence(context, block.cadence_secs));
-    errors.extend(validate_cadence_slug_token(
-        context,
-        block.cadence_slug_token.as_str(),
-    ));
+    let cadence_errors = validate_target_cadence(context, block.cadence_secs);
+    let token_errors = validate_cadence_slug_token(context, block.cadence_slug_token.as_str());
+    errors.extend(cadence_errors.iter().cloned());
+    errors.extend(token_errors.iter().cloned());
+    if cadence_errors.is_empty() && token_errors.is_empty() {
+        errors.extend(validate_cadence_slug_contract(
+            context,
+            block.cadence_secs,
+            block.cadence_slug_token.as_str(),
+        ));
+    }
 
     if block.retry_interval_secs == 0 {
         errors.push(format!(
@@ -387,6 +393,10 @@ pub fn validate_target_cadence(context: &str, cadence_secs: i64) -> Vec<String> 
         errors.push(format!(
             "{context}: target.cadence_secs must be divisible by 60 (got {cadence_secs})"
         ));
+    } else if expected_cadence_slug_token(cadence_secs).is_none() {
+        errors.push(format!(
+            "{context}: target.cadence_secs must be one of the updown runtime-contract values 60, 300, 900, 3600, or 14400 (got {cadence_secs})"
+        ));
     }
     errors
 }
@@ -411,6 +421,33 @@ fn validate_cadence_slug_token(context: &str, cadence_slug_token: &str) -> Vec<S
         ));
     }
     errors
+}
+
+fn validate_cadence_slug_contract(
+    context: &str,
+    cadence_secs: i64,
+    cadence_slug_token: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Some(expected) = expected_cadence_slug_token(cadence_secs)
+        && cadence_slug_token != expected
+    {
+        errors.push(format!(
+            "{context}: target.cadence_slug_token must be `{expected}` when target.cadence_secs is {cadence_secs} (got `{cadence_slug_token}`)"
+        ));
+    }
+    errors
+}
+
+fn expected_cadence_slug_token(cadence_secs: i64) -> Option<&'static str> {
+    match cadence_secs {
+        60 => Some("1m"),
+        300 => Some("5m"),
+        900 => Some("15m"),
+        3600 => Some("1h"),
+        14400 => Some("4h"),
+        _ => None,
+    }
 }
 
 /// Pure identity facts for one configured updown rotating-market
@@ -528,6 +565,18 @@ pub enum BoltV3MarketIdentityError {
         configured_target_id: Option<String>,
         cadence_slug_token: String,
     },
+    UnsupportedCadenceSeconds {
+        strategy_instance_id: Option<String>,
+        configured_target_id: Option<String>,
+        cadence_secs: i64,
+    },
+    CadenceSlugTokenMismatch {
+        strategy_instance_id: Option<String>,
+        configured_target_id: Option<String>,
+        cadence_secs: i64,
+        cadence_slug_token: String,
+        expected_cadence_slug_token: &'static str,
+    },
     NegativeNowUnixSeconds {
         now_unix_secs: i64,
     },
@@ -567,6 +616,26 @@ impl std::fmt::Display for BoltV3MarketIdentityError {
             } => write!(
                 f,
                 "{prefix}target.cadence_slug_token must use only lowercase ASCII letters and digits (got `{cadence_slug_token}`)",
+                prefix = format_target_prefix(strategy_instance_id, configured_target_id),
+            ),
+            BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
+                strategy_instance_id,
+                configured_target_id,
+                cadence_secs,
+            } => write!(
+                f,
+                "{prefix}target.cadence_secs must be one of the updown runtime-contract values 60, 300, 900, 3600, or 14400 (got {cadence_secs})",
+                prefix = format_target_prefix(strategy_instance_id, configured_target_id),
+            ),
+            BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
+                strategy_instance_id,
+                configured_target_id,
+                cadence_secs,
+                cadence_slug_token,
+                expected_cadence_slug_token,
+            } => write!(
+                f,
+                "{prefix}target.cadence_slug_token must be `{expected_cadence_slug_token}` when target.cadence_secs is {cadence_secs} (got `{cadence_slug_token}`)",
                 prefix = format_target_prefix(strategy_instance_id, configured_target_id),
             ),
             BoltV3MarketIdentityError::NegativeNowUnixSeconds { now_unix_secs } => {
@@ -644,6 +713,22 @@ fn plan_strategy_updown_target(
             strategy_instance_id: Some(strategy_instance_id),
             configured_target_id: Some(configured_target_id),
             cadence_slug_token: target.cadence_slug_token.clone(),
+        });
+    }
+    let Some(expected_cadence_slug_token) = expected_cadence_slug_token(target.cadence_secs) else {
+        return Err(BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
+            strategy_instance_id: Some(strategy_instance_id),
+            configured_target_id: Some(configured_target_id),
+            cadence_secs: target.cadence_secs,
+        });
+    };
+    if target.cadence_slug_token != expected_cadence_slug_token {
+        return Err(BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
+            strategy_instance_id: Some(strategy_instance_id),
+            configured_target_id: Some(configured_target_id),
+            cadence_secs: target.cadence_secs,
+            cadence_slug_token: target.cadence_slug_token.clone(),
+            expected_cadence_slug_token,
         });
     }
 
@@ -769,7 +854,9 @@ fn plan_strategy_error(error: BoltV3MarketIdentityError) -> InstrumentFilterErro
             strategy_instance_id,
             message,
         },
-        BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. } => {
+        BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
+        | BoltV3MarketIdentityError::UnsupportedCadenceSeconds { .. }
+        | BoltV3MarketIdentityError::CadenceSlugTokenMismatch { .. } => {
             InstrumentFilterError::TargetValidationFailure {
                 message: error.to_string(),
             }
@@ -788,6 +875,29 @@ pub fn target_runtime_fields(
                 strategy_instance_id: None,
                 configured_target_id: Some(target.configured_target_id.clone()),
                 cadence_slug_token: target.cadence_slug_token.clone(),
+            }
+            .to_string(),
+        });
+    }
+    if let Some(expected_cadence_slug_token) = expected_cadence_slug_token(target.cadence_secs) {
+        if target.cadence_slug_token != expected_cadence_slug_token {
+            return Err(InstrumentFilterError::TargetValidationFailure {
+                message: BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
+                    strategy_instance_id: None,
+                    configured_target_id: Some(target.configured_target_id.clone()),
+                    cadence_secs: target.cadence_secs,
+                    cadence_slug_token: target.cadence_slug_token.clone(),
+                    expected_cadence_slug_token,
+                }
+                .to_string(),
+            });
+        }
+    } else {
+        return Err(InstrumentFilterError::TargetValidationFailure {
+            message: BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
+                strategy_instance_id: None,
+                configured_target_id: Some(target.configured_target_id.clone()),
+                cadence_secs: target.cadence_secs,
             }
             .to_string(),
         });
@@ -1189,6 +1299,8 @@ fn market_identity_error_to_instrument_filter_error(
             cadence_seconds: cadence_secs,
         },
         BoltV3MarketIdentityError::InvalidCadenceSlugToken { .. }
+        | BoltV3MarketIdentityError::UnsupportedCadenceSeconds { .. }
+        | BoltV3MarketIdentityError::CadenceSlugTokenMismatch { .. }
         | BoltV3MarketIdentityError::TargetParseFailed { .. } => {
             InstrumentFilterError::TargetValidationFailure {
                 message: error.to_string(),
@@ -1316,8 +1428,8 @@ mod tests {
 
     const TEST_CONFIGURED_TARGET_ID: &str = "configured_updown_target";
     const TEST_UNDERLYING_ASSET: &str = "CONFIGUREDASSET";
-    const TEST_CADENCE_SLUG_TOKEN: &str = "configuredwindow";
-    const TEST_MARKET_SLUG: &str = "configuredasset-updown-configuredwindow-600";
+    const TEST_CADENCE_SLUG_TOKEN: &str = "5m";
+    const TEST_MARKET_SLUG: &str = "configuredasset-updown-5m-600";
     const TEST_UP_INSTRUMENT_ID: &str = "configured-condition-UP.POLYMARKET";
     const TEST_DOWN_INSTRUMENT_ID: &str = "configured-condition-DOWN.POLYMARKET";
     const TEST_CONDITION_ID: &str = "configured-condition";
@@ -1347,7 +1459,7 @@ mod tests {
             rotating_market_family = "updown"
             underlying_asset = "CONFIGUREDASSET"
             cadence_secs = 300
-            cadence_slug_token = "configuredwindow"
+            cadence_slug_token = "5m"
             market_selection_rule = "active_or_next"
             retry_interval_secs = 5
             blocked_after_secs = 30
@@ -1723,12 +1835,12 @@ mod tests {
     #[test]
     fn updown_market_slug_examples() {
         assert_eq!(
-            updown_market_slug("ASSET", "configuredwindow", 1_700_000_000),
-            "asset-updown-configuredwindow-1700000000"
+            updown_market_slug("ASSET", "5m", 1_700_000_000),
+            "asset-updown-5m-1700000000"
         );
         assert_eq!(
-            updown_market_slug("ALT", "hourwindow", 1_700_003_600),
-            "alt-updown-hourwindow-1700003600"
+            updown_market_slug("ALT", "1h", 1_700_003_600),
+            "alt-updown-1h-1700003600"
         );
     }
 
@@ -1742,6 +1854,28 @@ mod tests {
                 cadence_secs: 0,
             })
         ));
+    }
+
+    #[test]
+    fn validate_target_block_rejects_cadence_slug_token_contract_mismatch() {
+        let mut target = target_with_resolution_mapping();
+        target
+            .as_table_mut()
+            .expect("target should be a table")
+            .insert(
+                "cadence_slug_token".to_string(),
+                toml::Value::String("configuredwindow".to_string()),
+            );
+
+        let errors = validate_target_block("strategy `configured_updown_main`", &target);
+        assert!(
+            errors.iter().any(|message| {
+                message.contains("target.cadence_slug_token")
+                    && message.contains("must be `5m`")
+                    && message.contains("configuredwindow")
+            }),
+            "expected cadence/token contract mismatch, got: {errors:#?}"
+        );
     }
 
     #[test]

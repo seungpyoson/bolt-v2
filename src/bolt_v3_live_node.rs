@@ -8075,6 +8075,7 @@ configured_data_param = "configured-value"
             sample_kind: RealizedVolatilitySampleKindBlock::Midpoint,
             enabled,
             counts_toward_quorum: enabled,
+            canonical_base_asset: "BTC".to_string(),
             canonical_quote_asset: "USDT".to_string(),
         }
     }

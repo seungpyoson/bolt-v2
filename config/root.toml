@@ -42,26 +42,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
 source_id = "binance_btc_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "BTC-USDT.BINANCE"
+instrument_id = "BTCUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.btc_usdt_midpoint_rv.sources]]
 source_id = "bybit_btc_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "BTC-USDT.BYBIT"
+instrument_id = "BTCUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.eth_usdt_midpoint_rv]
@@ -96,26 +99,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "ETH"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.eth_usdt_midpoint_rv.sources]]
 source_id = "binance_eth_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "ETH-USDT.BINANCE"
+instrument_id = "ETHUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "ETH"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.eth_usdt_midpoint_rv.sources]]
 source_id = "bybit_eth_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "ETH-USDT.BYBIT"
+instrument_id = "ETHUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "ETH"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.sol_usdt_midpoint_rv]
@@ -150,26 +156,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "SOL"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.sol_usdt_midpoint_rv.sources]]
 source_id = "binance_sol_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "SOL-USDT.BINANCE"
+instrument_id = "SOLUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "SOL"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.sol_usdt_midpoint_rv.sources]]
 source_id = "bybit_sol_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "SOL-USDT.BYBIT"
+instrument_id = "SOLUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "SOL"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.bnb_usdt_midpoint_rv]
@@ -204,26 +213,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BNB"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.bnb_usdt_midpoint_rv.sources]]
 source_id = "binance_bnb_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "BNB-USDT.BINANCE"
+instrument_id = "BNBUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BNB"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.bnb_usdt_midpoint_rv.sources]]
 source_id = "bybit_bnb_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "BNB-USDT.BYBIT"
+instrument_id = "BNBUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "BNB"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.xrp_usdt_midpoint_rv]
@@ -258,26 +270,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "XRP"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.xrp_usdt_midpoint_rv.sources]]
 source_id = "binance_xrp_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "XRP-USDT.BINANCE"
+instrument_id = "XRPUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "XRP"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.xrp_usdt_midpoint_rv.sources]]
 source_id = "bybit_xrp_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "XRP-USDT.BYBIT"
+instrument_id = "XRPUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "XRP"
 canonical_quote_asset = "USDT"
 
 [realized_volatility_surfaces.doge_usdt_midpoint_rv]
@@ -312,26 +327,29 @@ source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "DOGE"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.doge_usdt_midpoint_rv.sources]]
 source_id = "binance_doge_usdt_midpoint"
 data_client_id = "binance_spot_data"
-instrument_id = "DOGE-USDT.BINANCE"
+instrument_id = "DOGEUSDT.BINANCE"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "DOGE"
 canonical_quote_asset = "USDT"
 
 [[realized_volatility_surfaces.doge_usdt_midpoint_rv.sources]]
 source_id = "bybit_doge_usdt_midpoint"
 data_client_id = "bybit_data"
-instrument_id = "DOGE-USDT.BYBIT"
+instrument_id = "DOGEUSDT-SPOT.BYBIT"
 source_class = "spot_quote"
 sample_kind = "midpoint"
 enabled = true
 counts_toward_quorum = true
+canonical_base_asset = "DOGE"
 canonical_quote_asset = "USDT"
 
 [runtime]

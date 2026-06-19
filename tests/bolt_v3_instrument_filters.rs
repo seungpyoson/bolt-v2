@@ -135,7 +135,7 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     assert_eq!(target.execution_client_id, "polymarket_main");
     assert_eq!(target.underlying_asset, "CONFIGURED_ASSET");
     assert_eq!(target.cadence_secs, 300);
-    assert_eq!(target.cadence_slug_token, "configuredwindow");
+    assert_eq!(target.cadence_slug_token, "5m");
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn candidates_for_target_yields_current_and_next_configured_slugs() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "window".to_string(),
+        cadence_slug_token: "5m".to_string(),
     };
     let UpdownSlugCandidates {
         current_period_start_unix_secs,
@@ -238,8 +238,8 @@ fn candidates_for_target_yields_current_and_next_configured_slugs() {
     } = candidates_for_target(&target, 601).expect("candidates should succeed for valid input");
     assert_eq!(current_period_start_unix_secs, 600);
     assert_eq!(next_period_start_unix_secs, 900);
-    assert_eq!(current_market_slug, "asset-updown-window-600");
-    assert_eq!(next_market_slug, "asset-updown-window-900");
+    assert_eq!(current_market_slug, "asset-updown-5m-600");
+    assert_eq!(next_market_slug, "asset-updown-5m-900");
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "window".to_string(),
+        cadence_slug_token: "5m".to_string(),
     };
     assert!(matches!(
         candidates_for_target(&target, -1),
@@ -286,6 +286,41 @@ fn plan_market_identity_rejects_invalid_cadence_slug_token_after_mutation() {
             assert_eq!(cadence_slug_token, "Bad-Token");
         }
         other => panic!("expected InvalidCadenceSlugToken; got {other:?}"),
+    }
+}
+
+#[test]
+fn plan_market_identity_rejects_cadence_slug_token_contract_mismatch_after_mutation() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+
+    set_target_field(
+        &mut loaded.strategies[0],
+        "cadence_slug_token",
+        toml::Value::String("configuredwindow".to_string()),
+    );
+
+    match plan_market_identity(&loaded) {
+        Err(BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
+            strategy_instance_id,
+            configured_target_id,
+            cadence_secs,
+            cadence_slug_token,
+            expected_cadence_slug_token,
+        }) => {
+            assert_eq!(
+                strategy_instance_id.as_deref(),
+                Some("configured_updown_main")
+            );
+            assert_eq!(
+                configured_target_id.as_deref(),
+                Some("configured_updown_target")
+            );
+            assert_eq!(cadence_secs, 300);
+            assert_eq!(cadence_slug_token, "configuredwindow");
+            assert_eq!(expected_cadence_slug_token, "5m");
+        }
+        other => panic!("expected CadenceSlugTokenMismatch; got {other:?}"),
     }
 }
 
@@ -359,13 +394,13 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     // `sort_by` on any of these keys would re-order at least one
     // index and fail the per-index assertions below.
     //
-    //   declared order : [0]=zeta_strategy_main / zeta_target / ZETA / 900  / quarterhour
-    //                    [1]=alpha_strategy_main / alpha_target / ALPHA / 300 / shortwindow
-    //                    [2]=mike_strategy_main / mike_target / MIKE / 3600 / hourwindow
+    //   declared order : [0]=zeta_strategy_main / zeta_target / ZETA / 900  / 15m
+    //                    [1]=alpha_strategy_main / alpha_target / ALPHA / 300 / 5m
+    //                    [2]=mike_strategy_main / mike_target / MIKE / 3600 / 1h
     //
     //   sort by strategy_instance_id ascending  -> [1, 2, 0]
-    //   sort by configured_target_id ascending  -> [2, 0, 1]
-    //   sort by underlying_asset ascending      -> [2, 0, 1]
+    //   sort by configured_target_id ascending  -> [1, 2, 0]
+    //   sort by underlying_asset ascending      -> [1, 2, 0]
     //   sort by cadence_secs ascending       -> [1, 0, 2]
     //   sort by cadence_secs descending      -> [2, 0, 1]
     //   sort by cadence_slug_token ascending    -> [0, 2, 1]
@@ -390,7 +425,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
         set_target_field(
             first,
             "cadence_slug_token",
-            toml::Value::String("quarterhour".to_string()),
+            toml::Value::String("15m".to_string()),
         );
     }
 
@@ -409,7 +444,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     set_target_field(
         &mut second,
         "cadence_slug_token",
-        toml::Value::String("shortwindow".to_string()),
+        toml::Value::String("5m".to_string()),
     );
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
@@ -427,7 +462,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     set_target_field(
         &mut third,
         "cadence_slug_token",
-        toml::Value::String("hourwindow".to_string()),
+        toml::Value::String("1h".to_string()),
     );
 
     loaded.strategies.push(second);
@@ -443,7 +478,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     assert_eq!(zero.execution_client_id, "polymarket_main");
     assert_eq!(zero.underlying_asset, "ZETA");
     assert_eq!(zero.cadence_secs, 900);
-    assert_eq!(zero.cadence_slug_token, "quarterhour");
+    assert_eq!(zero.cadence_slug_token, "15m");
 
     let one = targets[1];
     assert_eq!(one.strategy_instance_id, "alpha_strategy_main");
@@ -451,7 +486,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     assert_eq!(one.execution_client_id, "polymarket_main");
     assert_eq!(one.underlying_asset, "ALPHA");
     assert_eq!(one.cadence_secs, 300);
-    assert_eq!(one.cadence_slug_token, "shortwindow");
+    assert_eq!(one.cadence_slug_token, "5m");
 
     let two = targets[2];
     assert_eq!(two.strategy_instance_id, "mike_strategy_main");
@@ -459,7 +494,7 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     assert_eq!(two.execution_client_id, "polymarket_main");
     assert_eq!(two.underlying_asset, "MIKE");
     assert_eq!(two.cadence_secs, 3600);
-    assert_eq!(two.cadence_slug_token, "hourwindow");
+    assert_eq!(two.cadence_slug_token, "1h");
 }
 
 #[test]
@@ -542,7 +577,7 @@ fn candidates_for_target_propagates_period_pair_overflow() {
         execution_client_id: "polymarket_main".to_string(),
         underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "window".to_string(),
+        cadence_slug_token: "5m".to_string(),
     };
     assert!(matches!(
         candidates_for_target(&target, i64::MAX),

@@ -278,8 +278,20 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
         if surface.canonical_base_asset.trim().is_empty() {
             errors.push(format!("{context}.canonical_base_asset must be non-empty"));
         }
+        if surface.canonical_base_asset != surface.canonical_base_asset.trim() {
+            errors.push(format!(
+                "{context}.{} must not contain surrounding whitespace",
+                stringify!(canonical_base_asset),
+            ));
+        }
         if surface.canonical_quote_asset.trim().is_empty() {
             errors.push(format!("{context}.canonical_quote_asset must be non-empty"));
+        }
+        if surface.canonical_quote_asset != surface.canonical_quote_asset.trim() {
+            errors.push(format!(
+                "{context}.{} must not contain surrounding whitespace",
+                stringify!(canonical_quote_asset),
+            ));
         }
         if surface.sources.is_empty() {
             errors.push(format!(
@@ -497,11 +509,25 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                 ));
             }
 
-            let source_base_asset = instrument_base_asset(&source.instrument_id);
-            if source_base_asset != surface.canonical_base_asset {
+            if source.canonical_base_asset.trim().is_empty() {
                 errors.push(format!(
-                    "{source_context}.instrument_id `{}` resolves to base asset `{source_base_asset}`, which must match {context}.canonical_base_asset `{}`",
-                    source.instrument_id, surface.canonical_base_asset,
+                    "{source_context}.{} must be non-empty",
+                    stringify!(canonical_base_asset),
+                ));
+            }
+            if source.canonical_base_asset != source.canonical_base_asset.trim() {
+                errors.push(format!(
+                    "{source_context}.{} must not contain surrounding whitespace",
+                    stringify!(canonical_base_asset),
+                ));
+            }
+            if source.canonical_base_asset != surface.canonical_base_asset {
+                errors.push(format!(
+                    "{source_context}.{} `{}` must match {context}.{} `{}`",
+                    stringify!(canonical_base_asset),
+                    source.canonical_base_asset,
+                    stringify!(canonical_base_asset),
+                    surface.canonical_base_asset,
                 ));
             }
             let instrument_key = source.instrument_id.to_string();
@@ -522,10 +548,25 @@ fn validate_realized_volatility_surfaces(root: &BoltV3RootConfig) -> Vec<String>
                 }
             }
 
+            if source.canonical_quote_asset.trim().is_empty() {
+                errors.push(format!(
+                    "{source_context}.{} must be non-empty",
+                    stringify!(canonical_quote_asset),
+                ));
+            }
+            if source.canonical_quote_asset != source.canonical_quote_asset.trim() {
+                errors.push(format!(
+                    "{source_context}.{} must not contain surrounding whitespace",
+                    stringify!(canonical_quote_asset),
+                ));
+            }
             if source.canonical_quote_asset != surface.canonical_quote_asset {
                 errors.push(format!(
-                    "{source_context}.canonical_quote_asset `{}` must match {context}.canonical_quote_asset `{}`",
-                    source.canonical_quote_asset, surface.canonical_quote_asset
+                    "{source_context}.{} `{}` must match {context}.{} `{}`",
+                    stringify!(canonical_quote_asset),
+                    source.canonical_quote_asset,
+                    stringify!(canonical_quote_asset),
+                    surface.canonical_quote_asset,
                 ));
             }
             if !realized_volatility_source_pair_supported(source.source_class, source.sample_kind) {
@@ -592,11 +633,6 @@ fn realized_volatility_source_pair_supported(
             RealizedVolatilitySampleKindBlock::Index,
         )
     )
-}
-
-fn instrument_base_asset(instrument_id: &InstrumentId) -> &str {
-    let symbol = instrument_id.symbol.as_str();
-    symbol.split_once('-').map_or(symbol, |(asset, _)| asset)
 }
 
 fn validate_gate_providers(

@@ -2304,6 +2304,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
             VALID_MARKETS_TOML,
@@ -2328,6 +2329,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             surprise = 1
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
@@ -2351,6 +2353,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
             r#"
@@ -2423,6 +2426,7 @@ mod tests {
                 mu_stale_window_ms = 60000
                 mu_min_floor = 0.05
                 requote_min_interval_ms = 500
+                quote_interval_ms = 1000
                 "#,
                 VALID_MARKET_PORTFOLIO_TOML
             ))
@@ -2443,6 +2447,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             r#"
             [market_portfolio]
@@ -2471,6 +2476,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             valid_backtest_toml()
         );
@@ -2512,6 +2518,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             r#"
             [market_portfolio]

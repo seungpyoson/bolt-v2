@@ -67,7 +67,7 @@ pub async fn run_reference_live_probe(
     let chainlink_config = chainlink_probe_config(loaded, resolved)?;
     let polyresearch_config = polyresearch_probe_config(loaded, resolved)?;
 
-    let (chainlink, polyresearch) = tokio::join!(
+    let (chainlink, polyresearch) = tokio::try_join!(
         probe_chainlink_reference(
             probe.chainlink_client_id.as_str(),
             &chainlink_config,
@@ -79,9 +79,7 @@ pub async fn run_reference_live_probe(
             &polyresearch_config,
             duration,
         )
-    );
-    let chainlink = chainlink?;
-    let polyresearch = polyresearch?;
+    )?;
 
     Ok(ReferenceLiveProbeReport {
         duration_secs: probe.duration_secs,

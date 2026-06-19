@@ -25,9 +25,9 @@ use bolt_v2::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
         ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
+        reference_live_probe::run_reference_live_probe,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
-    bolt_v3_reference_live_probe::run_reference_live_probe,
     bolt_v3_secrets::{
         ResolvedBoltV3Secrets, check_no_forbidden_credential_env_vars,
         resolve_bolt_v3_client_secrets, resolve_bolt_v3_secrets,

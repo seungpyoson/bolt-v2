@@ -892,10 +892,15 @@ pub(crate) fn reference_price_client_config(
 pub(crate) fn reference_price_websocket_config(
     config: &ChainlinkReferencePriceClientConfig,
 ) -> anyhow::Result<WebSocketConfig> {
+    let feed_ids = config
+        .feed_bindings
+        .iter()
+        .map(|binding| binding.feed_id.clone())
+        .collect::<Vec<_>>();
     let (url, path_with_query) = chainlink_reference_websocket_url(
         &config.websocket_endpoint,
         &config.websocket_path,
-        &config.feed_bindings,
+        &feed_ids,
     )?;
     let authorization_timestamp_ms = current_unix_timestamp_ms()?;
     let credentials = chainlink_data_streams_credentials(&config.api_key, &config.api_secret)?;

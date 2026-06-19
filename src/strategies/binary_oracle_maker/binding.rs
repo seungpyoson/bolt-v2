@@ -501,4 +501,121 @@ mod tests {
             }
         );
     }
+
+    // --- static_binary_event maker resolution (PR #822 review disproof) ---
+    // An external review (GPT) raised a HIGH claim that the static_binary_event
+    // maker target reuses the taker's `event_key -> underlying_asset` projection
+    // (static_binary_event::target_runtime_fields), so a "canonical" static market
+    // whose identity is a lowercase event key would fail the maker load gate
+    // (which validates underlying_asset with the uppercase ASSET rule) and only an
+    // asset symbol like ETH would pass. That projection is taker-only: the maker
+    // binding has NO event_key field, and the static family selects a market
+    // strictly by market_slug + condition_id + yes/no outcomes
+    // (select_binary_option_market) and never reads underlying_asset. The test
+    // below pins that contract: a static market declared with an uppercase asset
+    // resolves the intended YES/NO pair, and re-resolving the SAME instruments with
+    // a DIFFERENT asset resolves the IDENTICAL market. If underlying_asset were a
+    // static selection key (i.e. had to carry the event key), the second
+    // resolution would miss. (Load-gate acceptance of this shape is pinned
+    // separately by
+    // archetype::validate_parameter_bounds_accepts_valid_static_binary_event_declaration.)
+
+    const STATIC_FAMILY: &str = "static_binary_event";
+    const STATIC_SLUG: &str = "will-sample-event-resolve-yes";
+    const STATIC_CONDITION_ID: &str = "condition-sample-event";
+    const STATIC_YES_OUTCOME: &str = "Yes";
+    const STATIC_NO_OUTCOME: &str = "No";
+
+    fn static_declaration(market_key: &str, underlying_asset: &str) -> MakerMarketDeclaration {
+        MakerMarketDeclaration {
+            market_key: market_key.to_string(),
+            family_key: STATIC_FAMILY.to_string(),
+            underlying_asset: underlying_asset.to_string(),
+            cadence_seconds: CADENCE_SECONDS,
+            cadence_slug_token: STATIC_SLUG.to_string(),
+            static_condition_id: Some(STATIC_CONDITION_ID.to_string()),
+            static_yes_outcome: Some(STATIC_YES_OUTCOME.to_string()),
+            static_no_outcome: Some(STATIC_NO_OUTCOME.to_string()),
+        }
+    }
+
+    /// Build a selectable YES/NO static pair matching `declaration`'s slug +
+    /// condition + outcomes. Deliberately does NOT consult `underlying_asset` — the
+    /// static family identifies a market without it.
+    fn static_selectable_pair(
+        declaration: &MakerMarketDeclaration,
+        yes_id: &str,
+        no_id: &str,
+    ) -> Vec<InstrumentAny> {
+        let slug = declaration.cadence_slug_token.as_str();
+        let condition_id = declaration
+            .static_condition_id
+            .as_deref()
+            .expect("static declaration carries a condition id");
+        let yes_outcome = declaration
+            .static_yes_outcome
+            .as_deref()
+            .expect("static declaration carries a yes outcome");
+        let no_outcome = declaration
+            .static_no_outcome
+            .as_deref()
+            .expect("static declaration carries a no outcome");
+        let market_id = format!("market-{slug}");
+        let question_id = format!("question-{slug}");
+        let activation_ms = NOW_MS - 1_000;
+        let expiration_ms = NOW_MS + 30_000;
+        vec![
+            test_binary_option(
+                yes_id,
+                slug,
+                &market_id,
+                condition_id,
+                &question_id,
+                yes_outcome,
+                activation_ms,
+                expiration_ms,
+            ),
+            test_binary_option(
+                no_id,
+                slug,
+                &market_id,
+                condition_id,
+                &question_id,
+                no_outcome,
+                activation_ms,
+                expiration_ms,
+            ),
+        ]
+    }
+
+    #[test]
+    fn static_market_resolves_and_is_invariant_to_underlying_asset() {
+        let eth = static_declaration("sample-event-eth", "ETH");
+        let instruments =
+            static_selectable_pair(&eth, "SAMPLE-EVENT-YES.SIM", "SAMPLE-EVENT-NO.SIM");
+
+        let eth_binding = resolve_declared_market(&eth, &instruments, NOW_MS)
+            .expect("a static market declared with an uppercase asset must resolve");
+        assert_eq!(
+            eth_binding.yes.instrument_id,
+            InstrumentId::from("SAMPLE-EVENT-YES.SIM"),
+            "the YES leg must bind the configured yes-outcome instrument"
+        );
+        assert_eq!(
+            eth_binding.no.instrument_id,
+            InstrumentId::from("SAMPLE-EVENT-NO.SIM"),
+            "the NO leg must bind the configured no-outcome instrument"
+        );
+
+        // Same market identity (slug/condition/outcomes), different underlying_asset:
+        // the IDENTICAL market resolves, proving underlying_asset is not a static
+        // selection key and so need not (and does not) carry the event key.
+        let btc = static_declaration("sample-event-btc", "BTC");
+        let btc_binding = resolve_declared_market(&btc, &instruments, NOW_MS).expect(
+            "underlying_asset is not a static selection key; a different asset still resolves",
+        );
+        assert_eq!(btc_binding.market_id, eth_binding.market_id);
+        assert_eq!(btc_binding.yes.instrument_id, eth_binding.yes.instrument_id);
+        assert_eq!(btc_binding.no.instrument_id, eth_binding.no.instrument_id);
+    }
 }

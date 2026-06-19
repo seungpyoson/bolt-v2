@@ -384,16 +384,16 @@ fn unsupported_maker_quote_targets(_inputs: FamilyQuoteInputs) -> Option<QuoteTa
     None
 }
 
+/// Maximum length of an underlying-asset symbol (e.g. `ETH`, `BTC`). Bounds the
+/// shared `validate_underlying_asset` rule.
+const UNDERLYING_ASSET_MAX_CHARS: usize = 32;
+
 /// Maker-target validator for families whose `select_binary_option_market`
 /// cannot resolve a binary up/down market (it returns `None`/errors
 /// unconditionally). Such a family is registered for other selection modes but is
 /// NOT a valid maker target, so a maker declaration naming it must fail closed at
 /// load — otherwise the go-live gate would admit a market that can only ever
 /// resolve to "no current market" at runtime.
-/// Maximum length of an underlying-asset symbol (e.g. `ETH`, `BTC`). Bounds the
-/// shared `validate_underlying_asset` rule.
-const UNDERLYING_ASSET_MAX_CHARS: usize = 32;
-
 fn unsupported_maker_market_target(
     context: &str,
     target: MarketSelectionTarget<'_>,

@@ -14933,7 +14933,7 @@ reason = "PolyResearch reference-price provider protocol/config literal; operato
 path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"apiKey"'''
-context = '''const POLYRESEARCH_LEGACY_API_KEY_QUERY_FIELD: &str = "apiKey";'''
+context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";'''
 classification = "polyresearch_reference_provider_contract"
 reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
 
@@ -14974,14 +14974,6 @@ path = "src/bolt_v3_providers/polyresearch.rs"
 kind = "string"
 literal = '''"chainlink"'''
 context = '''const POLYRESEARCH_REFERENCE_SUBSCRIPTION_TYPE: &str = "chainlink";'''
-classification = "polyresearch_reference_provider_contract"
-reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polyresearch.rs"
-kind = "string"
-literal = '''"key"'''
-context = '''const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "key";'''
 classification = "polyresearch_reference_provider_contract"
 reason = "PolyResearch reference-price provider protocol/config literal; operator-selected symbols and credentials remain TOML/SSM-owned."
 
@@ -15224,6 +15216,110 @@ literal = '''"key"'''
 context = '''validate_provenance_component(key, "key")?;'''
 classification = "reference_price_data_contract"
 reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "number"
+literal = '''0'''
+context = '''let data_frames = Arc::new(AtomicU64::new(0));'''
+classification = "reference_live_probe_counter_initial_value"
+reason = "Read-only reference live probe observation counters start at zero; probe duration and required observations are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "number"
+literal = '''0'''
+context = '''let server_pings = Arc::new(AtomicU64::new(0));'''
+classification = "reference_live_probe_counter_initial_value"
+reason = "Read-only reference live probe observation counters start at zero; probe duration and required observations are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "number"
+literal = '''1'''
+context = '''handler_data_frames.fetch_add(1, Ordering::SeqCst);'''
+classification = "reference_live_probe_counter_increment"
+reason = "Atomic observation counter increments by one per received frame; required observation thresholds are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "number"
+literal = '''1'''
+context = '''ping_counter.fetch_add(1, Ordering::SeqCst);'''
+classification = "reference_live_probe_counter_increment"
+reason = "Atomic observation counter increments by one per received server ping; required observation thresholds are TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "string"
+literal = '''"Chainlink reference probe ended with connection_mode={connection_mode}"'''
+context = '''"Chainlink reference probe ended with connection_mode={connection_mode}"'''
+classification = "reference_live_probe_diagnostic"
+reason = "Read-only pre-live probe diagnostic; endpoint, credentials, client ids, duration, and thresholds are TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "string"
+literal = '''"Chainlink reference probe observed {observed_data_frames} data frame(s), below reference_live_probe.min_chainlink_data_frames={required_data_frames}"'''
+context = '''"Chainlink reference probe observed {observed_data_frames} data frame(s), below reference_live_probe.min_chainlink_data_frames={required_data_frames}"'''
+classification = "reference_live_probe_diagnostic"
+reason = "Read-only pre-live probe diagnostic; endpoint, credentials, client ids, duration, and thresholds are TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "string"
+literal = '''"PolyResearch reference probe ended with connection_mode={connection_mode}"'''
+context = '''"PolyResearch reference probe ended with connection_mode={connection_mode}"'''
+classification = "reference_live_probe_diagnostic"
+reason = "Read-only pre-live probe diagnostic; endpoint, credentials, client ids, duration, and thresholds are TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "string"
+literal = '''"build Chainlink reference WebSocket config"'''
+context = '''.context("build Chainlink reference WebSocket config")?;'''
+classification = "reference_live_probe_diagnostic"
+reason = "Read-only pre-live probe diagnostic; endpoint, credentials, client ids, duration, and thresholds are TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "string"
+literal = '''"build PolyResearch reference WebSocket config"'''
+context = '''.context("build PolyResearch reference WebSocket config")?;'''
+classification = "reference_live_probe_diagnostic"
+reason = "Read-only pre-live probe diagnostic; endpoint, credentials, client ids, duration, and thresholds are TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "string"
+literal = '''"connect Chainlink reference WebSocket"'''
+context = '''.context("connect Chainlink reference WebSocket")?;'''
+classification = "reference_live_probe_diagnostic"
+reason = "Read-only pre-live probe diagnostic; endpoint, credentials, client ids, duration, and thresholds are TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_reference_live_probe.rs"
+kind = "string"
+literal = '''"connect PolyResearch reference WebSocket"'''
+context = '''.context("connect PolyResearch reference WebSocket")?;'''
+classification = "reference_live_probe_diagnostic"
+reason = "Read-only pre-live probe diagnostic; endpoint, credentials, client ids, duration, and thresholds are TOML/SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"reference_live_probe.chainlink_client_id"'''
+context = '''"reference_live_probe.chainlink_client_id",'''
+classification = "reference_live_probe_config_schema_field"
+reason = "TOML schema field label used in validation diagnostics; the actual configured client id remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"reference_live_probe.polyresearch_client_id"'''
+context = '''"reference_live_probe.polyresearch_client_id",'''
+classification = "reference_live_probe_config_schema_field"
+reason = "TOML schema field label used in validation diagnostics; the actual configured client id remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_reference_price.rs"

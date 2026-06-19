@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::{
+    collections::BTreeMap,
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
@@ -26,9 +27,10 @@ use bolt_v2::{
         ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
+    bolt_v3_reference_live_probe::run_reference_live_probe,
     bolt_v3_secrets::{
-        check_no_forbidden_credential_env_vars, resolve_bolt_v3_client_secrets,
-        resolve_bolt_v3_secrets,
+        ResolvedBoltV3Secrets, check_no_forbidden_credential_env_vars,
+        resolve_bolt_v3_client_secrets, resolve_bolt_v3_secrets,
     },
     secrets::SsmResolverSession,
 };
@@ -97,6 +99,10 @@ enum OpsCommand {
         config: PathBuf,
         #[arg(long)]
         client_key: String,
+    },
+    ReferenceLiveProbe {
+        #[arg(short, long)]
+        config: PathBuf,
     },
 }
 
@@ -203,7 +209,37 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::DataClientCensus { config, client_key } => {
             run_data_client_census(&config, &client_key)
         }
+        OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
     }
+}
+
+fn run_reference_live_probe_command(config: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let probe = loaded.root.reference_live_probe.as_ref().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "reference_live_probe must be configured",
+        )
+    })?;
+    let ssm_resolver_session = SsmResolverSession::new()?;
+    let chainlink =
+        resolve_bolt_v3_client_secrets(&ssm_resolver_session, &loaded, &probe.chainlink_client_id)?;
+    let polyresearch = resolve_bolt_v3_client_secrets(
+        &ssm_resolver_session,
+        &loaded,
+        &probe.polyresearch_client_id,
+    )?;
+    let mut clients = BTreeMap::new();
+    clients.extend(chainlink.clients);
+    clients.extend(polyresearch.clients);
+    let resolved = ResolvedBoltV3Secrets { clients };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let report = runtime.block_on(run_reference_live_probe(&loaded, &resolved))?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn run_data_client_probe(
@@ -759,6 +795,27 @@ mod tests {
                 assert_eq!(client_key, "bybit_data");
             }
             _ => panic!("expected ops data-client-census command"),
+        }
+    }
+
+    #[test]
+    fn ops_reference_live_probe_cli_parses_config() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "reference-live-probe",
+            "--config",
+            "config/root.toml",
+        ])
+        .expect("reference live probe command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::ReferenceLiveProbe { config },
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+            }
+            _ => panic!("expected ops reference-live-probe command"),
         }
     }
 

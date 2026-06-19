@@ -465,6 +465,7 @@ fn empty_clients_root_config_registers_zero_clients() {
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
     let empty_root = BoltV3RootConfig {
         clients: BTreeMap::new(),
+        reference_live_probe: None,
         ..loaded.root.clone()
     };
     let empty_loaded = LoadedBoltV3Config {

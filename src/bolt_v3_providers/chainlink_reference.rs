@@ -479,7 +479,7 @@ fn chainlink_reference_websocket_headers(
     headers
 }
 
-fn chainlink_reference_websocket_client_config(
+pub(crate) fn chainlink_reference_websocket_client_config(
     config: &ChainlinkReferencePriceClientConfig,
     url: Url,
     headers: Vec<(String, String)>,
@@ -711,6 +711,11 @@ fn validate_data_bounds(key: &str, data: &ChainlinkReferencePriceDataConfig) -> 
         data.heartbeat_secs,
         &mut errors,
     );
+    if data.heartbeat_message.is_some() {
+        errors.push(format!(
+            "clients.{key}.data.heartbeat_message must be omitted so Chainlink receives WebSocket protocol Ping frames instead of text messages"
+        ));
+    }
     validate_positive_u64(
         &format!("clients.{key}.data.reconnect_timeout_ms"),
         data.reconnect_timeout_ms,
@@ -865,6 +870,45 @@ pub fn map_adapters(
     })
 }
 
+pub(crate) fn reference_price_client_config(
+    root: &crate::bolt_v3_config::BoltV3RootConfig,
+    client_key: &str,
+    client: &ClientBlock,
+    resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Result<ChainlinkReferencePriceClientConfig, BoltV3AdapterMappingError> {
+    let value =
+        client
+            .data
+            .as_ref()
+            .ok_or_else(|| BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "data",
+                message: format!("clients.{client_key}.data must be configured"),
+            })?;
+    let secrets = secrets_for(client_key, resolved)?;
+    map_data(root, client_key, value, secrets)
+}
+
+pub(crate) fn reference_price_websocket_config(
+    config: &ChainlinkReferencePriceClientConfig,
+) -> anyhow::Result<WebSocketConfig> {
+    let (url, path_with_query) = chainlink_reference_websocket_url(
+        &config.websocket_endpoint,
+        &config.websocket_path,
+        &config.feed_bindings,
+    )?;
+    let authorization_timestamp_ms = current_unix_timestamp_ms()?;
+    let credentials = chainlink_data_streams_credentials(&config.api_key, &config.api_secret)?;
+    let headers = chainlink_reference_websocket_headers(chainlink_data_streams_auth_headers(
+        &credentials,
+        &path_with_query,
+        authorization_timestamp_ms,
+    ));
+    Ok(chainlink_reference_websocket_client_config(
+        config, url, headers,
+    ))
+}
+
 fn map_data(
     root: &crate::bolt_v3_config::BoltV3RootConfig,
     client_key: &str,
@@ -986,7 +1030,7 @@ mod tests {
             websocket_path: "/api/v1/ws".to_string(),
             transport_backend: TransportBackend::Sockudo,
             heartbeat_secs: Some(5),
-            heartbeat_message: Some("ping".to_string()),
+            heartbeat_message: None,
             reconnect_timeout_ms: 5_000,
             reconnect_delay_initial_ms: 250,
             reconnect_delay_max_ms: 5_000,

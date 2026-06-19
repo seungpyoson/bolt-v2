@@ -356,6 +356,43 @@ fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
 }
 
 #[test]
+fn shipped_reference_live_probe_config_points_to_reference_clients() {
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = fs::read_to_string(support::repo_path(relative_path))
+            .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
+        let root: bolt_v2::bolt_v3_config::BoltV3RootConfig = toml::from_str(&source)
+            .unwrap_or_else(|error| panic!("{relative_path} root config should parse: {error}"));
+        let probe = root
+            .reference_live_probe
+            .as_ref()
+            .unwrap_or_else(|| panic!("{relative_path} must configure reference_live_probe"));
+
+        assert_eq!(probe.chainlink_client_id, "chainlink_reference");
+        assert_eq!(probe.polyresearch_client_id, "polyresearch_reference");
+        assert!(
+            probe.duration_secs > 0,
+            "{relative_path} reference live probe duration must be positive"
+        );
+        assert!(
+            probe.min_chainlink_data_frames > 0,
+            "{relative_path} Chainlink probe data-frame floor must be positive"
+        );
+        assert!(
+            root.clients
+                .get(&probe.chainlink_client_id)
+                .is_some_and(|client| client.venue.as_str() == "CHAINLINK_REFERENCE_PRICE"),
+            "{relative_path} Chainlink probe client must resolve to the Chainlink reference provider"
+        );
+        assert!(
+            root.clients
+                .get(&probe.polyresearch_client_id)
+                .is_some_and(|client| client.venue.as_str() == "POLYRESEARCH_REFERENCE_PRICE"),
+            "{relative_path} PolyResearch probe client must resolve to the PolyResearch reference provider"
+        );
+    }
+}
+
+#[test]
 fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() {
     for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = std::fs::read_to_string(support::repo_path(relative_path))

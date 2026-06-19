@@ -296,11 +296,15 @@ fn manifest(run_id: &str, catalog_inputs: Vec<ManifestCatalogInput>) -> Backtest
             typed_config_hash: None,
             experiment_result_uri: None,
             experiment_result_hash: None,
+            config_overlay: None,
         },
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
         venue: venue_config(),
+        additional_venues: Vec::new(),
         catalog_inputs,
+        reconstructed_reference_current_price: Vec::new(),
+        instrument_settlements: Vec::new(),
         catalog_hash: "1111111111111111111111111111111111111111111111111111111111111111"
             .to_string(),
         execution_model: "nt_backtest_node".to_string(),
@@ -349,6 +353,7 @@ fn parquet_converter(object_len: u64) -> ConverterConfig {
         jsonl_bars: None,
         deltas: Some(event_stream_mapping()),
         quotes: None,
+        seeded_l2_quotes: None,
     }
 }
 

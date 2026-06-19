@@ -955,6 +955,297 @@ pub struct LoadedBoltV3Config {
     pub strategies: Vec<LoadedStrategy>,
 }
 
+/// One explicit load-time config override for a backtest run.
+///
+/// The production TOML remains the source of truth. This object is a run input
+/// that mutates the already loaded config in memory and produces an audit report
+/// describing the exact delta. It is deliberately narrow: a signal data role can
+/// be replaced, and one realized-volatility surface can be filtered to a set of
+/// already configured live sources.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BacktestConfigOverride {
+    pub label: String,
+    pub strategy_instance_id: String,
+    pub signal_role: String,
+    pub signal_data_client_id: ClientId,
+    pub signal_instrument_id: InstrumentId,
+    pub realized_volatility_surface_id: String,
+    pub keep_realized_volatility_sources: Vec<RealizedVolatilitySourceSelector>,
+}
+
+/// Selector for keeping an existing realized-volatility source from the loaded
+/// production surface.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct RealizedVolatilitySourceSelector {
+    pub data_client_id: ClientId,
+    pub instrument_id: InstrumentId,
+}
+
+impl RealizedVolatilitySourceSelector {
+    fn matches(&self, source: &RealizedVolatilitySourceBlock) -> bool {
+        self.data_client_id == source.data_client_id && self.instrument_id == source.instrument_id
+    }
+
+    fn label(&self) -> String {
+        format!("{}:{}", self.data_client_id, self.instrument_id)
+    }
+}
+
+/// String-only signal data snapshot for config override audit output.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ConfigSignalDataSnapshot {
+    pub data_client_id: String,
+    pub instrument_id: String,
+}
+
+impl ConfigSignalDataSnapshot {
+    fn from_data_instrument(block: &DataInstrumentBlock) -> Self {
+        Self {
+            data_client_id: block.data_client_id.to_string(),
+            instrument_id: block.instrument_id.to_string(),
+        }
+    }
+}
+
+/// String-only RV source snapshot for config override audit output.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ConfigRealizedVolatilitySourceSnapshot {
+    pub source_id: String,
+    pub data_client_id: String,
+    pub instrument_id: String,
+}
+
+impl ConfigRealizedVolatilitySourceSnapshot {
+    fn from_source(source: &RealizedVolatilitySourceBlock) -> Self {
+        Self {
+            source_id: source.source_id.clone(),
+            data_client_id: source.data_client_id.to_string(),
+            instrument_id: source.instrument_id.to_string(),
+        }
+    }
+}
+
+/// Audit output for a run-only config override.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct BacktestConfigOverrideReport {
+    pub label: String,
+    pub production_root_path: String,
+    pub production_config_bundle_checksum: String,
+    pub strategy_instance_id: String,
+    pub signal_role: String,
+    pub signal_before: ConfigSignalDataSnapshot,
+    pub signal_after: ConfigSignalDataSnapshot,
+    pub realized_volatility_surface_id: String,
+    pub realized_volatility_sources_before: Vec<ConfigRealizedVolatilitySourceSnapshot>,
+    pub realized_volatility_sources_after: Vec<ConfigRealizedVolatilitySourceSnapshot>,
+    pub realized_volatility_sources_removed: Vec<ConfigRealizedVolatilitySourceSnapshot>,
+}
+
+/// Apply a documented backtest-only override to an already loaded production
+/// config.
+///
+/// The returned config is the effective runtime config for the backtest. The
+/// caller must persist the returned report with the run output so results are
+/// labelled as "production config + documented override" rather than raw
+/// production TOML.
+///
+/// # Errors
+///
+/// Returns a validation error if the override does not match exactly one loaded
+/// strategy signal role, if the requested RV keep set is not present in the
+/// loaded production surface, or if the post-override config fails normal
+/// startup validation.
+pub fn apply_backtest_config_override(
+    mut loaded: LoadedBoltV3Config,
+    override_spec: &BacktestConfigOverride,
+) -> Result<(LoadedBoltV3Config, BacktestConfigOverrideReport), BoltV3ValidationError> {
+    let mut errors = validate_backtest_config_override_shape(override_spec);
+    if !errors.is_empty() {
+        return Err(BoltV3ValidationError::new(errors));
+    }
+
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| {
+            strategy.config.strategy_instance_id == override_spec.strategy_instance_id
+        })
+        .ok_or_else(|| {
+            BoltV3ValidationError::new(vec![format!(
+                "backtest override strategy_instance_id `{}` did not match any loaded strategy",
+                override_spec.strategy_instance_id
+            )])
+        })?;
+
+    let (signal_before, signal_after) = {
+        let strategy = &mut loaded.strategies[strategy_index];
+        if strategy.config.realized_volatility_surface_id.as_deref()
+            != Some(override_spec.realized_volatility_surface_id.as_str())
+        {
+            return Err(BoltV3ValidationError::new(vec![format!(
+                "backtest override realized_volatility_surface_id `{}` does not match strategy `{}` surface {:?}",
+                override_spec.realized_volatility_surface_id,
+                override_spec.strategy_instance_id,
+                strategy.config.realized_volatility_surface_id
+            )]));
+        }
+        let signal = strategy
+            .config
+            .signal_data
+            .get_mut(&override_spec.signal_role)
+            .ok_or_else(|| {
+                BoltV3ValidationError::new(vec![format!(
+                    "backtest override signal_role `{}` did not match strategy `{}` signal_data",
+                    override_spec.signal_role, override_spec.strategy_instance_id
+                )])
+            })?;
+        let before = ConfigSignalDataSnapshot::from_data_instrument(signal);
+        signal.data_client_id = override_spec.signal_data_client_id;
+        signal.instrument_id = override_spec.signal_instrument_id;
+        let after = ConfigSignalDataSnapshot::from_data_instrument(signal);
+        (before, after)
+    };
+
+    let (
+        realized_volatility_sources_before,
+        realized_volatility_sources_after,
+        realized_volatility_sources_removed,
+    ) = {
+        let surfaces = loaded
+            .root
+            .realized_volatility_surfaces
+            .as_mut()
+            .ok_or_else(|| {
+                BoltV3ValidationError::new(vec![
+                    "backtest override requires realized_volatility_surfaces".to_string(),
+                ])
+            })?;
+        let surface = surfaces
+            .get_mut(&override_spec.realized_volatility_surface_id)
+            .ok_or_else(|| {
+                BoltV3ValidationError::new(vec![format!(
+                    "backtest override surface `{}` was not found in realized_volatility_surfaces",
+                    override_spec.realized_volatility_surface_id
+                )])
+            })?;
+        let before_sources = surface.sources.clone();
+        let mut kept_sources = Vec::new();
+        let mut removed_sources = Vec::new();
+        for source in before_sources.iter().cloned() {
+            if override_spec
+                .keep_realized_volatility_sources
+                .iter()
+                .any(|selector| selector.matches(&source))
+            {
+                kept_sources.push(source);
+            } else {
+                removed_sources.push(ConfigRealizedVolatilitySourceSnapshot::from_source(&source));
+            }
+        }
+        let mut selector_errors = Vec::new();
+        for selector in &override_spec.keep_realized_volatility_sources {
+            let matches = kept_sources
+                .iter()
+                .filter(|source| selector.matches(source))
+                .count();
+            if matches != 1 {
+                selector_errors.push(format!(
+                    "backtest override RV keep selector `{}` matched {matches} sources in surface `{}`",
+                    selector.label(),
+                    override_spec.realized_volatility_surface_id
+                ));
+            }
+        }
+        if !selector_errors.is_empty() {
+            return Err(BoltV3ValidationError::new(selector_errors));
+        }
+        let enabled_quorum_sources = kept_sources
+            .iter()
+            .filter(|source| source.enabled && source.counts_toward_quorum)
+            .count();
+        if surface.policy.min_ready_sources > enabled_quorum_sources {
+            return Err(BoltV3ValidationError::new(vec![format!(
+                "backtest override surface `{}` min_ready_sources {} exceeds enabled quorum sources {} after filtering",
+                override_spec.realized_volatility_surface_id,
+                surface.policy.min_ready_sources,
+                enabled_quorum_sources
+            )]));
+        }
+        surface.sources = kept_sources;
+        (
+            before_sources
+                .iter()
+                .map(ConfigRealizedVolatilitySourceSnapshot::from_source)
+                .collect::<Vec<_>>(),
+            surface
+                .sources
+                .iter()
+                .map(ConfigRealizedVolatilitySourceSnapshot::from_source)
+                .collect::<Vec<_>>(),
+            removed_sources,
+        )
+    };
+
+    errors.extend(validate_root_only(&loaded.root));
+    errors.extend(validate_strategies(&loaded.root, &loaded.strategies));
+    if !errors.is_empty() {
+        return Err(BoltV3ValidationError::new(errors));
+    }
+
+    let report = BacktestConfigOverrideReport {
+        label: override_spec.label.clone(),
+        production_root_path: loaded.root_path.display().to_string(),
+        production_config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        strategy_instance_id: override_spec.strategy_instance_id.clone(),
+        signal_role: override_spec.signal_role.clone(),
+        signal_before,
+        signal_after,
+        realized_volatility_surface_id: override_spec.realized_volatility_surface_id.clone(),
+        realized_volatility_sources_before,
+        realized_volatility_sources_after,
+        realized_volatility_sources_removed,
+    };
+
+    Ok((loaded, report))
+}
+
+fn validate_backtest_config_override_shape(override_spec: &BacktestConfigOverride) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (field, value) in [
+        ("label", override_spec.label.as_str()),
+        (
+            "strategy_instance_id",
+            override_spec.strategy_instance_id.as_str(),
+        ),
+        ("signal_role", override_spec.signal_role.as_str()),
+        (
+            "realized_volatility_surface_id",
+            override_spec.realized_volatility_surface_id.as_str(),
+        ),
+    ] {
+        if value.trim().is_empty() {
+            errors.push(format!("backtest override {field} must not be empty"));
+        }
+    }
+    if override_spec.keep_realized_volatility_sources.is_empty() {
+        errors.push(
+            "backtest override keep_realized_volatility_sources must not be empty".to_string(),
+        );
+    }
+    let mut selectors = HashSet::new();
+    for selector in &override_spec.keep_realized_volatility_sources {
+        let label = selector.label();
+        if !selectors.insert(label.clone()) {
+            errors.push(format!(
+                "backtest override keep_realized_volatility_sources selector `{label}` is duplicated"
+            ));
+        }
+    }
+    errors
+}
+
 #[derive(Debug)]
 pub enum BoltV3ConfigError {
     FileRead {

@@ -17953,6 +17953,62 @@ classification = "prod_profile_compose_temp_prefix"
 reason = "Fixed prefix for the private temp directory used during the validation load; it is filesystem plumbing, not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override RV keep selector `{}` matched {matches} sources in surface `{}`"'''
+context = '''"backtest override RV keep selector `{}` matched {matches} sources in surface `{}`",'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic; selector, count, and surface values come from the loaded production TOML plus explicit backtest override input."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override keep_realized_volatility_sources selector `{label}` is duplicated"'''
+context = '''"backtest override keep_realized_volatility_sources selector `{label}` is duplicated"'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic for duplicate explicit RV keep selectors; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override surface `{}` min_ready_sources {} exceeds enabled quorum sources {} after filtering"'''
+context = '''"backtest override surface `{}` min_ready_sources {} exceeds enabled quorum sources {} after filtering",'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic comparing TOML-owned RV quorum policy with the explicit backtest keep-set."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"label"'''
+context = '''("label", override_spec.label.as_str()),'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"realized_volatility_surface_id"'''
+context = '''"realized_volatility_surface_id",'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"signal_role"'''
+context = '''("signal_role", override_spec.signal_role.as_str()),'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"strategy_instance_id"'''
+context = '''"strategy_instance_id",'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"
 kind = "string"
 literal = '''"static_yes_outcome"'''

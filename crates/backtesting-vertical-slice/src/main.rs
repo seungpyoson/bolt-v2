@@ -17,6 +17,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
 
+use bolt_v2::bolt_v3_config::BacktestConfigOverrideReport;
+
 use backtesting_vertical_slice::hashing::sha256_hex;
 use backtesting_vertical_slice::{
     artifact_store_secrets::{ArtifactStoreSecretResolver, ArtifactStoreSsmResolver},
@@ -31,6 +33,7 @@ use backtesting_vertical_slice::{
         run_from_run_spec_with_artifact_store, run_operator_from_run_spec,
         validate_run_spec_manifest_for_object_hash,
     },
+    result_contract::{BacktestFeedLabel, BacktestRunGuardReport},
 };
 
 #[derive(Debug, Parser)]
@@ -259,6 +262,13 @@ fn print_trade_run(
         output.nt_result.total_positions
     );
     println!("fidelity_class = {:?}", output.contract.fidelity_class);
+    if let Some(report) = &output.contract.config_override_report {
+        print_config_override_report(report);
+    }
+    if let Some(report) = &output.contract.run_guard_report {
+        print_run_guard_report(report);
+    }
+    print_feed_labels(&output.contract.feed_labels);
     println!("result_contract = {}", artifacts.contract_path.display());
     println!("accepted_source_proof = {}", artifacts.proof_path.display());
     if let Some(proof) = published_catalog_proof {
@@ -330,8 +340,97 @@ fn print_multi_table_run(artifacts: &MultiTableRunArtifacts) {
         artifacts.nt_result.total_positions
     );
     println!("fidelity_class = {:?}", artifacts.contract.fidelity_class);
+    if let Some(report) = &artifacts.contract.config_override_report {
+        print_config_override_report(report);
+    }
+    if let Some(report) = &artifacts.contract.run_guard_report {
+        print_run_guard_report(report);
+    }
+    print_feed_labels(&artifacts.contract.feed_labels);
     println!("result_contract = {}", artifacts.contract_path.display());
     println!("accepted_source_proof = {}", artifacts.proof_path.display());
+}
+
+fn print_config_override_report(report: &BacktestConfigOverrideReport) {
+    println!("config_override_label = {}", report.label);
+    println!(
+        "config_override_production_root = {}",
+        report.production_root_path
+    );
+    println!(
+        "config_override_production_bundle_checksum = {}",
+        report.production_config_bundle_checksum
+    );
+    println!(
+        "config_override_signal = role={} before={}:{} after={}:{}",
+        report.signal_role,
+        report.signal_before.data_client_id,
+        report.signal_before.instrument_id,
+        report.signal_after.data_client_id,
+        report.signal_after.instrument_id
+    );
+    for source in &report.realized_volatility_sources_before {
+        println!(
+            "config_override_rv_before = surface={} source={} client={} instrument={}",
+            report.realized_volatility_surface_id,
+            source.source_id,
+            source.data_client_id,
+            source.instrument_id
+        );
+    }
+    for source in &report.realized_volatility_sources_after {
+        println!(
+            "config_override_rv_after = surface={} source={} client={} instrument={}",
+            report.realized_volatility_surface_id,
+            source.source_id,
+            source.data_client_id,
+            source.instrument_id
+        );
+    }
+    for source in &report.realized_volatility_sources_removed {
+        println!(
+            "config_override_rv_removed = surface={} source={} client={} instrument={}",
+            report.realized_volatility_surface_id,
+            source.source_id,
+            source.data_client_id,
+            source.instrument_id
+        );
+    }
+}
+
+fn print_run_guard_report(report: &BacktestRunGuardReport) {
+    println!(
+        "run_guard = armed={} traded={} signal_quote_received={} rv_ready={} \
+         price_to_beat_received={} reference_fresh={}",
+        report.armed,
+        report.traded,
+        report.signal_quote_received,
+        report.realized_volatility_ready,
+        report.price_to_beat_received,
+        report.reference_fresh
+    );
+    println!(
+        "run_guard_counts = snapshots={} order_intents={} admission_decisions={} \
+         admitted_orders={} submit_reservations={} submit_fills={}",
+        report.strategy_input_snapshot_count,
+        report.order_intent_count,
+        report.admission_decision_count,
+        report.admitted_order_count,
+        report.submit_reservation_count,
+        report.submit_fill_count
+    );
+    if let Some(reason) = &report.did_not_arm_reason {
+        println!("run_guard_did_not_arm_reason = {reason}");
+    }
+}
+
+fn print_feed_labels(labels: &[BacktestFeedLabel]) {
+    for label in labels {
+        println!(
+            "feed_label = id={} source_class={} data_type={} instrument={} label={}",
+            label.feed_id, label.source_class, label.data_type, label.instrument_id, label.label
+        );
+    }
 }
 
 fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {

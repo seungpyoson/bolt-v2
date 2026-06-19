@@ -21,8 +21,8 @@ use arrow::array::{
 use nautilus_backtest::result::BacktestResult;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{OrderBookDelta, QuoteTick, TradeTick},
-    enums::AggressorSide,
+    data::{BookOrder, OrderBookDelta, QuoteTick, TradeTick},
+    enums::{AggressorSide, BookAction, OrderSide, RecordFlag},
     identifiers::InstrumentId,
     identifiers::TradeId,
     instruments::{BinaryOption, Instrument, InstrumentAny},
@@ -65,7 +65,8 @@ use crate::{
     run_manifest::{BacktestingRunManifest, MarketStructureFixture, parse_manifest_toml},
     runner::{
         iterations_mismatch, market_structure_label, nt_extension_surface_claim_limits,
-        result_contract_warnings, run_nt_backtest_node, run_purpose_label,
+        result_contract_feed_labels, result_contract_warnings, run_nt_backtest_node,
+        run_purpose_label,
     },
     selected_source_slice::{SelectedSourceSliceReport, SelectedSourceSliceUsageScope},
     source_proof::{AcceptanceMode, SourceProofFidelityClass, SourceProofUsageScope},
@@ -722,6 +723,144 @@ fn decode_batch_rows(
     Ok(())
 }
 
+/// Live per-side price levels mirrored from the deltas emitted for one PMXT
+/// instrument, used to keep the reconstructed Polymarket book consistent with
+/// the venue's authoritative inside market.
+///
+/// The PMXT R2 archive replays a `price_change` per level but is snapshot-sparse
+/// and almost never carries explicit level removals (the live venue relies on
+/// frequent server snapshots the archive did not capture). Replaying the level
+/// deltas alone therefore accumulates stale opposite-side levels and the rebuilt
+/// book crosses, even though every `price_change` row also carries the venue's
+/// clean `best_bid`/`best_ask`. Mirroring the deltas here lets the caller drop
+/// any level that crosses that authoritative inside market.
+#[derive(Debug, Default)]
+struct ReconBookLevels {
+    bid: BTreeSet<Price>,
+    ask: BTreeSet<Price>,
+}
+
+impl ReconBookLevels {
+    fn apply(&mut self, delta: &OrderBookDelta) {
+        match delta.action {
+            BookAction::Clear => {
+                self.bid.clear();
+                self.ask.clear();
+            }
+            BookAction::Delete => self.remove(delta.order.side, delta.order.price),
+            BookAction::Add | BookAction::Update => {
+                if delta.order.size.is_zero() {
+                    self.remove(delta.order.side, delta.order.price);
+                } else {
+                    match delta.order.side {
+                        OrderSide::Buy => {
+                            self.bid.insert(delta.order.price);
+                        }
+                        OrderSide::Sell => {
+                            self.ask.insert(delta.order.price);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn remove(&mut self, side: OrderSide, price: Price) {
+        match side {
+            OrderSide::Buy => {
+                self.bid.remove(&price);
+            }
+            OrderSide::Sell => {
+                self.ask.remove(&price);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Parse a PMXT `price_change` authoritative inside-market price string into an
+/// NT [`Price`] at the instrument's price precision.
+fn parse_authoritative_inside_price(raw: &str, precision: u8, label: &str) -> Result<Price> {
+    let value: f64 = raw
+        .trim()
+        .parse()
+        .with_context(|| format!("parse PMXT price_change {label} {raw:?}"))?;
+    Price::new_checked(value, precision)
+        .with_context(|| format!("PMXT price_change {label} {raw:?} is not a valid NT price"))
+}
+
+/// Emit `Delete` deltas for reconstructed levels that cross the venue's
+/// authoritative inside market: bids strictly above `best_bid` and asks strictly
+/// below `best_ask` are stale levels the snapshot-sparse archive failed to
+/// remove. The crossing levels are dropped from `levels` and returned as deltas
+/// with no record flags (the caller stamps the terminating `F_LAST`).
+fn prune_levels_crossing_inside_market(
+    levels: &mut ReconBookLevels,
+    best_bid: Price,
+    best_ask: Price,
+    instrument_id: InstrumentId,
+    size_precision: u8,
+    ts_event: UnixNanos,
+    ts_init: UnixNanos,
+) -> Vec<OrderBookDelta> {
+    let stale_bids: Vec<Price> = levels
+        .bid
+        .iter()
+        .copied()
+        .filter(|price| *price > best_bid)
+        .collect();
+    let stale_asks: Vec<Price> = levels
+        .ask
+        .iter()
+        .copied()
+        .filter(|price| *price < best_ask)
+        .collect();
+    let mut deltas = Vec::with_capacity(stale_bids.len() + stale_asks.len());
+    for price in stale_bids {
+        levels.bid.remove(&price);
+        deltas.push(reconstructed_delete_delta(
+            OrderSide::Buy,
+            price,
+            instrument_id,
+            size_precision,
+            ts_event,
+            ts_init,
+        ));
+    }
+    for price in stale_asks {
+        levels.ask.remove(&price);
+        deltas.push(reconstructed_delete_delta(
+            OrderSide::Sell,
+            price,
+            instrument_id,
+            size_precision,
+            ts_event,
+            ts_init,
+        ));
+    }
+    deltas
+}
+
+fn reconstructed_delete_delta(
+    side: OrderSide,
+    price: Price,
+    instrument_id: InstrumentId,
+    size_precision: u8,
+    ts_event: UnixNanos,
+    ts_init: UnixNanos,
+) -> OrderBookDelta {
+    OrderBookDelta {
+        instrument_id,
+        action: BookAction::Delete,
+        order: BookOrder::new(side, price, Quantity::zero(size_precision), 0),
+        flags: 0,
+        sequence: 0,
+        ts_event,
+        ts_init,
+    }
+}
+
 pub fn project_pmxt_one_off_rows_to_nt(
     request: PmxtOneOffProjectionRequest,
 ) -> Result<PmxtOneOffNtProjection> {
@@ -754,6 +893,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
     let (instrument_id, price_precision, size_precision) = binary_option_l2_metadata(&instrument)?;
 
     let mut order_book_deltas = Vec::new();
+    let mut reconstructed_levels = ReconBookLevels::default();
     let mut quote_ticks = Vec::new();
     let mut trade_rows = Vec::new();
     let mut nt_surfaces_used = vec![
@@ -785,6 +925,9 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     row.ts_init,
                 )
                 .context("parse PMXT one-off book snapshot with NT Polymarket parser")?;
+                for delta in &parsed.deltas {
+                    reconstructed_levels.apply(delta);
+                }
                 order_book_deltas.extend(parsed.deltas);
                 push_surface_once(
                     &mut nt_surfaces_used,
@@ -830,6 +973,8 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     &mut nt_surfaces_used,
                     "nautilus_polymarket::websocket::parse::parse_quote_from_price_change",
                 );
+                let authoritative_best_bid = quote.best_bid.clone();
+                let authoritative_best_ask = quote.best_ask.clone();
                 let quotes = PolymarketQuotes {
                     market: Ustr::from(row.market.as_str()),
                     price_changes: vec![quote],
@@ -843,7 +988,48 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     row.ts_init,
                 )
                 .context("parse PMXT one-off price_change with NT Polymarket parser")?;
-                order_book_deltas.extend(parsed.deltas);
+                // The PMXT archive replays per-level `price_change` rows but is
+                // snapshot-sparse and almost never carries explicit removals, so
+                // accumulating the level deltas alone leaves stale opposite-side
+                // levels and the rebuilt book crosses. Every `price_change` row
+                // also carries the venue's authoritative best_bid/best_ask, so we
+                // drop any reconstructed level that crosses that inside market —
+                // emitting the level removals the archive omitted — keeping the
+                // rebuilt book consistent with the venue's own top-of-book. The
+                // pruning deltas share the originating event's timestamps so the
+                // stable sort below keeps them in the same atomic book update.
+                let mut event_deltas = parsed.deltas;
+                for delta in &event_deltas {
+                    reconstructed_levels.apply(delta);
+                }
+                if let (Some(best_bid), Some(best_ask)) = (
+                    authoritative_best_bid.as_deref(),
+                    authoritative_best_ask.as_deref(),
+                ) {
+                    let best_bid =
+                        parse_authoritative_inside_price(best_bid, price_precision, "best_bid")?;
+                    let best_ask =
+                        parse_authoritative_inside_price(best_ask, price_precision, "best_ask")?;
+                    let pruned = prune_levels_crossing_inside_market(
+                        &mut reconstructed_levels,
+                        best_bid,
+                        best_ask,
+                        instrument_id,
+                        size_precision,
+                        ts_event,
+                        row.ts_init,
+                    );
+                    event_deltas.extend(pruned);
+                }
+                let last_index = event_deltas.len().saturating_sub(1);
+                for (index, delta) in event_deltas.iter_mut().enumerate() {
+                    if index == last_index {
+                        delta.flags |= RecordFlag::F_LAST as u8;
+                    } else {
+                        delta.flags &= !(RecordFlag::F_LAST as u8);
+                    }
+                }
+                order_book_deltas.extend(event_deltas);
                 push_surface_once(
                     &mut nt_surfaces_used,
                     "nautilus_polymarket::websocket::parse::parse_book_deltas",
@@ -869,8 +1055,11 @@ pub fn project_pmxt_one_off_rows_to_nt(
             }
         }
     }
-    let (trade_ticks, trade_dedupe_provenance) =
+    let (mut trade_ticks, trade_dedupe_provenance) =
         project_pmxt_trade_rows_to_nt(instrument_id, price_precision, size_precision, trade_rows)?;
+    order_book_deltas.sort_by_key(|delta| (delta.ts_init, delta.ts_event));
+    quote_ticks.sort_by_key(|quote| (quote.ts_init, quote.ts_event));
+    trade_ticks.sort_by_key(|tick| (tick.ts_init, tick.ts_event));
 
     Ok(PmxtOneOffNtProjection {
         source_binding: request.source_binding,
@@ -1520,9 +1709,8 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         "PMXT one-off manifest source_proof_version does not match conversion fingerprint"
     );
 
-    let nt_result = run_nt_backtest_node(spec.manifest)
-        .context("run PMXT one-off L2 BacktestNode")?
-        .result;
+    let nt_run = run_nt_backtest_node(spec.manifest).context("run PMXT one-off L2 BacktestNode")?;
+    let nt_result = nt_run.result;
     let expected_iterations = expected_pmxt_backtest_iterations(spec.manifest, completed)?;
     if let Some(reason) = iterations_mismatch(nt_result.iterations, expected_iterations) {
         bail!("PMXT one-off BacktestNode did not consume verified L2 catalog: {reason}");
@@ -1562,8 +1750,11 @@ pub fn run_pmxt_one_off_l2_backtest_contract(
         market_structure_fixture: market_structure_label(spec.manifest),
         fidelity_class: SourceProofFidelityClass::L2Replay,
         claim_limits,
-        warnings: result_contract_warnings(&nt_result),
+        warnings: result_contract_warnings(&nt_result, SourceProofFidelityClass::L2Replay),
         mechanical_blockers: Vec::new(),
+        config_override_report: nt_run.config_override_report.as_ref(),
+        run_guard_report: nt_run.run_guard_report.as_ref(),
+        feed_labels: result_contract_feed_labels(spec.manifest),
         nt_result: &nt_result,
         artifact_uris: spec.artifact_uris,
         created_at: spec.created_at,

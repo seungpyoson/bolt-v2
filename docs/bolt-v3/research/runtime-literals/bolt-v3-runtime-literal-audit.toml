@@ -6823,14 +6823,6 @@ reason = "Fixed UTC day nanosecond unit used to bucket realized PnL; the loss th
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
 kind = "string"
-literal = '''"adjusted position realized-PnL observation missing event_id"'''
-context = '''let reason = "adjusted position realized-PnL observation missing event_id".to_string();'''
-classification = "kill_switch_adjusted_position_event_id_integrity_error"
-reason = "Fail-closed integrity error for an impossible missing NT PositionAdjusted event id; not operator configurable."
-
-[[allowed]]
-path = "src/bolt_v3_loss_protection.rs"
-kind = "string"
 literal = '''"corrupt_evidence"'''
 context = '''KillSwitchRecoveryReason::CorruptEvidence => "corrupt_evidence",'''
 classification = "kill_switch_recovery_reason_label"
@@ -6879,14 +6871,6 @@ reason = "Stable synthetic source label for re-evaluating restored daily realize
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"
 kind = "string"
-literal = '''"recovered daily realized loss breach did not latch the kill switch"'''
-context = '''"recovered daily realized loss breach did not latch the kill switch"'''
-classification = "kill_switch_recovery_breach_assertion_error"
-reason = "Internal fail-closed assertion error for an impossible restored-breach transition miss; not operator configurable."
-
-[[allowed]]
-path = "src/bolt_v3_loss_protection.rs"
-kind = "string"
 literal = '''"loss_protection_snapshot_persistence_failed"'''
 context = '''const SNAPSHOT_PERSISTENCE_FAILED_REASON: &str = "loss_protection_snapshot_persistence_failed";'''
 classification = "kill_switch_snapshot_persistence_failure_reason_label"
@@ -6907,14 +6891,6 @@ literal = '''"mixed_settlement_currency"'''
 context = '''const MIXED_SETTLEMENT_CURRENCY_REASON: &str = "mixed_settlement_currency";'''
 classification = "kill_switch_mixed_settlement_currency_reason_label"
 reason = "Stable state-machine reason label emitted when realized-PnL observations span multiple settlement currencies and the accumulator fails closed; not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_loss_protection.rs"
-kind = "string"
-literal = '''"{MIXED_SETTLEMENT_CURRENCY_REASON}: expected {}, observed {}"'''
-context = '''"{MIXED_SETTLEMENT_CURRENCY_REASON}: expected {}, observed {}",'''
-classification = "kill_switch_mixed_settlement_currency_error_template"
-reason = "Operator-facing detail for the fail-closed mixed-settlement-currency reason; expected and observed currencies come from NT Money facts, not hardcoded runtime values."
 
 [[allowed]]
 path = "src/bolt_v3_loss_protection.rs"

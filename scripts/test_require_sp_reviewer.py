@@ -4,8 +4,13 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
+import json
+import os
 import pathlib
 import sys
+import tempfile
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -186,10 +191,93 @@ def assert_current_head_approval_passes() -> None:
     assert result.latest_decisive_state == "APPROVED"
 
 
+def assert_commit_status_payload_is_latest_wins_context() -> None:
+    module = load_script()
+    failed = decision([requested_user("sp-reviewer")], [])
+    failed_payload = module.commit_status_payload(
+        result=failed,
+        context="reviewer node_id approved",
+        target_url="https://github.test/run",
+    )
+    assert failed_payload["state"] == "failure"
+    assert failed_payload["context"] == "reviewer node_id approved"
+    assert failed_payload["target_url"] == "https://github.test/run"
+    assert "approval" in failed_payload["description"]
+    assert len(failed_payload["description"]) <= 140
+
+    approved = decision([], [review("sp-reviewer", "APPROVED", 10)])
+    approved_payload = module.commit_status_payload(
+        result=approved,
+        context="reviewer node_id approved",
+        target_url=None,
+    )
+    assert approved_payload["state"] == "success"
+    assert approved_payload["context"] == "reviewer node_id approved"
+    assert "target_url" not in approved_payload
+    assert "approved" in approved_payload["description"]
+
+
+def assert_status_mode_posts_failure_without_failing_job() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+
+    def fake_get_json(_url: str, _token: str) -> dict[str, object]:
+        return {"users": [requested_user("sp-reviewer", node_id="U_kgDOEZMFhA")], "teams": []}
+
+    def fake_paginate_json_list(_url: str, _token: str) -> list[dict[str, object]]:
+        return []
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_get_json = module._get_json
+    original_paginate_json_list = module._paginate_json_list
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 839, "head": {"sha": "current-head"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_RUN_ID": "12345",
+                    "GITHUB_SERVER_URL": "https://github.test",
+                    "GITHUB_TOKEN": "token",
+                    "REQUIRED_REVIEWER_NODE_ID": "U_kgDOEZMFhA",
+                    "REVIEWER_GATE_STATUS_CONTEXT": "reviewer node_id approved",
+                }
+            )
+            module._get_json = fake_get_json
+            module._paginate_json_list = fake_paginate_json_list
+            module._post_json = fake_post_json
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert module.run() == 0
+        finally:
+            module._get_json = original_get_json
+            module._paginate_json_list = original_paginate_json_list
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert len(posted) == 1
+    status_url, status_payload = posted[0]
+    assert status_url == "https://api.github.test/repos/owner/repo/statuses/current-head"
+    assert status_payload["state"] == "failure"
+    assert status_payload["context"] == "reviewer node_id approved"
+    assert status_payload["target_url"] == "https://github.test/owner/repo/actions/runs/12345"
+
+
 def assert_workflow_documents_bootstrap_and_requires_node_id() -> None:
     workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "name: reviewer node_id status publisher" in workflow
+    assert "name: reviewer node_id approved" not in workflow
+    assert "statuses: write" in workflow
     assert "reviewer node_id approved" in workflow
     assert "reviewer node_id requested or approved" not in workflow
+    assert "REVIEWER_GATE_STATUS_CONTEXT: reviewer node_id approved" in workflow
     assert "Run the reviewer gate from the protected base branch" in workflow
     assert "github.event.pull_request.base.sha" in workflow
     assert "Policy identity constant" in workflow
@@ -221,6 +309,8 @@ def main() -> int:
     assert_configured_node_id_ignores_login_collision()
     assert_stale_approval_does_not_pass_for_new_head_sha()
     assert_current_head_approval_passes()
+    assert_commit_status_payload_is_latest_wins_context()
+    assert_status_mode_posts_failure_without_failing_job()
     assert_workflow_documents_bootstrap_and_requires_node_id()
     assert_codeowners_requires_sp_reviewer_for_all_paths()
     print("OK: required reviewer gate self-tests passed.")

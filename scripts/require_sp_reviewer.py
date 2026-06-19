@@ -15,6 +15,7 @@ from typing import Any
 
 DEFAULT_REVIEWER = "sp-reviewer"
 DECISIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+STATUS_DESCRIPTION_LIMIT = 140
 
 
 class ReviewerGateError(RuntimeError):
@@ -268,6 +269,29 @@ def _get_json(url: str, token: str) -> Any:
     return payload
 
 
+def _post_json(url: str, token: str, payload: dict[str, Any]) -> None:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "bolt-v2-reviewer-node-gate",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30):
+            return
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ReviewerGateError(f"GitHub status update failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise ReviewerGateError(f"GitHub status update failed: {exc}") from exc
+
+
 def _paginate_json_list(url: str, token: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     next_url: str | None = url
@@ -285,9 +309,62 @@ def _pulls_api_url(repository: str, pull_number: int, suffix: str) -> str:
     return f"{_api_base()}/repos/{owner_repo}/pulls/{pull_number}/{suffix}"
 
 
+def _status_api_url(repository: str, sha: str) -> str:
+    owner_repo = "/".join(urllib.parse.quote(part, safe="") for part in repository.split("/", 1))
+    quoted_sha = urllib.parse.quote(sha, safe="")
+    return f"{_api_base()}/repos/{owner_repo}/statuses/{quoted_sha}"
+
+
+def _status_target_url() -> str | None:
+    server_url = os.environ.get("GITHUB_SERVER_URL")
+    repository = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if not server_url or not repository or not run_id:
+        return None
+    return f"{server_url.rstrip('/')}/{repository}/actions/runs/{run_id}"
+
+
+def _status_description(message: str) -> str:
+    if len(message) <= STATUS_DESCRIPTION_LIMIT:
+        return message
+    return f"{message[: STATUS_DESCRIPTION_LIMIT - 3]}..."
+
+
+def commit_status_payload(
+    *,
+    result: GateResult,
+    context: str,
+    target_url: str | None,
+) -> dict[str, str]:
+    payload = {
+        "state": "success" if result.passed else "failure",
+        "context": context,
+        "description": _status_description(result.message),
+    }
+    if target_url:
+        payload["target_url"] = target_url
+    return payload
+
+
+def post_commit_status(
+    *,
+    repository: str,
+    sha: str,
+    token: str,
+    result: GateResult,
+    context: str,
+) -> None:
+    _post_json(
+        _status_api_url(repository, sha),
+        token,
+        commit_status_payload(result=result, context=context, target_url=_status_target_url()),
+    )
+
+
 def run() -> int:
     reviewer_node_id = _optional_str_env("REQUIRED_REVIEWER_NODE_ID")
     reviewer_id = _optional_int_env("REQUIRED_REVIEWER_ID")
+    status_context = _optional_str_env("REVIEWER_GATE_STATUS_CONTEXT")
     reviewer = os.environ.get("REQUIRED_REVIEWER", "")
     if reviewer_node_id is None and reviewer_id is None and not reviewer:
         reviewer = DEFAULT_REVIEWER
@@ -310,6 +387,15 @@ def run() -> int:
         head_sha=head_sha,
     )
     print(result.message)
+    if status_context is not None:
+        post_commit_status(
+            repository=repository,
+            sha=head_sha,
+            token=token,
+            result=result,
+            context=status_context,
+        )
+        return 0
     return 0 if result.passed else 1
 
 

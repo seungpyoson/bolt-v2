@@ -23,10 +23,11 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read
+  statuses: write
 
 jobs:
   require-reviewer-node:
-    name: reviewer node_id approved
+    name: reviewer node_id status publisher
     if: >-
       ${{ github.event.pull_request.base.ref == 'main'
           && github.event.pull_request.draft == false }}
@@ -64,6 +65,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          # Required merge context. This is a commit status, not the Actions job
+          # name, so newer approval events replace older failed approval states.
+          REVIEWER_GATE_STATUS_CONTEXT: reviewer node_id approved
           # Policy identity constant: the required human reviewer. Hardcoded
           # intentionally because PR-editable config must not select the reviewer.
           REQUIRED_REVIEWER_NODE_ID: U_kgDOEZMFhA

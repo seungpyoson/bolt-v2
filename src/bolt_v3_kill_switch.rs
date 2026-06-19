@@ -15,6 +15,12 @@ pub enum KillSwitchState {
         halt_id: String,
         trigger: KillSwitchHaltTrigger,
     },
+    Cancelling {
+        halt_id: String,
+    },
+    Flattening {
+        halt_id: String,
+    },
     Flat {
         halt_id: String,
     },
@@ -29,6 +35,7 @@ pub enum KillSwitchEvent {
     HaltTriggered(KillSwitchHaltTrigger),
     DurableHaltEvidenceRecorded,
     DurableHaltEvidenceWriteFailed { reason: String },
+    HaltActionDispatchFailed { reason: String },
     ReconciliationProofReceived,
     ManualResetRequested(KillSwitchManualResetEvidence),
 }
@@ -174,6 +181,8 @@ pub enum KillSwitchStateKind {
     Armed,
     Halting,
     Halted,
+    Cancelling,
+    Flattening,
     Flat,
     FailedManualIntervention,
 }
@@ -183,6 +192,7 @@ pub enum KillSwitchEventKind {
     HaltTriggered,
     DurableHaltEvidenceRecorded,
     DurableHaltEvidenceWriteFailed,
+    HaltActionDispatchFailed,
     ReconciliationProofReceived,
     ManualResetRequested,
 }
@@ -209,6 +219,10 @@ pub fn transition_kill_switch_state(
         (
             KillSwitchState::Halting { halt_id, .. },
             KillSwitchEvent::DurableHaltEvidenceWriteFailed { reason },
+        ) => Ok(KillSwitchState::FailedManualIntervention { halt_id, reason }),
+        (
+            KillSwitchState::Halting { halt_id, .. },
+            KillSwitchEvent::HaltActionDispatchFailed { reason },
         ) => Ok(KillSwitchState::FailedManualIntervention { halt_id, reason }),
         (KillSwitchState::Halted { halt_id, .. }, KillSwitchEvent::ReconciliationProofReceived) => {
             require_fresh_clean_reconciliation(&context)?;
@@ -243,6 +257,8 @@ impl KillSwitchState {
             KillSwitchState::Armed => KillSwitchStateKind::Armed,
             KillSwitchState::Halting { .. } => KillSwitchStateKind::Halting,
             KillSwitchState::Halted { .. } => KillSwitchStateKind::Halted,
+            KillSwitchState::Cancelling { .. } => KillSwitchStateKind::Cancelling,
+            KillSwitchState::Flattening { .. } => KillSwitchStateKind::Flattening,
             KillSwitchState::Flat { .. } => KillSwitchStateKind::Flat,
             KillSwitchState::FailedManualIntervention { .. } => {
                 KillSwitchStateKind::FailedManualIntervention
@@ -260,6 +276,9 @@ impl KillSwitchEvent {
             }
             KillSwitchEvent::DurableHaltEvidenceWriteFailed { .. } => {
                 KillSwitchEventKind::DurableHaltEvidenceWriteFailed
+            }
+            KillSwitchEvent::HaltActionDispatchFailed { .. } => {
+                KillSwitchEventKind::HaltActionDispatchFailed
             }
             KillSwitchEvent::ReconciliationProofReceived => {
                 KillSwitchEventKind::ReconciliationProofReceived

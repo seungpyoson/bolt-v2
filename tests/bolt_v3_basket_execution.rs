@@ -31,6 +31,7 @@ use rust_decimal::prelude::FromPrimitive;
 const SUBMIT_NOW_UNIX_MS: u64 = 2_000;
 const SUBMIT_MAX_OBSERVATION_AGE_MS: u64 = 500;
 const SUBMIT_OBSERVED_UNIX_MS: u64 = 1_750;
+const TEST_MAX_STATE_FILE_BYTES: u64 = 65_536;
 
 #[test]
 fn complete_and_partial_fill_transitions_hold_and_release_reservation_explicitly() {
@@ -1048,7 +1049,10 @@ fn restart_reconciliation_rejects_duplicate_or_negative_reports() {
 #[test]
 fn stuck_basket_trips_dedicated_kill_switch_and_blocks_new_admission() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let kill_store = KillSwitchStore::new(temp.path().join("kill-switch.json"));
+    let kill_store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
     let writer = Arc::new(NoopDecisionEvidenceWriter);
     let submit_admission = BoltV3SubmitAdmissionState::new(writer);
     let mut basket = reserved_basket();
@@ -1083,7 +1087,10 @@ fn stuck_basket_trips_dedicated_kill_switch_and_blocks_new_admission() {
 #[test]
 fn stuck_basket_kill_switch_preserves_existing_non_armed_state() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let kill_store = KillSwitchStore::new(temp.path().join("kill-switch.json"));
+    let kill_store = KillSwitchStore::new(
+        temp.path().join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
     let existing = KillSwitchState::FailedManualIntervention {
         halt_id: "existing-halt".to_string(),
         reason: "operator intervention required".to_string(),
@@ -1124,7 +1131,10 @@ fn stuck_basket_kill_switch_latches_failed_manual_intervention_on_store_failure(
     fs::create_dir(&blocked_dir).expect("blocked directory should create");
     fs::set_permissions(&blocked_dir, fs::Permissions::from_mode(0o500))
         .expect("blocked directory should become read-only");
-    let kill_store = KillSwitchStore::new(blocked_dir.join("kill-switch.json"));
+    let kill_store = KillSwitchStore::new(
+        blocked_dir.join("kill-switch.json"),
+        TEST_MAX_STATE_FILE_BYTES,
+    );
     let writer = Arc::new(NoopDecisionEvidenceWriter);
     let submit_admission = BoltV3SubmitAdmissionState::new(writer);
     let mut basket = reserved_basket();

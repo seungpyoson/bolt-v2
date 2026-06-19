@@ -142,6 +142,23 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 
+[risk.kill_switch]
+enabled = false
+state_path = "state/kill-switch.json"
+max_state_file_bytes = 65536
+max_utc_daily_realized_loss = "250.00"
+flatten_open_positions_on_breach = false
+action_retry_interval_ms = 250
+action_retry_timeout_ms = 5000
+mandatory_proof_max_age_ms = 1000
+manual_reset_evidence_max_age_ms = 60000
+forced_reduction_policy_sha256 = "65170d6e1b2ed7154668ed976a0dc77576dd676843b5b6e6048377811d90d2ec"
+forced_reduction_max_live_order_count = 6
+forced_reduction_max_notional_per_order = "10.00"
+authorized_operator_ids = ["operator-primary"]
+account_ids = ["POLYMARKET-001"]
+instrument_ids = []
+
 [risk.nautilus]
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"

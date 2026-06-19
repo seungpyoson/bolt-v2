@@ -21,7 +21,7 @@ use nautilus_model::{
     data::TradeTick,
     enums::OmsType,
     identifiers::{ClientId, StrategyId},
-    instruments::InstrumentAny,
+    instruments::{Instrument, InstrumentAny},
 };
 use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
@@ -529,7 +529,7 @@ impl BinaryOracleMaker {
     }
 
     /// Current wall-clock in milliseconds from the NautilusTrader clock.
-    fn now_milliseconds(&self) -> u64 {
+    fn now_milliseconds(&mut self) -> u64 {
         self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64
     }
 
@@ -537,7 +537,7 @@ impl BinaryOracleMaker {
     /// the taker's venue-scoped cache read: a real maker order can only route to the
     /// execution client's venue, so any instrument on another venue must be
     /// unselectable here, and the read fails closed on a wrong-venue market.
-    fn execution_venue_instruments(&self) -> Vec<InstrumentAny> {
+    fn execution_venue_instruments(&mut self) -> Vec<InstrumentAny> {
         let execution_venue = self.context.execution_venue();
         let cache = self.cache();
         cache

@@ -65,8 +65,9 @@ group-readable modes (config and strategies dirs `0750`, TOML files `0640`). The
 umask under which it was copied (a restrictive umask would otherwise leave root-copied files
 `0600 root:root` and fail start).
 
-The systemd unit refuses to start unless `/srv/bolt-v2` is mounted and the Rust prestart check
-passes against `/opt/bolt-v2/config/live.toml`. That prestart check requires
+The systemd unit refuses to start unless `/srv/bolt-v2` is mounted, the Rust prestart check
+passes against `/opt/bolt-v2/config/live.toml`, and the read-only reference live probe can
+connect to the configured Chainlink and PolyResearch reference streams. The prestart check requires
 `persistence.catalog_directory` to stay under the TOML-configured
 `persistence.required_catalog_prefix` and requires the catalog filesystem to have at least the
 TOML-configured `persistence.min_free_bytes` available.

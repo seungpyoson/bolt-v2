@@ -14,7 +14,7 @@ fn builds_polyresearch_websocket_url_from_clean_endpoint_and_api_key() {
 
     assert_eq!(
         url.as_str(),
-        "wss://stream.example.test/feed?key=test-prr-api-key"
+        "wss://stream.example.test/feed?apiKey=test-prr-api-key"
     );
 }
 
@@ -35,6 +35,22 @@ fn rejects_polyresearch_endpoint_that_already_contains_api_key() {
     assert!(
         error.contains("apiKey"),
         "error should identify the duplicated query key: {error}"
+    );
+}
+
+#[test]
+fn rejects_polyresearch_endpoint_with_old_key_query_as_non_credential_free() {
+    let config = PolyResearchAuthConfig {
+        websocket_endpoint: "wss://stream.example.test/feed?key=test-prr-api-key".to_string(),
+        api_key: "test-prr-api-key".to_string(),
+    };
+
+    let error = polyresearch_websocket_url(&config)
+        .expect_err("endpoint query params must not bypass SSM-owned api key config");
+
+    assert!(
+        error.contains("credential-free"),
+        "old key query should be rejected as a forbidden endpoint query: {error}"
     );
 }
 

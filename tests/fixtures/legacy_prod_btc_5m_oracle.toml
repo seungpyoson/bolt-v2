@@ -21,6 +21,12 @@
 #   BTCUSDT-SPOT.BYBIT). The composed prod config must adopt that upstream
 #   correctness fix, so the oracle's BTC sources are kept value-equal to
 #   config/root.toml's `btc_usdt_midpoint_rv` sources.
+# - 2026-06-19 (#768): absorbed the `[reference_live_probe]` block added to the
+#   shared base `config/root.toml` (reference-live-probe ExecStartPre feature merged
+#   from main). The overlay does not touch this top-level section, so the composed
+#   prod config inherits it verbatim; both client refs it names
+#   (`chainlink_reference`, `polyresearch_reference`) are in the overlay's
+#   `active_clients`, so the prune keeps them. Kept value-equal to root.toml.
 #
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
 # `funder` is a public on-chain Safe address.
@@ -30,6 +36,12 @@ trader_id = "BOLT-001"
 strategy_files = [
   "strategies/binary_oracle_btc.toml",
 ]
+
+[reference_live_probe]
+chainlink_client_id = "chainlink_reference"
+polyresearch_client_id = "polyresearch_reference"
+duration_secs = 70
+min_chainlink_data_frames = 1
 
 [realized_volatility_surfaces.btc_usdt_midpoint_rv]
 canonical_base_asset = "BTC"

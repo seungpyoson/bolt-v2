@@ -23,6 +23,7 @@ pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
 pub mod polyresearch;
+pub mod reference_live_probe;
 
 // Neutral resolution-oracle seam. Core config resolution
 // (`crate::bolt_v3_config`), core validation (`crate::bolt_v3_validate`), the
@@ -615,6 +616,71 @@ pub fn reference_price_provider_identifier_is_configured(
     Err(format!(
         "reference price provider `{provider_key}` is unsupported"
     ))
+}
+
+pub(crate) fn validate_reference_live_probe_block(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(probe) = root.reference_live_probe.as_ref() else {
+        return errors;
+    };
+    if probe.duration_secs == 0 {
+        errors.push("reference_live_probe.duration_secs must be positive".to_string());
+    }
+    if probe.min_chainlink_data_frames == 0 {
+        errors.push("reference_live_probe.min_chainlink_data_frames must be positive".to_string());
+    }
+    validate_reference_live_probe_client(
+        root,
+        "reference_live_probe.chainlink_client_id",
+        probe.chainlink_client_id.as_str(),
+        chainlink_reference::KEY,
+        &mut errors,
+    );
+    validate_reference_live_probe_client(
+        root,
+        "reference_live_probe.polyresearch_client_id",
+        probe.polyresearch_client_id.as_str(),
+        polyresearch::KEY,
+        &mut errors,
+    );
+    errors
+}
+
+fn validate_reference_live_probe_client(
+    root: &BoltV3RootConfig,
+    field: &str,
+    client_key: &str,
+    expected_venue: &str,
+    errors: &mut Vec<String>,
+) {
+    if client_key.trim().is_empty() || client_key.trim() != client_key {
+        errors.push(format!(
+            "{field} must be non-empty without surrounding whitespace"
+        ));
+        return;
+    }
+    let Some(client) = root.clients.get(client_key) else {
+        errors.push(format!(
+            "{field} `{client_key}` must reference a configured client"
+        ));
+        return;
+    };
+    if client.venue.as_str() != expected_venue {
+        errors.push(format!(
+            "{field} `{client_key}` must reference provider `{expected_venue}`, got `{}`",
+            client.venue.as_str()
+        ));
+    }
+    if client.data.is_none() {
+        errors.push(format!(
+            "{field} `{client_key}` must reference a client with [data]"
+        ));
+    }
+    if client.secrets.is_none() {
+        errors.push(format!(
+            "{field} `{client_key}` must reference a client with [secrets]"
+        ));
+    }
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[

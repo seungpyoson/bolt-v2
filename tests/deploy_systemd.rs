@@ -25,6 +25,18 @@ fn systemd_unit_requires_srv_mountpoint() {
 }
 
 #[test]
+fn systemd_unit_allows_reference_live_probe_startup_window() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
+
+    assert!(
+        unit.contains("TimeoutStartSec=180"),
+        "systemd unit must allow the TOML-owned reference_live_probe duration plus connect/SSM overhead"
+    );
+}
+
+#[test]
 fn systemd_unit_runs_rust_prestart_storage_check() {
     let unit_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
@@ -61,6 +73,20 @@ fn systemd_unit_verifies_live_config_against_profile_before_start() {
     assert!(
         verify_at < run_at,
         "verify-live-config must run before the service starts"
+    );
+}
+
+#[test]
+fn systemd_unit_runs_reference_live_probe_before_start() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
+
+    assert!(
+        unit.contains(
+            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops reference-live-probe --config /opt/bolt-v2/config/live.toml"
+        ),
+        "systemd unit must prove Chainlink and PolyResearch reference streams before starting"
     );
 }
 
@@ -116,7 +142,9 @@ fn install_script_repairs_whole_config_bundle_for_service_user() {
         "installer must make each config subdir (strategies, profiles) traversable by the bolt group (0750)"
     );
     assert!(
-        install.contains("chown root:\"${BOLT_GROUP}\" \"${BOLT_INSTALL_ROOT}/config/${config_subdir}\""),
+        install.contains(
+            "chown root:\"${BOLT_GROUP}\" \"${BOLT_INSTALL_ROOT}/config/${config_subdir}\""
+        ),
         "installer must own each config subdir (strategies, profiles) as root:bolt for the service user"
     );
     assert!(

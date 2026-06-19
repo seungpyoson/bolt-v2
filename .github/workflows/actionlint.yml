@@ -61,3 +61,29 @@ jobs:
           # findings, so info/warning notes are logged without failing the job.
           filter_mode: nofilter
           fail_level: error
+
+  build-dynamos-application:
+    name: build DynaMOS KSC application
+    if: ${{ github.event_name == 'pull_request' && github.head_ref == 'chatgpt/dynamos-ksc-application-20260619' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install document dependency
+        run: python3 -m pip install --disable-pip-version-check python-docx==1.1.2
+      - name: Build and validate application
+        run: python3 tools/build_dynamos_ksc_application.py
+      - name: Expand DOCX package for artifact download
+        run: |
+          rm -rf build/docx-package
+          mkdir -p build/docx-package
+          python3 -c "import zipfile; zipfile.ZipFile('build/DynaMOS_KSC_2026_Singapore_Application_Draft.docx').extractall('build/docx-package')"
+          test -f 'build/docx-package/[Content_Types].xml'
+          test -f build/docx-package/word/document.xml
+      - name: Upload Word document package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: DynaMOS_KSC_2026_Singapore_Application_Draft
+          path: build/docx-package/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1

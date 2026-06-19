@@ -506,6 +506,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - required: no; shipped as `enabled = false` so the operator surface is visible without wiring durable halt recovery or loss-protection runtime behavior
 - when absent or disabled, no durable kill-switch loss controller is wired and no state file is required
 - when enabled, startup loads `state_path` before live-node construction and fails closed on missing, corrupt, oversized, unsupported, or unresolved halt evidence
+- before setting `enabled = true` on a fresh install, run `bolt-v2 ops init-kill-switch-store --config <root.toml>`; it creates the initial `Armed` + zero-loss snapshot at `state_path` and refuses to overwrite any existing store
 - `max_utc_daily_realized_loss` is a positive decimal string for the durable UTC-daily realized-loss accumulator
 - `flatten_open_positions_on_breach` must currently be `false`; live flatten/market-exit side effects remain rejected until the shared execution-policy flatten path exists
 - `action_retry_interval_ms` and `action_retry_timeout_ms` are positive retry timing values for proof-only halt action persistence/retry bookkeeping

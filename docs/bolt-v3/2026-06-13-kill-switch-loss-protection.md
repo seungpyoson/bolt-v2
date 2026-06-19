@@ -51,6 +51,14 @@ Startup loads `state_path` before the NT runner loop starts.
 
 Deleting the store file is not a reset. A missing store is treated as missing evidence.
 
+For a fresh install, initialize the store before enabling the controller:
+
+```bash
+bolt-v2 ops init-kill-switch-store --config config/root.toml
+```
+
+The command writes an `Armed` state with an empty loss-protection snapshot to `state_path`. It refuses to overwrite an existing store; halt reset remains a separate approved reset path.
+
 ## Manual Reset Evidence
 
 A reset requires operator evidence that the account is flat, there are no open orders, mandatory proof streams are fresh, and no pending entry risk remains.

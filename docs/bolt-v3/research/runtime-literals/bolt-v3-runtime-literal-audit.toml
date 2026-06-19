@@ -4317,6 +4317,30 @@ classification = "operator_artifact_cli_output_schema"
 reason = "This is the redacted CLI output field for the hash of the configured Polymarket HTTP base URL."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"kill_switch_store_init_completed"'''
+context = '''const KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: &str = "kill_switch_store_init_completed";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field reporting that the kill-switch initial Armed store bootstrap completed."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"state_path"'''
+context = '''const KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: &str = "state_path";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the configured kill-switch state_path that was initialized."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"{}"'''
+context = '''println!("{}", serde_json::to_string_pretty(&output)?);'''
+classification = "operator_artifact_cli_output_format"
+reason = "This is the CLI print format string for already-serialized redacted operator JSON output; no runtime value is hardcoded."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = '''"http://"'''

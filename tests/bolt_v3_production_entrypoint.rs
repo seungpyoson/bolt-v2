@@ -104,6 +104,32 @@ fn data_client_census_builds_node_before_entering_tokio_runtime() {
 }
 
 #[test]
+fn ops_exposes_no_overwrite_kill_switch_store_bootstrap() {
+    let source = include_str!("../src/main.rs");
+    let init_fn = source
+        .split("fn run_init_kill_switch_store")
+        .nth(1)
+        .expect("production ops CLI must expose kill-switch store bootstrap");
+
+    assert!(
+        source.contains("InitKillSwitchStore"),
+        "ops CLI must expose an explicit kill-switch store bootstrap command"
+    );
+    assert!(
+        init_fn.contains("KillSwitchStore::from_root_config_path"),
+        "bootstrap command must derive the store path from risk.kill_switch.state_path"
+    );
+    assert!(
+        init_fn.contains("bootstrap_initial_armed_loss_snapshot()"),
+        "bootstrap command must use the no-overwrite Armed+zero-loss store writer"
+    );
+    assert!(
+        !init_fn.contains("write_state_with_loss_snapshot"),
+        "bootstrap command must not bypass the no-overwrite helper"
+    );
+}
+
+#[test]
 fn bolt_v3_production_path_cannot_load_legacy_config_defaults() {
     let production_sources = [
         ("src/main.rs", include_str!("../src/main.rs")),

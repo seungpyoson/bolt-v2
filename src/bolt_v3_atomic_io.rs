@@ -44,6 +44,32 @@ pub fn write_private_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), Atomic
     Ok(())
 }
 
+pub fn write_private_new_file(path: &Path, bytes: &[u8]) -> Result<(), AtomicIoError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| AtomicIoError {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    configure_private_file_options(&mut options);
+
+    let mut file = options.open(path).map_err(|source| AtomicIoError {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| AtomicIoError {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    sync_parent_dir(path)?;
+    Ok(())
+}
+
 pub fn private_atomic_temp_path(path: &Path) -> PathBuf {
     private_atomic_temp_path_with_suffix(path, "tmp")
 }

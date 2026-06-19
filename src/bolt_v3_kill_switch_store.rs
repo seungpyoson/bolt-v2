@@ -11,7 +11,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolt_v3_atomic_io::{AtomicIoError, write_private_atomic_file},
+    bolt_v3_atomic_io::{AtomicIoError, write_private_atomic_file, write_private_new_file},
     bolt_v3_config::{KillSwitchConfigBlock, resolve_root_relative_path},
     bolt_v3_kill_switch::KillSwitchState,
 };
@@ -113,14 +113,7 @@ impl KillSwitchStore {
         state: &KillSwitchState,
         loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
     ) -> Result<(), KillSwitchStoreError> {
-        let persisted = PersistedKillSwitchState {
-            schema_version: KILL_SWITCH_STORE_SCHEMA_VERSION,
-            state: state.clone(),
-            loss_protection: loss_protection.map(PersistedKillSwitchLossProtectionSnapshot::from),
-        };
-        let mut bytes =
-            serde_json::to_vec_pretty(&persisted).map_err(KillSwitchStoreError::Serialize)?;
-        bytes.push(b'\n');
+        let bytes = serialize_state_with_loss_snapshot(state, loss_protection)?;
         if bytes.len() as u64 > self.max_state_file_bytes {
             return Err(KillSwitchStoreError::StateTooLarge {
                 path: self.path.clone(),
@@ -130,6 +123,25 @@ impl KillSwitchStore {
         }
         write_private_atomic_file(&self.path, &bytes)?;
         Ok(())
+    }
+
+    pub fn bootstrap_initial_armed_loss_snapshot(&self) -> Result<(), KillSwitchStoreError> {
+        let snapshot = initial_armed_loss_protection_snapshot();
+        let bytes = serialize_state_with_loss_snapshot(&KillSwitchState::Armed, Some(&snapshot))?;
+        if bytes.len() as u64 > self.max_state_file_bytes {
+            return Err(KillSwitchStoreError::StateTooLarge {
+                path: self.path.clone(),
+                bytes: bytes.len() as u64,
+                max_bytes: self.max_state_file_bytes,
+            });
+        }
+        match write_private_new_file(&self.path, &bytes) {
+            Ok(()) => Ok(()),
+            Err(error) if error.source.kind() == io::ErrorKind::AlreadyExists => {
+                Err(KillSwitchStoreError::StateAlreadyExists { path: error.path })
+            }
+            Err(error) => Err(KillSwitchStoreError::from(error)),
+        }
     }
 
     pub fn invalidate(&self) -> Result<(), KillSwitchStoreError> {
@@ -236,6 +248,33 @@ impl KillSwitchStore {
             loss_protection,
         })
     }
+}
+
+pub fn initial_armed_loss_protection_snapshot() -> KillSwitchLossProtectionSnapshot {
+    KillSwitchLossProtectionSnapshot {
+        daily_bucket: None,
+        daily_realized_pnl: Decimal::ZERO,
+        settlement_currency: None,
+        cumulative_position_pnl: BTreeMap::new(),
+        closed_position_pnl: BTreeMap::new(),
+        adjusted_position_pnl: BTreeMap::new(),
+        pending_halt_actions: None,
+    }
+}
+
+fn serialize_state_with_loss_snapshot(
+    state: &KillSwitchState,
+    loss_protection: Option<&KillSwitchLossProtectionSnapshot>,
+) -> Result<Vec<u8>, KillSwitchStoreError> {
+    let persisted = PersistedKillSwitchState {
+        schema_version: KILL_SWITCH_STORE_SCHEMA_VERSION,
+        state: state.clone(),
+        loss_protection: loss_protection.map(PersistedKillSwitchLossProtectionSnapshot::from),
+    };
+    let mut bytes =
+        serde_json::to_vec_pretty(&persisted).map_err(KillSwitchStoreError::Serialize)?;
+    bytes.push(b'\n');
+    Ok(bytes)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -359,6 +398,9 @@ pub enum KillSwitchStoreError {
         source: io::Error,
     },
     Serialize(serde_json::Error),
+    StateAlreadyExists {
+        path: PathBuf,
+    },
     StateTooLarge {
         path: PathBuf,
         bytes: u64,
@@ -373,6 +415,13 @@ impl std::fmt::Display for KillSwitchStoreError {
                 write!(f, "failed to access {}: {source}", path.display())
             }
             Self::Serialize(error) => write!(f, "failed to serialize kill-switch state: {error}"),
+            Self::StateAlreadyExists { path } => {
+                write!(
+                    f,
+                    "kill-switch state file {} already exists; refusing to bootstrap over existing evidence",
+                    path.display()
+                )
+            }
             Self::StateTooLarge {
                 path,
                 bytes,
@@ -391,6 +440,7 @@ impl std::error::Error for KillSwitchStoreError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Serialize(error) => Some(error),
+            Self::StateAlreadyExists { .. } => None,
             Self::StateTooLarge { .. } => None,
         }
     }

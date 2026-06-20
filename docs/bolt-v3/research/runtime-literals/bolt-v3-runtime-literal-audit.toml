@@ -648,9 +648,17 @@ reason = "This tuple index sorts strategy-fragment paths for deterministic confi
 path = "src/bolt_v3_config.rs"
 kind = "number"
 literal = '''0'''
-context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());'''
+context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_checksum_text.as_bytes());'''
 classification = "config_bundle_checksum_entry_kind"
 reason = "This structural tag distinguishes the root TOML entry inside the config-bundle checksum framing."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "number"
+literal = '''0'''
+context = '''let mut offset = 0;'''
+classification = "generated_live_config_header_strip_offset"
+reason = "Initial byte offset used while stripping the generated live-config provenance comment header before checksum framing; it is parser state, not a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_config.rs"
@@ -672,7 +680,7 @@ reason = "This structural tag distinguishes strategy-fragment TOML entries insid
 path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"root"'''
-context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());'''
+context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_checksum_text.as_bytes());'''
 classification = "config_bundle_checksum_root_label"
 reason = "This structural label identifies the root TOML bytes inside the config-bundle checksum framing."
 
@@ -17289,6 +17297,31 @@ classification = "ops_prestart_probe_filename"
 reason = "Temporary prestart write-probe filename prefix under the TOML-owned catalog directory; it does not configure trading behavior."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"live.local.toml"'''
+context = '''const LIVE_LOCAL_CONFIG_FILE_NAME: &str = "live.local.toml";'''
+classification = "live_runtime_legacy_config_filename_guard"
+reason = "Legacy ignored runtime-config filename rejected on the direct run path so it cannot re-enter as a live source of truth."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"BOLT_LIVE_PROFILE"'''
+context = '''const BOLT_LIVE_PROFILE_ENV: &str = "BOLT_LIVE_PROFILE";'''
+classification = "live_runtime_profile_env_name"
+reason = "Stable environment variable name used by systemd and direct run verification to select the reviewed profile ID; the value remains operator-supplied, not hardcoded."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"runtime config `{}` is the legacy live.local.toml path; run \
+             `bolt-v2 ops generate-live-config` from a reviewed profile ID instead"'''
+context = '''"runtime config `{}` is the legacy live.local.toml path; run \'''
+classification = "live_runtime_legacy_config_diagnostic"
+reason = "Fail-closed direct-run diagnostic explaining that legacy live.local.toml is not an accepted runtime config source."
+
+[[allowed]]
 path = "src/bolt_v3_outcome_group_sources.rs"
 kind = "string"
 literal = '''"{context}.gamma_query.sports_market_types cannot be combined with search or market_query"'''
@@ -17743,6 +17776,294 @@ literal = '''"market_portfolio_min_slot_notional"'''
 context = '''const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slot_notional";'''
 classification = "maker_market_portfolio_schema_field"
 reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "number"
+literal = '''1'''
+context = '''pub const GENERATOR_FORMAT_VERSION: u32 = 1;'''
+classification = "prod_profile_generator_format_version"
+reason = "Provenance-header format version stamped onto the generated runtime config and bumped only when the header format changes; it is a code constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"# bolt-v2:generated-live-config format="'''
+context = '''pub const GENERATED_LIVE_CONFIG_MARKER_PREFIX: &str = "# bolt-v2:generated-live-config format=";'''
+classification = "prod_profile_generation_marker"
+reason = "Fixed provenance-marker prefix stamped onto, and matched in, the generated runtime config; it is a code constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "number"
+literal = '''63'''
+context = '''const MAX_PROFILE_ID_LEN: usize = 63;'''
+classification = "prod_profile_id_shape_limit"
+reason = "Maximum opaque profile ID length accepted before deriving a profile overlay path; this is a structural input-shape bound, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"profiles"'''
+context = '''const PROFILES_DIR_NAME: &str = "profiles";'''
+classification = "prod_profile_source_path_derivation"
+reason = "Structural directory name under config root for reviewed deploy profile overlays; the operator supplies only an opaque profile ID, not this path."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"root.toml"'''
+context = '''const ROOT_CONFIG_FILE_NAME: &str = "root.toml";'''
+classification = "prod_profile_source_path_derivation"
+reason = "Structural base config filename derived from config root; it removes the overlay-owned base redirect and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"live.toml"'''
+context = '''pub const LIVE_CONFIG_FILE_NAME: &str = "live.toml";'''
+classification = "prod_profile_runtime_path_derivation"
+reason = "Structural generated runtime config filename derived from config root; generate/verify use it to avoid output/deployed path overrides."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''".overlay.toml"'''
+context = '''const PROFILE_OVERLAY_SUFFIX: &str = ".overlay.toml";'''
+classification = "prod_profile_source_path_derivation"
+reason = "Structural profile overlay filename suffix appended after profile ID validation; this is code-owned layout, not a trading runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"strategies"'''
+context = '''const STRATEGIES_DIR_NAME: &str = "strategies";'''
+classification = "prod_profile_strategy_bundle_path_derivation"
+reason = "Structural strategy-config directory under config root used to fence production profile strategy_files to the reviewed config bundle; not a strategy, venue, market, or runtime trading value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"toml"'''
+context = '''const STRATEGY_CONFIG_EXTENSION: &str = "toml";'''
+classification = "prod_profile_strategy_bundle_path_derivation"
+reason = "Structural file-extension guard for strategy config files selected by production overlays; the strategy contents remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"config root"'''
+context = '''reject_symlink_path(config_root, "config root")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked config root before deriving production profile paths; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"strategy_files directory"'''
+context = '''reject_symlink_path(&strategies_dir, "strategy_files directory")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked strategy bundle directory; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"base root.toml"'''
+context = '''reject_symlink_path(&base_path, "base root.toml")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked base root.toml before composition; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"profiles directory"'''
+context = '''reject_symlink_path(&config_root.join(PROFILES_DIR_NAME), "profiles directory")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked profile directory before overlay resolution; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"profile overlay"'''
+context = '''reject_symlink_path(&overlay_path, "profile overlay")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked selected overlay before reading profile data; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"deployed live.toml"'''
+context = '''reject_symlink_path(&deployed_path, "deployed live.toml")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked generated live.toml before verification; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "number"
+literal = '''2'''
+context = '''if components.len() < 2 {'''
+classification = "prod_profile_strategy_bundle_path_shape"
+reason = "Minimum path-component count for a strategy file under strategies/<file>.toml; this is path-shape validation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"live"'''
+context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
+classification = "prod_profile_reserved_id"
+reason = "Reserved opaque profile ID that avoids confusing a profile selector with the generated live.toml artifact."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"local"'''
+context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
+classification = "prod_profile_reserved_id"
+reason = "Reserved opaque profile ID that avoids confusing a profile selector with legacy live.local.toml operator drift."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"root"'''
+context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
+classification = "prod_profile_reserved_id"
+reason = "Reserved opaque profile ID that avoids confusing a profile selector with the structural root.toml base."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"profiles"'''
+context = '''if matches!(raw, "live" | "local" | "root" | "profiles") {'''
+classification = "prod_profile_reserved_id"
+reason = "Reserved opaque profile ID that avoids confusing a profile selector with the structural profiles directory."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
+kind = "number"
+literal = '''0o644'''
+context = '''pub const RUNTIME_CONFIG_FILE_MODE: u32 = 0o644;'''
+classification = "atomic_io_runtime_config_file_mode"
+reason = "Unix file mode for non-secret runtime files a service user must read (mirrors PRIVATE_ARTIFACT_FILE_MODE 0o600); it is a code constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
+kind = "string"
+literal = '''"{prefix}.{}.{timestamp_ns}.{counter}"'''
+context = '''"{prefix}.{}.{timestamp_ns}.{counter}",'''
+classification = "atomic_io_temp_path_template"
+reason = "Format template that names a process-unique temp path from a caller-supplied prefix plus the shared atomic-io counter/pid/timestamp identity; it is filesystem plumbing, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"strategy_files"'''
+context = '''"strategy_files".to_string(),'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML root-config key the overlay composition replaces in the base table (mirrors BoltV3RootConfig.strategy_files); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"clients"'''
+context = '''let base_clients = require_table(&root, "clients", "active_clients")?.clone();'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML root-config key the composition reads/retains from the base table (mirrors BoltV3RootConfig.clients); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"active_clients"'''
+context = '''let base_clients = require_table(&root, "clients", "active_clients")?.clone();'''
+classification = "prod_profile_compose_diagnostic_context"
+reason = "Context label naming the overlay field driving the client-retention step in a composition error message; it is a diagnostic anchor, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"execution"'''
+context = '''"execution".to_string(),'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML client-block key the composition full-replaces from the overlay (mirrors ClientBlock.execution); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"clients"'''
+context = '''root.insert("clients".to_string(), toml::Value::Table(retained_clients));'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML root-config key the composition writes the retained client set back to (mirrors BoltV3RootConfig.clients); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"realized_volatility_surfaces"'''
+context = '''require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")?.clone();'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML root-config key the composition reads/retains from the base table (mirrors BoltV3RootConfig.realized_volatility_surfaces); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"active_rv_surfaces"'''
+context = '''require_table(&root, "realized_volatility_surfaces", "active_rv_surfaces")?.clone();'''
+classification = "prod_profile_compose_diagnostic_context"
+reason = "Context label naming the overlay field driving the RV-surface-retention step in a composition error message; it is a diagnostic anchor, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"policy"'''
+context = '''.entry("policy".to_string())'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML RV-surface-block key whose table receives the overlay's per-surface scalar overrides (mirrors RealizedVolatilitySurfaceBlock.policy); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"realized_volatility_surfaces"'''
+context = '''"realized_volatility_surfaces".to_string(),'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML root-config key the composition writes the retained RV-surface set back to (mirrors BoltV3RootConfig.realized_volatility_surfaces); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"risk"'''
+context = '''.get_mut("risk")'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML root-config key whose table receives the overlay loss_governor block (mirrors BoltV3RootConfig.risk); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"loss_governor"'''
+context = '''"loss_governor".to_string(),'''
+classification = "prod_profile_compose_root_key"
+reason = "TOML risk-block key the composition inserts the overlay's loss rails at (mirrors RiskBlock.loss_governor); a structural schema key navigating the config tree, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "number"
+literal = '''0'''
+context = '''entries.sort_by(|left, right| left.0.cmp(&right.0));'''
+classification = "prod_profile_compose_tuple_sort_index"
+reason = "Tuple field index selecting the (key, value) entry's key for deterministic key-sorted serialization (mirrors the identical config_bundle_checksum sort in bolt_v3_config.rs); it is a tuple accessor, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"composed-live.toml"'''
+context = '''let composed_path = temp_dir.path().join("composed-live.toml");'''
+classification = "prod_profile_compose_temp_filename"
+reason = "Fixed file name of the composed config staged in a private temp dir solely for the validation load; it never reaches the deployed artifact and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"bolt-v2-compose"'''
+context = '''const COMPOSE_TEMP_DIR_PREFIX: &str = "bolt-v2-compose";'''
+classification = "prod_profile_compose_temp_prefix"
+reason = "Fixed prefix for the private temp directory used during the validation load; it is filesystem plumbing, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_config.rs"

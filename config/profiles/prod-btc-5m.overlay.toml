@@ -1,0 +1,98 @@
+# Tracked production OVERLAY — BTC 5m supervised pilot (issue #768).
+#
+# This is a typed, self-describing OVERLAY, not a full config. It declares ONLY
+# the production deltas against the shared template `config/root.toml`.
+# At deploy time `ops generate-live-config` derives the overlay from the profile
+# ID, composes it with `config/root.toml`, and writes the runtime `live.toml`.
+# Root owns all shared infrastructure (runtime, nautilus,
+# persistence, aws, logging, gate_providers, chainlink_data_streams, and every
+# venue's [data]/[secrets]); this overlay owns the pilot-specific selections and
+# the live execution identity. There is no duplicated infrastructure here — change
+# shared blocks in root.toml, change pilot deltas here, both in a reviewed PR.
+#
+# Non-secret only: every credential stays an SSM parameter reference in root; the
+# Polymarket `funder` below is a public on-chain Safe address. NEVER put secret
+# values in this file.
+#
+# Deploy/run: set `BOLT_LIVE_PROFILE` to this profile's opaque ID, then run
+# `bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config`.
+# Generation composes this overlay with the derived `root.toml`, stamps a
+# provenance header, and writes the runtime config; `ops verify-live-config`
+# proves the deployed file re-composes from (root ⊕ overlay) and still loads
+# against the running binary. Do NOT hand-edit the deployed live.toml — edit this
+# overlay (or root.toml) in a reviewed PR and regenerate.
+
+# REPLACES base.strategy_files: the BTC-only pilot selection.
+strategy_files = ["strategies/binary_oracle_btc.toml"]
+
+# Subset of base.clients to KEEP in the composed config. Every other client block
+# in root (e.g. hyperliquid_data / hyperliquid_execution) is dropped from the
+# deployed config. Generation errors if any name here is absent from base.clients.
+active_clients = [
+  "polymarket_main",
+  "binance_spot_data",
+  "binance_usdm_data",
+  "binance_coinm_data",
+  "bitmex_data",
+  "bybit_data",
+  "coinbase_data",
+  "deribit_data",
+  "kraken_spot_data",
+  "kraken_futures_data",
+  "okx_data",
+  "chainlink_strike",
+  "chainlink_reference",
+  "polyresearch_reference",
+]
+
+# Subset of base.realized_volatility_surfaces to KEEP. The pilot prices only BTC,
+# so only the BTC surface is retained. Generation errors on a name absent from base.
+active_rv_surfaces = ["btc_usdt_midpoint_rv"]
+
+# Per-surface scalar overrides merged into that surface's [policy] table. Keyed by
+# a surface name that MUST appear in active_rv_surfaces. The pilot tightens BTC RV
+# coverage from the template's permissive 0.01 to 0.5.
+[rv_policy_overrides.btc_usdt_midpoint_rv]
+min_coverage_ratio = 0.5
+
+# Full [risk.loss_governor] block, inserted at risk.loss_governor in the composed
+# config. ABSENT from root (the template carries no live loss rails); the pilot
+# owns them. generate/verify-live-config fail closed unless these rails are present
+# AND enabled.
+[loss_governor]
+# Must be true for a live deploy: ops generate/verify-live-config fail closed on
+# disabled rails, which go inert at runtime (loss_governor_policy_from_loaded returns
+# None when disabled, so no LossGovernorPolicy is constructed).
+enabled = true
+account_id = "POLYMARKET-001"
+max_snapshot_age_ns = 5000000000
+rolling_window_ns = 300000000000
+active_position_pnl_max_entries = 64
+on_loss_breach_trading_state = "reducing"
+on_untrusted_snapshot_trading_state = "reducing"
+recovery_mode = "manual"
+manual_recovery_evidence_max_path_bytes = 256
+max_per_trade_loss = "3.50"
+max_daily_loss = "10.00"
+max_rolling_loss = "10.00"
+max_drawdown = "15.00"
+
+# Per-client FULL replacement of [clients.<name>.execution]. Keyed by a client name
+# that MUST appear in active_clients. For polymarket_main this carries the live
+# Gnosis-Safe signature type and the public funder Safe address, and OMITS the
+# on_chain_collateral sub-table the template placeholder carries (the full-replace
+# drops it naturally). The `funder` is a public on-chain address, not a secret.
+[client_execution.polymarket_main]
+account_id = "POLYMARKET-001"
+signature_type = "poly_gnosis_safe"
+funder = "0xA3a5E9c062331237E5f1403b2bba7A184e5de983"
+base_url_http = "https://clob.polymarket.com"
+base_url_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+base_url_data_api = "https://data-api.polymarket.com"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+ack_timeout_secs = 5
+fee_cache_ttl_secs = 300
+transport_backend = "sockudo"

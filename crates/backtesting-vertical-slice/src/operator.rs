@@ -3982,9 +3982,11 @@ mod tests {
         // `run_multi_table_from_run_spec`: the `validate_converter_config(...)?`
         // gate must surface before `decode_object_payload(...)` ever runs.
         //
-        // `run_spec_for` binds `accepted_object.{bytes,sha256}` and the payload
-        // byte limit to THIS object, so the byte-length / SHA gates that sit
-        // between the validate and decode statements all pass for these bytes.
+        // `run_spec_for` binds `accepted_object.{bytes,sha256}` to THIS object, so
+        // the byte-length / SHA gates that sit between the validate and decode
+        // statements all pass for these bytes. `payload_config` (set below) then
+        // overrides the decode cap to `max_decoded_bytes = 64` (run_spec_for's own
+        // default is 4096) — that 64-byte cap is what the counterfactual relies on.
         // We then make the converter inadmissible (funding adapter + a JSONL
         // container that funding can never consume — funding's admissibility gate
         // returns `false` for every container, see

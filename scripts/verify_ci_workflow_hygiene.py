@@ -154,7 +154,7 @@ CI_PROVENANCE_REQUIRED_JOBS = (
     "test-archive",
     "test",
 )
-CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "tag_reuse"}
+CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "iteration", "tag_reuse"}
 CI_PROVENANCE_POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -174,7 +174,7 @@ CI_PROVENANCE_POLICY_EXPECTED = {
     "draft_pr_reopened": "defer",
     "draft_pr_edited": "defer",
     "converted_to_draft": "defer",
-    "ready_pr": "full",
+    "ready_pr": "iteration",
     "ready_for_review": "full",
     "workflow_dispatch": "full",
     "main_push": "full",
@@ -7521,6 +7521,10 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
 GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+GATE_ITERATION_CONDITION = '"$policy_path" == "iteration"'
+# Heavy merge-grade lanes that the ready-PR iteration path defers; the gate's
+# iteration branch must require each of these skipped before it exits 0.
+GATE_ITERATION_SKIPPED_JOBS = ("clippy", "source-fence", "test", "build")
 GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
 GATE_DEFERRED_NAME_EXPRESSION = """name: >-
@@ -7702,6 +7706,18 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         errors.append("gate must pass deferred full CI without failing stale draft checks")
     if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
         errors.append("gate must fail deferred policy outside deferred draft PR context")
+    iteration_sections = top_level_if_body_and_remainder(gate_text, GATE_ITERATION_CONDITION)
+    iteration_body = iteration_sections[0] if iteration_sections is not None else None
+    if iteration_body is None:
+        errors.append("gate must branch on ci_policy_path iteration")
+    else:
+        for job in GATE_ITERATION_SKIPPED_JOBS:
+            if not branch_exits_reachable(
+                iteration_body, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'
+            ):
+                errors.append(f"gate must require {job} skipped on ready-PR iteration")
+        if not body_exits_zero(iteration_body):
+            errors.append("gate must pass ready-PR iteration without running deferred heavy lanes")
     if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
         errors.append("gate must branch on ci_policy_path full")
     emit_failure_body = branch_body(
@@ -8180,6 +8196,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("clippy must not run check-aarch64")
         if clippy_installs_aarch64_toolchain(jobs["clippy"]):
             errors.append("clippy must not install aarch64 cross compiler")
+        # clippy is a merge-grade heavy lane: it must defer on the ready-PR
+        # iteration path (full_ci_required=false) while still running on full.
+        if "ci-policy" not in extract_needs(jobs["clippy"]):
+            errors.append("clippy needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["clippy"]):
+            errors.append("clippy must gate on full_ci_required")
 
     if "check-aarch64" in jobs:
         check_aarch64_needs = extract_needs(jobs["check-aarch64"])

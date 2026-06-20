@@ -29,7 +29,7 @@ SUPPORTED_MODES = {
     "resolve-fingerprint",
     "validate-record",
 }
-POLICY_VALUES = {"full", "defer", "tag_reuse"}
+POLICY_VALUES = {"full", "defer", "iteration", "tag_reuse"}
 POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -304,7 +304,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     for row in POLICY_ROWS:
         value = policy_table.get(row)
         if value not in POLICY_VALUES:
-            raise ProvenanceError(f"ci_provenance.policy.{row} must be full, defer, or tag_reuse")
+            raise ProvenanceError(f"ci_provenance.policy.{row} must be full, defer, iteration, or tag_reuse")
         policy[row] = value
 
     force_full_ci = overrides.get("force_full_ci")

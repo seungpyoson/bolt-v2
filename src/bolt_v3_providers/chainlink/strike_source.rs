@@ -37,12 +37,15 @@ use nautilus_common::{
     live::runtime::get_runtime,
     messages::{
         DataEvent,
-        data::{SubscribeIndexPrices, UnsubscribeIndexPrices},
+        data::{
+            SubscribeCustomData, SubscribeIndexPrices, UnsubscribeCustomData,
+            UnsubscribeIndexPrices,
+        },
     },
 };
 use nautilus_core::{Params, UnixNanos, consts::NAUTILUS_USER_AGENT};
 use nautilus_model::{
-    data::{Data, IndexPriceUpdate},
+    data::{Data, DataType, IndexPriceUpdate},
     identifiers::{ClientId, InstrumentId},
     types::Price,
 };
@@ -62,6 +65,11 @@ pub const STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM: &str = "window_open_unix_second
 /// NT subscribe-command `params` key carrying the window-close Unix timestamp
 /// (seconds) for the point-in-time settlement reference lookup.
 pub const SETTLEMENT_WINDOW_CLOSE_UNIX_SECONDS_PARAM: &str = "window_close_unix_seconds";
+const STRIKE_FETCH_REQUEST_DATA_TYPE: &str = "BoltV3ChainlinkStrikeFetchRequest";
+/// Custom strike-fetch subscribe `params` key carrying the resolution
+/// instrument whose Chainlink report should be fetched.
+pub(crate) const STRIKE_FETCH_INSTRUMENT_ID_PARAM: &str = "instrument_id";
+const STRIKE_FETCH_REQUEST_SEQUENCE_PARAM: &str = "request_sequence";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChainlinkReportBoundaryKind {
@@ -102,6 +110,12 @@ impl ChainlinkReportBoundary {
     fn new(kind: ChainlinkReportBoundaryKind, unix_seconds: u64) -> Self {
         Self { kind, unix_seconds }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CustomStrikeFetchRequest {
+    instrument_id: InstrumentId,
+    report_boundary: ChainlinkReportBoundary,
 }
 
 const CHAINLINK_STRIKE_SOURCE_FACTORY_NAME: &str = "CHAINLINK_DATA_STREAMS";
@@ -269,59 +283,23 @@ impl ChainlinkStrikeSourceClient {
             in_flight.remove(&instrument_id);
         }
     }
-}
 
-#[async_trait::async_trait(?Send)]
-impl DataClient for ChainlinkStrikeSourceClient {
-    fn client_id(&self) -> ClientId {
-        self.client_id
-    }
-
-    fn venue(&self) -> Option<nautilus_model::identifiers::Venue> {
-        None
-    }
-
-    fn start(&mut self) -> anyhow::Result<()> {
-        self.connected = true;
-        Ok(())
-    }
-
-    fn stop(&mut self) -> anyhow::Result<()> {
-        self.connected = false;
-        Ok(())
-    }
-
-    fn reset(&mut self) -> anyhow::Result<()> {
-        self.connected = false;
-        Ok(())
-    }
-
-    fn dispose(&mut self) -> anyhow::Result<()> {
-        self.connected = false;
-        Ok(())
-    }
-
-    fn is_connected(&self) -> bool {
-        self.connected
-    }
-
-    fn is_disconnected(&self) -> bool {
-        !self.connected
-    }
-
-    fn subscribe_index_prices(&mut self, cmd: SubscribeIndexPrices) -> anyhow::Result<()> {
-        let binding = self.feed_binding_for(cmd.instrument_id).ok_or_else(|| {
+    fn submit_strike_fetch(
+        &mut self,
+        instrument_id: InstrumentId,
+        report_boundary: ChainlinkReportBoundary,
+    ) -> anyhow::Result<()> {
+        let binding = self.feed_binding_for(instrument_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "Chainlink strike source has no feed binding for resolution instrument {}",
-                cmd.instrument_id
+                instrument_id
             )
         })?;
-        let report_boundary = requested_report_boundary(cmd.params.as_ref(), cmd.instrument_id)?;
         log::debug!(
-            "Chainlink strike source {} received {} subscribe for {} at {}={}",
+            "Chainlink strike source {} received {} fetch for {} at {}={}",
             self.client_id,
             report_boundary.kind.label(),
-            cmd.instrument_id,
+            instrument_id,
             report_boundary.kind.param_key(),
             report_boundary.unix_seconds
         );
@@ -340,14 +318,14 @@ impl DataClient for ChainlinkStrikeSourceClient {
             report_boundary,
         };
         // Admit at most one in-flight fetch per resolution instrument: the
-        // strategy re-issues this subscribe on every retry tick while the strike
-        // is unbound, so a stalled REST call must not stack concurrent requests.
+        // strategy re-issues this fetch on every retry tick while the strike is
+        // unbound, so a stalled REST call must not stack concurrent requests.
         if !Self::begin_strike_fetch_if_idle(&self.in_flight, binding.instrument_id) {
             log::debug!(
-                "Chainlink strike source {} skipping {} subscribe for {} at {}={}: a fetch is already in flight",
+                "Chainlink strike source {} skipping {} fetch for {} at {}={}: a fetch is already in flight",
                 self.client_id,
                 report_boundary.kind.label(),
-                cmd.instrument_id,
+                instrument_id,
                 report_boundary.kind.param_key(),
                 report_boundary.unix_seconds
             );
@@ -357,7 +335,7 @@ impl DataClient for ChainlinkStrikeSourceClient {
             "Chainlink strike source {} starting {} fetch for {} at {}={}",
             self.client_id,
             report_boundary.kind.label(),
-            cmd.instrument_id,
+            instrument_id,
             report_boundary.kind.param_key(),
             report_boundary.unix_seconds
         );
@@ -418,6 +396,115 @@ impl DataClient for ChainlinkStrikeSourceClient {
         });
         Ok(())
     }
+}
+
+pub(crate) fn strike_fetch_request_data_type(
+    instrument_id: InstrumentId,
+    request_sequence: u64,
+) -> DataType {
+    let mut metadata = Params::new();
+    metadata.insert(
+        STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+        serde_json::json!(instrument_id.to_string()),
+    );
+    metadata.insert(
+        STRIKE_FETCH_REQUEST_SEQUENCE_PARAM.to_string(),
+        serde_json::json!(request_sequence),
+    );
+    DataType::new(
+        STRIKE_FETCH_REQUEST_DATA_TYPE,
+        Some(metadata),
+        Some(instrument_id.to_string()),
+    )
+}
+
+fn strike_fetch_request_from_custom_subscribe(
+    cmd: &SubscribeCustomData,
+) -> anyhow::Result<CustomStrikeFetchRequest> {
+    if cmd.data_type.type_name() != STRIKE_FETCH_REQUEST_DATA_TYPE {
+        anyhow::bail!(
+            "Chainlink strike custom subscribe has unsupported data type `{}`",
+            cmd.data_type.type_name()
+        );
+    }
+    let params = cmd
+        .params
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Chainlink strike custom subscribe is missing params"))?;
+    let instrument_id_raw = params
+        .get_str(STRIKE_FETCH_INSTRUMENT_ID_PARAM)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Chainlink strike custom subscribe is missing params.{}",
+                STRIKE_FETCH_INSTRUMENT_ID_PARAM
+            )
+        })?;
+    let instrument_id = InstrumentId::from_str(instrument_id_raw).map_err(|error| {
+        anyhow::anyhow!(
+            "Chainlink strike custom subscribe params.{} is not a valid NT InstrumentId: {error}",
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM
+        )
+    })?;
+    let data_type_identifier = cmd.data_type.identifier().ok_or_else(|| {
+        anyhow::anyhow!("Chainlink strike custom subscribe data_type is missing identifier")
+    })?;
+    if data_type_identifier != instrument_id_raw {
+        anyhow::bail!(
+            "Chainlink strike custom subscribe data_type identifier `{}` does not match params.{} `{}`",
+            data_type_identifier,
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM,
+            instrument_id_raw
+        );
+    }
+    let report_boundary = requested_report_boundary(Some(params), instrument_id)?;
+    Ok(CustomStrikeFetchRequest {
+        instrument_id,
+        report_boundary,
+    })
+}
+
+#[async_trait::async_trait(?Send)]
+impl DataClient for ChainlinkStrikeSourceClient {
+    fn client_id(&self) -> ClientId {
+        self.client_id
+    }
+
+    fn venue(&self) -> Option<nautilus_model::identifiers::Venue> {
+        None
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.connected = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) -> anyhow::Result<()> {
+        self.connected = false;
+        Ok(())
+    }
+
+    fn reset(&mut self) -> anyhow::Result<()> {
+        self.connected = false;
+        Ok(())
+    }
+
+    fn dispose(&mut self) -> anyhow::Result<()> {
+        self.connected = false;
+        Ok(())
+    }
+
+    fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    fn is_disconnected(&self) -> bool {
+        !self.connected
+    }
+
+    fn subscribe_index_prices(&mut self, cmd: SubscribeIndexPrices) -> anyhow::Result<()> {
+        let report_boundary = requested_report_boundary(cmd.params.as_ref(), cmd.instrument_id)?;
+        self.submit_strike_fetch(cmd.instrument_id, report_boundary)
+    }
 
     fn unsubscribe_index_prices(&mut self, cmd: &UnsubscribeIndexPrices) -> anyhow::Result<()> {
         // Point-in-time source: each subscribe emits one strike and nothing
@@ -426,6 +513,20 @@ impl DataClient for ChainlinkStrikeSourceClient {
             "Chainlink strike source {} unsubscribed index prices for {}",
             self.client_id,
             cmd.instrument_id
+        );
+        Ok(())
+    }
+
+    fn subscribe(&mut self, cmd: SubscribeCustomData) -> anyhow::Result<()> {
+        let request = strike_fetch_request_from_custom_subscribe(&cmd)?;
+        self.submit_strike_fetch(request.instrument_id, request.report_boundary)
+    }
+
+    fn unsubscribe(&mut self, cmd: &UnsubscribeCustomData) -> anyhow::Result<()> {
+        log::debug!(
+            "Chainlink strike source {} unsubscribed custom strike fetch request {}",
+            self.client_id,
+            cmd.data_type
         );
         Ok(())
     }
@@ -780,6 +881,8 @@ mod tests {
     //! layout used by `super::report`'s decode tests and the offline
     //! materializer tests.
 
+    use nautilus_common::messages::data::SubscribeCustomData;
+    use nautilus_core::UUID4;
     use rust_decimal::{Decimal, prelude::ToPrimitive};
 
     use super::*;
@@ -1041,6 +1144,152 @@ mod tests {
     }
 
     #[test]
+    fn custom_strike_fetch_request_carries_resolution_instrument_and_window_open() {
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
+            .expect("test resolution instrument id should parse");
+        let data_type = strike_fetch_request_data_type(instrument_id, 1);
+        let mut params = Params::new();
+        params.insert(
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+            serde_json::json!(instrument_id.to_string()),
+        );
+        params.insert(
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
+            serde_json::json!(TEST_WINDOW_OPEN_UNIX_SECONDS),
+        );
+
+        let command = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            data_type,
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(params),
+        );
+
+        let request = strike_fetch_request_from_custom_subscribe(&command)
+            .expect("custom strike fetch command should parse");
+        assert_eq!(request.instrument_id, instrument_id);
+        assert_eq!(
+            request.report_boundary,
+            ChainlinkReportBoundary::new(
+                ChainlinkReportBoundaryKind::WindowOpenStrike,
+                TEST_WINDOW_OPEN_UNIX_SECONDS,
+            )
+        );
+    }
+
+    #[test]
+    fn custom_strike_fetch_data_type_is_unique_per_request_sequence() {
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
+            .expect("test resolution instrument id should parse");
+
+        let first = strike_fetch_request_data_type(instrument_id, 1);
+        let second = strike_fetch_request_data_type(instrument_id, 2);
+
+        assert_ne!(
+            first, second,
+            "custom strike fetch DataType must differ per retry so NT custom subscription dedup forwards each request",
+        );
+        assert_ne!(
+            first.topic(),
+            second.topic(),
+            "request_sequence metadata must participate in the NT DataType topic",
+        );
+    }
+
+    #[test]
+    fn custom_strike_fetch_request_rejects_fail_closed_shapes() {
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
+            .expect("test resolution instrument id should parse");
+        let data_type = strike_fetch_request_data_type(instrument_id, 1);
+
+        let wrong_type = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            DataType::new(CHAINLINK_STRIKE_SOURCE_CONFIG_TYPE, None, None),
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(valid_custom_strike_fetch_params(instrument_id)),
+        );
+        strike_fetch_request_from_custom_subscribe(&wrong_type)
+            .expect_err("wrong custom data type must fail closed");
+
+        let missing_params = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            data_type.clone(),
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            None,
+        );
+        strike_fetch_request_from_custom_subscribe(&missing_params)
+            .expect_err("missing params must fail closed");
+
+        let mut invalid_instrument_params = valid_custom_strike_fetch_params(instrument_id);
+        invalid_instrument_params.insert(
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+            serde_json::json!(String::new()),
+        );
+        let invalid_instrument = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            data_type.clone(),
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(invalid_instrument_params),
+        );
+        strike_fetch_request_from_custom_subscribe(&invalid_instrument)
+            .expect_err("invalid instrument_id param must fail closed");
+
+        let mismatched_identifier = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            DataType::new(STRIKE_FETCH_REQUEST_DATA_TYPE, None, Some(String::new())),
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(valid_custom_strike_fetch_params(instrument_id)),
+        );
+        strike_fetch_request_from_custom_subscribe(&mismatched_identifier)
+            .expect_err("data_type identifier mismatch must fail closed");
+
+        let mut missing_timestamp_params = Params::new();
+        missing_timestamp_params.insert(
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+            serde_json::json!(instrument_id.to_string()),
+        );
+        let missing_timestamp = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            data_type,
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(missing_timestamp_params),
+        );
+        strike_fetch_request_from_custom_subscribe(&missing_timestamp)
+            .expect_err("missing timestamp must fail closed");
+    }
+
+    fn valid_custom_strike_fetch_params(instrument_id: InstrumentId) -> Params {
+        let mut params = Params::new();
+        params.insert(
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+            serde_json::json!(instrument_id.to_string()),
+        );
+        params.insert(
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
+            serde_json::json!(TEST_WINDOW_OPEN_UNIX_SECONDS),
+        );
+        params
+    }
+
+    #[test]
     fn settlement_close_mapping_rejects_report_not_bound_to_window_close() {
         let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
             .expect("test resolution instrument id should parse");
@@ -1138,10 +1387,9 @@ mod tests {
 
     #[test]
     fn in_flight_guard_admits_one_fetch_per_instrument_until_finished() {
-        // After the strategy's unsubscribe-before-subscribe re-arm reaches the source
-        // on every retry tick, a stalled REST call must not let retries stack
-        // concurrent fetches against the live endpoint. The in-flight guard admits at
-        // most one fetch per resolution instrument until the prior one finishes.
+        // Strategy retry ticks can trigger custom one-shot fetch commands faster
+        // than a stalled REST call returns. The in-flight guard admits at most
+        // one fetch per resolution instrument until the prior one finishes.
         let in_flight: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<InstrumentId>>> =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let instrument_id =

@@ -30,7 +30,8 @@ pub(crate) use report::{
 };
 pub(crate) use strike_source::{
     ChainlinkStrikeFeedBinding, ChainlinkStrikeSourceConfig, ChainlinkStrikeSourceFactory,
-    STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, parse_feed_binding,
+    STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, parse_feed_binding,
+    strike_fetch_request_data_type,
 };
 
 use std::{any::Any, sync::Arc};

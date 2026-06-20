@@ -582,6 +582,73 @@ fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_routing_error() 
 }
 
 #[test]
+fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_routing_fails() {
+    // The mirror of the YES-then-NO reconcile, covering the opposite branch: the YES
+    // leg's command router fails on its first (and only) call. Because the YES leg
+    // carries a routing error, the dispatcher short-circuits and synthesizes an empty
+    // NO leg rather than attempting its route, returning Ok with a partial outcome
+    // whose combined routing_error surfaces the YES failure for the caller to fail
+    // loud on. Differential: if the short-circuit were dropped (the NO leg routed
+    // unconditionally) route_calls would be 2; if the YES error were `?`-aborted the
+    // `.expect` below would panic.
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let decision = plan_maker_runtime_quote(
+        &mut market,
+        &mut budget,
+        MakerRuntimeQuoteInput {
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set: quote_set_inputs(),
+            order_plan: order_plan_inputs(),
+        },
+    );
+    let order_plan = decision
+        .order_plan
+        .as_ref()
+        .expect("quote tick should produce maker order intents");
+
+    let template = maker_limit_post_only_template();
+    let mut route_calls = 0_u32;
+    let dispatched = dispatch_maker_runtime_order_plan_with_command_router(
+        MakerRuntimeOrderDispatchInput {
+            order_plan,
+            submit_template: &template,
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+        },
+        &mut |_command, _submit_order_prefix| {
+            route_calls += 1;
+            anyhow::bail!("simulated YES-leg routing failure")
+        },
+    )
+    .expect("a per-leg routing error is data, not a dispatcher abort");
+
+    assert_eq!(
+        route_calls, 1,
+        "the YES routing failure short-circuits the NO leg, which is never attempted"
+    );
+    assert!(
+        dispatched.yes.routing_error.is_some(),
+        "the YES leg captured its routing error as data"
+    );
+    assert!(
+        dispatched.no.dispatch.is_none(),
+        "the NO leg is synthesized empty when YES fails"
+    );
+    assert!(
+        dispatched.no.routing_error.is_none(),
+        "the synthesized NO leg carries no routing error of its own"
+    );
+    assert_eq!(
+        dispatched.routing_error(),
+        dispatched.yes.routing_error.as_deref(),
+        "the combined routing_error surfaces the YES-leg failure for the caller to fail loud on"
+    );
+}
+
+#[test]
 fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_charge() {
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
     assert_eq!(

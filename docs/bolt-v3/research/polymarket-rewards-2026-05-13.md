@@ -16,7 +16,7 @@
 - **Public trade history and holder concentration ARE unauth** via `data-api.polymarket.com/trades` and `/v1/holders`. Adverse-selection cost is measurable without authenticated trading.
 - **Rewards distributed off-chain** (no smart-contract dispatcher). Treasury wallet sends USDC.e via standard ERC-20 transfers after off-chain Q-score computation.
 - **Matching engine restarts Tuesdays 7 AM ET, ~90 seconds**. Returns HTTP 425. Bots must handle with exponential backoff.
-- **Geo-restrictions**: US, UK, DE, FR, AU, NL, IT and 25+ other countries blocked at order placement. **Korea NOT blocked. bolt-v2's deploy region NOT blocked.** (As of 2026-05-13 the region was `eu-west-1`; decommissioned 2026-06-20, target is now `eu-west-2` — also non-blocked.)
+- **Geo-restrictions**: US, UK, DE, FR, AU, NL, IT and 25+ other countries blocked at order placement. **Korea NOT blocked.** As of 2026-05-13 the deploy region was `eu-west-1` (Ireland — not on the blocked list). That region was decommissioned 2026-06-20; the current target is `eu-west-2` (London/**UK**). **UK is on the blocked list above — eu-west-2's order-placement geoblock status must be verified from the target before live trading** (the account's eu-west-2 colocation whitelist may or may not exempt it).
 - **NT adapter (rev `38b912a8`) parses only 3 reward fields**: `rewards_min_size`, `rewards_max_spread`, `fee_schedule.rebate_rate`. No binding for `/rewards/*`, `/rebates/*`, `/builders/*` namespaces.
 
 ## How to use this document
@@ -746,9 +746,9 @@ config/live.local.example.toml:67:region = "eu-west-1"
 config/operator-snapshots/2026-04-16/live.local.toml:28:region = "eu-west-1"
 ```
 
-**Finding (HIGH):** bolt-v2 is deployed in `eu-west-1` (Ireland). Polymarket's primary infra is `eu-west-2`; their docs explicitly recommend `eu-west-1` as the closest non-geo-restricted region. **Our bot's deploy region is NOT blocked.**
+**Finding (HIGH) — SUPERSEDED 2026-06-20 (see note below):** At probe time (2026-05-13), bolt-v2 was deployed in `eu-west-1` (Ireland), and Polymarket's docs recommended `eu-west-1` as the closest non-geo-restricted region. eu-west-1 has since been fully decommissioned; the current target `eu-west-2` (London/**UK**) has UNVERIFIED order-placement geoblock status (UK is on the blocked-country list). Do **not** treat "deploy region NOT blocked" as current.
 
-> **Update 2026-06-20 (superseded):** Accurate as of 2026-05-13 only. The `eu-west-1` deployment was decommissioned on 2026-06-20 (all eu-west-1 instances terminated); the deploy target is now `eu-west-2` (London), which is also non-blocked — so the geo-restriction conclusion is unaffected. Do **not** treat this line as current deploy guidance.
+> **Update 2026-06-20 (superseded):** Accurate as of 2026-05-13 only. The `eu-west-1` deployment (Ireland — not geo-blocked) was decommissioned on 2026-06-20 (all eu-west-1 instances terminated). The current deploy target is `eu-west-2` (London/**UK**); **this doc lists UK among the order-placement-blocked countries, so eu-west-2's geoblock status must be verified from the target before live trading** — the account's eu-west-2 colocation whitelist may or may not exempt it. Do **not** treat this line as current deploy guidance.
 
 ---
 
@@ -870,7 +870,7 @@ Both errors were in the optimistic direction first. This pattern argues for skep
 - Order book mechanics on top markets per §3
 - Reward eligibility rules (resting, ≥min_size, within max_spread, ≥3.5s, two-sided rule, Q-score formula)
 - WebSocket has no reward events
-- Geo-restriction list and KR/eu-west-1 status
+- Geo-restriction list and KR status (eu-west-1 deploy decommissioned 2026-06-20; eu-west-2 geoblock unverified)
 - NT adapter field coverage at pinned rev
 - Changelog entries
 - `/multi` vs `/current` relationship

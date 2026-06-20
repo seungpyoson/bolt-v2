@@ -392,7 +392,11 @@ fn run_reference_current_price_health_command(
 fn print_reference_current_price_health_report(
     report: &ReferenceCurrentPriceHealthReport,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}", serde_json::to_string_pretty(report)?);
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    serde_json::to_writer_pretty(&mut stdout, report)?;
+    use std::io::Write as _;
+    writeln!(&mut stdout)?;
     if !report.all_sources_observed() {
         return Err(std::io::Error::other(REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR).into());
     }

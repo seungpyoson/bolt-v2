@@ -4343,14 +4343,6 @@ reason = "This is the redacted CLI output field naming the configured kill-switc
 [[allowed]]
 path = "src/main.rs"
 kind = "string"
-literal = '''"reference_current_price health did not observe every configured source"'''
-context = '''"reference_current_price health did not observe every configured source";'''
-classification = "operator_health_cli_diagnostic"
-reason = "This is the fixed fail-closed diagnostic returned by the reference-current-price health CLI when configured source updates are not observed."
-
-[[allowed]]
-path = "src/main.rs"
-kind = "string"
 literal = '''"{}"'''
 context = '''println!("{}", serde_json::to_string_pretty(&output)?);'''
 classification = "operator_artifact_cli_output_format"

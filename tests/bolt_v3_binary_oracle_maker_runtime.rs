@@ -1114,6 +1114,9 @@ const RUNTIME_STATIC_NO_OUTCOME: &str = "No";
 const RUNTIME_MARKET_KEY: &str = "eth-static-event";
 const RUNTIME_YES_INSTRUMENT: &str = "MAKER-RT-YES.SIM";
 const RUNTIME_NO_INSTRUMENT: &str = "MAKER-RT-NO.SIM";
+// The YES leg's instrument id after a (hypothetical) venue re-issue of the same
+// period's market: a distinct InstrumentId resolved at the same window start.
+const RUNTIME_YES_INSTRUMENT_REISSUED: &str = "MAKER-RT-YES-REISSUED.SIM";
 
 fn runtime_static_declaration() -> MakerMarketDeclaration {
     MakerMarketDeclaration {
@@ -1220,6 +1223,31 @@ fn runtime_static_instruments_rolled() -> Vec<InstrumentAny> {
     ]
 }
 
+/// The same declared static market resolved on the SAME cadence window (identical
+/// activation => identical `start_timestamp_milliseconds`, same condition id /
+/// slug / market_id / outcomes) but with the YES leg re-issued under a NEW
+/// instrument id. A retain keyed only on the window start would keep the stale YES
+/// instrument; the leg instrument id is read live by the trade-subscription differ,
+/// so this is the regression guard that a re-issued instrument under an unchanged
+/// window start is treated as a roll (fail-closed) rather than a silent retain.
+fn runtime_static_instruments_reissued_yes() -> Vec<InstrumentAny> {
+    let market_id = format!("market-{RUNTIME_STATIC_SLUG}");
+    vec![
+        runtime_binary_option_with_market_id(
+            RUNTIME_YES_INSTRUMENT_REISSUED,
+            RUNTIME_STATIC_YES_OUTCOME,
+            &market_id,
+            RUNTIME_NOW_MS - 1_000,
+        ),
+        runtime_binary_option_with_market_id(
+            RUNTIME_NO_INSTRUMENT,
+            RUNTIME_STATIC_NO_OUTCOME,
+            &market_id,
+            RUNTIME_NOW_MS - 1_000,
+        ),
+    ]
+}
+
 fn runtime_portfolio_policy() -> MakerMarketPortfolioPolicy {
     MakerMarketPortfolioPolicy {
         max_active_markets: 3,
@@ -1288,6 +1316,64 @@ fn maker_runtime_refresh_reports_miss_for_undiscoverable_market_not_silent_drop(
     assert_eq!(refresh.misses.len(), 1);
     assert!(refresh.subscribe.is_empty());
     assert!(refresh.unsubscribe.is_empty());
+}
+
+#[test]
+fn maker_runtime_refresh_rerolls_when_a_leg_instrument_changes_under_the_same_window() {
+    // Fail-closed retain guard (PR #853 external review): the retain-vs-reset
+    // decision compares the resolved leg instrument ids, not just the cadence window
+    // start. If a venue re-issues the period's market under a new instrument id at an
+    // UNCHANGED window start, retaining by window start alone would keep the stale
+    // leg instrument — and the leg instrument id is read live by the trade-
+    // subscription differ, so the maker would stay subscribed to the gone feed and
+    // never subscribe the re-issued one. The second refresh below changes only the
+    // YES instrument id (same activation => same start_timestamp_milliseconds), so:
+    //   - with the instrument-aware retain predicate it is treated as a roll: the
+    //     active binding swaps to the re-issued YES, the re-issued id is subscribed,
+    //     and the stale id is unsubscribed;
+    //   - with a window-start-only predicate it would be retained: the active binding
+    //     keeps the stale YES, `subscribe` omits the re-issued id, and `unsubscribe`
+    //     omits the stale id — all three assertions below then fail.
+    let mut runtime = MakerRuntime::empty();
+    runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+
+    let reissued_yes = InstrumentId::from(RUNTIME_YES_INSTRUMENT_REISSUED);
+    let stale_yes = InstrumentId::from(RUNTIME_YES_INSTRUMENT);
+    let refresh = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments_reissued_yes(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+
+    assert_eq!(
+        runtime.active_market_count(),
+        1,
+        "the re-issued market stays active (a roll rebuilds, it does not drop)"
+    );
+    let market = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the re-issued declared market is active");
+    assert_eq!(
+        market.leg_binding(Leg::Yes).instrument_id,
+        reissued_yes,
+        "a re-issued leg instrument under the same window start must replace the stale one"
+    );
+    assert!(
+        refresh.subscribe.contains(&reissued_yes),
+        "the re-issued instrument must be newly subscribed: {:?}",
+        refresh.subscribe
+    );
+    assert!(
+        refresh.unsubscribe.contains(&stale_yes),
+        "the stale instrument feed must be dropped: {:?}",
+        refresh.unsubscribe
+    );
 }
 
 // ---------------------------------------------------------------------------

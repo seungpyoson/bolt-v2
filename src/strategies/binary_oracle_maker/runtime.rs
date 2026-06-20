@@ -323,15 +323,15 @@ impl MakerRuntime {
                 continue;
             };
             let runtime = match self.markets.remove(&market_key) {
-                // Same cadence window: retain assigned identities + generations and
-                // refresh only the allocation. The prior binding's other metadata
-                // (expiration, selection outcome) is intentionally NOT refreshed from
-                // the fresh resolution here: a same window start implies the same
-                // resolved instrument ids (the slug derives from the period start), and
-                // no consumer reads the expiration/selection fields until settlement, so
-                // a stale value is latent at the foundation. The X3 settlement slice
-                // refreshes that metadata on retain (and treats a changed instrument id
-                // under an unchanged window start as a roll) — tracked in #866.
+                // Same cadence window AND same resolved leg instruments (`same_window`
+                // compares both): retain assigned identities + generations and refresh
+                // only the allocation. A changed leg instrument under an unchanged window
+                // start is NOT retained — `same_window` treats it as a roll, so the live
+                // trade-subscription differ never strands on a re-issued instrument. The
+                // prior binding's remaining metadata (expiration, selection outcome) IS
+                // intentionally left un-refreshed here: no consumer reads those fields
+                // until settlement, so a stale value is latent at the foundation. The X3
+                // settlement slice refreshes that metadata on retain — tracked in #866.
                 Some(mut prior) if same_window(&prior.binding, binding) => {
                     prior.allocation_notional = allocation_notional;
                     prior
@@ -394,13 +394,23 @@ impl MakerRuntime {
 }
 
 /// Whether two bindings of the same declared market describe the same cadence
-/// window, i.e. share a resolved window start. This — not the venue `market_id`,
-/// which is metadata not guaranteed to change on a roll — is what
-/// [`MakerRuntime::apply_resolution`] keys the retain-vs-reset decision on, so a
-/// genuine roll (a new `start_timestamp_milliseconds`) always rebuilds the runtime
-/// with fresh identities even when the venue reuses the same `market_id`.
+/// window *and* resolved to the same leg instruments. The window start
+/// (`start_timestamp_milliseconds`) — not the venue `market_id`, which is metadata
+/// not guaranteed to change on a roll — is the primary discriminator, so a genuine
+/// roll (a new `start_timestamp_milliseconds`) always rebuilds the runtime with
+/// fresh identities even when the venue reuses the same `market_id`. The leg
+/// instrument ids are compared too, so a venue that re-issues the period's market
+/// under new instrument ids at an unchanged window start is treated as a roll
+/// (fail-closed): the leg instrument id is read live by the trade-subscription
+/// differ ([`MakerRuntime::instrument_id_set`]), so a window-start-only retain would
+/// strand the maker on the gone instrument's feed. The discovery engine resolves a
+/// period to stable instruments, so in practice the instrument ids match whenever
+/// the window start does; comparing them makes that trusted invariant fail-closed
+/// rather than merely assumed.
 fn same_window(prior: &MakerResolvedMarketBinding, current: &MakerResolvedMarketBinding) -> bool {
     prior.start_timestamp_milliseconds == current.start_timestamp_milliseconds
+        && prior.yes.instrument_id == current.yes.instrument_id
+        && prior.no.instrument_id == current.no.instrument_id
 }
 
 /// Apply one leg's dispatched intent to its identity slots. See

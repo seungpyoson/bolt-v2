@@ -35,10 +35,29 @@ pub struct MakerRuntimeOrderDispatchOutcome {
     pub no: MakerRuntimeLegOrderDispatchOutcome,
 }
 
+impl MakerRuntimeOrderDispatchOutcome {
+    /// The first per-leg routing error (YES then NO), if either leg failed to route
+    /// its compiled command through the execution policy. A caller reconciles the
+    /// identities of whichever legs *did* dispatch, then fails loud on this so a
+    /// partial two-leg dispatch never silently swallows a routing failure.
+    #[must_use]
+    pub fn routing_error(&self) -> Option<&str> {
+        self.yes
+            .routing_error
+            .as_deref()
+            .or(self.no.routing_error.as_deref())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MakerRuntimeLegOrderDispatchOutcome {
     pub dispatch: Option<MakerOrderDispatchOutcome>,
     pub blocked_by: Option<MakerRuntimeOrderDispatchBlockReason>,
+    /// Set when routing this leg's compiled command through the execution policy
+    /// returned an error. The leg did not dispatch (`dispatch` is `None`), but the
+    /// sibling leg's outcome is still returned so the caller can reconcile the
+    /// identity it *did* dispatch before failing loud, instead of orphaning it.
+    pub routing_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,10 +91,20 @@ pub fn dispatch_maker_runtime_order_plan_with_command_router(
         &str,
     ) -> Result<MakerOrderDispatchOutcome>,
 ) -> Result<MakerRuntimeOrderDispatchOutcome> {
-    Ok(MakerRuntimeOrderDispatchOutcome {
-        yes: dispatch_leg(input, &input.order_plan.yes, route_command)?,
-        no: dispatch_leg(input, &input.order_plan.no, route_command)?,
-    })
+    let yes = dispatch_leg(input, &input.order_plan.yes, route_command)?;
+    // Short-circuit on a YES routing error exactly as the prior `?` did (the NO leg
+    // is not attempted), but return the partial outcome instead of discarding it, so
+    // the caller can reconcile/abort with both legs' state in hand.
+    let no = if yes.routing_error.is_some() {
+        MakerRuntimeLegOrderDispatchOutcome {
+            dispatch: None,
+            blocked_by: None,
+            routing_error: None,
+        }
+    } else {
+        dispatch_leg(input, &input.order_plan.no, route_command)?
+    };
+    Ok(MakerRuntimeOrderDispatchOutcome { yes, no })
 }
 
 fn dispatch_leg(
@@ -96,6 +125,7 @@ fn dispatch_leg(
         return Ok(MakerRuntimeLegOrderDispatchOutcome {
             dispatch: None,
             blocked_by: None,
+            routing_error: None,
         });
     };
 
@@ -114,16 +144,27 @@ fn dispatch_leg(
         ));
     };
 
-    let dispatch = route_command(command, input.submit_order_prefix)?;
-    Ok(MakerRuntimeLegOrderDispatchOutcome {
-        dispatch: Some(dispatch),
-        blocked_by: None,
-    })
+    match route_command(command, input.submit_order_prefix) {
+        Ok(dispatch) => Ok(MakerRuntimeLegOrderDispatchOutcome {
+            dispatch: Some(dispatch),
+            blocked_by: None,
+            routing_error: None,
+        }),
+        // A routing error becomes per-leg data (not an early `?` abort) so a partial
+        // two-leg dispatch never discards the sibling leg's dispatched identity. The
+        // caller reconciles the dispatched leg, then fails loud on this error.
+        Err(error) => Ok(MakerRuntimeLegOrderDispatchOutcome {
+            dispatch: None,
+            blocked_by: None,
+            routing_error: Some(format!("{error:#}")),
+        }),
+    }
 }
 
 fn blocked(reason: MakerRuntimeOrderDispatchBlockReason) -> MakerRuntimeLegOrderDispatchOutcome {
     MakerRuntimeLegOrderDispatchOutcome {
         dispatch: None,
         blocked_by: Some(reason),
+        routing_error: None,
     }
 }

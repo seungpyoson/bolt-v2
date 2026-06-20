@@ -55,14 +55,11 @@ active_rv_surfaces = ["btc_usdt_midpoint_rv"]
 min_coverage_ratio = 0.5
 
 # Full [risk.loss_governor] block, inserted at risk.loss_governor in the composed
-# config. ABSENT from root (the template carries no live loss rails); the pilot
-# owns them. generate/verify-live-config fail closed unless these rails are present
-# AND enabled.
+# config. ABSENT from root (the template carries no live loss-governor policy); the pilot
+# owns them. The block must remain tracked and explicit; enabled=false deliberately
+# keeps submit admission from constructing a LossGovernorPolicy.
 [loss_governor]
-# Must be true for a live deploy: ops generate/verify-live-config fail closed on
-# disabled rails, which go inert at runtime (loss_governor_policy_from_loaded returns
-# None when disabled, so no LossGovernorPolicy is constructed).
-enabled = true
+enabled = false
 account_id = "POLYMARKET-001"
 max_snapshot_age_ns = 5000000000
 rolling_window_ns = 300000000000

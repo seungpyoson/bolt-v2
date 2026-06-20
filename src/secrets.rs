@@ -344,7 +344,7 @@ mod tests {
         );
 
         session
-            .client_for("eu-west-1")
+            .client_for("ap-southeast-1")
             .expect("client_for for second region must succeed");
         assert_eq!(
             session.cached_region_count(),

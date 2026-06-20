@@ -19,6 +19,7 @@ use nautilus_model::enums::OmsType;
 use serde::Deserialize;
 use toml::Value;
 
+use super::binding::MakerMarketDeclaration;
 use crate::strategies::registry::ValidationError;
 
 /// Flat NautilusTrader config the maker consumes at build. The `StrategyConfig`
@@ -57,6 +58,11 @@ pub struct BinaryOracleMakerConfig {
     /// submit-rate and venue REST caps are NOT config knobs — they come from
     /// `risk.nautilus.max_order_submit_rate` and the venue egress model.
     pub requote_min_interval_ms: u64,
+    /// Interval (ms) of the maker's autonomous quote/refresh timer — how often the
+    /// runtime re-resolves its active markets and (in later slices) requotes. The
+    /// loop cadence; distinct from `requote_min_interval_ms`, which is a per-leg
+    /// throttle floor inside a cycle, not the scheduling period.
+    pub quote_interval_ms: u64,
     /// Maximum number of markets the portfolio selector may quote concurrently.
     pub market_portfolio_max_active_markets: u64,
     /// Total bankroll notional allocated to the market-selection portfolio.
@@ -73,6 +79,12 @@ pub struct BinaryOracleMakerConfig {
     /// DIFFERENT market set. Without it the gate would accept stale evidence for
     /// an untested market set.
     pub markets_config_digest: String,
+    /// The operator-declared markets the maker quotes, threaded verbatim from the
+    /// `[[parameters.markets]]` block by `archetype::raw_maker_config` so the
+    /// runtime (`runtime::MakerRuntime`) can resolve them at `on_start` against the
+    /// live instrument snapshot. `markets_config_digest` above binds the same set
+    /// into the go-live hash; this carries the data the digest summarizes.
+    pub markets: Vec<MakerMarketDeclaration>,
 }
 
 /// Zero-sized factory the `StrategyBuilder` trait is implemented for (in
@@ -86,6 +98,7 @@ const MISSING_ORDER_ID_TAG_CODE: &str = "missing_order_id_tag";
 const MISSING_OMS_TYPE_CODE: &str = "missing_oms_type";
 const MISSING_CLIENT_ID_CODE: &str = "missing_client_id";
 const INVALID_OMS_TYPE_CODE: &str = "invalid_oms_type";
+const INVALID_ORDER_ID_TAG_CODE: &str = "invalid_order_id_tag";
 const UNKNOWN_FIELD_CODE: &str = "unknown_field";
 
 const STRATEGY_ID_FIELD: &str = "strategy_id";
@@ -98,6 +111,8 @@ const MU_MIN_CLASSIFIED_SAMPLES_FIELD: &str = "mu_min_classified_samples";
 const MU_STALE_WINDOW_MS_FIELD: &str = "mu_stale_window_ms";
 const MU_MIN_FLOOR_FIELD: &str = "mu_min_floor";
 const REQUOTE_MIN_INTERVAL_MS_FIELD: &str = "requote_min_interval_ms";
+const QUOTE_INTERVAL_MS_FIELD: &str = "quote_interval_ms";
+const MARKETS_FIELD: &str = "markets";
 const MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD: &str = "market_portfolio_max_active_markets";
 const MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD: &str =
     "market_portfolio_total_bankroll_notional";
@@ -145,10 +160,12 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
                 | MU_STALE_WINDOW_MS_FIELD
                 | MU_MIN_FLOOR_FIELD
                 | REQUOTE_MIN_INTERVAL_MS_FIELD
+                | QUOTE_INTERVAL_MS_FIELD
                 | MARKET_PORTFOLIO_MAX_ACTIVE_MARKETS_FIELD
                 | MARKET_PORTFOLIO_TOTAL_BANKROLL_NOTIONAL_FIELD
                 | MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD
                 | MARKETS_CONFIG_DIGEST_FIELD
+                | MARKETS_FIELD
         ) {
             errors.push(ValidationError {
                 field: format!("{field_prefix}.{key}"),
@@ -193,7 +210,33 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_MARKETS_CONFIG_DIGEST_CODE,
         errors,
     );
+    validate_order_id_tag_delimiter_free(table, field_prefix, errors);
     validate_oms_type_parses(table, field_prefix, errors);
+}
+
+/// Fail loud at load when `order_id_tag` contains the `-` delimiter the maker's
+/// per-leg client order id is joined on (`runtime::make_leg_identity`). The tag is
+/// the leading, free-form id component; constraining it to be delimiter-free keeps
+/// the positional id encoding unambiguous (the remaining free-form component,
+/// `market_key`, is right-anchored by the decimal window-start/generation and the
+/// `yes`/`no` leg), so two distinct markets can never mint the same client order
+/// id. A missing or non-string `order_id_tag` is already reported by
+/// `validate_string_field`, so it is skipped here.
+fn validate_order_id_tag_delimiter_free(
+    table: &toml::map::Map<String, Value>,
+    field_prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(value) = table.get(ORDER_ID_TAG_FIELD).and_then(Value::as_str) else {
+        return;
+    };
+    if value.contains('-') {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{ORDER_ID_TAG_FIELD}"),
+            code: INVALID_ORDER_ID_TAG_CODE,
+            message: format!("must not contain the `-` order-id delimiter, got `{value}`"),
+        });
+    }
 }
 
 /// Fail loud at load when `oms_type` is a string that does not parse as a
@@ -260,10 +303,18 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             market_portfolio_max_active_markets = 3
             market_portfolio_total_bankroll_notional = 1500.0
             market_portfolio_min_slot_notional = 100.0
             markets_config_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+            [[markets]]
+            market_key = "eth-hourly"
+            family_key = "updown"
+            underlying_asset = "ETH"
+            cadence_seconds = 3600
+            cadence_slug_token = "1h"
         }
         .into()
     }
@@ -281,6 +332,7 @@ mod tests {
         assert_eq!(config.mu_stale_window_ms, 60_000);
         assert_eq!(config.mu_min_floor, 0.05);
         assert_eq!(config.requote_min_interval_ms, 500);
+        assert_eq!(config.quote_interval_ms, 1000);
         assert_eq!(config.market_portfolio_max_active_markets, 3);
         assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
         assert_eq!(config.market_portfolio_min_slot_notional, 100.0);
@@ -288,6 +340,13 @@ mod tests {
             config.markets_config_digest,
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
+        assert_eq!(config.markets.len(), 1);
+        assert_eq!(config.markets[0].market_key, "eth-hourly");
+        assert_eq!(config.markets[0].family_key, "updown");
+        assert_eq!(config.markets[0].underlying_asset, "ETH");
+        assert_eq!(config.markets[0].cadence_seconds, 3600);
+        assert_eq!(config.markets[0].cadence_slug_token, "1h");
+        assert_eq!(config.markets[0].static_condition_id, None);
     }
 
     #[test]
@@ -295,6 +354,29 @@ mod tests {
         let mut errors = Vec::new();
         validate_config(&valid_raw(), "strategy", &mut errors);
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn validate_config_rejects_order_id_tag_with_delimiter() {
+        // The maker joins the per-leg client order id on `-`
+        // (`runtime::make_leg_identity`); an `order_id_tag` containing the delimiter
+        // would make the positional encoding ambiguous, so it must fail loud at
+        // config load rather than risk minting colliding ids. Without the
+        // delimiter-free check this passes validation, so the assertion is
+        // differential.
+        let mut raw = valid_raw();
+        raw.as_table_mut().expect("config is a table").insert(
+            "order_id_tag".to_string(),
+            Value::String("00-1".to_string()),
+        );
+        let mut errors = Vec::new();
+        validate_config(&raw, "strategy", &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.code == INVALID_ORDER_ID_TAG_CODE),
+            "a hyphenated order_id_tag must be rejected: {errors:?}"
+        );
     }
 
     #[test]

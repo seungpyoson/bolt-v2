@@ -2319,8 +2319,8 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         // to instrument precision (unlike index/mark, which go through `rescaled()` — see the
         // index/mark hash paths). The logical catalog hash is therefore scale-SENSITIVE: a
         // numerically-equal but differently-scaled rate (e.g. "0.0001" vs "0.000100") produces a
-        // different hash. This is by design — the sort comparator's `.rate.scale()` tie-break
-        // (line 2188) deterministically orders scale-distinct equal rates, and the golden hash
+        // different hash. This is by design — the `.rate.scale()` tie-break in this function's
+        // sort comparator deterministically orders scale-distinct equal rates, and the golden hash
         // (`funding_catalog_hash_matches_golden_v1`) is therefore scale-bound.
         hasher.update(funding_rate.rate.to_string().as_bytes());
         hasher.update([44u8]);
@@ -4553,6 +4553,46 @@ max_notional = "200000"
         assert_eq!(loaded.len(), 2);
         crate::runner::assert_funding_read_back_matches(&loaded, &table, "BTCUSDT.BYBIT")
             .expect("shared funding read-back assertion");
+    }
+
+    #[test]
+    fn funding_read_back_assert_is_order_independent_and_still_fails_loud() {
+        // Differential guard for the order-independent pairing in
+        // `assert_funding_read_back_matches`. The fixture's rows are already in
+        // ascending `event_time` order, which is also the read-back sort order,
+        // so `projects_and_reads_back_funding_rates` never actually exercises the
+        // reorder. This test feeds the canonical table in a DIFFERENT stored
+        // order than the read-back, plus a corrupted variant, so the sort-both-
+        // sides logic is genuinely load-bearing here:
+        //   - Under the current code both sides are key-sorted, so reversed input
+        //     still pairs correctly and passes.
+        //   - Under the old positional `zip`, reversed canonical row 0 (rate
+        //     0.000250) would pair with read-back row 0 (rate -0.000100) and fail.
+        let table = canonical_funding_rates_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_funding_rates_to_catalog(&table, &linear_perpetual_spec(), dir.path())
+            .expect("project");
+        let loaded = read_back_funding_rates(dir.path(), "BTCUSDT.BYBIT").expect("read back");
+        assert_eq!(loaded.len(), 2);
+
+        // Order-independence: reverse the canonical stored order so it no longer
+        // matches the ascending read-back order. The assertion must still pass.
+        let mut reversed = table.clone();
+        reversed.rows.reverse();
+        crate::runner::assert_funding_read_back_matches(&loaded, &reversed, "BTCUSDT.BYBIT")
+            .expect("read-back assertion must be independent of canonical stored order");
+
+        // Non-vacuity: a genuinely divergent canonical rate must still fail loud,
+        // proving the self-sorting did not make the per-field comparison circular.
+        // `event_time` is unchanged, so the corrupted row still pairs by ts_event
+        // with the matching read-back row and trips the rate ensure!.
+        let mut corrupted = table.clone();
+        corrupted.rows[0].rate = "9.999999".to_string();
+        assert!(
+            crate::runner::assert_funding_read_back_matches(&loaded, &corrupted, "BTCUSDT.BYBIT")
+                .is_err(),
+            "a divergent canonical rate must fail the read-back assertion"
+        );
     }
 
     #[test]

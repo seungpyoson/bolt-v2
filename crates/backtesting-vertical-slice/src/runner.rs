@@ -1765,9 +1765,12 @@ pub(crate) fn assert_funding_read_back_matches(
     let expected_id = InstrumentId::from_str(expected_instrument_id)
         .with_context(|| format!("invalid expected_instrument_id {expected_instrument_id:?}"))?;
 
-    // Comparable sort key derived from BOTH sides. Matches the field order of
-    // the projection's `read_back_funding_rates` sort so neither input's stored
-    // order can influence the pairing.
+    // Comparable sort key derived from BOTH sides, mirroring the projection's
+    // `read_back_funding_rates` sort order so neither input's stored order can
+    // influence the pairing. `instrument_id` (the projection's 2nd sort key) is
+    // intentionally omitted: each read-back is single-instrument, so it is
+    // constant on both sides and cannot affect ordering. If this assertion is
+    // ever reused for a multi-instrument read-back, restore instrument_id here.
     type FundingSortKey = (u64, Decimal, u32, Option<u16>, Option<u64>, u64);
 
     // Read-back side: fields are already typed; the key is infallible.

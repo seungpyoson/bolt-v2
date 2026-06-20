@@ -59,14 +59,19 @@ fn leg_tag(leg: Leg) -> &'static str {
 /// which the order compiler maps **verbatim** onto the NautilusTrader
 /// `ClientOrderId` (`bolt_v3_maker_order_compile::nt_client_order_id`), so it must
 /// be unique per live order: `order_id_tag` is unique per strategy, `market_key`
-/// per declared market, `window_start_milliseconds` is the resolved cadence
-/// window's start (`MakerResolvedMarketBinding::start_timestamp_milliseconds`) and
-/// is the one component **guaranteed** to change when that declared market rolls to
-/// a new window, `leg` distinguishes the two legs, and `generation` is monotonic
-/// per (market, leg). The `generation` counter lives on [`MakerMarketRuntime`] and
-/// resets to 0 when a roll rebuilds the runtime ([`MakerRuntime::apply_resolution`]);
-/// `market_key` is operator-stable across that roll, so the window start is what
-/// discriminates a post-roll re-mint from a pre-roll id. The venue `market_id` is
+/// per declared market, `leg` distinguishes the two legs, and `generation` is the
+/// monotonic per-(market_key, leg) counter that **guarantees** cross-roll
+/// uniqueness. The `generation` counter lives on [`MakerMarketRuntime`] and is
+/// **carried forward across every roll** ([`MakerRuntime::apply_resolution`] threads
+/// it into the rebuilt runtime, never resetting it to 0), so no roll — a new cadence
+/// window, a re-issued leg instrument under an unchanged window, or a venue
+/// `market_id` reuse — can re-mint a client order id a prior generation already
+/// consumed (NautilusTrader never reuses a `ClientOrderId`). `window_start_milliseconds`
+/// is the resolved cadence window's start
+/// (`MakerResolvedMarketBinding::start_timestamp_milliseconds`); it and `leg` keep the
+/// id human-readable and the source tuple recoverable, but uniqueness rests on the
+/// carried `generation`, not on the window start changing (an instrument-only roll
+/// leaves it unchanged). The venue `market_id` is
 /// deliberately **not** a component: it is venue metadata not guaranteed to change
 /// per window, so keying the id (or the retain-vs-roll decision) on it would reopen
 /// the collision class on a `market_id`-reuse roll. The positional encoding is
@@ -111,6 +116,26 @@ impl MakerMarketRuntime {
             binding,
             yes_generation: 0,
             no_generation: 0,
+            allocation_notional,
+        }
+    }
+
+    /// Rebuild a rolled market's runtime, **carrying the per-leg generation counters
+    /// forward** so minted client order ids stay monotonic per (market_key, leg)
+    /// across the roll. Resetting them to 0 would re-mint a `ClientOrderId` the
+    /// pre-roll leg already consumed on an instrument-only roll (where the window
+    /// start the id embeds is unchanged) — see [`MakerRuntime::apply_resolution`]'s
+    /// roll arm.
+    fn rolled(
+        binding: MakerResolvedMarketBinding,
+        allocation_notional: f64,
+        yes_generation: u64,
+        no_generation: u64,
+    ) -> Self {
+        Self {
+            binding,
+            yes_generation,
+            no_generation,
             allocation_notional,
         }
     }
@@ -261,9 +286,10 @@ impl MakerRuntime {
     /// Resolve the declared market set against the current instrument snapshot,
     /// re-plan the active portfolio, and reconcile per-market runtime state — the
     /// `on_start` / `on_time_event` entry point. Markets whose cadence window is
-    /// unchanged (same resolved `start_timestamp_milliseconds`) retain their
-    /// assigned order identities and generation counters; rolled or newly-filled
-    /// markets start fresh.
+    /// unchanged (same resolved `start_timestamp_milliseconds` and leg instruments)
+    /// retain their assigned order identities and generation counters; a rolled market
+    /// rebuilds its binding but carries its generation counters forward (so re-minted
+    /// ids stay unique across the roll), and a newly-filled market starts fresh.
     /// Returns the trade-subscription delta plus any resolution misses.
     pub fn refresh_active_markets(
         &mut self,
@@ -336,9 +362,23 @@ impl MakerRuntime {
                     prior.allocation_notional = allocation_notional;
                     prior
                 }
-                // New or rolled window: fresh identities — clone only here, never on
-                // the common retain path.
-                _ => MakerMarketRuntime::new(binding.clone(), allocation_notional),
+                // Roll of a still-active market (a new window start, OR a re-issued leg
+                // instrument at an unchanged window): rebuild the binding fresh but
+                // CARRY the per-leg generation counters forward. The client order id
+                // embeds `generation` but not the instrument id, and an instrument-only
+                // roll leaves `start_timestamp_milliseconds` unchanged, so resetting the
+                // generation to 0 would re-mint a client order id the pre-roll leg
+                // already consumed (NautilusTrader never reuses a `ClientOrderId`).
+                // Carrying it keeps every minted id unique regardless of roll kind.
+                // Clone the binding only here, never on the common retain path.
+                Some(prior) => MakerMarketRuntime::rolled(
+                    binding.clone(),
+                    allocation_notional,
+                    prior.yes_generation,
+                    prior.no_generation,
+                ),
+                // Newly-filled slot (was not active): start the generation counters at 0.
+                None => MakerMarketRuntime::new(binding.clone(), allocation_notional),
             };
             next.insert(market_key, runtime);
         }

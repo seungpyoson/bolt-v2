@@ -1724,16 +1724,17 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
 }
 
 #[test]
-fn maker_runtime_retains_identities_on_same_window_and_resets_on_roll() {
+fn maker_runtime_retains_identities_on_same_window_and_rebuilds_on_roll() {
     // Stateful clauses (b)/(c) invariant + the cadence-roll id guard. A second
     // refresh whose market resolves to the SAME window start retains the assigned
     // identities and the monotonic per-leg generation counters; a rolled window
     // start (same declared market_key and an UNCHANGED venue market_id, new cadence
-    // window) rebuilds the runtime fresh, and the post-roll re-mint must never
-    // reproduce a pre-roll client order id. The single-pass suite begins from
-    // `MakerRuntime::empty()`, so it never enters the retain branch — an inverted
-    // retain guard, a retain keyed on the (unchanged) market_id, or a client order
-    // id missing the rolled window start would otherwise ship green.
+    // window) rebuilds the runtime with unset identities but carries the generation
+    // counters forward, and the post-roll re-mint must never reproduce a pre-roll
+    // client order id. The single-pass suite begins from `MakerRuntime::empty()`, so
+    // it never enters the retain branch — an inverted retain guard, a retain keyed on
+    // the (unchanged) market_id, or a re-mint that dropped the carried generation
+    // would otherwise ship green.
     let mut runtime = MakerRuntime::empty();
     let _ = runtime.refresh_active_markets(
         &[runtime_static_declaration()],
@@ -1786,7 +1787,8 @@ fn maker_runtime_retains_identities_on_same_window_and_resets_on_roll() {
         "a retained window advances the generation, never repeats an id"
     );
 
-    // Third refresh, ROLLED window start => fresh runtime, generation reset to 0.
+    // Third refresh, ROLLED window start => rebuilt runtime, identities unset, the
+    // per-leg generation carried forward (not reset).
     let _ = runtime.refresh_active_markets(
         &[runtime_static_declaration()],
         &runtime_static_instruments_rolled(),
@@ -1814,6 +1816,71 @@ fn maker_runtime_retains_identities_on_same_window_and_resets_on_roll() {
         post_roll_yes.client_order_id(),
         pre_roll_yes.client_order_id(),
         "a post-roll re-mint must never reproduce a pre-roll client order id: the \
-         generation resets to 0, so the rolled window start must discriminate the id"
+         carried generation counter advances across the roll, so the id stays unique \
+         even though a window roll also moves the window start"
+    );
+}
+
+#[test]
+fn maker_runtime_mints_a_unique_id_when_a_leg_instrument_rerolls_under_the_same_window() {
+    // The instrument-only-roll id guard. A leg-instrument re-issue at an UNCHANGED
+    // window start is a roll (`same_window` is false), but the window start the client
+    // order id embeds does NOT change — so the window start alone cannot discriminate
+    // the post-roll id from the pre-roll one. Only the per-leg generation counter,
+    // CARRIED forward across the roll, keeps the re-minted id unique. If the roll
+    // reset the generation to 0, the post-roll re-mint would reproduce the pre-roll
+    // client order id (NautilusTrader never reuses a `ClientOrderId`), so this fails
+    // on a generation-reset-on-roll rebuild.
+    let mut runtime = MakerRuntime::empty();
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"),
+        "the declared market is active, so minting succeeds"
+    );
+    let pre_roll_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a next YES identity was minted");
+
+    // Second refresh: SAME window start, the YES leg re-issued under a NEW instrument
+    // id => `same_window` is false => roll (not retain), but the embedded window start
+    // is unchanged, so only the carried generation can keep the re-mint unique.
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments_reissued_yes(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the re-issued market is active")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .is_none(),
+        "the instrument-only roll rebuilds the runtime with unset identities"
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let post_roll_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a YES identity on the re-issued window");
+    assert_ne!(
+        post_roll_yes.client_order_id(),
+        pre_roll_yes.client_order_id(),
+        "a leg-instrument re-issue at an unchanged window start must still mint a \
+         unique client order id: the window start cannot discriminate it, so the \
+         per-leg generation must carry forward across the roll (never reset to 0)"
     );
 }

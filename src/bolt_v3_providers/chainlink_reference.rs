@@ -572,8 +572,16 @@ fn chainlink_reference_message_handler(
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
 ) -> MessageHandler {
     Arc::new(move |message: Message| {
-        let Some(frame) = message.as_text() else {
-            return;
+        let frame_bytes = match message {
+            Message::Text(bytes) | Message::Binary(bytes) => bytes,
+            _ => return,
+        };
+        let frame = match std::str::from_utf8(frame_bytes.as_ref()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                log::warn!("Chainlink reference frame dropped: invalid UTF-8: {error}");
+                return;
+            }
         };
         let received_ts_ms = match current_unix_timestamp_ms() {
             Ok(value) => value,

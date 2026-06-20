@@ -365,9 +365,10 @@ mod tests {
         // delimiter-free check this passes validation, so the assertion is
         // differential.
         let mut raw = valid_raw();
-        raw.as_table_mut()
-            .expect("config is a table")
-            .insert("order_id_tag".to_string(), Value::String("00-1".to_string()));
+        raw.as_table_mut().expect("config is a table").insert(
+            "order_id_tag".to_string(),
+            Value::String("00-1".to_string()),
+        );
         let mut errors = Vec::new();
         validate_config(&raw, "strategy", &mut errors);
         assert!(

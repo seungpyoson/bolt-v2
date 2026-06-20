@@ -42,7 +42,11 @@ use bolt_v2::{
     },
 };
 use futures_util::{FutureExt, future::BoxFuture};
-use nautilus_common::{cache::Cache, clock::TestClock};
+use nautilus_common::{
+    cache::Cache,
+    clock::{Clock, TestClock},
+    timer::{TimeEvent, TimeEventCallback},
+};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::TradeTick,
@@ -1324,10 +1328,29 @@ fn maker_sim_context(
 /// the static instruments (whose activation/expiration bracket `RUNTIME_NOW_MS`)
 /// are selectable at `on_start`. Returns the cache so the test can seed it.
 fn register_maker_at_runtime_now(maker: &mut BinaryOracleMaker) -> Rc<RefCell<Cache>> {
+    register_maker_at_runtime_now_with_quote_timer_handler(maker, true)
+}
+
+/// Register the maker against a `TestClock` set to `RUNTIME_NOW_MS`. When
+/// `wire_quote_timer_handler` is true this also registers the clock's default
+/// time-event handler, mirroring NT's `DataActor::register` (which wires it in
+/// production); without it `TestClock::set_timer_ns` returns "No callbacks
+/// provided" and `on_start`'s quote-timer registration fails loud. The bare
+/// `core_mut().register` used here performs only the core registration, so the
+/// handler must be wired explicitly to reproduce the live start path.
+fn register_maker_at_runtime_now_with_quote_timer_handler(
+    maker: &mut BinaryOracleMaker,
+    wire_quote_timer_handler: bool,
+) -> Rc<RefCell<Cache>> {
     let clock = Rc::new(RefCell::new(TestClock::new()));
     clock
         .borrow_mut()
         .set_time(UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)));
+    if wire_quote_timer_handler {
+        clock
+            .borrow_mut()
+            .register_default_handler(TimeEventCallback::from(|_event: TimeEvent| {}));
+    }
     let cache = Rc::new(RefCell::new(Cache::default()));
     let portfolio = Rc::new(RefCell::new(Portfolio::new(
         cache.clone(),
@@ -1459,6 +1482,40 @@ fn maker_on_start_fails_loud_when_quote_interval_overflows_the_nanosecond_clock(
     assert!(
         rendered.contains("overflows the nanosecond clock"),
         "on_start should fail loud naming the nanosecond-clock overflow: {rendered}"
+    );
+}
+
+#[test]
+fn maker_on_start_fails_loud_when_the_quote_timer_cannot_register() {
+    // register_quote_timer registers the autonomous quote/refresh timer through
+    // NT's clock default time-event handler, which the actor lifecycle wires in
+    // production (DataActor::register). If that registration fails, on_start must
+    // abort (fail loud) rather than run resolved markets with no quote/refresh
+    // cadence (never reconciling a cadence roll). Differential: a clock with NO
+    // default handler makes TestClock::set_timer_ns return "No callbacks
+    // provided", so on_start must error naming the timer-registration failure. If
+    // register_quote_timer is reverted to logging-and-swallowing that error,
+    // on_start returns Ok and this expect_err fails.
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config_with_static_market(),
+        maker_sim_context(writer, admission),
+    );
+    let cache = register_maker_at_runtime_now_with_quote_timer_handler(&mut maker, false);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    let error = DataActor::on_start(&mut maker)
+        .expect_err("a quote timer that cannot register must fail on_start");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("quote timer registration failed"),
+        "on_start should fail loud naming the quote timer registration failure: {rendered}"
     );
 }
 

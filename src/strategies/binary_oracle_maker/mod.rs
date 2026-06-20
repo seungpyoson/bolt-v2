@@ -362,7 +362,11 @@ impl BinaryOracleMaker {
         )?;
         // A routing error is now per-leg data, not a `?` abort; fail loud here to
         // preserve this reference-quote route's prior fail-closed behavior.
-        if let Some(error) = quote_route.orders.as_ref().and_then(|orders| orders.routing_error()) {
+        if let Some(error) = quote_route
+            .orders
+            .as_ref()
+            .and_then(|orders| orders.routing_error())
+        {
             anyhow::bail!(
                 "binary_oracle_maker reference-quote leg order routing failed: error={error}"
             );

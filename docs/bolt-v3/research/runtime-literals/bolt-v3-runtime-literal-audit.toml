@@ -7575,6 +7575,14 @@ reason = "Strike timestamp unit-conversion / zero-guard constant fixed by NT Uni
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"
 kind = "string"
+literal = '''"BoltV3ChainlinkStrikeFetchRequest"'''
+context = '''const STRIKE_FETCH_REQUEST_DATA_TYPE: &str = "BoltV3ChainlinkStrikeFetchRequest";'''
+classification = "chainlink_provider_type_tag"
+reason = "Stable NT custom-data type tag for provider-owned one-shot Chainlink strike fetch commands; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
 literal = '''"CHAINLINK_DATA_STREAMS"'''
 context = '''const CHAINLINK_STRIKE_SOURCE_FACTORY_NAME: &str = "CHAINLINK_DATA_STREAMS";'''
 classification = "chainlink_provider_type_tag"
@@ -7624,6 +7632,14 @@ reason = "Chainlink feed-binding config field name parsed from the configured bo
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"
 kind = "string"
 literal = '''"instrument_id"'''
+context = '''pub(crate) const STRIKE_FETCH_INSTRUMENT_ID_PARAM: &str = "instrument_id";'''
+classification = "chainlink_provider_custom_data_field"
+reason = "Provider-owned custom strike-fetch command metadata/params field identifying the configured resolution instrument; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"instrument_id"'''
 context = '''let instrument_id_raw = required_str(client_key, index, table, "instrument_id")?;'''
 classification = "chainlink_provider_config_field"
 reason = "Chainlink feed-binding config field name parsed from the configured bolt-v3 TOML; not an operator runtime value."
@@ -7635,6 +7651,14 @@ literal = '''"price_precision"'''
 context = '''let price_precision = required_u8(client_key, index, table, "price_precision")?;'''
 classification = "chainlink_provider_config_field"
 reason = "Chainlink feed-binding config field name parsed from the configured bolt-v3 TOML; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/chainlink/strike_source.rs"
+kind = "string"
+literal = '''"request_sequence"'''
+context = '''const STRIKE_FETCH_REQUEST_SEQUENCE_PARAM: &str = "request_sequence";'''
+classification = "chainlink_provider_custom_data_field"
+reason = "Provider-owned custom strike-fetch command metadata field used only to make NT custom DataType keys unique per retry; not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/chainlink/strike_source.rs"
@@ -8491,14 +8515,6 @@ literal = '''"resolution_instrument_id"'''
 context = '''| "resolution_instrument_id"'''
 classification = "strategy_runtime_schema_field"
 reason = "This whitelists the taker StrategyConfig resolution-strike instrument field name while rejecting unknown runtime config fields."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
-kind = "number"
-literal = '''0'''
-context = '''window_open_unix_seconds: 0,'''
-classification = "strategy_state_invariant"
-reason = "Sentinel placeholder: a resolution-strike unsubscribe event carries no window-open boundary, so the test-only recorder field is zero; not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polyresearch.rs"

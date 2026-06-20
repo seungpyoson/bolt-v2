@@ -21,12 +21,6 @@
 #   BTCUSDT-SPOT.BYBIT). The composed prod config must adopt that upstream
 #   correctness fix, so the oracle's BTC sources are kept value-equal to
 #   config/root.toml's `btc_usdt_midpoint_rv` sources.
-# - 2026-06-19 (#768): absorbed the `[reference_live_probe]` block added to the
-#   shared base `config/root.toml` (reference-live-probe ExecStartPre feature merged
-#   from main). The overlay does not touch this top-level section, so the composed
-#   prod config inherits it verbatim; both client refs it names
-#   (`chainlink_reference`, `polyresearch_reference`) are in the overlay's
-#   `active_clients`, so the prune keeps them. Kept value-equal to root.toml.
 # - 2026-06-20 (#768): absorbed the disabled `[risk.kill_switch]` block added to
 #   the shared base `config/root.toml` by the production kill-switch merge. The
 #   overlay does not touch this block, so the composed prod config inherits it
@@ -34,6 +28,10 @@
 # - 2026-06-20 (#768): absorbed the #855 PolyResearch endpoint/root-shape merge.
 #   The composed prod config inherits the verified endpoint and the BTC-only
 #   Chainlink catalog/gate binding now present in `config/root.toml`.
+# - 2026-06-20 (#870): re-baselined after BTC production disabled the legacy
+#   `[reference_live_probe]` and dropped `polyresearch_reference` from active
+#   BTC clients. Current-price readiness is now checked through the Chainlink-only
+#   `reference-current-price-health` ExecStartPre.
 #
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
 # `funder` is a public on-chain Safe address.
@@ -43,12 +41,6 @@ trader_id = "BOLT-001"
 strategy_files = [
   "strategies/binary_oracle_btc.toml",
 ]
-
-[reference_live_probe]
-chainlink_client_id = "chainlink_reference"
-polyresearch_client_id = "polyresearch_reference"
-duration_secs = 70
-min_chainlink_data_frames = 1
 
 [realized_volatility_surfaces.btc_usdt_midpoint_rv]
 canonical_base_asset = "BTC"
@@ -576,25 +568,3 @@ idle_timeout_ms = 10000
 [clients.chainlink_reference.secrets]
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
-
-# Live PolyResearch/PolyNode current-price websocket source. This is an
-# alternate continuous reference-price stream for [reference_current_price].
-[clients.polyresearch_reference]
-venue = "POLYRESEARCH_REFERENCE_PRICE"
-
-[clients.polyresearch_reference.data]
-websocket_endpoint = "wss://3j5lx6otd8.execute-api.eu-west-1.amazonaws.com/prod"
-transport_backend = "sockudo"
-heartbeat_secs = 5
-heartbeat_message = "{\"action\":\"ping\"}"
-reconnect_timeout_ms = 5000
-reconnect_delay_initial_ms = 250
-reconnect_delay_max_ms = 5000
-reconnect_backoff_factor = 1.5
-reconnect_jitter_ms = 100
-reconnect_max_attempts = "unlimited"
-subscribe_ack_timeout_ms = 2000
-idle_timeout_ms = 10000
-
-[clients.polyresearch_reference.secrets]
-api_key_ssm_parameter = "/bolt/polyresearch/api-key"

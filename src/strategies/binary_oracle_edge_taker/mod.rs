@@ -1953,7 +1953,7 @@ impl BinaryOracleEdgeTaker {
             STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
             serde_json::json!(window_open_unix_seconds),
         );
-        if self.resolution_strike_index_subscription != Some(resolution_instrument_id) {
+        if self.resolution_strike_index_subscription.as_ref() != Some(&resolution_instrument_id) {
             let previous_custom_subscription = self.resolution_strike_custom_subscription.take();
             #[cfg(not(test))]
             if let Some(data_type) = previous_custom_subscription {

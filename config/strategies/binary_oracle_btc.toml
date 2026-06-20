@@ -63,7 +63,7 @@ instrument_id = "BTCUSDT.BINANCE"
 
 [reference_current_price]
 asset = "BTC"
-sources = ["chainlink_primary", "polyresearch_backup"]
+sources = ["chainlink_primary"]
 min_valid_sources = 1
 selection_policy = "first_valid_per_interval"
 max_source_age_ms = 2000
@@ -75,13 +75,6 @@ stale_policy = "block"
 provider = "chainlink_ws"
 client_id = "chainlink_reference"
 instrument_id = "BTC-USD.CHAINLINK"
-enabled = true
-required = false
-
-[reference_current_price.source.polyresearch_backup]
-provider = "polyresearch_ws"
-client_id = "polyresearch_reference"
-symbol = "BTC/USD"
 enabled = true
 required = false
 

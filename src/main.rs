@@ -35,12 +35,19 @@ use bolt_v2::{
         reference_live_probe::run_reference_live_probe,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
+    bolt_v3_reference_price_health::{
+        ReferenceCurrentPriceHealthReport, prepare_reference_current_price_health_run,
+        run_prepared_reference_current_price_health,
+    },
     bolt_v3_secrets::{
         ResolvedBoltV3Secrets, check_no_forbidden_credential_env_vars,
         resolve_bolt_v3_client_secrets, resolve_bolt_v3_secrets,
     },
     secrets::SsmResolverSession,
 };
+
+#[cfg(test)]
+use bolt_v2::bolt_v3_reference_price_health::ReferenceCurrentPriceSourceUpdateObservation;
 
 const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
     "clob_v2_balance_allowance_cache_sync_completed";
@@ -51,6 +58,8 @@ const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
 const KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: &str = "kill_switch_store_init_completed";
 const KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: &str = "state_path";
+const REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR: &str =
+    "reference_current_price health did not observe every configured source";
 
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
@@ -128,6 +137,10 @@ enum OpsCommand {
         config: PathBuf,
     },
     ReferenceLiveProbe {
+        #[arg(short, long)]
+        config: PathBuf,
+    },
+    ReferenceCurrentPriceHealth {
         #[arg(short, long)]
         config: PathBuf,
     },
@@ -306,6 +319,9 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         } => run_verify_live_config(&config_root, &profile),
         OpsCommand::InitKillSwitchStore { config } => run_init_kill_switch_store(&config),
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
+        OpsCommand::ReferenceCurrentPriceHealth { config } => {
+            run_reference_current_price_health_command(&config)
+        }
     }
 }
 
@@ -353,6 +369,37 @@ fn run_reference_live_probe_command(config: &Path) -> Result<(), Box<dyn std::er
         .build()?;
     let report = runtime.block_on(run_reference_live_probe(&loaded, &resolved))?;
     println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_reference_current_price_health_command(
+    config: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let health_run = prepare_reference_current_price_health_run(&loaded)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let local = tokio::task::LocalSet::new();
+    let report = runtime.block_on(local.run_until(async move {
+        let mut health_run = health_run;
+        run_prepared_reference_current_price_health(&mut health_run).await
+    }))?;
+    print_reference_current_price_health_report(&report)
+}
+
+fn print_reference_current_price_health_report(
+    report: &ReferenceCurrentPriceHealthReport,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    serde_json::to_writer_pretty(&mut stdout, report)?;
+    use std::io::Write as _;
+    writeln!(&mut stdout)?;
+    if !report.all_sources_observed() {
+        return Err(std::io::Error::other(REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR).into());
+    }
     Ok(())
 }
 
@@ -1113,6 +1160,56 @@ mod tests {
             }
             _ => panic!("expected ops reference-live-probe command"),
         }
+    }
+
+    #[test]
+    fn ops_reference_current_price_health_cli_parses_config() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "reference-current-price-health",
+            "--config",
+            "config/root.toml",
+        ])
+        .expect("reference current price health command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::ReferenceCurrentPriceHealth { config },
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+            }
+            _ => panic!("expected ops reference-current-price-health command"),
+        }
+    }
+
+    #[test]
+    fn reference_current_price_health_report_gate_rejects_unobserved_source() {
+        let report = ReferenceCurrentPriceHealthReport {
+            targets: Vec::new(),
+            clients: Vec::new(),
+            source_update_observations: vec![ReferenceCurrentPriceSourceUpdateObservation {
+                strategy_instance_id: String::new(),
+                source_id: String::new(),
+                asset: String::new(),
+                provider: String::new(),
+                provider_instrument: String::new(),
+                status: String::new(),
+                reason: String::new(),
+                observed_ts_ms: None,
+                received_ts_ms: None,
+            }],
+        };
+
+        let error = print_reference_current_price_health_report(&report)
+            .expect_err("unobserved reference_current_price sources must fail the command");
+
+        assert!(
+            error
+                .to_string()
+                .contains(REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR),
+            "error should explain the failed health verdict, got: {error}"
+        );
     }
 
     #[test]

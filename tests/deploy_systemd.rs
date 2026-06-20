@@ -25,14 +25,14 @@ fn systemd_unit_requires_srv_mountpoint() {
 }
 
 #[test]
-fn systemd_unit_allows_reference_live_probe_startup_window() {
+fn systemd_unit_allows_reference_health_startup_window() {
     let unit_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
     let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
 
     assert!(
         unit.contains("TimeoutStartSec=180"),
-        "systemd unit must allow the TOML-owned reference_live_probe duration plus connect/SSM overhead"
+        "systemd unit must allow reference current-price health plus connect/SSM overhead"
     );
 }
 
@@ -93,16 +93,20 @@ fn systemd_unit_verifies_live_config_against_profile_before_start() {
 }
 
 #[test]
-fn systemd_unit_runs_reference_live_probe_before_start() {
+fn systemd_unit_runs_reference_current_price_health_before_start() {
     let unit_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
     let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
 
     assert!(
         unit.contains(
-            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops reference-live-probe --config /opt/bolt-v2/config/live.toml"
+            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops reference-current-price-health --config /opt/bolt-v2/config/live.toml"
         ),
-        "systemd unit must prove Chainlink and PolyResearch reference streams before starting"
+        "systemd unit must prove reference_current_price custom data reaches the strategy-free runtime path before starting"
+    );
+    assert!(
+        !unit.contains("ops reference-live-probe"),
+        "systemd must not rely on raw WebSocket frame probes as the reference readiness gate"
     );
 }
 

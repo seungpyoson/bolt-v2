@@ -597,15 +597,13 @@ fn strike_fetch_retries_each_open_tick_until_price_to_beat_binds() {
 }
 
 #[test]
-fn resolution_strike_reissue_unsubscribes_before_each_subscribe_to_defeat_nt_dedup() {
-    // NT's `DataClientAdapter` keys index-price subscriptions by `instrument_id`
-    // and ignores the params map (`nautilus_data` client.rs:494-498, rev 6e059dc),
-    // so a bare re-subscribe with the constant resolution instrument is silently
-    // swallowed and the point-in-time strike source never re-fetches for later
-    // windows or retries. `subscribe_resolution_strike` must therefore unsubscribe
-    // the resolution instrument immediately before every re-subscribe. This drives
-    // the pre-open + at-open reissue path and asserts that pairing; it MUST fail
-    // until the unsubscribe-before-subscribe is in place.
+fn resolution_strike_reissue_does_not_depend_on_index_unsubscribe_pairing() {
+    // Live NT dispatches data commands asynchronously. An immediate
+    // index-price unsubscribe/subscribe pair can re-add the exact topic handler
+    // before the data engine handles the unsubscribe, causing NT to suppress the
+    // provider unsubscribe and dedupe the later subscribe by instrument. Strike
+    // re-fetches must therefore use a fetch trigger that does not depend on
+    // index-price unsubscribe forwarding.
     let mut strategy = test_strategy();
     strategy.config.resolution_instrument_id = Some(format!(
         "{}-USD.CHAINLINK",
@@ -650,40 +648,61 @@ fn resolution_strike_reissue_unsubscribes_before_each_subscribe_to_defeat_nt_ded
         }
     }
 
-    // Pre-open selection then an at-open tick: each reissue must clear the
-    // subscription before re-subscribing.
+    // Pre-open selection then two open retry ticks: the first attempt should
+    // establish the durable index subscription that routes IndexPriceUpdate to
+    // on_index_price; later retries should use unique custom fetch commands.
     strategy.refresh_selection_from_cache(current_period_start as u64 * MILLIS_PER_SECOND_U64 + 1);
     strategy.refresh_selection_from_cache(next_start_ms + 1);
+    strategy.refresh_selection_from_cache(next_start_ms + 2);
 
     let events = &strategy.resolution_strike_subscribe_events;
-    assert!(
-        !events.is_empty(),
-        "the strike (re)subscribe path must record at least one event",
-    );
-    let subscribes = events
-        .iter()
-        .filter(|event| event.action == RESOLUTION_STRIKE_SUBSCRIBE_ACTION)
-        .count();
-    let unsubscribes = events
-        .iter()
-        .filter(|event| event.action == RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION)
-        .count();
     assert_eq!(
-        unsubscribes, subscribes,
-        "every strike subscribe must be paired with a preceding unsubscribe to clear NT's \
-         per-instrument index-price dedup (subscribes={subscribes}, unsubscribes={unsubscribes})",
+        events.len(),
+        3,
+        "expected one durable subscribe and two custom retries"
     );
-    for pair in events.chunks(2) {
-        assert_eq!(
-            pair[0].action, RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION,
-            "each reissue must unsubscribe before subscribing",
-        );
-        assert_eq!(pair[1].action, RESOLUTION_STRIKE_SUBSCRIBE_ACTION);
-        assert_eq!(
-            pair[0].instrument_id, pair[1].instrument_id,
-            "the unsubscribe and subscribe must target the same resolution instrument",
-        );
-    }
+    assert_eq!(
+        events[0].trigger,
+        ResolutionStrikeFetchTrigger::DurableIndex
+    );
+    assert!(
+        events[0].custom_data_type.is_none(),
+        "durable index subscribe must not masquerade as a custom fetch",
+    );
+
+    let custom_events = events
+        .iter()
+        .filter(|event| event.trigger == ResolutionStrikeFetchTrigger::CustomFetch)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        custom_events.len(),
+        2,
+        "open retry ticks must use the custom fetch trigger path",
+    );
+    assert_eq!(
+        custom_events[0].request_sequence,
+        Some(1),
+        "first custom retry should carry the first request sequence",
+    );
+    assert_eq!(
+        custom_events[1].request_sequence,
+        Some(2),
+        "second custom retry should carry the next request sequence",
+    );
+    let first_topic = custom_events[0]
+        .custom_data_type
+        .as_ref()
+        .expect("custom fetch must record its DataType")
+        .topic();
+    let second_topic = custom_events[1]
+        .custom_data_type
+        .as_ref()
+        .expect("custom fetch must record its DataType")
+        .topic();
+    assert_ne!(
+        first_topic, second_topic,
+        "each retry must have a distinct custom DataType topic so NT dedup cannot swallow it",
+    );
 }
 
 #[test]

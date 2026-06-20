@@ -681,6 +681,33 @@ fn task6_entry_evaluation_blocks_when_realized_vol_is_not_ready() {
 fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
     let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
     register_test_strategy_with_active_instruments(&mut strategy);
+    // Both-sided cheap book so each outcome is unambiguously tradeable: the #789
+    // diffusion-grounded uncertainty band is nonzero even at market open, so a
+    // knife-edge near-strike book would correctly wipe the marginal side.
+    let cheap_outcome_price = UNIT_F64 / BPS_DENOMINATOR.sqrt();
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (
+                BookAction::Clear,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Sell,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+        ],
+    );
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.4, 1_200)));
@@ -935,11 +962,23 @@ fn sized_executable_edge_recomputes_uncertainty_band_from_sized_fee() {
         )],
         "sized selected-side threshold failure should surface as a pricing block"
     );
+    // lead_gap and jitter are 0 and the recomputed sized fee contributes a 0.5
+    // fee-uncertainty term, so the band is 0.5 plus the #789 diffusion-grounded
+    // time term (realized_vol 1.5 * sqrt(T)) at seconds_to_expiry = 300 (snapshot
+    // start 1_000ms, eval 1_200ms => 0 elapsed seconds). The prior inverted term
+    // was exactly 0 at market open, which is why this used to assert band == 0.5.
+    let expected_band = 0.5
+        + crate::bolt_v3_taker_updown_signal::time_uncertainty_probability(
+            1.5,
+            300,
+            crate::bolt_v3_numeric::SECONDS_PER_YEAR_F64,
+        )
+        .expect("finite realized vol yields a time-uncertainty band");
     assert!(
         evaluation
             .uncertainty_band_probability
-            .is_some_and(|band| (band - 0.5).abs() < 1e-9),
-        "final selected-side band should be recomputed from the sized fee: {evaluation:#?}"
+            .is_some_and(|band| (band - expected_band).abs() < 1e-9),
+        "final selected-side band should be the recomputed sized fee plus the diffusion time term: {evaluation:#?}"
     );
 }
 
@@ -1511,10 +1550,10 @@ fn task6_entry_evaluation_applies_theta_scaled_threshold_at_boundary() {
         near_expiry.pricing_blocked_by.contains(
             &EntryPricingBlockReason::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
-                BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
+                BinaryOutcomeEdgeBlockReason::EdgeBelowThreshold
             )
         ),
-        "theta-scaled threshold miss should surface as an executable-edge pricing block: {near_expiry:#?}"
+        "theta-scaled threshold miss should surface as an edge-below-threshold pricing block: {near_expiry:#?}"
     );
     assert!(near_expiry.up_worst_case_ev_bps.is_some());
     assert!(near_expiry.min_worst_case_ev_bps.is_some());

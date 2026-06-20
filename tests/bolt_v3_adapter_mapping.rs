@@ -101,6 +101,18 @@ fn fixture_polyresearch_secrets() -> ResolvedBoltV3PolyResearchSecrets {
     }
 }
 
+fn nt_polymarket_signature_type(
+    value: polymarket::PolymarketSignatureType,
+) -> NtPolymarketSignatureType {
+    match value {
+        polymarket::PolymarketSignatureType::Eoa => NtPolymarketSignatureType::Eoa,
+        polymarket::PolymarketSignatureType::PolyProxy => NtPolymarketSignatureType::PolyProxy,
+        polymarket::PolymarketSignatureType::PolyGnosisSafe => {
+            NtPolymarketSignatureType::PolyGnosisSafe
+        }
+    }
+}
+
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -515,7 +527,20 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
         .expect("polymarket [execution] block must produce an NT exec config")
         .config_as::<PolymarketExecClientConfig>()
         .expect("polymarket [execution] should downcast to NT PolymarketExecClientConfig");
-    assert_eq!(exec.signature_type, NtPolymarketSignatureType::PolyProxy);
+    let expected_execution: polymarket::PolymarketExecutionConfig = loaded
+        .root
+        .clients
+        .get("polymarket_main")
+        .expect("fixture Polymarket client should exist")
+        .execution
+        .clone()
+        .expect("fixture Polymarket execution block should exist")
+        .try_into()
+        .expect("fixture Polymarket execution block should parse");
+    assert_eq!(
+        exec.signature_type,
+        nt_polymarket_signature_type(expected_execution.signature_type)
+    );
     assert_eq!(
         exec.private_key.as_deref(),
         Some(fixture_polymarket_secrets().private_key.as_str())
@@ -532,9 +557,9 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
         exec.passphrase.as_deref(),
         Some(fixture_polymarket_secrets().passphrase.as_str())
     );
-    assert_eq!(
-        exec.funder.as_deref(),
-        Some("0x1111111111111111111111111111111111111111")
+    assert!(
+        exec.funder.as_deref() == expected_execution.funder.as_deref(),
+        "mapped Polymarket funder must match the fixture funder"
     );
     assert_eq!(
         exec.base_url_http.as_deref(),

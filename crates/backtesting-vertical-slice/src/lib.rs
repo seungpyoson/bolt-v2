@@ -65,6 +65,7 @@ pub mod research_reader;
 pub mod result_contract;
 pub mod run_manifest;
 pub mod runner;
+pub mod seeded_l2_quotes;
 pub mod selected_source_slice;
 pub mod source_archive_discovery_seed;
 pub mod source_archive_index_manifest;

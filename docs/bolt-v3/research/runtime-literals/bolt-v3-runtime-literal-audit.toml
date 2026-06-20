@@ -1048,7 +1048,7 @@ reason = "The updown cadence validator requires minute-aligned periods; the mark
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''60'''
-context = '''60 => Some("1m"),'''
+context = '''(60, "1m"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1056,7 +1056,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = '''"1m"'''
-context = '''60 => Some("1m"),'''
+context = '''(60, "1m"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1064,7 +1064,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''300'''
-context = '''300 => Some("5m"),'''
+context = '''(300, "5m"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1072,7 +1072,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = '''"5m"'''
-context = '''300 => Some("5m"),'''
+context = '''(300, "5m"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1080,7 +1080,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''900'''
-context = '''900 => Some("15m"),'''
+context = '''(900, "15m"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1088,7 +1088,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = '''"15m"'''
-context = '''900 => Some("15m"),'''
+context = '''(900, "15m"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1096,7 +1096,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''3600'''
-context = '''3600 => Some("1h"),'''
+context = '''(3600, "1h"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1104,7 +1104,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = '''"1h"'''
-context = '''3600 => Some("1h"),'''
+context = '''(3600, "1h"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1112,7 +1112,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''14400'''
-context = '''14400 => Some("4h"),'''
+context = '''(14400, "4h"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -1120,7 +1120,7 @@ reason = "This is the documented updown runtime-contract mapping from cadence se
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = '''"4h"'''
-context = '''14400 => Some("4h"),'''
+context = '''(14400, "4h"),'''
 classification = "runtime_contract_cadence_slug_mapping"
 reason = "This is the documented updown runtime-contract mapping from cadence seconds to Polymarket slug token; TOML must match it exactly."
 
@@ -17735,6 +17735,62 @@ literal = '''"market_portfolio_min_slot_notional"'''
 context = '''const MARKET_PORTFOLIO_MIN_SLOT_NOTIONAL_FIELD: &str = "market_portfolio_min_slot_notional";'''
 classification = "maker_market_portfolio_schema_field"
 reason = "Maker flat config schema field name accepted by BinaryOracleMakerConfig; the value remains TOML-owned through [parameters.market_portfolio]."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override RV keep selector `{}` matched {matches} sources in surface `{}`"'''
+context = '''"backtest override RV keep selector `{}` matched {matches} sources in surface `{}`",'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic; selector, count, and surface values come from the loaded production TOML plus explicit backtest override input."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override keep_realized_volatility_sources selector `{label}` is duplicated"'''
+context = '''"backtest override keep_realized_volatility_sources selector `{label}` is duplicated"'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic for duplicate explicit RV keep selectors; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"backtest override surface `{}` min_ready_sources {} exceeds enabled quorum sources {} after filtering"'''
+context = '''"backtest override surface `{}` min_ready_sources {} exceeds enabled quorum sources {} after filtering",'''
+classification = "backtest_config_override_validation_diagnostic"
+reason = "Run-only config override validation diagnostic comparing TOML-owned RV quorum policy with the explicit backtest keep-set."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"label"'''
+context = '''("label", override_spec.label.as_str()),'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"realized_volatility_surface_id"'''
+context = '''"realized_volatility_surface_id",'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"signal_role"'''
+context = '''("signal_role", override_spec.signal_role.as_str()),'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"strategy_instance_id"'''
+context = '''"strategy_instance_id",'''
+classification = "backtest_config_override_validation_field"
+reason = "Field-name label used only to validate the explicit run-only backtest override shape."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/static_binary_event.rs"

@@ -183,8 +183,22 @@ pub enum MarketSelectionRule {
 /// strictness fires after the strategy envelope was relaxed to raw
 /// TOML.
 pub fn deserialize_target_block(target: &toml::Value) -> Result<TargetBlock, String> {
-    target
-        .clone()
+    let mut value = target.clone();
+    if let Some(table) = value.as_table_mut() {
+        // Fill in an omitted `cadence_slug_token` from `cadence_secs` through the
+        // shared, registry-dispatched family helper before typed deserialization,
+        // so an operator never restates a token the updown runtime-contract fully
+        // determines. The mapping lives in exactly one place
+        // (`expected_cadence_slug_token`, wired into the registry binding); this
+        // surface only plumbs its own field names. A provided token is left
+        // untouched and still checked against the contract downstream.
+        super::inject_derived_cadence_slug_token(
+            table,
+            stringify!(rotating_market_family),
+            stringify!(cadence_secs),
+        )?;
+    }
+    value
         .try_into::<TargetBlock>()
         .map_err(|error| error.to_string())
 }
@@ -382,7 +396,8 @@ pub fn validate_target_cadence(context: &str, cadence_secs: i64) -> Vec<String> 
         ));
     } else if expected_cadence_slug_token(cadence_secs).is_none() {
         errors.push(format!(
-            "{context}: target.cadence_secs must be one of the updown runtime-contract values 60, 300, 900, 3600, or 14400 (got {cadence_secs})"
+            "{context}: target.cadence_secs must be one of the updown runtime-contract values {} (got {cadence_secs})",
+            cadence_contract_values()
         ));
     }
     errors
@@ -461,14 +476,41 @@ fn validate_cadence_slug_contract(
     errors
 }
 
-fn expected_cadence_slug_token(cadence_secs: i64) -> Option<&'static str> {
-    match cadence_secs {
-        60 => Some("1m"),
-        300 => Some("5m"),
-        900 => Some("15m"),
-        3600 => Some("1h"),
-        14400 => Some("4h"),
-        _ => None,
+/// The updown runtime-contract: the ONLY `(cadence_secs, cadence_slug_token)`
+/// pairs. Single source for slug derivation (`expected_cadence_slug_token`,
+/// wired into the family registry binding) AND the valid-cadence diagnostics
+/// (`cadence_contract_values`); no caller restates the pairs or the list, so the
+/// derivation and the "must be one of …" error can never drift apart. Exposed
+/// `pub(crate)` so the family-registry seam test iterates these exact pairs rather
+/// than a restated copy; the closed-set drift guard
+/// (`tests::cadence_slug_contract_matches_independent_pins`) keeps the one
+/// deliberate independent restatement that fails closed on any added/removed pair.
+pub(crate) const CADENCE_SLUG_CONTRACT: &[(i64, &str)] = &[
+    (60, "1m"),
+    (300, "5m"),
+    (900, "15m"),
+    (3600, "1h"),
+    (14400, "4h"),
+];
+
+pub(crate) fn expected_cadence_slug_token(cadence_secs: i64) -> Option<&'static str> {
+    CADENCE_SLUG_CONTRACT
+        .iter()
+        .find(|(secs, _)| *secs == cadence_secs)
+        .map(|(_, token)| *token)
+}
+
+/// The contract's valid cadence values rendered for fail-closed diagnostics
+/// (`"60, 300, 900, 3600, or 14400"`), derived from the single contract source.
+fn cadence_contract_values() -> String {
+    let values: Vec<String> = CADENCE_SLUG_CONTRACT
+        .iter()
+        .map(|(secs, _)| secs.to_string())
+        .collect();
+    match values.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, head)) => format!("{}, or {last}", head.join(", ")),
+        None => String::new(),
     }
 }
 
@@ -646,8 +688,9 @@ impl std::fmt::Display for BoltV3MarketIdentityError {
                 cadence_secs,
             } => write!(
                 f,
-                "{prefix}target.cadence_secs must be one of the updown runtime-contract values 60, 300, 900, 3600, or 14400 (got {cadence_secs})",
+                "{prefix}target.cadence_secs must be one of the updown runtime-contract values {values} (got {cadence_secs})",
                 prefix = format_target_prefix(strategy_instance_id, configured_target_id),
+                values = cadence_contract_values(),
             ),
             BoltV3MarketIdentityError::CadenceSlugTokenMismatch {
                 strategy_instance_id,
@@ -2057,5 +2100,111 @@ mod tests {
             .is_none(),
             "expired markets must not produce a step-function entry probability"
         );
+    }
+
+    fn target_without_cadence_slug_token() -> toml::Value {
+        let mut target = target_with_resolution_mapping();
+        target
+            .as_table_mut()
+            .expect("target fixture is a table")
+            .remove(stringify!(cadence_slug_token));
+        target
+    }
+
+    #[test]
+    fn deserialize_target_block_derives_omitted_cadence_slug_token() {
+        // Fixture cadence_secs = 300 ⇒ contract slug "5m"; with the operator token
+        // omitted the shared seam must fill it in before typed deserialization.
+        let target = target_without_cadence_slug_token();
+        let block = deserialize_target_block(&target)
+            .expect("an omitted cadence_slug_token must derive from cadence_secs");
+        assert_eq!(block.cadence_slug_token, TEST_CADENCE_SLUG_TOKEN);
+    }
+
+    #[test]
+    fn deserialize_target_block_preserves_explicit_cadence_slug_token() {
+        // The fixture's cadence_secs = 300 would derive "5m", so a deliberately
+        // different supplied token proves the seam never clobbers operator input.
+        let mut target = target_with_resolution_mapping();
+        target
+            .as_table_mut()
+            .expect("target fixture is a table")
+            .insert(
+                stringify!(cadence_slug_token).to_string(),
+                toml::Value::String("operator_choice".to_string()),
+            );
+        let block =
+            deserialize_target_block(&target).expect("an explicit token deserializes verbatim");
+        assert_eq!(block.cadence_slug_token, "operator_choice");
+    }
+
+    #[test]
+    fn deserialize_target_block_rejects_omitted_token_for_non_contract_cadence() {
+        let mut target = target_without_cadence_slug_token();
+        target
+            .as_table_mut()
+            .expect("target fixture is a table")
+            .insert(
+                stringify!(cadence_secs).to_string(),
+                toml::Value::Integer(120),
+            );
+        let error = deserialize_target_block(&target)
+            .expect_err("a non-contract cadence with no token must fail closed");
+        assert!(
+            error.contains("cadence_secs=120") && error.contains("cadence_slug_token is required"),
+            "error must name the offending cadence: {error}"
+        );
+    }
+
+    #[test]
+    fn deserialize_target_block_still_rejects_unknown_fields() {
+        // The raw-table preprocessing must not weaken `deny_unknown_fields`.
+        let mut target = target_with_resolution_mapping();
+        target
+            .as_table_mut()
+            .expect("target fixture is a table")
+            .insert("unexpected_field".to_string(), toml::Value::Boolean(true));
+        let error =
+            deserialize_target_block(&target).expect_err("an unknown field must still be rejected");
+        assert!(
+            error.contains("unexpected_field") || error.contains("unknown field"),
+            "deny_unknown_fields must reject stray keys: {error}"
+        );
+    }
+
+    #[test]
+    fn cadence_slug_contract_matches_independent_pins() {
+        // Authoritative bidirectional drift guard, colocated with the single
+        // source it protects. The seam tests in the parent module iterate a
+        // pinned list, so they catch a CHANGED or REMOVED pair but cannot catch
+        // an ADDED cadence. Comparing the whole slice against an independent
+        // restatement fails closed in every direction: a changed token, an added
+        // cadence, or a removed cadence all break this.
+        const PINS: &[(i64, &str)] = &[
+            (60, "1m"),
+            (300, "5m"),
+            (900, "15m"),
+            (3600, "1h"),
+            (14400, "4h"),
+        ];
+        assert_eq!(
+            CADENCE_SLUG_CONTRACT, PINS,
+            "updown cadence->slug contract drifted from its pinned expectation"
+        );
+    }
+
+    #[test]
+    fn target_runtime_fields_from_target_inherits_derived_cadence_slug_token() {
+        // The taker holds no cadence_slug_token derivation of its own; it inherits
+        // the derived value through `target_runtime_fields_from_target` -- the exact
+        // dispatcher `raw_taker_config` calls -- which routes the updown family
+        // through `deserialize_target_block`'s shared seam. Omitting the operator
+        // token must still surface the derived slug in the runtime fields the taker
+        // copies into its config, so deleting the taker's old per-config derivation
+        // stays safe.
+        let target = target_without_cadence_slug_token();
+        let runtime = crate::bolt_v3_market_families::target_runtime_fields_from_target(&target)
+            .expect("dispatcher must derive the omitted cadence_slug_token for the updown family");
+        assert_eq!(runtime.cadence_slug_token, TEST_CADENCE_SLUG_TOKEN);
     }
 }

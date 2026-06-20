@@ -430,6 +430,18 @@ mod tests {
 
     const FAKE_UPDOWN_PROVIDER_KEY: &str = "FAKE_UPDOWN_PROVIDER";
 
+    fn nt_polymarket_signature_type(
+        value: polymarket::PolymarketSignatureType,
+    ) -> NtPolymarketSignatureType {
+        match value {
+            polymarket::PolymarketSignatureType::Eoa => NtPolymarketSignatureType::Eoa,
+            polymarket::PolymarketSignatureType::PolyProxy => NtPolymarketSignatureType::PolyProxy,
+            polymarket::PolymarketSignatureType::PolyGnosisSafe => {
+                NtPolymarketSignatureType::PolyGnosisSafe
+            }
+        }
+    }
+
     #[derive(Debug)]
     struct FakeProviderSecrets;
 
@@ -910,6 +922,16 @@ mod tests {
             .expect("polymarket [execution] block must map")
             .config_as::<PolymarketExecClientConfig>()
             .expect("polymarket execution config should downcast to NT config");
+        let expected_execution: polymarket::PolymarketExecutionConfig = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture Polymarket client should exist")
+            .execution
+            .clone()
+            .expect("fixture Polymarket execution block should exist")
+            .try_into()
+            .expect("fixture Polymarket execution block should parse");
         assert_eq!(exec.trader_id, TraderId::from("BOLT-001"));
         assert_eq!(exec.account_id, AccountId::from("POLYMARKET-001"));
         assert_eq!(
@@ -919,11 +941,14 @@ mod tests {
         assert_eq!(exec.api_key.as_deref(), Some("fixture-poly-api-key"));
         assert_eq!(exec.api_secret.as_deref(), Some("fixture-poly-api-secret"));
         assert_eq!(exec.passphrase.as_deref(), Some("fixture-poly-passphrase"));
-        assert_eq!(
-            exec.funder.as_deref(),
-            Some("0x1111111111111111111111111111111111111111")
+        assert!(
+            exec.funder.as_deref() == expected_execution.funder.as_deref(),
+            "mapped Polymarket funder must match the fixture funder"
         );
-        assert_eq!(exec.signature_type, NtPolymarketSignatureType::PolyProxy);
+        assert_eq!(
+            exec.signature_type,
+            nt_polymarket_signature_type(expected_execution.signature_type)
+        );
         assert_eq!(
             exec.base_url_http.as_deref(),
             Some("https://clob.polymarket.com")

@@ -216,6 +216,7 @@ pub enum SourceAdapterKind {
     TarJsonlSnapshotDeltas,
     ParquetEventStreamDeltas,
     SnapshotQuotes,
+    SeededL2Quotes,
     IndexPrices,
     MarkPrices,
     FundingRates,
@@ -284,6 +285,12 @@ pub struct ConverterConfig {
     /// run-specs carry no `quotes` key and deserialize unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quotes: Option<super::canonical_market_data::QuoteMappingConfig>,
+    /// Snapshot-seeded L2 quote mapping, present only when the registered
+    /// adapter kind is [`SourceAdapterKind::SeededL2Quotes`]. The adapter reads
+    /// L2 snapshot+delta rows, seeds a book from the first snapshot, then emits
+    /// top-of-book `QuoteTick` rows from absolute level-replace updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeded_l2_quotes: Option<super::seeded_l2_quotes::SeededL2QuoteMappingConfig>,
 }
 
 impl ConverterConfig {
@@ -328,6 +335,9 @@ pub enum RawPayloadContainer {
     CsvGzip,
     CsvText,
     SingleCsvZip,
+    /// ZIP archive with exactly one UTF-8 line-delimited JSON member; decoded to
+    /// one bounded text string after ZIP CRC/length verification.
+    SingleJsonlZip,
     /// Plain UTF-8 line-delimited JSON (also single-envelope or pretty-printed
     /// paged JSON), decoded to one text string bounded by `max_decoded_bytes`.
     JsonlText,
@@ -444,6 +454,15 @@ pub const SNAPSHOT_QUOTES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefini
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_QUOTE_TICK,
 };
 
+pub const SEEDED_L2_QUOTES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: super::seeded_l2_quotes::SEEDED_L2_QUOTES_TRANSFORM_IDENTITY,
+    version: super::seeded_l2_quotes::SEEDED_L2_QUOTES_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::SeededL2Quotes,
+    table_family: QUOTE_TABLE_FAMILY,
+    normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_QUOTE_TICK,
+};
+
 pub const INDEX_PRICES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
     identity: INDEX_PRICES_TRANSFORM_IDENTITY,
     version: INDEX_PRICES_TRANSFORM_VERSION,
@@ -491,6 +510,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SNAPSHOT_QUOTES_ADAPTER,
+    SEEDED_L2_QUOTES_ADAPTER,
     INDEX_PRICES_ADAPTER,
     MARK_PRICES_ADAPTER,
     FUNDING_RATES_ADAPTER,
@@ -506,6 +526,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SNAPSHOT_QUOTES_ADAPTER,
+    SEEDED_L2_QUOTES_ADAPTER,
     INDEX_PRICES_ADAPTER,
     MARK_PRICES_ADAPTER,
     FUNDING_RATES_ADAPTER,
@@ -768,6 +789,32 @@ pub fn require_registered_quote_converter_for_table_family(
     ensure!(
         adapter.kind == SourceAdapterKind::SnapshotQuotes,
         "adapter {:?} version {:?} is {:?}, not a snapshot-quotes converter",
+        adapter.identity,
+        adapter.version,
+        adapter.kind
+    );
+    Ok(adapter)
+}
+
+#[must_use]
+pub fn registered_seeded_l2_quote_converter(
+    identity: &str,
+    version: &str,
+) -> Option<&'static SourceAdapterDefinition> {
+    registered_source_adapter(identity, version)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::SeededL2Quotes)
+}
+
+pub fn require_registered_seeded_l2_quote_converter_for_table_family(
+    identity: &str,
+    version: &str,
+    table_family: &str,
+) -> Result<&'static SourceAdapterDefinition> {
+    let adapter =
+        require_registered_source_adapter_for_table_family(identity, version, table_family)?;
+    ensure!(
+        adapter.kind == SourceAdapterKind::SeededL2Quotes,
+        "adapter {:?} version {:?} is {:?}, not a seeded L2 quote converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -1407,6 +1454,9 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize native trades")
         }
+        SourceAdapterKind::SeededL2Quotes => {
+            bail!("seeded L2 quote adapter cannot normalize native trades")
+        }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize native trades")
         }
@@ -1492,6 +1542,9 @@ pub fn normalize_registered_bar_converter(
         }
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize native bars")
+        }
+        SourceAdapterKind::SeededL2Quotes => {
+            bail!("seeded L2 quote adapter cannot normalize native bars")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize native bars")
@@ -1579,6 +1632,9 @@ pub fn normalize_registered_paged_json_bar_converter(
         }
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize paged-JSON bars")
+        }
+        SourceAdapterKind::SeededL2Quotes => {
+            bail!("seeded L2 quote adapter cannot normalize paged-JSON bars")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize paged-JSON bars")
@@ -1669,6 +1725,9 @@ pub fn normalize_registered_jsonl_multi_interval_bar_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize JSONL multi-interval bars")
         }
+        SourceAdapterKind::SeededL2Quotes => {
+            bail!("seeded L2 quote adapter cannot normalize JSONL multi-interval bars")
+        }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize JSONL multi-interval bars")
         }
@@ -1756,6 +1815,9 @@ pub fn normalize_registered_order_book_delta_converter(
         }
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize order-book deltas")
+        }
+        SourceAdapterKind::SeededL2Quotes => {
+            bail!("seeded L2 quote adapter cannot normalize order-book deltas")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize order-book deltas")
@@ -1852,6 +1914,9 @@ pub fn normalize_registered_tar_order_book_delta_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize tar order-book deltas")
         }
+        SourceAdapterKind::SeededL2Quotes => {
+            bail!("seeded L2 quote adapter cannot normalize tar order-book deltas")
+        }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize tar order-book deltas")
         }
@@ -1947,6 +2012,9 @@ pub fn normalize_registered_event_stream_delta_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize event-stream deltas")
         }
+        SourceAdapterKind::SeededL2Quotes => {
+            bail!("seeded L2 quote adapter cannot normalize event-stream deltas")
+        }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize event-stream deltas")
         }
@@ -1961,6 +2029,84 @@ pub fn normalize_registered_event_stream_delta_converter(
             bail!("test fixture adapter cannot normalize event-stream deltas")
         }
     }
+}
+
+/// Normalize accepted snapshot-seeded L2 JSONL into top-of-book quote tables.
+///
+/// The adapter kind must be [`SourceAdapterKind::SeededL2Quotes`] for the
+/// accepted object's quote table family. The mapping is run-spec-owned and
+/// describes the JSON action/time/level fields; replay starts only after a
+/// source snapshot seeds the book.
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a seeded-L2 quote converter, if the
+/// mapping is absent, if an update precedes the seeding snapshot, or if the
+/// produced canonical quote table fails validation.
+pub fn normalize_registered_seeded_l2_quote_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    jsonl_text: &str,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalQuotesTable>> {
+    let converter = require_registered_seeded_l2_quote_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    let mapping = converter_config.seeded_l2_quotes.as_ref().with_context(|| {
+        format!(
+            "converter {:?} is a seeded L2 quote adapter but carries no [converter.seeded_l2_quotes] mapping",
+            converter.identity
+        )
+    })?;
+    super::seeded_l2_quotes::normalize_seeded_l2_jsonl_quotes(
+        accepted,
+        identity,
+        mapping,
+        jsonl_text,
+        capture_time_nanos,
+        ingest_run_id,
+    )
+}
+
+/// Normalize accepted tar-bundled snapshot-seeded L2 JSONL into top-of-book
+/// quote tables.
+///
+/// # Errors
+///
+/// Returns an error if the converter is not a seeded-L2 quote converter, if the
+/// mapping is absent, if a tar member is malformed, if an update precedes the
+/// seeding snapshot, or if the produced canonical quote table fails validation.
+pub fn normalize_registered_tar_seeded_l2_quote_converter(
+    converter_config: &ConverterConfig,
+    accepted: &AcceptedDataset,
+    identity: &CanonicalInstrumentIdentity,
+    members: impl IntoIterator<Item = super::tar_reader::TarMember>,
+    capture_time_nanos: i64,
+    ingest_run_id: &str,
+) -> Result<Vec<super::canonical_market_data::CanonicalQuotesTable>> {
+    let converter = require_registered_seeded_l2_quote_converter_for_table_family(
+        &converter_config.identity,
+        &converter_config.version,
+        &accepted.table_family,
+    )?;
+    let mapping = converter_config.seeded_l2_quotes.as_ref().with_context(|| {
+        format!(
+            "converter {:?} is a seeded L2 quote adapter but carries no [converter.seeded_l2_quotes] mapping",
+            converter.identity
+        )
+    })?;
+    super::seeded_l2_quotes::normalize_seeded_l2_tar_jsonl_quotes(
+        accepted,
+        identity,
+        mapping,
+        members,
+        capture_time_nanos,
+        ingest_run_id,
+    )
 }
 
 /// Normalize an accepted top-of-book snapshot object through the registered
@@ -2033,6 +2179,12 @@ pub fn normalize_registered_quote_converter(
         }
         SourceAdapterKind::ParquetEventStreamDeltas => {
             bail!("Parquet event-stream delta adapter cannot normalize top-of-book quotes")
+        }
+        SourceAdapterKind::SeededL2Quotes => {
+            bail!(
+                "seeded L2 quote adapter requires the seeded-L2 quote entry point; \
+                 call normalize_registered_seeded_l2_quote_converter"
+            )
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize top-of-book quotes")

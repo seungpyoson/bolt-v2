@@ -10,35 +10,52 @@
 //! There is no custom simulation behaviour: NautilusTrader owns the engine,
 //! catalog, fills, and results.
 
-use std::{path::Path, str::FromStr, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use bolt_v2::{
+    ReferencePriceUpdate, ReferenceQuoteProvenance,
+    bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
+    bolt_v3_config::{
+        BacktestConfigOverrideReport, LoadedStrategy, apply_backtest_config_override,
+        load_bolt_v3_config,
+    },
     bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
+        BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
+        BoltV3OrderIntentEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+        BoltV3SubmitReservationMetadataEvidence,
     },
     bolt_v3_order_execution::{BoltV3OrderExecutionMode, BoltV3OrderExecutionPolicy},
+    bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     strategies::{
-        binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder,
+        production_strategy_registry,
         registry::{FeeProvider, StrategyBuildContext},
     },
 };
 use futures_util::future::BoxFuture;
 use nautilus_analysis::analyzer::PortfolioAnalyzer;
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
+use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate,
-        OrderBookDelta, QuoteTick, TradeTick,
+        Bar, BarSpecification, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentClose,
+        MarkPriceUpdate, OrderBookDelta, QuoteTick, TradeTick,
     },
-    enums::{AggregationSource, AggressorSide, BookAction, OrderSide, OrderStatus, PriceType},
-    identifiers::{InstrumentId, Venue},
+    enums::{
+        AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide, OrderStatus,
+        PriceType,
+    },
+    identifiers::{ClientId, InstrumentId, Venue},
     orders::Order,
-    types::Quantity,
+    types::{Price, Quantity},
 };
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 use rust_decimal::Decimal;
@@ -59,8 +76,10 @@ use super::{
         domain_statistics_from_analyzer, register_domain_statistics, resolve_domain_statistics,
     },
     mechanical_probe_strategy::{MechanicalTradeReplayProbe, MechanicalTradeReplayProbeConfig},
+    path_resolution::resolve_existing_input_path,
     result_contract::{
-        BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
+        BacktestFeedLabel, BacktestResultContract, BacktestRunGuardReport, ResultArtifactUris,
+        ResultContractInputs, build_result_contract,
     },
     run_manifest::{
         BacktestingRunManifest, NtSurfaceClassification, STRATEGY_BINARY_ORACLE_EDGE_TAKER,
@@ -79,22 +98,197 @@ const PARAM_CONFIG_TOML: &str = "config_toml";
 /// Strategy parameter key for the backtest fee-provider assumption.
 const PARAM_FEE_BPS: &str = "fee_bps";
 
-#[derive(Debug)]
-struct BacktestDecisionEvidenceWriter;
+#[derive(Debug, Default)]
+struct BacktestDecisionEvidenceState {
+    strategy_input_snapshot_count: u64,
+    order_intent_count: u64,
+    admission_decision_count: u64,
+    admitted_order_count: u64,
+    submit_reservation_count: u64,
+    submit_fill_count: u64,
+    latest_strategy_input_snapshot: Option<BoltV3StrategyInputEvidenceSnapshot>,
+}
+
+#[derive(Debug, Default)]
+struct BacktestDecisionEvidenceWriter {
+    state: Mutex<BacktestDecisionEvidenceState>,
+}
+
+impl BacktestDecisionEvidenceWriter {
+    fn run_guard_report(&self, result: &BacktestResult) -> Result<BacktestRunGuardReport> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("backtest decision evidence state mutex poisoned"))?;
+        let latest = state.latest_strategy_input_snapshot.as_ref();
+        let signal_quote_received =
+            latest.is_some_and(|snapshot| positive_decimal_text(&snapshot.spot_price));
+        let realized_volatility_ready = latest.is_some_and(|snapshot| {
+            positive_decimal_text(&snapshot.realized_volatility)
+                && snapshot.realized_volatility_as_of_ms.is_some()
+                && snapshot.realized_volatility_blockers.is_empty()
+        });
+        let price_to_beat_received =
+            latest.is_some_and(|snapshot| positive_decimal_text(&snapshot.price_to_beat_value));
+        let reference_fresh = latest.is_some_and(|snapshot| {
+            snapshot
+                .reference_current_price
+                .as_deref()
+                .is_some_and(positive_decimal_text)
+        });
+        let armed = signal_quote_received
+            && realized_volatility_ready
+            && price_to_beat_received
+            && reference_fresh;
+        let traded = result.total_orders > 0 && result.total_positions > 0;
+        let did_not_arm_reason = did_not_arm_reason(DidNotArmReasonInputs {
+            latest,
+            signal_quote_received,
+            realized_volatility_ready,
+            price_to_beat_received,
+            reference_fresh,
+            order_intent_count: state.order_intent_count,
+            admitted_order_count: state.admitted_order_count,
+            total_orders: result.total_orders as u64,
+            total_positions: result.total_positions as u64,
+        });
+
+        Ok(BacktestRunGuardReport {
+            strategy_input_snapshot_count: state.strategy_input_snapshot_count,
+            order_intent_count: state.order_intent_count,
+            admission_decision_count: state.admission_decision_count,
+            admitted_order_count: state.admitted_order_count,
+            submit_reservation_count: state.submit_reservation_count,
+            submit_fill_count: state.submit_fill_count,
+            signal_quote_received,
+            realized_volatility_ready,
+            price_to_beat_received,
+            reference_fresh,
+            armed,
+            traded,
+            latest_market_id: latest.and_then(|snapshot| snapshot.market_id.clone()),
+            latest_spot_price: latest.map(|snapshot| snapshot.spot_price.clone()),
+            latest_reference_current_price: latest
+                .and_then(|snapshot| snapshot.reference_current_price.clone()),
+            latest_reference_current_price_source_id: latest
+                .and_then(|snapshot| snapshot.reference_current_price_source_id.clone()),
+            latest_price_to_beat_value: latest.map(|snapshot| snapshot.price_to_beat_value.clone()),
+            latest_realized_volatility_as_of_ms: latest
+                .and_then(|snapshot| snapshot.realized_volatility_as_of_ms),
+            latest_realized_volatility_sources_used: latest.map_or_else(Vec::new, |snapshot| {
+                snapshot.realized_volatility_sources_used.clone()
+            }),
+            latest_realized_volatility_blockers: latest.map_or_else(Vec::new, |snapshot| {
+                snapshot.realized_volatility_blockers.clone()
+            }),
+            did_not_arm_reason,
+        })
+    }
+
+    fn with_state<R>(&self, f: impl FnOnce(&mut BacktestDecisionEvidenceState) -> R) -> Result<R> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("backtest decision evidence state mutex poisoned"))?;
+        Ok(f(&mut state))
+    }
+}
+
+fn positive_decimal_text(value: &str) -> bool {
+    value
+        .trim()
+        .parse::<Decimal>()
+        .is_ok_and(|value| value > Decimal::ZERO)
+}
+
+struct DidNotArmReasonInputs<'a> {
+    latest: Option<&'a BoltV3StrategyInputEvidenceSnapshot>,
+    signal_quote_received: bool,
+    realized_volatility_ready: bool,
+    price_to_beat_received: bool,
+    reference_fresh: bool,
+    order_intent_count: u64,
+    admitted_order_count: u64,
+    total_orders: u64,
+    total_positions: u64,
+}
+
+fn did_not_arm_reason(inputs: DidNotArmReasonInputs<'_>) -> Option<String> {
+    let DidNotArmReasonInputs {
+        latest,
+        signal_quote_received,
+        realized_volatility_ready,
+        price_to_beat_received,
+        reference_fresh,
+        order_intent_count,
+        admitted_order_count,
+        total_orders,
+        total_positions,
+    } = inputs;
+    if total_orders > 0 && total_positions > 0 {
+        return None;
+    }
+    let Some(snapshot) = latest else {
+        return Some("did NOT arm — feed strategy input evidence missing/stale".to_string());
+    };
+    if !signal_quote_received {
+        return Some("did NOT arm — feed signal quote missing/stale".to_string());
+    }
+    if !realized_volatility_ready {
+        let blockers = snapshot.realized_volatility_blockers.join(",");
+        return Some(if blockers.is_empty() {
+            "did NOT arm — feed realized volatility missing/stale".to_string()
+        } else {
+            format!("did NOT arm — feed realized volatility missing/stale ({blockers})")
+        });
+    }
+    if !price_to_beat_received {
+        return Some("did NOT arm — feed strike reconstruction missing/stale".to_string());
+    }
+    if !reference_fresh {
+        return Some("did NOT arm — feed reference reconstruction missing/stale".to_string());
+    }
+    if order_intent_count == 0 {
+        return Some("did NOT arm — no order intent emitted after feeds were ready".to_string());
+    }
+    if admitted_order_count == 0 {
+        return Some("did NOT arm — submit admission rejected order intents".to_string());
+    }
+    if total_orders == 0 {
+        return Some("did NOT arm — Nautilus total_orders stayed zero after admission".to_string());
+    }
+    if total_positions == 0 {
+        return Some("did NOT arm — feed tradable book/fill path missing/stale".to_string());
+    }
+    None
+}
 
 impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
     fn record_strategy_input_snapshot(
         &self,
-        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        snapshot: &BoltV3StrategyInputEvidenceSnapshot,
     ) -> Result<()> {
+        self.with_state(|state| {
+            state.strategy_input_snapshot_count += 1;
+            state.latest_strategy_input_snapshot = Some(snapshot.clone());
+        })?;
         Ok(())
     }
 
     fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+        self.with_state(|state| {
+            state.order_intent_count += 1;
+        })?;
         Ok(())
     }
 
-    fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+    fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        self.with_state(|state| {
+            state.admission_decision_count += 1;
+            if decision.outcome == BoltV3AdmissionOutcome::Admitted {
+                state.admitted_order_count += 1;
+            }
+        })?;
         Ok(())
     }
 
@@ -116,6 +310,9 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
         &self,
         _metadata: &BoltV3SubmitReservationMetadataEvidence,
     ) -> Result<()> {
+        self.with_state(|state| {
+            state.submit_reservation_count += 1;
+        })?;
         Ok(())
     }
 
@@ -123,6 +320,9 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
         &self,
         _fill: &BoltV3SubmitReservationFillEvidence,
     ) -> Result<()> {
+        self.with_state(|state| {
+            state.submit_fill_count += 1;
+        })?;
         Ok(())
     }
 }
@@ -176,18 +376,71 @@ pub(crate) fn nt_extension_surface_claim_limits(
         .collect())
 }
 
-pub(crate) fn result_contract_warnings(nt_result: &BacktestResult) -> Vec<String> {
+pub(crate) fn result_contract_warnings(
+    nt_result: &BacktestResult,
+    fidelity_class: SourceProofFidelityClass,
+) -> Vec<String> {
     let mut warnings = Vec::new();
     if nt_result.total_orders == 0 {
-        warnings.push(
+        // Two honest, mutually exclusive reasons for a zero-order run, keyed off
+        // the source fidelity. Trade-only sources carry no quote ticks, so a
+        // quote-driven strategy structurally cannot enter — expected fidelity,
+        // not a defect. Any quote-bearing source had ticks available, so zero
+        // orders means the strategy never armed; point the operator at the run
+        // guard report instead. One source of truth, shared by every run path.
+        let message = if fidelity_class == SourceProofFidelityClass::TradeReplay {
             "No orders were placed: the accepted data is trade-only and carries no quote ticks, \
              and the configured strategy's order entry is quote-driven. NautilusTrader still \
              aggregated the accepted trades into bars and ran the strategy's signal logic. This \
              reflects the TRADE_REPLAY fidelity of the source, not a defect."
-                .to_string(),
-        );
+        } else {
+            "No orders were placed. Treat P/L as non-armed unless the run_guard_report shows \
+             armed=true and traded=true; inspect run_guard_report.did_not_arm_reason for the \
+             missing or stale feed."
+        };
+        warnings.push(message.to_string());
     }
     warnings
+}
+
+pub(crate) fn result_contract_feed_labels(
+    manifest: &BacktestingRunManifest,
+) -> Vec<BacktestFeedLabel> {
+    let mut labels = manifest
+        .catalog_inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| BacktestFeedLabel {
+            feed_id: input
+                .client_id
+                .clone()
+                .unwrap_or_else(|| format!("catalog_input_{index}")),
+            source_class: "real".to_string(),
+            data_type: input.data_type.clone(),
+            instrument_id: input.nt_instrument_id.clone(),
+            label: format!(
+                "real catalog feed: data_type={} instrument={}",
+                input.data_type, input.nt_instrument_id
+            ),
+        })
+        .collect::<Vec<_>>();
+    if manifest.strategy.registry_key == STRATEGY_BINARY_ORACLE_EDGE_TAKER {
+        labels.push(BacktestFeedLabel {
+            feed_id: "binary_oracle_price_to_beat".to_string(),
+            source_class: "reconstructed".to_string(),
+            data_type: "ChainlinkStrikeReference".to_string(),
+            instrument_id: "price_to_beat".to_string(),
+            label: "Chainlink strike/reference reconstruction, not raw".to_string(),
+        });
+        labels.push(BacktestFeedLabel {
+            feed_id: "binary_oracle_reference_current_price".to_string(),
+            source_class: "reconstructed".to_string(),
+            data_type: "ChainlinkReferencePrice".to_string(),
+            instrument_id: "reference_current_price".to_string(),
+            label: "Chainlink reference-current-price reconstruction, not raw".to_string(),
+        });
+    }
+    labels
 }
 
 /// Inputs for one end-to-end backtest run over accepted data.
@@ -252,6 +505,70 @@ pub struct BacktestRunOutput {
     pub contract: BacktestResultContract,
 }
 
+#[derive(Default)]
+struct AddedManifestStrategy {
+    config_override_report: Option<BacktestConfigOverrideReport>,
+    run_guard_writer: Option<Arc<BacktestDecisionEvidenceWriter>>,
+}
+
+fn register_backtest_data_clients(
+    engine: &mut BacktestEngine,
+    client_ids: impl IntoIterator<Item = ClientId>,
+) {
+    for client_id in client_ids {
+        engine.add_data_client_if_not_exists(client_id);
+    }
+}
+
+fn manifest_backtest_data_client_ids(manifest: &BacktestingRunManifest) -> BTreeSet<ClientId> {
+    let mut client_ids = BTreeSet::new();
+    for input in &manifest.catalog_inputs {
+        if let Some(client_id) = input.client_id.as_deref() {
+            client_ids.insert(ClientId::from(client_id));
+        }
+    }
+    for input in &manifest.reconstructed_reference_current_price {
+        client_ids.insert(ClientId::from(input.client_id.as_str()));
+    }
+    client_ids
+}
+
+fn effective_taker_subscription_data_client_ids(
+    strategy: &LoadedStrategy,
+    realized_volatility_runtime: &RealizedVolSurfaceRuntime,
+) -> BTreeSet<ClientId> {
+    let mut client_ids = BTreeSet::new();
+    for signal in strategy.config.signal_data.values() {
+        client_ids.insert(ClientId::from(signal.data_client_id.as_str()));
+    }
+    if let Some(resolution_data) = &strategy.config.resolution_data {
+        client_ids.insert(ClientId::from(resolution_data.data_client_id.as_str()));
+    }
+    if let Some(reference_current_price) = &strategy.config.reference_current_price {
+        for source_id in &reference_current_price.source_order {
+            let Some(source) = reference_current_price.sources.get(source_id) else {
+                continue;
+            };
+            if source.enabled {
+                client_ids.insert(ClientId::from(source.client_id.as_str()));
+            }
+        }
+    }
+    if let Some(surface_id) = strategy.config.realized_volatility_surface_id.as_deref() {
+        for (_, client_id) in realized_volatility_runtime
+            .quote_subscription_requests_for_surface(surface_id)
+            .into_iter()
+            .chain(realized_volatility_runtime.trade_subscription_requests_for_surface(surface_id))
+            .chain(realized_volatility_runtime.index_subscription_requests_for_surface(surface_id))
+        {
+            if let Some(client_id) = client_id {
+                client_ids.insert(client_id);
+            }
+        }
+    }
+    client_ids
+}
+
 /// Add the manifest-selected compiled Rust strategy to the engine.
 ///
 /// Only registered compiled Rust strategies are admissible; the manifest is
@@ -259,7 +576,7 @@ pub struct BacktestRunOutput {
 fn add_manifest_strategy(
     engine: &mut BacktestEngine,
     manifest: &BacktestingRunManifest,
-) -> Result<()> {
+) -> Result<AddedManifestStrategy> {
     let strategy = &manifest.strategy;
     match strategy.registry_key.as_str() {
         STRATEGY_HURST_VPIN_DIRECTIONAL => {
@@ -286,15 +603,10 @@ fn add_manifest_strategy(
             let config = HurstVpinDirectionalConfig::new(instrument_id, bar_type, trade_size);
             engine
                 .add_strategy(HurstVpinDirectional::new(config))
-                .context("add HurstVpinDirectional strategy")
+                .context("add HurstVpinDirectional strategy")?;
+            Ok(AddedManifestStrategy::default())
         }
         STRATEGY_BINARY_ORACLE_EDGE_TAKER => {
-            let raw_config = strategy
-                .parameters
-                .get(PARAM_CONFIG_TOML)
-                .with_context(|| format!("strategy parameter {PARAM_CONFIG_TOML} is required"))?;
-            let raw_config = toml::from_str::<toml::Value>(raw_config)
-                .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))?;
             let fee_bps_raw = strategy
                 .parameters
                 .get(PARAM_FEE_BPS)
@@ -320,23 +632,93 @@ fn add_manifest_strategy(
                     "invalid {STRATEGY_PARAM_ORDER_EXECUTION_MODE} {order_execution_mode_raw:?}"
                 )
             })?;
-            let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
-                Arc::new(BacktestDecisionEvidenceWriter);
+            let (raw_config, config_override_report, realized_volatility_runtime) =
+                if let Some(overlay) = &strategy.config_overlay {
+                    let production_root_config_path = resolve_existing_input_path(Path::new(
+                        &overlay.production_root_config_path,
+                    ));
+                    let loaded =
+                        load_bolt_v3_config(&production_root_config_path).with_context(|| {
+                            format!(
+                                "load production config root {}",
+                                overlay.production_root_config_path
+                            )
+                        })?;
+                    let override_spec = overlay.to_bolt_v3_override();
+                    let (loaded, report) = apply_backtest_config_override(loaded, &override_spec)
+                        .with_context(|| {
+                        format!(
+                            "apply backtest config overlay {}",
+                            overlay.override_delta.label
+                        )
+                    })?;
+                    let loaded_strategy = loaded
+                        .strategies
+                        .iter()
+                        .find(|loaded_strategy| {
+                            loaded_strategy.config.strategy_instance_id
+                                == overlay.override_delta.strategy_instance_id
+                        })
+                        .with_context(|| {
+                            format!(
+                                "overlay strategy_instance_id {} was not present after load",
+                                overlay.override_delta.strategy_instance_id
+                            )
+                        })?;
+                    let raw_config = raw_taker_config(loaded_strategy, &loaded)
+                        .context("build raw taker config from overlaid production config")?;
+                    let runtime = RealizedVolSurfaceRuntime::from_loaded_config(&loaded)
+                        .map_err(|error| anyhow::anyhow!("{error}"))
+                        .context("build realized-volatility runtime from overlaid config")?;
+                    register_backtest_data_clients(
+                        engine,
+                        effective_taker_subscription_data_client_ids(loaded_strategy, &runtime),
+                    );
+                    let runtime = Arc::new(Mutex::new(runtime));
+                    (raw_config, Some(report), Some(runtime))
+                } else {
+                    let raw_config =
+                        strategy
+                            .parameters
+                            .get(PARAM_CONFIG_TOML)
+                            .with_context(|| {
+                                format!("strategy parameter {PARAM_CONFIG_TOML} is required")
+                            })?;
+                    let raw_config = toml::from_str::<toml::Value>(raw_config)
+                        .with_context(|| format!("invalid {PARAM_CONFIG_TOML}"))?;
+                    (raw_config, None, None)
+                };
+            let run_guard_writer = Arc::new(BacktestDecisionEvidenceWriter::default());
+            let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = run_guard_writer.clone();
             let submit_admission =
                 Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone()));
             let fee_provider: Arc<dyn FeeProvider> = Arc::new(ManifestFeeProvider { fee_bps });
-            let build_context = StrategyBuildContext::new(
+            let mut build_context = StrategyBuildContext::new(
                 fee_provider,
                 decision_evidence,
                 submit_admission,
                 BoltV3OrderExecutionPolicy::from_mode(order_execution_mode),
                 Venue::from(manifest.venue.nt_venue.as_str()),
             );
-            let strategy =
-                BinaryOracleEdgeTakerBuilder::build_strategy(&raw_config, &build_context)
-                    .context("build binary_oracle_edge_taker strategy")?;
-            let result = engine.add_strategy(strategy);
-            result.context("add binary_oracle_edge_taker strategy")
+            if let Some(runtime) = realized_volatility_runtime {
+                build_context = build_context.with_realized_volatility_runtime(runtime);
+            }
+            let registry =
+                production_strategy_registry().context("build production strategy registry")?;
+            registry
+                .register_strategy(
+                    STRATEGY_BINARY_ORACLE_EDGE_TAKER,
+                    &raw_config,
+                    &build_context,
+                    engine.kernel().trader(),
+                )
+                .context(
+                    "register binary_oracle_edge_taker strategy through production registry",
+                )?;
+            Ok(AddedManifestStrategy {
+                config_override_report,
+                run_guard_writer: Some(run_guard_writer),
+            })
         }
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => {
             let catalog_input = manifest.primary_catalog_input().map_err(|error| {
@@ -387,7 +769,8 @@ fn add_manifest_strategy(
             );
             engine
                 .add_strategy(MechanicalTradeReplayProbe::new(config))
-                .context("add MechanicalTradeReplayProbe strategy")
+                .context("add MechanicalTradeReplayProbe strategy")?;
+            Ok(AddedManifestStrategy::default())
         }
         other => bail!("strategy {other:?} is not a registered compiled Rust strategy"),
     }
@@ -413,22 +796,203 @@ pub struct OrderTerminalRecord {
 pub struct NtBacktestNodeRun {
     pub result: BacktestResult,
     pub order_terminals: Vec<OrderTerminalRecord>,
+    pub config_override_report: Option<BacktestConfigOverrideReport>,
+    pub run_guard_report: Option<BacktestRunGuardReport>,
+}
+
+fn reconstructed_reference_current_price_data(
+    manifest: &BacktestingRunManifest,
+) -> Result<BTreeMap<String, Vec<Data>>> {
+    let mut by_client_id = BTreeMap::<String, Vec<Data>>::new();
+    for (index, row) in manifest
+        .reconstructed_reference_current_price
+        .iter()
+        .enumerate()
+    {
+        let price = parse_reconstructed_price_float(index, "price", &row.price)?;
+        let bid = row
+            .bid
+            .as_deref()
+            .map(|value| parse_reconstructed_price_float(index, "bid", value))
+            .transpose()?;
+        let ask = row
+            .ask
+            .as_deref()
+            .map(|value| parse_reconstructed_price_float(index, "ask", value))
+            .transpose()?;
+        let provenance = ReferenceQuoteProvenance::try_from_fields(row.provenance.clone())
+            .map_err(|error| anyhow::anyhow!("{error}"))
+            .with_context(|| {
+                format!("invalid reconstructed_reference_current_price[{index}] provenance")
+            })?;
+        let update = ReferencePriceUpdate::try_new_with_provenance(
+            row.asset.as_str(),
+            row.source_id.as_str(),
+            row.provider.as_str(),
+            row.provider_instrument.as_str(),
+            price,
+            bid,
+            ask,
+            row.observed_ts_ms,
+            row.received_ts_ms,
+            provenance,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))
+        .with_context(|| {
+            format!("invalid reconstructed_reference_current_price[{index}] update")
+        })?;
+        by_client_id
+            .entry(row.client_id.clone())
+            .or_default()
+            .push(Data::Custom(update.to_custom_data()));
+    }
+    Ok(by_client_id)
+}
+
+fn parse_reconstructed_price_float(index: usize, field: &str, value: &str) -> Result<f64> {
+    value.trim().parse::<f64>().with_context(|| {
+        format!("parse reconstructed_reference_current_price[{index}].{field} {value:?}")
+    })
+}
+
+/// Builds NT `InstrumentClose` settlement events from the manifest's instrument
+/// settlement inputs. When replayed, each `ContractExpired` close redeems a held
+/// position to its resolved value (binary: winner `1.0`, loser `0.0`) and books a
+/// realized P/L. The `close_price` is the real market resolution carried on the
+/// manifest — it is not synthesized here.
+fn instrument_settlement_data(manifest: &BacktestingRunManifest) -> Result<Vec<Data>> {
+    let mut closes = Vec::with_capacity(manifest.instrument_settlements.len());
+    for (index, row) in manifest.instrument_settlements.iter().enumerate() {
+        let instrument_id = InstrumentId::from_str(row.nt_instrument_id.as_str())
+            .map_err(|error| anyhow::anyhow!("{error}"))
+            .with_context(|| {
+                format!(
+                    "parse instrument_settlements[{index}].nt_instrument_id {:?}",
+                    row.nt_instrument_id
+                )
+            })?;
+        // The settlement close must route to a declared backtest venue, else NT
+        // sends it to no exchange and the held position silently never redeems.
+        let settlement_venue = instrument_id.venue.to_string();
+        let venue_config = std::iter::once(&manifest.venue)
+            .chain(manifest.additional_venues.iter())
+            .find(|venue| venue.nt_venue == settlement_venue)
+            .with_context(|| {
+                format!(
+                    "instrument_settlements[{index}] {} settles on venue {settlement_venue}, which is not a declared backtest venue",
+                    row.nt_instrument_id
+                )
+            })?;
+        // The holding venue MUST be funded in the settlement currency. NT's
+        // multi-currency portfolio silently drops a realized PnL booked in a
+        // currency the account was never funded in (the loss vanishes from
+        // stats_pnls), so this binding is the difference between a real P/L and a
+        // green run that lost the number. settlement_currency is a required
+        // manifest field, so this check is unconditional — it can never be
+        // skipped by omitting it.
+        ensure_settlement_currency_funded(
+            index,
+            &row.nt_instrument_id,
+            &settlement_venue,
+            &row.settlement_currency,
+            &venue_config.starting_balances,
+        )?;
+        let close_value = row.close_price.trim().parse::<f64>().with_context(|| {
+            format!(
+                "parse instrument_settlements[{index}].close_price {:?}",
+                row.close_price
+            )
+        })?;
+        // Binary options redeem at a payoff in [0,1]; a value outside that range is
+        // a malformed resolution that would book a nonsensical multiple-of-stake P/L
+        // while still passing as the "real market resolution".
+        ensure!(
+            (0.0..=1.0).contains(&close_value),
+            "instrument_settlements[{index}] {} close_price {close_value} is outside the binary [0,1] redemption range",
+            row.nt_instrument_id
+        );
+        let close_price = Price::new_checked(close_value, row.price_precision)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+            .with_context(|| {
+                format!("invalid close_price for instrument_settlements[{index}]: {close_value}")
+            })?;
+        closes.push(Data::InstrumentClose(InstrumentClose::new(
+            instrument_id,
+            close_price,
+            InstrumentCloseType::ContractExpired,
+            UnixNanos::from(row.ts_event_ns),
+            UnixNanos::from(row.ts_init_ns),
+        )));
+    }
+    Ok(closes)
+}
+
+/// The holding venue MUST be funded in the settlement currency, else NT's
+/// multi-currency portfolio silently drops the realized PnL booked in a currency
+/// the account was never funded in — turning a real loss into a green run that
+/// lost the number. `settlement_currency` is a required manifest field, so the
+/// settlement builder calls this for every injected settlement: the funded-venue
+/// check is unconditional and cannot be skipped by omitting the field.
+fn ensure_settlement_currency_funded(
+    index: usize,
+    nt_instrument_id: &str,
+    settlement_venue: &str,
+    settlement_currency: &str,
+    starting_balances: &[String],
+) -> Result<()> {
+    let funded = starting_balances.iter().any(|balance| {
+        balance
+            .split_whitespace()
+            .last()
+            .is_some_and(|funded_currency| funded_currency == settlement_currency)
+    });
+    ensure!(
+        funded,
+        "instrument_settlements[{index}] {nt_instrument_id} settles in {settlement_currency} but venue {settlement_venue} is not funded in it; NautilusTrader would silently drop the realized PnL"
+    );
+    Ok(())
 }
 
 pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<NtBacktestNodeRun> {
     let run_config = manifest
         .to_nt_run_config()
         .map_err(|error| anyhow::anyhow!("manifest to NautilusTrader config failed: {error}"))?;
+    let reconstructed_reference_current_price_data =
+        reconstructed_reference_current_price_data(manifest)?;
     let domain_statistics = resolve_domain_statistics(&manifest.domain_metrics)?;
     let mut domain_analyzer = PortfolioAnalyzer::new();
     register_domain_statistics(&mut domain_analyzer, &domain_statistics);
     let mut node = BacktestNode::new(vec![run_config]).context("construct BacktestNode")?;
     node.build().context("build BacktestNode")?;
-    {
+    let added_strategy = {
         let engine = node
             .get_engine_mut(&manifest.run_id)
             .with_context(|| format!("no engine for run id {}", manifest.run_id))?;
-        add_manifest_strategy(engine, manifest)?;
+        register_backtest_data_clients(engine, manifest_backtest_data_client_ids(manifest));
+        add_manifest_strategy(engine, manifest)?
+    };
+    if !reconstructed_reference_current_price_data.is_empty() {
+        let engine = node
+            .get_engine_mut(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {}", manifest.run_id))?;
+        for (client_id, data) in reconstructed_reference_current_price_data {
+            engine
+                .add_data(data, Some(ClientId::from(client_id.as_str())), false, false)
+                .with_context(|| {
+                    format!(
+                        "add reconstructed reference-current-price custom data for client {client_id}"
+                    )
+                })?;
+        }
+    }
+    let instrument_settlement_data = instrument_settlement_data(manifest)?;
+    if !instrument_settlement_data.is_empty() {
+        let engine = node
+            .get_engine_mut(&manifest.run_id)
+            .with_context(|| format!("no engine for run id {}", manifest.run_id))?;
+        engine
+            .add_data(instrument_settlement_data, None, false, true)
+            .context("add instrument settlement close events")?;
     }
     let mut results = node.run().context("run BacktestNode")?;
     ensure!(
@@ -459,9 +1023,16 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
         }
         capture_order_terminals(engine)
     };
+    let run_guard_report = added_strategy
+        .run_guard_writer
+        .as_ref()
+        .map(|writer| writer.run_guard_report(&nt_result))
+        .transpose()?;
     Ok(NtBacktestNodeRun {
         result: nt_result,
         order_terminals,
+        config_override_report: added_strategy.config_override_report,
+        run_guard_report,
     })
 }
 
@@ -578,6 +1149,8 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     let NtBacktestNodeRun {
         result: nt_result,
         order_terminals,
+        config_override_report,
+        run_guard_report,
     } = run_nt_backtest_node(inputs.manifest)?;
     // The read-back proof above loads the catalog through one NautilusTrader code
     // path; the engine consumed it through another. Bind the two by asserting the
@@ -650,7 +1223,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         .context("hash catalog metadata")?;
 
     // Gate 6: objective result contract.
-    let warnings = result_contract_warnings(&nt_result);
+    let warnings = result_contract_warnings(&nt_result, canonical_table.fidelity_class);
     let mut claim_limits = inputs.accepted.result_contract_claim_limits();
     claim_limits.extend(nt_extension_surface_claim_limits(inputs.manifest)?);
     let (event_count_ledger_hash, selected_asset_ids_hash) =
@@ -688,6 +1261,9 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         claim_limits,
         warnings,
         mechanical_blockers: Vec::new(),
+        config_override_report: config_override_report.as_ref(),
+        run_guard_report: run_guard_report.as_ref(),
+        feed_labels: result_contract_feed_labels(inputs.manifest),
         nt_result: &nt_result,
         artifact_uris: inputs.artifact_uris,
         created_at: inputs.created_at,
@@ -1372,22 +1948,56 @@ pub(crate) fn time_window_excludes_all_data(
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
+    use std::{collections::BTreeMap, fs, path::PathBuf, str::FromStr};
 
+    use anyhow::{Context, Result, ensure};
     use nautilus_core::UnixNanos;
     use nautilus_model::{
         data::TradeTick,
         enums::AggressorSide,
         identifiers::{InstrumentId, TradeId},
+        instruments::Instrument,
         types::{Price, Quantity},
     };
+    use nautilus_polymarket::http::models::GammaMarket;
+    use rust_decimal::Decimal;
+    use serde::Deserialize;
+    use sha2::{Digest, Sha256};
 
     use super::{
-        BacktestSelectorProvenance, assert_read_back_matches, expected_iterations,
-        iterations_mismatch, selector_provenance_hashes, time_window_excludes_all_data,
+        BacktestSelectorProvenance, assert_read_back_matches, ensure_settlement_currency_funded,
+        expected_iterations, iterations_mismatch, run_nt_backtest_node, selector_provenance_hashes,
+        time_window_excludes_all_data,
     };
-    use crate::canonical_trades::{CanonicalTradeRow, TradeAggressorSide};
-    use crate::source_proof::SourceProofFidelityClass;
+    use crate::canonical_market_data::{
+        CanonicalIndexPriceRow, CanonicalIndexPricesTable, CanonicalQuotesTable,
+        NORMALIZED_SCHEMA_VERSION,
+    };
+    use crate::canonical_trades::{
+        CanonicalTradeRow, CsvTimestampUnit, TradeAggressorSide, TradesPartition,
+    };
+    use crate::catalog_projection::{
+        SpotInstrumentSpec, project_canonical_index_to_catalog, project_canonical_quotes_to_catalog,
+    };
+    use crate::pmxt_one_off_backfill_projection::{
+        PmxtBookLevel, PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
+        PmxtOneOffTickSide, PmxtOneOffTradeRow, PmxtPriceChangeRow,
+        project_pmxt_one_off_rows_to_nt, write_pmxt_one_off_projection_to_catalog,
+    };
+    use crate::run_manifest::{
+        BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE,
+        ManifestArtifactStore, ManifestBacktestConfigOverride, ManifestCatalogInput,
+        ManifestInstrumentSettlementInput, ManifestRealizedVolatilitySourceSelector,
+        ManifestReferenceCurrentPriceInput, ManifestVenueConfig, MarketStructureFixture,
+        RunPurpose, STRATEGY_BINARY_ORACLE_EDGE_TAKER, STRATEGY_PARAM_FEE_BPS,
+        STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
+        StrategySourceKind,
+    };
+    use crate::seeded_l2_quotes::{
+        SeededL2QuoteAction, SeededL2QuoteMappingConfig, SeededL2QuoteProvenance,
+        normalize_seeded_l2_events, parse_seeded_l2_jsonl, seeded_l2_quote_transform_hash,
+    };
+    use crate::source_proof::{SourceProofFidelityClass, SourceProofUsageScope};
 
     const TEST_INSTRUMENT: &str = "BTCUSDT.BYBIT";
 
@@ -1524,6 +2134,38 @@ mod tests {
     #[test]
     fn iterations_matching_expected_is_admitted() {
         assert!(iterations_mismatch(3, 3).is_none());
+    }
+
+    #[test]
+    fn settlement_currency_must_be_funded_at_holding_venue() -> Result<()> {
+        // A settlement in the funded collateral currency passes: the realized PnL
+        // has an account to book against.
+        ensure_settlement_currency_funded(
+            0,
+            "BTC-up.POLYMARKET",
+            "POLYMARKET",
+            "pUSD",
+            &["1000 pUSD".to_string()],
+        )?;
+
+        // Differential: settle in a currency the venue was NEVER funded in. NT
+        // would silently drop the realized PnL (the loss vanishes from
+        // stats_pnls); the guard must instead fail loud so the green run can't
+        // hide the lost number.
+        let err = ensure_settlement_currency_funded(
+            1,
+            "BTC-up.POLYMARKET",
+            "POLYMARKET",
+            "pUSD",
+            &["1000 USDC".to_string()],
+        )
+        .expect_err("a settlement in an unfunded currency must fail loud, not drop the PnL");
+        let message = err.to_string();
+        ensure!(
+            message.contains("is not funded in it"),
+            "unexpected error message: {message}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -1679,5 +2321,1123 @@ mod tests {
             time_window_excludes_all_data(None, Some(99), 100, 200),
             Some("end_time")
         );
+    }
+
+    const ISSUE_789_START_MS: u64 = 1_776_816_000_000;
+    const ISSUE_789_END_MS: u64 = 1_776_816_300_000;
+    const ISSUE_789_START_NS: i64 = 1_776_816_000_000_000_000;
+    const ISSUE_789_END_NS: i64 = 1_776_816_300_000_000_000;
+    const ISSUE_789_CONDITION_ID: &str =
+        "0xb98f764c4d5dd36580c8c9903bc75ddcb631428d84e9c1e532f0da236f77054c";
+    const ISSUE_789_UP_TOKEN: &str =
+        "70185630899601185587604849909583851214968263628583846260964185007520683306835";
+    const ISSUE_789_DOWN_TOKEN: &str =
+        "39327110184724906690545821148183414832224062782460969169826610548819991310639";
+    const ISSUE_789_MARKET_SLUG: &str = "btc-updown-5m-1776816000";
+
+    #[test]
+    fn issue_789_first_real_free_data_taker_pl() -> Result<()> {
+        let tempdir = tempfile::TempDir::new().context("create issue #789 temp catalog root")?;
+        let okx_quotes = seeded_quote_table(
+            &gunzip_pinned_fixture(
+                include_bytes!(
+                    "../tests/fixtures/issue_789_first_pl/okx_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
+                ),
+                ISSUE_789_OKX_FIXTURE_SHA256,
+                "okx",
+            )?,
+            okx_seeded_l2_mapping(),
+            QuoteTableSpec {
+                source_binding: "okx-official-historical-l2-400lv",
+                venue: "OKX",
+                instrument_id: "BTC-USDT",
+                venue_symbol: "BTC-USDT",
+                nt_instrument_id: "BTC-USDT.OKX",
+                payload_id: "https://static.okx.com/cdn/okx/match/orderbook/L2/400lv/daily/20260422/BTC-USDT-L2orderbook-400lv-2026-04-22.tar.gz",
+            },
+        )?;
+        let bybit_quotes = seeded_quote_table(
+            &gunzip_pinned_fixture(
+                include_bytes!(
+                    "../tests/fixtures/issue_789_first_pl/bybit_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
+                ),
+                ISSUE_789_BYBIT_FIXTURE_SHA256,
+                "bybit",
+            )?,
+            bybit_seeded_l2_mapping(),
+            QuoteTableSpec {
+                source_binding: "bybit-quote-saver-ob200",
+                venue: "BYBIT",
+                instrument_id: "BTCUSDT",
+                venue_symbol: "BTCUSDT",
+                nt_instrument_id: "BTCUSDT-SPOT.BYBIT",
+                payload_id: "https://quote-saver.bycsi.com/orderbook/spot/BTCUSDT/2026-04-22_BTCUSDT_ob200.data.zip",
+            },
+        )?;
+
+        let okx_catalog = tempdir.path().join("okx_btc_usdt_quotes");
+        let okx_projection = project_canonical_quotes_to_catalog(
+            &okx_quotes,
+            &spot_spec(
+                "BTC-USDT.OKX",
+                "BTC-USDT",
+                "BTC",
+                "USDT",
+                "0.1",
+                "0.00000001",
+            ),
+            &okx_catalog,
+        )
+        .context("project OKX seeded L2 BBO quotes")?;
+        let bybit_catalog = tempdir.path().join("bybit_btc_usdt_quotes");
+        let bybit_projection = project_canonical_quotes_to_catalog(
+            &bybit_quotes,
+            &spot_spec(
+                "BTCUSDT-SPOT.BYBIT",
+                "BTCUSDT",
+                "BTC",
+                "USDT",
+                "0.1",
+                "0.000001",
+            ),
+            &bybit_catalog,
+        )
+        .context("project Bybit seeded L2 BBO quotes")?;
+
+        let gamma_markets = issue_789_gamma_markets()?;
+        let pmxt_rows = issue_789_pmxt_rows()?;
+        let up_projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
+            source_binding: "pmxt-free-r2-archive".to_string(),
+            usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
+            selected_token_id: ISSUE_789_UP_TOKEN.to_string(),
+            gamma_markets: gamma_markets.clone(),
+            rows: pmxt_rows_for_token(&pmxt_rows, ISSUE_789_UP_TOKEN)?,
+        })
+        .context("project PMXT Up book/trades")?;
+        let down_projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
+            source_binding: "pmxt-free-r2-archive".to_string(),
+            usage_scope: SourceProofUsageScope::OneOffBackfillData,
+            selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
+            selected_token_id: ISSUE_789_DOWN_TOKEN.to_string(),
+            gamma_markets,
+            rows: pmxt_rows_for_token(&pmxt_rows, ISSUE_789_DOWN_TOKEN)?,
+        })
+        .context("project PMXT Down book/trades")?;
+        let up_instrument_id = up_projection.instrument.id().to_string();
+        let down_instrument_id = down_projection.instrument.id().to_string();
+        let up_catalog = tempdir.path().join("pmxt_up_catalog");
+        let down_catalog = tempdir.path().join("pmxt_down_catalog");
+        let up_catalog_report =
+            write_pmxt_one_off_projection_to_catalog(&up_catalog, &up_projection)
+                .context("write PMXT Up catalog")?;
+        let down_catalog_report =
+            write_pmxt_one_off_projection_to_catalog(&down_catalog, &down_projection)
+                .context("write PMXT Down catalog")?;
+
+        let chainlink_catalog = tempdir.path().join("chainlink_price_to_beat");
+        let chainlink_table = reconstructed_chainlink_price_to_beat_table(&okx_quotes)?;
+        let chainlink_projection = project_canonical_index_to_catalog(
+            &chainlink_table,
+            &spot_spec(
+                "BTC-USD.CHAINLINK",
+                "BTC-USD",
+                "BTC",
+                "USD",
+                "0.000001",
+                "0.000001",
+            ),
+            &chainlink_catalog,
+        )
+        .context("project reconstructed Chainlink price-to-beat index updates")?;
+
+        // Faithful settlement: replay the REAL market resolution observed in the
+        // archive. At resolution the winning binary token's order book converges
+        // to ~1.0 and the loser's to ~0.0; redeem the winner at 1.0 and the loser
+        // at 0.0 so a held position books its true realized P/L. The winner is read
+        // from the terminal best-bid of the SAME PMXT rows that drive the backtest
+        // (single source of truth — not synthesized).
+        let up_terminal_bid = issue_789_terminal_best_bid(&pmxt_rows, ISSUE_789_UP_TOKEN)?;
+        let down_terminal_bid = issue_789_terminal_best_bid(&pmxt_rows, ISSUE_789_DOWN_TOKEN)?;
+        ensure!(
+            (up_terminal_bid > 0.5) ^ (down_terminal_bid > 0.5),
+            "ambiguous #789 resolution: up_terminal_bid={up_terminal_bid} down_terminal_bid={down_terminal_bid}"
+        );
+        let (up_close, down_close) = if up_terminal_bid > down_terminal_bid {
+            (1.0_f64, 0.0_f64)
+        } else {
+            (0.0_f64, 1.0_f64)
+        };
+        let up_precision = up_projection.instrument.price_precision();
+        let down_precision = down_projection.instrument.price_precision();
+        let instrument_settlements = vec![
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: up_instrument_id.clone(),
+                close_price: format!("{up_close:.prec$}", prec = up_precision as usize),
+                price_precision: up_precision,
+                ts_event_ns: ISSUE_789_END_NS as u64,
+                ts_init_ns: ISSUE_789_END_NS as u64,
+                // The binary settles in pUSD (NT Polymarket collateral); bind it so a
+                // mis-funded venue fails loud instead of silently dropping the loss.
+                settlement_currency: "pUSD".to_string(),
+            },
+            ManifestInstrumentSettlementInput {
+                nt_instrument_id: down_instrument_id.clone(),
+                close_price: format!("{down_close:.prec$}", prec = down_precision as usize),
+                price_precision: down_precision,
+                ts_event_ns: ISSUE_789_END_NS as u64,
+                ts_init_ns: ISSUE_789_END_NS as u64,
+                settlement_currency: "pUSD".to_string(),
+            },
+        ];
+
+        let manifest = issue_789_manifest(Issue789Catalogs {
+            okx_catalog,
+            okx_catalog_hash: okx_projection.catalog_hash.clone(),
+            bybit_catalog,
+            bybit_catalog_hash: bybit_projection.catalog_hash.clone(),
+            chainlink_catalog,
+            chainlink_catalog_hash: chainlink_projection.catalog_hash.clone(),
+            up_catalog,
+            up_catalog_hash: up_catalog_report.catalog_hash.clone(),
+            up_instrument_id,
+            down_catalog,
+            down_catalog_hash: down_catalog_report.catalog_hash.clone(),
+            down_instrument_id,
+            reference_rows: reconstructed_reference_rows_from_okx(&okx_quotes)?,
+            instrument_settlements,
+        });
+
+        let output = run_nt_backtest_node(&manifest)
+            .context("run issue #789 first real free-data taker P/L slice")?;
+        let guard = output
+            .run_guard_report
+            .as_ref()
+            .context("missing binary-oracle run guard report")?;
+        let did_not_arm = || {
+            guard.did_not_arm_reason.clone().unwrap_or_else(|| {
+                "did NOT arm — guard did not provide a feed-specific reason".to_string()
+            })
+        };
+
+        println!("issue_789_result_label=production config + documented OKX/Bybit override");
+        println!(
+            "issue_789_override_report={:?}",
+            output.config_override_report
+        );
+        println!(
+            "issue_789_feed_labels=signal:OKX real snapshot-seeded L2 BBO; rv:OKX real snapshot-seeded L2 BBO; rv:Bybit real snapshot-seeded L2 BBO; tradable:PMXT real R2 archive book/price_change/trades WITH converter-synthesized uncross deltas (not byte-faithful); strike/reference:reconstructed-from-spot not raw Chainlink; fidelity:ZERO-LATENCY single-clock replay (spot/reference on exchange event-time, fast-venue age pinned 0; ~120ms live spot->PM lead NOT modeled) — the P/L is a reconstructed-replay figure, not latency-aware"
+        );
+        println!(
+            "issue_789_guard total_orders={} total_positions={} armed={} traded={} signal_quote_received={} rv_ready={} price_to_beat_received={} reference_fresh={} latest_market_id={:?} latest_spot_price={:?} latest_price_to_beat={:?} latest_reference={:?} rv_sources={:?} rv_blockers={:?}",
+            output.result.total_orders,
+            output.result.total_positions,
+            guard.armed,
+            guard.traded,
+            guard.signal_quote_received,
+            guard.realized_volatility_ready,
+            guard.price_to_beat_received,
+            guard.reference_fresh,
+            guard.latest_market_id,
+            guard.latest_spot_price,
+            guard.latest_price_to_beat_value,
+            guard.latest_reference_current_price,
+            guard.latest_realized_volatility_sources_used,
+            guard.latest_realized_volatility_blockers,
+        );
+        println!("issue_789_stats_pnls={:?}", output.result.stats_pnls);
+        println!("issue_789_stats_returns={:?}", output.result.stats_returns);
+        write_issue_789_result_artifact(&output, guard)?;
+
+        ensure!(guard.signal_quote_received, "{}", did_not_arm());
+        ensure!(guard.realized_volatility_ready, "{}", did_not_arm());
+        ensure!(guard.price_to_beat_received, "{}", did_not_arm());
+        ensure!(guard.reference_fresh, "{}", did_not_arm());
+        ensure!(guard.armed, "{}", did_not_arm());
+        ensure!(output.result.total_orders > 0, "{}", did_not_arm());
+        ensure!(output.result.total_positions > 0, "{}", did_not_arm());
+        ensure!(guard.traded, "{}", did_not_arm());
+        // The override keeps OKX + Bybit RV sources, but min_ready_sources=1 means
+        // OKX alone satisfies readiness — so rv_ready does NOT prove Bybit fed the
+        // surface. Assert Bybit actually contributed, else a silent Bybit routing
+        // drop (e.g. an instrument-id drift) would still report "OKX+Bybit RV".
+        ensure!(
+            guard
+                .latest_realized_volatility_sources_used
+                .iter()
+                .any(|source| source.to_ascii_lowercase().contains("bybit")),
+            "issue #789 RV claims OKX+Bybit but the Bybit source never contributed (likely a routing/id drift); sources_used={:?}",
+            guard.latest_realized_volatility_sources_used
+        );
+        ensure!(
+            !output.result.stats_pnls.is_empty(),
+            "issue #789 run traded but stats_pnls was empty"
+        );
+        // The held position must redeem at the real resolution and book a realized
+        // LOSS in the binary's settlement currency (pUSD). Assert the pUSD leg
+        // specifically, with sign and magnitude: a cross-currency sum can hide a
+        // silently-dropped pUSD leg (NT drops PnL booked in an unfunded currency)
+        // behind a small non-zero P/L in another currency, and a bare `!= 0` also
+        // passes a direction flip or a fill mis-scale. Pinning the proven value
+        // makes any drift fail loud for re-confirmation rather than silently
+        // re-baselining the headline first real P/L.
+        const ISSUE_789_EXPECTED_PUSD_PNL: f64 = -0.9462;
+        const ISSUE_789_PUSD_PNL_TOLERANCE: f64 = 0.05;
+        let pusd_pnl = output
+            .result
+            .stats_pnls
+            .get("pUSD")
+            .and_then(|per_stat| per_stat.get("PnL (total)"))
+            .copied()
+            .with_context(|| {
+                format!(
+                    "issue #789 settled but no pUSD realized P/L leg is present — the loss was dropped (the settlement currency was likely not funded); stats_pnls={:?}",
+                    output.result.stats_pnls
+                )
+            })?;
+        ensure!(
+            pusd_pnl < 0.0,
+            "issue #789 first real P/L must be a loss (taker pays the spread); got pUSD P/L {pusd_pnl} (stats_pnls={:?})",
+            output.result.stats_pnls
+        );
+        ensure!(
+            (pusd_pnl - ISSUE_789_EXPECTED_PUSD_PNL).abs() < ISSUE_789_PUSD_PNL_TOLERANCE,
+            "issue #789 realized pUSD P/L {pusd_pnl} drifted beyond tolerance from the proven {ISSUE_789_EXPECTED_PUSD_PNL}; re-confirm the result before updating this anchor (stats_pnls={:?})",
+            output.result.stats_pnls
+        );
+        Ok(())
+    }
+
+    fn write_issue_789_result_artifact(
+        output: &super::NtBacktestNodeRun,
+        guard: &crate::result_contract::BacktestRunGuardReport,
+    ) -> Result<()> {
+        let Ok(path) = std::env::var("BOLT_ISSUE_789_RESULT_PATH") else {
+            return Ok(());
+        };
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create issue #789 result dir {}", parent.display()))?;
+        }
+        let payload = serde_json::json!({
+            "result_label": "production config + documented OKX/Bybit override",
+            "feed_labels": {
+                "signal": "OKX real snapshot-seeded L2 BBO",
+                "rv_okx": "OKX real snapshot-seeded L2 BBO",
+                "rv_bybit": "Bybit real snapshot-seeded L2 BBO",
+                "tradable": "PMXT real R2 archive book/price_change/trades, with converter-synthesized uncross deltas (not byte-faithful)",
+                "strike": "reconstructed-from-spot, not raw Chainlink",
+                "reference": "reconstructed-from-spot, not raw Chainlink"
+            },
+            "fidelity": {
+                "inter_feed_latency_collapsed": true,
+                "clock_model": "single-clock zero-latency replay: spot/reference/strike on exchange event-time, fast-venue age pinned to 0; the ~120ms live spot->PM lead is NOT modeled",
+                "tradable_book": "real R2 archive with converter-synthesized uncross Delete deltas (pruned crossings the archive omitted), not a byte-faithful raw replay",
+                "note": "the realized P/L is a zero-latency reconstructed-replay figure, not a latency-aware live-faithful P/L"
+            },
+            "total_orders": output.result.total_orders,
+            "total_positions": output.result.total_positions,
+            "stats_pnls_debug": format!("{:?}", output.result.stats_pnls),
+            "stats_returns_debug": format!("{:?}", output.result.stats_returns),
+            "guard": {
+                "strategy_input_snapshot_count": guard.strategy_input_snapshot_count,
+                "order_intent_count": guard.order_intent_count,
+                "admission_decision_count": guard.admission_decision_count,
+                "admitted_order_count": guard.admitted_order_count,
+                "submit_reservation_count": guard.submit_reservation_count,
+                "submit_fill_count": guard.submit_fill_count,
+                "signal_quote_received": guard.signal_quote_received,
+                "realized_volatility_ready": guard.realized_volatility_ready,
+                "price_to_beat_received": guard.price_to_beat_received,
+                "reference_fresh": guard.reference_fresh,
+                "armed": guard.armed,
+                "traded": guard.traded,
+                "latest_market_id": guard.latest_market_id.clone(),
+                "latest_spot_price": guard.latest_spot_price.clone(),
+                "latest_reference_current_price": guard.latest_reference_current_price.clone(),
+                "latest_reference_current_price_source_id": guard.latest_reference_current_price_source_id.clone(),
+                "latest_price_to_beat_value": guard.latest_price_to_beat_value.clone(),
+                "latest_realized_volatility_as_of_ms": guard.latest_realized_volatility_as_of_ms,
+                "latest_realized_volatility_sources_used": guard.latest_realized_volatility_sources_used.clone(),
+                "latest_realized_volatility_blockers": guard.latest_realized_volatility_blockers.clone(),
+                "did_not_arm_reason": guard.did_not_arm_reason.clone()
+            }
+        });
+        let bytes =
+            serde_json::to_vec_pretty(&payload).context("serialize issue #789 result artifact")?;
+        fs::write(&path, bytes)
+            .with_context(|| format!("write issue #789 result artifact {}", path.display()))?;
+        Ok(())
+    }
+
+    struct QuoteTableSpec<'a> {
+        source_binding: &'a str,
+        venue: &'a str,
+        instrument_id: &'a str,
+        venue_symbol: &'a str,
+        nt_instrument_id: &'a str,
+        payload_id: &'a str,
+    }
+
+    /// Decompress a gzip-embedded issue #789 fixture into its plaintext form.
+    /// The real OKX/Bybit L2 and PMXT R2 windows are large, so they are committed
+    /// gzip-compressed and embedded via `include_bytes!`; this keeps the test
+    /// hermetic without bloating the source tree with tens of MB of plaintext.
+    fn gunzip_fixture(bytes: &[u8]) -> Result<String> {
+        use std::io::Read as _;
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(bytes)
+            .read_to_string(&mut text)
+            .context("gunzip issue #789 fixture")?;
+        Ok(text)
+    }
+
+    /// sha256 of each issue #789 fixture's DECOMPRESSED content, pinning the
+    /// committed `.gz` bytes to the exact rows replayed. The whole −$0.95 P/L
+    /// derives from these three archives; without a pin a single edited price or
+    /// size would change the result undetectably (the gzip CRC only catches
+    /// accidental corruption, not a deliberate edit). On intentional regeneration
+    /// from the public archives named in each `payload_id`, recompute with
+    /// `gunzip -c <fixture>.gz | shasum -a 256` and update the matching constant.
+    const ISSUE_789_OKX_FIXTURE_SHA256: &str =
+        "36f749da9e40ff88cbdabff2b070c8086102d5f136168e3c648f1ec7dd8651d0";
+    const ISSUE_789_BYBIT_FIXTURE_SHA256: &str =
+        "4df60a46aaf424222c42a2fb2ea42b43b599065c0709854f8e89c9b92646dfea";
+    const ISSUE_789_PMXT_FIXTURE_SHA256: &str =
+        "5b108b1fb82701173a05aac734089f3cddf6f133fbadc4abad47fda40b92dffb";
+
+    /// Decompress a committed fixture and fail loud unless its content hash matches
+    /// the pinned value, so any post-commit edit to the replayed data is caught.
+    fn gunzip_pinned_fixture(bytes: &[u8], expected_sha256: &str, name: &str) -> Result<String> {
+        let text = gunzip_fixture(bytes)?;
+        let actual = sha256_hex(text.as_bytes());
+        ensure!(
+            actual == expected_sha256,
+            "issue #789 fixture {name} content hash {actual} != pinned {expected_sha256}: the committed bytes were altered or regenerated. Re-confirm provenance against the documented public archive before trusting any P/L derived from it."
+        );
+        Ok(text)
+    }
+
+    fn seeded_quote_table(
+        jsonl: &str,
+        mapping: SeededL2QuoteMappingConfig,
+        spec: QuoteTableSpec<'_>,
+    ) -> Result<CanonicalQuotesTable> {
+        let events = parse_seeded_l2_jsonl(&mapping, jsonl)
+            .with_context(|| format!("parse {} seeded L2 rows", spec.venue))?;
+        ensure!(
+            events
+                .first()
+                .is_some_and(|event| event.action == SeededL2QuoteAction::Snapshot),
+            "{} seeded L2 fixture must start with a snapshot row",
+            spec.venue
+        );
+        let provenance = SeededL2QuoteProvenance {
+            ingest_run_id: "issue-789-first-real-pl".to_string(),
+            source_binding: spec.source_binding.to_string(),
+            venue: spec.venue.to_string(),
+            product_family: "spot".to_string(),
+            product_category: "l2_orderbook".to_string(),
+            instrument_id: spec.instrument_id.to_string(),
+            canonical_instrument_key: format!("spot/{}", spec.venue_symbol),
+            venue_symbol: spec.venue_symbol.to_string(),
+            nt_instrument_id: Some(spec.nt_instrument_id.to_string()),
+            partition_dt: "2026-04-22".to_string(),
+            source_proof_id: format!(
+                "issue-789-{}-snapshot-seeded-l2",
+                spec.venue.to_ascii_lowercase()
+            ),
+            source_proof_version: 1,
+            forbidden_claims: vec!["raw-bbo-claim-without-snapshot-seeded-replay".to_string()],
+            raw_payload_id: spec.payload_id.to_string(),
+            payload_hash: sha256_hex(jsonl.as_bytes()),
+            transform_hash: seeded_l2_quote_transform_hash(),
+            default_capture_time: events[0].event_time,
+        };
+        normalize_seeded_l2_events(&provenance, &events)
+            .with_context(|| format!("normalize {} seeded L2 BBO quotes", spec.venue))
+    }
+
+    fn okx_seeded_l2_mapping() -> SeededL2QuoteMappingConfig {
+        SeededL2QuoteMappingConfig {
+            action_path: vec!["action".to_string()],
+            event_time_path: vec!["ts".to_string()],
+            event_time_unit: CsvTimestampUnit::Milliseconds,
+            bids_path: vec!["bids".to_string()],
+            asks_path: vec!["asks".to_string()],
+            level_price_index: 0,
+            level_size_index: 1,
+            snapshot_action_values: vec!["snapshot".to_string()],
+            update_action_values: vec!["update".to_string()],
+            source_sequence_path: None,
+        }
+    }
+
+    fn bybit_seeded_l2_mapping() -> SeededL2QuoteMappingConfig {
+        SeededL2QuoteMappingConfig {
+            action_path: vec!["type".to_string()],
+            event_time_path: vec!["ts".to_string()],
+            event_time_unit: CsvTimestampUnit::Milliseconds,
+            bids_path: vec!["data".to_string(), "b".to_string()],
+            asks_path: vec!["data".to_string(), "a".to_string()],
+            level_price_index: 0,
+            level_size_index: 1,
+            snapshot_action_values: vec!["snapshot".to_string()],
+            update_action_values: vec!["delta".to_string()],
+            source_sequence_path: Some(vec!["data".to_string(), "seq".to_string()]),
+        }
+    }
+
+    fn spot_spec(
+        nt_instrument_id: &str,
+        raw_symbol: &str,
+        base_currency: &str,
+        quote_currency: &str,
+        price_increment: &str,
+        size_increment: &str,
+    ) -> SpotInstrumentSpec {
+        SpotInstrumentSpec {
+            nt_instrument_id: nt_instrument_id.to_string(),
+            raw_symbol: raw_symbol.to_string(),
+            base_currency: base_currency.to_string(),
+            quote_currency: quote_currency.to_string(),
+            price_increment: price_increment.to_string(),
+            size_increment: size_increment.to_string(),
+            min_quantity: size_increment.to_string(),
+            max_quantity: "1000000".to_string(),
+            min_notional: "0".to_string(),
+            max_notional: "1000000000".to_string(),
+        }
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Issue789PmxtCsvRow {
+        event_type: String,
+        asset_id: String,
+        bids: Option<String>,
+        asks: Option<String>,
+        price: Option<String>,
+        size: Option<String>,
+        side: Option<String>,
+        best_bid: Option<String>,
+        best_ask: Option<String>,
+        transaction_hash: Option<String>,
+        fee_rate_bps: Option<String>,
+        timestamp_ms: String,
+        ts_init_ns: u64,
+    }
+
+    /// The binary resolves AT market end; its outcome is read from the terminal
+    /// best-bid of the same PMXT rows that drive the backtest (single source of
+    /// truth). The terminal tick lands just after the half-open window end — the
+    /// resolution is observed at the close — so the read is BOUNDED to this
+    /// immediate post-close window rather than accepting an arbitrary future row.
+    const ISSUE_789_RESOLUTION_OBSERVATION_TOLERANCE_NS: i64 = 1_000_000_000;
+
+    /// Terminal (latest-`ts_init`) best-bid for a PMXT token, used to read the
+    /// real binary resolution: the winning outcome's book converges to ~1.0.
+    fn issue_789_terminal_best_bid(rows: &[Issue789PmxtCsvRow], token_id: &str) -> Result<f64> {
+        let (terminal_ts, terminal_bid) = rows
+            .iter()
+            .filter(|row| row.asset_id == token_id)
+            .filter_map(|row| row.best_bid.as_deref().map(|bid| (row.ts_init_ns, bid)))
+            .max_by_key(|(ts, _)| *ts)
+            .with_context(|| format!("no terminal best_bid for token {token_id}"))?;
+        let end_ns = ISSUE_789_END_NS as u64;
+        let max_resolution_ns =
+            end_ns.saturating_add(ISSUE_789_RESOLUTION_OBSERVATION_TOLERANCE_NS as u64);
+        ensure!(
+            (end_ns..=max_resolution_ns).contains(&terminal_ts),
+            "issue #789 resolution read for token {token_id} at ts {terminal_ts} is outside the post-close resolution bound [{end_ns}, {max_resolution_ns}]; the terminal tick must be the immediate at-/post-close observation, not arbitrary future data"
+        );
+        terminal_bid
+            .trim()
+            .parse::<f64>()
+            .with_context(|| format!("parse terminal best_bid for token {token_id}"))
+    }
+
+    fn issue_789_pmxt_rows() -> Result<Vec<Issue789PmxtCsvRow>> {
+        let csv_text = gunzip_pinned_fixture(
+            include_bytes!(
+                "../tests/fixtures/issue_789_first_pl/pmxt_btc_updown_5m_1776816000_rows.csv.gz"
+            ),
+            ISSUE_789_PMXT_FIXTURE_SHA256,
+            "pmxt",
+        )?;
+        csv::Reader::from_reader(csv_text.as_bytes())
+            .deserialize()
+            .collect::<std::result::Result<Vec<Issue789PmxtCsvRow>, csv::Error>>()
+            .context("parse issue #789 PMXT CSV fixture")
+    }
+
+    fn pmxt_rows_for_token(
+        rows: &[Issue789PmxtCsvRow],
+        token_id: &str,
+    ) -> Result<Vec<PmxtOneOffSelectedRow>> {
+        let mut selected = Vec::new();
+        for row in rows.iter().filter(|row| row.asset_id == token_id) {
+            match row.event_type.as_str() {
+                "book" => {
+                    selected.push(PmxtOneOffSelectedRow::BookSnapshot(PmxtOneOffSnapshotRow {
+                        market: ISSUE_789_CONDITION_ID.to_string(),
+                        asset_id: row.asset_id.clone(),
+                        bids: parse_pmxt_book_levels(row.bids.as_deref().context("book bids")?)?,
+                        asks: parse_pmxt_book_levels(row.asks.as_deref().context("book asks")?)?,
+                        timestamp_ms: row.timestamp_ms.clone(),
+                        ts_init: UnixNanos::from(row.ts_init_ns),
+                    }))
+                }
+                "price_change" => {
+                    selected.push(PmxtOneOffSelectedRow::PriceChange(PmxtPriceChangeRow {
+                        market: ISSUE_789_CONDITION_ID.to_string(),
+                        asset_id: row.asset_id.clone(),
+                        price: row.price.clone().context("price_change price")?,
+                        side: parse_pmxt_side(row.side.as_deref().context("price_change side")?)?,
+                        size: row.size.clone().context("price_change size")?,
+                        best_bid: row.best_bid.clone(),
+                        best_ask: row.best_ask.clone(),
+                        timestamp_ms: row.timestamp_ms.clone(),
+                        ts_init: UnixNanos::from(row.ts_init_ns),
+                    }))
+                }
+                "last_trade_price" => {
+                    selected.push(PmxtOneOffSelectedRow::LastTrade(PmxtOneOffTradeRow {
+                        market: ISSUE_789_CONDITION_ID.to_string(),
+                        asset_id: row.asset_id.clone(),
+                        transaction_hash: row
+                            .transaction_hash
+                            .clone()
+                            .context("last_trade_price transaction_hash")?,
+                        price: row.price.clone().context("last_trade_price price")?,
+                        side: parse_pmxt_side(
+                            row.side.as_deref().context("last_trade_price side")?,
+                        )?,
+                        size: row.size.clone().context("last_trade_price size")?,
+                        fee_rate_bps: row
+                            .fee_rate_bps
+                            .clone()
+                            .context("last_trade_price fee_rate_bps")?,
+                        timestamp: UnixNanos::from(
+                            row.timestamp_ms
+                                .parse::<u64>()
+                                .context("parse PMXT timestamp_ms")?
+                                .checked_mul(1_000_000)
+                                .context("PMXT timestamp_ms overflow")?,
+                        ),
+                        ts_init: UnixNanos::from(row.ts_init_ns),
+                    }))
+                }
+                other => anyhow::bail!("unsupported issue #789 PMXT event_type {other:?}"),
+            }
+        }
+        ensure!(
+            !selected.is_empty(),
+            "no PMXT rows selected for token {token_id}"
+        );
+        Ok(selected)
+    }
+
+    fn parse_pmxt_book_levels(raw: &str) -> Result<Vec<PmxtBookLevel>> {
+        serde_json::from_str::<Vec<Vec<String>>>(raw)
+            .context("parse PMXT book levels JSON")?
+            .into_iter()
+            .map(|level| {
+                ensure!(
+                    level.len() >= 2,
+                    "PMXT book level must carry price and size, got {level:?}"
+                );
+                Ok(PmxtBookLevel {
+                    price: level[0].clone(),
+                    size: level[1].clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn parse_pmxt_side(raw: &str) -> Result<PmxtOneOffTickSide> {
+        match raw {
+            "BUY" => Ok(PmxtOneOffTickSide::Buy),
+            "SELL" => Ok(PmxtOneOffTickSide::Sell),
+            other => anyhow::bail!("unsupported PMXT side {other:?}"),
+        }
+    }
+
+    /// Regression guard for the #789 crossed-book reconstruction defect.
+    ///
+    /// The raw PMXT archive's `best_bid`/`best_ask` are always uncrossed, but a
+    /// naive level-delta replay of the snapshot-sparse archive accumulates stale
+    /// opposite-side levels and the rebuilt book crosses on the large majority of
+    /// ticks, which trips the taker's `BookCrossed` entry gate and blocks every
+    /// trade. The projection now prunes levels that cross the venue's
+    /// authoritative inside market. This applies the projected deltas through the
+    /// same book maintenance the strategy uses (`OutcomeBookState::update_from_deltas`)
+    /// and asserts the book stays uncrossed at every atomic update boundary while
+    /// still becoming two-sided — so the guard is not vacuous.
+    #[test]
+    fn issue_789_reconstructed_pmxt_book_never_crosses() -> Result<()> {
+        use std::collections::BTreeMap;
+
+        use nautilus_model::{
+            data::OrderBookDelta,
+            enums::{BookAction, OrderSide, RecordFlag},
+            types::Price,
+        };
+
+        let gamma_markets = issue_789_gamma_markets()?;
+        let pmxt_rows = issue_789_pmxt_rows()?;
+        let last_flag = RecordFlag::F_LAST as u8;
+
+        for token in [ISSUE_789_UP_TOKEN, ISSUE_789_DOWN_TOKEN] {
+            let projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
+                source_binding: "pmxt-free-r2-archive".to_string(),
+                usage_scope: SourceProofUsageScope::OneOffBackfillData,
+                selected_condition_id: ISSUE_789_CONDITION_ID.to_string(),
+                selected_token_id: token.to_string(),
+                gamma_markets: gamma_markets.clone(),
+                rows: pmxt_rows_for_token(&pmxt_rows, token)?,
+            })
+            .with_context(|| format!("project PMXT token {token}"))?;
+
+            let mut bids: BTreeMap<Price, f64> = BTreeMap::new();
+            let mut asks: BTreeMap<Price, f64> = BTreeMap::new();
+            let mut became_priced = false;
+
+            for delta in &projection.order_book_deltas {
+                // Mirror OutcomeBookState::update_from_deltas exactly.
+                match delta.action {
+                    BookAction::Clear => {
+                        bids.clear();
+                        asks.clear();
+                    }
+                    BookAction::Delete => match delta.order.side {
+                        OrderSide::Buy => {
+                            bids.remove(&delta.order.price);
+                        }
+                        OrderSide::Sell => {
+                            asks.remove(&delta.order.price);
+                        }
+                        _ => {}
+                    },
+                    BookAction::Add | BookAction::Update => {
+                        let levels = match delta.order.side {
+                            OrderSide::Buy => Some(&mut bids),
+                            OrderSide::Sell => Some(&mut asks),
+                            _ => None,
+                        };
+                        if let Some(levels) = levels {
+                            if delta.order.size.is_zero() {
+                                levels.remove(&delta.order.price);
+                            } else {
+                                levels.insert(delta.order.price, delta.order.size.as_f64());
+                            }
+                        }
+                    }
+                }
+                if (delta.flags & last_flag) == 0 {
+                    continue;
+                }
+                if let (Some((best_bid, _)), Some((best_ask, _))) =
+                    (bids.iter().next_back(), asks.iter().next())
+                {
+                    became_priced = true;
+                    assert!(
+                        best_bid <= best_ask,
+                        "token {token}: reconstructed book crossed (best_bid {best_bid} > best_ask {best_ask})"
+                    );
+                }
+            }
+
+            assert!(
+                became_priced,
+                "token {token}: reconstructed book never became two-sided; guard is vacuous"
+            );
+        }
+
+        Ok(())
+    }
+
+    fn issue_789_gamma_markets() -> Result<Vec<GammaMarket>> {
+        serde_json::from_str(&format!(
+            r#"[{{
+  "id": "2039137",
+  "conditionId": "{condition}",
+  "questionID": "0xd5167b495ac67974886a5875266d6a2c43b245f56bae3cd52d5756abe7b11c4b",
+  "clobTokenIds": "[\"{up}\", \"{down}\"]",
+  "outcomes": "[\"Up\", \"Down\"]",
+  "question": "Bitcoin Up or Down - April 21, 8:00PM-8:05PM ET",
+  "description": "Issue #789 real PMXT fixture market metadata reconstructed from Gamma for replay-time open state",
+  "startDate": "2026-04-22T00:00:00Z",
+  "endDate": "2026-04-22T00:05:00Z",
+  "active": true,
+  "closed": false,
+  "acceptingOrders": true,
+  "enableOrderBook": true,
+  "orderPriceMinTickSize": 0.001,
+  "orderMinSize": 5,
+  "slug": "{slug}"
+}}]"#,
+            condition = ISSUE_789_CONDITION_ID,
+            up = ISSUE_789_UP_TOKEN,
+            down = ISSUE_789_DOWN_TOKEN,
+            slug = ISSUE_789_MARKET_SLUG,
+        ))
+        .context("parse issue #789 Gamma market metadata")
+    }
+
+    fn reconstructed_chainlink_price_to_beat_table(
+        okx_quotes: &CanonicalQuotesTable,
+    ) -> Result<CanonicalIndexPricesTable> {
+        // The price-to-beat (resolution strike) is the underlying price at the
+        // market's interval open, fixed for the interval. Reconstruct it from
+        // the real OKX BBO midpoint at the earliest in-window sample — never a
+        // hardcoded literal. Mirrors `reconstructed_reference_rows_from_okx`.
+        let open_quote = okx_quotes
+            .rows
+            .iter()
+            .filter(|row| {
+                u64::try_from(row.event_time / 1_000_000)
+                    .map(|ms| (ISSUE_789_START_MS..ISSUE_789_END_MS).contains(&ms))
+                    .unwrap_or(false)
+            })
+            .min_by_key(|row| row.event_time)
+            .context("OKX fixture carries no quote at the issue #789 interval open")?;
+        let open_bid = open_quote
+            .bid
+            .parse::<Decimal>()
+            .context("parse OKX interval-open bid")?;
+        let open_ask = open_quote
+            .ask
+            .parse::<Decimal>()
+            .context("parse OKX interval-open ask")?;
+        let price_to_beat = ((open_bid + open_ask) / Decimal::from(2))
+            .normalize()
+            .to_string();
+        // Emit one strike row per second across the whole replay window so the
+        // price-to-beat feed never ages out before the market resolves. The value
+        // is constant (the interval-open strike); only the timestamps advance.
+        let window_seconds = ((ISSUE_789_END_MS - ISSUE_789_START_MS) / 1_000) as i32;
+        let rows = (0..window_seconds)
+            .map(|second| {
+                let ts = ISSUE_789_START_NS + i64::from(second) * 1_000_000_000;
+                CanonicalIndexPriceRow {
+                    schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+                    ingest_run_id: "issue-789-first-real-pl".to_string(),
+                    source_binding:
+                        "chainlink-price-to-beat-reconstructed-from-okx-interval-open-bbo"
+                            .to_string(),
+                    venue: "CHAINLINK".to_string(),
+                    product_family: "index".to_string(),
+                    product_category: "price_to_beat".to_string(),
+                    instrument_id: "BTC-USD".to_string(),
+                    canonical_instrument_key: "CHAINLINK/index/BTC-USD".to_string(),
+                    venue_symbol: "BTC-USD".to_string(),
+                    nt_instrument_id: Some("BTC-USD.CHAINLINK".to_string()),
+                    event_time: ts,
+                    capture_time: ts,
+                    availability_time: None,
+                    source_sequence: Some(format!("issue-789-reconstructed-strike-{second}")),
+                    raw_payload_id: "issue-789-chainlink-reconstruction".to_string(),
+                    source_proof_id: "issue-789-chainlink-reconstructed-strike".to_string(),
+                    payload_hash: sha256_hex(format!("{price_to_beat}-{second}").as_bytes()),
+                    transform_hash: sha256_hex(b"canonical-chainlink-reconstruction.v1"),
+                    value: price_to_beat.clone(),
+                }
+            })
+            .collect();
+        Ok(CanonicalIndexPricesTable {
+            schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
+            partition: TradesPartition {
+                venue: "CHAINLINK".to_string(),
+                product_family: "index".to_string(),
+                product_category: "price_to_beat".to_string(),
+                instrument_id: "BTC-USD".to_string(),
+                dt: "2026-04-22".to_string(),
+            },
+            source_proof_id: "issue-789-chainlink-reconstructed-strike".to_string(),
+            source_proof_version: 1,
+            fidelity_class: SourceProofFidelityClass::IndexReplay,
+            forbidden_claims: vec!["raw_chainlink_data_streams_replay".to_string()],
+            transform_hash: sha256_hex(b"canonical-chainlink-reconstruction.v1"),
+            payload_hash: sha256_hex(price_to_beat.as_bytes()),
+            rows,
+        })
+    }
+
+    fn reconstructed_reference_rows_from_okx(
+        okx_quotes: &CanonicalQuotesTable,
+    ) -> Result<Vec<ManifestReferenceCurrentPriceInput>> {
+        let mut by_second = BTreeMap::new();
+        for row in &okx_quotes.rows {
+            let observed_ms = u64::try_from(row.event_time / 1_000_000)
+                .context("OKX quote event_time before Unix epoch")?;
+            if !(ISSUE_789_START_MS..ISSUE_789_END_MS).contains(&observed_ms) {
+                continue;
+            }
+            by_second
+                .entry((observed_ms - ISSUE_789_START_MS) / 1_000)
+                .or_insert(row);
+        }
+        ensure!(
+            by_second.len() >= 10,
+            "OKX reference reconstruction needs at least 10 one-second samples"
+        );
+        by_second
+            .into_values()
+            .map(|row| {
+                let bid = row.bid.parse::<Decimal>().context("parse OKX bid")?;
+                let ask = row.ask.parse::<Decimal>().context("parse OKX ask")?;
+                let midpoint = (bid + ask) / Decimal::from(2);
+                let observed_ms = u64::try_from(row.event_time / 1_000_000)
+                    .context("OKX reference observed_ms before Unix epoch")?;
+                Ok(ManifestReferenceCurrentPriceInput {
+                    client_id: "chainlink_reference".to_string(),
+                    asset: "BTC".to_string(),
+                    source_id: "chainlink_primary".to_string(),
+                    provider: "chainlink_ws".to_string(),
+                    provider_instrument: "BTC-USD.CHAINLINK".to_string(),
+                    price: midpoint.normalize().to_string(),
+                    bid: Some(row.bid.clone()),
+                    ask: Some(row.ask.clone()),
+                    observed_ts_ms: observed_ms,
+                    received_ts_ms: observed_ms,
+                    provenance: BTreeMap::from([
+                        (
+                            "fidelity".to_string(),
+                            "reconstructed_from_okx_snapshot_seeded_l2_bbo".to_string(),
+                        ),
+                        ("raw_chainlink".to_string(), "false".to_string()),
+                    ]),
+                })
+            })
+            .collect()
+    }
+
+    struct Issue789Catalogs {
+        okx_catalog: PathBuf,
+        okx_catalog_hash: String,
+        bybit_catalog: PathBuf,
+        bybit_catalog_hash: String,
+        chainlink_catalog: PathBuf,
+        chainlink_catalog_hash: String,
+        up_catalog: PathBuf,
+        up_catalog_hash: String,
+        up_instrument_id: String,
+        down_catalog: PathBuf,
+        down_catalog_hash: String,
+        down_instrument_id: String,
+        reference_rows: Vec<ManifestReferenceCurrentPriceInput>,
+        instrument_settlements: Vec<ManifestInstrumentSettlementInput>,
+    }
+
+    fn issue_789_manifest(catalogs: Issue789Catalogs) -> BacktestingRunManifest {
+        let catalog_hash = sha256_hex(
+            format!(
+                "{}{}{}{}{}",
+                catalogs.okx_catalog_hash,
+                catalogs.bybit_catalog_hash,
+                catalogs.chainlink_catalog_hash,
+                catalogs.up_catalog_hash,
+                catalogs.down_catalog_hash
+            )
+            .as_bytes(),
+        );
+        BacktestingRunManifest {
+            manifest_schema_version: BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION.to_string(),
+            run_id: "issue-789-first-real-free-data-taker-pl".to_string(),
+            target_bolt_v2_branch: "codex/789-first-faithful-taker-pl".to_string(),
+            target_bolt_v2_ref: "worktree".to_string(),
+            resolved_nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+            market_structure_fixture: MarketStructureFixture::BinaryOption,
+            venue_binding_key: "issue-789-pmxt-okx-bybit-chainlink".to_string(),
+            run_purpose: RunPurpose::Normal,
+            source_proof_id: "issue-789-first-real-free-data-slice".to_string(),
+            source_proof_version: 1,
+            pins_non_latest_proof: false,
+            proof_pin_reason_code: None,
+            proof_pin_reason_detail: None,
+            strategy: StrategySource {
+                source_kind: StrategySourceKind::CompiledRustRegistry,
+                registry_key: STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string(),
+                parameters: BTreeMap::from([
+                    (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
+                    (
+                        STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
+                        "live".to_string(),
+                    ),
+                ]),
+                typed_config_uri: None,
+                typed_config_hash: None,
+                experiment_result_uri: None,
+                experiment_result_hash: None,
+                config_overlay: Some(StrategyConfigOverlaySource {
+                    production_root_config_path: "config/root.toml".to_string(),
+                    override_delta: ManifestBacktestConfigOverride {
+                        label: "production config + documented OKX/Bybit override".to_string(),
+                        strategy_instance_id: "binary_oracle_btc".to_string(),
+                        signal_role: "primary".to_string(),
+                        signal_data_client_id: "okx_data".to_string(),
+                        signal_instrument_id: "BTC-USDT.OKX".to_string(),
+                        realized_volatility_surface_id: "btc_usdt_midpoint_rv".to_string(),
+                        keep_realized_volatility_sources: vec![
+                            ManifestRealizedVolatilitySourceSelector {
+                                data_client_id: "okx_data".to_string(),
+                                instrument_id: "BTC-USDT.OKX".to_string(),
+                            },
+                            ManifestRealizedVolatilitySourceSelector {
+                                data_client_id: "bybit_data".to_string(),
+                                instrument_id: "BTCUSDT-SPOT.BYBIT".to_string(),
+                            },
+                        ],
+                    },
+                }),
+            },
+            strategy_config_hash: sha256_hex(
+                b"config/root.toml + production config + documented OKX/Bybit override",
+            ),
+            // POLYMARKET must be funded in the binary's settlement currency
+            // (pUSD — the NT Polymarket adapter's collateral currency), not
+            // USDC. NT's multi-currency portfolio manager refuses to auto-create
+            // a balance for a negative realized PnL, so settling a held loser in
+            // a currency the account was never funded in silently drops the P/L
+            // from stats_pnls. The instrument's settlement currency owns this.
+            venue: issue_789_venue("POLYMARKET", "pUSD", "L2_MBP", true, true),
+            additional_venues: vec![
+                issue_789_venue("OKX", "USDT", "L1_MBP", false, false),
+                issue_789_venue("BYBIT", "USDT", "L1_MBP", false, false),
+                issue_789_venue("CHAINLINK", "USD", "L1_MBP", false, false),
+            ],
+            catalog_inputs: vec![
+                catalog_input(
+                    &catalogs.okx_catalog,
+                    "QuoteTick",
+                    "BTC-USDT.OKX",
+                    Some("okx_data"),
+                ),
+                catalog_input(
+                    &catalogs.bybit_catalog,
+                    "QuoteTick",
+                    "BTCUSDT-SPOT.BYBIT",
+                    Some("bybit_data"),
+                ),
+                catalog_input(
+                    &catalogs.chainlink_catalog,
+                    "IndexPriceUpdate",
+                    "BTC-USD.CHAINLINK",
+                    Some("chainlink_strike"),
+                ),
+                catalog_input(
+                    &catalogs.up_catalog,
+                    "OrderBookDelta",
+                    &catalogs.up_instrument_id,
+                    None,
+                ),
+                catalog_input(
+                    &catalogs.up_catalog,
+                    "TradeTick",
+                    &catalogs.up_instrument_id,
+                    None,
+                ),
+                catalog_input(
+                    &catalogs.down_catalog,
+                    "OrderBookDelta",
+                    &catalogs.down_instrument_id,
+                    None,
+                ),
+                catalog_input(
+                    &catalogs.down_catalog,
+                    "TradeTick",
+                    &catalogs.down_instrument_id,
+                    None,
+                ),
+            ],
+            reconstructed_reference_current_price: catalogs.reference_rows,
+            instrument_settlements: catalogs.instrument_settlements,
+            catalog_hash,
+            execution_model: "nt_backtest_node".to_string(),
+            artifact_root: "memory://issue-789".to_string(),
+            output_prefix: "issue-789-first-real-free-data-taker-pl".to_string(),
+            artifact_store: ManifestArtifactStore {
+                storage_options: BTreeMap::new(),
+                rust_storage_options: BTreeMap::new(),
+                ssm_parameters: None,
+            },
+            domain_metrics: Vec::new(),
+            start_time: Some(ISSUE_789_START_NS),
+            end_time: Some(ISSUE_789_END_NS),
+        }
+    }
+
+    fn issue_789_venue(
+        nt_venue: &str,
+        balance_currency: &str,
+        book_type: &str,
+        trade_execution: bool,
+        liquidity_consumption: bool,
+    ) -> ManifestVenueConfig {
+        ManifestVenueConfig {
+            nt_venue: nt_venue.to_string(),
+            oms_type: "NETTING".to_string(),
+            account_type: "CASH".to_string(),
+            book_type: book_type.to_string(),
+            starting_balances: vec![format!("1_000_000 {balance_currency}")],
+            routing: false,
+            frozen_account: false,
+            reject_stop_orders: true,
+            support_gtd_orders: true,
+            support_contingent_orders: true,
+            use_position_ids: true,
+            use_random_ids: false,
+            use_reduce_only: true,
+            bar_execution: false,
+            bar_adaptive_high_low_ordering: false,
+            trade_execution,
+            use_market_order_acks: false,
+            liquidity_consumption,
+            allow_cash_borrowing: false,
+            queue_position: false,
+            oto_trigger_mode: "PARTIAL".to_string(),
+            base_currency: "NONE".to_string(),
+            default_leverage: "1".to_string(),
+            price_protection_points: 0,
+            leverages: None,
+            margin_model: None,
+            modules: None,
+            fill_model: None,
+            latency_model: None,
+            fee_model: None,
+            settlement_prices: None,
+        }
+    }
+
+    fn catalog_input(
+        catalog_path: &std::path::Path,
+        data_type: &str,
+        nt_instrument_id: &str,
+        client_id: Option<&str>,
+    ) -> ManifestCatalogInput {
+        ManifestCatalogInput {
+            catalog_path: catalog_path.display().to_string(),
+            catalog_fs_protocol: CATALOG_FS_PROTOCOL_NONE.to_string(),
+            catalog_fs_storage_options: BTreeMap::new(),
+            catalog_fs_rust_storage_options: BTreeMap::new(),
+            data_type: data_type.to_string(),
+            nt_instrument_id: nt_instrument_id.to_string(),
+            instrument_ids: None,
+            start_time: Some(ISSUE_789_START_NS),
+            end_time: Some(ISSUE_789_END_NS),
+            filter_expr: None,
+            client_id: client_id.map(str::to_string),
+            metadata: None,
+            bar_spec: None,
+            bar_types: None,
+            optimize_file_loading: None,
+        }
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        hex::encode(hasher.finalize())
     }
 }

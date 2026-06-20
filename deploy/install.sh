@@ -68,6 +68,35 @@ install -d -o "${BOLT_USER}" -g "${BOLT_GROUP}" \
 install -d -m 0755 "${BOLT_INSTALL_ROOT}"
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${BOLT_INSTALL_ROOT}/config"
 
+reject_symlinked_install_path() {
+    local path="$1"
+    local label="$2"
+    if [[ -L "${path}" ]]; then
+        echo "Refusing symlinked ${label}: ${path}" >&2
+        exit 1
+    fi
+}
+
+repair_config_dir() {
+    local path="$1"
+    local label="$2"
+    reject_symlinked_install_path "${path}" "${label}"
+    if [[ -d "${path}" ]]; then
+        chown root:"${BOLT_GROUP}" "${path}"
+        chmod 0750 "${path}"
+    fi
+}
+
+repair_config_file() {
+    local path="$1"
+    local label="$2"
+    reject_symlinked_install_path "${path}" "${label}"
+    if [[ -f "${path}" ]]; then
+        chown root:"${BOLT_GROUP}" "${path}"
+        chmod 0640 "${path}"
+    fi
+}
+
 # The bolt service user runs verify-live-config / prestart-check / run (ExecStartPre +
 # ExecStart) and must read the ENTIRE deployed config bundle: the tracked overlay (under
 # config/profiles/), its base root.toml, the generated live.toml, AND every referenced
@@ -77,9 +106,12 @@ install -d -o root -g "${BOLT_GROUP}" -m 0750 "${BOLT_INSTALL_ROOT}/config"
 # with group-readable modes regardless of how it was copied, so readability does not depend
 # on the deploy shell's umask.
 for config_subdir in strategies profiles; do
-    if [[ -d "${BOLT_INSTALL_ROOT}/config/${config_subdir}" ]]; then
-        chown root:"${BOLT_GROUP}" "${BOLT_INSTALL_ROOT}/config/${config_subdir}"
-        chmod 0750 "${BOLT_INSTALL_ROOT}/config/${config_subdir}"
+    config_subdir_path="${BOLT_INSTALL_ROOT}/config/${config_subdir}"
+    repair_config_dir "${config_subdir_path}" "config ${config_subdir} directory"
+    if [[ -d "${config_subdir_path}" ]]; then
+        while IFS= read -r -d '' config_bundle_dir; do
+            repair_config_dir "${config_bundle_dir}" "config ${config_subdir} directory"
+        done < <(find "${config_subdir_path}" -type d -print0)
     fi
 done
 config_bundle_files=(
@@ -93,10 +125,7 @@ if [[ -d "${BOLT_INSTALL_ROOT}/config/strategies" ]]; then
     done < <(find "${BOLT_INSTALL_ROOT}/config/strategies" -type f -name '*.toml' -print0)
 fi
 for config_bundle_file in "${config_bundle_files[@]}"; do
-    if [[ -f "${config_bundle_file}" ]]; then
-        chown root:"${BOLT_GROUP}" "${config_bundle_file}"
-        chmod 0640 "${config_bundle_file}"
-    fi
+    repair_config_file "${config_bundle_file}" "config bundle file"
 done
 
 install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d

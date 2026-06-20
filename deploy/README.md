@@ -64,7 +64,8 @@ reviewed release so the on-box bytes are exactly what CI loaded.
 
 `deploy/install.sh` repairs the **entire** deployed config bundle — the tracked overlay, its base
 `root.toml`, the generated `live.toml`, and every `config/strategies/*.toml` — to `root:bolt` with
-group-readable modes (config and strategies dirs `0750`, TOML files `0640`). The service user runs
+group-readable modes (config, profiles, and strategies dirs `0750`, TOML files `0640`). The installer
+rejects symlinked config bundle paths before repairing ownership or modes. The service user runs
 `ops verify-live-config` / `prestart-check` / `run`, so this keeps the bundle readable regardless of the
 umask under which it was copied (a restrictive umask would otherwise leave root-copied files
 `0600 root:root` and fail start).
@@ -76,8 +77,26 @@ connect to the configured Chainlink and PolyResearch reference streams. The pres
 `persistence.required_catalog_prefix` and requires the catalog filesystem to have at least the
 TOML-configured `persistence.min_free_bytes` available.
 For live EC2 operation, start Bolt through the systemd unit; direct `bolt-v2 run --config ...`
-rejects a non-generated `live.toml`, confirms production invariants, and executes the same storage
-prestart check before constructing the live node.
+requires the generated `live.toml` path, re-runs `ops verify-live-config` from `BOLT_LIVE_PROFILE`,
+confirms production invariants, and executes the same storage prestart check before constructing the
+live node.
+
+## Supervised live checklist
+
+Before any supervised live run, record one evidence packet that ties together:
+
+1. The exact Git head, binary checksum, `BOLT_LIVE_PROFILE`, generated config checksum, and
+   `ops verify-live-config` result.
+2. Secret resolution, prestart-check, and reference-live-probe results from the deployed instance.
+3. The configured loss-governor and kill-switch caps from the generated `live.toml`, plus the
+   operator-approved arming artifact checksum.
+4. A rehearsed abort path: the operator who can remove submit authorization, stop the service, and
+   preserve logs/reports.
+5. Evidence retention paths for journald, runtime reports, decision evidence, raw capture, and catalog
+   data.
+
+Do not start the service for a supervised run until that packet exists and the operator explicitly
+approves proceeding.
 
 Before a live run, inspect the instance storage state:
 

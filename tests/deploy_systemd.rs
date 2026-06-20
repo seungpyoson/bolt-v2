@@ -152,13 +152,23 @@ fn install_script_repairs_whole_config_bundle_for_service_user() {
         "installer must repair BOTH required config subdirs — strategies AND the #768 overlay dir profiles"
     );
     assert!(
-        install.contains("chmod 0750 \"${BOLT_INSTALL_ROOT}/config/${config_subdir}\""),
+        install.contains("reject_symlinked_install_path()"),
+        "installer must refuse symlinked config bundle paths before root-owned repair"
+    );
+    assert!(
+        install.contains("repair_config_dir \"${config_subdir_path}\""),
+        "installer must repair each top-level config bundle directory through the symlink guard"
+    );
+    assert!(
+        install.contains("find \"${config_subdir_path}\" -type d -print0"),
+        "installer must repair nested strategy/profile directories without following symlinked dirs"
+    );
+    assert!(
+        install.contains("chmod 0750 \"${path}\""),
         "installer must make each config subdir (strategies, profiles) traversable by the bolt group (0750)"
     );
     assert!(
-        install.contains(
-            "chown root:\"${BOLT_GROUP}\" \"${BOLT_INSTALL_ROOT}/config/${config_subdir}\""
-        ),
+        install.contains("chown root:\"${BOLT_GROUP}\" \"${path}\""),
         "installer must own each config subdir (strategies, profiles) as root:bolt for the service user"
     );
     assert!(
@@ -188,8 +198,8 @@ fn install_script_repairs_whole_config_bundle_for_service_user() {
         "installer must not repair or bless legacy live.local.toml"
     );
     assert!(
-        install.contains("chown root:\"${BOLT_GROUP}\" \"${config_bundle_file}\"")
-            && install.contains("chmod 0640 \"${config_bundle_file}\""),
+        install.contains("repair_config_file \"${config_bundle_file}\" \"config bundle file\"")
+            && install.contains("chmod 0640 \"${path}\""),
         "installer must make each enumerated deploy-bundle file root:bolt and group-readable"
     );
 }

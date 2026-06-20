@@ -17299,11 +17299,53 @@ reason = "Legacy ignored runtime-config filename rejected on the direct run path
 [[allowed]]
 path = "src/main.rs"
 kind = "string"
+literal = '''"BOLT_LIVE_PROFILE"'''
+context = '''const BOLT_LIVE_PROFILE_ENV: &str = "BOLT_LIVE_PROFILE";'''
+classification = "live_runtime_profile_env_name"
+reason = "Stable environment variable name used by systemd and direct run verification to select the reviewed profile ID; the value remains operator-supplied, not hardcoded."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
 literal = '''"runtime config `{}` is the legacy live.local.toml path; run \
              `bolt-v2 ops generate-live-config` from a reviewed profile ID instead"'''
 context = '''"runtime config `{}` is the legacy live.local.toml path; run \'''
 classification = "live_runtime_legacy_config_diagnostic"
 reason = "Fail-closed direct-run diagnostic explaining that legacy live.local.toml is not an accepted runtime config source."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"runtime config `{}` is not the generated live.toml path; run \
+             `bolt-v2 ops generate-live-config` from a reviewed profile ID and start from live.toml"'''
+context = '''"runtime config `{}` is not the generated live.toml path; run \'''
+classification = "live_runtime_generated_config_diagnostic"
+reason = "Fail-closed direct-run diagnostic requiring the generated live.toml artifact instead of arbitrary runtime config paths."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"{BOLT_LIVE_PROFILE_ENV} must be set to the reviewed profile ID before running \
+             generated live.toml"'''
+context = '''"{BOLT_LIVE_PROFILE_ENV} must be set to the reviewed profile ID before running \'''
+classification = "live_runtime_profile_env_diagnostic"
+reason = "Fail-closed direct-run diagnostic requiring the operator-selected profile ID before verifying generated live.toml."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"{BOLT_LIVE_PROFILE_ENV} must be non-empty before running generated live.toml"'''
+context = '''"{BOLT_LIVE_PROFILE_ENV} must be non-empty before running generated live.toml"'''
+classification = "live_runtime_profile_env_diagnostic"
+reason = "Fail-closed direct-run diagnostic for an empty profile selector; the selected profile value remains operator-supplied."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"runtime config `{}` must be inside the deployed config root"'''
+context = '''"runtime config `{}` must be inside the deployed config root",'''
+classification = "live_runtime_generated_config_diagnostic"
+reason = "Fail-closed direct-run diagnostic requiring generated live.toml to live under a config root so verification can derive root+overlay sources."
 
 [[allowed]]
 path = "src/bolt_v3_outcome_group_sources.rs"

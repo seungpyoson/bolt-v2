@@ -45,6 +45,7 @@ use bolt_v2::{
 const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
     "clob_v2_balance_allowance_cache_sync_completed";
 const LIVE_LOCAL_CONFIG_FILE_NAME: &str = "live.local.toml";
+const BOLT_LIVE_PROFILE_ENV: &str = "BOLT_LIVE_PROFILE";
 const CLOB_V2_CACHE_SYNC_EXECUTION_CLIENT_OUTPUT_FIELD: &str = "execution_client_id";
 const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
@@ -209,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    require_generated_marker_for_live_config(&config)?;
+    verify_runtime_live_config_source(&config)?;
     let loaded = load_bolt_v3_config(&config)?;
     confirm_production_invariants(&loaded)?;
     run_loaded_prestart_check(&loaded, None)?;
@@ -225,9 +226,7 @@ fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     runtime.block_on(local.run_until(app))
 }
 
-fn require_generated_marker_for_live_config(
-    config: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn verify_runtime_live_config_source(config: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let file_name = config.file_name().and_then(|name| name.to_str());
     if file_name == Some(LIVE_LOCAL_CONFIG_FILE_NAME) {
         return Err(format!(
@@ -238,7 +237,12 @@ fn require_generated_marker_for_live_config(
         .into());
     }
     if file_name != Some(LIVE_CONFIG_FILE_NAME) {
-        return Ok(());
+        return Err(format!(
+            "runtime config `{}` is not the generated live.toml path; run \
+             `bolt-v2 ops generate-live-config` from a reviewed profile ID and start from live.toml",
+            config.display()
+        )
+        .into());
     }
     let text = std::fs::read_to_string(config).map_err(|source| {
         std::io::Error::new(
@@ -258,6 +262,25 @@ fn require_generated_marker_for_live_config(
         )
         .into());
     }
+    let profile = std::env::var(BOLT_LIVE_PROFILE_ENV).map_err(|_| {
+        format!(
+            "{BOLT_LIVE_PROFILE_ENV} must be set to the reviewed profile ID before running \
+             generated live.toml"
+        )
+    })?;
+    if profile.is_empty() {
+        return Err(format!(
+            "{BOLT_LIVE_PROFILE_ENV} must be non-empty before running generated live.toml"
+        )
+        .into());
+    }
+    let config_root = config.parent().ok_or_else(|| {
+        format!(
+            "runtime config `{}` must be inside the deployed config root",
+            config.display()
+        )
+    })?;
+    verify_live_config(config_root, &profile)?;
     Ok(())
 }
 
@@ -993,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn live_config_run_guard_requires_generated_marker() {
+    fn live_config_run_guard_requires_verified_generated_live_toml() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
@@ -1003,7 +1026,7 @@ mod tests {
         let live = dir.join("live.toml");
         fs::write(&live, "[runtime]\n").expect("hand-edited live.toml should write");
 
-        let error = require_generated_marker_for_live_config(&live)
+        let error = verify_runtime_live_config_source(&live)
             .expect_err("live.toml without generated marker must be rejected");
         assert!(
             error.to_string().contains("is not a generated live config"),
@@ -1015,17 +1038,29 @@ mod tests {
             format!("{GENERATED_MARKER_PREFIX}{GENERATOR_FORMAT_VERSION}\n"),
         )
         .expect("generated marker should write");
-        require_generated_marker_for_live_config(&live)
-            .expect("live.toml with generated marker should pass");
+        if std::env::var_os(BOLT_LIVE_PROFILE_ENV).is_none() {
+            let error = verify_runtime_live_config_source(&live)
+                .expect_err("generated live.toml without a profile ID must be rejected");
+            assert!(
+                error.to_string().contains(BOLT_LIVE_PROFILE_ENV),
+                "error should require the selected profile ID, got: {error}"
+            );
+        }
 
         let root = dir.join("root.toml");
         fs::write(&root, "[runtime]\n").expect("non-live config should write");
-        require_generated_marker_for_live_config(&root)
-            .expect("non-live config paths should not require the live marker");
+        let error = verify_runtime_live_config_source(&root)
+            .expect_err("run must reject non-live.toml runtime config paths");
+        assert!(
+            error
+                .to_string()
+                .contains("not the generated live.toml path"),
+            "error should require generated live.toml, got: {error}"
+        );
 
         let live_local = dir.join("live.local.toml");
         fs::write(&live_local, "[runtime]\n").expect("legacy live.local.toml should write");
-        let error = require_generated_marker_for_live_config(&live_local)
+        let error = verify_runtime_live_config_source(&live_local)
             .expect_err("live.local.toml must be rejected as a runtime config source");
         assert!(
             error.to_string().contains("legacy live.local.toml"),

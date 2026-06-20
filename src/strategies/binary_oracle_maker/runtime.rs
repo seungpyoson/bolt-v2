@@ -217,6 +217,12 @@ impl MakerMarketRuntime {
     }
 
     fn mint_next(&mut self, order_id_tag: &str, leg: Leg) {
+        // `generation` is a monotonic `u64`; the increment is unchecked because
+        // exhausting it needs ~1.8e19 mints of a single (market_key, leg) (~3e8 years at
+        // a 1 ms cadence) AND there is no live mint driver at this foundation. Checked
+        // fail-loud arithmetic and the durable cross-process high-water both belong to the
+        // arming-time generation rework (#869); adding a fallible mint here would ripple
+        // signatures the rework redoes. (Debug builds already panic on overflow.)
         let generation = match leg {
             Leg::Yes => {
                 self.yes_generation += 1;

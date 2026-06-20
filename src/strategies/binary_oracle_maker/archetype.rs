@@ -493,7 +493,12 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
             runtime.quote_interval_ms
         ));
     }
-    validate_market_portfolio_policy(context, market_portfolio, &mut errors);
+    validate_market_portfolio_policy(
+        context,
+        market_portfolio,
+        parameters.markets.len(),
+        &mut errors,
+    );
     validate_market_declarations(
         context,
         &parameters.markets,
@@ -513,6 +518,7 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
 fn validate_market_portfolio_policy(
     context: &str,
     market_portfolio: &MarketPortfolioParametersBlock,
+    declared_market_count: usize,
     errors: &mut Vec<String>,
 ) {
     let policy = market_portfolio.policy();
@@ -523,12 +529,25 @@ fn validate_market_portfolio_policy(
             market_portfolio_blocker_required_state(blocker)
         ));
     }
+    // The shared planner equal-splits `total_bankroll_notional` across the markets it
+    // selects (`bolt_v3_maker_market_selection`) and admits NO plan when that per-slot
+    // split falls below `min_slot_notional`, so an under-funded bankroll blocks the
+    // ENTIRE active set (a silent idle), not just the marginal slot. The planner can
+    // select up to `min(declared markets, max_active_markets)` slots, so the bankroll
+    // must cover that many minimum allocations. Keyed on the declared count, not
+    // `max_active_markets` alone, so a generous cap with fewer declared markets is not
+    // wrongly rejected; this generalises the single-slot floor (`fundable_slots == 1`
+    // reduces to `total_bankroll >= min_slot`) and no-ops fail-closed for the
+    // separately-rejected degenerate cases (zero declared markets or a zero cap make
+    // `fundable_slots == 0`, so the required minimum is 0 and the check cannot fire).
+    let fundable_slots = declared_market_count.min(policy.max_active_markets);
     if crate::bolt_v3_numeric::is_positive_finite(policy.total_bankroll_notional)
         && crate::bolt_v3_numeric::is_positive_finite(policy.min_slot_notional)
-        && policy.total_bankroll_notional < policy.min_slot_notional
+        && policy.total_bankroll_notional < (fundable_slots as f64) * policy.min_slot_notional
     {
         errors.push(format!(
-            "{context}: parameters.market_portfolio.total_bankroll_notional must be >= parameters.market_portfolio.min_slot_notional (otherwise no market slot can receive the configured minimum allocation)"
+            "{context}: parameters.market_portfolio.total_bankroll_notional must be >= min(declared markets, max_active_markets) * parameters.market_portfolio.min_slot_notional (the planner equal-splits the bankroll across the up-to-{fundable_slots} selected markets, so too small a total drives every per-slot allocation below the minimum and blocks the entire active set; configured total_bankroll_notional={}, min_slot_notional={})",
+            policy.total_bankroll_notional, policy.min_slot_notional
         ));
     }
 }
@@ -1670,6 +1689,68 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("total_bankroll_notional must be >=")),
             "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_bankroll_that_cannot_fund_every_declared_slot() {
+        // The shared planner equal-splits total_bankroll_notional across the markets it
+        // selects and admits NO plan when the per-slot split falls below
+        // min_slot_notional, blocking the ENTIRE active set (a silent idle). A bankroll
+        // that clears the single-slot floor but cannot fund every declarable slot at
+        // min_slot_notional must therefore be rejected at load, not just one `< min_slot`.
+        // Three declared markets, cap 3, min slot 100, bankroll 150: 150 >= 100 clears the
+        // single-slot floor (so the pre-existing check passes it) but 150 / 3 = 50 < 100,
+        // so all three slots are unfundable and the maker would silently quote nothing.
+        let starved = validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                market_portfolio: MarketPortfolioParametersBlock {
+                    max_active_markets: 3,
+                    total_bankroll_notional: 150.0,
+                    min_slot_notional: 100.0,
+                },
+                markets: vec![
+                    market_declaration("eth-hourly"),
+                    market_declaration("btc-hourly"),
+                    market_declaration("sol-hourly"),
+                ],
+                backtest: valid_backtest(),
+            },
+        );
+        assert!(
+            starved
+                .iter()
+                .any(|error| error.contains("total_bankroll_notional must be >=")),
+            "a bankroll that cannot fund every declared slot at min_slot_notional must be \
+             rejected even though it clears the single-slot floor: {starved:?}"
+        );
+
+        // Over-rejection guard (the bound is min(declared, max_active), NOT max_active
+        // alone): a SINGLE declared market under the same cap 3 needs only one funded
+        // slot, so 150 >= 1 * 100 funds it and must NOT be rejected. Keying the bound on
+        // max_active_markets (3 * 100 = 300) would wrongly reject this legitimate config —
+        // the regression this assertion locks against.
+        let generous_cap = validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                market_portfolio: MarketPortfolioParametersBlock {
+                    max_active_markets: 3,
+                    total_bankroll_notional: 150.0,
+                    min_slot_notional: 100.0,
+                },
+                markets: vec![market_declaration("eth-hourly")],
+                backtest: valid_backtest(),
+            },
+        );
+        assert!(
+            !generous_cap
+                .iter()
+                .any(|error| error.contains("total_bankroll_notional must be >=")),
+            "one declared market under a generous cap needs only one slot funded, so a \
+             sufficient bankroll must not be rejected: {generous_cap:?}"
         );
     }
 

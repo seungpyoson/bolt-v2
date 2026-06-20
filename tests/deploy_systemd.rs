@@ -142,10 +142,8 @@ fn install_script_repairs_whole_config_bundle_for_service_user() {
     // ExecStartPre runs `ops verify-live-config` as User=bolt and must read the tracked
     // overlay (under config/profiles/) AND every referenced strategy file (under
     // config/strategies/), not just live.toml. Files/dirs copied by root under a restrictive
-    // umask can land 0600/0700 root:root; the installer must repair the whole bundle — BOTH
-    // required config subdirs (strategies + the #768 overlay dir profiles) and all *.toml — to
-    // root:bolt group-readable so verification does not fail with a service-user lockout
-    // regardless of the deploy shell's umask (#768).
+    // umask can land 0600/0700 root:root; the installer must repair the whole deploy bundle,
+    // without broad-scanning ignored legacy files such as config/live.local.toml.
     let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
     let install = fs::read_to_string(&install_path).expect("install script should exist");
 
@@ -164,16 +162,35 @@ fn install_script_repairs_whole_config_bundle_for_service_user() {
         "installer must own each config subdir (strategies, profiles) as root:bolt for the service user"
     );
     assert!(
-        install.contains(
-            "find \"${BOLT_INSTALL_ROOT}/config\" -type f -name '*.toml' -exec chown root:\"${BOLT_GROUP}\" {} +"
-        ),
-        "installer must own every deployed config/strategy TOML as root:bolt"
+        install.contains("\"${BOLT_INSTALL_ROOT}/config/root.toml\""),
+        "installer must repair root.toml explicitly"
+    );
+    assert!(
+        install.contains("\"${BOLT_INSTALL_ROOT}/config/live.toml\""),
+        "installer must repair the generated live.toml explicitly"
+    );
+    assert!(
+        install.contains("\"${BOLT_INSTALL_ROOT}/config/profiles/\"*.overlay.toml"),
+        "installer must repair tracked profile overlays explicitly"
     );
     assert!(
         install.contains(
-            "find \"${BOLT_INSTALL_ROOT}/config\" -type f -name '*.toml' -exec chmod 0640 {} +"
+            "find \"${BOLT_INSTALL_ROOT}/config/strategies\" -type f -name '*.toml' -print0"
         ),
-        "installer must make every deployed config/strategy TOML group-readable (0640) for the service user"
+        "installer must repair strategy TOMLs under config/strategies, including nested files"
+    );
+    assert!(
+        !install.contains("find \"${BOLT_INSTALL_ROOT}/config\" -type f -name '*.toml'"),
+        "installer must not broad-scan config/*.toml because that touches ignored live.local.toml drift"
+    );
+    assert!(
+        !install.contains("live.local.toml"),
+        "installer must not repair or bless legacy live.local.toml"
+    );
+    assert!(
+        install.contains("chown root:\"${BOLT_GROUP}\" \"${config_bundle_file}\"")
+            && install.contains("chmod 0640 \"${config_bundle_file}\""),
+        "installer must make each enumerated deploy-bundle file root:bolt and group-readable"
     );
 }
 

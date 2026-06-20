@@ -648,9 +648,17 @@ reason = "This tuple index sorts strategy-fragment paths for deterministic confi
 path = "src/bolt_v3_config.rs"
 kind = "number"
 literal = '''0'''
-context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());'''
+context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_checksum_text.as_bytes());'''
 classification = "config_bundle_checksum_entry_kind"
 reason = "This structural tag distinguishes the root TOML entry inside the config-bundle checksum framing."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "number"
+literal = '''0'''
+context = '''let mut offset = 0;'''
+classification = "generated_live_config_header_strip_offset"
+reason = "Initial byte offset used while stripping the generated live-config provenance comment header before checksum framing; it is parser state, not a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_config.rs"
@@ -672,7 +680,7 @@ reason = "This structural tag distinguishes strategy-fragment TOML entries insid
 path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"root"'''
-context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());'''
+context = '''update_config_bundle_entry(&mut hasher, 0, "root", root_checksum_text.as_bytes());'''
 classification = "config_bundle_checksum_root_label"
 reason = "This structural label identifies the root TOML bytes inside the config-bundle checksum framing."
 
@@ -17281,6 +17289,23 @@ classification = "ops_prestart_probe_filename"
 reason = "Temporary prestart write-probe filename prefix under the TOML-owned catalog directory; it does not configure trading behavior."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"live.local.toml"'''
+context = '''const LIVE_LOCAL_CONFIG_FILE_NAME: &str = "live.local.toml";'''
+classification = "live_runtime_legacy_config_filename_guard"
+reason = "Legacy ignored runtime-config filename rejected on the direct run path so it cannot re-enter as a live source of truth."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"runtime config `{}` is the legacy live.local.toml path; run \
+             `bolt-v2 ops generate-live-config` from a reviewed profile ID instead"'''
+context = '''"runtime config `{}` is the legacy live.local.toml path; run \'''
+classification = "live_runtime_legacy_config_diagnostic"
+reason = "Fail-closed direct-run diagnostic explaining that legacy live.local.toml is not an accepted runtime config source."
+
+[[allowed]]
 path = "src/bolt_v3_outcome_group_sources.rs"
 kind = "string"
 literal = '''"{context}.gamma_query.sports_market_types cannot be combined with search or market_query"'''
@@ -17745,10 +17770,10 @@ classification = "prod_profile_generator_format_version"
 reason = "Provenance-header format version stamped onto the generated runtime config and bumped only when the header format changes; it is a code constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_prod_profile.rs"
+path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"# bolt-v2:generated-live-config format="'''
-context = '''pub const GENERATED_MARKER_PREFIX: &str = "# bolt-v2:generated-live-config format=";'''
+context = '''pub const GENERATED_LIVE_CONFIG_MARKER_PREFIX: &str = "# bolt-v2:generated-live-config format=";'''
 classification = "prod_profile_generation_marker"
 reason = "Fixed provenance-marker prefix stamped onto, and matched in, the generated runtime config; it is a code constant, not an operator runtime value."
 
@@ -17807,6 +17832,54 @@ literal = '''"toml"'''
 context = '''const STRATEGY_CONFIG_EXTENSION: &str = "toml";'''
 classification = "prod_profile_strategy_bundle_path_derivation"
 reason = "Structural file-extension guard for strategy config files selected by production overlays; the strategy contents remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"config root"'''
+context = '''reject_symlink_path(config_root, "config root")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked config root before deriving production profile paths; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"strategy_files directory"'''
+context = '''reject_symlink_path(&strategies_dir, "strategy_files directory")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked strategy bundle directory; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"base root.toml"'''
+context = '''reject_symlink_path(&base_path, "base root.toml")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked base root.toml before composition; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"profiles directory"'''
+context = '''reject_symlink_path(&config_root.join(PROFILES_DIR_NAME), "profiles directory")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked profile directory before overlay resolution; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"profile overlay"'''
+context = '''reject_symlink_path(&overlay_path, "profile overlay")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked selected overlay before reading profile data; not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_prod_profile.rs"
+kind = "string"
+literal = '''"deployed live.toml"'''
+context = '''reject_symlink_path(&deployed_path, "deployed live.toml")?;'''
+classification = "prod_profile_symlink_guard_context"
+reason = "Diagnostic context label for rejecting a symlinked generated live.toml before verification; not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_prod_profile.rs"

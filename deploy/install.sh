@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s nullglob
 
 BOLT_USER="${BOLT_USER:-bolt}"
 BOLT_GROUP="${BOLT_GROUP:-$BOLT_USER}"
@@ -81,8 +82,22 @@ for config_subdir in strategies profiles; do
         chmod 0750 "${BOLT_INSTALL_ROOT}/config/${config_subdir}"
     fi
 done
-find "${BOLT_INSTALL_ROOT}/config" -type f -name '*.toml' -exec chown root:"${BOLT_GROUP}" {} +
-find "${BOLT_INSTALL_ROOT}/config" -type f -name '*.toml' -exec chmod 0640 {} +
+config_bundle_files=(
+    "${BOLT_INSTALL_ROOT}/config/root.toml"
+    "${BOLT_INSTALL_ROOT}/config/live.toml"
+    "${BOLT_INSTALL_ROOT}/config/profiles/"*.overlay.toml
+)
+if [[ -d "${BOLT_INSTALL_ROOT}/config/strategies" ]]; then
+    while IFS= read -r -d '' strategy_config; do
+        config_bundle_files+=("${strategy_config}")
+    done < <(find "${BOLT_INSTALL_ROOT}/config/strategies" -type f -name '*.toml' -print0)
+fi
+for config_bundle_file in "${config_bundle_files[@]}"; do
+    if [[ -f "${config_bundle_file}" ]]; then
+        chown root:"${BOLT_GROUP}" "${config_bundle_file}"
+        chmod 0640 "${config_bundle_file}"
+    fi
+done
 
 install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${LIVE_ENV_DIR}"

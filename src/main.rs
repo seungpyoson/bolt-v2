@@ -44,6 +44,7 @@ use bolt_v2::{
 
 const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
     "clob_v2_balance_allowance_cache_sync_completed";
+const LIVE_LOCAL_CONFIG_FILE_NAME: &str = "live.local.toml";
 const CLOB_V2_CACHE_SYNC_EXECUTION_CLIENT_OUTPUT_FIELD: &str = "execution_client_id";
 const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
@@ -227,7 +228,16 @@ fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 fn require_generated_marker_for_live_config(
     config: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if config.file_name().and_then(|name| name.to_str()) != Some(LIVE_CONFIG_FILE_NAME) {
+    let file_name = config.file_name().and_then(|name| name.to_str());
+    if file_name == Some(LIVE_LOCAL_CONFIG_FILE_NAME) {
+        return Err(format!(
+            "runtime config `{}` is the legacy live.local.toml path; run \
+             `bolt-v2 ops generate-live-config` from a reviewed profile ID instead",
+            config.display()
+        )
+        .into());
+    }
+    if file_name != Some(LIVE_CONFIG_FILE_NAME) {
         return Ok(());
     }
     let text = std::fs::read_to_string(config).map_err(|source| {
@@ -1012,6 +1022,15 @@ mod tests {
         fs::write(&root, "[runtime]\n").expect("non-live config should write");
         require_generated_marker_for_live_config(&root)
             .expect("non-live config paths should not require the live marker");
+
+        let live_local = dir.join("live.local.toml");
+        fs::write(&live_local, "[runtime]\n").expect("legacy live.local.toml should write");
+        let error = require_generated_marker_for_live_config(&live_local)
+            .expect_err("live.local.toml must be rejected as a runtime config source");
+        assert!(
+            error.to_string().contains("legacy live.local.toml"),
+            "error should identify live.local.toml as legacy drift, got: {error}"
+        );
 
         fs::remove_dir_all(&dir).expect("test temp dir should clean up");
     }

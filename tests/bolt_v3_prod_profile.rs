@@ -376,8 +376,22 @@ fn generated_live_config_carries_provenance_and_loads() {
 
     let deployed = dir.path().join("live.toml");
     write(&deployed, &generated.text);
-    load_bolt_v3_config(&deployed)
+    let loaded = load_bolt_v3_config(&deployed)
         .expect("generated runtime config (header is comments) must still load against the binary");
+    assert_eq!(
+        loaded.config_bundle_checksum, generated.profile_bundle_sha256,
+        "loading a generated live.toml must preserve the body+strategy checksum recorded in its provenance header"
+    );
+}
+
+#[test]
+fn generate_live_config_accepts_relative_config_root() {
+    let generated = generate_live_config(Path::new(CONFIG_ROOT), PROFILE_ID)
+        .expect("relative config root works");
+    assert!(
+        generated.text.starts_with(GENERATED_MARKER_PREFIX),
+        "relative config-root generation must still produce a generated runtime config"
+    );
 }
 
 // --- Verification: byte-equality AND independent load ------------------------
@@ -689,6 +703,37 @@ fn generate_rejects_strategy_file_symlink_escape_even_when_entry_is_under_strate
             "composition error must identify strategy_files, got: {message}"
         ),
         other => panic!("expected a strategy_files composition error, got: {other}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn generate_rejects_symlinked_strategies_directory_even_when_target_exists() {
+    let dir = stage_full_config_tree("prod-overlay-strategy-dir-symlink");
+    let external_strategies = dir
+        .path()
+        .parent()
+        .expect("staged config root has a parent")
+        .join("external-strategies-dir");
+    std::fs::create_dir_all(&external_strategies)
+        .expect("external strategies dir should be created");
+    write(
+        &external_strategies.join("binary_oracle_btc.toml"),
+        &repo_config_text(BTC_STRATEGY),
+    );
+    std::fs::remove_dir_all(dir.path().join("strategies"))
+        .expect("staged strategies dir should remove");
+    std::os::unix::fs::symlink(&external_strategies, dir.path().join("strategies"))
+        .expect("strategies dir symlink should be created");
+
+    let error = generate_live_config(dir.path(), PROFILE_ID)
+        .expect_err("symlinked strategies directory must fail generation closed");
+    match error {
+        ProfileError::Composition(message) => assert!(
+            message.contains("strategy_files directory") && message.contains("symbolic link"),
+            "composition error must identify symlinked strategies dir, got: {message}"
+        ),
+        other => panic!("expected a symlink strategies-dir composition error, got: {other}"),
     }
 }
 

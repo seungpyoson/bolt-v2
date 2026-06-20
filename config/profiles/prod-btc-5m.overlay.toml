@@ -15,7 +15,7 @@
 # values in this file.
 #
 # Deploy/run: set `BOLT_LIVE_PROFILE` to this profile's opaque ID, then run
-# `bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}"`.
+# `bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config`.
 # Generation composes this overlay with the derived `root.toml`, stamps a
 # provenance header, and writes the runtime config; `ops verify-live-config`
 # proves the deployed file re-composes from (root ⊕ overlay) and still loads

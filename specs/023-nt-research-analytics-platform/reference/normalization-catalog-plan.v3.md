@@ -60,15 +60,15 @@ v2" above).
 
 NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`, crate `nautilus-persistence`:
 
-- The catalog's `CatalogPathPrefix` set is fixed (`crates/persistence/src/backend/catalog.rs:4109-4146`):
+- The catalog's `CatalogPathPrefix` set is fixed (`crates/persistence/src/backend/catalog.rs:4248-4286`):
   `QuoteTick→quotes`, `TradeTick→trades`, `OrderBookDelta→order_book_deltas`,
-  `OrderBookDepth10→order_book_depths` (**NOT** `order_book_depth_10`, `catalog.rs:4112`),
+  `OrderBookDepth10→order_book_depths` (**NOT** `order_book_depth_10`, `catalog.rs:4251`),
   `Bar→bars`, `IndexPriceUpdate→index_prices`, `MarkPriceUpdate→mark_prices`,
-  `FundingRateUpdate→funding_rate_update` (**NOT** `funding_rates`, `catalog.rs:4116`),
+  `FundingRateUpdate→funding_rate_update` (**NOT** `funding_rates`, `catalog.rs:4255`),
   `InstrumentStatus→instrument_status`, `OptionGreeks→option_greeks`, `InstrumentClose→instrument_closes`,
   `InstrumentAny→instruments`, `AccountState→account_state`, plus order/position/report lifecycle
-  prefixes (execution outputs, out of scope here). The full `impl_catalog_path_prefix!` set is 38
-  entries (`catalog.rs:4109-4146`) — only the load-bearing subset is asserted by the R-11 guard (§11/§12).
+  prefixes (execution outputs, out of scope here). The full `impl_catalog_path_prefix!` set is 39
+  entries (`catalog.rs:4248-4286`) — only the load-bearing subset is asserted by the R-11 guard (§11/§12).
 - The Rust `BacktestNode` replay path (`crates/backtest/src/node.rs`, `dispatch_query`)
   streams the current `NautilusDataType` enum (`crates/backtest/src/config.rs`):
   `QuoteTick, TradeTick, Bar, OrderBookDelta, OrderBookDepth10, MarkPriceUpdate, IndexPriceUpdate,
@@ -169,7 +169,7 @@ do NOT go through `dispatch_query`.
 > is a class fix (a table-level `time_series` predicate), not an instruments-only special case: any
 > future point-in-time definition table inherits the exemption by setting `time_series = false`.
 
-### 2.2 Verified NT path-prefix set (catalog.rs:4109-4146)
+### 2.2 Verified NT path-prefix set (catalog.rs:4248-4286)
 
 | NT type | Exact prefix string | Tier | `NautilusDataType`? |
 | --- | --- | --- | --- |
@@ -220,7 +220,7 @@ current repo-pinned NT rev.
 | `order_book_snapshot_deltas` | Tier C — non-NT research-only Parquet (no NT class; derived clear-and-rebuild) |
 | `order_book_snapshots_full` | Tier C — non-NT research-only Parquet (no NT class) |
 | `order_book_snapshots_fixed_depth` | Tier C — non-NT research-only Parquet (no NT class). A top-10 projection MAY ADDITIONALLY be emitted to Tier A `order_book_depths` — see naming note below |
-| `order_book_depth_10` (contract column name) | **Rename → NT prefix `order_book_depths`.** Tier A — `OrderBookDepth10 → order_book_depths`. The contract column name `order_book_depth_10` is a derived/native top-10 projection; the NT catalog prefix is `order_book_depths` (`catalog.rs:4112`). All `order_book_depth_10` references in this plan use prefix `order_book_depths` |
+| `order_book_depth_10` (contract column name) | **Rename → NT prefix `order_book_depths`.** Tier A — `OrderBookDepth10 → order_book_depths`. The contract column name `order_book_depth_10` is a derived/native top-10 projection; the NT catalog prefix is `order_book_depths` (`catalog.rs:4251`). All `order_book_depth_10` references in this plan use prefix `order_book_depths` |
 | `bars` | Tier A — `Bar → bars` (carries `bar_source_type`) |
 
 **Derivatives, Carry, And Risk State** (`contract:134-143`):
@@ -404,7 +404,7 @@ NT's `write_to_parquet` is non-atomic last-writer-wins, interval-keyed, not crea
   `put` there is a TOCTOU window: two concurrent writers both see "absent" and both PUT; on S3 the
   second silently overwrites the first.
 - The filename is **interval-keyed** (`timestamps_to_filename(start_ts, end_ts)`, `catalog.rs:535`,
-  `catalog.rs:4175-4180`), not content-keyed. Two different transforms over the same `(start_ts,
+  `catalog.rs:4315-4320`), not content-keyed. Two different transforms over the same `(start_ts,
   end_ts)` collide on the same object path; the `head()` skip then suppresses the second write
   entirely, so a re-run with a *changed* `transform_hash` is silently dropped.
 - The only structural guard is the disjoint-interval check (`catalog.rs:549-561`), bypassable with
@@ -566,7 +566,7 @@ public API.
 **4.3.4 (canonical) Canonical NT-catalog filenames MUST be NT-native, or NT silently over-includes
 (B-1(b), verified).** When the writer materializes a canonical NT-catalog root it names each file with
 the **exact `timestamps_to_filename` format** NT's reader expects: `format!("{ts1}_{ts2}.parquet")`
-(`catalog.rs:4175-4179`), e.g.
+(`catalog.rs:4315-4320`), e.g.
 `2026-01-01T00-00-00-000000000Z_2026-01-02T00-00-00-000000000Z.parquet`. This is mandatory, proven by
 the reader:
 - NT prunes by filename: `query_files` retains a file iff `query_intersects_filename` is true
@@ -719,7 +719,7 @@ wholesale. Promotion is the commit of an explicit promotion package, never a pre
    snapshot-set id, e.g. `nt-catalog/sets/<snapshot_set_id>/` (each becomes a distinct NT `base_path`,
    `catalog.rs:316-320`). Each promoted object is placed at its NT-native interval path under that root
    — `<root>/data/<type>/<safe_instrument_id>/<start>_<end>.parquet` (`make_path` `catalog.rs:2729-2737`
-   + `timestamps_to_filename` `catalog.rs:4175-4179`), interval-disjoint, exactly one live file per
+   + `timestamps_to_filename` `catalog.rs:4315-4320`), interval-disjoint, exactly one live file per
    interval (§4.3.4 canonical). Materialization uses **backend-native server-side copy** (§4.4a), never
    download+reupload. The new root is **immutable**: once a snapshot-set id is committed, its root is
    never appended to or mutated.
@@ -941,7 +941,7 @@ path NT is enumerating:
 
 1. **Immutable per-set NT roots (builds on §4.4).** Canonical NT bytes for a committed set live under an
    immutable, set-id-keyed root, `nt-catalog/sets/<snapshot_set_id>/data/<type>/...` with NT-native
-   filenames (`<start>_<end>.parquet`, `catalog.rs:4175`). A new promotion writes a NEW set root; it
+   filenames (`<start>_<end>.parquet`, `catalog.rs:4319`). A new promotion writes a NEW set root; it
    never adds, renames, or deletes a `.parquet` under an already-committed set root. A run whose catalogs
    are rooted at `<snapshot_set_id>` reads a frozen byte set regardless of any in-flight promotion — the
    LIST-at-different-instants hazard is neutralized because the listed prefix is immutable for that set's
@@ -1095,7 +1095,7 @@ staging at all.**
    that is present under ANY Tier A/B NT prefix (`data/quotes/`, `data/trades/`, `data/order_book_deltas/`,
    `data/order_book_depths/`, `data/bars/`, `data/index_prices/`, `data/mark_prices/`,
    `data/funding_rate_update/`, `data/instrument_status/`, `data/instrument_closes/`, `data/instruments/`);
-   (b) any non-NT-native filename (one not matching `timestamps_to_filename`, `catalog.rs:4175-4179`)
+   (b) any non-NT-native filename (one not matching `timestamps_to_filename`, `catalog.rs:4315-4320`)
    under any committed canonical NT-catalog root. The validator runs as a gate before promotion (§4.4)
    and before any provider-derived `BacktestResultContract` (§5.2 rule 3).
 
@@ -1914,20 +1914,20 @@ projector workspace asserts, against the pinned source, ALL of:
    FundingRateUpdate, InstrumentStatus, OptionGreeks, InstrumentClose`). A removal or unreviewed member drift fails
    the guard.
 2. The **exact** `CatalogPathPrefix` strings the projector depends on
-   (`crates/persistence/src/backend/catalog.rs:4109-4119`) are byte-for-byte unchanged:
+   (`crates/persistence/src/backend/catalog.rs:4248-4259`) are byte-for-byte unchanged:
    `QuoteTick→"quotes"`, `TradeTick→"trades"`, `OrderBookDelta→"order_book_deltas"`,
    `OrderBookDepth10→"order_book_depths"`, `Bar→"bars"`, `IndexPriceUpdate→"index_prices"`,
    `MarkPriceUpdate→"mark_prices"`, `FundingRateUpdate→"funding_rate_update"`,
    `InstrumentStatus→"instrument_status"`, `OptionGreeks→"option_greeks"`, `InstrumentClose→"instrument_closes"`,
    `InstrumentAny→"instruments"`.
-3. `timestamps_to_filename` still produces `"{iso1}_{iso2}.parquet"` (`catalog.rs:4175-4179`) — the
+3. `timestamps_to_filename` still produces `"{iso1}_{iso2}.parquet"` (`catalog.rs:4315-4320`) — the
    NT-native canonical filename the reader parses (B-1).
 
 > **Why assert the enum count AND the explicit strings, not a blanket "CatalogPathPrefix count":** the
-> full `impl_catalog_path_prefix!` set is broader than the replay surface (`catalog.rs:4109-4146`) — the replayable types
-> + `InstrumentAny` (`:4119`) + `AccountState` (`:4120`) + execution-output prefixes
-> order/position/report execution-output prefixes (`:4121-4146`) the projector does NOT map. A blanket
-> member-count assertion (e.g. "== 9" against `CatalogPathPrefix`) would be **wrong** (the set is 38),
+> full `impl_catalog_path_prefix!` set is broader than the replay surface (`catalog.rs:4248-4286`) — the replayable types
+> + `InstrumentAny` (`:4259`) + `AccountState` (`:4260`) + execution-output prefixes
+> order/position/report execution-output prefixes (`:4261-4286`) the projector does NOT map. A blanket
+> member-count assertion (e.g. "== 9" against `CatalogPathPrefix`) would be **wrong** (the set is 39),
 > brittle (it would fire on an unrelated execution-type addition that doesn't affect this projection),
 > AND insufficient (a renamed-but-same-count prefix would slip through). The guard keys on the
 > load-bearing surface only: the replay enum + the exact projector-relevant prefix strings (the

@@ -408,6 +408,33 @@ fn funding_replay_fixture_routing_arm_is_exercised() {
     assert_nt_mapping_evidence_is_bounded(&path, &report);
 }
 
+#[test]
+#[should_panic(expected = "must bind mapping evidence to NT FundingRateUpdate catalog readback")]
+fn funding_replay_fixture_routing_arm_rejects_unbound_evidence() {
+    // Fail-closed proof for the funding arm of assert_nt_mapping_evidence_is_bounded: a
+    // funding-replay report whose NT-mapping evidence does NOT bind the FundingRateUpdate catalog
+    // readback must be REJECTED (panic). Without this negative arm the positive
+    // funding_replay_fixture_routing_arm_is_exercised test alone would still pass even if the
+    // binding assertion were silently weakened, so this pins the gate as load-bearing.
+    let (path, _, mut report) = reference_source_proof_reports()
+        .into_iter()
+        .find(|(_, _, report)| {
+            report.table_family == "trades"
+                && report.fidelity_class == SourceProofFidelityClass::TradeReplay
+        })
+        .expect("trade replay fixture available as a thin accepted report template");
+    report.table_family = "funding_rates".to_string();
+    report.fidelity_class = SourceProofFidelityClass::FundingReplay;
+    report.nt_mapping_status = NtMappingStatus::Accepted;
+    report.required_checks.nt_mapping.outcome = CheckOutcome::Passed;
+    // Evidence binds a TradeTick readback instead of the required FundingRateUpdate catalog,
+    // so the funding arm's binding assertion must fire.
+    report.required_checks.nt_mapping.evidence_ref =
+        "repo://synthetic TradeTick ParquetDataCatalog readback".to_string();
+
+    assert_nt_mapping_evidence_is_bounded(&path, &report);
+}
+
 fn assert_kimchi_premium_component_shape(path: &PathBuf, report: &SourceProofReport) {
     let roles = report
         .cross_market_components

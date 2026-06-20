@@ -4803,6 +4803,26 @@ max_notional = "200000"
             a.catalog_hash, b.catalog_hash,
             "scale-distinct equal rates must sort deterministically regardless of input order"
         );
+
+        // Pin the load-bearing premise of the `.rate.scale()` tie-break in `logical_catalog_hash`:
+        // NT serializes `FundingRateUpdate.rate` as a utf8 string (`FUNDING_RATE_UPDATE_FIELDS` in
+        // nautilus-serialization), so the numerically-equal but scale-distinct rates "0.000100"
+        // (scale 6) and "0.0001000" (scale 7) survive the Parquet round-trip as DISTINCT scales.
+        // That distinctness is exactly what makes the scale tie-break load-bearing rather than dead
+        // code; if a future NT rev collapses Decimal scale on round-trip, this assertion fails loud
+        // and the tie-break must be re-evaluated.
+        let mut read_back_scales: Vec<u32> = read_back_funding_rates(dir_a.path(), "BTCUSDT.BYBIT")
+            .unwrap()
+            .iter()
+            .map(|update| update.rate.scale())
+            .collect();
+        read_back_scales.sort_unstable();
+        assert_eq!(
+            read_back_scales,
+            vec![6, 7],
+            "scale-distinct funding rates must round-trip through the NT catalog with distinct \
+             Decimal scales, proving the catalog-hash scale tie-break is load-bearing"
+        );
     }
 
     #[test]

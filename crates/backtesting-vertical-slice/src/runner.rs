@@ -1785,7 +1785,7 @@ pub(crate) fn assert_funding_read_back_matches(
             (key, update)
         })
         .collect();
-    sorted_read_back.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted_read_back.sort_by_key(|entry| entry.0);
 
     // Canonical side: key derivation is fallible (timestamp helpers, rate parse,
     // next-funding cast), so pre-compute keys in a fallible pass before sorting
@@ -1820,7 +1820,7 @@ pub(crate) fn assert_funding_read_back_matches(
             Ok((key, row))
         })
         .collect::<Result<Vec<_>>>()?;
-    sorted_rows.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted_rows.sort_by_key(|entry| entry.0);
 
     for (index, ((_, update), (_, row))) in
         sorted_read_back.iter().zip(sorted_rows.iter()).enumerate()

@@ -3997,7 +3997,8 @@ mod tests {
 
         let dir = tempfile::TempDir::new().unwrap();
         let err = run_multi_table_from_run_spec(&spec, &object_bytes, dir.path())
-            .expect_err("funding run-path must fail loud at the converter preflight");
+            .err()
+            .expect("funding run-path must fail loud at the converter preflight");
         let message = err.to_string();
 
         // The "not admissible for adapter kind FundingRates" string is produced

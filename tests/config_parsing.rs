@@ -5287,8 +5287,38 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
     let justfile = std::fs::read_to_string(support::repo_path("justfile"))
         .expect("justfile should be readable");
     assert!(
-        justfile.contains("live_root := \"config/live.local.toml\""),
-        "live recipes should use the ignored operator root"
+        justfile.contains("live_profile := env_var_or_default('BOLT_LIVE_PROFILE', '')"),
+        "live recipes should source the operator-selected profile ID (single source of truth over the base template, #768)"
+    );
+    assert!(
+        justfile.contains("ERROR: set BOLT_LIVE_PROFILE to an opaque profile ID"),
+        "live recipes must fail closed instead of using a venue/market/strategy profile default"
+    );
+    assert!(
+        justfile.contains("--profile \"{{live_profile}}\" --config-root config"),
+        "live recipes must pass an opaque profile ID plus structural config root to the binary"
+    );
+    assert!(
+        support::repo_text("src/bolt_v3_prod_profile.rs")
+            .contains("ProfileError::InvalidProfileId"),
+        "generate/verify must reject path-shaped profile inputs for systemd/direct CLI callers"
+    );
+    assert!(
+        !justfile.contains("config/profiles/<profile>.overlay.toml"),
+        "live recipes must not teach operators to put paths in BOLT_LIVE_PROFILE"
+    );
+    assert!(
+        !justfile.contains("--output {{live_runtime}}")
+            && !justfile.contains("--deployed {{live_runtime}}"),
+        "live recipes must derive config/live.toml instead of accepting output/deployed path overrides"
+    );
+    assert!(
+        !justfile.contains("live_root := \"config/live.local.toml\""),
+        "live recipes must no longer source the gitignored operator root"
+    );
+    assert!(
+        !justfile.contains("live_root := \"config/profiles/prod-btc-5m.overlay.toml\""),
+        "live recipes must not hardcode a BTC 5m production profile"
     );
     assert!(
         !justfile.contains("live_root_example"),

@@ -458,6 +458,17 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
             "{context}: parameters.runtime.quote_interval_ms must be > 0 (a zero quote-loop interval would schedule a degenerate timer that never advances the runtime's market resolution and requote cadence)"
         ));
     }
+    if runtime.quote_interval_ms != 0
+        && runtime
+            .quote_interval_ms
+            .checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
+            .is_none()
+    {
+        errors.push(format!(
+            "{context}: parameters.runtime.quote_interval_ms ({}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64 (a larger interval silently saturates the quote-timer cadence instead of meaning the configured value)",
+            runtime.quote_interval_ms
+        ));
+    }
     validate_market_portfolio_policy(context, market_portfolio, &mut errors);
     validate_market_declarations(
         context,
@@ -1314,6 +1325,32 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("quote_interval_ms")),
             "a valid runtime must not flag quote_interval_ms"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_quote_interval_overflowing_the_nanosecond_clock() {
+        // quote_interval_ms is converted ms -> ns when the quote timer registers; a
+        // value so large the conversion overflows u64 would silently saturate the
+        // timer cadence at runtime instead of meaning the configured value. Like its
+        // sibling trade_flow_window_secs, that must fail closed at load rather than
+        // only at on_start. Differential: a value that fits (the valid 1000) produces
+        // no such error; only the overflowing value does, so this fails on a missing
+        // or mis-wired overflow check.
+        let errors = bounds_errors(RuntimeParametersBlock {
+            quote_interval_ms: u64::MAX,
+            ..valid_runtime()
+        });
+        assert!(
+            errors.iter().any(|error| error
+                .contains("its millisecond-to-nanosecond conversion does not overflow u64")),
+            "expected quote_interval_ms overflow error, got: {errors:?}"
+        );
+        assert!(
+            !bounds_errors(valid_runtime())
+                .iter()
+                .any(|error| error.contains("millisecond-to-nanosecond")),
+            "a valid runtime must not flag a quote_interval_ms overflow"
         );
     }
 

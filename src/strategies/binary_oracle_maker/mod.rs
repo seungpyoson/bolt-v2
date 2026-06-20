@@ -605,7 +605,10 @@ impl BinaryOracleMaker {
     /// Fails loud: a `quote_interval_ms` that overflows the nanosecond clock unit, or
     /// a timer registration error, aborts `on_start` rather than leaving the maker
     /// running with resolved markets but no quote/refresh cadence (silently never
-    /// reconciling a cadence roll).
+    /// reconciling a cadence roll). This timer is the sole driver of the maker's
+    /// market resolution and requote cadence, so — unlike the edge taker's
+    /// best-effort selection-retry timer, which logs and continues — a registration
+    /// failure here is propagated rather than swallowed.
     fn register_quote_timer(&mut self) -> anyhow::Result<()> {
         let timer_name = self.quote_timer_name();
         let strategy_id = self.config.strategy_id.clone();
@@ -719,8 +722,11 @@ impl BinaryOracleMaker {
 // chokepoint — nothing here submits to a venue.
 impl DataActor for BinaryOracleMaker {
     fn on_start(&mut self) -> anyhow::Result<()> {
-        self.refresh_active_markets();
+        // Register the quote timer first: it is the only fallible step here, so a
+        // registration failure aborts on_start before refresh_active_markets emits
+        // any subscription side effects, leaving no half-started runtime behind.
         self.register_quote_timer()?;
+        self.refresh_active_markets();
         Ok(())
     }
 

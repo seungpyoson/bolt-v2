@@ -470,6 +470,37 @@ mod tests {
     }
 
     #[test]
+    fn make_leg_identity_is_injective_when_market_key_contains_the_delimiter() {
+        // External reviewers (PR #853) flagged a delimiter-injection collision on the
+        // earlier `{tag}-{market_key}-{market_id}-{leg}-{generation}` template, where
+        // the venue `market_id` could itself contain `-`. HEAD keys the id on
+        // `window_start_milliseconds` (decimal) instead, and `order_id_tag` is
+        // validated delimiter-free at load, so `market_key` is the only `-`-bearing
+        // component and is bounded by a pure-decimal window start. The source tuple
+        // therefore stays recoverable and the encoding injective. Differential: two
+        // distinct markets whose key/window boundaries could be confused still mint
+        // distinct ids; re-introducing a `-`-bearing component after `market_key`
+        // (such as the old `market_id`) would let them collide.
+        let a = make_leg_identity("001", "eth-hourly", 1_700_000_000_000, Leg::Yes, 1);
+        let b = make_leg_identity("001", "eth", 1_700_000_000_000, Leg::Yes, 1);
+        assert_ne!(
+            a.client_order_id(),
+            b.client_order_id(),
+            "distinct market keys must mint distinct ids even when one contains the delimiter"
+        );
+        // A market_key whose trailing characters mimic another market's window prefix
+        // still cannot alias, because the window start is a fixed decimal field:
+        // "001-eth-1700000000000-1-yes-1" vs "001-eth-1700000000001-yes-1".
+        let c = make_leg_identity("001", "eth-1700000000000", 1, Leg::Yes, 1);
+        let d = make_leg_identity("001", "eth", 1_700_000_000_001, Leg::Yes, 1);
+        assert_ne!(
+            c.client_order_id(),
+            d.client_order_id(),
+            "a hyphen in market_key cannot fabricate another market's (key, window) pair"
+        );
+    }
+
+    #[test]
     fn submit_dispatch_promotes_next_identity_to_active() {
         // Differential rotation guard: a Submit promotes next_order -> active_order
         // (the order now rests, so a later requote cancels it via active_order). A

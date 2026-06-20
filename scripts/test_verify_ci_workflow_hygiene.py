@@ -737,6 +737,10 @@ jobs:
               echo "clippy unexpectedly ran during ready-PR iteration"
               exit 1
             fi
+            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
+              echo "check-aarch64 unexpectedly ran during ready-PR iteration"
+              exit 1
+            fi
             if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
               echo "source-fence unexpectedly ran during ready-PR iteration"
               exit 1
@@ -1559,6 +1563,17 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
                 workflow,
                 '            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then\n'
                 '              echo "clippy unexpectedly ran during ready-PR iteration"\n'
+                '              exit 1\n'
+                '            fi\n',
+                "",
+            ),
+        ),
+        (
+            "gate must require check-aarch64 skipped on ready-PR iteration",
+            replace_once(
+                workflow,
+                '            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then\n'
+                '              echo "check-aarch64 unexpectedly ran during ready-PR iteration"\n'
                 '              exit 1\n'
                 '            fi\n',
                 "",

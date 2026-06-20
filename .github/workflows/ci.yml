@@ -776,6 +776,10 @@ jobs:
               echo "clippy unexpectedly ran during ready-PR iteration"
               exit 1
             fi
+            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
+              echo "check-aarch64 unexpectedly ran during ready-PR iteration"
+              exit 1
+            fi
             if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
               echo "source-fence unexpectedly ran during ready-PR iteration"
               exit 1

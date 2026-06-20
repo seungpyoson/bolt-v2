@@ -7523,8 +7523,14 @@ GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 GATE_ITERATION_CONDITION = '"$policy_path" == "iteration"'
 # Heavy merge-grade lanes that the ready-PR iteration path defers; the gate's
-# iteration branch must require each of these skipped before it exits 0.
-GATE_ITERATION_SKIPPED_JOBS = ("clippy", "source-fence", "test", "build")
+# iteration branch must require each of these skipped before it exits 0. This
+# mirrors the heavy lanes the tag_reuse branch tracks (clippy, check-aarch64,
+# source-fence, test, build). test-archive is intentionally omitted here: like
+# the tag_reuse and full branches, the gate tracks the terminal `test` job, not
+# the intermediate `test-archive`; test-archive's deferral on the iteration path
+# is independently enforced by its own full_ci_required if-gate and asserted by
+# assert_ci_policy_heavy_lane_gaps_are_reported.
+GATE_ITERATION_SKIPPED_JOBS = ("clippy", "check-aarch64", "source-fence", "test", "build")
 GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
 GATE_DEFERRED_NAME_EXPRESSION = """name: >-

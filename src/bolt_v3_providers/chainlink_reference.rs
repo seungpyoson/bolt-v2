@@ -574,7 +574,7 @@ fn chainlink_reference_message_handler(
     Arc::new(move |message: Message| {
         let frame_bytes = match message {
             Message::Text(bytes) | Message::Binary(bytes) => bytes,
-            Message::Ping(_) | Message::Pong(_) | Message::Close(_) => return,
+            _ => return,
         };
         let frame = match std::str::from_utf8(frame_bytes.as_ref()) {
             Ok(frame) => frame,

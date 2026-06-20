@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s nullglob
 
 BOLT_USER="${BOLT_USER:-bolt}"
 BOLT_GROUP="${BOLT_GROUP:-$BOLT_USER}"
@@ -12,6 +13,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SYSTEMD_SRC_DIR="${SCRIPT_DIR}/systemd"
 UNIT_DST="/etc/systemd/system/bolt-v2.service"
 JOURNALD_DST="/etc/systemd/journald.conf.d/journald-bolt-v2.conf"
+LIVE_ENV_DIR="/etc/bolt-v2"
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "deploy/install.sh must run as root" >&2
@@ -53,6 +55,15 @@ if ! mountpoint -q "${BOLT_HOME}"; then
     mount "${BOLT_HOME}"
 fi
 
+reject_symlinked_install_path() {
+    local path="$1"
+    local label="$2"
+    if [[ -L "${path}" ]]; then
+        echo "Refusing symlinked ${label}: ${path}" >&2
+        exit 1
+    fi
+}
+
 chown "${BOLT_USER}:${BOLT_GROUP}" "${BOLT_HOME}"
 
 install -d -o "${BOLT_USER}" -g "${BOLT_GROUP}" \
@@ -63,15 +74,64 @@ install -d -o "${BOLT_USER}" -g "${BOLT_GROUP}" \
     "${BOLT_HOME}/var/bolt-v3-live" \
     "${BOLT_HOME}/var/bolt-v3-live/catalog" \
     "${BOLT_HOME}/var/bolt-v3-live/reports"
+reject_symlinked_install_path "${BOLT_INSTALL_ROOT}" "install root"
 install -d -m 0755 "${BOLT_INSTALL_ROOT}"
+reject_symlinked_install_path "${BOLT_INSTALL_ROOT}/config" "config root"
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${BOLT_INSTALL_ROOT}/config"
 
-if [[ -f "${BOLT_INSTALL_ROOT}/config/live.toml" ]]; then
-    chown root:"${BOLT_GROUP}" "${BOLT_INSTALL_ROOT}/config/live.toml"
-    chmod 0640 "${BOLT_INSTALL_ROOT}/config/live.toml"
+repair_config_dir() {
+    local path="$1"
+    local label="$2"
+    reject_symlinked_install_path "${path}" "${label}"
+    if [[ -d "${path}" ]]; then
+        chown root:"${BOLT_GROUP}" "${path}"
+        chmod 0750 "${path}"
+    fi
+}
+
+repair_config_file() {
+    local path="$1"
+    local label="$2"
+    reject_symlinked_install_path "${path}" "${label}"
+    if [[ -f "${path}" ]]; then
+        chown root:"${BOLT_GROUP}" "${path}"
+        chmod 0640 "${path}"
+    fi
+}
+
+# The bolt service user runs verify-live-config / prestart-check / run (ExecStartPre +
+# ExecStart) and must read the ENTIRE deployed config bundle: the tracked overlay (under
+# config/profiles/), its base root.toml, the generated live.toml, AND every referenced
+# strategy file. Files/dirs copied by root under a restrictive umask (e.g. 077) can land
+# 0600/0700 root:root and lock the service user out before start (issue #768) — the same
+# lockout class the atomic writer fixes for live.toml. Repair the whole bundle to root:bolt
+# with group-readable modes regardless of how it was copied, so readability does not depend
+# on the deploy shell's umask.
+for config_subdir in strategies profiles; do
+    config_subdir_path="${BOLT_INSTALL_ROOT}/config/${config_subdir}"
+    repair_config_dir "${config_subdir_path}" "config ${config_subdir} directory"
+    if [[ -d "${config_subdir_path}" ]]; then
+        while IFS= read -r -d '' config_bundle_dir; do
+            repair_config_dir "${config_bundle_dir}" "config ${config_subdir} directory"
+        done < <(find "${config_subdir_path}" -type d -print0)
+    fi
+done
+config_bundle_files=(
+    "${BOLT_INSTALL_ROOT}/config/root.toml"
+    "${BOLT_INSTALL_ROOT}/config/live.toml"
+    "${BOLT_INSTALL_ROOT}/config/profiles/"*.overlay.toml
+)
+if [[ -d "${BOLT_INSTALL_ROOT}/config/strategies" ]]; then
+    while IFS= read -r -d '' strategy_config; do
+        config_bundle_files+=("${strategy_config}")
+    done < <(find "${BOLT_INSTALL_ROOT}/config/strategies" -type f -name '*.toml' -print0)
 fi
+for config_bundle_file in "${config_bundle_files[@]}"; do
+    repair_config_file "${config_bundle_file}" "config bundle file"
+done
 
 install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d
+install -d -o root -g "${BOLT_GROUP}" -m 0750 "${LIVE_ENV_DIR}"
 install -m 0644 "${SYSTEMD_SRC_DIR}/bolt-v2.service" "${UNIT_DST}"
 install -m 0644 "${SYSTEMD_SRC_DIR}/journald-bolt-v2.conf" "${JOURNALD_DST}"
 

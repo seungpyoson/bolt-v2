@@ -28,6 +28,7 @@
 //! family) are enforced in the archetype's go-live gate before this code runs.
 
 use nautilus_model::instruments::InstrumentAny;
+use serde::Deserialize;
 
 use crate::bolt_v3_maker_market_selection::{
     MakerMarketCandidate, MakerMarketPortfolioDecision, MakerMarketPortfolioPolicy,
@@ -49,7 +50,15 @@ use crate::bolt_v3_market_families::{
 /// and converted to the engine's signed `i64` at resolution, exactly as the
 /// taker's `select_configured_market_from_instruments` does; an overflowing
 /// conversion fails the market's resolution rather than silently wrapping.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Deserialize` (with `deny_unknown_fields`) lets the flat NautilusTrader maker
+/// config carry the operator-declared market set through to the runtime: PR-A's
+/// archetype threads each declared market into the flat config table, and the
+/// strategy parses it back into this type at build so `runtime::MakerRuntime` can
+/// resolve markets at `on_start` without re-reading the operator `[parameters]`
+/// block.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MakerMarketDeclaration {
     pub market_key: String,
     pub family_key: String,

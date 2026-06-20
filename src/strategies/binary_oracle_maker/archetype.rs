@@ -131,6 +131,7 @@ struct RuntimeParametersBlock {
     mu_stale_window_ms: u64,
     mu_min_floor: f64,
     requote_min_interval_ms: u64,
+    quote_interval_ms: u64,
 }
 
 /// Operator policy for generic Slice 9 market portfolio selection. Discovery and
@@ -379,8 +380,32 @@ pub fn validate_strategy(
         }
     };
     let mut errors = validate_parameter_bounds(context, &parameters);
+    errors.extend(validate_order_id_tag_delimiter_free(
+        context,
+        &strategy.order_id_tag,
+    ));
     validate_strategy_config_hash_binding(context, strategy, &parameters, &mut errors);
     errors
+}
+
+/// Reject an `order_id_tag` that contains the `-` client-order-id delimiter on the
+/// live node-startup path. The maker mints each per-leg client order id by joining
+/// `order_id_tag` with the market key, window start, leg, and generation on `-`
+/// (`runtime::make_leg_identity`); a delimiter in the tag makes that positional
+/// encoding ambiguous, so two distinct `(order_id_tag, market_key)` pairs — e.g.
+/// `("00-1", "eth")` and `("00", "1-eth")` — could mint an identical id even though
+/// `validate_strategies` already enforces tag *uniqueness* (distinct tags do not
+/// stop the concatenation collision). The schema-layer
+/// `config::validate_order_id_tag_delimiter_free` enforces the same invariant on the
+/// builder `validate_config` path, but that path is not wired into the live startup
+/// gate, so the injectivity invariant `make_leg_identity` documents must also be
+/// enforced here, where the node actually validates the parsed strategy config.
+fn validate_order_id_tag_delimiter_free(context: &str, order_id_tag: &str) -> Option<String> {
+    order_id_tag.contains('-').then(|| {
+        format!(
+            "{context}: order_id_tag `{order_id_tag}` must not contain the `-` client-order-id delimiter (the maker joins its per-leg client order id on `-`, so a delimiter in the tag would make the positional id encoding ambiguous and two distinct markets could mint the same client order id)"
+        )
+    })
 }
 
 /// Fail-closed bounds for the maker's μ runtime knobs (the go-live gate). Each
@@ -452,7 +477,28 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
             "{context}: parameters.runtime.requote_min_interval_ms must be > 0 (a zero requote interval disables the same-tick throttle the requote budget relies on, so the budget rejects construction)"
         ));
     }
-    validate_market_portfolio_policy(context, market_portfolio, &mut errors);
+    if runtime.quote_interval_ms == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.quote_interval_ms must be > 0 (a zero quote-loop interval would schedule a degenerate timer that never advances the runtime's market resolution and requote cadence)"
+        ));
+    }
+    if runtime.quote_interval_ms != 0
+        && runtime
+            .quote_interval_ms
+            .checked_mul(crate::bolt_v3_numeric::NANOS_PER_MILLI_U64)
+            .is_none()
+    {
+        errors.push(format!(
+            "{context}: parameters.runtime.quote_interval_ms ({}) must be small enough that its millisecond-to-nanosecond conversion does not overflow u64 (a larger interval silently saturates the quote-timer cadence instead of meaning the configured value)",
+            runtime.quote_interval_ms
+        ));
+    }
+    validate_market_portfolio_policy(
+        context,
+        market_portfolio,
+        parameters.markets.len(),
+        &mut errors,
+    );
     validate_market_declarations(
         context,
         &parameters.markets,
@@ -472,6 +518,7 @@ fn validate_parameter_bounds(context: &str, parameters: &ParametersBlock) -> Vec
 fn validate_market_portfolio_policy(
     context: &str,
     market_portfolio: &MarketPortfolioParametersBlock,
+    declared_market_count: usize,
     errors: &mut Vec<String>,
 ) {
     let policy = market_portfolio.policy();
@@ -482,12 +529,34 @@ fn validate_market_portfolio_policy(
             market_portfolio_blocker_required_state(blocker)
         ));
     }
-    if crate::bolt_v3_numeric::is_positive_finite(policy.total_bankroll_notional)
+    // The shared planner equal-splits `total_bankroll_notional` across the markets it
+    // selects (`bolt_v3_maker_market_selection`) and admits NO plan when that per-slot
+    // split falls below `min_slot_notional`, so an under-funded bankroll blocks the
+    // ENTIRE active set (a silent idle), not just the marginal slot. The planner can
+    // select up to `min(declared markets, max_active_markets)` slots, so this gate must
+    // reject exactly when the worst-case per-slot allocation would fall below the floor.
+    //
+    // It reproduces the planner's admission test BIT-FOR-BIT: the same
+    // `total_bankroll_notional / slot_count` division, NOT the algebraically-equal
+    // `total < slot_count * min_slot` multiply. The multiply rounds differently in f64
+    // and can reject a config the planner would actually admit (the gate and the planner
+    // must agree to the ULP — single source of truth), so the load-time verdict can never
+    // diverge from the runtime planner it predicts.
+    //
+    // Keyed on the declared count, not `max_active_markets` alone, so a generous cap with
+    // fewer declared markets is not wrongly rejected; `fundable_slots == 1` reduces to the
+    // single-slot floor (`total_bankroll >= min_slot`). The `fundable_slots > 0` guard
+    // skips the separately-rejected degenerate cases (zero declared markets or a zero cap),
+    // mirroring the planner short-circuiting before it divides on an empty selection.
+    let fundable_slots = declared_market_count.min(policy.max_active_markets);
+    if fundable_slots > 0
+        && crate::bolt_v3_numeric::is_positive_finite(policy.total_bankroll_notional)
         && crate::bolt_v3_numeric::is_positive_finite(policy.min_slot_notional)
-        && policy.total_bankroll_notional < policy.min_slot_notional
+        && policy.total_bankroll_notional / (fundable_slots as f64) < policy.min_slot_notional
     {
         errors.push(format!(
-            "{context}: parameters.market_portfolio.total_bankroll_notional must be >= parameters.market_portfolio.min_slot_notional (otherwise no market slot can receive the configured minimum allocation)"
+            "{context}: parameters.market_portfolio.total_bankroll_notional must be >= min(declared markets, max_active_markets) * parameters.market_portfolio.min_slot_notional (the planner equal-splits the bankroll across the up-to-{fundable_slots} selected markets, so too small a total drives every per-slot allocation below the minimum and blocks the entire active set; configured total_bankroll_notional={}, min_slot_notional={})",
+            policy.total_bankroll_notional, policy.min_slot_notional
         ));
     }
 }
@@ -789,11 +858,77 @@ fn raw_maker_config_from_parts(
     );
     insert_runtime_knobs(&mut table, runtime)?;
     insert_market_portfolio_knobs(&mut table, market_portfolio)?;
+    // Canonicalize the declared set by `market_key` so neither the embedded
+    // `[[markets]]` array nor the strategy_config_hash (computed over this whole
+    // table) depends on operator TOML ordering: two operators declaring the same
+    // set in different orders produce a byte-identical config and an identical
+    // hash. `markets_config_digest` canonicalizes the same way internally, so the
+    // digest field and the array agree on one ordering, and the runtime's
+    // market resolution is order-agnostic regardless.
+    let mut canonical_markets = parameters.markets.clone();
+    canonical_markets.sort_by(|a, b| a.market_key.cmp(&b.market_key));
     table.insert(
         super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
-        Value::String(markets_config_digest(&parameters.markets)?),
+        Value::String(markets_config_digest(&canonical_markets)?),
     );
+    insert_markets(&mut table, &canonical_markets)?;
     Ok(Value::Table(table))
+}
+
+/// Thread the operator-declared `[[parameters.markets]]` set into the flat config
+/// table as a TOML array-of-tables under `markets`, so the strategy parses them
+/// back into `MakerMarketDeclaration`s at build and the runtime
+/// (`runtime::MakerRuntime`) can resolve them at `on_start`. Built field-by-field
+/// rather than via derive `Serialize` so a `None` static-market override is omitted
+/// (TOML has no null) and an out-of-range `cadence_seconds` fails closed here
+/// rather than silently wrapping. `markets_config_digest` (inserted above) binds
+/// the same set into the go-live hash; this carries the data it summarizes.
+fn insert_markets(
+    table: &mut Map<String, Value>,
+    markets: &[MarketBindingParametersBlock],
+) -> Result<(), String> {
+    let mut rows = Vec::with_capacity(markets.len());
+    for market in markets {
+        let mut row = Map::new();
+        row.insert(
+            "market_key".to_string(),
+            Value::String(market.market_key.clone()),
+        );
+        row.insert(
+            "family_key".to_string(),
+            Value::String(market.family_key.clone()),
+        );
+        row.insert(
+            "underlying_asset".to_string(),
+            Value::String(market.underlying_asset.clone()),
+        );
+        insert_u64_field(&mut row, "cadence_seconds", market.cadence_seconds)?;
+        row.insert(
+            "cadence_slug_token".to_string(),
+            Value::String(market.cadence_slug_token.clone()),
+        );
+        if let Some(value) = &market.static_condition_id {
+            row.insert(
+                "static_condition_id".to_string(),
+                Value::String(value.clone()),
+            );
+        }
+        if let Some(value) = &market.static_yes_outcome {
+            row.insert(
+                "static_yes_outcome".to_string(),
+                Value::String(value.clone()),
+            );
+        }
+        if let Some(value) = &market.static_no_outcome {
+            row.insert(
+                "static_no_outcome".to_string(),
+                Value::String(value.clone()),
+            );
+        }
+        rows.push(Value::Table(row));
+    }
+    table.insert("markets".to_string(), Value::Array(rows));
+    Ok(())
 }
 
 /// Compute a deterministic digest of the operator-declared market set so the
@@ -850,6 +985,7 @@ fn insert_runtime_knobs(
         "requote_min_interval_ms",
         runtime.requote_min_interval_ms,
     )?;
+    insert_u64_field(table, "quote_interval_ms", runtime.quote_interval_ms)?;
     Ok(())
 }
 
@@ -934,6 +1070,7 @@ mod tests {
             mu_stale_window_ms: 60_000,
             mu_min_floor: 0.05,
             requote_min_interval_ms: 500,
+            quote_interval_ms: 1000,
         }
     }
 
@@ -1161,6 +1298,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
 
             [parameters.market_portfolio]
             max_active_markets = 3
@@ -1215,6 +1353,79 @@ mod tests {
                 backtest: valid_backtest(),
             },
         )
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_zero_quote_interval() {
+        // A zero quote-loop interval would schedule a degenerate timer that never
+        // advances the runtime's market resolution / requote cadence, so it must
+        // fail closed at load like the other runtime knobs. A valid runtime (with
+        // quote_interval_ms = 1000) produces no such error; only the zero override
+        // does, so this fails on a missing or mis-wired bound check.
+        let errors = bounds_errors(RuntimeParametersBlock {
+            quote_interval_ms: 0,
+            ..valid_runtime()
+        });
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("parameters.runtime.quote_interval_ms must be > 0")),
+            "expected quote_interval_ms bound error, got: {errors:?}"
+        );
+        assert!(
+            !bounds_errors(valid_runtime())
+                .iter()
+                .any(|error| error.contains("quote_interval_ms")),
+            "a valid runtime must not flag quote_interval_ms"
+        );
+    }
+
+    #[test]
+    fn validate_order_id_tag_delimiter_free_rejects_the_client_order_id_delimiter() {
+        // make_leg_identity joins order_id_tag with the market key, window start,
+        // leg, and generation on `-`, so a `-` in the tag lets two distinct
+        // (tag, market_key) pairs mint the same client order id (e.g. "00-1"+"eth"
+        // == "00"+"1-eth") even though validate_strategies enforces tag uniqueness.
+        // validate_strategy wires this onto the live node-startup gate (the
+        // schema-layer config check is not). Differential: removing the delimiter
+        // rule (or the validate_strategy wiring that calls it) makes the hyphenated
+        // tag return None and this expect panics.
+        let error = validate_order_id_tag_delimiter_free(CONTEXT, "00-1")
+            .expect("a hyphenated order_id_tag must be rejected on the live gate");
+        assert!(
+            error.contains("must not contain the `-` client-order-id delimiter"),
+            "the rejection must name the delimiter invariant: {error}"
+        );
+        assert!(
+            validate_order_id_tag_delimiter_free(CONTEXT, "001").is_none(),
+            "a delimiter-free order_id_tag must pass the live gate"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_quote_interval_overflowing_the_nanosecond_clock() {
+        // quote_interval_ms is converted ms -> ns when the quote timer registers; a
+        // value so large the conversion overflows u64 would silently saturate the
+        // timer cadence at runtime instead of meaning the configured value. Like its
+        // sibling trade_flow_window_secs, that must fail closed at load rather than
+        // only at on_start. Differential: a value that fits (the valid 1000) produces
+        // no such error; only the overflowing value does, so this fails on a missing
+        // or mis-wired overflow check.
+        let errors = bounds_errors(RuntimeParametersBlock {
+            quote_interval_ms: u64::MAX,
+            ..valid_runtime()
+        });
+        assert!(
+            errors.iter().any(|error| error
+                .contains("its millisecond-to-nanosecond conversion does not overflow u64")),
+            "expected quote_interval_ms overflow error, got: {errors:?}"
+        );
+        assert!(
+            !bounds_errors(valid_runtime())
+                .iter()
+                .any(|error| error.contains("millisecond-to-nanosecond")),
+            "a valid runtime must not flag a quote_interval_ms overflow"
+        );
     }
 
     fn market_portfolio_errors(market_portfolio: MarketPortfolioParametersBlock) -> Vec<String> {
@@ -1487,6 +1698,109 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("total_bankroll_notional must be >=")),
             "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_rejects_bankroll_that_cannot_fund_every_declared_slot() {
+        // The shared planner equal-splits total_bankroll_notional across the markets it
+        // selects and admits NO plan when the per-slot split falls below
+        // min_slot_notional, blocking the ENTIRE active set (a silent idle). A bankroll
+        // that clears the single-slot floor but cannot fund every declarable slot at
+        // min_slot_notional must therefore be rejected at load, not just one `< min_slot`.
+        // Three declared markets, cap 3, min slot 100, bankroll 150: 150 >= 100 clears the
+        // single-slot floor (so the pre-existing check passes it) but 150 / 3 = 50 < 100,
+        // so all three slots are unfundable and the maker would silently quote nothing.
+        let starved = validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                market_portfolio: MarketPortfolioParametersBlock {
+                    max_active_markets: 3,
+                    total_bankroll_notional: 150.0,
+                    min_slot_notional: 100.0,
+                },
+                markets: vec![
+                    market_declaration("eth-hourly"),
+                    market_declaration("btc-hourly"),
+                    market_declaration("sol-hourly"),
+                ],
+                backtest: valid_backtest(),
+            },
+        );
+        assert!(
+            starved
+                .iter()
+                .any(|error| error.contains("total_bankroll_notional must be >=")),
+            "a bankroll that cannot fund every declared slot at min_slot_notional must be \
+             rejected even though it clears the single-slot floor: {starved:?}"
+        );
+
+        // Over-rejection guard (the bound is min(declared, max_active), NOT max_active
+        // alone): a SINGLE declared market under the same cap 3 needs only one funded
+        // slot, so 150 >= 1 * 100 funds it and must NOT be rejected. Keying the bound on
+        // max_active_markets (3 * 100 = 300) would wrongly reject this legitimate config —
+        // the regression this assertion locks against.
+        let generous_cap = validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                market_portfolio: MarketPortfolioParametersBlock {
+                    max_active_markets: 3,
+                    total_bankroll_notional: 150.0,
+                    min_slot_notional: 100.0,
+                },
+                markets: vec![market_declaration("eth-hourly")],
+                backtest: valid_backtest(),
+            },
+        );
+        assert!(
+            !generous_cap
+                .iter()
+                .any(|error| error.contains("total_bankroll_notional must be >=")),
+            "one declared market under a generous cap needs only one slot funded, so a \
+             sufficient bankroll must not be rejected: {generous_cap:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_bankroll_floor_mirrors_the_planner_per_slot_division() {
+        // The bankroll floor must reproduce the shared planner's admission arithmetic
+        // BIT-FOR-BIT. The planner divides (`total_bankroll / slot_count < min_slot`); the
+        // algebraically-equal multiply (`total < slot_count * min_slot`) rounds differently
+        // in f64 and would reject configs the planner actually admits. These exact f64
+        // values are such a divergence at slot_count 3:
+        //   192.30000000000794 / 3.0 == 64.10000000000265 == min_slot  -> planner ADMITS
+        //                                                                  (allocation is NOT
+        //                                                                  below the floor),
+        //   3.0 * 64.10000000000265   == 192.30000000000797 > 192.30000000000794
+        //                                                                -> the multiply gate
+        //                                                                   wrongly REJECTS.
+        // The divide-based gate must NOT emit the bankroll error here; this assertion fails
+        // on the pre-fix multiply form, locking the gate to the planner it predicts.
+        let boundary = validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                market_portfolio: MarketPortfolioParametersBlock {
+                    max_active_markets: 3,
+                    total_bankroll_notional: 192.30000000000794,
+                    min_slot_notional: 64.10000000000265,
+                },
+                markets: vec![
+                    market_declaration("eth-hourly"),
+                    market_declaration("btc-hourly"),
+                    market_declaration("sol-hourly"),
+                ],
+                backtest: valid_backtest(),
+            },
+        );
+        assert!(
+            !boundary
+                .iter()
+                .any(|error| error.contains("total_bankroll_notional must be >=")),
+            "a bankroll the planner would admit (total / slots == min_slot) must not be \
+             rejected by an f64 multiply-rounding artifact: {boundary:?}"
         );
     }
 
@@ -2251,6 +2565,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
             VALID_MARKETS_TOML,
@@ -2280,6 +2595,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             surprise = 1
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
@@ -2307,6 +2623,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             VALID_MARKET_PORTFOLIO_TOML,
             VALID_MARKETS_TOML,
@@ -2383,6 +2700,7 @@ mod tests {
                 mu_stale_window_ms = 60000
                 mu_min_floor = 0.05
                 requote_min_interval_ms = 500
+                quote_interval_ms = 1000
                 "#,
                 VALID_MARKET_PORTFOLIO_TOML
             ))
@@ -2403,6 +2721,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             r#"
             [market_portfolio]
@@ -2436,6 +2755,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             valid_backtest_toml()
         );
@@ -2477,6 +2797,7 @@ mod tests {
             mu_stale_window_ms = 60000
             mu_min_floor = 0.05
             requote_min_interval_ms = 500
+            quote_interval_ms = 1000
             "#,
             r#"
             [market_portfolio]
@@ -2517,6 +2838,10 @@ mod tests {
             super::super::config::MARKETS_CONFIG_DIGEST_FIELD.to_string(),
             Value::String(expected_digest.clone()),
         );
+        // Mirror the production raw-config builder, which always threads the
+        // declared `[[markets]]` array alongside the digest; the consumer config
+        // requires the `markets` field, so omitting it would fail the parse.
+        insert_markets(&mut table, &valid_markets()).expect("declared markets thread");
         let config =
             parse_config(&Value::Table(table)).expect("flat table parses into the consumer config");
         assert_eq!(config.client_id, "maker_execution_client");
@@ -2530,6 +2855,8 @@ mod tests {
         assert_eq!(config.market_portfolio_total_bankroll_notional, 1500.0);
         assert_eq!(config.market_portfolio_min_slot_notional, 100.0);
         assert_eq!(config.markets_config_digest, expected_digest);
+        assert_eq!(config.markets.len(), 1);
+        assert_eq!(config.markets[0].market_key, "eth-hourly");
     }
 
     #[test]

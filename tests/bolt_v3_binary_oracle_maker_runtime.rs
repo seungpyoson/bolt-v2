@@ -42,7 +42,11 @@ use bolt_v2::{
     },
 };
 use futures_util::{FutureExt, future::BoxFuture};
-use nautilus_common::{cache::Cache, clock::TestClock};
+use nautilus_common::{
+    cache::Cache,
+    clock::{Clock, TestClock},
+    timer::{TimeEvent, TimeEventCallback},
+};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::TradeTick,
@@ -844,11 +848,13 @@ fn maker_config() -> BinaryOracleMakerConfig {
         mu_stale_window_ms: 60_000,
         mu_min_floor: 0.05,
         requote_min_interval_ms: 500,
+        quote_interval_ms: 1_000,
         market_portfolio_max_active_markets: 3,
         market_portfolio_total_bankroll_notional: 1500.0,
         market_portfolio_min_slot_notional: 100.0,
         markets_config_digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
             .to_string(),
+        markets: Vec::new(),
     }
 }
 
@@ -1076,4 +1082,950 @@ fn reference_quote(
         observed_ts_ms,
     )
     .expect("reference quote fixture should be valid")
+}
+
+// ---------------------------------------------------------------------------
+// PR-B runtime foundation: the maker consumes PR-A's per-market bindings to
+// resolve its active market set, reconcile trade subscriptions, and track the
+// per-leg order identities the quote cycle mints. These fixtures use the STATIC
+// binary-event family because it identifies a market by a fixed condition id +
+// outcomes (no engine-derived time slug), so the fixtures are self-contained.
+// Mirrors the proven `binding.rs` static resolver fixtures.
+// ---------------------------------------------------------------------------
+
+use bolt_v2::{
+    bolt_v3_maker_market_selection::MakerMarketPortfolioPolicy,
+    strategies::binary_oracle_maker::{binding::MakerMarketDeclaration, runtime::MakerRuntime},
+};
+use nautilus_core::Params;
+use nautilus_model::{
+    enums::AssetClass,
+    identifiers::Symbol,
+    instruments::{BinaryOption, InstrumentAny},
+    types::Currency,
+};
+
+const RUNTIME_NOW_MS: u64 = 1_700_000_000_000;
+const RUNTIME_STATIC_FAMILY: &str = "static_binary_event";
+const RUNTIME_STATIC_SLUG: &str = "will-sample-maker-resolve-yes";
+const RUNTIME_STATIC_CONDITION_ID: &str = "condition-sample-maker";
+const RUNTIME_STATIC_YES_OUTCOME: &str = "Yes";
+const RUNTIME_STATIC_NO_OUTCOME: &str = "No";
+const RUNTIME_MARKET_KEY: &str = "eth-static-event";
+const RUNTIME_YES_INSTRUMENT: &str = "MAKER-RT-YES.SIM";
+const RUNTIME_NO_INSTRUMENT: &str = "MAKER-RT-NO.SIM";
+// The YES leg's instrument id after a (hypothetical) venue re-issue of the same
+// period's market: a distinct InstrumentId resolved at the same window start.
+const RUNTIME_YES_INSTRUMENT_REISSUED: &str = "MAKER-RT-YES-REISSUED.SIM";
+
+fn runtime_static_declaration() -> MakerMarketDeclaration {
+    MakerMarketDeclaration {
+        market_key: RUNTIME_MARKET_KEY.to_string(),
+        family_key: RUNTIME_STATIC_FAMILY.to_string(),
+        underlying_asset: "ETH".to_string(),
+        cadence_seconds: 3_600,
+        cadence_slug_token: RUNTIME_STATIC_SLUG.to_string(),
+        static_condition_id: Some(RUNTIME_STATIC_CONDITION_ID.to_string()),
+        static_yes_outcome: Some(RUNTIME_STATIC_YES_OUTCOME.to_string()),
+        static_no_outcome: Some(RUNTIME_STATIC_NO_OUTCOME.to_string()),
+    }
+}
+
+fn runtime_binary_option(instrument_id: &str, outcome: &str) -> InstrumentAny {
+    runtime_binary_option_with_market_id(
+        instrument_id,
+        outcome,
+        &format!("market-{RUNTIME_STATIC_SLUG}"),
+        RUNTIME_NOW_MS - 1_000,
+    )
+}
+
+fn runtime_binary_option_with_market_id(
+    instrument_id: &str,
+    outcome: &str,
+    market_id: &str,
+    activation_milliseconds: u64,
+) -> InstrumentAny {
+    let question_id = format!("question-{RUNTIME_STATIC_SLUG}");
+    let mut info = Params::new();
+    for (key, value) in [
+        ("market_slug", RUNTIME_STATIC_SLUG),
+        ("market_id", market_id),
+        ("condition_id", RUNTIME_STATIC_CONDITION_ID),
+        ("question_id", question_id.as_str()),
+    ] {
+        info.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+    InstrumentAny::BinaryOption(BinaryOption::new(
+        InstrumentId::from(instrument_id),
+        Symbol::from(instrument_id.split('.').next().unwrap_or(instrument_id)),
+        AssetClass::Alternative,
+        Currency::USDC(),
+        (activation_milliseconds.saturating_mul(1_000_000)).into(),
+        ((RUNTIME_NOW_MS + 30_000).saturating_mul(1_000_000)).into(),
+        3,
+        2,
+        Price::from("0.001"),
+        Quantity::from("0.01"),
+        Some(ustr::Ustr::from(outcome)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(info),
+        1.into(),
+        1.into(),
+    ))
+}
+
+fn runtime_static_instruments() -> Vec<InstrumentAny> {
+    vec![
+        runtime_binary_option(RUNTIME_YES_INSTRUMENT, RUNTIME_STATIC_YES_OUTCOME),
+        runtime_binary_option(RUNTIME_NO_INSTRUMENT, RUNTIME_STATIC_NO_OUTCOME),
+    ]
+}
+
+/// The same declared static market resolved on a LATER cadence window: identical
+/// instrument ids / slug / condition id / outcomes AND an unchanged venue
+/// `market_id` (so a `market_id`-keyed retain would wrongly retain the stale
+/// window), but a later window start — `start_timestamp_milliseconds`, which the
+/// static resolver derives from the instrument activation. That window start is the
+/// field `apply_resolution` keys the retain-vs-reset decision on, so this fixture is
+/// the regression guard for the cadence-roll bug: discriminating a roll only by the
+/// venue `market_id` (which a venue may reuse across windows) would keep re-quoting
+/// the expired window's instruments.
+fn runtime_static_instruments_rolled() -> Vec<InstrumentAny> {
+    let market_id = format!("market-{RUNTIME_STATIC_SLUG}");
+    vec![
+        runtime_binary_option_with_market_id(
+            RUNTIME_YES_INSTRUMENT,
+            RUNTIME_STATIC_YES_OUTCOME,
+            &market_id,
+            RUNTIME_NOW_MS - 500,
+        ),
+        runtime_binary_option_with_market_id(
+            RUNTIME_NO_INSTRUMENT,
+            RUNTIME_STATIC_NO_OUTCOME,
+            &market_id,
+            RUNTIME_NOW_MS - 500,
+        ),
+    ]
+}
+
+/// The same declared static market resolved on the SAME cadence window (identical
+/// activation => identical `start_timestamp_milliseconds`, same condition id /
+/// slug / market_id / outcomes) but with the YES leg re-issued under a NEW
+/// instrument id. A retain keyed only on the window start would keep the stale YES
+/// instrument; the leg instrument id is read live by the trade-subscription differ,
+/// so this is the regression guard that a re-issued instrument under an unchanged
+/// window start is treated as a roll (fail-closed) rather than a silent retain.
+fn runtime_static_instruments_reissued_yes() -> Vec<InstrumentAny> {
+    let market_id = format!("market-{RUNTIME_STATIC_SLUG}");
+    vec![
+        runtime_binary_option_with_market_id(
+            RUNTIME_YES_INSTRUMENT_REISSUED,
+            RUNTIME_STATIC_YES_OUTCOME,
+            &market_id,
+            RUNTIME_NOW_MS - 1_000,
+        ),
+        runtime_binary_option_with_market_id(
+            RUNTIME_NO_INSTRUMENT,
+            RUNTIME_STATIC_NO_OUTCOME,
+            &market_id,
+            RUNTIME_NOW_MS - 1_000,
+        ),
+    ]
+}
+
+fn runtime_portfolio_policy() -> MakerMarketPortfolioPolicy {
+    MakerMarketPortfolioPolicy {
+        max_active_markets: 3,
+        total_bankroll_notional: 1_500.0,
+        min_slot_notional: 100.0,
+    }
+}
+
+#[test]
+fn maker_runtime_refresh_resolves_declared_market_and_emits_subscription_delta() {
+    // PR-B consumes PR-A's declared markets: a declared static market whose
+    // YES/NO instruments are discoverable resolves to one active market, both leg
+    // instruments become the newly-active trade-subscription delta, and the active
+    // market carries leg bindings whose order identities are UNSET — the quote
+    // cycle mints them per cycle, not at resolution. A resolver that silently
+    // dropped the market would leave the runtime empty (the pre-PR-B state).
+    let mut runtime = MakerRuntime::empty();
+    let yes_id = InstrumentId::from(RUNTIME_YES_INSTRUMENT);
+    let no_id = InstrumentId::from(RUNTIME_NO_INSTRUMENT);
+
+    let refresh = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+
+    assert_eq!(runtime.active_market_count(), 1);
+    assert!(
+        refresh.misses.is_empty(),
+        "a discoverable market must not miss: {:?}",
+        refresh.misses
+    );
+    assert!(refresh.subscribe.contains(&yes_id));
+    assert!(refresh.subscribe.contains(&no_id));
+    assert!(refresh.unsubscribe.is_empty());
+    let market = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the resolved declared market is active");
+    assert_eq!(market.leg_binding(Leg::Yes).instrument_id, yes_id);
+    assert_eq!(market.leg_binding(Leg::No).instrument_id, no_id);
+    assert!(
+        market.leg_binding(Leg::Yes).active_order.is_none(),
+        "resolution must not assign an active order identity"
+    );
+    assert!(
+        market.leg_binding(Leg::Yes).next_order.is_none(),
+        "resolution must not assign a next order identity"
+    );
+}
+
+#[test]
+fn maker_runtime_refresh_reports_miss_for_undiscoverable_market_not_silent_drop() {
+    // Fail-closed: a declared market with no matching instruments surfaces as a
+    // miss and produces no active market and no subscription — never a silent idle.
+    let mut runtime = MakerRuntime::empty();
+
+    let refresh = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &[],
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+
+    assert_eq!(runtime.active_market_count(), 0);
+    assert_eq!(refresh.misses.len(), 1);
+    assert!(refresh.subscribe.is_empty());
+    assert!(refresh.unsubscribe.is_empty());
+}
+
+#[test]
+fn maker_runtime_refresh_rerolls_when_a_leg_instrument_changes_under_the_same_window() {
+    // Fail-closed retain guard (PR #853 external review): the retain-vs-reset
+    // decision compares the resolved leg instrument ids, not just the cadence window
+    // start. If a venue re-issues the period's market under a new instrument id at an
+    // UNCHANGED window start, retaining by window start alone would keep the stale
+    // leg instrument — and the leg instrument id is read live by the trade-
+    // subscription differ, so the maker would stay subscribed to the gone feed and
+    // never subscribe the re-issued one. The second refresh below changes only the
+    // YES instrument id (same activation => same start_timestamp_milliseconds), so:
+    //   - with the instrument-aware retain predicate it is treated as a roll: the
+    //     active binding swaps to the re-issued YES, the re-issued id is subscribed,
+    //     and the stale id is unsubscribed;
+    //   - with a window-start-only predicate it would be retained: the active binding
+    //     keeps the stale YES, `subscribe` omits the re-issued id, and `unsubscribe`
+    //     omits the stale id — all three assertions below then fail.
+    let mut runtime = MakerRuntime::empty();
+    runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+
+    let reissued_yes = InstrumentId::from(RUNTIME_YES_INSTRUMENT_REISSUED);
+    let stale_yes = InstrumentId::from(RUNTIME_YES_INSTRUMENT);
+    let refresh = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments_reissued_yes(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+
+    assert_eq!(
+        runtime.active_market_count(),
+        1,
+        "the re-issued market stays active (a roll rebuilds, it does not drop)"
+    );
+    let market = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the re-issued declared market is active");
+    assert_eq!(
+        market.leg_binding(Leg::Yes).instrument_id,
+        reissued_yes,
+        "a re-issued leg instrument under the same window start must replace the stale one"
+    );
+    assert!(
+        refresh.subscribe.contains(&reissued_yes),
+        "the re-issued instrument must be newly subscribed: {:?}",
+        refresh.subscribe
+    );
+    assert!(
+        refresh.unsubscribe.contains(&stale_yes),
+        "the stale instrument feed must be dropped: {:?}",
+        refresh.unsubscribe
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PR-B NT shell: on_start resolves the declared markets against the
+// execution-venue-scoped instrument cache and populates the runtime, and one
+// intent-only quote cycle mints + assigns + rotates leg order identities while
+// the global shadow chokepoint suppresses every venue mutation.
+// ---------------------------------------------------------------------------
+
+use bolt_v2::strategies::binary_oracle_maker::BinaryOracleMakerQuoteCycleInput;
+use nautilus_common::actor::DataActor;
+
+fn maker_config_with_static_market() -> BinaryOracleMakerConfig {
+    BinaryOracleMakerConfig {
+        markets: vec![runtime_static_declaration()],
+        ..maker_config()
+    }
+}
+
+/// A build context whose execution venue is a single-token `SIM`, so the static
+/// instruments (`*.SIM`) pass the maker's execution-venue cache filter. (The
+/// other maker fixtures use a dotted `MAKER.TEST` venue, which never matches an
+/// `InstrumentId`'s parsed venue and so is unsuitable for the cache-read path.)
+fn maker_sim_context(
+    writer: Arc<support::RecordingDecisionEvidenceWriter>,
+    admission: Arc<BoltV3SubmitAdmissionState>,
+) -> StrategyBuildContext {
+    StrategyBuildContext::new(
+        Arc::new(NoopFeeProvider),
+        writer,
+        admission,
+        BoltV3OrderExecutionPolicy::shadow(),
+        Venue::from("SIM"),
+    )
+}
+
+/// Register the maker with a real NT core whose clock reads `RUNTIME_NOW_MS`, so
+/// the static instruments (whose activation/expiration bracket `RUNTIME_NOW_MS`)
+/// are selectable at `on_start`. Returns the cache so the test can seed it.
+fn register_maker_at_runtime_now(maker: &mut BinaryOracleMaker) -> Rc<RefCell<Cache>> {
+    register_maker_at_runtime_now_with_quote_timer_handler(maker, true)
+}
+
+/// Register the maker against a `TestClock` set to `RUNTIME_NOW_MS`. When
+/// `wire_quote_timer_handler` is true this also registers the clock's default
+/// time-event handler, mirroring NT's `DataActor::register` (which wires it in
+/// production); without it `TestClock::set_timer_ns` returns "No callbacks
+/// provided" and `on_start`'s quote-timer registration fails loud. The bare
+/// `core_mut().register` used here performs only the core registration, so the
+/// handler must be wired explicitly to reproduce the live start path.
+fn register_maker_at_runtime_now_with_quote_timer_handler(
+    maker: &mut BinaryOracleMaker,
+    wire_quote_timer_handler: bool,
+) -> Rc<RefCell<Cache>> {
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)));
+    if wire_quote_timer_handler {
+        clock
+            .borrow_mut()
+            .register_default_handler(TimeEventCallback::from(|_event: TimeEvent| {}));
+    }
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(
+        cache.clone(),
+        clock.clone(),
+        None,
+    )));
+    maker
+        .core_mut()
+        .register(
+            TraderId::from("TRADER-001"),
+            clock,
+            cache.clone(),
+            portfolio,
+        )
+        .expect("maker test strategy should register with NT core");
+    cache
+}
+
+#[test]
+fn maker_on_start_resolves_declared_markets_from_the_execution_venue_cache() {
+    // The NT shell wiring: on_start reads the execution-venue-scoped instrument
+    // cache, resolves the declared markets through the shared engine, and tracks
+    // them in the runtime. With both leg instruments cached on the maker's venue,
+    // the declared market becomes active (an empty cache would leave it idle).
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config_with_static_market(),
+        maker_sim_context(writer, admission),
+    );
+    let cache = register_maker_at_runtime_now(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    // `on_start` is declared by both `DataActor` and `Strategy` (a subtrait); the
+    // actor lifecycle invokes `DataActor::on_start` (the maker's override), so the
+    // test drives that exact method.
+    DataActor::on_start(&mut maker).expect("on_start resolves and subscribes the declared markets");
+
+    assert_eq!(maker.runtime().active_market_count(), 1);
+    let market = maker
+        .runtime()
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active after on_start");
+    assert_eq!(
+        market.leg_binding(Leg::Yes).instrument_id,
+        InstrumentId::from(RUNTIME_YES_INSTRUMENT)
+    );
+    assert_eq!(
+        market.leg_binding(Leg::No).instrument_id,
+        InstrumentId::from(RUNTIME_NO_INSTRUMENT)
+    );
+}
+
+#[test]
+fn maker_on_stop_resets_runtime_so_a_restart_re_resolves_and_re_subscribes() {
+    // on_stop resets the runtime to empty (after unsubscribing) so a stop/start
+    // restart re-resolves from empty and re-emits the full trade-subscription delta.
+    // Without that reset the runtime keeps its active markets, the next on_start's
+    // refresh diffs before == after, no subscribe delta is emitted, and the maker
+    // runs active with no trade feeds. The post-on_stop `active_market_count() == 0`
+    // assertion below is differential: it fails if the on_stop runtime reset is
+    // removed (the count would stay 1, and no re-subscribe would be emitted).
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config_with_static_market(),
+        maker_sim_context(writer, admission),
+    );
+    let cache = register_maker_at_runtime_now(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    DataActor::on_start(&mut maker).expect("first on_start resolves the declared market");
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        1,
+        "the declared market is active after the first on_start"
+    );
+
+    DataActor::on_stop(&mut maker).expect("on_stop tears the runtime down cleanly");
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        0,
+        "on_stop must reset the runtime to empty so a restart re-emits the subscribe delta"
+    );
+
+    DataActor::on_start(&mut maker).expect("second on_start re-resolves from the empty runtime");
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        1,
+        "the restart re-activates the declared market from an empty runtime"
+    );
+}
+
+#[test]
+fn maker_on_start_fails_loud_when_quote_interval_overflows_the_nanosecond_clock() {
+    // register_quote_timer converts quote_interval_ms into nanoseconds with a
+    // checked_mul; a value so large that the ms -> ns conversion overflows u64 must
+    // abort on_start (fail loud) rather than silently run with a wrong/saturated
+    // cadence. Differential: it fails if the checked_mul guard is reverted to the
+    // prior saturating_mul (which would silently clamp instead of erroring).
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let config = BinaryOracleMakerConfig {
+        quote_interval_ms: u64::MAX,
+        ..maker_config_with_static_market()
+    };
+    let mut maker = BinaryOracleMaker::new(config, maker_sim_context(writer, admission));
+    let cache = register_maker_at_runtime_now(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    let error = DataActor::on_start(&mut maker)
+        .expect_err("an overflowing quote_interval_ms must fail on_start");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("overflows the nanosecond clock"),
+        "on_start should fail loud naming the nanosecond-clock overflow: {rendered}"
+    );
+    // No half-started runtime: on_start registers the quote timer BEFORE resolving
+    // markets, so the abort precedes any market subscription even though the cache
+    // already holds the declared instruments. Differential: reordering on_start to
+    // refresh markets before the timer would leave active_market_count() == 1 here.
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        0,
+        "a failed on_start must leave no resolved/subscribed markets behind"
+    );
+}
+
+#[test]
+fn maker_on_start_fails_loud_when_the_quote_timer_cannot_register() {
+    // register_quote_timer registers the autonomous quote/refresh timer through
+    // NT's clock default time-event handler, which the actor lifecycle wires in
+    // production (DataActor::register). If that registration fails, on_start must
+    // abort (fail loud) rather than run resolved markets with no quote/refresh
+    // cadence (never reconciling a cadence roll). Differential: a clock with NO
+    // default handler makes TestClock::set_timer_ns return "No callbacks
+    // provided", so on_start must error naming the timer-registration failure. If
+    // register_quote_timer is reverted to logging-and-swallowing that error,
+    // on_start returns Ok and this expect_err fails.
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config_with_static_market(),
+        maker_sim_context(writer, admission),
+    );
+    let cache = register_maker_at_runtime_now_with_quote_timer_handler(&mut maker, false);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+
+    let error = DataActor::on_start(&mut maker)
+        .expect_err("a quote timer that cannot register must fail on_start");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("quote timer registration failed"),
+        "on_start should fail loud naming the quote timer registration failure: {rendered}"
+    );
+    // No half-started runtime: the quote timer registers BEFORE markets resolve, so
+    // a registration failure aborts on_start before any market subscription even
+    // though the cache holds the declared instruments. Differential: reordering
+    // on_start to refresh markets first would leave active_market_count() == 1 here.
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        0,
+        "a failed on_start must leave no resolved/subscribed markets behind"
+    );
+}
+
+#[test]
+fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
+    // The keystone PR-B behavior: once a market is active, one quote cycle mints
+    // fresh leg order identities, emits order INTENT through the shared execution
+    // context, and rotates the dispatched identity from `next` to `active`. The
+    // global shadow chokepoint suppresses every venue mutation, so the intent is
+    // produced but nothing is admitted.
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config_with_static_market(),
+        maker_sim_context(writer, admission.clone()),
+    );
+    let cache = register_maker_at_runtime_now(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the venue cache with a maker instrument");
+    }
+    DataActor::on_start(&mut maker).expect("on_start resolves the declared market");
+    assert_eq!(maker.runtime().active_market_count(), 1);
+
+    let yes_id = InstrumentId::from(RUNTIME_YES_INSTRUMENT);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let submit_template = maker_limit_post_only_template();
+
+    let outcome = maker
+        .run_quote_cycle(
+            RUNTIME_MARKET_KEY,
+            &mut market,
+            &mut budget,
+            BinaryOracleMakerQuoteCycleInput {
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set: quote_set_inputs(),
+                submit_template: &submit_template,
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+                max_fee_bps: Decimal::ZERO,
+                submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            },
+        )
+        .expect("run_quote_cycle routes an active market")
+        .expect("an active market yields a quote-cycle outcome");
+
+    let orders = outcome
+        .orders
+        .expect("a fresh market quote cycle dispatches leg order intent");
+    let no_id = InstrumentId::from(RUNTIME_NO_INSTRUMENT);
+    match &orders.yes.dispatch {
+        Some(MakerOrderDispatchOutcome::Submitted { instrument_id, .. }) => {
+            assert_eq!(
+                *instrument_id, yes_id,
+                "the YES leg intent must target the resolved YES instrument"
+            );
+        }
+        other => panic!("expected a YES submit intent in shadow, got {other:?}"),
+    }
+    // Clause (c) is per-leg: the NO leg mints + dispatches its own intent. Asserting
+    // only the YES leg would let a regression that dropped the NO-leg rotation, or
+    // transposed both rotations onto YES, ship green.
+    match &orders.no.dispatch {
+        Some(MakerOrderDispatchOutcome::Submitted { instrument_id, .. }) => {
+            assert_eq!(
+                *instrument_id, no_id,
+                "the NO leg intent must target the resolved NO instrument"
+            );
+        }
+        other => panic!("expected a NO submit intent in shadow, got {other:?}"),
+    }
+    // Shadow chokepoint: intent emitted, nothing admitted to the venue.
+    assert_eq!(admission.admitted_order_count(), 0);
+
+    // The dispatched identity rotated from `next` to `active` on BOTH legs; the next
+    // slot is consumed so the following cycle mints a fresh generation.
+    let market_runtime = maker
+        .runtime()
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the market is still active after the cycle");
+    assert!(
+        market_runtime.leg_binding(Leg::Yes).active_order.is_some(),
+        "a submitted YES intent must rotate the minted identity to active"
+    );
+    assert!(
+        market_runtime.leg_binding(Leg::Yes).next_order.is_none(),
+        "the minted next YES identity is consumed by the submit"
+    );
+    assert!(
+        market_runtime.leg_binding(Leg::No).active_order.is_some(),
+        "a submitted NO intent must rotate the minted identity to active"
+    );
+    assert!(
+        market_runtime.leg_binding(Leg::No).next_order.is_none(),
+        "the minted next NO identity is consumed by the submit"
+    );
+}
+
+#[test]
+fn maker_runtime_retains_identities_on_same_window_and_rebuilds_on_roll() {
+    // Stateful clauses (b)/(c) invariant + the cadence-roll id guard. A second
+    // refresh whose market resolves to the SAME window start retains the assigned
+    // identities and the monotonic per-leg generation counters; a rolled window
+    // start (same declared market_key and an UNCHANGED venue market_id, new cadence
+    // window) rebuilds the runtime with unset identities but carries the generation
+    // counters forward, and the post-roll re-mint must never reproduce a pre-roll
+    // client order id. The single-pass suite begins from `MakerRuntime::empty()`, so
+    // it never enters the retain branch — an inverted retain guard, a retain keyed on
+    // the (unchanged) market_id, or a re-mint that dropped the carried generation
+    // would otherwise ship green.
+    let mut runtime = MakerRuntime::empty();
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"),
+        "the declared market is active, so minting succeeds"
+    );
+    let pre_roll_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a next YES identity was minted");
+
+    // Second refresh, SAME instruments => SAME window start => retain.
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert_eq!(
+        runtime
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the market stays active across an unchanged-window refresh")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .as_ref(),
+        Some(&pre_roll_yes),
+        "an unchanged cadence window retains the assigned identity (no reset)"
+    );
+    // The retained generation counter is monotonic: the next mint advances past the
+    // pre-roll id rather than repeating it.
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let advanced_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a fresh YES identity after a retained refresh");
+    assert_ne!(
+        advanced_yes.client_order_id(),
+        pre_roll_yes.client_order_id(),
+        "a retained window advances the generation, never repeats an id"
+    );
+
+    // Third refresh, ROLLED window start => rebuilt runtime, identities unset, the
+    // per-leg generation carried forward (not reset).
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments_rolled(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the rolled market is active")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .is_none(),
+        "a rolled cadence window rebuilds the runtime with unset identities"
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let post_roll_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a YES identity on the rolled window");
+    assert_ne!(
+        post_roll_yes.client_order_id(),
+        pre_roll_yes.client_order_id(),
+        "a post-roll re-mint must never reproduce a pre-roll client order id: the \
+         carried generation counter advances across the roll, so the id stays unique \
+         even though a window roll also moves the window start"
+    );
+}
+
+#[test]
+fn maker_runtime_mints_a_unique_id_when_a_leg_instrument_rerolls_under_the_same_window() {
+    // The instrument-only-roll id guard. A leg-instrument re-issue at an UNCHANGED
+    // window start is a roll (`same_window` is false), but the window start the client
+    // order id embeds does NOT change — so the window start alone cannot discriminate
+    // the post-roll id from the pre-roll one. Only the per-leg generation counter,
+    // CARRIED forward across the roll, keeps the re-minted id unique. If the roll
+    // reset the generation to 0, the post-roll re-mint would reproduce the pre-roll
+    // client order id (NautilusTrader never reuses a `ClientOrderId`), so this fails
+    // on a generation-reset-on-roll rebuild.
+    let mut runtime = MakerRuntime::empty();
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"),
+        "the declared market is active, so minting succeeds"
+    );
+    let pre_roll_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a next YES identity was minted");
+
+    // Second refresh: SAME window start, the YES leg re-issued under a NEW instrument
+    // id => `same_window` is false => roll (not retain), but the embedded window start
+    // is unchanged, so only the carried generation can keep the re-mint unique.
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments_reissued_yes(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the re-issued market is active")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .is_none(),
+        "the instrument-only roll rebuilds the runtime with unset identities"
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let post_roll_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a YES identity on the re-issued window");
+    assert_ne!(
+        post_roll_yes.client_order_id(),
+        pre_roll_yes.client_order_id(),
+        "a leg-instrument re-issue at an unchanged window start must still mint a \
+         unique client order id: the window start cannot discriminate it, so the \
+         per-leg generation must carry forward across the roll (never reset to 0)"
+    );
+}
+
+#[test]
+fn maker_runtime_mints_a_unique_id_after_a_market_drops_and_refills_the_same_window() {
+    // The drop/refill id guard (PR #853 external review: GPT/GLM/Kimi). A market can
+    // leave the active set WITHOUT a window roll — a transient resolution miss, or the
+    // shared planner blocking the whole plan that cycle — then refill the SAME cadence
+    // window on a later refresh. The client order id embeds the window start, which is
+    // unchanged across such a gap, so only a generation that SURVIVES the drop keeps the
+    // re-mint unique. The per-(market_key, leg) high-water lives on `MakerRuntime`, not
+    // on the per-refresh per-market runtime, so it persists across the gap; if the
+    // generation reset to 0 on the refill, the re-mint would reproduce the pre-drop
+    // client order id (NautilusTrader never reuses a `ClientOrderId`), failing the final
+    // assertion.
+    let mut runtime = MakerRuntime::empty();
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let pre_drop_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a next YES identity was minted");
+
+    // Drop: the market resolves to nothing this refresh (no matching instruments), so
+    // it leaves the active set entirely (surfaced as a miss, never a silent retain).
+    let dropped = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &[],
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert_eq!(
+        runtime.active_market_count(),
+        0,
+        "the unresolvable market drops out of the active set"
+    );
+    assert_eq!(
+        dropped.misses.len(),
+        1,
+        "the drop is surfaced as a miss, not a silent idle"
+    );
+
+    // Refill: the SAME declared market resolves again at the SAME window start.
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the refilled market is active")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .is_none(),
+        "a refill rebuilds the runtime with unset identities"
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let post_refill_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a YES identity on the refilled window");
+    assert_ne!(
+        post_refill_yes.client_order_id(),
+        pre_drop_yes.client_order_id(),
+        "a market that drops and refills the same window must not re-mint a consumed \
+         client order id: the per-(market_key, leg) generation high-water survives the \
+         drop, so the re-mint advances past the pre-drop generation"
+    );
+}
+
+#[test]
+fn maker_runtime_deactivate_all_preserves_generation_high_water_for_a_restart() {
+    // The within-process stop/start id guard. `on_stop` deactivates the runtime (clears
+    // the active markets so the next `on_start` re-emits the full subscription delta)
+    // but must NOT discard the per-(market_key, leg) generation high-water: a restart
+    // re-resolves the SAME cadence window, and the client order id embeds the window
+    // start, so a re-mint from generation 0 would reproduce a client order id the
+    // pre-stop run consumed. `deactivate_all` retains the high-water; replacing the
+    // runtime with `empty()` (the pre-fix behaviour) would reset it and fail the final
+    // assertion. The subscribe-delta assertion also pins that deactivation still clears
+    // the active set (so the restart re-subscribes), the reason on_stop clears markets.
+    let mut runtime = MakerRuntime::empty();
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let pre_stop_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a next YES identity was minted");
+
+    // Stop: deactivate the active set (as `on_stop` does).
+    runtime.deactivate_all();
+    assert_eq!(
+        runtime.active_market_count(),
+        0,
+        "deactivation clears the active set so a restart re-subscribes"
+    );
+
+    // Restart: `on_start` re-resolves the SAME window.
+    let restart = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        restart
+            .subscribe
+            .contains(&InstrumentId::from(RUNTIME_YES_INSTRUMENT)),
+        "a deactivated restart re-emits the full subscribe delta: {:?}",
+        restart.subscribe
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let post_restart_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a YES identity after restart");
+    assert_ne!(
+        post_restart_yes.client_order_id(),
+        pre_stop_yes.client_order_id(),
+        "a within-process restart must not re-mint a consumed client order id: \
+         deactivation preserves the generation high-water, so the re-mint advances"
+    );
 }

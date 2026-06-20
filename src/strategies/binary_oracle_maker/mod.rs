@@ -16,8 +16,13 @@
 use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Result;
-use nautilus_common::{actor::DataActor, component::Component};
-use nautilus_model::{data::TradeTick, enums::OmsType, identifiers::StrategyId};
+use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
+use nautilus_model::{
+    data::TradeTick,
+    enums::OmsType,
+    identifiers::{ClientId, StrategyId},
+    instruments::{Instrument, InstrumentAny},
+};
 use nautilus_system::trader::Trader;
 use nautilus_trading::{StrategyConfig, StrategyCore, nautilus_strategy};
 use rust_decimal::Decimal;
@@ -25,6 +30,7 @@ use toml::Value;
 
 use crate::{
     bolt_v3_loss_governor::LossAdmissionDecision,
+    bolt_v3_maker_market_selection::MakerMarketPortfolioPolicy,
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
@@ -47,6 +53,7 @@ use crate::{
         MakerRuntimeReferenceFairValueInput, maker_reference_current_price_fair_value_decision,
         plan_maker_runtime_quote,
     },
+    bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
         BoltV3MakerOrderRoutingContext,
         route_maker_order_command as route_maker_order_command_through_policy,
@@ -59,6 +66,7 @@ use crate::{
     bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
+    strategies::binary_oracle_maker::runtime::MakerRuntime,
     strategies::registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
 };
 
@@ -66,6 +74,7 @@ pub mod archetype;
 pub mod binding;
 mod config;
 pub mod mu;
+pub mod runtime;
 
 pub use config::{
     BinaryOracleMakerBuilder, BinaryOracleMakerConfig, parse_config, validate_config,
@@ -86,6 +95,7 @@ pub struct BinaryOracleMaker {
     config: BinaryOracleMakerConfig,
     context: StrategyBuildContext,
     mu: MakerMuState,
+    runtime: MakerRuntime,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -179,6 +189,7 @@ impl std::fmt::Debug for BinaryOracleMaker {
             .field("core", &self.core)
             .field("config", &self.config)
             .field("mu", &self.mu)
+            .field("runtime", &self.runtime)
             .finish_non_exhaustive()
     }
 }
@@ -201,12 +212,19 @@ impl BinaryOracleMaker {
             config,
             context,
             mu,
+            runtime: MakerRuntime::empty(),
         }
     }
 
     /// The parsed maker config (read by later slices once they add behaviour).
     pub fn config(&self) -> &BinaryOracleMakerConfig {
         &self.config
+    }
+
+    /// The maker's per-market runtime state (active markets + their assigned order
+    /// identities). Read by the integration tests and later runtime slices.
+    pub fn runtime(&self) -> &MakerRuntime {
+        &self.runtime
     }
 
     pub fn route_maker_order_command(
@@ -342,6 +360,17 @@ impl BinaryOracleMaker {
                 submit_lifecycle_policy,
             },
         )?;
+        // A routing error is now per-leg data, not a `?` abort; fail loud here to
+        // preserve this reference-quote route's prior fail-closed behavior.
+        if let Some(error) = quote_route
+            .orders
+            .as_ref()
+            .and_then(|orders| orders.routing_error())
+        {
+            anyhow::bail!(
+                "binary_oracle_maker reference-quote leg order routing failed: error={error}"
+            );
+        }
         let BinaryOracleMakerRuntimeQuoteRouteOutcome { quote, orders } = quote_route;
         let blocked_by = quote
             .blocked_by
@@ -390,6 +419,13 @@ impl BinaryOracleMaker {
             },
             &mut route_command,
         )?;
+        // A routing error is now per-leg data, not a `?` abort; fail loud here to
+        // preserve this market-action route's prior fail-closed behavior.
+        if let Some(error) = orders.routing_error() {
+            anyhow::bail!(
+                "binary_oracle_maker market-action leg order routing failed: error={error}"
+            );
+        }
         let order = match action_kind {
             MarketAction::Leg { leg: Leg::No, .. }
             | MarketAction::CancelAllOneSide { leg: Leg::No } => orders.no.clone(),
@@ -471,12 +507,263 @@ fn build_mu_state(config: &BinaryOracleMakerConfig) -> MakerMuState {
     )
 }
 
-// The maker overrides only `on_trade`, to feed the per-instrument μ buffer; every
-// other `DataActor` handler defaults to a no-op. The maker subscribes to nothing
-// yet, so this handler is dormant until a later slice subscribes.
+/// Inputs for one intent-only quote cycle on an active market. Bundles the
+/// fair-value-resolved quote plan, the quote-set sizing/lifecycle inputs, and the
+/// order-build context the dispatch needs. The leg `order_plan` is NOT part of
+/// this input: [`BinaryOracleMaker::run_quote_cycle`] mints fresh leg order
+/// identities and builds it from the runtime's active binding for the cycle.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryOracleMakerQuoteCycleInput<'a> {
+    pub quote_plan: MakerQuotePlanInputs<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub submit_template: &'a NtOrderTemplate,
+    pub price_precision: u8,
+    pub quantity_precision: u8,
+    pub submit_order_prefix: &'a str,
+    pub max_fee_bps: Decimal,
+    pub submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+}
+
+impl BinaryOracleMaker {
+    /// The NautilusTrader timer name for the maker's autonomous quote/refresh loop.
+    fn quote_timer_name(&self) -> String {
+        format!("{}:quote_loop", self.config.strategy_id)
+    }
+
+    /// The execution-client id the maker subscribes its market data on, built from
+    /// config for each subscribe/unsubscribe call.
+    fn data_client_id(&self) -> ClientId {
+        ClientId::from(self.config.client_id.as_str())
+    }
+
+    /// The shared portfolio policy derived from the operator's market-portfolio
+    /// knobs.
+    fn market_portfolio_policy(&self) -> MakerMarketPortfolioPolicy {
+        MakerMarketPortfolioPolicy {
+            max_active_markets: self.config.market_portfolio_max_active_markets as usize,
+            total_bankroll_notional: self.config.market_portfolio_total_bankroll_notional,
+            min_slot_notional: self.config.market_portfolio_min_slot_notional,
+        }
+    }
+
+    /// Current wall-clock in milliseconds from the NautilusTrader clock.
+    fn now_milliseconds(&mut self) -> u64 {
+        self.clock().timestamp_ms()
+    }
+
+    /// The execution-venue-scoped instrument snapshot the resolver consumes. Mirrors
+    /// the taker's venue-scoped cache read: a real maker order can only route to the
+    /// execution client's venue, so any instrument on another venue must be
+    /// unselectable here, and the read fails closed on a wrong-venue market.
+    fn execution_venue_instruments(&mut self) -> Vec<InstrumentAny> {
+        let execution_venue = self.context.execution_venue();
+        let cache = self.cache();
+        // Scope the cache read to the execution venue so NT filters before
+        // materialization; the trailing `.filter` is retained as a defensive
+        // assertion of the same fail-closed wrong-venue invariant.
+        cache
+            .instrument_ids(Some(&execution_venue))
+            .into_iter()
+            .filter_map(|instrument_id| cache.instrument(instrument_id).cloned())
+            .filter(|instrument| instrument.id().venue == execution_venue)
+            .collect()
+    }
+
+    /// Re-resolve the declared market set against the current instrument snapshot,
+    /// re-plan the active portfolio, and reconcile trade subscriptions to match the
+    /// new active set. The `on_start` / `on_time_event` driver. INTENT ONLY: this
+    /// subscribes to market data and tracks per-market runtime state; it never
+    /// submits. Declared markets that do not resolve are logged (a fail-closed
+    /// surface), never silently dropped.
+    fn refresh_active_markets(&mut self) {
+        let now_milliseconds = self.now_milliseconds();
+        let instruments = self.execution_venue_instruments();
+        let policy = self.market_portfolio_policy();
+        let refresh = self.runtime.refresh_active_markets(
+            &self.config.markets,
+            &instruments,
+            now_milliseconds,
+            policy,
+        );
+        let client_id = self.data_client_id();
+        for instrument_id in refresh.unsubscribe {
+            self.unsubscribe_trades(instrument_id, Some(client_id), None);
+        }
+        for instrument_id in refresh.subscribe {
+            self.subscribe_trades(instrument_id, Some(client_id), None);
+        }
+        for miss in &refresh.misses {
+            log::warn!(
+                "binary_oracle_maker declared market did not resolve: strategy_id={} miss={:?}",
+                self.config.strategy_id,
+                miss,
+            );
+        }
+    }
+
+    /// Register the autonomous quote/refresh timer (period = `quote_interval_ms`).
+    /// Fails loud: a `quote_interval_ms` that overflows the nanosecond clock unit, or
+    /// a timer registration error, aborts `on_start` rather than leaving the maker
+    /// running with resolved markets but no quote/refresh cadence (silently never
+    /// reconciling a cadence roll). This timer is the sole driver of the maker's
+    /// market resolution and requote cadence, so — unlike the edge taker's
+    /// best-effort selection-retry timer, which logs and continues — a registration
+    /// failure here is propagated rather than swallowed.
+    fn register_quote_timer(&mut self) -> anyhow::Result<()> {
+        let timer_name = self.quote_timer_name();
+        let strategy_id = self.config.strategy_id.clone();
+        let quote_interval_ms = self.config.quote_interval_ms;
+        let interval_nanoseconds = quote_interval_ms
+            .checked_mul(NANOS_PER_MILLI_U64)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "binary_oracle_maker quote_interval_ms is invalid; it overflows the nanosecond clock unit: strategy_id={strategy_id} quote_interval_ms={quote_interval_ms}"
+                )
+            })?;
+        self.clock()
+            .set_timer_ns(
+                &timer_name,
+                interval_nanoseconds,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "binary_oracle_maker quote timer registration failed: strategy_id={strategy_id} error={error:#}"
+                )
+            })?;
+        Ok(())
+    }
+
+    /// Cancel the autonomous quote/refresh timer.
+    fn deregister_quote_timer(&mut self) {
+        let timer_name = self.quote_timer_name();
+        self.clock().cancel_timer(timer_name.as_str());
+    }
+
+    /// Run one intent-only quote cycle for an active market: mint fresh leg order
+    /// identities, drive the existing quote/order pipeline with the caller-supplied
+    /// fair-value-resolved inputs, and rotate the leg identities from the dispatched
+    /// outcome. Returns `None` if the market is not active. INTENT ONLY: the
+    /// dispatch routes through the global execution-policy chokepoint, which
+    /// suppresses every venue mutation in shadow.
+    ///
+    /// The fair-value + quote-math inputs are caller-supplied because the
+    /// reference/realized-volatility feed that resolves them lands in a later slice
+    /// (X2); until then the autonomous loop has no fair value to drive this, so it
+    /// is exercised by the differential tests rather than the live timer.
+    pub fn run_quote_cycle(
+        &mut self,
+        market_key: &str,
+        market: &mut MarketQuote,
+        budget: &mut RequoteBudgetPair,
+        input: BinaryOracleMakerQuoteCycleInput<'_>,
+    ) -> Result<Option<BinaryOracleMakerRuntimeQuoteRouteOutcome>> {
+        if self.runtime.market(market_key).is_none() {
+            return Ok(None);
+        }
+        let order_id_tag = self.config.order_id_tag.clone();
+        self.runtime.mint_next_identities(market_key, &order_id_tag);
+        let order_plan = self
+            .runtime
+            .market(market_key)
+            .expect("market presence checked above")
+            .order_plan_input();
+        let BinaryOracleMakerQuoteCycleInput {
+            quote_plan,
+            quote_set,
+            submit_template,
+            price_precision,
+            quantity_precision,
+            submit_order_prefix,
+            max_fee_bps,
+            submit_lifecycle_policy,
+        } = input;
+        let outcome = self.route_maker_runtime_quote(
+            market,
+            budget,
+            BinaryOracleMakerRuntimeQuoteRouteInput {
+                quote: MakerRuntimeQuoteInput {
+                    quote_plan,
+                    quote_set,
+                    order_plan,
+                },
+                submit_template,
+                price_precision,
+                quantity_precision,
+                submit_order_prefix,
+                max_fee_bps,
+                submit_lifecycle_policy,
+            },
+        )?;
+        if let Some(orders) = outcome.orders.as_ref() {
+            // Reconcile the identity of whichever legs dispatched BEFORE failing loud
+            // on a leg routing error, so a partial two-leg dispatch never orphans the
+            // sibling leg's assigned identity from the runtime's view. The MarketQuote
+            // FSM and requote budget that plan_maker_runtime_quote already advanced are
+            // deliberately NOT rolled back: the dispatched leg's identity is bookkept
+            // active, so the FSM state and charged budget consistently reflect the leg
+            // that rested, and a rollback would desync them from the reconciled active
+            // identity. Recovering the partial (pulling the orphaned leg / reduce-only)
+            // is the pull-on-cannot-defend + active-flatten work tracked in #869 (X2/X4).
+            self.runtime.apply_dispatch_outcome(market_key, orders);
+            if let Some(error) = orders.routing_error() {
+                anyhow::bail!(
+                    "binary_oracle_maker leg order routing failed after identity reconcile: market_key={market_key} error={error}"
+                );
+            }
+        }
+        Ok(Some(outcome))
+    }
+}
+
+// The maker drives an autonomous, INTENT-ONLY runtime: `on_start` resolves the
+// declared markets against the instrument cache, subscribes their trade feeds, and
+// registers the quote timer; `on_time_event` re-resolves on each tick (following
+// cadence-window rollover) and reconciles subscriptions; `on_stop` tears both down;
+// `on_trade` feeds the per-instrument μ buffer. Order routing stays on the shadow
+// chokepoint — nothing here submits to a venue.
 impl DataActor for BinaryOracleMaker {
+    fn on_start(&mut self) -> anyhow::Result<()> {
+        // Register the quote timer first: it is the only fallible step here, so a
+        // registration failure aborts on_start before refresh_active_markets emits
+        // any subscription side effects, leaving no half-started runtime behind.
+        self.register_quote_timer()?;
+        self.refresh_active_markets();
+        Ok(())
+    }
+
+    fn on_stop(&mut self) -> anyhow::Result<()> {
+        self.deregister_quote_timer();
+        let client_id = self.data_client_id();
+        for instrument_id in self.runtime.active_instrument_ids() {
+            self.unsubscribe_trades(instrument_id, Some(client_id), None);
+        }
+        // Deactivate every market so a restart re-resolves from an empty active set
+        // and re-emits the full trade-subscription delta (leaving the active markets
+        // here would make the next `on_start`'s refresh diff before == after and emit
+        // no subscribe delta, leaving the maker active with no trade feeds). Use
+        // `deactivate_all` rather than replacing the runtime with `empty()` so the
+        // per-(market_key, leg) generation high-water survives a within-process
+        // stop/start: a re-mint after restart cannot reproduce a `ClientOrderId` a
+        // prior run consumed. (Cross-process restart durability needs a persisted
+        // high-water — arming-time work, #869.)
+        self.runtime.deactivate_all();
+        Ok(())
+    }
+
     fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
         self.mu.observe(trade);
+        Ok(())
+    }
+
+    fn on_time_event(&mut self, event: &TimeEvent) -> anyhow::Result<()> {
+        if event.name.as_str() == self.quote_timer_name() {
+            self.refresh_active_markets();
+        }
         Ok(())
     }
 }
@@ -546,6 +833,7 @@ mod tests {
     const TEST_STALE_WINDOW_MS: u64 = 60_000;
     const TEST_MU_FLOOR: f64 = 0.05;
     const TEST_REQUOTE_MIN_INTERVAL_MS: u64 = 500;
+    const TEST_QUOTE_INTERVAL_MS: u64 = 1_000;
 
     #[derive(Debug)]
     struct NoopFeeProvider;
@@ -638,11 +926,16 @@ mod tests {
             mu_stale_window_ms: TEST_STALE_WINDOW_MS,
             mu_min_floor: TEST_MU_FLOOR,
             requote_min_interval_ms: TEST_REQUOTE_MIN_INTERVAL_MS,
+            quote_interval_ms: TEST_QUOTE_INTERVAL_MS,
             market_portfolio_max_active_markets: 3,
             market_portfolio_total_bankroll_notional: 1500.0,
             market_portfolio_min_slot_notional: 100.0,
             markets_config_digest:
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            // The μ-focused unit tests here drive `on_trade` only; market resolution
+            // is exercised in the integration suite, so an empty declared set is the
+            // right fixture (the non-empty bounds gate is an archetype concern).
+            markets: Vec::new(),
         }
     }
 

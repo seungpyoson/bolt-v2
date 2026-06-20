@@ -742,11 +742,16 @@ impl DataActor for BinaryOracleMaker {
         for instrument_id in self.runtime.active_instrument_ids() {
             self.unsubscribe_trades(instrument_id, Some(client_id), None);
         }
-        // Reset runtime state so a restart re-resolves from empty and re-emits the
-        // full trade-subscription delta. Leaving the active markets here would make
-        // the next `on_start`'s refresh diff before == after and emit no subscribe
-        // delta, leaving the maker active with no trade feeds.
-        self.runtime = MakerRuntime::empty();
+        // Deactivate every market so a restart re-resolves from an empty active set
+        // and re-emits the full trade-subscription delta (leaving the active markets
+        // here would make the next `on_start`'s refresh diff before == after and emit
+        // no subscribe delta, leaving the maker active with no trade feeds). Use
+        // `deactivate_all` rather than replacing the runtime with `empty()` so the
+        // per-(market_key, leg) generation high-water survives a within-process
+        // stop/start: a re-mint after restart cannot reproduce a `ClientOrderId` a
+        // prior run consumed. (Cross-process restart durability needs a persisted
+        // high-water — arming-time work, #869.)
+        self.runtime.deactivate_all();
         Ok(())
     }
 

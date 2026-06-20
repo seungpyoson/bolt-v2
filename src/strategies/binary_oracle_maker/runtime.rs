@@ -60,18 +60,24 @@ fn leg_tag(leg: Leg) -> &'static str {
 /// `ClientOrderId` (`bolt_v3_maker_order_compile::nt_client_order_id`), so it must
 /// be unique per live order: `order_id_tag` is unique per strategy, `market_key`
 /// per declared market, `leg` distinguishes the two legs, and `generation` is the
-/// monotonic per-(market_key, leg) counter that **guarantees** cross-roll
-/// uniqueness. The `generation` counter lives on [`MakerMarketRuntime`] and is
-/// **carried forward across every roll** ([`MakerRuntime::apply_resolution`] threads
-/// it into the rebuilt runtime, never resetting it to 0), so no roll — a new cadence
-/// window, a re-issued leg instrument under an unchanged window, or a venue
-/// `market_id` reuse — can re-mint a client order id a prior generation already
-/// consumed (NautilusTrader never reuses a `ClientOrderId`). `window_start_milliseconds`
-/// is the resolved cadence window's start
+/// monotonic per-(market_key, leg) counter that **guarantees** uniqueness for the
+/// whole in-process strategy lifetime. The high-water generation lives on
+/// [`MakerRuntime`] keyed by `market_key` ([`MakerRuntime::generations`]) — not on
+/// the per-refresh [`MakerMarketRuntime`] — so it **survives a market dropping out
+/// of the active set**, and is the seed every rebuilt per-market runtime starts
+/// from ([`MakerRuntime::apply_resolution`]). No transition can re-mint a client
+/// order id a prior generation already consumed (NautilusTrader never reuses a
+/// `ClientOrderId`): not a new cadence window, not a re-issued leg instrument under
+/// an unchanged window, not a venue `market_id` reuse, and not a market that goes
+/// inactive (planner block / transient resolution miss / `on_stop` deactivation)
+/// and later refills the SAME window — the counter is never reset to 0 once a
+/// (market_key, leg) has minted. (Durability across a full *process* restart needs
+/// a persisted high-water; that is arming-time work, tracked in #869.)
+/// `window_start_milliseconds` is the resolved cadence window's start
 /// (`MakerResolvedMarketBinding::start_timestamp_milliseconds`); it and `leg` keep the
 /// id human-readable and the source tuple recoverable, but uniqueness rests on the
-/// carried `generation`, not on the window start changing (an instrument-only roll
-/// leaves it unchanged). The venue `market_id` is
+/// monotonic `generation`, not on the window start changing (an instrument-only roll,
+/// or a same-window refill, leaves it unchanged). The venue `market_id` is
 /// deliberately **not** a component: it is venue metadata not guaranteed to change
 /// per window, so keying the id (or the retain-vs-roll decision) on it would reopen
 /// the collision class on a `market_id`-reuse roll. The positional encoding is
@@ -98,10 +104,30 @@ fn make_leg_identity(
     )
 }
 
+/// The per-leg generation high-water marks for one declared market — the highest
+/// generation its YES and NO legs have minted. Held by [`MakerRuntime`] keyed by
+/// `market_key` (not by the per-refresh [`MakerMarketRuntime`]) so the next
+/// generation a (market_key, leg) mints survives the market dropping out of the
+/// active set and refilling. `Copy` so it threads through the rebuild seed by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LegGenerations {
+    yes: u64,
+    no: u64,
+}
+
+impl LegGenerations {
+    /// The seed for a (market_key, leg) that has never minted. An explicit named
+    /// constant rather than a `Default` impl: the bolt-v3 legacy-default fence
+    /// forbids `Default` on the production surface.
+    const ZERO: Self = Self { yes: 0, no: 0 };
+}
+
 /// Per-active-market runtime state. Holds the resolved binding (whose `yes`/`no`
-/// [`MakerLegBinding`]s carry the order identities PR-B assigns), the monotonic
-/// per-leg generation counters used to mint fresh identities, and the bankroll
-/// slice the portfolio planner allocated this market.
+/// [`MakerLegBinding`]s carry the order identities PR-B assigns), the per-leg
+/// generation counters used to mint fresh identities (seeded from the persistent
+/// [`MakerRuntime`] high-water so they stay monotonic across a drop/refill, never
+/// resetting to 0), and the bankroll slice the portfolio planner allocated this
+/// market.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MakerMarketRuntime {
     binding: MakerResolvedMarketBinding,
@@ -111,32 +137,33 @@ pub struct MakerMarketRuntime {
 }
 
 impl MakerMarketRuntime {
-    fn new(binding: MakerResolvedMarketBinding, allocation_notional: f64) -> Self {
+    /// Build a per-market runtime, **seeding the per-leg generation counters from
+    /// the persistent [`MakerRuntime`] high-water** for this `market_key`. A
+    /// brand-new (market_key, leg) seeds at [`LegGenerations::ZERO`]; a roll or a
+    /// drop/refill of a market that already minted seeds at the high-water the prior
+    /// active period reached, so a re-mint never reproduces a `ClientOrderId` a
+    /// prior generation consumed — the id embeds `generation` but not the instrument
+    /// id, and an instrument-only roll or a same-window refill leaves the embedded
+    /// window start unchanged. See [`MakerRuntime::apply_resolution`].
+    fn seeded(
+        binding: MakerResolvedMarketBinding,
+        allocation_notional: f64,
+        generations: LegGenerations,
+    ) -> Self {
         Self {
             binding,
-            yes_generation: 0,
-            no_generation: 0,
+            yes_generation: generations.yes,
+            no_generation: generations.no,
             allocation_notional,
         }
     }
 
-    /// Rebuild a rolled market's runtime, **carrying the per-leg generation counters
-    /// forward** so minted client order ids stay monotonic per (market_key, leg)
-    /// across the roll. Resetting them to 0 would re-mint a `ClientOrderId` the
-    /// pre-roll leg already consumed on an instrument-only roll (where the window
-    /// start the id embeds is unchanged) — see [`MakerRuntime::apply_resolution`]'s
-    /// roll arm.
-    fn rolled(
-        binding: MakerResolvedMarketBinding,
-        allocation_notional: f64,
-        yes_generation: u64,
-        no_generation: u64,
-    ) -> Self {
-        Self {
-            binding,
-            yes_generation,
-            no_generation,
-            allocation_notional,
+    /// The current per-leg generation counters, captured into the [`MakerRuntime`]
+    /// high-water after each mint so they survive this runtime being dropped.
+    fn leg_generations(&self) -> LegGenerations {
+        LegGenerations {
+            yes: self.yes_generation,
+            no: self.no_generation,
         }
     }
 
@@ -231,6 +258,15 @@ pub struct MakerRuntimeRefresh {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MakerRuntime {
     markets: BTreeMap<String, MakerMarketRuntime>,
+    /// Per-(market_key, leg) generation high-water marks — the single source of
+    /// truth for the next generation each leg mints. Persists independently of
+    /// `markets`: a market that drops out of the active set (planner block,
+    /// transient resolution miss, `on_stop` deactivation) leaves its entry here, so
+    /// a refill in the SAME cadence window re-seeds from the high-water instead of 0
+    /// and never re-mints a consumed `ClientOrderId`. Never pruned within a process
+    /// (bounded by the operator-declared market count); pruning would reopen the
+    /// collision class. Updated on every mint, read on every rebuild.
+    generations: BTreeMap<String, LegGenerations>,
 }
 
 impl MakerRuntime {
@@ -243,7 +279,19 @@ impl MakerRuntime {
     pub fn empty() -> Self {
         Self {
             markets: BTreeMap::new(),
+            generations: BTreeMap::new(),
         }
+    }
+
+    /// Drop every active market — clearing the trade-subscription set so a restart
+    /// re-emits the full subscribe delta — while **retaining the per-(market_key,
+    /// leg) generation high-water marks**. `on_stop` uses this instead of replacing
+    /// the runtime with [`MakerRuntime::empty`], so a within-process stop/start (or
+    /// any drop/refill) cannot re-mint a `ClientOrderId` a prior active period
+    /// already consumed. Durability across a full process restart still needs a
+    /// persisted high-water (arming-time work, #869).
+    pub fn deactivate_all(&mut self) {
+        self.markets = BTreeMap::new();
     }
 
     /// Whether any market is currently active.
@@ -287,10 +335,11 @@ impl MakerRuntime {
     /// re-plan the active portfolio, and reconcile per-market runtime state — the
     /// `on_start` / `on_time_event` entry point. Markets whose cadence window is
     /// unchanged (same resolved `start_timestamp_milliseconds` and leg instruments)
-    /// retain their assigned order identities and generation counters; a rolled market
-    /// rebuilds its binding but carries its generation counters forward (so re-minted
-    /// ids stay unique across the roll), and a newly-filled market starts fresh.
-    /// Returns the trade-subscription delta plus any resolution misses.
+    /// retain their assigned order identities; every rebuilt market — a roll, or a
+    /// (re)fill of a market that was inactive — seeds its generation counters from
+    /// the persistent per-(market_key, leg) high-water ([`MakerRuntime::generations`]),
+    /// so re-minted ids stay unique across a roll AND across a drop/refill. Returns
+    /// the trade-subscription delta plus any resolution misses.
     pub fn refresh_active_markets(
         &mut self,
         declarations: &[MakerMarketDeclaration],
@@ -348,9 +397,19 @@ impl MakerRuntime {
                 // a defensive guard, never expected to fire.
                 continue;
             };
+            // The persistent generation high-water for this market_key. A market that
+            // was active and minted leaves its high-water here even after it drops out
+            // of `self.markets`, so every rebuild below seeds from the last generation
+            // consumed, never 0. Read before the `remove` borrow so the two field
+            // borrows don't overlap.
+            let seed = self
+                .generations
+                .get(&market_key)
+                .copied()
+                .unwrap_or(LegGenerations::ZERO);
             let runtime = match self.markets.remove(&market_key) {
                 // Same cadence window AND same resolved leg instruments (`same_window`
-                // compares both): retain assigned identities + generations and refresh
+                // compares both): retain assigned identities + live counters and refresh
                 // only the allocation. A changed leg instrument under an unchanged window
                 // start is NOT retained — `same_window` treats it as a roll, so the live
                 // trade-subscription differ never strands on a re-issued instrument. The
@@ -363,22 +422,17 @@ impl MakerRuntime {
                     prior
                 }
                 // Roll of a still-active market (a new window start, OR a re-issued leg
-                // instrument at an unchanged window): rebuild the binding fresh but
-                // CARRY the per-leg generation counters forward. The client order id
-                // embeds `generation` but not the instrument id, and an instrument-only
-                // roll leaves `start_timestamp_milliseconds` unchanged, so resetting the
-                // generation to 0 would re-mint a client order id the pre-roll leg
-                // already consumed (NautilusTrader never reuses a `ClientOrderId`).
-                // Carrying it keeps every minted id unique regardless of roll kind.
+                // instrument at an unchanged window), OR a (re)fill of a market that was
+                // inactive (planner block / transient resolution miss / `on_stop`):
+                // rebuild the binding fresh but SEED the per-leg generation counters from
+                // the persistent high-water. The client order id embeds `generation` but
+                // not the instrument id, and an instrument-only roll or a same-window
+                // refill leaves `start_timestamp_milliseconds` unchanged, so seeding at 0
+                // would re-mint a client order id a prior generation already consumed
+                // (NautilusTrader never reuses a `ClientOrderId`). Seeding from the
+                // high-water keeps every minted id unique regardless of transition kind.
                 // Clone the binding only here, never on the common retain path.
-                Some(prior) => MakerMarketRuntime::rolled(
-                    binding.clone(),
-                    allocation_notional,
-                    prior.yes_generation,
-                    prior.no_generation,
-                ),
-                // Newly-filled slot (was not active): start the generation counters at 0.
-                None => MakerMarketRuntime::new(binding.clone(), allocation_notional),
+                _ => MakerMarketRuntime::seeded(binding.clone(), allocation_notional, seed),
             };
             next.insert(market_key, runtime);
         }
@@ -397,13 +451,20 @@ impl MakerRuntime {
     /// closed with `MissingNextOrderIdentity` if `next_order` is unset). Returns
     /// `false` if the market is not active. The generation is monotonic per
     /// (market, leg), so re-minting before a prior intent is dispatched simply
-    /// supersedes it.
+    /// supersedes it. Each mint also advances the persistent per-(market_key, leg)
+    /// high-water ([`MakerRuntime::generations`]), so the counter survives the market
+    /// dropping out of the active set and a same-window refill never repeats an id.
     pub fn mint_next_identities(&mut self, market_key: &str, order_id_tag: &str) -> bool {
         let Some(market) = self.markets.get_mut(market_key) else {
             return false;
         };
         market.mint_next(order_id_tag, Leg::Yes);
         market.mint_next(order_id_tag, Leg::No);
+        // Record the advanced counters into the persistent high-water so they survive
+        // this market dropping out of the active set: a same-window refill then
+        // re-seeds from here instead of 0 (see `MakerRuntime::generations`).
+        let generations = market.leg_generations();
+        self.generations.insert(market_key.to_string(), generations);
         true
     }
 
@@ -524,16 +585,18 @@ mod tests {
             yes,
             "minting is a pure function of its inputs"
         );
-        // Cadence-roll guard: a roll keeps (tag, market_key, leg) but rebuilds the
-        // runtime with the generation counter back at 0, so the next generation-3
-        // mint would reproduce this id unless the rolled window start discriminates
-        // it. The same inputs with a different `window_start_milliseconds` must mint
-        // a distinct id (even if the venue `market_id` were unchanged).
+        // Window-start injectivity: the id embeds `window_start_milliseconds`, so the
+        // same (tag, market_key, leg, generation) at a different window start mints a
+        // distinct id (even if the venue `market_id` were unchanged). Cross-roll and
+        // cross-refill uniqueness is actually guaranteed by the monotonic
+        // per-(market_key, leg) generation high-water (see `MakerRuntime::generations`),
+        // not by the window start moving; this asserts the orthogonal property that the
+        // window start is a real, distinguishing component of the encoding.
         let rolled = make_leg_identity("001", "eth-hourly", 1_700_003_600_000, Leg::Yes, 3);
         assert_ne!(
             yes.client_order_id(),
             rolled.client_order_id(),
-            "the rolled window start must discriminate the client order id"
+            "a different window start must mint a distinct client order id"
         );
     }
 

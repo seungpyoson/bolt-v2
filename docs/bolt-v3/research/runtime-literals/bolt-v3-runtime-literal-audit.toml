@@ -18205,17 +18205,9 @@ reason = "Maximum character length of an underlying-asset symbol; a structural v
 path = "src/strategies/binary_oracle_maker/runtime.rs"
 kind = "number"
 literal = '''0'''
-context = '''yes_generation: 0,'''
+context = '''const ZERO: Self = Self { yes: 0, no: 0 };'''
 classification = "maker_runtime_generation_counter_seed"
-reason = "Initial value of the per-market YES-leg order-generation counter; the first minted identity increments it to generation 1. A structural monotonic-sequence seed, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_maker/runtime.rs"
-kind = "number"
-literal = '''0'''
-context = '''no_generation: 0,'''
-classification = "maker_runtime_generation_counter_seed"
-reason = "Initial value of the per-market NO-leg order-generation counter; the first minted identity increments it to generation 1. A structural monotonic-sequence seed, not an operator runtime value."
+reason = "Initial value of a never-minted per-(market_key, leg) generation high-water (the LegGenerations::ZERO constant seeded into a brand-new market's counters); the first minted identity increments it to generation 1. A structural monotonic-sequence seed, not an operator runtime value. Both the YES and NO seed fields on this line share this literal and context, so one allowlist entry covers both."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/runtime.rs"
@@ -18255,7 +18247,7 @@ kind = "string"
 literal = '''"{order_id_tag}-{market_key}-{window_start_milliseconds}-{}-{generation}"'''
 context = '''"{order_id_tag}-{market_key}-{window_start_milliseconds}-{}-{generation}",'''
 classification = "maker_runtime_order_identity_template"
-reason = "Client-order-id construction template the order compiler maps verbatim onto the NautilusTrader ClientOrderId; the interpolated parts are runtime values (order-id tag, market key, cadence-window start timestamp in milliseconds, leg token, generation) and the literal is identity-handle structure, not an operator runtime value. The window start timestamp discriminates a cadence-window roll of the same declared market: each roll resolves a new window with a distinct start, so a post-roll re-mint can never reproduce a pre-roll id even when the venue reuses the same market_id."
+reason = "Client-order-id construction template the order compiler maps verbatim onto the NautilusTrader ClientOrderId; the interpolated parts are runtime values (order-id tag, market key, cadence-window start timestamp in milliseconds, leg token, generation) and the literal is identity-handle structure, not an operator runtime value. Uniqueness across every transition of the same declared market — a window roll, an instrument-only re-issue at an unchanged window, a venue market_id reuse, or a drop and same-window refill — rests on the monotonic per-(market_key, leg) generation high-water (MakerRuntime::generations), which is never reset to 0 once a leg has minted; the embedded window start keeps the id human-readable and the source tuple recoverable but is not relied on to discriminate a re-mint."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_maker/config.rs"

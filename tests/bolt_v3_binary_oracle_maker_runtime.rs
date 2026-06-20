@@ -1884,3 +1884,148 @@ fn maker_runtime_mints_a_unique_id_when_a_leg_instrument_rerolls_under_the_same_
          per-leg generation must carry forward across the roll (never reset to 0)"
     );
 }
+
+#[test]
+fn maker_runtime_mints_a_unique_id_after_a_market_drops_and_refills_the_same_window() {
+    // The drop/refill id guard (PR #853 external review: GPT/GLM/Kimi). A market can
+    // leave the active set WITHOUT a window roll — a transient resolution miss, or the
+    // shared planner blocking the whole plan that cycle — then refill the SAME cadence
+    // window on a later refresh. The client order id embeds the window start, which is
+    // unchanged across such a gap, so only a generation that SURVIVES the drop keeps the
+    // re-mint unique. The per-(market_key, leg) high-water lives on `MakerRuntime`, not
+    // on the per-refresh per-market runtime, so it persists across the gap; if the
+    // generation reset to 0 on the refill, the re-mint would reproduce the pre-drop
+    // client order id (NautilusTrader never reuses a `ClientOrderId`), failing the final
+    // assertion.
+    let mut runtime = MakerRuntime::empty();
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let pre_drop_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a next YES identity was minted");
+
+    // Drop: the market resolves to nothing this refresh (no matching instruments), so
+    // it leaves the active set entirely (surfaced as a miss, never a silent retain).
+    let dropped = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &[],
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert_eq!(
+        runtime.active_market_count(),
+        0,
+        "the unresolvable market drops out of the active set"
+    );
+    assert_eq!(
+        dropped.misses.len(),
+        1,
+        "the drop is surfaced as a miss, not a silent idle"
+    );
+
+    // Refill: the SAME declared market resolves again at the SAME window start.
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        runtime
+            .market(RUNTIME_MARKET_KEY)
+            .expect("the refilled market is active")
+            .leg_binding(Leg::Yes)
+            .next_order
+            .is_none(),
+        "a refill rebuilds the runtime with unset identities"
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let post_refill_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a YES identity on the refilled window");
+    assert_ne!(
+        post_refill_yes.client_order_id(),
+        pre_drop_yes.client_order_id(),
+        "a market that drops and refills the same window must not re-mint a consumed \
+         client order id: the per-(market_key, leg) generation high-water survives the \
+         drop, so the re-mint advances past the pre-drop generation"
+    );
+}
+
+#[test]
+fn maker_runtime_deactivate_all_preserves_generation_high_water_for_a_restart() {
+    // The within-process stop/start id guard. `on_stop` deactivates the runtime (clears
+    // the active markets so the next `on_start` re-emits the full subscription delta)
+    // but must NOT discard the per-(market_key, leg) generation high-water: a restart
+    // re-resolves the SAME cadence window, and the client order id embeds the window
+    // start, so a re-mint from generation 0 would reproduce a client order id the
+    // pre-stop run consumed. `deactivate_all` retains the high-water; replacing the
+    // runtime with `empty()` (the pre-fix behaviour) would reset it and fail the final
+    // assertion. The subscribe-delta assertion also pins that deactivation still clears
+    // the active set (so the restart re-subscribes), the reason on_stop clears markets.
+    let mut runtime = MakerRuntime::empty();
+    let _ = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let pre_stop_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("the declared market is active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a next YES identity was minted");
+
+    // Stop: deactivate the active set (as `on_stop` does).
+    runtime.deactivate_all();
+    assert_eq!(
+        runtime.active_market_count(),
+        0,
+        "deactivation clears the active set so a restart re-subscribes"
+    );
+
+    // Restart: `on_start` re-resolves the SAME window.
+    let restart = runtime.refresh_active_markets(
+        &[runtime_static_declaration()],
+        &runtime_static_instruments(),
+        RUNTIME_NOW_MS,
+        runtime_portfolio_policy(),
+    );
+    assert!(
+        restart
+            .subscribe
+            .contains(&InstrumentId::from(RUNTIME_YES_INSTRUMENT)),
+        "a deactivated restart re-emits the full subscribe delta: {:?}",
+        restart.subscribe
+    );
+    assert!(runtime.mint_next_identities(RUNTIME_MARKET_KEY, "001"));
+    let post_restart_yes = runtime
+        .market(RUNTIME_MARKET_KEY)
+        .expect("market active")
+        .leg_binding(Leg::Yes)
+        .next_order
+        .clone()
+        .expect("a YES identity after restart");
+    assert_ne!(
+        post_restart_yes.client_order_id(),
+        pre_stop_yes.client_order_id(),
+        "a within-process restart must not re-mint a consumed client order id: \
+         deactivation preserves the generation high-water, so the re-mint advances"
+    );
+}

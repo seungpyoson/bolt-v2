@@ -767,7 +767,7 @@ fn generate_allows_overlay_with_disabled_loss_governor() {
     let dir = stage_full_config_tree("prod-overlay-disabled-rails");
     let overlay_text = support::repo_text(OVERLAY);
     assert!(
-        overlay_text.contains("[loss_governor]\nenabled = false\n"),
+        overlay_loss_governor_enabled_is_false(&overlay_text),
         "the profile overlay must explicitly disable loss governor"
     );
     let profile_id = ProfileId::parse("prod-disabled").expect("test profile id is valid");
@@ -874,6 +874,21 @@ fn deploy_readme_documents_the_full_pre_arm_gate() {
             "deploy/README.md must document `{needle}` in the pre-arm sequence (#768 step 3)"
         );
     }
+}
+
+fn overlay_loss_governor_enabled_is_false(overlay_text: &str) -> bool {
+    let mut in_loss_governor = false;
+    for line in overlay_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_loss_governor = trimmed == "[loss_governor]";
+            continue;
+        }
+        if in_loss_governor && trimmed == "enabled = false" {
+            return true;
+        }
+    }
+    false
 }
 
 /// Drop the `[loss_governor]` table (header + its key lines) up to the next

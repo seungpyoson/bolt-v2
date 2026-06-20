@@ -155,6 +155,26 @@ fn install_script_repairs_whole_config_bundle_for_service_user() {
         install.contains("reject_symlinked_install_path()"),
         "installer must refuse symlinked config bundle paths before root-owned repair"
     );
+    let install_root_guard = install
+        .find("reject_symlinked_install_path \"${BOLT_INSTALL_ROOT}\" \"install root\"")
+        .expect("installer must check install root for symlink before install -d");
+    let install_root_create = install
+        .find("install -d -m 0755 \"${BOLT_INSTALL_ROOT}\"")
+        .expect("installer must create the structural install root");
+    assert!(
+        install_root_guard < install_root_create,
+        "installer must reject symlinked install root before install -d can chmod/chown through it"
+    );
+    let config_root_guard = install
+        .find("reject_symlinked_install_path \"${BOLT_INSTALL_ROOT}/config\" \"config root\"")
+        .expect("installer must check config root for symlink before install -d");
+    let config_root_create = install
+        .find("install -d -o root -g \"${BOLT_GROUP}\" -m 0750 \"${BOLT_INSTALL_ROOT}/config\"")
+        .expect("installer must create the structural config root");
+    assert!(
+        config_root_guard < config_root_create,
+        "installer must reject symlinked config root before install -d can chmod/chown through it"
+    );
     assert!(
         install.contains("repair_config_dir \"${config_subdir_path}\""),
         "installer must repair each top-level config bundle directory through the symlink guard"

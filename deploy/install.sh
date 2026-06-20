@@ -55,6 +55,15 @@ if ! mountpoint -q "${BOLT_HOME}"; then
     mount "${BOLT_HOME}"
 fi
 
+reject_symlinked_install_path() {
+    local path="$1"
+    local label="$2"
+    if [[ -L "${path}" ]]; then
+        echo "Refusing symlinked ${label}: ${path}" >&2
+        exit 1
+    fi
+}
+
 chown "${BOLT_USER}:${BOLT_GROUP}" "${BOLT_HOME}"
 
 install -d -o "${BOLT_USER}" -g "${BOLT_GROUP}" \
@@ -65,17 +74,10 @@ install -d -o "${BOLT_USER}" -g "${BOLT_GROUP}" \
     "${BOLT_HOME}/var/bolt-v3-live" \
     "${BOLT_HOME}/var/bolt-v3-live/catalog" \
     "${BOLT_HOME}/var/bolt-v3-live/reports"
+reject_symlinked_install_path "${BOLT_INSTALL_ROOT}" "install root"
 install -d -m 0755 "${BOLT_INSTALL_ROOT}"
+reject_symlinked_install_path "${BOLT_INSTALL_ROOT}/config" "config root"
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${BOLT_INSTALL_ROOT}/config"
-
-reject_symlinked_install_path() {
-    local path="$1"
-    local label="$2"
-    if [[ -L "${path}" ]]; then
-        echo "Refusing symlinked ${label}: ${path}" >&2
-        exit 1
-    fi
-}
 
 repair_config_dir() {
     local path="$1"

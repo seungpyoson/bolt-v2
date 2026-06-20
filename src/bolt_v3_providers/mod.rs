@@ -33,7 +33,10 @@ pub mod reference_live_probe;
 // module path, provider type, or provider-key literal.
 pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
 pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
-pub(crate) use chainlink::STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM;
+pub(crate) use chainlink::{
+    STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+    strike_fetch_request_data_type as resolution_strike_fetch_request_data_type,
+};
 pub use chainlink_reference::KEY as REFERENCE_CATALOG_VENUE_KEY;
 pub use hyperliquid::KEY as OUTCOME_GROUP_HIP4_VENUE_KEY;
 pub use polymarket::KEY as OUTCOME_GROUP_POLYMARKET_VENUE_KEY;

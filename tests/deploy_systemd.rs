@@ -61,7 +61,7 @@ fn systemd_unit_verifies_live_config_against_profile_before_start() {
             "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
         ),
         "systemd unit must verify the deployed live.toml against the operator-selected tracked profile before start, \
-         so the fail-closed gate (incl. enabled loss rails) is enforced at the prod entry point, not advisory (#768)"
+         so the tracked production config policy is enforced at the prod entry point, not advisory (#768)"
     );
     assert!(
         unit.contains("EnvironmentFile=/etc/bolt-v2/live.env"),

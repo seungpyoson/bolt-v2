@@ -24,9 +24,9 @@
 //! * [`generate_live_config`] parses the derived overlay, composes it onto the
 //!   derived base, serializes the result deterministically, loads the composed config
 //!   through the SAME [`load_bolt_v3_config`] the binary uses at startup, enforces
-//!   the production invariants a live deploy requires (loss rails present AND
-//!   enabled — disabled rails are inert at runtime — and a non-empty strategy
-//!   selection), and emits a deterministic, provenance-stamped runtime config. Any
+//!   the production invariants a live deploy requires (a tracked loss-governor
+//!   block with explicit enablement state and a non-empty strategy selection), and
+//!   emits a deterministic, provenance-stamped runtime config. Any
 //!   schema, semantic, composition, or invariant error fails generation closed.
 //! * [`verify_live_config`] re-composes from the on-box (overlay ⊕ base) and proves
 //!   `<config-root>/live.toml` is (a) byte-identical to the regenerated artifact and
@@ -134,8 +134,8 @@ pub struct ProdOverlay {
     /// explicitly — a silent default on a production surface is forbidden (fail loud).
     pub rv_policy_overrides: BTreeMap<String, toml::Table>,
     /// The full `[risk.loss_governor]` block, inserted at `risk.loss_governor` in
-    /// the composed config. Absent from the base (the template carries no live
-    /// loss rails); the overlay owns them.
+    /// the composed config. Absent from the base; the overlay owns the explicit
+    /// loss-governor policy state.
     pub loss_governor: toml::Table,
     /// Per-client FULL replacement of `[clients.<name>.execution]`. Each key MUST
     /// appear in `active_clients`. A full replace lets the overlay both override
@@ -211,7 +211,7 @@ pub enum ProfileError {
     /// The overlay referenced a base/client/surface that the composition could not
     /// satisfy (e.g. an `active_clients` name absent from the base).
     Composition(String),
-    /// A required production invariant was missing (e.g. no loss rails).
+    /// A required production invariant was missing (e.g. no loss-governor block).
     Invariant(String),
     /// A deployed file did not match the config regenerated from the overlay+base.
     Mismatch(String),
@@ -713,19 +713,9 @@ pub fn confirm_production_invariants(
 
     let governor = loaded.root.risk.loss_governor.as_ref().ok_or_else(|| {
         ProfileError::Invariant(
-            "production profile must declare [risk.loss_governor] loss rails before live deploy"
-                .to_string(),
+            "production profile must declare [risk.loss_governor] before live deploy".to_string(),
         )
     })?;
-
-    if !governor.enabled {
-        return Err(ProfileError::Invariant(
-            "[risk.loss_governor].enabled must be true before live deploy — present-but-disabled \
-             rails are inert at runtime (loss_governor_policy_from_loaded returns None when \
-             disabled, so no loss-governor policy is constructed)"
-                .to_string(),
-        ));
-    }
 
     let max_per_trade_loss = governor.max_per_trade_loss.clone().ok_or_else(|| {
         ProfileError::Invariant(

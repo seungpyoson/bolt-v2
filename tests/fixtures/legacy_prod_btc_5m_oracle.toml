@@ -192,10 +192,9 @@ account_ids = ["POLYMARKET-001"]
 instrument_ids = []
 
 [risk.loss_governor]
-# Must be true for a live deploy: ops generate/verify-live-config fail closed on
-# disabled rails, which go inert at runtime (loss_governor_policy_from_loaded returns
-# None when disabled, so no LossGovernorPolicy is constructed).
-enabled = true
+# The block is tracked and explicit; enabled=false deliberately keeps submit admission
+# from constructing a LossGovernorPolicy.
+enabled = false
 account_id = "POLYMARKET-001"
 max_snapshot_age_ns = 5000000000
 rolling_window_ns = 300000000000

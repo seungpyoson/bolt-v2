@@ -12,7 +12,7 @@ v3 keeps the v2 design that the review did not challenge (the F1–F15 resolutio
 
 - **B-1 (convergent read-path blocker, 5 of 6 reviewers):** the largest v3 change. Restructures §3, §4.3, §4.4, §4.5, §5.3 around (a) immutable per-commit NT-native catalog roots materialized only from a committed PromotionPackage, (b) NT-native interval filenames in canonical roots vs content+transform-hash names staging-only, (c) Tier-C-only physically-non-NT staging that NT's reader cannot enumerate, plus a fail-loud validator. Grounded: NT lists a single root's `data/<type>/` prefix naively with zero pointer awareness (`catalog.rs:2040-2063`) and over-includes unparseable filenames (`query_intersects_filename` returns `true` on `None`, `catalog.rs:4741`) — silent wrong-data, NOT a crash (Gemini's crash mechanism disproven).
 - **R-2 (cross-kind promotion atomicity):** one PromotionPackage commits as a single immutable `SnapshotSet` advanced by ONE CAS on `pointers/set/latest.json`; per-kind pointers are derived views; the backtest pins the committed set once at run start. New §4.5; §13 open sub-question "Pointer-commit ordering across kinds" RESOLVED.
-- **R-3 (idempotency digest):** staging key, PromotionPackage entry, and `ArtifactIndex.content_hash` key on a canonical LOGICAL-content digest (new §4.3b, via NT's own in-tree `arrow_row::RowConverter`), never raw parquet bytes (non-deterministic — `created_by`/SNAPPY/row-group, `parquet.rs:182-183`). §9.x cost-model note added.
+- **R-3 (idempotency digest):** staging key, PromotionPackage entry, and `ArtifactIndex.content_hash` key on a canonical LOGICAL-content digest (new §4.3b, via NT's own in-tree `arrow_row::RowConverter`), never raw parquet bytes (non-deterministic — SNAPPY/row-group at `parquet.rs:182-183`; `created_by` library-injected at writer construction `parquet.rs:190`, defaulted at `parquet-58.3.0/src/file/properties.rs:51` const / applied `:609`). §9.x cost-model note added.
 - **R-4 (instruments lane):** instruments go through `ConditionalCatalogWriter` (new §4.5); NT `write_instruments` (`catalog.rs:726`, NOT node.rs:169 which is the read side) is never called for platform-root writes (§4.1 scope-boundary note); `event_time_source` guard exemption made class-correct via a table-level `time_series=false` predicate.
 - **R-5 (encoder seam):** `write_batches_to_object_store` is `pub` (`parquet.rs:170`) but encode+put share one function with no byte-return seam (`parquet.rs:178-197`); Phase-0 sub-task 0.E mandates verifying visibility and choosing vendor-encode vs arrow-rs, recorded in `NtCapabilityProof`.
 - **R-6 (conditional-put unprovable + multipart):** resolved S3ConditionalPut is not introspectable from a built store and NT's `create_s3_store` cannot even set it (drops unknown keys, `parquet.rs:763-765`); the writer builds its own `AmazonS3Builder` and asserts capability via a runtime probe at construction (Phase-0 prerequisite 0.6); public multipart cannot carry a create guard, so per-object size is bounded under the single-PUT limit, fail loud.
@@ -77,7 +77,7 @@ NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`, crate `nautilus-persistence`:
 - `instruments` load via a separate lane: write (`write_instruments`, `catalog.rs:726`) /
   read (`query_instruments`, `catalog.rs:858`, called at `node.rs:169`), NOT through `dispatch_query`.
 - `MarkPriceUpdate`/`IndexPriceUpdate` are **point updates** carrying a single price + timestamp
-  (`crates/model/src/data/mod.rs:109-110`), **not** OHLC bars.
+  (`crates/model/src/data/prices.rs:42`, `:123` — single `value: Price`, not OHLC; enum variants at `mod.rs:109-110`), **not** OHLC bars.
 - NT's writer is non-atomic: `head()` existence probe (`catalog.rs:564-567`) then unconditional
   `object_store.put` (`parquet.rs:197`, default `PutMode::Overwrite`, no If-None-Match). Filename is
   interval-keyed (`timestamps_to_filename`, `catalog.rs:560,4315-4320`). The only structural guard is
@@ -408,7 +408,7 @@ NT's `write_to_parquet` is non-atomic last-writer-wins, interval-keyed, not crea
   end_ts)` collide on the same object path; the `head()` skip then suppresses the second write
   entirely, so a re-run with a *changed* `transform_hash` is silently dropped.
 - The only structural guard is the disjoint-interval check (`catalog.rs:574-586`), bypassable with
-  `skip_disjoint_check=true` (`catalog.rs:462-472`). It is not a create-only guard.
+  `skip_disjoint_check=true` (`catalog.rs:574`). It is not a create-only guard.
 
 Conclusion: NT's writer cannot satisfy the contract's "Idempotent write manifest, create-only
 behavior, and no-overwrite behavior" gate or `ingest_manifest.no_overwrite_proof`. **Never call NT's
@@ -553,8 +553,8 @@ public API.
   layout** (see §5.3). NT must never read staging, so staging filenames need not be NT-parseable. The
   staging key embeds `transform_hash` (code+config hash, `data-model.md:78`) and the **logical**
   content digest `content_digest` (R-3, §4.3b — a `sha256` over the *sorted, canonicalized logical
-  rows*, NOT over the parquet bytes, which are non-deterministic — SNAPPY + 5000-row-group default +
-  unpinned `created_by` at `parquet.rs:182-183`). Example staging key:
+  rows*, NOT over the parquet bytes, which are non-deterministic — SNAPPY + 5000-row-group default at
+  `parquet.rs:182-183` + library-injected `created_by` (writer construction `parquet.rs:190`, defaulted at `parquet-58.3.0/src/file/properties.rs:51` const / applied `:609`)). Example staging key:
   `staged-research/<family>/<instrument_id>/<start>_<end>__t-<transform_hash>__c-<content_digest>.parquet`.
   Two distinct transforms over one interval are distinct objects (fixes the interval-collision drop);
   two re-runs producing the *same logical rows* land on the identical key regardless of parquet-encoding
@@ -1689,8 +1689,8 @@ writes; the irreducible per-object `PutMode::Create` HEAD/PUT is budgeted explic
 ### 9.3 Requester-pays egress for Hyperliquid archives (hard NT constraint)
 
 The HL archive is requester-pays (`contract:215,274`; coverage doc line 99 records the lag).
-`object_store` supports it via `with_request_payer(true)` (`object_store-0.13.2/src/aws/builder.rs:191,
-442-444,1063-1064`). **However, NT's `create_s3_store` does NOT pass it through** — its
+`object_store` supports it via the `with_request_payer(true)` method
+(`object_store-0.13.2/src/aws/builder.rs:1063`; backing `request_payer` field at `:191`, applied at `442-444`). **However, NT's `create_s3_store` does NOT pass it through** — its
 `storage_options` match handles only `endpoint_url`/`region`/`access_key_id`/`secret_access_key`/
 `session_token`/`allow_http`; any `request_payer` key falls into the `_ =>` "Unknown S3 storage option"
 arm and is silently dropped (`crates/persistence/src/parquet.rs:743-765`). **Consequence:** NT's
@@ -2121,8 +2121,8 @@ the built store (`aws/precondition.rs:117-160`, `aws/client.rs:209`).
 - **Cross-kind / mid-promotion read race (R-2):** NT re-LISTs each `data_config` independently at
   different instants in one run (`node.rs:160-182`/`378-386`/`492-505`); a per-kind pointer admits a
   silent mixed read. Mitigated by the single-`SnapshotSet` CAS + run-start pin (§4.4/§4.5).
-- **Idempotency-key non-determinism (R-3):** parquet bytes are not deterministic (`created_by` =
-  parquet-rs version, SNAPPY, row-group sizing, `parquet.rs:182-183`); the staging/canonical key and
+- **Idempotency-key non-determinism (R-3):** parquet bytes are not deterministic (SNAPPY + row-group sizing at
+  `parquet.rs:182-183`; `created_by` = parquet-rs version, library-injected at writer construction `parquet.rs:190`, defaulted at `parquet-58.3.0/src/file/properties.rs:51` const / applied `:609`); the staging/canonical key and
   `content_hash` MUST be the §4.3b LOGICAL digest, never the parquet bytes, or re-runs mint duplicate
   objects.
 - Identity traps (OKX/Bybit perpetual-vs-dated contractType join; OKX instrument_id from payload not

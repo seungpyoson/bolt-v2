@@ -3976,6 +3976,51 @@ mod tests {
     }
 
     #[test]
+    fn funding_run_path_validates_before_raw_decode() {
+        // Drive the REAL multi-table run-path (not `validate_converter_config` in
+        // isolation) to pin the validate -> decode statement ORDERING in
+        // `run_multi_table_from_run_spec`: the `validate_converter_config(...)?`
+        // gate must surface before `decode_object_payload(...)` ever runs.
+        //
+        // `run_spec_for` binds `accepted_object.{bytes,sha256}` and the payload
+        // byte limit to THIS object, so the byte-length / SHA gates that sit
+        // between the validate and decode statements all pass for these bytes.
+        // We then make the converter inadmissible (funding adapter + a JSONL
+        // container that funding can never consume — funding's admissibility gate
+        // returns `false` for every container, see
+        // `ensure_container_matches_adapter_kind`).
+        let object_bytes = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&object_bytes);
+        spec.converter.identity = FUNDING_RATES_TRANSFORM_IDENTITY.to_string();
+        spec.converter.version = FUNDING_RATES_TRANSFORM_VERSION.to_string();
+        spec.converter.raw_payload = payload_config(RawPayloadContainer::JsonlText);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = run_multi_table_from_run_spec(&spec, &object_bytes, dir.path())
+            .expect_err("funding run-path must fail loud at the converter preflight");
+        let message = err.to_string();
+
+        // The "not admissible for adapter kind FundingRates" string is produced
+        // ONLY by `ensure_container_matches_adapter_kind` (reached via the
+        // `validate_converter_config(...)?` statement). `decode_object_payload`
+        // never emits it. Observing it therefore proves validate ran FIRST.
+        //
+        // Counterfactual: were `decode_object_payload(...)` moved above the
+        // validate gate, decoding these gzip-CSV bytes as a `JsonlText` container
+        // (read as plain text, capped at `max_decoded_bytes = 64`) would instead
+        // surface a distinguishable "max_decoded_bytes" decode error — NOT this
+        // admissibility error — so this assertion fails under a reorder.
+        assert!(
+            message.contains("FundingRates") && message.contains("not admissible"),
+            "expected funding admissibility error from the validate gate, got: {message}"
+        );
+        assert!(
+            !message.contains("max_decoded_bytes"),
+            "decode error surfaced — decode ran before the validate gate: {message}"
+        );
+    }
+
+    #[test]
     fn run_from_run_spec_produces_artifacts() {
         let gz = gzip(SAMPLE_CSV);
         let spec = run_spec_for(&gz);

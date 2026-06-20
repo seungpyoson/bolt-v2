@@ -1779,6 +1779,8 @@ fn canonical_row_to_funding_rate_update(
     instrument_id: InstrumentId,
     row: &CanonicalFundingRateRow,
 ) -> Result<FundingRateUpdate> {
+    // Rate is preserved at its source scale by design (NOT rescaled like index/mark); see the
+    // scale-faithful hash contract at `hasher.update(funding_rate.rate.to_string().as_bytes())`.
     let rate = Decimal::from_str(&row.rate)
         .map_err(|error| anyhow::anyhow!("invalid funding rate {:?}: {error}", row.rate))?;
     let label = format!("funding rate {}", row.event_time);
@@ -2313,6 +2315,13 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update([42u8]);
         hasher.update(funding_rate.instrument_id.to_string().as_bytes());
         hasher.update([43u8]);
+        // The funding rate is hashed byte/scale-faithfully via `to_string()` and is NOT rescaled
+        // to instrument precision (unlike index/mark, which go through `rescaled()` — see the
+        // index/mark hash paths). The logical catalog hash is therefore scale-SENSITIVE: a
+        // numerically-equal but differently-scaled rate (e.g. "0.0001" vs "0.000100") produces a
+        // different hash. This is by design — the sort comparator's `.rate.scale()` tie-break
+        // (line 2188) deterministically orders scale-distinct equal rates, and the golden hash
+        // (`funding_catalog_hash_matches_golden_v1`) is therefore scale-bound.
         hasher.update(funding_rate.rate.to_string().as_bytes());
         hasher.update([44u8]);
         if let Some(value) = funding_rate.interval {
@@ -4733,6 +4742,8 @@ max_notional = "200000"
 
     #[test]
     fn funding_catalog_hash_matches_golden_v1() {
+        // Golden computed over the canonical fixture at NT rev 6be5a50 with the current bolt
+        // hash-input layout; a future NT bump or hash-tag/layout change requires regenerating this.
         const EXPECTED: &str = "1193d55c1d22b2c3fc95398904d7ebeed6a5c939eacdebe7427f279df5967dfa";
 
         let table = canonical_funding_rates_table();

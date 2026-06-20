@@ -389,6 +389,13 @@ fn assert_nt_mapping_evidence_is_bounded(path: &PathBuf, report: &SourceProofRep
     }
 }
 
+// Exercises the funding source-proof routing arm with a SYNTHETIC, in-memory-mutated report
+// because NO committed `funding_rates` source-proof fixture exists yet (the four committed
+// fixtures cover bars/prediction_market_outcomes/order_book_snapshot_deltas/trades). This
+// validates the arm's LOGIC, not any real committed funding artifact; a real committed funding
+// source-proof fixture is deferred to #836/#437 (funding raw acquisition). The companion
+// negative test (`funding_replay_fixture_routing_arm_rejects_unbound_evidence`, just below) is
+// the differential guard that proves this arm is load-bearing.
 #[test]
 fn funding_replay_fixture_routing_arm_is_exercised() {
     let (path, _, mut report) = reference_source_proof_reports()

@@ -1739,11 +1739,18 @@ pub(crate) fn assert_mark_read_back_matches(
 }
 
 /// Prove a funding-rate catalog read-back is value-faithful, mirroring
-/// [`assert_index_read_back_matches`] for the funding family: element-wise in
-/// stable read-back order, every read-back update must carry the projected
-/// instrument id, rate, interval, next funding timestamp, event clock, and
-/// availability-or-capture receipt clock derived through the shared projection
-/// owner.
+/// [`assert_index_read_back_matches`] for the funding family: every read-back
+/// update must carry the projected instrument id, rate, interval, next funding
+/// timestamp, event clock, and availability-or-capture receipt clock derived
+/// through the shared projection owner.
+///
+/// The comparison is order-INDEPENDENT: both sides are sorted here by the SAME
+/// key the projection's `read_back_funding_rates` sorts the read-back by
+/// (`(ts_event, rate, rate.scale(), interval, next_funding_ns, ts_init)`;
+/// instrument id is constant for one instrument so it is omitted from the
+/// discriminator but still checked per element) before the element-wise pass,
+/// so correctness can never silently depend on the canonical table's stored
+/// order matching the read-back's stable sort order.
 pub(crate) fn assert_funding_read_back_matches(
     read_back: &[FundingRateUpdate],
     table: &super::canonical_market_data::CanonicalFundingRatesTable,
@@ -1757,7 +1764,67 @@ pub(crate) fn assert_funding_read_back_matches(
     );
     let expected_id = InstrumentId::from_str(expected_instrument_id)
         .with_context(|| format!("invalid expected_instrument_id {expected_instrument_id:?}"))?;
-    for (index, (update, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
+
+    // Comparable sort key derived from BOTH sides. Matches the field order of
+    // the projection's `read_back_funding_rates` sort so neither input's stored
+    // order can influence the pairing.
+    type FundingSortKey = (u64, Decimal, u32, Option<u16>, Option<u64>, u64);
+
+    // Read-back side: fields are already typed; the key is infallible.
+    let mut sorted_read_back: Vec<(FundingSortKey, &FundingRateUpdate)> = read_back
+        .iter()
+        .map(|update| {
+            let key: FundingSortKey = (
+                update.ts_event.as_u64(),
+                update.rate,
+                update.rate.scale(),
+                update.interval,
+                update.next_funding_ns.map(|value| value.as_u64()),
+                update.ts_init.as_u64(),
+            );
+            (key, update)
+        })
+        .collect();
+    sorted_read_back.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Canonical side: key derivation is fallible (timestamp helpers, rate parse,
+    // next-funding cast), so pre-compute keys in a fallible pass before sorting
+    // on the infallible precomputed key.
+    let mut sorted_rows: Vec<(
+        FundingSortKey,
+        &super::canonical_market_data::CanonicalFundingRateRow,
+    )> = table
+        .rows
+        .iter()
+        .map(|row| {
+            let label = format!("funding rate {}", row.event_time);
+            let ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+            let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            let rate = Decimal::from_str(&row.rate)
+                .with_context(|| format!("canonical rate {:?}", row.rate))?;
+            let next_funding_ns = row
+                .next_funding_time
+                .map(u64::try_from)
+                .transpose()
+                .with_context(|| {
+                    format!("canonical next_funding_time {:?}", row.next_funding_time)
+                })?;
+            let key: FundingSortKey = (
+                ts_event,
+                rate,
+                rate.scale(),
+                row.interval_minutes,
+                next_funding_ns,
+                ts_init,
+            );
+            Ok((key, row))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    sorted_rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (index, ((_, update), (_, row))) in
+        sorted_read_back.iter().zip(sorted_rows.iter()).enumerate()
+    {
         ensure!(
             update.instrument_id == expected_id,
             "funding read-back {index} instrument {} does not match projected {expected_instrument_id}",

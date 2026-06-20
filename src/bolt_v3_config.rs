@@ -1353,13 +1353,15 @@ pub fn load_bolt_v3_config(root_path: &Path) -> Result<LoadedBoltV3Config, BoltV
     })
 }
 
+pub const GENERATED_LIVE_CONFIG_MARKER_PREFIX: &str = "# bolt-v2:generated-live-config format=";
 const CONFIG_BUNDLE_CHECKSUM_DOMAIN: &[u8] = b"bolt-v3.config-bundle.v1\n";
 
 fn config_bundle_checksum(root_text: &str, strategy_texts: &[(String, String)]) -> String {
+    let root_checksum_text = generated_live_config_body(root_text);
     let mut hasher = Sha256::new();
     hasher.update(CONFIG_BUNDLE_CHECKSUM_DOMAIN);
     hasher.update((strategy_texts.len() as u32 + 1).to_be_bytes());
-    update_config_bundle_entry(&mut hasher, 0, "root", root_text.as_bytes());
+    update_config_bundle_entry(&mut hasher, 0, "root", root_checksum_text.as_bytes());
 
     let mut sorted_strategy_texts: Vec<_> = strategy_texts.iter().collect();
     sorted_strategy_texts.sort_by(|left, right| left.0.cmp(&right.0));
@@ -1368,6 +1370,21 @@ fn config_bundle_checksum(root_text: &str, strategy_texts: &[(String, String)]) 
     }
 
     hex::encode(hasher.finalize())
+}
+
+fn generated_live_config_body(root_text: &str) -> &str {
+    if !root_text.starts_with(GENERATED_LIVE_CONFIG_MARKER_PREFIX) {
+        return root_text;
+    }
+
+    let mut offset = 0;
+    for line in root_text.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim().is_empty() {
+            return &root_text[offset..];
+        }
+    }
+    root_text
 }
 
 fn update_config_bundle_entry(hasher: &mut Sha256, kind: u8, key: &str, content: &[u8]) {

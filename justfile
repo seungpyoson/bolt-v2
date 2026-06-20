@@ -10,7 +10,11 @@ zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"
 worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
-live_root := "config/live.local.toml"
+# Tracked live profile selected by the operator. This is an opaque profile ID;
+# there is no venue/market/strategy default.
+live_profile := env_var_or_default('BOLT_LIVE_PROFILE', '')
+# Generated, gitignored runtime config the binary actually runs.
+live_runtime := "config/live.toml"
 repo_root := justfile_directory()
 rust_verification_owner := repo_root + "/scripts/rust_verification.py"
 
@@ -49,6 +53,14 @@ require-local-verification-gate:
     #!/usr/bin/env bash
     if [ "${BOLT_LOCAL_VERIFICATION_GATE:-}" != "1" ]; then
         echo "ERROR: run the public local verification recipe so scripts/local_verification_gate.py owns the lane"
+        exit 2
+    fi
+
+[private]
+require-live-profile:
+    #!/usr/bin/env bash
+    if [ -z "${BOLT_LIVE_PROFILE:-}" ]; then
+        echo "ERROR: set BOLT_LIVE_PROFILE to an opaque profile ID"
         exit 2
     fi
 
@@ -405,26 +417,30 @@ source-fence: source-fence-static
 cargo-shim-tests:
     python3 -m pytest scripts/test_cargo_shim.py -q
 
-require-live-root: check-workspace
-    #!/usr/bin/env bash
-    if [ ! -f "{{live_root}}" ]; then
-        echo "Missing {{live_root}}"
-        echo "Refresh the ignored operator root before running live commands."
-        exit 1
-    fi
+# Generate the runtime config by composing the operator-selected tracked profile
+# overlay onto config/root.toml. The single, fail-closed path from a reviewed
+# profile ID to a deployable runtime config; operators never hand-edit the
+# runtime config (issue #768).
+live-generate: check-workspace require-live-profile require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops generate-live-config --profile "{{live_profile}}" --config-root config
+
+# Prove a deployed runtime config regenerates from the tracked profile and still
+# loads against this exact binary (byte parity + independent schema load).
+live-verify: check-workspace require-live-profile require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops verify-live-config --profile "{{live_profile}}" --config-root config
 
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
-live: require-live-root require-rust-verification-owner
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_root}}
+live: live-generate
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_runtime}}
 
-# Optional diagnostics for the live operator config.
-live-check: require-live-root require-rust-verification-owner
+# Optional diagnostics for the live operator config (run against the generated runtime config).
+live-check: live-generate
     # Validate secret-config completeness only; do not resolve secrets.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_root}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_runtime}}
 
-live-resolve: require-live-root require-rust-verification-owner
-    # Perform actual secret resolution against the bolt-v3 root config.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_root}}
+live-resolve: live-generate
+    # Perform actual secret resolution against the generated runtime config.
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_runtime}}
 
 ci-lint-workflow: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner

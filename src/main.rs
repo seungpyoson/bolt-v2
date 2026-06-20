@@ -14,6 +14,7 @@ use std::{
 };
 
 use bolt_v2::{
+    bolt_v3_atomic_io::{RUNTIME_CONFIG_FILE_MODE, write_atomic_file_with_mode},
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_live_node::{
@@ -22,6 +23,11 @@ use bolt_v2::{
         run_bolt_v3_live_node,
     },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
+    bolt_v3_prod_profile::{
+        GENERATED_MARKER_PREFIX, GENERATOR_FORMAT_VERSION, LIVE_CONFIG_FILE_NAME,
+        ProductionInvariants, confirm_production_invariants, generate_live_config,
+        live_config_path, verify_live_config,
+    },
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
@@ -38,6 +44,8 @@ use bolt_v2::{
 
 const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
     "clob_v2_balance_allowance_cache_sync_completed";
+const LIVE_LOCAL_CONFIG_FILE_NAME: &str = "live.local.toml";
+const BOLT_LIVE_PROFILE_ENV: &str = "BOLT_LIVE_PROFILE";
 const CLOB_V2_CACHE_SYNC_EXECUTION_CLIENT_OUTPUT_FIELD: &str = "execution_client_id";
 const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
@@ -102,6 +110,18 @@ enum OpsCommand {
         config: PathBuf,
         #[arg(long)]
         client_key: String,
+    },
+    GenerateLiveConfig {
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        config_root: PathBuf,
+    },
+    VerifyLiveConfig {
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        config_root: PathBuf,
     },
     InitKillSwitchStore {
         #[arg(short, long)]
@@ -190,7 +210,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    verify_runtime_live_config_source(&config)?;
     let loaded = load_bolt_v3_config(&config)?;
+    confirm_production_invariants(&loaded)?;
     run_loaded_prestart_check(&loaded, None)?;
     let mut node = build_bolt_v3_live_node(&loaded)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -202,6 +224,64 @@ fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     };
     runtime.block_on(local.run_until(app))
+}
+
+fn verify_runtime_live_config_source(config: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let file_name = config.file_name().and_then(|name| name.to_str());
+    if file_name == Some(LIVE_LOCAL_CONFIG_FILE_NAME) {
+        return Err(format!(
+            "runtime config `{}` is the legacy live.local.toml path; run \
+             `bolt-v2 ops generate-live-config` from a reviewed profile ID instead",
+            config.display()
+        )
+        .into());
+    }
+    if file_name != Some(LIVE_CONFIG_FILE_NAME) {
+        return Err(format!(
+            "runtime config `{}` is not the generated live.toml path; run \
+             `bolt-v2 ops generate-live-config` from a reviewed profile ID and start from live.toml",
+            config.display()
+        )
+        .into());
+    }
+    let text = std::fs::read_to_string(config).map_err(|source| {
+        std::io::Error::new(
+            source.kind(),
+            format!(
+                "runtime config `{}` is not readable before live start: {source}",
+                config.display()
+            ),
+        )
+    })?;
+    if !text.starts_with(GENERATED_MARKER_PREFIX) {
+        return Err(format!(
+            "runtime config `{}` is named live.toml but is not a generated live config; \
+             run `bolt-v2 ops generate-live-config` from a reviewed profile ID instead of \
+             hand-editing or using live.local.toml",
+            config.display()
+        )
+        .into());
+    }
+    let profile = std::env::var(BOLT_LIVE_PROFILE_ENV).map_err(|_| {
+        format!(
+            "{BOLT_LIVE_PROFILE_ENV} must be set to the reviewed profile ID before running \
+             generated live.toml"
+        )
+    })?;
+    if profile.is_empty() {
+        return Err(format!(
+            "{BOLT_LIVE_PROFILE_ENV} must be non-empty before running generated live.toml"
+        )
+        .into());
+    }
+    let config_root = config.parent().ok_or_else(|| {
+        format!(
+            "runtime config `{}` must be inside the deployed config root",
+            config.display()
+        )
+    })?;
+    verify_live_config(config_root, &profile)?;
+    Ok(())
 }
 
 fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -216,6 +296,14 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::DataClientCensus { config, client_key } => {
             run_data_client_census(&config, &client_key)
         }
+        OpsCommand::GenerateLiveConfig {
+            profile,
+            config_root,
+        } => run_generate_live_config(&config_root, &profile),
+        OpsCommand::VerifyLiveConfig {
+            profile,
+            config_root,
+        } => run_verify_live_config(&config_root, &profile),
         OpsCommand::InitKillSwitchStore { config } => run_init_kill_switch_store(&config),
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
     }
@@ -300,6 +388,77 @@ fn run_data_client_census(
     let report = runtime.block_on(local.run_until(async move {
         run_bolt_v3_data_client_census(node_runtime, &census_loaded, client_key).await
     }))?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+// Output reports are typed structs (serde derives the JSON keys from the field
+// names) rather than `json!` string keys, so no operator-runtime string literals
+// are introduced in this binary's output path.
+#[derive(serde::Serialize)]
+struct GenerateLiveConfigReport {
+    generated_live_config: bool,
+    output: String,
+    source_profile: String,
+    profile_bundle_sha256: String,
+    generator_format_version: u32,
+    invariants: ProductionInvariants,
+}
+
+#[derive(serde::Serialize)]
+struct VerifyLiveConfigReport {
+    verified_live_config: bool,
+    profile: String,
+    deployed: String,
+    profile_bundle_sha256: String,
+    matches_profile: bool,
+    loads_against_binary: bool,
+    invariants: ProductionInvariants,
+}
+
+fn run_generate_live_config(
+    config_root: &Path,
+    profile: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let output = live_config_path(config_root);
+    let generated = generate_live_config(config_root, profile)?;
+    // Non-secret runtime config (SSM refs + public addresses only) — written
+    // group/world-readable so the `bolt` service user can read it (the deploy may
+    // tighten ownership/mode to root:bolt 0640). NOT the private 0600 secret mode.
+    write_atomic_file_with_mode(&output, generated.text.as_bytes(), RUNTIME_CONFIG_FILE_MODE)
+        .map_err(|error| {
+            format!(
+                "failed to write generated runtime config `{}`: {}",
+                error.path.display(),
+                error.source
+            )
+        })?;
+    let report = GenerateLiveConfigReport {
+        generated_live_config: true,
+        output: output.display().to_string(),
+        source_profile: generated.source_profile,
+        profile_bundle_sha256: generated.profile_bundle_sha256,
+        generator_format_version: GENERATOR_FORMAT_VERSION,
+        invariants: generated.invariants,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_verify_live_config(
+    config_root: &Path,
+    profile: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let verification = verify_live_config(config_root, profile)?;
+    let report = VerifyLiveConfigReport {
+        verified_live_config: true,
+        profile: verification.profile_id,
+        deployed: verification.deployed_path.display().to_string(),
+        profile_bundle_sha256: verification.profile_bundle_sha256,
+        matches_profile: verification.matches_profile,
+        loads_against_binary: verification.loads_against_binary,
+        invariants: verification.invariants,
+    };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -798,6 +957,117 @@ mod tests {
             }
             _ => panic!("expected ops data-client-probe command"),
         }
+    }
+
+    #[test]
+    fn ops_generate_live_config_cli_parses_profile_id_and_config_root() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "generate-live-config",
+            "--profile",
+            "example",
+            "--config-root",
+            "config",
+        ])
+        .expect("generate-live-config command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command:
+                    OpsCommand::GenerateLiveConfig {
+                        profile,
+                        config_root,
+                    },
+            } => {
+                assert_eq!(profile, "example");
+                assert_eq!(config_root, PathBuf::from("config"));
+            }
+            _ => panic!("expected ops generate-live-config command"),
+        }
+    }
+
+    #[test]
+    fn ops_verify_live_config_cli_parses_profile_id_and_config_root() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "verify-live-config",
+            "--profile",
+            "example",
+            "--config-root",
+            "/opt/bolt-v2/config",
+        ])
+        .expect("verify-live-config command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command:
+                    OpsCommand::VerifyLiveConfig {
+                        profile,
+                        config_root,
+                    },
+            } => {
+                assert_eq!(profile, "example");
+                assert_eq!(config_root, PathBuf::from("/opt/bolt-v2/config"));
+            }
+            _ => panic!("expected ops verify-live-config command"),
+        }
+    }
+
+    #[test]
+    fn live_config_run_guard_requires_verified_generated_live_toml() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("bolt-v2-live-marker-test-{suffix}"));
+        fs::create_dir_all(&dir).expect("test temp dir should create");
+        let live = dir.join("live.toml");
+        fs::write(&live, "[runtime]\n").expect("hand-edited live.toml should write");
+
+        let error = verify_runtime_live_config_source(&live)
+            .expect_err("live.toml without generated marker must be rejected");
+        assert!(
+            error.to_string().contains("is not a generated live config"),
+            "error should explain the generated-marker requirement, got: {error}"
+        );
+
+        fs::write(
+            &live,
+            format!("{GENERATED_MARKER_PREFIX}{GENERATOR_FORMAT_VERSION}\n"),
+        )
+        .expect("generated marker should write");
+        if std::env::var_os(BOLT_LIVE_PROFILE_ENV).is_none() {
+            let error = verify_runtime_live_config_source(&live)
+                .expect_err("generated live.toml without a profile ID must be rejected");
+            assert!(
+                error.to_string().contains(BOLT_LIVE_PROFILE_ENV),
+                "error should require the selected profile ID, got: {error}"
+            );
+        }
+
+        let root = dir.join("root.toml");
+        fs::write(&root, "[runtime]\n").expect("non-live config should write");
+        let error = verify_runtime_live_config_source(&root)
+            .expect_err("run must reject non-live.toml runtime config paths");
+        assert!(
+            error
+                .to_string()
+                .contains("not the generated live.toml path"),
+            "error should require generated live.toml, got: {error}"
+        );
+
+        let live_local = dir.join("live.local.toml");
+        fs::write(&live_local, "[runtime]\n").expect("legacy live.local.toml should write");
+        let error = verify_runtime_live_config_source(&live_local)
+            .expect_err("live.local.toml must be rejected as a runtime config source");
+        assert!(
+            error.to_string().contains("legacy live.local.toml"),
+            "error should identify live.local.toml as legacy drift, got: {error}"
+        );
+
+        fs::remove_dir_all(&dir).expect("test temp dir should clean up");
     }
 
     #[test]

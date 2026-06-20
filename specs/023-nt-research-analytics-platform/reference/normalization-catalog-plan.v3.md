@@ -1690,7 +1690,7 @@ writes; the irreducible per-object `PutMode::Create` HEAD/PUT is budgeted explic
 
 The HL archive is requester-pays (`contract:215,274`; coverage doc line 99 records the lag).
 `object_store` supports it via the `with_request_payer(true)` method
-(`object_store-0.13.2/src/aws/builder.rs:1063`; backing `request_payer` field at `:191`, applied at `442-444`). **However, NT's `create_s3_store` does NOT pass it through** — its
+(`object_store-0.13.2/src/aws/builder.rs:1063`; backing `request_payer` field at `:191`, consumed when `build()` assembles the S3 client config at `:1250`; the equivalent `aws_request_payer`/`request_payer` string config keys are defined at `:442-444`). **However, NT's `create_s3_store` does NOT pass it through** — its
 `storage_options` match handles only `endpoint_url`/`region`/`access_key_id`/`secret_access_key`/
 `session_token`/`allow_http`; any `request_payer` key falls into the `_ =>` "Unknown S3 storage option"
 arm and is silently dropped (`crates/persistence/src/parquet.rs:743-765`). **Consequence:** NT's

@@ -77,7 +77,7 @@ All API access requires HMAC-SHA256 authentication with an API key + API secret 
 SSM Parameter Store path: `/bolt/testnet/chainlink/`
 - `api-key` (36 chars, UUID format)
 - `api-secret` (128 chars, hex)
-- Region: `eu-west-1`
+- Region: `eu-west-2` (creds replicated to eu-west-2 on 2026-06-20; the eu-west-1 copy was deleted in the region decommission)
 
 ### HMAC Signing Process
 

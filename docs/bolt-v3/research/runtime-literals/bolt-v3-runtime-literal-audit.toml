@@ -16546,6 +16546,14 @@ classification = "strategy_runtime_validation_code"
 reason = "This validation code labels a maker oms_type envelope value that is a string but does not parse as a NautilusTrader OmsType (so the build-path .expect can never fire on operator input); it is a stable diagnostic tag, not an operator runtime value."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"invalid_order_id_tag"'''
+context = '''const INVALID_ORDER_ID_TAG_CODE: &str = "invalid_order_id_tag";'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a maker order_id_tag that contains the `-` delimiter the per-leg client order id is joined on, which would make the positional id encoding ambiguous; it is a stable diagnostic tag, not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_maker_runtime_order.rs"
 kind = "string"
 literal = '''"maker order compiler returned neither command nor block reason"'''
@@ -18047,7 +18055,7 @@ kind = "string"
 literal = '''"loss_governor"'''
 context = '''"loss_governor".to_string(),'''
 classification = "prod_profile_compose_root_key"
-reason = "TOML risk-block key the composition inserts the overlay's loss rails at (mirrors RiskBlock.loss_governor); a structural schema key navigating the config tree, not an operator runtime value."
+reason = "TOML risk-block key the composition inserts the overlay's explicit loss-governor policy block at (mirrors RiskBlock.loss_governor); a structural schema key navigating the config tree, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_prod_profile.rs"
@@ -18208,6 +18216,150 @@ literal = '''32'''
 context = '''const UNDERLYING_ASSET_MAX_CHARS: usize = 32;'''
 classification = "underlying_asset_length_bound"
 reason = "Maximum character length of an underlying-asset symbol; a structural validation bound (named constant), not a runtime trading value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "number"
+literal = '''0'''
+context = '''const ZERO: Self = Self { yes: 0, no: 0 };'''
+classification = "maker_runtime_generation_counter_seed"
+reason = "Initial value of a never-minted per-(market_key, leg) generation high-water (the LegGenerations::ZERO constant seeded into a brand-new market's counters); the first minted identity increments it to generation 1. A structural monotonic-sequence seed, not an operator runtime value. Both the YES and NO seed fields on this line share this literal and context, so one allowlist entry covers both."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "number"
+literal = '''1'''
+context = '''self.yes_generation += 1;'''
+classification = "maker_runtime_generation_counter_step"
+reason = "Monotonic step of the per-market YES-leg order-generation counter so each minted client order id is unique per live order. A structural increment, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "number"
+literal = '''1'''
+context = '''self.no_generation += 1;'''
+classification = "maker_runtime_generation_counter_step"
+reason = "Monotonic step of the per-market NO-leg order-generation counter so each minted client order id is unique per live order. A structural increment, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "string"
+literal = '''"yes"'''
+context = '''Leg::Yes => "yes",'''
+classification = "maker_runtime_order_identity_leg_token"
+reason = "Stable per-leg discriminator embedded in the client order id so the YES and NO orders of one generation never collide; identity-handle structure derived from the Leg enum, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "string"
+literal = '''"no"'''
+context = '''Leg::No => "no",'''
+classification = "maker_runtime_order_identity_leg_token"
+reason = "Stable per-leg discriminator embedded in the client order id so the YES and NO orders of one generation never collide; identity-handle structure derived from the Leg enum, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/runtime.rs"
+kind = "string"
+literal = '''"{order_id_tag}-{market_key}-{window_start_milliseconds}-{}-{generation}"'''
+context = '''"{order_id_tag}-{market_key}-{window_start_milliseconds}-{}-{generation}",'''
+classification = "maker_runtime_order_identity_template"
+reason = "Client-order-id construction template the order compiler maps verbatim onto the NautilusTrader ClientOrderId; the interpolated parts are runtime values (order-id tag, market key, cadence-window start timestamp in milliseconds, leg token, generation) and the literal is identity-handle structure, not an operator runtime value. Uniqueness across every transition of the same declared market — a window roll, an instrument-only re-issue at an unchanged window, a venue market_id reuse, or a drop and same-window refill — rests on the monotonic per-(market_key, leg) generation high-water (MakerRuntime::generations), which is never reset to 0 once a leg has minted; the embedded window start keeps the id human-readable and the source tuple recoverable but is not relied on to discriminate a re-mint."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"markets"'''
+context = '''const MARKETS_FIELD: &str = "markets";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker flat-config field label for the declared `[[parameters.markets]]` set, used by the validation whitelist; the declared markets remain TOML-owned in the operator [parameters] block."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/config.rs"
+kind = "string"
+literal = '''"quote_interval_ms"'''
+context = '''const QUOTE_INTERVAL_MS_FIELD: &str = "quote_interval_ms";'''
+classification = "strategy_config_field_name"
+reason = "Stable maker flat-config field label for the quote-loop interval, used by the validation whitelist; the runtime value remains TOML-owned in [parameters.runtime]."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"quote_interval_ms"'''
+context = '''insert_u64_field(table, "quote_interval_ms", runtime.quote_interval_ms)?;'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker flat-config schema field name under which the operator [parameters.runtime].quote_interval_ms is threaded into the flat NT config; the runtime value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"markets"'''
+context = '''table.insert("markets".to_string(), Value::Array(rows));'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker flat-config schema key under which the declared market set is threaded as an array-of-tables into the flat NT config; the declared markets come from the operator [[parameters.markets]] block."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"market_key"'''
+context = '''"market_key".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared market_key value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"family_key"'''
+context = '''"family_key".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared family_key value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"underlying_asset"'''
+context = '''"underlying_asset".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared underlying_asset value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"cadence_seconds"'''
+context = '''insert_u64_field(&mut row, "cadence_seconds", market.cadence_seconds)?;'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared cadence_seconds value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"cadence_slug_token"'''
+context = '''"cadence_slug_token".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded into each markets array row; the operator-declared cadence_slug_token value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"static_condition_id"'''
+context = '''"static_condition_id".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded (when present) into each markets array row; the operator-declared static_condition_id value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"static_yes_outcome"'''
+context = '''"static_yes_outcome".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded (when present) into each markets array row; the operator-declared static_yes_outcome value comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker/archetype.rs"
+kind = "string"
+literal = '''"static_no_outcome"'''
+context = '''"static_no_outcome".to_string(),'''
+classification = "strategy_runtime_schema_field"
+reason = "Maker per-market flat-config schema field label threaded (when present) into each markets array row; the operator-declared static_no_outcome value comes from bolt-v3 TOML."
 
 [[allowed]]
 path = '''src/bolt_v3_validate.rs'''

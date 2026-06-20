@@ -125,7 +125,7 @@ draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
 draft_pr_edited = "defer"
 converted_to_draft = "defer"
-ready_pr = "full"
+ready_pr = "iteration"
 ready_for_review = "full"
 workflow_dispatch = "full"
 main_push = "full"
@@ -337,8 +337,8 @@ jobs:
 
   clippy:
     name: clippy
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [detector, ci-policy]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -730,6 +730,26 @@ jobs:
               exit 1
             fi
             echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "iteration" ]]; then
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              echo "clippy unexpectedly ran during ready-PR iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              echo "source-fence unexpectedly ran during ready-PR iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              echo "test unexpectedly ran during ready-PR iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              echo "build unexpectedly ran during ready-PR iteration"
+              exit 1
+            fi
+            echo "ready-PR iteration: heavy lanes deferred to ready_for_review / merge; full suite runs there"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then
@@ -1182,8 +1202,12 @@ check_name = "test"
             valid.replace("ignore_emit_failure = false\n", ""),
         ),
         (
-            "ci_provenance.policy.ready_pr must be full",
-            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+            "ci_provenance.policy.ready_pr must be iteration",
+            valid.replace('ready_pr = "iteration"', 'ready_pr = "full"'),
+        ),
+        (
+            "ci_provenance.policy.ready_pr must be one of",
+            valid.replace('ready_pr = "iteration"', 'ready_pr = "bogus"'),
         ),
         (
             "ci_provenance.policy.ready_for_review must be full",
@@ -1252,7 +1276,8 @@ def assert_ci_policy_matrix() -> None:
         ("pull_request", "synchronize", True, "refs/pull/1/merge", "defer"),
         ("pull_request", "reopened", True, "refs/pull/1/merge", "defer"),
         ("pull_request", "converted_to_draft", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "opened", False, "refs/pull/1/merge", "full"),
+        ("pull_request", "opened", False, "refs/pull/1/merge", "iteration"),
+        ("pull_request", "synchronize", False, "refs/pull/1/merge", "iteration"),
         ("pull_request", "ready_for_review", True, "refs/pull/1/merge", "full"),
         ("workflow_dispatch", "", True, "refs/heads/codex/branch", "full"),
         ("unknown_event", "", True, "refs/heads/codex/branch", "full"),
@@ -1386,6 +1411,22 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             ),
         ),
         (
+            "clippy needs ci-policy",
+            replace_once(
+                workflow,
+                "  clippy:\n    name: clippy\n    needs: [detector, ci-policy]",
+                "  clippy:\n    name: clippy\n    needs: detector",
+            ),
+        ),
+        (
+            "clippy must gate on full_ci_required",
+            replace_once(
+                workflow,
+                "  clippy:\n    name: clippy\n    needs: [detector, ci-policy]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  clippy:\n    name: clippy\n    needs: [detector, ci-policy]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
             "test-archive needs ci-policy",
             replace_once(
                 workflow,
@@ -1507,6 +1548,33 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
         (
             "gate must branch on ci_policy_path tag_reuse",
             replace_once(workflow, 'if [[ "$policy_path" == "tag_reuse" ]]; then', 'if [[ "$tag_ref" == "true" ]]; then'),
+        ),
+        (
+            "gate must branch on ci_policy_path iteration",
+            replace_once(workflow, 'if [[ "$policy_path" == "iteration" ]]; then', 'if [[ "$never" == "true" ]]; then'),
+        ),
+        (
+            "gate must require clippy skipped on ready-PR iteration",
+            replace_once(
+                workflow,
+                '            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then\n'
+                '              echo "clippy unexpectedly ran during ready-PR iteration"\n'
+                '              exit 1\n'
+                '            fi\n',
+                "",
+            ),
+        ),
+        (
+            "gate must require build skipped on ready-PR iteration",
+            replace_once(
+                workflow,
+                '            if [[ "${{ needs.build.result }}" != "skipped" ]]; then\n'
+                '              echo "build unexpectedly ran during ready-PR iteration"\n'
+                '              exit 1\n'
+                '            fi\n'
+                '            echo "ready-PR iteration: heavy lanes deferred to ready_for_review / merge; full suite runs there"\n',
+                '            echo "ready-PR iteration: heavy lanes deferred to ready_for_review / merge; full suite runs there"\n',
+            ),
         ),
         (
             "gate must read ignore_emit_failure only for ci-provenance-emit",

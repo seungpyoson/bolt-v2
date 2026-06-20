@@ -115,7 +115,7 @@ draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
 draft_pr_edited = "defer"
 converted_to_draft = "defer"
-ready_pr = "full"
+ready_pr = "iteration"
 ready_for_review = "full"
 workflow_dispatch = "full"
 main_push = "full"
@@ -143,7 +143,7 @@ tag = "tag_reuse"
 main_push = "full"
 workflow_dispatch = "full"
 ready_for_review = "full"
-ready_pr = "full"
+ready_pr = "iteration"
 converted_to_draft = "defer"
 draft_pr_edited = "defer"
 draft_pr_reopened = "defer"
@@ -944,7 +944,8 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("pull_request", "reopened", "true", "refs/pull/1/merge", "defer"),
             ("pull_request", "edited", "true", "refs/pull/1/merge", "defer"),
             ("pull_request", "converted_to_draft", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "opened", "false", "refs/pull/1/merge", "full"),
+            ("pull_request", "opened", "false", "refs/pull/1/merge", "iteration"),
+            ("pull_request", "synchronize", "false", "refs/pull/1/merge", "iteration"),
             ("pull_request", "ready_for_review", "true", "refs/pull/1/merge", "full"),
             ("workflow_dispatch", "", "true", "refs/heads/codex/branch", "full"),
             ("unknown_event", "", "true", "refs/heads/codex/branch", "full"),

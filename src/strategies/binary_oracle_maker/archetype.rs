@@ -533,17 +533,26 @@ fn validate_market_portfolio_policy(
     // selects (`bolt_v3_maker_market_selection`) and admits NO plan when that per-slot
     // split falls below `min_slot_notional`, so an under-funded bankroll blocks the
     // ENTIRE active set (a silent idle), not just the marginal slot. The planner can
-    // select up to `min(declared markets, max_active_markets)` slots, so the bankroll
-    // must cover that many minimum allocations. Keyed on the declared count, not
-    // `max_active_markets` alone, so a generous cap with fewer declared markets is not
-    // wrongly rejected; this generalises the single-slot floor (`fundable_slots == 1`
-    // reduces to `total_bankroll >= min_slot`) and no-ops fail-closed for the
-    // separately-rejected degenerate cases (zero declared markets or a zero cap make
-    // `fundable_slots == 0`, so the required minimum is 0 and the check cannot fire).
+    // select up to `min(declared markets, max_active_markets)` slots, so this gate must
+    // reject exactly when the worst-case per-slot allocation would fall below the floor.
+    //
+    // It reproduces the planner's admission test BIT-FOR-BIT: the same
+    // `total_bankroll_notional / slot_count` division, NOT the algebraically-equal
+    // `total < slot_count * min_slot` multiply. The multiply rounds differently in f64
+    // and can reject a config the planner would actually admit (the gate and the planner
+    // must agree to the ULP — single source of truth), so the load-time verdict can never
+    // diverge from the runtime planner it predicts.
+    //
+    // Keyed on the declared count, not `max_active_markets` alone, so a generous cap with
+    // fewer declared markets is not wrongly rejected; `fundable_slots == 1` reduces to the
+    // single-slot floor (`total_bankroll >= min_slot`). The `fundable_slots > 0` guard
+    // skips the separately-rejected degenerate cases (zero declared markets or a zero cap),
+    // mirroring the planner short-circuiting before it divides on an empty selection.
     let fundable_slots = declared_market_count.min(policy.max_active_markets);
-    if crate::bolt_v3_numeric::is_positive_finite(policy.total_bankroll_notional)
+    if fundable_slots > 0
+        && crate::bolt_v3_numeric::is_positive_finite(policy.total_bankroll_notional)
         && crate::bolt_v3_numeric::is_positive_finite(policy.min_slot_notional)
-        && policy.total_bankroll_notional < (fundable_slots as f64) * policy.min_slot_notional
+        && policy.total_bankroll_notional / (fundable_slots as f64) < policy.min_slot_notional
     {
         errors.push(format!(
             "{context}: parameters.market_portfolio.total_bankroll_notional must be >= min(declared markets, max_active_markets) * parameters.market_portfolio.min_slot_notional (the planner equal-splits the bankroll across the up-to-{fundable_slots} selected markets, so too small a total drives every per-slot allocation below the minimum and blocks the entire active set; configured total_bankroll_notional={}, min_slot_notional={})",
@@ -1751,6 +1760,47 @@ mod tests {
                 .any(|error| error.contains("total_bankroll_notional must be >=")),
             "one declared market under a generous cap needs only one slot funded, so a \
              sufficient bankroll must not be rejected: {generous_cap:?}"
+        );
+    }
+
+    #[test]
+    fn validate_parameter_bounds_bankroll_floor_mirrors_the_planner_per_slot_division() {
+        // The bankroll floor must reproduce the shared planner's admission arithmetic
+        // BIT-FOR-BIT. The planner divides (`total_bankroll / slot_count < min_slot`); the
+        // algebraically-equal multiply (`total < slot_count * min_slot`) rounds differently
+        // in f64 and would reject configs the planner actually admits. These exact f64
+        // values are such a divergence at slot_count 3:
+        //   192.30000000000794 / 3.0 == 64.10000000000265 == min_slot  -> planner ADMITS
+        //                                                                  (allocation is NOT
+        //                                                                  below the floor),
+        //   3.0 * 64.10000000000265   == 192.30000000000797 > 192.30000000000794
+        //                                                                -> the multiply gate
+        //                                                                   wrongly REJECTS.
+        // The divide-based gate must NOT emit the bankroll error here; this assertion fails
+        // on the pre-fix multiply form, locking the gate to the planner it predicts.
+        let boundary = validate_parameter_bounds(
+            CONTEXT,
+            &ParametersBlock {
+                runtime: valid_runtime(),
+                market_portfolio: MarketPortfolioParametersBlock {
+                    max_active_markets: 3,
+                    total_bankroll_notional: 192.30000000000794,
+                    min_slot_notional: 64.10000000000265,
+                },
+                markets: vec![
+                    market_declaration("eth-hourly"),
+                    market_declaration("btc-hourly"),
+                    market_declaration("sol-hourly"),
+                ],
+                backtest: valid_backtest(),
+            },
+        );
+        assert!(
+            !boundary
+                .iter()
+                .any(|error| error.contains("total_bankroll_notional must be >=")),
+            "a bankroll the planner would admit (total / slots == min_slot) must not be \
+             rejected by an f64 multiply-rounding artifact: {boundary:?}"
         );
     }
 

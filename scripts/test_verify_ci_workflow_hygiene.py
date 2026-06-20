@@ -127,7 +127,7 @@ draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
 ready_for_review = "full"
-workflow_dispatch = "full"
+workflow_dispatch = "iteration"
 main_push = "full"
 tag = "tag_reuse"
 unknown_event = "full"
@@ -189,7 +189,7 @@ on:
       full_ci:
         description: "Run full CI for the selected ref"
         required: false
-        default: "true"
+        default: "false"
 
 concurrency:
   group: >-
@@ -233,6 +233,7 @@ jobs:
           --event-name "${{ github.event_name }}"
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || 'false' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
 
@@ -337,8 +338,8 @@ jobs:
 
   clippy:
     name: clippy
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [detector, ci-policy]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -730,6 +731,30 @@ jobs:
               exit 1
             fi
             echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "iteration" ]]; then
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              echo "clippy unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
+              echo "check-aarch64 unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              echo "source-fence unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              echo "test unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              echo "build unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            echo "iteration policy: heavy lanes deferred; run full_ci=true or merge for full suite"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then
@@ -1183,15 +1208,19 @@ check_name = "test"
         ),
         (
             "ci_provenance.policy.ready_pr must be full",
-            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+            valid.replace('ready_pr = "full"', 'ready_pr = "iteration"'),
+        ),
+        (
+            "ci_provenance.policy.ready_pr must be one of",
+            valid.replace('ready_pr = "full"', 'ready_pr = "bogus"'),
         ),
         (
             "ci_provenance.policy.ready_for_review must be full",
             valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
         ),
         (
-            "ci_provenance.policy.workflow_dispatch must be full",
-            valid.replace('workflow_dispatch = "full"', 'workflow_dispatch = "defer"'),
+            "ci_provenance.policy.workflow_dispatch must be iteration",
+            valid.replace('workflow_dispatch = "iteration"', 'workflow_dispatch = "full"'),
         ),
         (
             "ci_provenance.policy.main_push must be full",
@@ -1245,28 +1274,33 @@ def assert_ci_policy_matrix() -> None:
         verifier.tomllib.loads(ci_provenance_config_fixture())
     )
     policy = config["policy"]
+    # Columns: event_name, action, draft, ref, workflow_dispatch_full_ci, expected.
     cases = [
-        ("push", "", False, "refs/heads/main", "full"),
-        ("push", "", False, "refs/tags/v1.2.3", "tag_reuse"),
-        ("pull_request", "opened", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "synchronize", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "reopened", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "converted_to_draft", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "opened", False, "refs/pull/1/merge", "full"),
-        ("pull_request", "ready_for_review", True, "refs/pull/1/merge", "full"),
-        ("workflow_dispatch", "", True, "refs/heads/codex/branch", "full"),
-        ("unknown_event", "", True, "refs/heads/codex/branch", "full"),
+        ("push", "", False, "refs/heads/main", False, "full"),
+        ("push", "", False, "refs/tags/v1.2.3", False, "tag_reuse"),
+        ("pull_request", "opened", True, "refs/pull/1/merge", False, "defer"),
+        ("pull_request", "synchronize", True, "refs/pull/1/merge", False, "defer"),
+        ("pull_request", "reopened", True, "refs/pull/1/merge", False, "defer"),
+        ("pull_request", "converted_to_draft", True, "refs/pull/1/merge", False, "defer"),
+        ("pull_request", "opened", False, "refs/pull/1/merge", False, "full"),
+        ("pull_request", "synchronize", False, "refs/pull/1/merge", False, "full"),
+        ("pull_request", "ready_for_review", True, "refs/pull/1/merge", False, "full"),
+        # Manual dispatch defaults to the cheap iteration path; only full_ci=true opts into full.
+        ("workflow_dispatch", "", True, "refs/heads/codex/branch", False, "iteration"),
+        ("workflow_dispatch", "", True, "refs/heads/codex/branch", True, "full"),
+        ("unknown_event", "", True, "refs/heads/codex/branch", False, "full"),
     ]
-    for event_name, action, draft, ref, expected in cases:
+    for event_name, action, draft, ref, dispatch_full_ci, expected in cases:
         result = verifier.evaluate_ci_policy(
             policy,
             event_name=event_name,
             action=action,
             pull_request_draft=draft,
             ref=ref,
+            workflow_dispatch_full_ci=dispatch_full_ci,
         )
         if result.ci_policy_path != expected:
-            raise AssertionError((event_name, action, draft, ref, expected, result))
+            raise AssertionError((event_name, action, draft, ref, dispatch_full_ci, expected, result))
         if result.full_ci_required != (expected == "full"):
             raise AssertionError(f"full_ci_required must derive from {expected}: {result}")
         if result.full_ci_deferred != (expected == "defer"):
@@ -1319,6 +1353,18 @@ def assert_ci_workflow_requires_policy_trigger_and_dispatch_input() -> None:
         (
             "workflow_dispatch must define configured full CI input",
             replace_once(workflow, "      full_ci:\n", "      not_full_ci:\n"),
+        ),
+        (
+            "workflow_dispatch full CI input default must be \"false\"",
+            replace_once(workflow, '        default: "false"', '        default: "true"'),
+        ),
+        (
+            "ci-policy must pass workflow_dispatch full_ci input",
+            replace_once(
+                workflow,
+                "          --workflow-dispatch-full-ci \"${{ github.event.inputs.full_ci || 'false' }}\"\n",
+                "",
+            ),
         ),
         (
             "pull_request types must include ready_for_review",
@@ -1383,6 +1429,22 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
                 workflow,
                 "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
                 "  source-fence:\n    name: source-fence\n    needs: [ci-policy, detector]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
+            ),
+        ),
+        (
+            "clippy needs ci-policy",
+            replace_once(
+                workflow,
+                "  clippy:\n    name: clippy\n    needs: [detector, ci-policy]",
+                "  clippy:\n    name: clippy\n    needs: detector",
+            ),
+        ),
+        (
+            "clippy must gate on full_ci_required",
+            replace_once(
+                workflow,
+                "  clippy:\n    name: clippy\n    needs: [detector, ci-policy]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.ci-policy.outputs.full_ci_required == 'true' }}",
+                "  clippy:\n    name: clippy\n    needs: [detector, ci-policy]\n    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
         (
@@ -1507,6 +1569,44 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
         (
             "gate must branch on ci_policy_path tag_reuse",
             replace_once(workflow, 'if [[ "$policy_path" == "tag_reuse" ]]; then', 'if [[ "$tag_ref" == "true" ]]; then'),
+        ),
+        (
+            "gate must branch on ci_policy_path iteration",
+            replace_once(workflow, 'if [[ "$policy_path" == "iteration" ]]; then', 'if [[ "$never" == "true" ]]; then'),
+        ),
+        (
+            "gate must require clippy skipped on iteration policy",
+            replace_once(
+                workflow,
+                '            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then\n'
+                '              echo "clippy unexpectedly ran during iteration policy"\n'
+                '              exit 1\n'
+                '            fi\n',
+                "",
+            ),
+        ),
+        (
+            "gate must require check-aarch64 skipped on iteration policy",
+            replace_once(
+                workflow,
+                '            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then\n'
+                '              echo "check-aarch64 unexpectedly ran during iteration policy"\n'
+                '              exit 1\n'
+                '            fi\n',
+                "",
+            ),
+        ),
+        (
+            "gate must require build skipped on iteration policy",
+            replace_once(
+                workflow,
+                '            if [[ "${{ needs.build.result }}" != "skipped" ]]; then\n'
+                '              echo "build unexpectedly ran during iteration policy"\n'
+                '              exit 1\n'
+                '            fi\n'
+                '            echo "iteration policy: heavy lanes deferred; run full_ci=true or merge for full suite"\n',
+                '            echo "iteration policy: heavy lanes deferred; run full_ci=true or merge for full suite"\n',
+            ),
         ),
         (
             "gate must read ignore_emit_failure only for ci-provenance-emit",

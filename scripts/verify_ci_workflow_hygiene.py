@@ -154,7 +154,7 @@ CI_PROVENANCE_REQUIRED_JOBS = (
     "test-archive",
     "test",
 )
-CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "tag_reuse"}
+CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "iteration", "tag_reuse"}
 CI_PROVENANCE_POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -176,7 +176,7 @@ CI_PROVENANCE_POLICY_EXPECTED = {
     "converted_to_draft": "defer",
     "ready_pr": "full",
     "ready_for_review": "full",
-    "workflow_dispatch": "full",
+    "workflow_dispatch": "iteration",
     "main_push": "full",
     "tag": "tag_reuse",
     "unknown_event": "full",
@@ -738,6 +738,7 @@ def evaluate_ci_policy(
     action: str,
     pull_request_draft: bool,
     ref: str,
+    workflow_dispatch_full_ci: bool = False,
 ) -> CiPolicyResult:
     override = policy.get("override")
     force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
@@ -746,8 +747,12 @@ def evaluate_ci_policy(
         path = str(policy["tag"])
         reason = "tag"
     elif event_name == "workflow_dispatch":
-        path = str(policy["workflow_dispatch"])
-        reason = "workflow_dispatch"
+        if workflow_dispatch_full_ci:
+            path = "full"
+            reason = "workflow_dispatch_full"
+        else:
+            path = str(policy["workflow_dispatch"])
+            reason = "workflow_dispatch"
     elif event_name == "push" and ref == "refs/heads/main":
         path = str(policy["main_push"])
         reason = "main_push"
@@ -843,6 +848,32 @@ def workflow_pull_request_type_errors(
     return errors
 
 
+def workflow_dispatch_input_default(block: list[str], input_name: str) -> str | None:
+    """Return the `default:` literal for the named workflow_dispatch input, if present.
+
+    Scans the input's own sub-block (lines more deeply indented than the input
+    key) so the default of an unrelated input cannot satisfy the lookup.
+    """
+    input_re = re.compile(rf"^(?P<indent>\s+){re.escape(input_name)}:\s*$")
+    in_input = False
+    input_indent = ""
+    for line in block:
+        match = input_re.match(line)
+        if match:
+            in_input = True
+            input_indent = match.group("indent")
+            continue
+        if not in_input:
+            continue
+        if line.strip() and not line.startswith(input_indent + " "):
+            # Dedent to the input's level or shallower ends this input's block.
+            break
+        default_match = re.match(r"^\s+default:\s*(?P<value>.+?)\s*$", line)
+        if default_match:
+            return default_match.group("value").strip().strip("'\"")
+    return None
+
+
 def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[str]:
     block = workflow_trigger_block(workflow_text, "workflow_dispatch")
     if not block and "workflow_dispatch:" not in "\n".join(top_level_block(workflow_text, "on")):
@@ -850,6 +881,8 @@ def workflow_dispatch_input_errors(workflow_text: str, input_name: str) -> list[
     block_text = "\n".join(block)
     if "inputs:" not in block_text or not re.search(rf"^\s+{re.escape(input_name)}:\s*$", block_text, re.MULTILINE):
         return ["workflow_dispatch must define configured full CI input"]
+    if workflow_dispatch_input_default(block, input_name) != "false":
+        return ["workflow_dispatch full CI input default must be \"false\""]
     return []
 
 
@@ -875,6 +908,8 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass github.event.action")
     if '--pull-request-draft "${{ github.event.pull_request.draft || false }}"' not in text:
         errors.append("ci-policy must pass pull_request draft state")
+    if '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'false\' }}"' not in text:
+        errors.append("ci-policy must pass workflow_dispatch full_ci input")
     if '--ref "${{ github.ref }}"' not in text:
         errors.append("ci-policy must pass github.ref")
     return errors
@@ -7521,6 +7556,16 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
 GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+GATE_ITERATION_CONDITION = '"$policy_path" == "iteration"'
+# Heavy merge-grade lanes that the iteration path defers; the gate's
+# iteration branch must require each of these skipped before it exits 0. This
+# mirrors the heavy lanes the tag_reuse branch tracks (clippy, check-aarch64,
+# source-fence, test, build). test-archive is intentionally omitted here: like
+# the tag_reuse and full branches, the gate tracks the terminal `test` job, not
+# the intermediate `test-archive`; test-archive's deferral on the iteration path
+# is independently enforced by its own full_ci_required if-gate and asserted by
+# assert_ci_policy_heavy_lane_gaps_are_reported.
+GATE_ITERATION_SKIPPED_JOBS = ("clippy", "check-aarch64", "source-fence", "test", "build")
 GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
 GATE_DEFERRED_NAME_EXPRESSION = """name: >-
@@ -7702,6 +7747,18 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         errors.append("gate must pass deferred full CI without failing stale draft checks")
     if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
         errors.append("gate must fail deferred policy outside deferred draft PR context")
+    iteration_sections = top_level_if_body_and_remainder(gate_text, GATE_ITERATION_CONDITION)
+    iteration_body = iteration_sections[0] if iteration_sections is not None else None
+    if iteration_body is None:
+        errors.append("gate must branch on ci_policy_path iteration")
+    else:
+        for job in GATE_ITERATION_SKIPPED_JOBS:
+            if not branch_exits_reachable(
+                iteration_body, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'
+            ):
+                errors.append(f"gate must require {job} skipped on iteration policy")
+        if not body_exits_zero(iteration_body):
+            errors.append("gate must pass iteration policy without running deferred heavy lanes")
     if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
         errors.append("gate must branch on ci_policy_path full")
     emit_failure_body = branch_body(
@@ -8180,6 +8237,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("clippy must not run check-aarch64")
         if clippy_installs_aarch64_toolchain(jobs["clippy"]):
             errors.append("clippy must not install aarch64 cross compiler")
+        # clippy is a merge-grade heavy lane: it must defer on the
+        # iteration path (full_ci_required=false) while still running on full.
+        if "ci-policy" not in extract_needs(jobs["clippy"]):
+            errors.append("clippy needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["clippy"]):
+            errors.append("clippy must gate on full_ci_required")
 
     if "check-aarch64" in jobs:
         check_aarch64_needs = extract_needs(jobs["check-aarch64"])

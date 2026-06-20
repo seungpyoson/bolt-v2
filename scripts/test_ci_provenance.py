@@ -117,7 +117,7 @@ draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
 ready_for_review = "full"
-workflow_dispatch = "full"
+workflow_dispatch = "iteration"
 main_push = "full"
 tag = "tag_reuse"
 unknown_event = "full"
@@ -141,7 +141,7 @@ force_full_ci = false
 unknown_event = "full"
 tag = "tag_reuse"
 main_push = "full"
-workflow_dispatch = "full"
+workflow_dispatch = "iteration"
 ready_for_review = "full"
 ready_pr = "full"
 converted_to_draft = "defer"
@@ -936,20 +936,24 @@ def assert_top_level_help_is_supported() -> None:
 def assert_ci_policy_outputs_matrix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        # Columns: event_name, action, draft, ref, workflow_dispatch_full_ci, expected.
         cases = [
-            ("push", "", "false", "refs/heads/main", "full"),
-            ("push", "", "false", "refs/tags/v1.2.3", "tag_reuse"),
-            ("pull_request", "opened", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "synchronize", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "reopened", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "edited", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "converted_to_draft", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "opened", "false", "refs/pull/1/merge", "full"),
-            ("pull_request", "ready_for_review", "true", "refs/pull/1/merge", "full"),
-            ("workflow_dispatch", "", "true", "refs/heads/codex/branch", "full"),
-            ("unknown_event", "", "true", "refs/heads/codex/branch", "full"),
+            ("push", "", "false", "refs/heads/main", "false", "full"),
+            ("push", "", "false", "refs/tags/v1.2.3", "false", "tag_reuse"),
+            ("pull_request", "opened", "true", "refs/pull/1/merge", "false", "defer"),
+            ("pull_request", "synchronize", "true", "refs/pull/1/merge", "false", "defer"),
+            ("pull_request", "reopened", "true", "refs/pull/1/merge", "false", "defer"),
+            ("pull_request", "edited", "true", "refs/pull/1/merge", "false", "defer"),
+            ("pull_request", "converted_to_draft", "true", "refs/pull/1/merge", "false", "defer"),
+            ("pull_request", "opened", "false", "refs/pull/1/merge", "false", "full"),
+            ("pull_request", "synchronize", "false", "refs/pull/1/merge", "false", "full"),
+            ("pull_request", "ready_for_review", "true", "refs/pull/1/merge", "false", "full"),
+            # Manual dispatch defaults to the cheap iteration path; only full_ci=true opts into full.
+            ("workflow_dispatch", "", "true", "refs/heads/codex/branch", "false", "iteration"),
+            ("workflow_dispatch", "", "true", "refs/heads/codex/branch", "true", "full"),
+            ("unknown_event", "", "true", "refs/heads/codex/branch", "false", "full"),
         ]
-        for event_name, action, draft, ref, expected in cases:
+        for event_name, action, draft, ref, dispatch_full_ci, expected in cases:
             code, stdout, stderr = run_cli(
                 [
                     "ci-policy",
@@ -961,6 +965,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                     action,
                     "--pull-request-draft",
                     draft,
+                    "--workflow-dispatch-full-ci",
+                    dispatch_full_ci,
                     "--ref",
                     ref,
                 ]
@@ -1004,6 +1010,27 @@ def assert_ci_policy_outputs_matrix() -> None:
         output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
         if output.get("ci_policy_path") != "full":
             raise AssertionError(f"force_full_ci must force draft PR events to full, got {output}")
+
+        # Omitting --workflow-dispatch-full-ci must fall back to the cheap iteration
+        # path, so a no-flag manual dispatch never silently runs the full heavy suite.
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "workflow_dispatch",
+                "--ref",
+                "refs/heads/codex/branch",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"default-dispatch ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ci_policy_path") != "iteration":
+            raise AssertionError(f"default workflow_dispatch must resolve to iteration, got {output}")
+        if output.get("full_ci_required") != "false":
+            raise AssertionError(f"default workflow_dispatch must not require full CI, got {output}")
 
 
 def assert_config_digest_is_canonical() -> None:

@@ -29,7 +29,7 @@ SUPPORTED_MODES = {
     "resolve-fingerprint",
     "validate-record",
 }
-POLICY_VALUES = {"full", "defer", "tag_reuse"}
+POLICY_VALUES = {"full", "defer", "iteration", "tag_reuse"}
 POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -304,7 +304,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     for row in POLICY_ROWS:
         value = policy_table.get(row)
         if value not in POLICY_VALUES:
-            raise ProvenanceError(f"ci_provenance.policy.{row} must be full, defer, or tag_reuse")
+            raise ProvenanceError(f"ci_provenance.policy.{row} must be full, defer, iteration, or tag_reuse")
         policy[row] = value
 
     force_full_ci = overrides.get("force_full_ci")
@@ -368,13 +368,18 @@ def evaluate_ci_policy(
     event_action: str,
     pull_request_draft: bool,
     ref: str,
+    workflow_dispatch_full_ci: bool = False,
 ) -> CiPolicyResult:
     if event_name == "push" and ref.startswith("refs/tags/v"):
         path = config.policy["tag"]
         reason = "tag"
     elif event_name == "workflow_dispatch":
-        path = config.policy["workflow_dispatch"]
-        reason = "workflow_dispatch"
+        if workflow_dispatch_full_ci:
+            path = "full"
+            reason = "workflow_dispatch_full"
+        else:
+            path = config.policy["workflow_dispatch"]
+            reason = "workflow_dispatch"
     elif event_name == "push" and ref == "refs/heads/main":
         path = config.policy["main_push"]
         reason = "main_push"
@@ -1498,6 +1503,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--event-name", required=True)
         parser.add_argument("--event-action", default="")
         parser.add_argument("--pull-request-draft", default="false")
+        parser.add_argument("--workflow-dispatch-full-ci", default="false")
         parser.add_argument("--ref", required=True)
     if mode == "emit-full-ci":
         parser.add_argument("--output", type=pathlib.Path)
@@ -1542,6 +1548,7 @@ def main(argv: list[str] | None = None) -> int:
                 event_action=args.event_action,
                 pull_request_draft=parse_bool(args.pull_request_draft),
                 ref=args.ref,
+                workflow_dispatch_full_ci=parse_bool(args.workflow_dispatch_full_ci),
             )
             print(f"ci_policy_path={result.ci_policy_path}")
             print(f"full_ci_required={str(result.full_ci_required).lower()}")

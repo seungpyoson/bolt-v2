@@ -40,15 +40,16 @@ on:
   # whose diff exceeds its internal size limit (observed at ~28k files on #610),
   # so oversized PRs need a manually dispatched run against the branch ref.
   # full_ci is a required structural slot enforced by ci/github-actions-runners.toml
-  # (ci_provenance.dispatch.workflow_input = "full_ci") — its presence is what the
-  # ci_provenance policy resolver detects, not its value. The resolver always applies
-  # the workflow_dispatch = "full" policy regardless of the input value.
+  # (ci_provenance.dispatch.workflow_input = "full_ci"). A plain dispatch resolves to
+  # the cheap iteration policy (workflow_dispatch = "iteration"); only full_ci=true
+  # opts into the full heavy suite. The resolver reads the input value, not just its
+  # presence, so the default must stay "false" to keep the no-flag dispatch cheap.
   workflow_dispatch:
     inputs:
       full_ci:
         description: "Run full CI for the selected ref"
         required: false
-        default: "true"
+        default: "false"
 
 concurrency:
   group: >-
@@ -100,6 +101,7 @@ jobs:
           --event-name "${{ github.event_name }}"
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || 'false' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
 
@@ -245,8 +247,8 @@ jobs:
 
   clippy:
     name: clippy
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [detector, ci-policy]
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') && needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -769,6 +771,30 @@ jobs:
               exit 1
             fi
             echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "iteration" ]]; then
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              echo "clippy unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
+              echo "check-aarch64 unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              echo "source-fence unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              echo "test unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              echo "build unexpectedly ran during iteration policy"
+              exit 1
+            fi
+            echo "iteration policy: heavy lanes deferred; run full_ci=true or merge for full suite"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then

@@ -5,12 +5,6 @@ strategy_files = [
   "strategies/binary_oracle_btc.toml",
 ]
 
-[reference_live_probe]
-chainlink_client_id = "chainlink_reference"
-polyresearch_client_id = "polyresearch_reference"
-duration_secs = 70
-min_chainlink_data_frames = 1
-
 [realized_volatility_surfaces.btc_usdt_midpoint_rv]
 canonical_base_asset = "BTC"
 canonical_quote_asset = "USDT"

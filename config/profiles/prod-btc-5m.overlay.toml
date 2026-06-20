@@ -42,7 +42,6 @@ active_clients = [
   "okx_data",
   "chainlink_strike",
   "chainlink_reference",
-  "polyresearch_reference",
 ]
 
 # Subset of base.realized_volatility_surfaces to KEEP. The pilot prices only BTC,

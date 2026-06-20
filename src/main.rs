@@ -35,6 +35,9 @@ use bolt_v2::{
         reference_live_probe::run_reference_live_probe,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
+    bolt_v3_reference_price_health::{
+        prepare_reference_current_price_health_run, run_prepared_reference_current_price_health,
+    },
     bolt_v3_secrets::{
         ResolvedBoltV3Secrets, check_no_forbidden_credential_env_vars,
         resolve_bolt_v3_client_secrets, resolve_bolt_v3_secrets,
@@ -128,6 +131,10 @@ enum OpsCommand {
         config: PathBuf,
     },
     ReferenceLiveProbe {
+        #[arg(short, long)]
+        config: PathBuf,
+    },
+    ReferenceCurrentPriceHealth {
         #[arg(short, long)]
         config: PathBuf,
     },
@@ -306,6 +313,9 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         } => run_verify_live_config(&config_root, &profile),
         OpsCommand::InitKillSwitchStore { config } => run_init_kill_switch_store(&config),
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
+        OpsCommand::ReferenceCurrentPriceHealth { config } => {
+            run_reference_current_price_health_command(&config)
+        }
     }
 }
 
@@ -352,6 +362,24 @@ fn run_reference_live_probe_command(config: &Path) -> Result<(), Box<dyn std::er
         .enable_all()
         .build()?;
     let report = runtime.block_on(run_reference_live_probe(&loaded, &resolved))?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+fn run_reference_current_price_health_command(
+    config: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let health_run = prepare_reference_current_price_health_run(&loaded)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let local = tokio::task::LocalSet::new();
+    let report = runtime.block_on(local.run_until(async move {
+        let mut health_run = health_run;
+        run_prepared_reference_current_price_health(&mut health_run).await
+    }))?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
@@ -1112,6 +1140,27 @@ mod tests {
                 assert_eq!(config, PathBuf::from("config/root.toml"));
             }
             _ => panic!("expected ops reference-live-probe command"),
+        }
+    }
+
+    #[test]
+    fn ops_reference_current_price_health_cli_parses_config() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "reference-current-price-health",
+            "--config",
+            "config/root.toml",
+        ])
+        .expect("reference current price health command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::ReferenceCurrentPriceHealth { config },
+            } => {
+                assert_eq!(config, PathBuf::from("config/root.toml"));
+            }
+            _ => panic!("expected ops reference-current-price-health command"),
         }
     }
 

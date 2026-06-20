@@ -67,8 +67,9 @@ use crate::{
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::is_observed_open_side,
     bolt_v3_providers::{
-        STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+        STRIKE_FETCH_INSTRUMENT_ID_PARAM, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
         normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+        resolution_strike_fetch_request_data_type,
     },
     bolt_v3_reference_price::{
         ReferencePriceSelection, ReferencePriceSelector, ReferencePriceSourceHealth,
@@ -993,18 +994,14 @@ pub struct BinaryOracleEdgeTaker {
     reference_price_quotes: BTreeMap<String, ReferenceQuote>,
     reference_price_source_health: BTreeMap<String, ReferencePriceSourceHealth>,
     selection_missing_since_ms: Option<u64>,
+    resolution_strike_index_subscription: Option<InstrumentId>,
+    resolution_strike_custom_subscription: Option<DataType>,
+    resolution_strike_fetch_sequence: u64,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
-    /// Test-only observability for live-strike (re)subscribe attempts. Records,
-    /// in order, the index-price unsubscribe/subscribe events
-    /// `subscribe_resolution_strike` issues, so a test can assert that every
-    /// strike re-subscribe is preceded by an unsubscribe of the same resolution
-    /// instrument. That pairing is mandatory: NT's `DataClientAdapter` keys
-    /// index-price subscriptions by `instrument_id` and ignores the params map
-    /// (`nautilus_data` `client.rs:494-498`, rev `6e059dc`), so a bare
-    /// re-subscribe with the constant resolution instrument is silently swallowed
-    /// and the point-in-time strike source never re-fetches for later
-    /// windows/retries.
+    /// Test-only observability for live-strike fetch attempts. Records each
+    /// logical fetch trigger, not transport cleanup, so tests can assert that
+    /// retries do not depend on NT forwarding an immediate index unsubscribe.
     #[cfg(test)]
     resolution_strike_subscribe_events: Vec<ResolutionStrikeSubscribeEvent>,
     #[cfg(test)]
@@ -1057,6 +1054,9 @@ impl BinaryOracleEdgeTaker {
             reference_price_quotes: BTreeMap::new(),
             reference_price_source_health,
             selection_missing_since_ms: None,
+            resolution_strike_index_subscription: None,
+            resolution_strike_custom_subscription: None,
+            resolution_strike_fetch_sequence: INITIAL_COUNTER_U64,
             #[cfg(test)]
             book_subscription_events: Vec::new(),
             #[cfg(test)]
@@ -1920,15 +1920,12 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    /// Subscribes to the live resolution strike for the current market interval.
+    /// Fetches the live resolution strike for the current market interval.
     ///
-    /// Issues ONE point-in-time index-price subscribe to the explicit Chainlink
-    /// strike client, carrying the interval-open boundary (unix seconds) in the
-    /// NT `params` map under [`STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM`] — the same
-    /// key the strike source reads with `params.get_u64`. Only subscribes when
-    /// the resolution instrument, the explicit strike client, and the market's
-    /// interval-open are all configured/known; otherwise it is a no-op and the
-    /// fail-closed entry gate keeps blocking.
+    /// The first call keeps one durable index-price subscription open so NT
+    /// will route the provider's [`IndexPriceUpdate`] into `on_index_price`.
+    /// Later retry ticks use provider-owned custom fetch commands with unique
+    /// data types, avoiding NT's per-instrument index subscribe dedup.
     fn subscribe_resolution_strike(&mut self) {
         let (Some(resolution_instrument_id), Some(resolution_client_id), Some(interval_start_ms)) = (
             self.resolution_instrument_id(),
@@ -1951,35 +1948,99 @@ impl BinaryOracleEdgeTaker {
             return;
         }
         let window_open_unix_seconds = interval_start_ms / MILLIS_PER_SECOND_U64;
-        // Defeat NT's per-instrument index-price subscribe dedup: `DataClientAdapter`
-        // keys subscriptions by `instrument_id` and ignores the params map
-        // (`nautilus_data` client.rs:494-498, rev 6e059dc), so a bare re-subscribe
-        // with the constant resolution instrument is silently swallowed and the
-        // point-in-time strike source would never re-fetch for later windows or
-        // retries. Clear the subscription first, then re-subscribe carrying the new
-        // window-open boundary in the params map.
-        #[cfg(not(test))]
-        self.unsubscribe_index_prices(resolution_instrument_id, Some(resolution_client_id), None);
-        self.record_resolution_strike_subscribe_event(ResolutionStrikeSubscribeEvent::unsubscribe(
-            resolution_instrument_id,
-        ));
         let mut params = Params::new();
         params.insert(
             STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
             serde_json::json!(window_open_unix_seconds),
         );
-        #[cfg(not(test))]
-        self.subscribe_index_prices(
-            resolution_instrument_id,
-            Some(resolution_client_id),
-            Some(params),
+        if self.resolution_strike_index_subscription != Some(resolution_instrument_id) {
+            let previous_custom_subscription = self.resolution_strike_custom_subscription.take();
+            #[cfg(not(test))]
+            if let Some(data_type) = previous_custom_subscription {
+                self.unsubscribe_data(data_type, Some(resolution_client_id), None);
+            }
+            #[cfg(test)]
+            let _ = previous_custom_subscription;
+
+            let previous_index_subscription = self
+                .resolution_strike_index_subscription
+                .replace(resolution_instrument_id);
+            #[cfg(not(test))]
+            if let Some(instrument_id) = previous_index_subscription {
+                self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
+            }
+            #[cfg(test)]
+            let _ = previous_index_subscription;
+
+            #[cfg(not(test))]
+            self.subscribe_index_prices(
+                resolution_instrument_id,
+                Some(resolution_client_id),
+                Some(params.clone()),
+            );
+            #[cfg(test)]
+            let _ = (resolution_client_id, params);
+            self.record_resolution_strike_subscribe_event(
+                ResolutionStrikeSubscribeEvent::subscribe(
+                    resolution_instrument_id,
+                    window_open_unix_seconds,
+                ),
+            );
+            return;
+        }
+
+        params.insert(
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+            serde_json::json!(resolution_instrument_id.to_string()),
         );
+        self.resolution_strike_fetch_sequence = self
+            .resolution_strike_fetch_sequence
+            .wrapping_add(COUNTER_INCREMENT_U64);
+        let data_type = resolution_strike_fetch_request_data_type(
+            resolution_instrument_id,
+            self.resolution_strike_fetch_sequence,
+        );
+        let previous_custom_subscription = self
+            .resolution_strike_custom_subscription
+            .replace(data_type.clone());
+        #[cfg(not(test))]
+        {
+            if let Some(previous_data_type) = previous_custom_subscription {
+                self.unsubscribe_data(previous_data_type, Some(resolution_client_id), None);
+            }
+            self.subscribe_data(data_type, Some(resolution_client_id), Some(params));
+        }
         #[cfg(test)]
-        let _ = (resolution_client_id, params);
+        let _ = (
+            resolution_client_id,
+            previous_custom_subscription,
+            data_type,
+            params,
+        );
         self.record_resolution_strike_subscribe_event(ResolutionStrikeSubscribeEvent::subscribe(
             resolution_instrument_id,
             window_open_unix_seconds,
         ));
+    }
+
+    fn unsubscribe_resolution_strike(&mut self) {
+        let Some(resolution_client_id) = self.resolution_client_id() else {
+            self.resolution_strike_index_subscription = None;
+            self.resolution_strike_custom_subscription = None;
+            return;
+        };
+        if let Some(data_type) = self.resolution_strike_custom_subscription.take() {
+            #[cfg(not(test))]
+            self.unsubscribe_data(data_type, Some(resolution_client_id), None);
+            #[cfg(test)]
+            let _ = data_type;
+        }
+        if let Some(instrument_id) = self.resolution_strike_index_subscription.take() {
+            #[cfg(not(test))]
+            self.unsubscribe_index_prices(instrument_id, Some(resolution_client_id), None);
+            #[cfg(test)]
+            let _ = instrument_id;
+        }
     }
 
     fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
@@ -5517,6 +5578,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         self.unsubscribe_realized_volatility_sources();
         self.unsubscribe_signal_quotes();
         self.unsubscribe_reference_prices();
+        self.unsubscribe_resolution_strike();
         self.deregister_selection_retry_timer();
         Ok(())
     }
@@ -6102,9 +6164,9 @@ impl BinaryOracleEdgeTaker {
     }
 }
 
-/// One recorded index-price (un)subscribe the resolution-strike re-arm path
-/// issued. Constructed unconditionally so the production ordering is the same
-/// code the test observes; only the storage is test-only (see
+/// One recorded resolution-strike fetch trigger. Constructed unconditionally
+/// so the production ordering is the same code the test observes; only the
+/// storage is test-only (see
 /// [`BinaryOracleEdgeTaker::record_resolution_strike_subscribe_event`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolutionStrikeSubscribeEvent {
@@ -6114,6 +6176,7 @@ struct ResolutionStrikeSubscribeEvent {
 }
 
 const RESOLUTION_STRIKE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
+#[cfg(test)]
 const RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
 
 impl ResolutionStrikeSubscribeEvent {
@@ -6122,14 +6185,6 @@ impl ResolutionStrikeSubscribeEvent {
             action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
             instrument_id,
             window_open_unix_seconds,
-        }
-    }
-
-    fn unsubscribe(instrument_id: InstrumentId) -> Self {
-        Self {
-            action: RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION,
-            instrument_id,
-            window_open_unix_seconds: 0,
         }
     }
 }

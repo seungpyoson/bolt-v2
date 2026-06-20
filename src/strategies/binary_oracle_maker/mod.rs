@@ -360,6 +360,13 @@ impl BinaryOracleMaker {
                 submit_lifecycle_policy,
             },
         )?;
+        // A routing error is now per-leg data, not a `?` abort; fail loud here to
+        // preserve this reference-quote route's prior fail-closed behavior.
+        if let Some(error) = quote_route.orders.as_ref().and_then(|orders| orders.routing_error()) {
+            anyhow::bail!(
+                "binary_oracle_maker reference-quote leg order routing failed: error={error}"
+            );
+        }
         let BinaryOracleMakerRuntimeQuoteRouteOutcome { quote, orders } = quote_route;
         let blocked_by = quote
             .blocked_by
@@ -408,6 +415,13 @@ impl BinaryOracleMaker {
             },
             &mut route_command,
         )?;
+        // A routing error is now per-leg data, not a `?` abort; fail loud here to
+        // preserve this market-action route's prior fail-closed behavior.
+        if let Some(error) = orders.routing_error() {
+            anyhow::bail!(
+                "binary_oracle_maker market-action leg order routing failed: error={error}"
+            );
+        }
         let order = match action_kind {
             MarketAction::Leg { leg: Leg::No, .. }
             | MarketAction::CancelAllOneSide { leg: Leg::No } => orders.no.clone(),
@@ -584,26 +598,37 @@ impl BinaryOracleMaker {
     }
 
     /// Register the autonomous quote/refresh timer (period = `quote_interval_ms`).
-    fn register_quote_timer(&mut self) {
+    /// Fails loud: a `quote_interval_ms` that overflows the nanosecond clock unit, or
+    /// a timer registration error, aborts `on_start` rather than leaving the maker
+    /// running with resolved markets but no quote/refresh cadence (silently never
+    /// reconciling a cadence roll).
+    fn register_quote_timer(&mut self) -> anyhow::Result<()> {
         let timer_name = self.quote_timer_name();
         let strategy_id = self.config.strategy_id.clone();
-        let interval_nanoseconds = self
-            .config
-            .quote_interval_ms
-            .saturating_mul(NANOS_PER_MILLI_U64);
-        if let Err(error) = self.clock().set_timer_ns(
-            &timer_name,
-            interval_nanoseconds,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ) {
-            log::error!(
-                "binary_oracle_maker quote timer registration failed: strategy_id={strategy_id} error={error:#}"
-            );
-        }
+        let quote_interval_ms = self.config.quote_interval_ms;
+        let interval_nanoseconds = quote_interval_ms
+            .checked_mul(NANOS_PER_MILLI_U64)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "binary_oracle_maker quote_interval_ms is invalid; it overflows the nanosecond clock unit: strategy_id={strategy_id} quote_interval_ms={quote_interval_ms}"
+                )
+            })?;
+        self.clock()
+            .set_timer_ns(
+                &timer_name,
+                interval_nanoseconds,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "binary_oracle_maker quote timer registration failed: strategy_id={strategy_id} error={error:#}"
+                )
+            })?;
+        Ok(())
     }
 
     /// Cancel the autonomous quote/refresh timer.
@@ -668,7 +693,15 @@ impl BinaryOracleMaker {
             },
         )?;
         if let Some(orders) = outcome.orders.as_ref() {
+            // Reconcile the identity of whichever legs dispatched BEFORE failing loud
+            // on a leg routing error, so a partial two-leg dispatch never orphans the
+            // sibling leg's assigned identity from the runtime's view.
             self.runtime.apply_dispatch_outcome(market_key, orders);
+            if let Some(error) = orders.routing_error() {
+                anyhow::bail!(
+                    "binary_oracle_maker leg order routing failed after identity reconcile: market_key={market_key} error={error}"
+                );
+            }
         }
         Ok(Some(outcome))
     }
@@ -683,7 +716,7 @@ impl BinaryOracleMaker {
 impl DataActor for BinaryOracleMaker {
     fn on_start(&mut self) -> anyhow::Result<()> {
         self.refresh_active_markets();
-        self.register_quote_timer();
+        self.register_quote_timer()?;
         Ok(())
     }
 
@@ -693,6 +726,11 @@ impl DataActor for BinaryOracleMaker {
         for instrument_id in self.runtime.active_instrument_ids() {
             self.unsubscribe_trades(instrument_id, Some(client_id), None);
         }
+        // Reset runtime state so a restart re-resolves from empty and re-emits the
+        // full trade-subscription delta. Leaving the active markets here would make
+        // the next `on_start`'s refresh diff before == after and emit no subscribe
+        // delta, leaving the maker active with no trade feeds.
+        self.runtime = MakerRuntime::empty();
         Ok(())
     }
 

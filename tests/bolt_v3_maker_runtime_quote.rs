@@ -12,6 +12,7 @@ use bolt_v2::{
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_runtime_order::{
         MakerRuntimeOrderDispatchInput, dispatch_maker_runtime_order_plan,
+        dispatch_maker_runtime_order_plan_with_command_router,
     },
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteInput,
@@ -502,6 +503,81 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
             ClientOrderId::from("MAKER-YES-1"),
             ClientOrderId::from("MAKER-NO-1"),
         ]
+    );
+}
+
+#[test]
+fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_routing_error() {
+    // A two-leg dispatch where the YES leg routes but the NO leg's command router
+    // returns an error. Fix F turns that per-leg routing error into data instead of a
+    // `?` abort: the dispatcher returns Ok with a partial outcome (YES dispatched, NO
+    // carrying its routing error) so the caller can reconcile the YES identity before
+    // failing loud, rather than orphaning it. Differential: under the prior `?`-abort
+    // behavior the dispatcher returns Err and the `.expect` below panics.
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let decision = plan_maker_runtime_quote(
+        &mut market,
+        &mut budget,
+        MakerRuntimeQuoteInput {
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set: quote_set_inputs(),
+            order_plan: order_plan_inputs(),
+        },
+    );
+    let order_plan = decision
+        .order_plan
+        .as_ref()
+        .expect("quote tick should produce maker order intents");
+
+    let template = maker_limit_post_only_template();
+    let mut route_calls = 0_u32;
+    let dispatched = dispatch_maker_runtime_order_plan_with_command_router(
+        MakerRuntimeOrderDispatchInput {
+            order_plan,
+            submit_template: &template,
+            price_precision: 2,
+            quantity_precision: 2,
+            submit_order_prefix: "maker_submit",
+        },
+        &mut |_command, _submit_order_prefix| {
+            route_calls += 1;
+            if route_calls == 1 {
+                Ok(MakerOrderDispatchOutcome::Submitted {
+                    leg: Leg::Yes,
+                    instrument_id: InstrumentId::from("YES.RUNTIME"),
+                    client_order_id: ClientOrderId::from("MAKER-YES-1"),
+                    price: Price::new(0.40, 2),
+                    quantity: Quantity::new(2.0, 2),
+                })
+            } else {
+                anyhow::bail!("simulated NO-leg routing failure")
+            }
+        },
+    )
+    .expect("a per-leg routing error is data, not a dispatcher abort");
+
+    assert_eq!(
+        route_calls, 2,
+        "YES routes, then NO is attempted because YES had no routing error"
+    );
+    assert!(
+        dispatched.yes.dispatch.is_some(),
+        "the YES leg dispatched before the NO failure"
+    );
+    assert!(
+        dispatched.no.dispatch.is_none(),
+        "the NO leg did not dispatch"
+    );
+    assert!(
+        dispatched.no.routing_error.is_some(),
+        "the NO leg captured its routing error as data"
+    );
+    assert_eq!(
+        dispatched.routing_error(),
+        dispatched.no.routing_error.as_deref(),
+        "the combined routing_error surfaces the NO-leg failure for the caller to fail loud on"
     );
 }
 

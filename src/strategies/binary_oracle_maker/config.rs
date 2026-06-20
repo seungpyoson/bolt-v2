@@ -98,6 +98,7 @@ const MISSING_ORDER_ID_TAG_CODE: &str = "missing_order_id_tag";
 const MISSING_OMS_TYPE_CODE: &str = "missing_oms_type";
 const MISSING_CLIENT_ID_CODE: &str = "missing_client_id";
 const INVALID_OMS_TYPE_CODE: &str = "invalid_oms_type";
+const INVALID_ORDER_ID_TAG_CODE: &str = "invalid_order_id_tag";
 const UNKNOWN_FIELD_CODE: &str = "unknown_field";
 
 const STRATEGY_ID_FIELD: &str = "strategy_id";
@@ -209,7 +210,33 @@ pub fn validate_config(raw: &Value, field_prefix: &str, errors: &mut Vec<Validat
         MISSING_MARKETS_CONFIG_DIGEST_CODE,
         errors,
     );
+    validate_order_id_tag_delimiter_free(table, field_prefix, errors);
     validate_oms_type_parses(table, field_prefix, errors);
+}
+
+/// Fail loud at load when `order_id_tag` contains the `-` delimiter the maker's
+/// per-leg client order id is joined on (`runtime::make_leg_identity`). The tag is
+/// the leading, free-form id component; constraining it to be delimiter-free keeps
+/// the positional id encoding unambiguous (the remaining free-form component,
+/// `market_key`, is right-anchored by the decimal window-start/generation and the
+/// `yes`/`no` leg), so two distinct markets can never mint the same client order
+/// id. A missing or non-string `order_id_tag` is already reported by
+/// `validate_string_field`, so it is skipped here.
+fn validate_order_id_tag_delimiter_free(
+    table: &toml::map::Map<String, Value>,
+    field_prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let Some(value) = table.get(ORDER_ID_TAG_FIELD).and_then(Value::as_str) else {
+        return;
+    };
+    if value.contains('-') {
+        errors.push(ValidationError {
+            field: format!("{field_prefix}.{ORDER_ID_TAG_FIELD}"),
+            code: INVALID_ORDER_ID_TAG_CODE,
+            message: format!("must not contain the `-` order-id delimiter, got `{value}`"),
+        });
+    }
 }
 
 /// Fail loud at load when `oms_type` is a string that does not parse as a
@@ -327,6 +354,28 @@ mod tests {
         let mut errors = Vec::new();
         validate_config(&valid_raw(), "strategy", &mut errors);
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn validate_config_rejects_order_id_tag_with_delimiter() {
+        // The maker joins the per-leg client order id on `-`
+        // (`runtime::make_leg_identity`); an `order_id_tag` containing the delimiter
+        // would make the positional encoding ambiguous, so it must fail loud at
+        // config load rather than risk minting colliding ids. Without the
+        // delimiter-free check this passes validation, so the assertion is
+        // differential.
+        let mut raw = valid_raw();
+        raw.as_table_mut()
+            .expect("config is a table")
+            .insert("order_id_tag".to_string(), Value::String("00-1".to_string()));
+        let mut errors = Vec::new();
+        validate_config(&raw, "strategy", &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.code == INVALID_ORDER_ID_TAG_CODE),
+            "a hyphenated order_id_tag must be rejected: {errors:?}"
+        );
     }
 
     #[test]

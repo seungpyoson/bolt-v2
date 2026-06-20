@@ -1766,9 +1766,11 @@ pub(crate) fn assert_funding_read_back_matches(
         let expected_rate = Decimal::from_str(&row.rate)
             .with_context(|| format!("canonical rate {:?}", row.rate))?;
         ensure!(
-            update.rate == expected_rate,
-            "funding read-back {index} rate {} does not match canonical {expected_rate}",
-            update.rate
+            update.rate == expected_rate && update.rate.scale() == expected_rate.scale(),
+            "funding read-back {index} rate {} (scale {}) does not match canonical {expected_rate} (scale {})",
+            update.rate,
+            update.rate.scale(),
+            expected_rate.scale()
         );
         ensure!(
             update.interval == row.interval_minutes,

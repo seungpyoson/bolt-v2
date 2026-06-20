@@ -13,9 +13,9 @@ v3 keeps the v2 design that the review did not challenge (the F1–F15 resolutio
 - **B-1 (convergent read-path blocker, 5 of 6 reviewers):** the largest v3 change. Restructures §3, §4.3, §4.4, §4.5, §5.3 around (a) immutable per-commit NT-native catalog roots materialized only from a committed PromotionPackage, (b) NT-native interval filenames in canonical roots vs content+transform-hash names staging-only, (c) Tier-C-only physically-non-NT staging that NT's reader cannot enumerate, plus a fail-loud validator. Grounded: NT lists a single root's `data/<type>/` prefix naively with zero pointer awareness (`catalog.rs:2040-2063`) and over-includes unparseable filenames (`query_intersects_filename` returns `true` on `None`, `catalog.rs:4741`) — silent wrong-data, NOT a crash (Gemini's crash mechanism disproven).
 - **R-2 (cross-kind promotion atomicity):** one PromotionPackage commits as a single immutable `SnapshotSet` advanced by ONE CAS on `pointers/set/latest.json`; per-kind pointers are derived views; the backtest pins the committed set once at run start. New §4.5; §13 open sub-question "Pointer-commit ordering across kinds" RESOLVED.
 - **R-3 (idempotency digest):** staging key, PromotionPackage entry, and `ArtifactIndex.content_hash` key on a canonical LOGICAL-content digest (new §4.3b, via NT's own in-tree `arrow_row::RowConverter`), never raw parquet bytes (non-deterministic — `created_by`/SNAPPY/row-group, `parquet.rs:182-183`). §9.x cost-model note added.
-- **R-4 (instruments lane):** instruments go through `ConditionalCatalogWriter` (new §4.5); NT `write_instruments` (`catalog.rs:726`, NOT node.rs:165 which is the read side) is never called for platform-root writes (§4.1 scope-boundary note); `event_time_source` guard exemption made class-correct via a table-level `time_series=false` predicate.
+- **R-4 (instruments lane):** instruments go through `ConditionalCatalogWriter` (new §4.5); NT `write_instruments` (`catalog.rs:726`, NOT node.rs:169 which is the read side) is never called for platform-root writes (§4.1 scope-boundary note); `event_time_source` guard exemption made class-correct via a table-level `time_series=false` predicate.
 - **R-5 (encoder seam):** `write_batches_to_object_store` is `pub` (`parquet.rs:170`) but encode+put share one function with no byte-return seam (`parquet.rs:178-197`); Phase-0 sub-task 0.E mandates verifying visibility and choosing vendor-encode vs arrow-rs, recorded in `NtCapabilityProof`.
-- **R-6 (conditional-put unprovable + multipart):** resolved S3ConditionalPut is not introspectable from a built store and NT's `create_s3_store` cannot even set it (drops unknown keys, `parquet.rs:712-714`); the writer builds its own `AmazonS3Builder` and asserts capability via a runtime probe at construction (Phase-0 prerequisite 0.6); public multipart cannot carry a create guard, so per-object size is bounded under the single-PUT limit, fail loud.
+- **R-6 (conditional-put unprovable + multipart):** resolved S3ConditionalPut is not introspectable from a built store and NT's `create_s3_store` cannot even set it (drops unknown keys, `parquet.rs:763-765`); the writer builds its own `AmazonS3Builder` and asserts capability via a runtime probe at construction (Phase-0 prerequisite 0.6); public multipart cannot carry a create guard, so per-object size is bounded under the single-PUT limit, fail loud.
 - **R-7 (server-side copy):** promotion materializes canonical objects by backend-native `object_store::copy_opts(CopyMode::Create)` → S3 `CopyObject` (`aws/mod.rs:312`), zero egress; new §4.4a; §9 cost addendum.
 - **R-8 (write_mode migration atomicity):** the coverage ledger's exclusion heuristic (`backfill_coverage_ledger.py:289-293`) is replaced with positive identification; the 13 producer/ledger edits + schema-validation test ship as ONE indivisible change set (§6.2, §16 Group G-A).
 - **R-9 (`:v0-pending`):** the provisional suffix is an opaque ROW-ID discriminator decoupled from the typed `source_proof_version` field (a positive integer; pending = `1`); §6.3.
@@ -75,7 +75,7 @@ NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`, crate `nautilus-persistence`:
   FundingRateUpdate, InstrumentStatus, OptionGreeks, InstrumentClose`. `FundingRateUpdate` and
   `OptionGreeks` have native dispatch arms at the pinned rev.
 - `instruments` load via a separate lane: write (`write_instruments`, `catalog.rs:726`) /
-  read (`query_instruments`, `catalog.rs:858`, called at `node.rs:165`), NOT through `dispatch_query`.
+  read (`query_instruments`, `catalog.rs:858`, called at `node.rs:169`), NOT through `dispatch_query`.
 - `MarkPriceUpdate`/`IndexPriceUpdate` are **point updates** carrying a single price + timestamp
   (`crates/model/src/data/mod.rs:107-108`), **not** OHLC bars.
 - NT's writer is non-atomic: `head()` existence probe (`catalog.rs:564-567`) then unconditional
@@ -133,7 +133,7 @@ v1 collapsed two NT surfaces that are NOT the same. There are THREE tiers, not t
 **`instruments` is a fourth, separate lane.** It is written by `ParquetDataCatalog::write_instruments`
 (**`catalog.rs:726`**, `pub fn write_instruments`) and read back for a backtest by
 `query_instruments` (**`catalog.rs:858`**); the `BacktestNode` calls only the READ side,
-`catalog.query_instruments(filter)` (**`node.rs:165`** — this line is the read, not the write).
+`catalog.query_instruments(filter)` (**`node.rs:169`** — this line is the read, not the write).
 Instruments are a backtest precondition (instrument definitions), not a streamed time-series, so they
 do NOT go through `dispatch_query`.
 
@@ -184,7 +184,7 @@ do NOT go through `dispatch_query`.
 | `InstrumentClose` | `instrument_closes` | A | yes |
 | `FundingRateUpdate` | `funding_rate_update` | **A** | **yes** |
 | `OptionGreeks` | `option_greeks` | **A** | **yes** |
-| `InstrumentAny` | `instruments` | separate lane — write via `ConditionalCatalogWriter` (NEVER NT `write_instruments` for platform-root writes, `catalog.rs:726`; §4.1 scope-boundary note); read via `query_instruments` (`catalog.rs:858`, called at `node.rs:165`) | n/a |
+| `InstrumentAny` | `instruments` | separate lane — write via `ConditionalCatalogWriter` (NEVER NT `write_instruments` for platform-root writes, `catalog.rs:726`; §4.1 scope-boundary note); read via `query_instruments` (`catalog.rs:858`, called at `node.rs:169`) | n/a |
 | `AccountState` | `account_state` | execution output, out of scope | no |
 
 Confirmed exact strings: `order_book_depths` (NOT `order_book_depth_10`); `funding_rate_update`
@@ -311,7 +311,7 @@ Rationale: (1) **Single write path** — one encode-then-conditional-`Create` di
 SSM-only credential resolver (bolt rule 6), one immutable-per-commit-root promotion (§4.4). A second
 producer would fork all three. (2) **Credential discipline** — bolt-v2 mandates SSM-only secrets
 (rule 6); Rust resolves S3 creds in-process and injects them into `from_uri` `storage_options`
-(`catalog.rs:307-322`, `storage_options` consumed at `parquet.rs:692-711`), whereas a Python writer
+(`catalog.rs:307-322`, `storage_options` consumed at `parquet.rs:743-762`), whereas a Python writer
 needs an s3fs/fsspec write surface that risks an env-var/AWS-CLI fallback. Read-only Python carries the
 same credential injection but can never produce a non-conditional PUT. (3) **Single build path** — the
 Rust projector shares one `nautilus-persistence`/`datafusion` version with the downstream
@@ -363,8 +363,8 @@ either (bolt rule 6).
 Verified at rev `6be5a50`:
 
 - A backtest declares **one catalog root URI per `BacktestDataConfig`**: `catalog_path` +
-  optional `catalog_fs_protocol` (`config.rs:599,601`). `create_catalog` builds `<protocol>://<path>`
-  and calls `ParquetDataCatalog::from_uri(&uri, storage_options, …)` (`node.rs:503-512`).
+  optional `catalog_fs_protocol` (`config.rs:662,664`). `create_catalog` builds `<protocol>://<path>`
+  and calls `ParquetDataCatalog::from_uri(&uri, storage_options, …)` (`node.rs:507-516`).
 - `from_uri` parses that URI into a `base_path` and stores only `base_path` + `object_store`
   (`catalog.rs:307-330`) — it has no field for a pointer, snapshot, or set. `make_path(type, id)`
   builds exactly `<base_path>/data/<type>/[<safe_id>]` (`catalog.rs:2841-2849`).
@@ -506,10 +506,10 @@ resolved mode CANNOT be read back from a built `AmazonS3`:
   (`aws/client.rs:209`) behind a `pub(crate)` client — invisible to an external consumer (the in-crate
   integration test reads it as `config.conditional_put`, `aws/mod.rs:625`, which an external caller
   cannot do).
-- **NT's store builder cannot even set it.** `create_s3_store` (`parquet.rs:680-722`) maps only
+- **NT's store builder cannot even set it.** `create_s3_store` (`parquet.rs:731-773`) maps only
   `endpoint_url`/`region`/`access_key_id`/`secret_access_key`/`session_token`/`allow_http` from
   `storage_options`; any other key (including a hypothetical `conditional_put`) hits the `_ =>`
-  "Unknown S3 storage option" warn arm and is silently dropped (`parquet.rs:712-714`). So NT's
+  "Unknown S3 storage option" warn arm and is silently dropped (`parquet.rs:763-765`). So NT's
   `from_uri` path yields the crate-default `ETagMatch` only by default, with no caller control and no
   read-back.
 >
@@ -776,7 +776,7 @@ wholesale. Promotion is the commit of an explicit promotion package, never a pre
 7. **The hot pointer names the active root; NT is pointed at THAT root.** A backtest resolves its
    `catalog_path` from the committed `set/latest.json` → `SnapshotSet` → per-kind snapshot, which names
    the immutable `nt-catalog/sets/<snapshot_set_id>/` root. NT is pointed at that root URI
-   (`create_catalog` `node.rs:503-512`), so it lists only that one immutable, NT-native,
+   (`create_catalog` `node.rs:507-516`), so it lists only that one immutable, NT-native,
    interval-disjoint `data/` tree. **A lost CAS leaves an unreferenced root** that no committed pointer
    names: NT is never pointed at it, `query_files` never lists it, and it is garbage-collectible — it
    is structurally impossible for a backtest to read it. Because every root is immutable and the pointer
@@ -918,12 +918,12 @@ wall-clock moments within one run*:
   `base_path`** — discovered by independent LIST calls, each a fresh snapshot of whatever bytes exist at
   that instant.
 - `BacktestNode` LISTs **at least twice per run, on N separately-constructed catalogs**: `build()`
-  constructs a fresh catalog **per `data_config`** and queries instruments (`node.rs:156-178`, via
-  `create_catalog`→`from_uri`, `node.rs:503-513`); then `run()` re-constructs a fresh catalog **per
-  `data_config`** and LISTs the time-series at load time (`run_oneshot` `node.rs:374-382` → `load_data`
-  `node.rs:515-523`; multi-config streaming `run_streaming`/`load_and_merge_data` `node.rs:393-414,
-  488-501`). Each `create_catalog` is an independent `from_uri` over that config's `catalog_path`
-  (`node.rs:504-512`).
+  constructs a fresh catalog **per `data_config`** and queries instruments (`node.rs:160-182`, via
+  `create_catalog`→`from_uri`, `node.rs:507-517`); then `run()` re-constructs a fresh catalog **per
+  `data_config`** and LISTs the time-series at load time (`run_oneshot` `node.rs:378-386` → `load_data`
+  `node.rs:519-527`; multi-config streaming `run_streaming`/`load_and_merge_data` `node.rs:397-418,
+  492-505`). Each `create_catalog` is an independent `from_uri` over that config's `catalog_path`
+  (`node.rs:508-516`).
 
 **The race (concrete).** A run with a `data_config` for trades + a `data_config` for quotes + an
 instruments load is, in NT, three-plus independent LISTs at three different instants. If a promotion
@@ -952,11 +952,11 @@ path NT is enumerating:
    `source_proof_ids`, §5.2 rule 3), and resolves the per-kind committed snapshots **from that pinned
    set only**. This is the single point at which "what is live" is observed for the whole run.
 3. **Every `catalog_path` is derived from the pinned set, never from a live pointer.** The driver
-   constructs each `BacktestDataConfig.catalog_path` (`config.rs:599`) as the immutable per-set root for
+   constructs each `BacktestDataConfig.catalog_path` (`config.rs:662`) as the immutable per-set root for
    that kind. Because NT's `from_uri` simply stores whatever base it is given (`catalog.rs:321-329`),
    pinning is achieved entirely on the bolt side by what string we hand NT — no NT change is required.
    All N `data_config` catalogs in `build()` and `run()` resolve to the SAME pinned set, so the multiple
-   independent LISTs (`node.rs:156-178` build, `node.rs:374-382`/`488-501` run) all enumerate the same
+   independent LISTs (`node.rs:160-182` build, `node.rs:378-386`/`492-505` run) all enumerate the same
    immutable roots. A promotion that lands mid-run advances `set/latest.json` to a new set root the
    running node never references; the next run picks it up. **A backtest started mid-promotion sees
    either the old set or the new set, never a mix** — the acceptance criterion for R-2.
@@ -1693,7 +1693,7 @@ The HL archive is requester-pays (`contract:215,274`; coverage doc line 99 recor
 442-444,1063-1064`). **However, NT's `create_s3_store` does NOT pass it through** — its
 `storage_options` match handles only `endpoint_url`/`region`/`access_key_id`/`secret_access_key`/
 `session_token`/`allow_http`; any `request_payer` key falls into the `_ =>` "Unknown S3 storage option"
-arm and is silently dropped (`crates/persistence/src/parquet.rs:692-714`). **Consequence:** NT's
+arm and is silently dropped (`crates/persistence/src/parquet.rs:743-765`). **Consequence:** NT's
 catalog reader/writer CANNOT issue `x-amz-request-payer: requester`, so HL requester-pays archives
 cannot be read directly through the NT catalog. The projection must **pre-stage HL raw archives into our
 own (requester-owned) bucket** via a separate copy step that DOES set requester-pays (the existing
@@ -1783,7 +1783,7 @@ canonical-promotion step.
   - **0.0 Structural isolation (F12, §12).** Cloud-enabled projector in a SEPARATE workspace/lockfile.
   - **0.1 Falsifiable `cargo tree -e features` build guard (F12, §12).**
   - **0.2 Negative control 1 — feature gate (F12).** No-cloud build → `from_uri` on `s3://` hits the
-    `crates/persistence/src/parquet.rs:539` bail.
+    `crates/persistence/src/parquet.rs:549` bail.
   - **0.3 Negative control 2 — credential attribution (F11, §11-cred).** Cloud ON + scrubbed ambient
     creds (env + IMDS) + no/invalid `storage_options` creds → write FAILS; same write with valid SSM
     creds → SUCCEEDS.
@@ -1941,7 +1941,7 @@ keyed to the pinned rev.
 
 - **0.2 Negative control 1 — feature gate (unchanged):** a no-cloud build calling `from_uri` on an
   `s3://` URI must hit the bail `"Cloud storage support requires the 'cloud' feature: {uri}"`
-  (`crates/persistence/src/parquet.rs:539`, the `#[cfg(not(feature = "cloud"))]` arm `:530-540`). This
+  (`crates/persistence/src/parquet.rs:549`, the `#[cfg(not(feature = "cloud"))]` arm `:540-550`). This
   proves cloud is feature-driven — but NOT that SSM creds (vs ambient creds) drive the positive write.
 - **0.3 Negative control 2 — credential attribution:** the no-cloud bail proves nothing about WHERE the
   positive write's credentials came from. With cloud ON, the write could succeed via ambient AWS env
@@ -1952,7 +1952,7 @@ keyed to the pinned rev.
     SCRUB every ambient AWS credential source.
   - **Why scrubbing both env AND IMDS is required (grounded):** the projector's `AmazonS3Builder` (and
     NT's `create_s3_store`, which uses `AmazonS3Builder::new()` not `from_env()` and only sets keys from
-    `storage_options`, `parquet.rs:687-718`) does NOT auto-load env-var creds. HOWEVER,
+    `storage_options`, `parquet.rs:738-769`) does NOT auto-load env-var creds. HOWEVER,
     `AmazonS3Builder::build()` does NOT fail on missing static creds; when both keys are `None` it falls
     through WebIdentity / Task / EKS Pod / `InstanceCredentialProvider` (IMDS at
     `http://169.254.169.254`) (`object_store-0.13.2/src/aws/builder.rs:1090-1179`, default endpoint
@@ -1973,8 +1973,8 @@ keyed to the pinned rev.
 - **0.4 Positive proof (unchanged):** SSM-resolved creds → write two SYNTHETIC fixtures → re-open →
   `query_files` → assert. Stamp `NtCapabilityProof` recording PROVEN direct-S3, the EXACT
   `storage_options`/builder key set consumed (`endpoint_url`, `region`, `access_key_id`/`key`,
-  `secret_access_key`/`secret`, `session_token`/`token`, `allow_http` — `parquet.rs:692-711`; any other
-  key is silently dropped via the `_ =>` warn arm `parquet.rs:712-714`), and credential source = SSM. On
+  `secret_access_key`/`secret`, `session_token`/`token`, `allow_http` — `parquet.rs:743-762`; any other
+  key is silently dropped via the `_ =>` warn arm `parquet.rs:763-765`), and credential source = SSM. On
   failure, document the local-write-then-s3-sync fallback and block direct-S3 claims.
 
 (The cost/scale section for F10 is §9 above.)
@@ -2038,7 +2038,7 @@ not that proof.
 
 **DECIDED (not an open question): single set-atomic commit + run-pinned set read.** Per-kind eventual
 consistency is rejected — it admits the silent mixed read proven in §4.5 (NT re-LISTs each kind
-independently at different instants within one run: `node.rs:156-178`, `374-382`, `488-501`). A
+independently at different instants within one run: `node.rs:160-182`, `378-386`, `492-505`). A
 PromotionPackage spanning multiple `artifact_kind`s commits as ONE immutable `SnapshotSet` advanced by a
 single CAS on `artifact-index/v1/pointers/set/latest.json` (§4.4 step 6), and readers pin that committed
 set for the entire run (§4.5 reader rule). The `SnapshotSet` is the join record across kinds; the
@@ -2119,7 +2119,7 @@ the built store (`aws/precondition.rs:117-160`, `aws/client.rs:209`).
   immutable per-set root NT is pointed at, never a shared mutated prefix. A pointer alone does NOT keep
   pre-CAS bytes out of a read.
 - **Cross-kind / mid-promotion read race (R-2):** NT re-LISTs each `data_config` independently at
-  different instants in one run (`node.rs:156-178`/`374-382`/`488-501`); a per-kind pointer admits a
+  different instants in one run (`node.rs:160-182`/`378-386`/`492-505`); a per-kind pointer admits a
   silent mixed read. Mitigated by the single-`SnapshotSet` CAS + run-start pin (§4.4/§4.5).
 - **Idempotency-key non-determinism (R-3):** parquet bytes are not deterministic (`created_by` =
   parquet-rs version, SNAPPY, row-group sizing, `parquet.rs:182-183`); the staging/canonical key and
@@ -2205,11 +2205,11 @@ the built store (`aws/precondition.rs:117-160`, `aws/client.rs:209`).
 | Finding | Resolution in v3 |
 |---|---|
 | **B-1** Catalog read-path incompatibility (3 defects: hash-suffixed names over-included; pointer never consulted so pre-CAS canonical bytes are NT-readable orphans; interim-staging NT catalog guarded only socially) | RESOLVED. §4.3.4: canonical roots use NT-native `timestamps_to_filename` names only, interval-disjoint, one live file per interval; content+transform-hash names are staging-only (NT over-includes unparseable names — `query_intersects_filename` `true` on `None`, `catalog.rs:4741`; NOT a crash). §4.4: canonical NT catalog is materialized into a FRESH IMMUTABLE per-set root via server-side copy AFTER the pointer CAS; the pointer names the active root and NT is pointed at THAT root, so a lost CAS leaves an unreferenced root NT never lists (`catalog.rs:307-322,2040-2063`). §5.3: staging is Tier-C-only under `staged-research/…` (never `data/<type>/`), so NT's `make_path`/`query_files`/`list_parquet_files` cannot enumerate it; a fail-loud validator rejects pending-proof objects under any Tier A/B prefix and non-NT-native names under any canonical root. |
-| **R-2** Cross-kind promotion atomicity | RESOLVED. §4.4 step 6: one PromotionPackage commits as a single immutable `SnapshotSet` advanced by ONE CAS on `pointers/set/latest.json`; per-kind pointers are derived. §4.5: the backtest pins the committed set ONCE at run start and derives every `catalog_path` from one immutable per-set root, so NT's independent per-config LISTs (`node.rs:156-178`/`374-382`/`488-501`) all enumerate the same frozen byte set; a run sees the old set or the new set, never a mix. §13.6 resolved. BLOCKER Phase-0 acceptance proof 0.R. |
+| **R-2** Cross-kind promotion atomicity | RESOLVED. §4.4 step 6: one PromotionPackage commits as a single immutable `SnapshotSet` advanced by ONE CAS on `pointers/set/latest.json`; per-kind pointers are derived. §4.5: the backtest pins the committed set ONCE at run start and derives every `catalog_path` from one immutable per-set root, so NT's independent per-config LISTs (`node.rs:160-182`/`378-386`/`492-505`) all enumerate the same frozen byte set; a run sees the old set or the new set, never a mix. §13.6 resolved. BLOCKER Phase-0 acceptance proof 0.R. |
 | **R-3** Idempotency digest over non-deterministic parquet bytes | RESOLVED. §4.3b: one canonical LOGICAL-content digest via `arrow_row::RowConverter` (`parquet.rs:211-249`, in-tree dep `Cargo.toml:69`) over a fixed schema image + total row order + decimal-preserved values; every staging key, PromotionPackage entry, and `ArtifactIndex.content_hash` resolves to it. Determinism contract test. §9.x cost note. |
-| **R-4** Instruments lane contradiction (non-atomic `write_instruments`) | RESOLVED. §2.1 + §4.5: instruments go through `ConditionalCatalogWriter`; NT `write_instruments` (`catalog.rs:726`, NOT node.rs:165 = read) never called for platform writes (scope: see §4.1 scope-boundary note for the pre-existing vertical-slice run projection on `main`); `event_time_source` exemption via table-level `time_series=false`. |
+| **R-4** Instruments lane contradiction (non-atomic `write_instruments`) | RESOLVED. §2.1 + §4.5: instruments go through `ConditionalCatalogWriter`; NT `write_instruments` (`catalog.rs:726`, NOT node.rs:169 = read) never called for platform writes (scope: see §4.1 scope-boundary note for the pre-existing vertical-slice run projection on `main`); `event_time_source` exemption via table-level `time_series=false`. |
 | **R-5** NT encoder reuse / buffer seam | RESOLVED. §4.3.0: `write_batches_to_object_store` is `pub` (`parquet.rs:170`) but encode+put share one function (`:178-197`); Phase-0 0.E mandates vendor-encode vs arrow-rs decision + round-trip proof + encoder identity in `NtCapabilityProof`. |
-| **R-6** Conditional-put unprovable + multipart | RESOLVED. §4.3.2: resolved mode not introspectable (`aws/precondition.rs:117-160`, `aws/client.rs:209`) and NT can't even set it (`parquet.rs:712-714`); writer builds its own `AmazonS3Builder` + runtime probe at construction (Phase-0 prereq 0.6). §4.3.3: public multipart carries no `PutMode`; per-object size bounded under single-PUT, fail loud. |
+| **R-6** Conditional-put unprovable + multipart | RESOLVED. §4.3.2: resolved mode not introspectable (`aws/precondition.rs:117-160`, `aws/client.rs:209`) and NT can't even set it (`parquet.rs:763-765`); writer builds its own `AmazonS3Builder` + runtime probe at construction (Phase-0 prereq 0.6). §4.3.3: public multipart carries no `PutMode`; per-object size bounded under single-PUT, fail loud. |
 | **R-7** Promotion egress / no atomic cross-prefix copy | RESOLVED. §4.4a: server-side `copy_opts(CopyMode::Create)` → S3 `CopyObject` (`aws/mod.rs:312`, `aws/client.rs:596-597,702`), zero egress; size-keyed single vs multipart `UploadPartCopy` (one path); `copy_if_not_exists` capability probed Phase-0 (0.6). §9.x cost addendum. |
 | **R-8** `write_mode` migration not atomic | RESOLVED. §6.2: ledger flips from exclusion heuristic (`backfill_coverage_ledger.py:289-293`) to positive identification (`local_staging`+`staging_location=s3_noncanonical`); unknown/missing = hard error; producers + ledger + schema-validation test ship as one indivisible change set (§16 G-A). |
 | **R-9** `:v0-pending` violates `source_proof_version` schema | RESOLVED. §6.3: `:v0-pending` is an opaque ROW-ID discriminator; `source_proof_version` is a positive integer (pending = `1`, `status=pending`); provisional id must resolve to a real pending record; acceptance creates a NEW immutable record. Schema-validation test rejects non-integer/<1 versions. |

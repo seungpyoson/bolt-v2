@@ -702,7 +702,13 @@ impl BinaryOracleMaker {
         if let Some(orders) = outcome.orders.as_ref() {
             // Reconcile the identity of whichever legs dispatched BEFORE failing loud
             // on a leg routing error, so a partial two-leg dispatch never orphans the
-            // sibling leg's assigned identity from the runtime's view.
+            // sibling leg's assigned identity from the runtime's view. The MarketQuote
+            // FSM and requote budget that plan_maker_runtime_quote already advanced are
+            // deliberately NOT rolled back: the dispatched leg's identity is bookkept
+            // active, so the FSM state and charged budget consistently reflect the leg
+            // that rested, and a rollback would desync them from the reconciled active
+            // identity. Recovering the partial (pulling the orphaned leg / reduce-only)
+            // is the pull-on-cannot-defend + active-flatten work tracked in #869 (X2/X4).
             self.runtime.apply_dispatch_outcome(market_key, orders);
             if let Some(error) = orders.routing_error() {
                 anyhow::bail!(

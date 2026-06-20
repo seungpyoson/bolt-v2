@@ -380,8 +380,32 @@ pub fn validate_strategy(
         }
     };
     let mut errors = validate_parameter_bounds(context, &parameters);
+    errors.extend(validate_order_id_tag_delimiter_free(
+        context,
+        &strategy.order_id_tag,
+    ));
     validate_strategy_config_hash_binding(context, strategy, &parameters, &mut errors);
     errors
+}
+
+/// Reject an `order_id_tag` that contains the `-` client-order-id delimiter on the
+/// live node-startup path. The maker mints each per-leg client order id by joining
+/// `order_id_tag` with the market key, window start, leg, and generation on `-`
+/// (`runtime::make_leg_identity`); a delimiter in the tag makes that positional
+/// encoding ambiguous, so two distinct `(order_id_tag, market_key)` pairs — e.g.
+/// `("00-1", "eth")` and `("00", "1-eth")` — could mint an identical id even though
+/// `validate_strategies` already enforces tag *uniqueness* (distinct tags do not
+/// stop the concatenation collision). The schema-layer
+/// `config::validate_order_id_tag_delimiter_free` enforces the same invariant on the
+/// builder `validate_config` path, but that path is not wired into the live startup
+/// gate, so the injectivity invariant `make_leg_identity` documents must also be
+/// enforced here, where the node actually validates the parsed strategy config.
+fn validate_order_id_tag_delimiter_free(context: &str, order_id_tag: &str) -> Option<String> {
+    order_id_tag.contains('-').then(|| {
+        format!(
+            "{context}: order_id_tag `{order_id_tag}` must not contain the `-` client-order-id delimiter (the maker joins its per-leg client order id on `-`, so a delimiter in the tag would make the positional id encoding ambiguous and two distinct markets could mint the same client order id)"
+        )
+    })
 }
 
 /// Fail-closed bounds for the maker's μ runtime knobs (the go-live gate). Each
@@ -1325,6 +1349,28 @@ mod tests {
                 .iter()
                 .any(|error| error.contains("quote_interval_ms")),
             "a valid runtime must not flag quote_interval_ms"
+        );
+    }
+
+    #[test]
+    fn validate_order_id_tag_delimiter_free_rejects_the_client_order_id_delimiter() {
+        // make_leg_identity joins order_id_tag with the market key, window start,
+        // leg, and generation on `-`, so a `-` in the tag lets two distinct
+        // (tag, market_key) pairs mint the same client order id (e.g. "00-1"+"eth"
+        // == "00"+"1-eth") even though validate_strategies enforces tag uniqueness.
+        // validate_strategy wires this onto the live node-startup gate (the
+        // schema-layer config check is not). Differential: removing the delimiter
+        // rule (or the validate_strategy wiring that calls it) makes the hyphenated
+        // tag return None and this expect panics.
+        let error = validate_order_id_tag_delimiter_free(CONTEXT, "00-1")
+            .expect("a hyphenated order_id_tag must be rejected on the live gate");
+        assert!(
+            error.contains("must not contain the `-` client-order-id delimiter"),
+            "the rejection must name the delimiter invariant: {error}"
+        );
+        assert!(
+            validate_order_id_tag_delimiter_free(CONTEXT, "001").is_none(),
+            "a delimiter-free order_id_tag must pass the live gate"
         );
     }
 

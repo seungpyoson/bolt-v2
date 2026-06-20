@@ -1483,6 +1483,15 @@ fn maker_on_start_fails_loud_when_quote_interval_overflows_the_nanosecond_clock(
         rendered.contains("overflows the nanosecond clock"),
         "on_start should fail loud naming the nanosecond-clock overflow: {rendered}"
     );
+    // No half-started runtime: on_start registers the quote timer BEFORE resolving
+    // markets, so the abort precedes any market subscription even though the cache
+    // already holds the declared instruments. Differential: reordering on_start to
+    // refresh markets before the timer would leave active_market_count() == 1 here.
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        0,
+        "a failed on_start must leave no resolved/subscribed markets behind"
+    );
 }
 
 #[test]
@@ -1516,6 +1525,15 @@ fn maker_on_start_fails_loud_when_the_quote_timer_cannot_register() {
     assert!(
         rendered.contains("quote timer registration failed"),
         "on_start should fail loud naming the quote timer registration failure: {rendered}"
+    );
+    // No half-started runtime: the quote timer registers BEFORE markets resolve, so
+    // a registration failure aborts on_start before any market subscription even
+    // though the cache holds the declared instruments. Differential: reordering
+    // on_start to refresh markets first would leave active_market_count() == 1 here.
+    assert_eq!(
+        maker.runtime().active_market_count(),
+        0,
+        "a failed on_start must leave no resolved/subscribed markets behind"
     );
 }
 

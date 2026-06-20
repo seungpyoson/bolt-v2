@@ -70,10 +70,13 @@ fn leg_tag(leg: Leg) -> &'static str {
 /// deliberately **not** a component: it is venue metadata not guaranteed to change
 /// per window, so keying the id (or the retain-vs-roll decision) on it would reopen
 /// the collision class on a `market_id`-reuse roll. The positional encoding is
-/// unambiguous because `order_id_tag` is validated delimiter-free at config load
-/// (`config::validate_order_id_tag_delimiter_free`), `window_start_milliseconds`
-/// and `generation` are decimal, and `leg` is `yes`/`no`, so the source tuple is
-/// recoverable from the string even when `market_key` contains the delimiter.
+/// unambiguous because `order_id_tag` is rejected at load when it contains the
+/// delimiter — on the live node-startup path by the bounds gate
+/// (`archetype::validate_strategy`, which the node actually runs) and on the
+/// builder `validate_config` path by `config::validate_order_id_tag_delimiter_free`
+/// — while `window_start_milliseconds` and `generation` are decimal and `leg` is
+/// `yes`/`no`, so the source tuple is recoverable from the string even when
+/// `market_key` contains the delimiter.
 fn make_leg_identity(
     order_id_tag: &str,
     market_key: &str,
@@ -320,7 +323,15 @@ impl MakerRuntime {
                 continue;
             };
             let runtime = match self.markets.remove(&market_key) {
-                // Same cadence window: retain assigned identities + generations.
+                // Same cadence window: retain assigned identities + generations and
+                // refresh only the allocation. The prior binding's other metadata
+                // (expiration, selection outcome) is intentionally NOT refreshed from
+                // the fresh resolution here: a same window start implies the same
+                // resolved instrument ids (the slug derives from the period start), and
+                // no consumer reads the expiration/selection fields until settlement, so
+                // a stale value is latent at the foundation. The X3 settlement slice
+                // refreshes that metadata on retain (and treats a changed instrument id
+                // under an unchanged window start as a roll) — tracked in #866.
                 Some(mut prior) if same_window(&prior.binding, binding) => {
                     prior.allocation_notional = allocation_notional;
                     prior
@@ -406,7 +417,14 @@ fn rotate_leg_identity(
             MakerOrderDispatchOutcome::Canceled { .. }
             | MakerOrderDispatchOutcome::CanceledAll { .. },
         ) => {
+            // A cancel/drain clears the resting identity AND drops the pre-minted
+            // replacement: a drained leg leaves a clean slate, so no stale
+            // `next_order` survives to be promoted by a later submit (the X4
+            // reduce-only/flatten path mints fresh identities of its own). The next
+            // quote cycle re-mints `next_order` before use, so this never strands a
+            // live cycle.
             binding.active_order = None;
+            binding.next_order = None;
         }
         // A modify amends the resting order in place: the active identity is
         // unchanged. No dispatch (a blocked or no-action leg) leaves the slots as-is.
@@ -543,9 +561,15 @@ mod tests {
     }
 
     #[test]
-    fn cancel_all_dispatch_clears_active_identity() {
+    fn cancel_all_dispatch_clears_both_active_and_pending_identities() {
+        // A drain clears the resting identity AND drops the pre-minted replacement,
+        // so a cancelled leg leaves a clean slate (no stale next_order for a later
+        // submit to promote). Differential: next_order is seeded here, so if the
+        // cancel branch stops clearing it the pre-minted replacement survives the
+        // drain and the second assertion fails.
         let mut binding = leg_binding("YES.SIM");
         binding.active_order = Some(make_leg_identity("001", "m", 1, Leg::Yes, 5));
+        binding.next_order = Some(make_leg_identity("001", "m", 1, Leg::Yes, 6));
         rotate_leg_identity(
             &mut binding,
             Some(&MakerOrderDispatchOutcome::CanceledAll {
@@ -555,6 +579,10 @@ mod tests {
             }),
         );
         assert_eq!(binding.active_order, None);
+        assert_eq!(
+            binding.next_order, None,
+            "a drain must drop the pre-minted replacement identity"
+        );
     }
 
     #[test]

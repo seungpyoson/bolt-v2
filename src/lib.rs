@@ -60,6 +60,7 @@ pub mod bolt_v3_outcome_groups;
 pub mod bolt_v3_position_contract;
 pub mod bolt_v3_position_sizer;
 pub mod bolt_v3_position_sizer_runtime_feed;
+pub mod bolt_v3_prod_profile;
 pub mod bolt_v3_providers;
 pub mod bolt_v3_quote_lifecycle;
 pub mod bolt_v3_quoting;

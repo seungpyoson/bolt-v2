@@ -1473,6 +1473,75 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         raise AssertionError(f"expected merge_group cancel-scope error, got: {cancel_errors}")
 
+    # Fail-open guard (ci.yml): a decoupled merge_group arm must be caught even
+    # when 'mq-{0}'/'github.ref' still appear elsewhere. Swap the merge_group and
+    # workflow_dispatch format strings so both substrings remain present but the
+    # merge_group arm no longer keys on format('mq-{0}', github.ref). The old
+    # bare-substring check passed this; the anchored regex must reject it.
+    ci_fail_open = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'workflow_dispatch'\n"
+        "        && format('{0}-full-ci', github.ref_name)\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n",
+        "        || github.event_name == 'workflow_dispatch'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('{0}-full-ci', github.ref_name)\n",
+    )
+    if ci_fail_open == ci_workflow:
+        raise AssertionError("merge_group fail-open fixture fragment not found in ci.yml")
+    fail_open_errors = verifier.verify_workflow(ci_fail_open)
+    if not any(
+        "concurrency group must key merge_group runs on github.ref" in error
+        for error in fail_open_errors
+    ):
+        raise AssertionError(
+            f"anchored merge_group concurrency check must reject a decoupled arm, got: {fail_open_errors}"
+        )
+
+    # actionlint concurrency must also isolate merge_group (the reviewer-flagged
+    # class gap: only ci.yml's concurrency was contract-checked). Removing
+    # actionlint's merge_group concurrency arm must be reported.
+    actionlint_no_concurrency_arm = replace_once(
+        actionlint_workflow,
+        "      || github.event_name == 'merge_group'\n"
+        "      && format('mq-{0}', github.ref)\n",
+        "",
+    )
+    if actionlint_no_concurrency_arm == actionlint_workflow:
+        raise AssertionError("actionlint merge_group concurrency fixture fragment not found")
+    actionlint_concurrency_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/actionlint.yml": actionlint_no_concurrency_arm}
+    )
+    if not any(
+        "concurrency group must key merge_group runs on github.ref" in error
+        for error in actionlint_concurrency_errors
+    ):
+        raise AssertionError(
+            f"expected actionlint merge_group concurrency error, got: {actionlint_concurrency_errors}"
+        )
+
+    # actionlint cancel-in-progress must never cancel merge_group queue runs.
+    actionlint_cancel_merge_group = replace_once(
+        actionlint_workflow,
+        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        "  cancel-in-progress: ${{ github.event_name == 'pull_request'"
+        " || github.event_name == 'merge_group' }}",
+    )
+    if actionlint_cancel_merge_group == actionlint_workflow:
+        raise AssertionError("actionlint cancel-in-progress fixture fragment not found")
+    actionlint_cancel_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/actionlint.yml": actionlint_cancel_merge_group}
+    )
+    if not any(
+        "cancel-in-progress must not cancel merge_group queue validations" in error
+        for error in actionlint_cancel_errors
+    ):
+        raise AssertionError(
+            f"expected actionlint merge_group cancel-scope error, got: {actionlint_cancel_errors}"
+        )
+
 
 def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
     verifier = load_verifier()

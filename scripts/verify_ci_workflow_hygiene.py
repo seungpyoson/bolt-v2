@@ -679,11 +679,21 @@ def top_level_block(workflow_text: str, key: str) -> list[str]:
     return []
 
 
-def verify_pr_concurrency(workflow_text: str) -> list[str]:
+MERGE_GROUP_CONCURRENCY_GROUP_RE = re.compile(
+    r"github\.event_name\s*==\s*(['\"])merge_group\1"
+    r"\s*&&\s*format\(\s*(['\"])mq-\{0\}\2\s*,\s*github\.ref\s*\)"
+)
+
+
+def concurrency_group_and_cancel(workflow_text: str) -> tuple[str, str] | None:
+    """Split a workflow's top-level concurrency block into (group_text,
+    cancel_text). group_text is the group expression joined to one line;
+    cancel_text is the cancel-in-progress expression. Returns None when no
+    concurrency block is defined. Shared by verify_pr_concurrency and
+    verify_merge_group_concurrency so both read the block identically."""
     block = top_level_block(workflow_text, "concurrency")
     if not block:
-        return ["workflow must define PR-only concurrency"]
-
+        return None
     group_lines: list[str] = []
     cancel_lines: list[str] = []
     seen_cancel = False
@@ -694,9 +704,46 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
             cancel_lines.append(line)
         else:
             group_lines.append(line)
-
     group_text = " ".join(line.strip() for line in group_lines if line.strip())
     cancel_text = "\n".join(cancel_lines)
+    return group_text, cancel_text
+
+
+def merge_group_concurrency_errors(group_text: str, cancel_text: str) -> list[str]:
+    """Assert the concurrency block isolates merge_group queue validations on
+    github.ref and never cancels them. The group check is anchored to the
+    merge_group arm via regex (not bare substrings): a broken merge_group arm
+    must not pass just because 'mq-{0}'/'github.ref' also appear in another arm.
+    That fail-open gap would let two queue entries share a concurrency group and
+    cancel each other, dropping a required-check report and blocking or
+    corrupting the merge."""
+    errors: list[str] = []
+    if not MERGE_GROUP_CONCURRENCY_GROUP_RE.search(group_text):
+        errors.append("concurrency group must key merge_group runs on github.ref")
+    if (
+        "github.event_name == 'merge_group'" in cancel_text
+        or 'github.event_name == "merge_group"' in cancel_text
+    ):
+        errors.append("cancel-in-progress must not cancel merge_group queue validations")
+    return errors
+
+
+def verify_merge_group_concurrency(workflow_text: str) -> list[str]:
+    """Standalone merge_group concurrency check for required-check workflows that
+    do not use ci.yml's full PR-deferral concurrency shape (e.g. actionlint.yml),
+    so they get the same fail-closed merge_group isolation as ci.yml."""
+    split = concurrency_group_and_cancel(workflow_text)
+    if split is None:
+        return ["workflow must define concurrency for merge_group isolation"]
+    group_text, cancel_text = split
+    return merge_group_concurrency_errors(group_text, cancel_text)
+
+
+def verify_pr_concurrency(workflow_text: str) -> list[str]:
+    split = concurrency_group_and_cancel(workflow_text)
+    if split is None:
+        return ["workflow must define PR-only concurrency"]
+    group_text, cancel_text = split
     errors: list[str] = []
     if not PR_CONCURRENCY_EVENT_RE.search(group_text):
         errors.append("concurrency group must branch on pull_request event")
@@ -730,17 +777,7 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         or "startsWith(github.ref" in cancel_text
     ):
         errors.append("cancel-in-progress must not cancel push, tag, or deploy flows")
-    group_has_merge_group_arm = (
-        "github.event_name == 'merge_group'" in group_text
-        or 'github.event_name == "merge_group"' in group_text
-    )
-    if not group_has_merge_group_arm or "mq-{0}" not in group_text or "github.ref" not in group_text:
-        errors.append("concurrency group must key merge_group runs on github.ref")
-    if (
-        "github.event_name == 'merge_group'" in cancel_text
-        or 'github.event_name == "merge_group"' in cancel_text
-    ):
-        errors.append("cancel-in-progress must not cancel merge_group queue validations")
+    errors.extend(merge_group_concurrency_errors(group_text, cancel_text))
     return errors
 
 
@@ -8960,6 +8997,17 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                 # actionlint is a required check; it must report on merge_group
                 # or the merge queue is blocked.
                 errors.append(f"{file_name}: on must define merge_group for merge queue")
+            # actionlint uses a simpler concurrency shape than ci.yml (no PR
+            # draft-deferral split), so it cannot reuse verify_pr_concurrency.
+            # Hold its merge_group concurrency arm to the same fail-closed
+            # isolation: keyed on github.ref, never cancelled.
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in verify_merge_group_concurrency(text)
+                ),
+            )
         if file_name == "backtester-ci.yml" or file_name.endswith("/backtester-ci.yml"):
             add_unique_errors(
                 errors,

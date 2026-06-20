@@ -36,15 +36,16 @@ use crate::{
         ResolvedArtifactRoot, S3ConditionalPutMode, persist_catalog_projection_for_source_binding,
     },
     canonical_market_data::{
-        CanonicalBarsTable, CanonicalIndexPricesTable, CanonicalMarkPricesTable,
-        CanonicalOrderBookDeltasTable, CanonicalQuotesTable,
+        CanonicalBarsTable, CanonicalFundingRatesTable, CanonicalIndexPricesTable,
+        CanonicalMarkPricesTable, CanonicalOrderBookDeltasTable, CanonicalQuotesTable,
     },
     canonical_trades::{
         BAR_TABLE_FAMILY, CanonicalInstrumentIdentity, CanonicalTradesTable, ConverterConfig,
-        DELTAS_TABLE_FAMILY, INDEX_PRICES_TABLE_FAMILY, MARK_PRICES_TABLE_FAMILY,
-        QUOTE_TABLE_FAMILY, RawPayloadConfig, RawPayloadContainer, SourceAdapterKind,
-        TRADE_TABLE_FAMILY, normalize_registered_bar_converter,
-        normalize_registered_event_stream_delta_converter, normalize_registered_index_converter,
+        DELTAS_TABLE_FAMILY, FUNDING_RATES_TABLE_FAMILY, INDEX_PRICES_TABLE_FAMILY,
+        MARK_PRICES_TABLE_FAMILY, QUOTE_TABLE_FAMILY, RawPayloadConfig, RawPayloadContainer,
+        SourceAdapterKind, TRADE_TABLE_FAMILY, normalize_registered_bar_converter,
+        normalize_registered_event_stream_delta_converter, normalize_registered_funding_converter,
+        normalize_registered_index_converter,
         normalize_registered_jsonl_multi_interval_bar_converter,
         normalize_registered_mark_converter, normalize_registered_order_book_delta_converter,
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
@@ -55,13 +56,14 @@ use crate::{
     },
     catalog_projection::{
         CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
-        NT_DATA_TYPE_INDEX_PRICE_UPDATE, NT_DATA_TYPE_MARK_PRICE_UPDATE,
-        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK, NT_DATA_TYPE_TRADE_TICK,
-        logical_catalog_hash, project_canonical_bars_to_catalog,
-        project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
-        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
-        project_canonical_trades_to_catalog, read_back_bars, read_back_index, read_back_mark,
-        read_back_order_book_deltas, read_back_quotes, read_back_trade_ticks, ts_init_nanos,
+        NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
+        NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
+        NT_DATA_TYPE_TRADE_TICK, logical_catalog_hash, project_canonical_bars_to_catalog,
+        project_canonical_funding_rates_to_catalog, project_canonical_index_to_catalog,
+        project_canonical_mark_to_catalog, project_canonical_order_book_deltas_to_catalog,
+        project_canonical_quotes_to_catalog, project_canonical_trades_to_catalog, read_back_bars,
+        read_back_funding_rates, read_back_index, read_back_mark, read_back_order_book_deltas,
+        read_back_quotes, read_back_trade_ticks, ts_init_nanos,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_TABLES_FILE, ConversionCatalogMetadata,
@@ -80,12 +82,13 @@ use crate::{
     run_manifest::{BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, ManifestCatalogInput},
     runner::{
         BacktestRunInputs, BacktestRunOutput, assert_bar_read_back_matches,
-        assert_delta_read_back_matches, assert_index_read_back_matches,
-        assert_mark_read_back_matches, assert_quote_read_back_matches, assert_read_back_matches,
-        assert_time_window_overlaps_data, expected_iterations, iterations_mismatch,
-        market_structure_label, nt_extension_surface_claim_limits, result_contract_feed_labels,
-        result_contract_warnings, run_backtest, run_nt_backtest_node, run_purpose_label,
-        time_window_excludes_all_data, window_bound_nanos,
+        assert_delta_read_back_matches, assert_funding_read_back_matches,
+        assert_index_read_back_matches, assert_mark_read_back_matches,
+        assert_quote_read_back_matches, assert_read_back_matches, assert_time_window_overlaps_data,
+        expected_iterations, iterations_mismatch, market_structure_label,
+        nt_extension_surface_claim_limits, result_contract_feed_labels, result_contract_warnings,
+        run_backtest, run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data,
+        window_bound_nanos,
     },
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
@@ -642,19 +645,26 @@ fn ensure_container_matches_adapter_kind(
             matches!(container, RawPayloadContainer::ParquetFile)
         }
         // The index-price raw normalizer (and thus its container shape) is not
-        // yet built — data acquisition is deferred to bolt-v2 #685. No container
-        // is admissible, so a run-spec naming the index adapter fails loud here
+        // yet built — data acquisition is tracked by bolt-v2 #836/#437. No
+        // container is admissible, so a run-spec naming the index adapter fails
+        // loud here at config validation; the canonical->NT projection path is
+        // exercised directly by the synthetic round-trip tests, not via this raw
+        // decode boundary.
+        SourceAdapterKind::IndexPrices => false,
+        // The mark-price raw normalizer (and thus its container shape) is not yet
+        // built — data acquisition is tracked by bolt-v2 #836/#437. No container
+        // is admissible, so a run-spec naming the mark adapter fails loud here
         // at config validation; the canonical->NT projection path is exercised
         // directly by the synthetic round-trip tests, not via this raw decode
         // boundary.
-        SourceAdapterKind::IndexPrices => false,
-        // The mark-price raw normalizer (and thus its container shape) is not yet
-        // built — data acquisition is deferred to bolt-v2 #685. No container is
-        // admissible, so a run-spec naming the mark adapter fails loud here at
-        // config validation; the canonical->NT projection path is exercised
-        // directly by the synthetic round-trip tests, not via this raw decode
-        // boundary.
         SourceAdapterKind::MarkPrices => false,
+        // The funding-rate raw normalizer (and thus its container shape) is not
+        // yet built; data acquisition is tracked by bolt-v2 #836/#437. No
+        // container is admissible, so a run-spec naming the funding adapter
+        // fails loud here at config validation; the registered seam keeps
+        // funding on the same operator path as index/mark while failing before
+        // raw decode.
+        SourceAdapterKind::FundingRates => false,
         #[cfg(test)]
         SourceAdapterKind::SyntheticOrderBookDeltas => false,
     };
@@ -1537,6 +1547,7 @@ enum NormalizedTable {
     Quotes(CanonicalQuotesTable),
     Index(CanonicalIndexPricesTable),
     Mark(CanonicalMarkPricesTable),
+    Funding(CanonicalFundingRatesTable),
 }
 
 impl NormalizedTable {
@@ -1548,6 +1559,7 @@ impl NormalizedTable {
             Self::Quotes(_) => QUOTE_TABLE_FAMILY,
             Self::Index(_) => INDEX_PRICES_TABLE_FAMILY,
             Self::Mark(_) => MARK_PRICES_TABLE_FAMILY,
+            Self::Funding(_) => FUNDING_RATES_TABLE_FAMILY,
         }
     }
 
@@ -1559,6 +1571,7 @@ impl NormalizedTable {
             Self::Quotes(_) => NT_DATA_TYPE_QUOTE_TICK,
             Self::Index(_) => NT_DATA_TYPE_INDEX_PRICE_UPDATE,
             Self::Mark(_) => NT_DATA_TYPE_MARK_PRICE_UPDATE,
+            Self::Funding(_) => NT_DATA_TYPE_FUNDING_RATE_UPDATE,
         }
     }
 
@@ -1570,6 +1583,7 @@ impl NormalizedTable {
             Self::Quotes(table) => &table.schema_version,
             Self::Index(table) => &table.schema_version,
             Self::Mark(table) => &table.schema_version,
+            Self::Funding(table) => &table.schema_version,
         }
     }
 
@@ -1581,6 +1595,7 @@ impl NormalizedTable {
             Self::Quotes(table) => table.fidelity_class,
             Self::Index(table) => table.fidelity_class,
             Self::Mark(table) => table.fidelity_class,
+            Self::Funding(table) => table.fidelity_class,
         }
     }
 
@@ -1592,6 +1607,7 @@ impl NormalizedTable {
             Self::Quotes(table) => table.rows.len(),
             Self::Index(table) => table.rows.len(),
             Self::Mark(table) => table.rows.len(),
+            Self::Funding(table) => table.rows.len(),
         }
     }
 
@@ -1618,6 +1634,10 @@ impl NormalizedTable {
                 .first()
                 .and_then(|row| row.nt_instrument_id.as_deref()),
             Self::Mark(table) => table
+                .rows
+                .first()
+                .and_then(|row| row.nt_instrument_id.as_deref()),
+            Self::Funding(table) => table
                 .rows
                 .first()
                 .and_then(|row| row.nt_instrument_id.as_deref()),
@@ -1651,6 +1671,10 @@ impl NormalizedTable {
                 .rows
                 .first()
                 .map(|row| row.canonical_instrument_key.as_str()),
+            Self::Funding(table) => table
+                .rows
+                .first()
+                .map(|row| row.canonical_instrument_key.as_str()),
         };
         key.context("normalized table is missing rows[0].canonical_instrument_key")
     }
@@ -1665,7 +1689,8 @@ impl NormalizedTable {
             | Self::Deltas(_)
             | Self::Quotes(_)
             | Self::Index(_)
-            | Self::Mark(_) => TABLE_DISCRIMINANT_DEFAULT.to_string(),
+            | Self::Mark(_)
+            | Self::Funding(_) => TABLE_DISCRIMINANT_DEFAULT.to_string(),
         }
     }
 
@@ -1736,6 +1761,14 @@ impl NormalizedTable {
                     row.availability_time,
                     row.capture_time,
                     &format!("mark price {}", row.event_time),
+                )?
+                .as_u64())
+            }),
+            Self::Funding(table) => fold(&table.rows, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("funding rate {}", row.event_time),
                 )?
                 .as_u64())
             }),
@@ -1813,6 +1846,14 @@ impl NormalizedTable {
                     row.availability_time,
                     row.capture_time,
                     &format!("mark price {}", row.event_time),
+                )?
+                .as_u64())
+            }),
+            Self::Funding(table) => count(&table.rows, start, end, |row| {
+                Ok(ts_init_nanos(
+                    row.availability_time,
+                    row.capture_time,
+                    &format!("funding rate {}", row.event_time),
                 )?
                 .as_u64())
             }),
@@ -2104,12 +2145,12 @@ fn normalize_tables_for_kind(
                 anyhow::bail!("index-price adapter requires a text payload container");
             };
             // The index-price wire normalizer (raw acquisition) is a registered
-            // seam; its parsing path lands in a follow-up slice (bolt-v2 #685,
-            // failing loud naming that follow-up). The canonical index table +
-            // canonical->NT projection + read-back are proven by the synthetic
-            // round-trip tests in catalog_projection. Dispatching through the
-            // seam keeps NormalizedTable::Index on the one normalization path
-            // (no parallel admittance logic).
+            // seam; its parsing path lands in a follow-up slice tracked by
+            // bolt-v2 #836/#437, failing loud naming that follow-up. The
+            // canonical index table + canonical->NT projection + read-back are
+            // proven by the synthetic round-trip tests in catalog_projection.
+            // Dispatching through the seam keeps NormalizedTable::Index on the
+            // one normalization path (no parallel admittance logic).
             normalize_registered_index_converter(
                 &spec.converter,
                 accepted,
@@ -2127,12 +2168,12 @@ fn normalize_tables_for_kind(
                 anyhow::bail!("mark-price adapter requires a text payload container");
             };
             // The mark-price wire normalizer (raw acquisition) is a registered
-            // seam; its parsing path lands in a follow-up slice (bolt-v2 #685,
-            // failing loud naming that follow-up). The canonical mark table +
-            // canonical->NT projection + read-back are proven by the synthetic
-            // round-trip tests in catalog_projection. Dispatching through the
-            // seam keeps NormalizedTable::Mark on the one normalization path
-            // (no parallel admittance logic).
+            // seam; its parsing path lands in a follow-up slice tracked by
+            // bolt-v2 #836/#437, failing loud naming that follow-up. The
+            // canonical mark table + canonical->NT projection + read-back are
+            // proven by the synthetic round-trip tests in catalog_projection.
+            // Dispatching through the seam keeps NormalizedTable::Mark on the
+            // one normalization path (no parallel admittance logic).
             normalize_registered_mark_converter(
                 &spec.converter,
                 accepted,
@@ -2143,6 +2184,28 @@ fn normalize_tables_for_kind(
             )?
             .into_iter()
             .map(NormalizedTable::Mark)
+            .collect()
+        }
+        SourceAdapterKind::FundingRates => {
+            let DecodedPayload::Text(text) = payload else {
+                anyhow::bail!("funding-rate adapter requires a text payload container");
+            };
+            // The funding-rate wire normalizer (raw acquisition) is a registered
+            // seam; its parsing path lands in a follow-up slice tracked by
+            // bolt-v2 #836/#437. The canonical funding table + canonical->NT
+            // projection + read-back are proven by the synthetic round-trip
+            // tests in catalog_projection. Dispatching through the seam keeps
+            // NormalizedTable::Funding on the one normalization path.
+            normalize_registered_funding_converter(
+                &spec.converter,
+                accepted,
+                spec.identity.single()?,
+                &text,
+                capture_time_nanos,
+                run_id,
+            )?
+            .into_iter()
+            .map(NormalizedTable::Funding)
             .collect()
         }
         SourceAdapterKind::CsvNativeTrades => {
@@ -2189,7 +2252,8 @@ fn plan_projected_tables(
             | NormalizedTable::Deltas(_)
             | NormalizedTable::Quotes(_)
             | NormalizedTable::Index(_)
-            | NormalizedTable::Mark(_) => None,
+            | NormalizedTable::Mark(_)
+            | NormalizedTable::Funding(_) => None,
         };
         planned.push(PlannedTable {
             subroot: output_dir.join(&subroot_relative),
@@ -2269,6 +2333,11 @@ fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
             let prices = read_back_mark(&planned.subroot, &planned.nt_instrument_id)
                 .context("catalog read-back failed")?;
             assert_mark_read_back_matches(&prices, table, &planned.nt_instrument_id)
+        }
+        NormalizedTable::Funding(table) => {
+            let rates = read_back_funding_rates(&planned.subroot, &planned.nt_instrument_id)
+                .context("catalog read-back failed")?;
+            assert_funding_read_back_matches(&rates, table, &planned.nt_instrument_id)
         }
     }
 }
@@ -2592,6 +2661,7 @@ pub fn run_multi_table_from_run_spec(
         QUOTE_TABLE_FAMILY,
         INDEX_PRICES_TABLE_FAMILY,
         MARK_PRICES_TABLE_FAMILY,
+        FUNDING_RATES_TABLE_FAMILY,
     ] {
         let path = output_dir.join(stale_tree);
         if path.exists() {
@@ -2624,6 +2694,11 @@ pub fn run_multi_table_from_run_spec(
             NormalizedTable::Mark(canonical) => {
                 project_canonical_mark_to_catalog(canonical, instrument_spec, &table.subroot)
             }
+            NormalizedTable::Funding(canonical) => project_canonical_funding_rates_to_catalog(
+                canonical,
+                instrument_spec,
+                &table.subroot,
+            ),
         }
         .with_context(|| format!("catalog projection failed for {}", table.subroot_relative))?;
         ensure!(
@@ -2652,6 +2727,7 @@ pub fn run_multi_table_from_run_spec(
             NormalizedTable::Quotes(canonical) => canonical.write_parquet(&table.canonical_path),
             NormalizedTable::Index(canonical) => canonical.write_parquet(&table.canonical_path),
             NormalizedTable::Mark(canonical) => canonical.write_parquet(&table.canonical_path),
+            NormalizedTable::Funding(canonical) => canonical.write_parquet(&table.canonical_path),
         }
         .with_context(|| {
             format!(
@@ -3527,7 +3603,8 @@ mod tests {
 
     use super::*;
     use crate::canonical_trades::{
-        CsvTimestampUnit, REGISTERED_SOURCE_ADAPTERS, RawPayloadConfig, RawPayloadContainer,
+        CsvTimestampUnit, FUNDING_RATES_TRANSFORM_IDENTITY, FUNDING_RATES_TRANSFORM_VERSION,
+        REGISTERED_SOURCE_ADAPTERS, RawPayloadConfig, RawPayloadContainer,
     };
     use crate::conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
@@ -3879,6 +3956,71 @@ mod tests {
                 .expect("zip_member on a non-zip container must be rejected");
             assert!(err.to_string().contains("zip_member"), "{err}");
         }
+    }
+
+    #[test]
+    fn funding_converter_config_fails_loud_before_raw_decode() {
+        let gz = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&gz);
+        spec.converter.identity = FUNDING_RATES_TRANSFORM_IDENTITY.to_string();
+        spec.converter.version = FUNDING_RATES_TRANSFORM_VERSION.to_string();
+        spec.converter.raw_payload = payload_config(RawPayloadContainer::JsonlText);
+
+        let err = validate_converter_config(&spec.converter)
+            .expect_err("funding raw acquisition must fail at converter preflight");
+        let message = err.to_string();
+        assert!(
+            message.contains("FundingRates") && message.contains("not admissible"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn funding_run_path_validates_before_raw_decode() {
+        // Drive the REAL multi-table run-path (not `validate_converter_config` in
+        // isolation) to pin the validate -> decode statement ORDERING in
+        // `run_multi_table_from_run_spec`: the `validate_converter_config(...)?`
+        // gate must surface before `decode_object_payload(...)` ever runs.
+        //
+        // `run_spec_for` binds `accepted_object.{bytes,sha256}` to THIS object, so
+        // the byte-length / SHA gates that sit between the validate and decode
+        // statements all pass for these bytes. `payload_config` (set below) then
+        // overrides the decode cap to `max_decoded_bytes = 64` (run_spec_for's own
+        // default is 4096) — that 64-byte cap is what the counterfactual relies on.
+        // We then make the converter inadmissible (funding adapter + a JSONL
+        // container that funding can never consume — funding's admissibility gate
+        // returns `false` for every container, see
+        // `ensure_container_matches_adapter_kind`).
+        let object_bytes = gzip(SAMPLE_CSV);
+        let mut spec = run_spec_for(&object_bytes);
+        spec.converter.identity = FUNDING_RATES_TRANSFORM_IDENTITY.to_string();
+        spec.converter.version = FUNDING_RATES_TRANSFORM_VERSION.to_string();
+        spec.converter.raw_payload = payload_config(RawPayloadContainer::JsonlText);
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let err = run_multi_table_from_run_spec(&spec, &object_bytes, dir.path())
+            .err()
+            .expect("funding run-path must fail loud at the converter preflight");
+        let message = err.to_string();
+
+        // The "not admissible for adapter kind FundingRates" string is produced
+        // ONLY by `ensure_container_matches_adapter_kind` (reached via the
+        // `validate_converter_config(...)?` statement). `decode_object_payload`
+        // never emits it. Observing it therefore proves validate ran FIRST.
+        //
+        // Counterfactual: were `decode_object_payload(...)` moved above the
+        // validate gate, decoding these gzip-CSV bytes as a `JsonlText` container
+        // (read as plain text, capped at `max_decoded_bytes = 64`) would instead
+        // surface a distinguishable "max_decoded_bytes" decode error — NOT this
+        // admissibility error — so this assertion fails under a reorder.
+        assert!(
+            message.contains("FundingRates") && message.contains("not admissible"),
+            "expected funding admissibility error from the validate gate, got: {message}"
+        );
+        assert!(
+            !message.contains("max_decoded_bytes"),
+            "decode error surfaced — decode ran before the validate gate: {message}"
+        );
     }
 
     #[test]

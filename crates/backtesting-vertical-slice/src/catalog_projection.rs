@@ -1607,9 +1607,18 @@ pub fn read_back_index(
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
+    let mut read_back = catalog
         .query_typed_data::<IndexPriceUpdate>(None, None, None, None, Some(files), false)
-        .context("query index prices from catalog")
+        .context("query index prices from catalog")?;
+    read_back.sort_by_key(|p| {
+        (
+            p.ts_event.as_u64(),
+            p.instrument_id.to_string(),
+            p.value.as_decimal().to_string(),
+            p.ts_init.as_u64(),
+        )
+    });
+    Ok(read_back)
 }
 
 /// Convert canonical mark-price rows into NautilusTrader `MarkPriceUpdate`s at
@@ -1730,9 +1739,18 @@ pub fn read_back_mark(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
+    let mut read_back = catalog
         .query_typed_data::<MarkPriceUpdate>(None, None, None, None, Some(files), false)
-        .context("query mark prices from catalog")
+        .context("query mark prices from catalog")?;
+    read_back.sort_by_key(|p| {
+        (
+            p.ts_event.as_u64(),
+            p.instrument_id.to_string(),
+            p.value.as_decimal().to_string(),
+            p.ts_init.as_u64(),
+        )
+    });
+    Ok(read_back)
 }
 
 /// Convert canonical funding-rate rows into NautilusTrader
@@ -1761,6 +1779,8 @@ fn canonical_row_to_funding_rate_update(
     instrument_id: InstrumentId,
     row: &CanonicalFundingRateRow,
 ) -> Result<FundingRateUpdate> {
+    // Rate is preserved at its source scale by design (NOT rescaled like index/mark); see the
+    // scale-faithful hash contract at `hasher.update(funding_rate.rate.to_string().as_bytes())`.
     let rate = Decimal::from_str(&row.rate)
         .map_err(|error| anyhow::anyhow!("invalid funding rate {:?}: {error}", row.rate))?;
     let label = format!("funding rate {}", row.event_time);
@@ -1858,9 +1878,20 @@ pub fn read_back_funding_rates(
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    catalog
+    let mut read_back = catalog
         .query_typed_data::<FundingRateUpdate>(None, None, None, None, Some(files), false)
-        .context("query funding rates from catalog")
+        .context("query funding rates from catalog")?;
+    read_back.sort_by(|a, b| {
+        a.ts_event
+            .cmp(&b.ts_event)
+            .then_with(|| a.instrument_id.cmp(&b.instrument_id))
+            .then_with(|| a.rate.cmp(&b.rate))
+            .then_with(|| a.rate.scale().cmp(&b.rate.scale()))
+            .then_with(|| a.interval.cmp(&b.interval))
+            .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
+            .then_with(|| a.ts_init.cmp(&b.ts_init))
+    });
+    Ok(read_back)
 }
 
 /// Convert canonical bar rows into NautilusTrader `Bar`s under the table's
@@ -2156,6 +2187,7 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
             .cmp(&b.ts_event)
             .then_with(|| a.instrument_id.cmp(&b.instrument_id))
             .then_with(|| a.rate.cmp(&b.rate))
+            .then_with(|| a.rate.scale().cmp(&b.rate.scale()))
             .then_with(|| a.interval.cmp(&b.interval))
             .then_with(|| a.next_funding_ns.cmp(&b.next_funding_ns))
             .then_with(|| a.ts_init.cmp(&b.ts_init))
@@ -2276,30 +2308,37 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     }
     // Funding-rate loop appended AFTER the mark loop with NEW unique
     // domain-separator tags 42..47 (existing tags end at 41 for mark prices).
-    // Empty funding catalogs emit nothing, preserving existing reference hashes.
+    // Empty funding catalogs emit nothing, preserving existing reference hashes;
+    // funding-bearing catalog bytes are pinned by
+    // `funding_catalog_hash_matches_golden_v1`.
     for funding_rate in funding_rates {
         hasher.update([42u8]);
-        hasher.update(funding_rate.instrument_id.symbol.as_str().as_bytes());
-        hasher.update([0xff]);
-        hasher.update(funding_rate.instrument_id.venue.as_str().as_bytes());
+        hasher.update(funding_rate.instrument_id.to_string().as_bytes());
         hasher.update([43u8]);
+        // The funding rate is hashed byte/scale-faithfully via `to_string()` and is NOT rescaled
+        // to instrument precision (unlike index/mark, which go through `rescaled()` — see the
+        // index/mark hash paths). The logical catalog hash is therefore scale-SENSITIVE: a
+        // numerically-equal but differently-scaled rate (e.g. "0.0001" vs "0.000100") produces a
+        // different hash. This is by design — the `.rate.scale()` tie-break in this function's
+        // sort comparator deterministically orders scale-distinct equal rates, and the golden hash
+        // (`funding_catalog_hash_matches_golden_v1`) is therefore scale-bound.
         hasher.update(funding_rate.rate.to_string().as_bytes());
         hasher.update([44u8]);
         if let Some(value) = funding_rate.interval {
-            hasher.update(value.to_be_bytes());
+            hasher.update(value.to_string().as_bytes());
         } else {
             hasher.update(b"<none>");
         }
         hasher.update([45u8]);
         if let Some(value) = funding_rate.next_funding_ns {
-            hasher.update(value.as_u64().to_be_bytes());
+            hasher.update(value.as_u64().to_string().as_bytes());
         } else {
             hasher.update(b"<none>");
         }
         hasher.update([46u8]);
-        hasher.update(funding_rate.ts_event.as_u64().to_be_bytes());
+        hasher.update(funding_rate.ts_event.as_u64().to_string().as_bytes());
         hasher.update([47u8]);
-        hasher.update(funding_rate.ts_init.as_u64().to_be_bytes());
+        hasher.update(funding_rate.ts_init.as_u64().to_string().as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -4109,8 +4148,6 @@ max_notional = "200000"
 
         let loaded = read_back_index(dir.path(), "BNBUSDC.BYBIT").expect("read back");
         assert_eq!(loaded.len(), 2);
-        let mut loaded = loaded;
-        loaded.sort_by_key(|p| p.ts_event.as_u64());
         for (update, row) in loaded.iter().zip(table.rows.iter()) {
             assert_eq!(update.instrument_id.to_string(), "BNBUSDC.BYBIT");
             assert_eq!(
@@ -4304,8 +4341,6 @@ max_notional = "200000"
 
         let loaded = read_back_mark(dir.path(), "BNBUSDC.BYBIT").expect("read back");
         assert_eq!(loaded.len(), 2);
-        let mut loaded = loaded;
-        loaded.sort_by_key(|p| p.ts_event.as_u64());
         for (update, row) in loaded.iter().zip(table.rows.iter()) {
             assert_eq!(update.instrument_id.to_string(), "BNBUSDC.BYBIT");
             assert_eq!(
@@ -4516,30 +4551,48 @@ max_notional = "200000"
 
         let loaded = read_back_funding_rates(dir.path(), "BTCUSDT.BYBIT").expect("read back");
         assert_eq!(loaded.len(), 2);
-        let mut loaded = loaded;
-        loaded.sort_by_key(|p| p.ts_event.as_u64());
-        for (update, row) in loaded.iter().zip(table.rows.iter()) {
-            assert_eq!(update.instrument_id.to_string(), "BTCUSDT.BYBIT");
-            assert_eq!(update.rate, Decimal::from_str(&row.rate).unwrap());
-            assert_eq!(update.interval, row.interval_minutes);
-            assert_eq!(
-                update.next_funding_ns.map(|ts| ts.as_u64()),
-                row.next_funding_time.map(|ts| u64::try_from(ts).unwrap())
-            );
-            let label = format!("funding rate {}", row.event_time);
-            assert_eq!(
-                update.ts_event.as_u64(),
-                ts_event_nanos(row.event_time, &label).unwrap().as_u64()
-            );
-            assert_eq!(row.availability_time, None);
-            assert_eq!(
-                update.ts_init.as_u64(),
-                ts_init_nanos(row.availability_time, row.capture_time, &label)
-                    .unwrap()
-                    .as_u64(),
-                "ts_init must equal capture_time (the receipt clock), not event_time"
-            );
-        }
+        crate::runner::assert_funding_read_back_matches(&loaded, &table, "BTCUSDT.BYBIT")
+            .expect("shared funding read-back assertion");
+    }
+
+    #[test]
+    fn funding_read_back_assert_is_order_independent_and_still_fails_loud() {
+        // Differential guard for the order-independent pairing in
+        // `assert_funding_read_back_matches`. The fixture's rows are already in
+        // ascending `event_time` order, which is also the read-back sort order,
+        // so `projects_and_reads_back_funding_rates` never actually exercises the
+        // reorder. This test feeds the canonical table in a DIFFERENT stored
+        // order than the read-back, plus a corrupted variant, so the sort-both-
+        // sides logic is genuinely load-bearing here:
+        //   - Under the current code both sides are key-sorted, so reversed input
+        //     still pairs correctly and passes.
+        //   - Under the old positional `zip`, reversed canonical row 0 (rate
+        //     0.000250) would pair with read-back row 0 (rate -0.000100) and fail.
+        let table = canonical_funding_rates_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_funding_rates_to_catalog(&table, &linear_perpetual_spec(), dir.path())
+            .expect("project");
+        let loaded = read_back_funding_rates(dir.path(), "BTCUSDT.BYBIT").expect("read back");
+        assert_eq!(loaded.len(), 2);
+
+        // Order-independence: reverse the canonical stored order so it no longer
+        // matches the ascending read-back order. The assertion must still pass.
+        let mut reversed = table.clone();
+        reversed.rows.reverse();
+        crate::runner::assert_funding_read_back_matches(&loaded, &reversed, "BTCUSDT.BYBIT")
+            .expect("read-back assertion must be independent of canonical stored order");
+
+        // Non-vacuity: a genuinely divergent canonical rate must still fail loud,
+        // proving the self-sorting did not make the per-field comparison circular.
+        // `event_time` is unchanged, so the corrupted row still pairs by ts_event
+        // with the matching read-back row and trips the rate ensure!.
+        let mut corrupted = table.clone();
+        corrupted.rows[0].rate = "9.999999".to_string();
+        assert!(
+            crate::runner::assert_funding_read_back_matches(&loaded, &corrupted, "BTCUSDT.BYBIT")
+                .is_err(),
+            "a divergent canonical rate must fail the read-back assertion"
+        );
     }
 
     #[test]
@@ -4728,6 +4781,27 @@ max_notional = "200000"
     }
 
     #[test]
+    fn funding_catalog_hash_matches_golden_v1() {
+        // Golden computed over the canonical fixture at NT rev 6be5a50 with the current bolt
+        // hash-input layout; a future NT bump or hash-tag/layout change requires regenerating this.
+        const EXPECTED: &str = "1193d55c1d22b2c3fc95398904d7ebeed6a5c939eacdebe7427f279df5967dfa";
+
+        let table = canonical_funding_rates_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let projection = project_canonical_funding_rates_to_catalog(
+            &table,
+            &linear_perpetual_spec(),
+            dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            projection.catalog_hash, EXPECTED,
+            "funding-bearing logical catalog hash v1 bytes changed"
+        );
+    }
+
+    #[test]
     fn funding_catalog_hash_changes_with_data_content() {
         let table_a = canonical_funding_rates_table();
         let mut table_b = canonical_funding_rates_table();
@@ -4749,6 +4823,56 @@ max_notional = "200000"
         assert_ne!(
             a.catalog_hash, b.catalog_hash,
             "different funding rate must change the catalog hash"
+        );
+    }
+
+    #[test]
+    fn funding_catalog_hash_orders_scale_distinct_equal_rates_deterministically() {
+        let mut table_a = canonical_funding_rates_table();
+        table_a.rows[0].rate = "0.000100".to_string();
+        table_a.rows[1] = table_a.rows[0].clone();
+        table_a.rows[1].rate = "0.0001000".to_string();
+
+        let mut table_b = table_a.clone();
+        table_b.rows.reverse();
+
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_funding_rates_to_catalog(
+            &table_a,
+            &linear_perpetual_spec(),
+            dir_a.path(),
+        )
+        .unwrap();
+        let b = project_canonical_funding_rates_to_catalog(
+            &table_b,
+            &linear_perpetual_spec(),
+            dir_b.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            a.catalog_hash, b.catalog_hash,
+            "scale-distinct equal rates must sort deterministically regardless of input order"
+        );
+
+        // Pin the load-bearing premise of the `.rate.scale()` tie-break in `logical_catalog_hash`:
+        // NT serializes `FundingRateUpdate.rate` as a utf8 string (`FUNDING_RATE_UPDATE_FIELDS` in
+        // nautilus-serialization), so the numerically-equal but scale-distinct rates "0.000100"
+        // (scale 6) and "0.0001000" (scale 7) survive the Parquet round-trip as DISTINCT scales.
+        // That distinctness is exactly what makes the scale tie-break load-bearing rather than dead
+        // code; if a future NT rev collapses Decimal scale on round-trip, this assertion fails loud
+        // and the tie-break must be re-evaluated.
+        let mut read_back_scales: Vec<u32> = read_back_funding_rates(dir_a.path(), "BTCUSDT.BYBIT")
+            .unwrap()
+            .iter()
+            .map(|update| update.rate.scale())
+            .collect();
+        read_back_scales.sort_unstable();
+        assert_eq!(
+            read_back_scales,
+            vec![6, 7],
+            "scale-distinct funding rates must round-trip through the NT catalog with distinct \
+             Decimal scales, proving the catalog-hash scale tie-break is load-bearing"
         );
     }
 
@@ -4818,6 +4942,23 @@ max_notional = "200000"
             projection.catalog_hash,
             expected_logical_catalog_hash(&instrument, &ticks),
             "an empty mark section must add zero bytes to a trade-only catalog hash"
+        );
+    }
+
+    #[test]
+    fn funding_section_does_not_change_trade_only_catalog_hash() {
+        // The funding loop is appended after mark with fresh tags 42..47 and
+        // emits nothing for catalogs with no funding files. Trade-only catalogs
+        // must keep the committed logical-hash byte stream unchanged.
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().unwrap();
+        let projection = project_canonical_trades_to_catalog(&table, &spec(), dir.path()).unwrap();
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        let ticks = canonical_rows_to_trade_ticks(&table, &instrument).expect("ticks");
+        assert_eq!(
+            projection.catalog_hash,
+            expected_logical_catalog_hash(&instrument, &ticks),
+            "an empty funding section must add zero bytes to a trade-only catalog hash"
         );
     }
 

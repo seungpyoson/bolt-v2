@@ -1181,6 +1181,115 @@ mod tests {
     }
 
     #[test]
+    fn custom_strike_fetch_data_type_is_unique_per_request_sequence() {
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
+            .expect("test resolution instrument id should parse");
+
+        let first = strike_fetch_request_data_type(instrument_id, 1);
+        let second = strike_fetch_request_data_type(instrument_id, 2);
+
+        assert_ne!(
+            first, second,
+            "custom strike fetch DataType must differ per retry so NT custom subscription dedup forwards each request",
+        );
+        assert_ne!(
+            first.topic(),
+            second.topic(),
+            "request_sequence metadata must participate in the NT DataType topic",
+        );
+    }
+
+    #[test]
+    fn custom_strike_fetch_request_rejects_fail_closed_shapes() {
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
+            .expect("test resolution instrument id should parse");
+        let data_type = strike_fetch_request_data_type(instrument_id, 1);
+
+        let wrong_type = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            DataType::new(CHAINLINK_STRIKE_SOURCE_CONFIG_TYPE, None, None),
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(valid_custom_strike_fetch_params(instrument_id)),
+        );
+        strike_fetch_request_from_custom_subscribe(&wrong_type)
+            .expect_err("wrong custom data type must fail closed");
+
+        let missing_params = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            data_type.clone(),
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            None,
+        );
+        strike_fetch_request_from_custom_subscribe(&missing_params)
+            .expect_err("missing params must fail closed");
+
+        let mut invalid_instrument_params = valid_custom_strike_fetch_params(instrument_id);
+        invalid_instrument_params.insert(
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+            serde_json::json!(String::new()),
+        );
+        let invalid_instrument = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            data_type.clone(),
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(invalid_instrument_params),
+        );
+        strike_fetch_request_from_custom_subscribe(&invalid_instrument)
+            .expect_err("invalid instrument_id param must fail closed");
+
+        let mismatched_identifier = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            DataType::new(STRIKE_FETCH_REQUEST_DATA_TYPE, None, Some(String::new())),
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(valid_custom_strike_fetch_params(instrument_id)),
+        );
+        strike_fetch_request_from_custom_subscribe(&mismatched_identifier)
+            .expect_err("data_type identifier mismatch must fail closed");
+
+        let mut missing_timestamp_params = Params::new();
+        missing_timestamp_params.insert(
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+            serde_json::json!(instrument_id.to_string()),
+        );
+        let missing_timestamp = SubscribeCustomData::new(
+            Some(ClientId::from("chainlink_strike")),
+            None,
+            data_type,
+            UUID4::new(),
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+            None,
+            Some(missing_timestamp_params),
+        );
+        strike_fetch_request_from_custom_subscribe(&missing_timestamp)
+            .expect_err("missing timestamp must fail closed");
+    }
+
+    fn valid_custom_strike_fetch_params(instrument_id: InstrumentId) -> Params {
+        let mut params = Params::new();
+        params.insert(
+            STRIKE_FETCH_INSTRUMENT_ID_PARAM.to_string(),
+            serde_json::json!(instrument_id.to_string()),
+        );
+        params.insert(
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
+            serde_json::json!(TEST_WINDOW_OPEN_UNIX_SECONDS),
+        );
+        params
+    }
+
+    #[test]
     fn settlement_close_mapping_rejects_report_not_bound_to_window_close() {
         let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
             .expect("test resolution instrument id should parse");
@@ -1278,10 +1387,9 @@ mod tests {
 
     #[test]
     fn in_flight_guard_admits_one_fetch_per_instrument_until_finished() {
-        // After the strategy's unsubscribe-before-subscribe re-arm reaches the source
-        // on every retry tick, a stalled REST call must not let retries stack
-        // concurrent fetches against the live endpoint. The in-flight guard admits at
-        // most one fetch per resolution instrument until the prior one finishes.
+        // Strategy retry ticks can trigger custom one-shot fetch commands faster
+        // than a stalled REST call returns. The in-flight guard admits at most
+        // one fetch per resolution instrument until the prior one finishes.
         let in_flight: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<InstrumentId>>> =
             std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let instrument_id =

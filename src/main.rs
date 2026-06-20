@@ -36,7 +36,8 @@ use bolt_v2::{
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
     bolt_v3_reference_price_health::{
-        prepare_reference_current_price_health_run, run_prepared_reference_current_price_health,
+        ReferenceCurrentPriceHealthReport, prepare_reference_current_price_health_run,
+        run_prepared_reference_current_price_health,
     },
     bolt_v3_secrets::{
         ResolvedBoltV3Secrets, check_no_forbidden_credential_env_vars,
@@ -44,6 +45,9 @@ use bolt_v2::{
     },
     secrets::SsmResolverSession,
 };
+
+#[cfg(test)]
+use bolt_v2::bolt_v3_reference_price_health::ReferenceCurrentPriceSourceUpdateObservation;
 
 const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
     "clob_v2_balance_allowance_cache_sync_completed";
@@ -54,6 +58,8 @@ const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
 const KILL_SWITCH_STORE_INIT_COMPLETED_OUTPUT_FIELD: &str = "kill_switch_store_init_completed";
 const KILL_SWITCH_STORE_INIT_STATE_PATH_OUTPUT_FIELD: &str = "state_path";
+const REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR: &str =
+    "reference_current_price health did not observe every configured source";
 
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
@@ -380,7 +386,16 @@ fn run_reference_current_price_health_command(
         let mut health_run = health_run;
         run_prepared_reference_current_price_health(&mut health_run).await
     }))?;
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    print_reference_current_price_health_report(&report)
+}
+
+fn print_reference_current_price_health_report(
+    report: &ReferenceCurrentPriceHealthReport,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", serde_json::to_string_pretty(report)?);
+    if !report.all_sources_observed() {
+        return Err(std::io::Error::other(REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR).into());
+    }
     Ok(())
 }
 
@@ -1162,6 +1177,35 @@ mod tests {
             }
             _ => panic!("expected ops reference-current-price-health command"),
         }
+    }
+
+    #[test]
+    fn reference_current_price_health_report_gate_rejects_unobserved_source() {
+        let report = ReferenceCurrentPriceHealthReport {
+            targets: Vec::new(),
+            clients: Vec::new(),
+            source_update_observations: vec![ReferenceCurrentPriceSourceUpdateObservation {
+                strategy_instance_id: String::new(),
+                source_id: String::new(),
+                asset: String::new(),
+                provider: String::new(),
+                provider_instrument: String::new(),
+                status: String::new(),
+                reason: String::new(),
+                observed_ts_ms: None,
+                received_ts_ms: None,
+            }],
+        };
+
+        let error = print_reference_current_price_health_report(&report)
+            .expect_err("unobserved reference_current_price sources must fail the command");
+
+        assert!(
+            error
+                .to_string()
+                .contains(REFERENCE_CURRENT_PRICE_HEALTH_UNOBSERVED_ERROR),
+            "error should explain the failed health verdict, got: {error}"
+        );
     }
 
     #[test]

@@ -1981,7 +1981,7 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = (resolution_client_id, params);
             self.record_resolution_strike_subscribe_event(
-                ResolutionStrikeSubscribeEvent::subscribe(
+                ResolutionStrikeSubscribeEvent::durable_index(
                     resolution_instrument_id,
                     window_open_unix_seconds,
                 ),
@@ -2008,19 +2008,18 @@ impl BinaryOracleEdgeTaker {
             if let Some(previous_data_type) = previous_custom_subscription {
                 self.unsubscribe_data(previous_data_type, Some(resolution_client_id), None);
             }
-            self.subscribe_data(data_type, Some(resolution_client_id), Some(params));
+            self.subscribe_data(data_type.clone(), Some(resolution_client_id), Some(params));
         }
         #[cfg(test)]
-        let _ = (
-            resolution_client_id,
-            previous_custom_subscription,
-            data_type,
-            params,
+        let _ = (resolution_client_id, previous_custom_subscription, params);
+        self.record_resolution_strike_subscribe_event(
+            ResolutionStrikeSubscribeEvent::custom_fetch(
+                resolution_instrument_id,
+                window_open_unix_seconds,
+                self.resolution_strike_fetch_sequence,
+                data_type,
+            ),
         );
-        self.record_resolution_strike_subscribe_event(ResolutionStrikeSubscribeEvent::subscribe(
-            resolution_instrument_id,
-            window_open_unix_seconds,
-        ));
     }
 
     fn unsubscribe_resolution_strike(&mut self) {
@@ -6171,20 +6170,46 @@ impl BinaryOracleEdgeTaker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolutionStrikeSubscribeEvent {
     action: &'static str,
+    trigger: ResolutionStrikeFetchTrigger,
     instrument_id: InstrumentId,
     window_open_unix_seconds: u64,
+    request_sequence: Option<u64>,
+    custom_data_type: Option<DataType>,
 }
 
 const RESOLUTION_STRIKE_SUBSCRIBE_ACTION: &str = stringify!(subscribe);
-#[cfg(test)]
-const RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION: &str = stringify!(unsubscribe);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolutionStrikeFetchTrigger {
+    DurableIndex,
+    CustomFetch,
+}
 
 impl ResolutionStrikeSubscribeEvent {
-    fn subscribe(instrument_id: InstrumentId, window_open_unix_seconds: u64) -> Self {
+    fn durable_index(instrument_id: InstrumentId, window_open_unix_seconds: u64) -> Self {
         Self {
             action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
+            trigger: ResolutionStrikeFetchTrigger::DurableIndex,
             instrument_id,
             window_open_unix_seconds,
+            request_sequence: None,
+            custom_data_type: None,
+        }
+    }
+
+    fn custom_fetch(
+        instrument_id: InstrumentId,
+        window_open_unix_seconds: u64,
+        request_sequence: u64,
+        custom_data_type: DataType,
+    ) -> Self {
+        Self {
+            action: RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
+            trigger: ResolutionStrikeFetchTrigger::CustomFetch,
+            instrument_id,
+            window_open_unix_seconds,
+            request_sequence: Some(request_sequence),
+            custom_data_type: Some(custom_data_type),
         }
     }
 }

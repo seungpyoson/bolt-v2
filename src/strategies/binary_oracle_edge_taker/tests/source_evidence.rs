@@ -648,36 +648,61 @@ fn resolution_strike_reissue_does_not_depend_on_index_unsubscribe_pairing() {
         }
     }
 
-    // Pre-open selection then an at-open tick: each attempt should issue a
-    // fetch trigger, but none should rely on an index-price unsubscribe.
+    // Pre-open selection then two open retry ticks: the first attempt should
+    // establish the durable index subscription that routes IndexPriceUpdate to
+    // on_index_price; later retries should use unique custom fetch commands.
     strategy.refresh_selection_from_cache(current_period_start as u64 * MILLIS_PER_SECOND_U64 + 1);
     strategy.refresh_selection_from_cache(next_start_ms + 1);
+    strategy.refresh_selection_from_cache(next_start_ms + 2);
 
     let events = &strategy.resolution_strike_subscribe_events;
-    assert!(
-        !events.is_empty(),
-        "the strike (re)subscribe path must record at least one event",
-    );
-    let subscribes = events
-        .iter()
-        .filter(|event| event.action == RESOLUTION_STRIKE_SUBSCRIBE_ACTION)
-        .count();
-    let unsubscribes = events
-        .iter()
-        .filter(|event| event.action == RESOLUTION_STRIKE_UNSUBSCRIBE_ACTION)
-        .count();
     assert_eq!(
-        unsubscribes, 0,
-        "strike reissue must not rely on index-price unsubscribe forwarding because live NT can \
-         suppress the unsubscribe while the exact topic has a re-added subscriber \
-         (subscribes={subscribes}, unsubscribes={unsubscribes})",
+        events.len(),
+        3,
+        "expected one durable subscribe and two custom retries"
     );
-    for event in events {
-        assert_eq!(
-            event.action, RESOLUTION_STRIKE_SUBSCRIBE_ACTION,
-            "each recorded strike reissue event should be a fetch trigger, not an index unsubscribe",
-        );
-    }
+    assert_eq!(
+        events[0].trigger,
+        ResolutionStrikeFetchTrigger::DurableIndex
+    );
+    assert!(
+        events[0].custom_data_type.is_none(),
+        "durable index subscribe must not masquerade as a custom fetch",
+    );
+
+    let custom_events = events
+        .iter()
+        .filter(|event| event.trigger == ResolutionStrikeFetchTrigger::CustomFetch)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        custom_events.len(),
+        2,
+        "open retry ticks must use the custom fetch trigger path",
+    );
+    assert_eq!(
+        custom_events[0].request_sequence,
+        Some(1),
+        "first custom retry should carry the first request sequence",
+    );
+    assert_eq!(
+        custom_events[1].request_sequence,
+        Some(2),
+        "second custom retry should carry the next request sequence",
+    );
+    let first_topic = custom_events[0]
+        .custom_data_type
+        .as_ref()
+        .expect("custom fetch must record its DataType")
+        .topic();
+    let second_topic = custom_events[1]
+        .custom_data_type
+        .as_ref()
+        .expect("custom fetch must record its DataType")
+        .topic();
+    assert_ne!(
+        first_topic, second_topic,
+        "each retry must have a distinct custom DataType topic so NT dedup cannot swallow it",
+    );
 }
 
 #[test]

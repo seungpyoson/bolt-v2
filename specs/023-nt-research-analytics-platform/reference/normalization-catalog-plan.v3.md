@@ -77,7 +77,7 @@ NT rev `6be5a5094716790a8ca2875445fde4fa2586107e`, crate `nautilus-persistence`:
 - `instruments` load via a separate lane: write (`write_instruments`, `catalog.rs:726`) /
   read (`query_instruments`, `catalog.rs:858`, called at `node.rs:169`), NOT through `dispatch_query`.
 - `MarkPriceUpdate`/`IndexPriceUpdate` are **point updates** carrying a single price + timestamp
-  (`crates/model/src/data/mod.rs:107-108`), **not** OHLC bars.
+  (`crates/model/src/data/mod.rs:109-110`), **not** OHLC bars.
 - NT's writer is non-atomic: `head()` existence probe (`catalog.rs:564-567`) then unconditional
   `object_store.put` (`parquet.rs:197`, default `PutMode::Overwrite`, no If-None-Match). Filename is
   interval-keyed (`timestamps_to_filename`, `catalog.rs:560,4315-4320`). The only structural guard is

@@ -614,12 +614,11 @@ fn sort_toml_value(value: toml::Value) -> toml::Value {
 }
 
 /// Load the composed config text through the binary's real loader, WITHOUT
-/// mutating the repo tree. The composed text is written into a fresh private temp
-/// directory whose `strategy_files` parent directories are symlinked back to the
-/// config root, so the loader resolves strategy files exactly as the
-/// deployed `live.toml`'s do (relative to the loaded file's parent) while leaving
-/// `config/` untouched. The temp directory is removed before returning, on success
-/// and on error alike.
+/// mutating the repo tree. The composed text and referenced strategy files are
+/// copied into a fresh private temp directory, so the loader resolves strategy
+/// files exactly as deployed `live.toml` does (relative to the loaded file's
+/// parent) while preserving the production no-symlink invariant. The temp
+/// directory is removed before returning, on success and on error alike.
 fn load_composed_against_binary(
     config_root: &Path,
     overlay_path: &Path,
@@ -627,23 +626,19 @@ fn load_composed_against_binary(
     composed_text: &str,
 ) -> Result<(LoadedBoltV3Config, ProductionInvariants), ProfileError> {
     let temp_dir = ComposeTempDir::create()?;
-    // Mirror each distinct first path component referenced by strategy_files into the
-    // temp dir as a symlink back to config root's matching child, so relative
-    // strategy paths (e.g. `strategies/binary_oracle_btc.toml`) resolve there.
-    let mut linked: BTreeSet<String> = BTreeSet::new();
     for relative in &overlay.strategy_files {
-        let mut components = Path::new(relative).components();
-        if let Some(std::path::Component::Normal(first)) = components.next() {
-            let first = first.to_string_lossy().into_owned();
-            if linked.insert(first.clone()) {
-                let target = config_root.join(&first);
-                let link = temp_dir.path().join(&first);
-                symlink_dir(&target, &link).map_err(|source| ProfileError::Io {
-                    path: link,
-                    message: source.to_string(),
-                })?;
-            }
+        let source = config_root.join(relative);
+        let dest = temp_dir.path().join(relative);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| ProfileError::Io {
+                path: parent.to_path_buf(),
+                message: source.to_string(),
+            })?;
         }
+        std::fs::copy(&source, &dest).map_err(|source| ProfileError::Io {
+            path: dest,
+            message: source.to_string(),
+        })?;
     }
 
     let composed_path = temp_dir.path().join("composed-live.toml");
@@ -664,16 +659,6 @@ fn load_composed_against_binary(
     let invariants = confirm_production_invariants(&loaded)?;
     Ok((loaded, invariants))
     // `temp_dir` drops here, removing the staged directory on success and error alike.
-}
-
-#[cfg(unix)]
-fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(target, link)
-}
-
-#[cfg(not(unix))]
-fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_dir(target, link)
 }
 
 /// A uniquely-named private temp directory for staging the composed config during

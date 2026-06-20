@@ -165,6 +165,7 @@ CI_PROVENANCE_POLICY_ROWS = (
     "ready_for_review",
     "workflow_dispatch",
     "main_push",
+    "merge_group",
     "tag",
     "unknown_event",
 )
@@ -178,6 +179,7 @@ CI_PROVENANCE_POLICY_EXPECTED = {
     "ready_for_review": "full",
     "workflow_dispatch": "full",
     "main_push": "full",
+    "merge_group": "full",
     "tag": "tag_reuse",
     "unknown_event": "full",
 }
@@ -728,6 +730,17 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         or "startsWith(github.ref" in cancel_text
     ):
         errors.append("cancel-in-progress must not cancel push, tag, or deploy flows")
+    group_has_merge_group_arm = (
+        "github.event_name == 'merge_group'" in group_text
+        or 'github.event_name == "merge_group"' in group_text
+    )
+    if not group_has_merge_group_arm or "mq-{0}" not in group_text or "github.ref" not in group_text:
+        errors.append("concurrency group must key merge_group runs on github.ref")
+    if (
+        "github.event_name == 'merge_group'" in cancel_text
+        or 'github.event_name == "merge_group"' in cancel_text
+    ):
+        errors.append("cancel-in-progress must not cancel merge_group queue validations")
     return errors
 
 
@@ -742,7 +755,14 @@ def evaluate_ci_policy(
     override = policy.get("override")
     force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
 
-    if event_name == "push" and ref.startswith("refs/tags/v"):
+    if event_name == "merge_group":
+        # Mirror of ci_provenance.evaluate_ci_policy: the merge queue validates
+        # the exact to-be-merged commit on a gh-readonly-queue ref. Resolve on
+        # event_name alone so the queue ref shape is never misclassified as a
+        # tag or main_push; always run full.
+        path = str(policy["merge_group"])
+        reason = "merge_group"
+    elif event_name == "push" and ref.startswith("refs/tags/v"):
         path = str(policy["tag"])
         reason = "tag"
     elif event_name == "workflow_dispatch":
@@ -7750,6 +7770,21 @@ def detector_forces_build_on_workflow_dispatch(job_lines: list[str]) -> bool:
     return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
 
 
+def detector_forces_build_on_merge_group(job_lines: list[str]) -> bool:
+    # merge_group is a dedicated elif arm so the existing push/workflow_dispatch
+    # arm string stays intact:
+    #   elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+    # A skipped required check counts as passing in GitHub, so the required-capable
+    # build job must run on the merge commit; verify the arm emits value=true.
+    text = uncommented_text(job_lines)
+    branch = branch_body(
+        text,
+        "elif",
+        '"${{ github.event_name }}" == "merge_group"',
+    )
+    return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
+
+
 def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
     normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
     matches = [
@@ -8124,6 +8159,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
                     dispatch_input,
                 )
             )
+        if "merge_group" not in triggers:
+            # The merge queue dispatches merge_group/checks_requested; required
+            # checks that do not declare it never report and block the merge.
+            errors.append("on must define merge_group for merge queue full CI")
 
     errors.extend(verify_pr_concurrency(workflow_text))
 
@@ -8138,6 +8177,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.append("fmt-check must not need detector")
     if "detector" in jobs and not detector_forces_build_on_workflow_dispatch(jobs["detector"]):
         errors.append("detector must force build_required=true for workflow_dispatch full CI")
+    if "detector" in jobs and not detector_forces_build_on_merge_group(jobs["detector"]):
+        errors.append("detector must force build_required=true for merge_group full CI")
     if "detector" in jobs:
         errors.extend(detector_fingerprint_reuse_errors(jobs["detector"]))
 
@@ -8915,6 +8956,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                     )
                 ),
             )
+            if "merge_group" not in workflow_trigger_keys(text):
+                # actionlint is a required check; it must report on merge_group
+                # or the merge queue is blocked.
+                errors.append(f"{file_name}: on must define merge_group for merge queue")
         if file_name == "backtester-ci.yml" or file_name.endswith("/backtester-ci.yml"):
             add_unique_errors(
                 errors,

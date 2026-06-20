@@ -119,6 +119,7 @@ ready_pr = "full"
 ready_for_review = "full"
 workflow_dispatch = "full"
 main_push = "full"
+merge_group = "full"
 tag = "tag_reuse"
 unknown_event = "full"
 
@@ -140,6 +141,7 @@ force_full_ci = false
 [ci_provenance.policy]
 unknown_event = "full"
 tag = "tag_reuse"
+merge_group = "full"
 main_push = "full"
 workflow_dispatch = "full"
 ready_for_review = "full"
@@ -947,6 +949,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("pull_request", "opened", "false", "refs/pull/1/merge", "full"),
             ("pull_request", "ready_for_review", "true", "refs/pull/1/merge", "full"),
             ("workflow_dispatch", "", "true", "refs/heads/codex/branch", "full"),
+            ("merge_group", "checks_requested", "false", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
             ("unknown_event", "", "true", "refs/heads/codex/branch", "full"),
         ]
         for event_name, action, draft, ref, expected in cases:

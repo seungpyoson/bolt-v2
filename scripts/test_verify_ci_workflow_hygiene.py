@@ -129,6 +129,7 @@ ready_pr = "full"
 ready_for_review = "full"
 workflow_dispatch = "full"
 main_push = "full"
+merge_group = "full"
 tag = "tag_reuse"
 unknown_event = "full"
 
@@ -190,6 +191,8 @@ on:
         description: "Run full CI for the selected ref"
         required: false
         default: "true"
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   group: >-
@@ -201,6 +204,8 @@ concurrency:
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
+        || github.event_name == 'merge_group'
+        && format('mq-{0}', github.ref)
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
@@ -279,6 +284,8 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"
@@ -1198,6 +1205,10 @@ check_name = "test"
             valid.replace('main_push = "full"', 'main_push = "defer"'),
         ),
         (
+            "ci_provenance.policy.merge_group must be full",
+            valid.replace('merge_group = "full"', 'merge_group = "defer"'),
+        ),
+        (
             "ci_provenance.policy.draft_pr_synchronize must be defer",
             valid.replace('draft_pr_synchronize = "defer"', 'draft_pr_synchronize = "full"'),
         ),
@@ -1255,6 +1266,7 @@ def assert_ci_policy_matrix() -> None:
         ("pull_request", "opened", False, "refs/pull/1/merge", "full"),
         ("pull_request", "ready_for_review", True, "refs/pull/1/merge", "full"),
         ("workflow_dispatch", "", True, "refs/heads/codex/branch", "full"),
+        ("merge_group", "checks_requested", False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
         ("unknown_event", "", True, "refs/heads/codex/branch", "full"),
     ]
     for event_name, action, draft, ref, expected in cases:
@@ -1363,6 +1375,103 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
     errors = verifier.verify_workflow(mutated)
     if not any("detector must force build_required=true for workflow_dispatch full CI" in error for error in errors):
         raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
+
+
+def assert_merge_group_support_gaps_are_reported() -> None:
+    # Non-vacuous mutation tests for the merge queue (merge_group) lane:
+    # the real workflows/config must be clean, and each mutation must surface
+    # its own specific error. A skipped required check counts as passing in
+    # GitHub, so every gap here would silently let an unvalidated commit merge.
+    verifier = load_verifier()
+    ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
+    actionlint_workflow = repo_workflow_text(".github/workflows/actionlint.yml")
+
+    # Baseline: real workflows declare merge_group and resolve clean.
+    if verifier.verify_workflow(ci_workflow):
+        raise AssertionError(
+            f"real ci.yml must be merge_group-clean, got: {verifier.verify_workflow(ci_workflow)}"
+        )
+    actionlint_baseline = verifier.verify_repo_automation_texts(
+        {".github/workflows/actionlint.yml": actionlint_workflow}
+    )
+    if any("merge_group" in error for error in actionlint_baseline):
+        raise AssertionError(
+            f"real actionlint.yml must be merge_group-clean, got: {actionlint_baseline}"
+        )
+
+    # (i) merge_group policy value flipped away from "full" → config contract error.
+    flipped_config = ci_provenance_config_fixture().replace(
+        'merge_group = "full"', 'merge_group = "defer"'
+    )
+    if flipped_config == ci_provenance_config_fixture():
+        raise AssertionError("merge_group policy fixture fragment not found")
+    error = runner_config_load_error(flipped_config)
+    if "ci_provenance.policy.merge_group must be full" not in error:
+        raise AssertionError(f"expected merge_group policy contract error, got: {error!r}")
+
+    # (ii-a) merge_group trigger removed from ci.yml → CI workflow error.
+    ci_without_merge_group = replace_once(
+        ci_workflow,
+        "  merge_group:\n    types: [checks_requested]\n",
+        "",
+    )
+    ci_errors = verifier.verify_workflow(ci_without_merge_group)
+    if not any("on must define merge_group for merge queue full CI" in error for error in ci_errors):
+        raise AssertionError(f"expected ci.yml merge_group trigger error, got: {ci_errors}")
+
+    # (ii-b) merge_group trigger removed from actionlint.yml → actionlint error.
+    actionlint_without_merge_group = replace_once(
+        actionlint_workflow,
+        "  merge_group:\n    types: [checks_requested]\n",
+        "",
+    )
+    actionlint_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/actionlint.yml": actionlint_without_merge_group}
+    )
+    if not any(
+        "on must define merge_group for merge queue" in error for error in actionlint_errors
+    ):
+        raise AssertionError(
+            f"expected actionlint.yml merge_group trigger error, got: {actionlint_errors}"
+        )
+
+    # Detector must force build on merge_group (a skipped required build is a hole).
+    ci_without_detector_arm = replace_once(
+        ci_workflow,
+        '          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then\n',
+        "",
+    )
+    detector_errors = verifier.verify_workflow(ci_without_detector_arm)
+    if not any(
+        "detector must force build_required=true for merge_group full CI" in error
+        for error in detector_errors
+    ):
+        raise AssertionError(f"expected merge_group detector guard error, got: {detector_errors}")
+
+    # Concurrency must key merge_group on github.ref and must not cancel it.
+    ci_without_concurrency_arm = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'merge_group'\n        && format('mq-{0}', github.ref)\n",
+        "",
+    )
+    concurrency_errors = verifier.verify_workflow(ci_without_concurrency_arm)
+    if not any(
+        "concurrency group must key merge_group runs on github.ref" in error
+        for error in concurrency_errors
+    ):
+        raise AssertionError(f"expected merge_group concurrency error, got: {concurrency_errors}")
+
+    ci_cancelling_merge_group = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'workflow_dispatch' }}",
+        "        || github.event_name == 'workflow_dispatch'\n        || github.event_name == 'merge_group' }}",
+    )
+    cancel_errors = verifier.verify_workflow(ci_cancelling_merge_group)
+    if not any(
+        "cancel-in-progress must not cancel merge_group queue validations" in error
+        for error in cancel_errors
+    ):
+        raise AssertionError(f"expected merge_group cancel-scope error, got: {cancel_errors}")
 
 
 def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
@@ -2306,6 +2415,8 @@ def without_pr_concurrency(workflow: str) -> str:
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
+        || github.event_name == 'merge_group'
+        && format('mq-{0}', github.ref)
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
@@ -5790,6 +5901,8 @@ def main() -> int:
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
+        || github.event_name == 'merge_group'
+        && format('mq-{0}', github.ref)
         || format('{0}-{1}', github.ref_name, github.sha) }}""",
             "  group: format('pr-{0}', github.event.number)",
         ),
@@ -7884,6 +7997,7 @@ def main() -> int:
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_detector_forces_build_on_workflow_dispatch()
+    assert_merge_group_support_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()

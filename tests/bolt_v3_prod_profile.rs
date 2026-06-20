@@ -182,17 +182,17 @@ fn composed_prod_config_is_btc_only_with_loss_rails() {
         .risk
         .loss_governor
         .as_ref()
-        .expect("pilot config must declare [risk.loss_governor] loss rails");
+        .expect("pilot config must declare [risk.loss_governor]");
     assert!(
-        governor.enabled,
-        "pilot loss rails must be ENABLED — present-but-disabled rails are inert at runtime"
+        !governor.enabled,
+        "pilot loss governor must be explicitly disabled so submit admission skips loss policy"
     );
     assert!(
         governor.max_per_trade_loss.is_some()
             && governor.max_daily_loss.is_some()
             && governor.max_rolling_loss.is_some()
             && governor.max_drawdown.is_some(),
-        "pilot loss rails (per-trade/daily/rolling/drawdown) must all be set"
+        "configured loss thresholds (per-trade/daily/rolling/drawdown) must all be set"
     );
 }
 
@@ -753,7 +753,7 @@ fn generate_rejects_overlay_without_loss_rails() {
     write(&path, &without_rails);
 
     let error = generate_live_config(dir.path(), profile_id.as_str())
-        .expect_err("an overlay without loss rails must fail closed");
+        .expect_err("an overlay without a loss-governor block must fail closed");
     assert!(
         matches!(error, ProfileError::Overlay { .. }),
         "overlay missing the required loss_governor must fail at overlay parse, got: {error}"
@@ -761,29 +761,32 @@ fn generate_rejects_overlay_without_loss_rails() {
 }
 
 #[test]
-fn generate_rejects_overlay_with_disabled_loss_rails() {
-    // Present-but-disabled rails parse fine but are inert at runtime, so the
-    // production invariant on the COMPOSED config must reject them.
+fn generate_allows_overlay_with_disabled_loss_governor() {
+    // Disabled loss governor is the explicit production policy for this profile.
+    // The composed config still records that state for runtime and operator evidence.
     let dir = stage_full_config_tree("prod-overlay-disabled-rails");
     let overlay_text = support::repo_text(OVERLAY);
-    let disabled = overlay_text.replace("enabled = true\n", "enabled = false\n");
-    assert_ne!(
-        disabled, overlay_text,
-        "the enabled flag must have been flipped to false"
+    assert!(
+        overlay_loss_governor_enabled_is_false(&overlay_text),
+        "the profile overlay must explicitly disable loss governor"
     );
     let profile_id = ProfileId::parse("prod-disabled").expect("test profile id is valid");
     let path = profile_overlay_path(dir.path(), &profile_id);
-    write(&path, &disabled);
+    write(&path, &overlay_text);
 
-    let error = generate_live_config(dir.path(), profile_id.as_str())
-        .expect_err("an overlay with present-but-disabled loss rails must fail closed");
-    match error {
-        ProfileError::Invariant(message) => assert!(
-            message.contains("enabled"),
-            "invariant error must point at the disabled rails, got: {message}"
-        ),
-        other => panic!("expected an invariant error, got: {other}"),
-    }
+    let generated = generate_live_config(dir.path(), profile_id.as_str())
+        .expect("an overlay with explicit disabled loss governor must generate");
+    let loaded = load_text_in_staged_dir("prod-overlay-disabled-rails-generated", &generated.text);
+    let governor = loaded
+        .root
+        .risk
+        .loss_governor
+        .as_ref()
+        .expect("generated config must retain the loss-governor block");
+    assert!(
+        !governor.enabled,
+        "generated config must preserve explicit disabled loss governor"
+    );
 }
 
 #[test]
@@ -873,8 +876,23 @@ fn deploy_readme_documents_the_full_pre_arm_gate() {
     }
 }
 
+fn overlay_loss_governor_enabled_is_false(overlay_text: &str) -> bool {
+    let mut in_loss_governor = false;
+    for line in overlay_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_loss_governor = trimmed == "[loss_governor]";
+            continue;
+        }
+        if in_loss_governor && trimmed == "enabled = false" {
+            return true;
+        }
+    }
+    false
+}
+
 /// Drop the `[loss_governor]` table (header + its key lines) up to the next
-/// section header, leaving an otherwise-valid overlay with no loss rails.
+/// section header, leaving an otherwise-valid overlay with no loss-governor block.
 fn without_overlay_loss_governor(overlay_text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut skipping = false;

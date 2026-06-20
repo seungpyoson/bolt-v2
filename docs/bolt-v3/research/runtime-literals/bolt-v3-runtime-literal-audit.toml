@@ -18047,7 +18047,7 @@ kind = "string"
 literal = '''"loss_governor"'''
 context = '''"loss_governor".to_string(),'''
 classification = "prod_profile_compose_root_key"
-reason = "TOML risk-block key the composition inserts the overlay's loss rails at (mirrors RiskBlock.loss_governor); a structural schema key navigating the config tree, not an operator runtime value."
+reason = "TOML risk-block key the composition inserts the overlay's explicit loss-governor policy block at (mirrors RiskBlock.loss_governor); a structural schema key navigating the config tree, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_prod_profile.rs"

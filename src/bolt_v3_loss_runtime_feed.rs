@@ -460,7 +460,7 @@ impl LossGovernorRuntimeFeedState {
             account_state_equity_baseline: None,
             portfolio_pnl_observed: false,
             latest_snapshot: None,
-            source_observations: LossSourceObservationTimestamps::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         }
     }
 

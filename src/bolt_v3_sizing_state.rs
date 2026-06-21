@@ -402,7 +402,7 @@ mod tests {
     use rust_decimal::Decimal;
     use sha2::{Digest, Sha256};
 
-    use crate::bolt_v3_loss_governor::LossSnapshot;
+    use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
     use crate::bolt_v3_position_sizer::{PredictionMarketSizingSnapshot, ProductSizingSnapshot};
 
     use super::{
@@ -480,7 +480,7 @@ mod tests {
             rolling_pnl: Some(Decimal::ZERO),
             current_equity: Some(Decimal::new(100, 0)),
             peak_equity: Some(Decimal::new(100, 0)),
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         }
     }
 

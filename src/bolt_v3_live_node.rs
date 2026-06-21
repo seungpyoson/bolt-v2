@@ -6300,7 +6300,7 @@ mod tests {
     };
     use crate::bolt_v3_iv::config::IvRootConfig;
     use crate::bolt_v3_iv::error::IvRejectReason;
-    use crate::bolt_v3_loss_governor::LossSnapshot;
+    use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
     use crate::bolt_v3_providers::hyperliquid::{
         ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
     };
@@ -6754,7 +6754,7 @@ mod tests {
             rolling_pnl: Some(Decimal::ZERO),
             current_equity: Some(Decimal::new(100, 0)),
             peak_equity: Some(Decimal::new(100, 0)),
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         });
         let evidence = LossGovernorManualRecoveryEvidence::new(
             "operator-primary",

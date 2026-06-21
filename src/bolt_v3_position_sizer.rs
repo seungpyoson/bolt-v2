@@ -739,7 +739,9 @@ mod tests {
         CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason,
         ReservationReleaseRequest, ReservationRequest, ReservationRevalueRequest,
     };
-    use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
+    use crate::bolt_v3_loss_governor::{
+        LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
+    };
     use crate::bolt_v3_sizing_state::{
         NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
         ReservationLedgerSnapshot, SizingStateEvidenceKind, VenueSpendabilitySnapshot,
@@ -1034,7 +1036,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let mut ledger = ReservationLedger::reconciled();
@@ -1069,7 +1071,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let mut ledger = ReservationLedger::reconciled();
@@ -1105,7 +1107,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let mut ledger = ReservationLedger::reconciled();
@@ -1183,7 +1185,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let mut floor_policy = policy();
@@ -1246,7 +1248,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let mut unreconciled_ledger = ReservationLedger::unreconciled();
@@ -1283,7 +1285,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();
@@ -1661,7 +1663,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();
@@ -1708,7 +1710,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();
@@ -1751,7 +1753,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();
@@ -1787,7 +1789,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();
@@ -1839,7 +1841,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();
@@ -1892,7 +1894,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();

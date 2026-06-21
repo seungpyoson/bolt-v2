@@ -300,6 +300,7 @@ mod tests {
     };
     use crate::bolt_v3_loss_governor::{
         LossAdmissionDecision, LossHaltReason, LossSnapshot, LossSnapshotDiagnostics,
+        LossSourceObservationTimestamps,
     };
     use nautilus_model::enums::TradingState;
     use rust_decimal::Decimal;
@@ -341,7 +342,7 @@ mod tests {
             rolling_pnl: Some(Decimal::ZERO),
             current_equity: Some(Decimal::new(100, 0)),
             peak_equity: Some(Decimal::new(100, 0)),
-            source_observations: Default::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         }
     }
 

@@ -386,7 +386,7 @@ impl BoltV3SubmitAdmissionState {
                 loss_snapshot: None,
                 // No feed event has been observed at construction time, so all
                 // per-source last-seen timestamps are genuinely unavailable.
-                loss_source_observations: LossSourceObservationTimestamps::default(),
+                loss_source_observations: LossSourceObservationTimestamps::unobserved(),
                 position_sizer: position_sizer.map(|config| BoltV3SubmitPositionSizerState {
                     venue_id: config.venue_id,
                     account_id: config.account_id,

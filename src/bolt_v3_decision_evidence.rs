@@ -565,59 +565,36 @@ pub enum BoltV3ExitBlockedReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3ExitDecisionEvidence {
     pub strategy_id: String,
-    #[serde(default)]
     pub market_id: Option<String>,
-    #[serde(default)]
     pub position_id: Option<String>,
-    #[serde(default)]
     pub position_instrument_id: Option<String>,
-    #[serde(default)]
     pub position_outcome_side: Option<BoltV3OutcomeSide>,
-    #[serde(default)]
     pub forced_flat_reasons: Vec<BoltV3ForcedFlatReason>,
-    #[serde(default)]
     pub hold_ev_bps: Option<String>,
-    #[serde(default)]
     pub exit_ev_bps: Option<String>,
-    #[serde(default)]
     pub realized_vol: Option<String>,
-    #[serde(default)]
     pub realized_vol_source_venue: Option<String>,
-    #[serde(default)]
     pub realized_vol_source_ts_ms: Option<u64>,
     pub exit_eval_now_ms: u64,
     pub exit_trigger_source: BoltV3ExitTriggerSource,
     pub trigger_ts_event_ms: u64,
-    #[serde(default)]
     pub trigger_ts_init_ms: Option<u64>,
     pub rv_surface_id: String,
-    #[serde(default)]
     pub rv_snapshot_as_of_ms: Option<u64>,
-    #[serde(default)]
     pub rv_snapshot_ready: bool,
-    #[serde(default)]
     pub rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
-    #[serde(default, alias = "realized_volatility_source_diagnostics")]
     pub rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
     pub rv_gate_result: BoltV3ExitRvGateResult,
-    #[serde(default)]
     pub rv_future_dating_delta_ms: Option<u64>,
     pub exit_hysteresis_bps: String,
     pub exit_decision: BoltV3ExitDecisionOutcome,
-    #[serde(default)]
     pub blocked_reason: Option<BoltV3ExitBlockedReason>,
-    #[serde(default)]
     pub client_order_id: Option<String>,
-    #[serde(default)]
     pub seconds_to_market_end: Option<u64>,
     pub ts_ms: u64,
-    #[serde(default)]
     pub stale_reference_after_ms: Option<u64>,
-    #[serde(default)]
     pub last_reference_ts_ms: Option<u64>,
-    #[serde(default)]
     pub min_liquidity_required: Option<String>,
-    #[serde(default)]
     pub liquidity_available: Option<String>,
     pub frozen: bool,
     pub metadata_matches_selection: bool,
@@ -712,23 +689,14 @@ pub struct BoltV3LossGovernorHaltEvidence {
     pub snapshot_observed_at_ns: Option<u64>,
     pub admission_now_ns: u64,
     pub snapshot_age_ns: Option<u64>,
-    #[serde(default)]
     pub snapshot_source: Option<BoltV3LossSnapshotSource>,
-    #[serde(default)]
     pub per_trade_pnl_present: bool,
-    #[serde(default)]
     pub daily_pnl_present: bool,
-    #[serde(default)]
     pub rolling_pnl_present: bool,
-    #[serde(default)]
     pub current_equity_present: bool,
-    #[serde(default)]
     pub peak_equity_present: bool,
-    #[serde(default)]
     pub last_account_state_observed_at_ns: Option<u64>,
-    #[serde(default)]
     pub last_portfolio_snapshot_observed_at_ns: Option<u64>,
-    #[serde(default)]
     pub last_position_event_observed_at_ns: Option<u64>,
     pub per_trade_pnl: Option<String>,
     pub daily_pnl: Option<String>,

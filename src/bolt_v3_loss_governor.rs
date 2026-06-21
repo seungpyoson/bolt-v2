@@ -43,11 +43,21 @@ pub struct LossSnapshot {
     pub source_observations: LossSourceObservationTimestamps,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LossSourceObservationTimestamps {
     pub last_account_state_observed_at_ns: Option<u64>,
     pub last_portfolio_snapshot_observed_at_ns: Option<u64>,
     pub last_position_event_observed_at_ns: Option<u64>,
+}
+
+impl LossSourceObservationTimestamps {
+    pub const fn unobserved() -> Self {
+        Self {
+            last_account_state_observed_at_ns: None,
+            last_portfolio_snapshot_observed_at_ns: None,
+            last_position_event_observed_at_ns: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,7 +127,7 @@ pub fn evaluate_loss_admission(
         policy,
         snapshot,
         now_ns,
-        snapshot.map_or_else(LossSourceObservationTimestamps::default, |snapshot| {
+        snapshot.map_or_else(LossSourceObservationTimestamps::unobserved, |snapshot| {
             snapshot.source_observations
         }),
     )
@@ -290,7 +300,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: LossSourceObservationTimestamps::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         }
     }
 
@@ -451,7 +461,7 @@ mod tests {
             rolling_pnl: Some(Decimal::new(-31, 0)),
             current_equity: Some(Decimal::new(959, 0)),
             peak_equity: Some(Decimal::new(1000, 0)),
-            source_observations: LossSourceObservationTimestamps::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
 
         let decision = evaluate_loss_admission(&policy, Some(&snapshot), 10_100);
@@ -498,7 +508,7 @@ mod tests {
             rolling_pnl: Some(Decimal::new(-30, 0)),
             current_equity: Some(Decimal::new(960, 0)),
             peak_equity: Some(Decimal::new(1000, 0)),
-            source_observations: LossSourceObservationTimestamps::default(),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
 
         let decision = evaluate_loss_admission(&policy, Some(&snapshot), 10_100);

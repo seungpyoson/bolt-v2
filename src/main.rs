@@ -1474,6 +1474,37 @@ mod tests {
     }
 
     #[test]
+    fn ops_launch_target_verify_stage_degrades_when_no_deploy_toml() {
+        // Dispatch guard for the TargetVerify arm of `run_ops_launch_stage`:
+        // a `config_root` with no `deploy.toml` exercises the dispatch arm and
+        // the `NoTargetConfigured => Ok(())` degrade WITHOUT reaching the real
+        // IMDS endpoint (no gating binding means the host is never observed),
+        // so the test is hermetic — no 169.254.x network call. The
+        // `Mismatched => Err` mapping is covered by `verify_deploy_target`
+        // unit tests in `bolt_v3_deploy_target.rs`.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut context =
+            OpsLaunchContext::new("fixture-profile".to_string(), temp.path().to_path_buf());
+
+        run_ops_launch_stage(OpsLaunchStage::TargetVerify, &mut context).expect(
+            "target-verify stage must degrade to Ok when no deploy.toml configures a target",
+        );
+    }
+
+    #[test]
+    fn ops_launch_stage_target_verify_serializes_to_kebab_case() {
+        // Pin the kebab-case wire contract for the TargetVerify stage so a
+        // future serde-attr regression (e.g. dropping `rename_all`) is caught:
+        // the stage name is emitted in the ops-launch stage logs that operators
+        // and tooling parse.
+        assert_eq!(
+            serde_json::to_string(&OpsLaunchStage::TargetVerify)
+                .expect("OpsLaunchStage must serialize"),
+            "\"target-verify\"",
+        );
+    }
+
+    #[test]
     fn ops_data_client_census_cli_parses_config_and_client_key() {
         let cli = Cli::try_parse_from([
             "bolt-v2",

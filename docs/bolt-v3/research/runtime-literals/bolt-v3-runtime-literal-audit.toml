@@ -18455,7 +18455,7 @@ kind = '''number'''
 literal = '''2'''
 context = '''const IMDS_FETCH_TIMEOUT: Duration = Duration::from_secs(2);'''
 classification = '''imdsv2_fetch_safety_timeout'''
-reason = '''Fixed short fail-closed ceiling on the IMDSv2 handshake so TargetVerify fails fast when host facts are unreachable; an internal protocol-safety bound, not an operator-tunable runtime value.'''
+reason = '''Deliberate fixed fail-fast preflight bound on the link-local IMDSv2 handshake (the service is reachable with no network hops), so TargetVerify fails closed quickly when host facts are unreachable. Not asserted to be operator-irrelevant; promoting it to a configured value is deferred to a follow-up if operations ever observe transient-slowness false-fails.'''
 
 [[allowed]]
 path = '''src/bolt_v3_deploy_target.rs'''

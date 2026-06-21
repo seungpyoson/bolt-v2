@@ -19,7 +19,7 @@
 //!   - `name_tag` is informational only (basic IMDSv2 metadata does not expose
 //!     instance tags), so it never gates the outcome in this slice.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -38,9 +38,14 @@ const IMDS_INSTANCE_ID_PATH: &str = "/latest/meta-data/instance-id";
 const IMDS_AVAILABILITY_ZONE_PATH: &str = "/latest/meta-data/placement/availability-zone";
 const IMDS_REGION_PATH: &str = "/latest/meta-data/placement/region";
 
-/// Short fetch budget for the IMDSv2 handshake. Kept small because the launch
-/// lane must fail closed quickly when the host facts are unreachable rather
-/// than stalling startup.
+/// Fetch budget for the IMDSv2 handshake. This is a deliberate fixed fail-fast
+/// ceiling on the link-local IMDSv2 token + metadata handshake: the service is
+/// reachable over the link-local address with no network hops, so a short fixed
+/// preflight bound is the right shape and the launch lane fails closed quickly
+/// when host facts are unreachable instead of stalling startup. The value is
+/// NOT asserted to be operator-irrelevant; if operations ever observe
+/// transient-slowness false-fails, promoting it to a configured value is
+/// deferred to a follow-up rather than presumed unnecessary here.
 const IMDS_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Parsed `deploy.toml`. The `[target]` table is optional so an absent or
@@ -105,7 +110,10 @@ pub enum TargetVerifyOutcome {
 #[derive(Debug)]
 pub enum DeployTargetError {
     /// `deploy.toml` exists but could not be read.
-    Read(ConfigFileReadError),
+    Read {
+        path: PathBuf,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// `deploy.toml` could not be parsed as a valid deploy target.
     Parse {
         path: String,
@@ -119,7 +127,13 @@ pub enum DeployTargetError {
 impl std::fmt::Display for DeployTargetError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Read(source) => write!(f, "failed to read deploy target config: {source}"),
+            Self::Read { path, source } => {
+                write!(
+                    f,
+                    "failed to read deploy target config {}: {source}",
+                    path.display()
+                )
+            }
             Self::Parse { path, source } => {
                 write!(f, "failed to parse deploy target config {path}: {source}")
             }
@@ -133,7 +147,7 @@ impl std::fmt::Display for DeployTargetError {
 impl std::error::Error for DeployTargetError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Read(source) => Some(source),
+            Self::Read { source, .. } => Some(source.as_ref()),
             Self::Parse { source, .. } => Some(source),
             Self::Observe(_) => None,
         }
@@ -162,7 +176,12 @@ pub fn load_deploy_target(config_root: &Path) -> Result<DeployTargetConfig, Depl
         {
             return Ok(DeployTargetConfig::default());
         }
-        Err(error) => return Err(DeployTargetError::Read(error)),
+        Err(error) => {
+            return Err(DeployTargetError::Read {
+                path: path.clone(),
+                source: Box::new(error),
+            });
+        }
     };
     toml::from_str(&contents).map_err(|source| DeployTargetError::Parse {
         path: path.display().to_string(),
@@ -247,6 +266,26 @@ impl Imdsv2HostFactsSource {
     pub fn new() -> Self {
         Self
     }
+
+    /// Reject `observe` when called from inside an active Tokio runtime,
+    /// mirroring `secrets::SsmResolverSession::ensure_not_inside_active_tokio_runtime`.
+    /// `observe` builds and `block_on`s a current-thread runtime; Tokio panics
+    /// if `block_on` runs inside another runtime's task. Host-facts observation
+    /// must run on the synchronous startup boundary (the same one SSM secret
+    /// resolution uses), before any NT runtime is built, so a same-thread
+    /// misuse converts to a structured `DeployTargetError::Observe` instead of
+    /// a runtime panic.
+    fn ensure_not_inside_active_tokio_runtime() -> Result<(), DeployTargetError> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(DeployTargetError::Observe(
+                "Imdsv2HostFactsSource invoked from inside an active Tokio \
+                 runtime; deploy-target host-facts observation must run on the \
+                 synchronous startup boundary, before any NT runtime is built"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for Imdsv2HostFactsSource {
@@ -257,6 +296,7 @@ impl Default for Imdsv2HostFactsSource {
 
 impl HostFactsSource for Imdsv2HostFactsSource {
     fn observe(&self) -> Result<ObservedHostFacts, DeployTargetError> {
+        Self::ensure_not_inside_active_tokio_runtime()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

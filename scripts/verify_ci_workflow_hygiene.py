@@ -694,6 +694,18 @@ def top_level_block(workflow_text: str, key: str) -> list[str]:
 # derived from the workflows, so an unsafe edit to a workflow is rejected rather
 # than silently blessed. A new or edited merge_group workflow must add its
 # normalized group expression here after review — that review is the gate.
+#
+# Known textual-scanning residual (liveness-only, tracked #879): the block
+# extractor strips per-line YAML comments, which is faithful for real comments
+# but treats a `#` inside a block scalar (`>-`/`|`, where GitHub keeps it as
+# literal content) as a comment too. Such a workflow can normalize to an approved
+# form and be accepted here even though GitHub's expression evaluation breaks on
+# the literal `#`. This cannot admit an unvalidated commit — the broken
+# expression errors the run, and actionlint (a required merge_group check this
+# verifier already enforces) rejects it (verified exit 1). It is the same class
+# as the duplicate-key / exotic-encoding residual below; the encoding-proof fix
+# is a YAML-faithful parse, deferred to avoid a new runtime dependency for a
+# liveness-only hardening.
 def _normalize_concurrency_text(text: str) -> str:
     """Collapse all runs of whitespace to single spaces so formatting (YAML
     folding, indentation, line wrapping) does not affect the allowlist match."""

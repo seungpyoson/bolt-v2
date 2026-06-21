@@ -1696,8 +1696,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
     # Decoy-after-fallback (ci.yml): the real merge_group arm is decoupled to a
     # shared key, but a dead keyed arm sits after the always-true fallback (which
-    # GitHub's `||` never reaches). A single .search() would still pass; the
-    # every-arm-keyed check must reject the decoupled real arm.
+    # GitHub's `||` never reaches). A single .search() for the keyed arm would
+    # still pass; the allowlist rejects it because the decoupled group expression
+    # is not an approved form.
     ci_decoy_after_fallback = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n"
@@ -1776,8 +1777,12 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
     # Literal-string spoof (ci.yml): the merge_group arm's value is a constant
     # key that merely contains the text 'github.ref', so every queue entry gets
-    # the same group. A ref-isolation check that matches the bare token would be
-    # fooled; quoted string literals must be stripped before the ref check.
+    # the same group. A naive ref-isolation check matching the bare token would be
+    # fooled; the allowlist rejects it because the constant group is not an
+    # approved form. (Regression coverage: the prior expression-analysis verifier
+    # also rejected this form — it required github.ref as a format() placeholder
+    # arg — so this is NOT a gap the allowlist uniquely closes; see the
+    # load-bearing allowlist guard below for what is proven.)
     ci_literal_spoof = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n"
@@ -1801,11 +1806,16 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             f"rejected, got: {literal_errors}"
         )
 
-    # The remaining mutations are forms an adversarial pass confirmed fail-open
-    # under any expression-analysis contract; the positive allowlist rejects them
-    # because the normalized group is not an approved form. github.ref wrapped in
-    # a constant-collapsing function (startsWith/endsWith/contains) yields the
-    # same key for every queue ref.
+    # github.ref wrapped in a constant-collapsing function
+    # (startsWith/endsWith/contains) yields the same key for every queue ref. The
+    # allowlist rejects it because the normalized group is not an approved form.
+    # (Regression coverage: the prior expression-analysis verifier also rejected
+    # this — the merge_group arm's format() arg was startsWith(...), not the bare
+    # github.ref it required — so, like literal_spoof, it is NOT a gap the
+    # allowlist uniquely closes. The forms the allowlist DOES uniquely close
+    # against expression analysis are index_syntax/ref_shape/amp_literal/
+    # gate_literal; the guard below proves the allowlist is the sole gate for all
+    # of them without depending on which historical check caught which.)
     ci_collapse = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n"
@@ -1862,6 +1872,48 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         for error in verifier.verify_workflow(ci_gate_literal)
     ):
         raise AssertionError("a gate hidden inside a string literal must be rejected")
+
+    # --- Load-bearing proof for the group allowlist (differential) ---
+    # Every merge_group group-expression mutation above resolves to a shared or
+    # constant group that is unsafe under merge_group, and the positive allowlist
+    # rejects each one (none is an approved form). Stub the allowlist branch back
+    # out (pre-rework behavior: cancel check only) and every one must stop being
+    # rejected — proving the allowlist is the sole load-bearing gate, not a
+    # vacuous assertion. (Some of these forms were ALSO caught by the prior
+    # expression-analysis verifier and are kept as regression coverage; the
+    # allowlist's value is that it rejects all of them without depending on which
+    # historical check caught which.) load_verifier() returns a fresh module, but
+    # restore anyway so the patch cannot leak.
+    allowlist_gated_group_mutations = [
+        ("decoy_after_fallback", ci_decoy_after_fallback),
+        ("index_syntax_escape", ci_index_syntax_escape),
+        ("ref_shape_escape", ci_ref_shape_escape),
+        ("literal_spoof", ci_literal_spoof),
+        ("collapse", ci_collapse),
+        ("amp_literal", ci_amp_literal),
+        ("gate_literal", ci_gate_literal),
+    ]
+    original_group_check = verifier.merge_group_concurrency_errors
+    try:
+        verifier.merge_group_concurrency_errors = (
+            lambda group_text, cancel_text: (
+                []
+                if verifier.cancel_in_progress_is_merge_group_safe(cancel_text)
+                else ["cancel-in-progress must not cancel merge_group queue validations"]
+            )
+        )
+        for label, mutated in allowlist_gated_group_mutations:
+            if any(
+                "approved merge_group-safe form" in error
+                for error in verifier.verify_workflow(mutated)
+            ):
+                raise AssertionError(
+                    f"differential: {label} must no longer draw the allowlist error "
+                    "once the group allowlist is stubbed out (else the allowlist "
+                    "guard proves nothing)"
+                )
+    finally:
+        verifier.merge_group_concurrency_errors = original_group_check
 
     # Duplicate top-level group: key — GitHub takes the last (a constant). The
     # extractor joins both group: lines, so the normalized text is not approved.

@@ -47,7 +47,6 @@ fingerprint_source = "meter"
 [ci_provenance.full_ci]
 required_jobs = [
   "detector",
-  "fmt-check",
   "deny",
   "clippy",
   "check-aarch64",
@@ -61,9 +60,6 @@ conditional_job_outputs = { build = "detector.build_required" }
 
 [ci_provenance.full_ci.jobs.detector]
 check_name = "detector"
-
-[ci_provenance.full_ci.jobs.fmt-check]
-check_name = "fmt-check"
 
 [ci_provenance.full_ci.jobs.deny]
 check_name = "deny"
@@ -196,9 +192,6 @@ check_name = "clippy"
 [ci_provenance.full_ci.jobs.deny]
 check_name = "deny"
 
-[ci_provenance.full_ci.jobs.fmt-check]
-check_name = "fmt-check"
-
 [ci_provenance.full_ci.jobs.detector]
 check_name = "detector"
 
@@ -207,7 +200,6 @@ conditional_job_outputs = { build = "detector.build_required" }
 conditional_jobs = ["build"]
 required_jobs = [
   "detector",
-  "fmt-check",
   "deny",
   "clippy",
   "check-aarch64",
@@ -335,7 +327,6 @@ def valid_record(module, config_path: pathlib.Path) -> dict[str, object]:
         "pull_request": {"number": None, "base_sha": None},
         "required_jobs": {
             "detector": "success",
-            "fmt-check": "success",
             "deny": "success",
             "clippy": "success",
             "check-aarch64": "success",
@@ -426,7 +417,6 @@ def job_payload(name: str, conclusion: object = "success", status: object = "com
 def required_job_payloads(build_conclusion: object = "success") -> list[dict[str, object]]:
     return [
         job_payload("detector"),
-        job_payload("fmt-check"),
         job_payload("deny"),
         job_payload("clippy"),
         job_payload("check-aarch64"),
@@ -541,7 +531,6 @@ def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
                 config_path=config,
                 required_job_values=[
                     "detector=success",
-                    "fmt-check=success",
                     "deny=success",
                     "clippy=success",
                     "check-aarch64=success",

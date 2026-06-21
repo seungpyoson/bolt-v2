@@ -1885,16 +1885,21 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError("a gate hidden inside a string literal must be rejected")
 
     # --- Load-bearing proof for the group allowlist (differential) ---
-    # Every merge_group group-expression mutation above resolves to a shared or
-    # constant group that is unsafe under merge_group, and the positive allowlist
-    # rejects each one (none is an approved form). Stub the allowlist branch back
-    # out (pre-rework behavior: cancel check only) and every one must stop being
-    # rejected — proving the allowlist is the sole load-bearing gate, not a
-    # vacuous assertion. (Some of these forms were ALSO caught by the prior
-    # expression-analysis verifier and are kept as regression coverage; the
-    # allowlist's value is that it rejects all of them without depending on which
-    # historical check caught which.) load_verifier() returns a fresh module, but
-    # restore anyway so the patch cannot leak.
+    # Every merge_group group-expression mutation above is a NON-APPROVED group
+    # form, and the positive allowlist rejects each one. Most resolve to a shared
+    # or constant group that is genuinely unsafe under merge_group; fail_open_swap
+    # is the exception — its merge_group arm keys on github.ref_name, which is
+    # unique per queue entry (gh-readonly-queue/<base>/pr-N-<sha>), so it would in
+    # fact isolate, yet it is still rejected because it is not the exact approved
+    # form. That is the allowlist's whole point: it is fail-closed on any
+    # non-approved form and never tries to decide whether a novel form happens to
+    # be safe. Stub the allowlist branch back out (pre-rework behavior: cancel
+    # check only) and every one must stop being rejected — proving the allowlist
+    # is the sole load-bearing gate, not a vacuous assertion. (Some of these forms
+    # were ALSO caught by the prior expression-analysis verifier and are kept as
+    # regression coverage; the allowlist's value is that it rejects all of them
+    # without depending on which historical check caught which.) load_verifier()
+    # returns a fresh module, but restore anyway so the patch cannot leak.
     allowlist_gated_group_mutations = [
         ("fail_open_swap", ci_fail_open),
         ("decoy_after_fallback", ci_decoy_after_fallback),

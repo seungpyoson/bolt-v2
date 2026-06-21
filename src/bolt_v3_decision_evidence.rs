@@ -541,7 +541,7 @@ pub enum BoltV3ExitTriggerSource {
 /// time. `RejectedFutureDated` and `RejectedNotReady` are split apart here even
 /// though the production gate collapses them into a single `None`, so evidence can
 /// distinguish the incident's future-dated case from a not-yet-warm surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3RvGateResult {
     Accepted,
@@ -553,7 +553,7 @@ pub enum BoltV3RvGateResult {
 /// Closed exit decision as recorded in evidence. Mirrors the strategy's internal
 /// `ExitDecision` (Hold / Exit / ExitFailClosed) without importing it, keeping the
 /// evidence schema decoupled from strategy internals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3ExitDecisionEvidence {
     Hold,

@@ -42,9 +42,10 @@ use crate::{
     },
     bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
+        BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence, BoltV3ExitTriggerSource,
         BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        realized_volatility_aggregation_evidence_label,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
+        BoltV3StrategyInputEvidenceSnapshot, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
     },
@@ -997,6 +998,12 @@ pub struct BinaryOracleEdgeTaker {
     resolution_strike_index_subscription: Option<InstrumentId>,
     resolution_strike_custom_subscription: Option<DataType>,
     resolution_strike_fetch_sequence: u64,
+    /// Flood guard for #885 exit-evaluation evidence: the last durable outcome key
+    /// recorded per open position. A durable record is emitted only when this key
+    /// changes (or on an actual submit), collapsing a per-tick exit flood (e.g. the
+    /// 2026-06-20 incident) into one record per distinct outcome. The per-tick
+    /// tracing log is unaffected.
+    last_exit_evidence_outcome: BTreeMap<PositionId, ExitOutcomeKey>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
     /// Test-only observability for live-strike fetch attempts. Records each
@@ -1057,6 +1064,7 @@ impl BinaryOracleEdgeTaker {
             resolution_strike_index_subscription: None,
             resolution_strike_custom_subscription: None,
             resolution_strike_fetch_sequence: INITIAL_COUNTER_U64,
+            last_exit_evidence_outcome: BTreeMap::new(),
             #[cfg(test)]
             book_subscription_events: Vec::new(),
             #[cfg(test)]
@@ -1128,7 +1136,12 @@ impl BinaryOracleEdgeTaker {
         self.prune_market_lifecycle(now_ms);
         self.refresh_book_subscriptions_for_current_state();
         if self.exposure.managed_position().is_some()
-            && let Err(error) = self.try_submit_exit_order(now_ms)
+            && let Err(error) = self.try_submit_exit_order(
+                now_ms,
+                BoltV3ExitTriggerSource::SelectionUpdate,
+                Some(now_ms as i64),
+                None,
+            )
         {
             log::error!(
                 "binary_oracle_edge_taker exit submit failed on selection update: strategy_id={} market_id={:?} now_ms={} error={:#}",
@@ -1140,14 +1153,23 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
+    fn observe_signal_quote(
+        &mut self,
+        quote: &FastSpotObservation,
+        trigger_ts_init_ms: Option<i64>,
+    ) {
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
-            && let Err(error) = self.try_submit_exit_order(quote.observed_ts_ms)
+            && let Err(error) = self.try_submit_exit_order(
+                quote.observed_ts_ms,
+                BoltV3ExitTriggerSource::SignalQuote,
+                Some(quote.observed_ts_ms as i64),
+                trigger_ts_init_ms,
+            )
         {
             log::error!(
                 "binary_oracle_edge_taker exit submit failed on signal update: strategy_id={} market_id={:?} ts_ms={} error={:#}",
@@ -1171,7 +1193,12 @@ impl BinaryOracleEdgeTaker {
         self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
-            && let Err(error) = self.try_submit_exit_order(snapshot.ts_ms)
+            && let Err(error) = self.try_submit_exit_order(
+                snapshot.ts_ms,
+                BoltV3ExitTriggerSource::ReferenceUpdate,
+                Some(snapshot.ts_ms as i64),
+                None,
+            )
         {
             log::error!(
                 "binary_oracle_edge_taker exit submit failed on reference update: strategy_id={} market_id={:?} ts_ms={} error={:#}",
@@ -4792,26 +4819,54 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
-    fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
+    /// Evaluate and (if admitted) submit an exit order, then record durable #885
+    /// exit-evaluation evidence flood-gated by [`ExitOutcomeKey`].
+    ///
+    /// `trigger_source` / `trigger_ts_event_ms` / `trigger_ts_init_ms` are narrow,
+    /// caller-supplied evidence inputs only — they do not alter the trading decision,
+    /// which is computed entirely from `now_ms` inside [`Self::try_submit_exit_order_inner`].
+    fn try_submit_exit_order(
+        &mut self,
+        now_ms: u64,
+        trigger_source: BoltV3ExitTriggerSource,
+        trigger_ts_event_ms: Option<i64>,
+        trigger_ts_init_ms: Option<i64>,
+    ) -> Result<Option<ClientOrderId>> {
+        let (result, decision) = self.try_submit_exit_order_inner(now_ms)?;
+        self.record_exit_evaluation_evidence(
+            now_ms,
+            &decision,
+            trigger_source,
+            trigger_ts_event_ms,
+            trigger_ts_init_ms,
+            result.is_some(),
+        );
+        Ok(result)
+    }
+
+    fn try_submit_exit_order_inner(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<(Option<ClientOrderId>, ExitSubmissionDecision)> {
         self.refresh_realized_volatility_snapshot_at(now_ms);
         self.refresh_current_reference_price_selection_at(now_ms);
         let mut decision = self.exit_submission_decision_at(now_ms);
 
         let Some(instrument_id) = decision.instrument_id else {
             self.log_exit_evaluation(now_ms, &decision);
-            return Ok(None);
+            return Ok((None, decision));
         };
         let Some(order_side) = decision.order_side else {
             self.log_exit_evaluation(now_ms, &decision);
-            return Ok(None);
+            return Ok((None, decision));
         };
         let Some(raw_price) = decision.price else {
             self.log_exit_evaluation(now_ms, &decision);
-            return Ok(None);
+            return Ok((None, decision));
         };
         let Some(mut quantity) = decision.quantity else {
             self.log_exit_evaluation(now_ms, &decision);
-            return Ok(None);
+            return Ok((None, decision));
         };
         let order_config = decision
             .execution_config()
@@ -4824,7 +4879,7 @@ impl BinaryOracleEdgeTaker {
         else {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE);
             self.log_exit_evaluation(now_ms, &decision);
-            return Ok(None);
+            return Ok((None, decision));
         };
         quantity = normalized_quantity;
         decision.quantity = Some(quantity);
@@ -4901,7 +4956,112 @@ impl BinaryOracleEdgeTaker {
             }
         }
 
-        Ok(Some(client_order_id))
+        Ok((Some(client_order_id), decision))
+    }
+
+    /// Assemble the #885 exit-evaluation evidence from the same single-source field
+    /// builders that drive the existing exit log (`exit_evaluation_log_fields_at` +
+    /// `realized_volatility_evidence_fields` + the shared RV-gate classifier), then
+    /// emit it flood-gated by [`ExitOutcomeKey`]. Observability only: this never
+    /// changes the trading decision (the decision was already computed in
+    /// `try_submit_exit_order_inner`).
+    fn record_exit_evaluation_evidence(
+        &mut self,
+        now_ms: u64,
+        decision: &ExitSubmissionDecision,
+        trigger_source: BoltV3ExitTriggerSource,
+        trigger_ts_event_ms: Option<i64>,
+        trigger_ts_init_ms: Option<i64>,
+        submitted: bool,
+    ) {
+        let log_fields = self.exit_evaluation_log_fields_at(now_ms, decision);
+        let rv_fields = self.realized_volatility_evidence_fields();
+        let rv_gate_result = self
+            .pricing
+            .classify_realized_vol_gate(&self.config.realized_volatility_surface_id, now_ms);
+        let exit_eval_now_ms = now_ms as i64;
+        let rv_as_of_ms = rv_fields.as_of_ms.map(|value| value as i64);
+        let rv_as_of_minus_now_ms = rv_as_of_ms.map(|as_of| as_of - exit_eval_now_ms);
+        let rv_ready = self
+            .pricing
+            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
+            .is_some_and(|snapshot| snapshot.ready_realized_vol().is_some());
+
+        let exit_decision = exit_decision_evidence_from_optional(decision.evaluation.exit_decision);
+        let outcome_key = ExitOutcomeKey {
+            exit_decision,
+            submission_blocked_reason: decision.blocked_reason,
+            rv_gate_result,
+        };
+
+        // Flood guard: collapse a per-tick exit flood (same outcome key) into a single
+        // durable record per open position. An actual submit always records (it is a
+        // distinct, rare event). The per-tick tracing log above is untouched.
+        if let Some(position_id) = log_fields.position_id {
+            let changed = self.last_exit_evidence_outcome.get(&position_id) != Some(&outcome_key);
+            if !submitted && !changed {
+                return;
+            }
+            self.last_exit_evidence_outcome
+                .insert(position_id, outcome_key);
+        }
+
+        let evidence = BoltV3ExitEvaluationEvidence {
+            position_id: log_fields
+                .position_id
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            market_id: log_fields.market_id.clone().unwrap_or_default(),
+            instrument_id: log_fields
+                .position_instrument_id
+                .map(|id| id.to_string())
+                .unwrap_or_default(),
+            client_order_id: decision.client_order_id.map(|id| id.to_string()),
+            exit_eval_now_ms,
+            exit_trigger_source: trigger_source,
+            trigger_ts_event_ms,
+            trigger_ts_init_ms,
+            rv_surface_id: rv_fields.surface_id.clone(),
+            rv_as_of_ms,
+            rv_ready,
+            rv_blockers: rv_fields.blockers.clone(),
+            rv_source_diagnostics: rv_fields
+                .source_diagnostics
+                .iter()
+                .map(|diagnostic| format!("{}:{}", diagnostic.source_id, diagnostic.status))
+                .collect(),
+            rv_gate_result,
+            rv_as_of_minus_now_ms,
+            hold_ev_bps: log_fields.hold_ev_bps.map(evidence_number),
+            exit_ev_bps: log_fields.exit_ev_bps.map(evidence_number),
+            exit_decision,
+            forced_flat_reasons: log_fields
+                .forced_flat_reasons
+                .iter()
+                .map(|reason| format!("{reason:?}"))
+                .collect(),
+            submission_order_side: log_fields
+                .submission_order_side
+                .map(|side| side.to_string()),
+            submission_price: log_fields.submission_price.map(evidence_number),
+            submission_quantity: log_fields
+                .submission_quantity
+                .map(|quantity| quantity.to_string()),
+            submission_blocked_reason: log_fields.submission_blocked_reason.map(str::to_string),
+        };
+
+        if let Err(error) = self
+            .context
+            .decision_evidence()
+            .record_exit_evaluation(&evidence)
+        {
+            log::warn!(
+                "binary_oracle_edge_taker exit evidence write failed: strategy_id={} position_id={} error={:#}",
+                self.config.strategy_id,
+                evidence.position_id,
+                error,
+            );
+        }
     }
 
     fn entry_submission_decision_at(&self, now_ms: u64) -> EntrySubmissionDecision {
@@ -5597,7 +5757,8 @@ impl DataActor for BinaryOracleEdgeTaker {
             .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
             && let Some(signal_quote) = self.signal_quote_from_tick(quote)
         {
-            self.observe_signal_quote(&signal_quote);
+            let trigger_ts_init_ms = (quote.ts_init.as_u64() / NANOS_PER_MILLI_U64) as i64;
+            self.observe_signal_quote(&signal_quote, Some(trigger_ts_init_ms));
         }
         for snapshot in self.context.observe_realized_volatility_quote(quote) {
             self.pricing.observe_realized_vol_snapshot(snapshot);
@@ -5665,8 +5826,14 @@ impl DataActor for BinaryOracleEdgeTaker {
 
         self.refresh_fee_readiness();
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
+        let book_delta_ts_event_ms = (deltas.ts_event.as_u64() / NANOS_PER_MILLI_U64) as i64;
         if matches!(self.exposure, ExposureState::Managed(_))
-            && let Err(error) = self.try_submit_exit_order(now_ms)
+            && let Err(error) = self.try_submit_exit_order(
+                now_ms,
+                BoltV3ExitTriggerSource::BookDelta,
+                Some(book_delta_ts_event_ms),
+                None,
+            )
         {
             log::error!(
                 "binary_oracle_edge_taker exit submit failed on book delta: strategy_id={} instrument_id={} error={:#}",
@@ -6883,6 +7050,18 @@ enum ExitDecision {
     ExitFailClosed,
 }
 
+/// Stable key for #885 exit-evaluation evidence flood-gating. Two exit evaluations
+/// with the same key produce the same RCA story, so only the first is recorded
+/// durably (subsequent identical ticks are suppressed). Deliberately excludes the
+/// client_order_id (re-minted per attempt) and timestamps so a per-tick flood
+/// collapses to one record. `Ord` lets it key a `BTreeMap` without a new import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ExitOutcomeKey {
+    exit_decision: BoltV3ExitDecisionEvidence,
+    submission_blocked_reason: Option<&'static str>,
+    rv_gate_result: BoltV3RvGateResult,
+}
+
 fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bool {
     matches!(
         occupancy,
@@ -6897,6 +7076,20 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
         || reason == EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING
         || reason == EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING
         || reason == EXIT_BLOCK_REASON_EXIT_HOLD)
+}
+
+/// Map the strategy-internal [`ExitDecision`] to the closed evidence enum. `None`
+/// (blocked before a decision was computed, e.g. exit already pending or entry order
+/// still working) maps to `Hold` — no exit action was taken — and the durable record's
+/// `submission_blocked_reason` field separately explains why.
+fn exit_decision_evidence_from_optional(
+    decision: Option<ExitDecision>,
+) -> BoltV3ExitDecisionEvidence {
+    match decision {
+        Some(ExitDecision::Hold) | None => BoltV3ExitDecisionEvidence::Hold,
+        Some(ExitDecision::Exit) => BoltV3ExitDecisionEvidence::Exit,
+        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionEvidence::ExitFailClosed,
+    }
 }
 
 fn evaluate_exit_decision(

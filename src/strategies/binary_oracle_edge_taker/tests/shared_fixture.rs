@@ -332,6 +332,7 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     StrategyInput(Box<crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot>),
     OrderIntent(Box<crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>),
     AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
+    ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
 }
 
 #[derive(Debug, Default)]
@@ -420,8 +421,14 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
 
     fn record_exit_evaluation(
         &self,
-        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
+        evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
     ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::ExitEvaluation(Box::new(
+                evidence.clone(),
+            )));
         Ok(())
     }
 

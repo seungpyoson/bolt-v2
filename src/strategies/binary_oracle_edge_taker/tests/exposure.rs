@@ -949,7 +949,12 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             .expect("test cache should accept resting entry order");
 
         let exit_client_order_id = strategy
-            .try_submit_exit_order(1_200)
+            .try_submit_exit_order(
+                1_200,
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                Some(1_200),
+                None,
+            )
             .expect("forced-flat exit submit should not fail")
             .expect("forced-flat exit should submit");
 
@@ -1344,7 +1349,12 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
             .expect("test cache should accept resting entry order");
 
         strategy
-            .try_submit_exit_order(1_200)
+            .try_submit_exit_order(
+                1_200,
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                Some(1_200),
+                None,
+            )
             .expect("forced-flat exit must not error in shadow mode");
 
         let exec_messages = exec_messages.get_messages();

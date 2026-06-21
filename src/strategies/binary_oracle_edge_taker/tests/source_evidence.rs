@@ -894,7 +894,12 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     );
 
     let first_client_order_id = strategy
-        .try_submit_exit_order(1_200)
+        .try_submit_exit_order(
+            1_200,
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+            Some(1_200),
+            None,
+        )
         .expect("first shadow exit should pass evidence and admission")
         .expect("first shadow exit should produce a would-be client order id");
     assert_eq!(
@@ -909,7 +914,12 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
 
     assert_eq!(
         strategy
-            .try_submit_exit_order(1_201)
+            .try_submit_exit_order(
+                1_201,
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                Some(1_201),
+                None,
+            )
             .expect("latched shadow exit should not fail"),
         None,
         "latched shadow exit should block repeated would-be exits"
@@ -1291,5 +1301,189 @@ fn observe_resolution_strike_window_mismatch_is_observable_and_distinct_from_idl
         idle.resolution_strike_window_mismatch_count, 0,
         "an Idle drop must be handled distinctly from a configured mismatch \
          (no observable rejection recorded)"
+    );
+}
+
+/// Build a ready-to-trade strategy with one open managed position and a recording
+/// evidence writer, for #885 exit-evaluation evidence tests. Returns the strategy
+/// and the writer (the caller drives exits and reads back `events()`).
+fn exit_evidence_strategy_with_open_position() -> (
+    BinaryOracleEdgeTaker,
+    Arc<RecordingSequencedDecisionEvidenceWriter>,
+) {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    // Shadow policy so a would-be exit submits through the admission/evidence path
+    // without consuming live submit capacity.
+    set_shadow_order_execution_policy(&mut strategy);
+    strategy.active.phase = SelectionPhase::Freeze;
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let instrument_id = configured_outcome_instruments(&strategy)
+        .into_iter()
+        .next()
+        .expect("ready-to-trade fixture should expose an outcome instrument");
+    let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-EXIT-EVIDENCE-001"),
+        position_quantity,
+        0.45,
+    );
+    set_managed_position(
+        &mut strategy,
+        position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    (strategy, evidence)
+}
+
+/// Collect every recorded exit-evaluation evidence record, in order.
+fn recorded_exit_evaluations(
+    evidence: &RecordingSequencedDecisionEvidenceWriter,
+) -> Vec<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence> {
+    evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::ExitEvaluation(evidence) => Some(*evidence),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn exit_evaluation_evidence_records_accepted_rv_gate() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    // RV ready at as_of == now == 1_200 → the gate accepts the snapshot.
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+
+    strategy
+        .try_submit_exit_order(
+            1_200,
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            Some(1_200),
+            Some(1_180),
+        )
+        .expect("exit evaluation should not error with a ready realized-vol surface");
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        1,
+        "an accepted exit evaluation must record exactly one durable evidence record"
+    );
+    let record = &records[0];
+    assert_eq!(
+        record.rv_gate_result,
+        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::Accepted,
+        "a fresh, ready realized-vol snapshot must classify as Accepted"
+    );
+    assert_eq!(record.exit_eval_now_ms, 1_200);
+    assert_eq!(record.rv_as_of_ms, Some(1_200));
+    assert!(
+        record.rv_ready,
+        "an accepted snapshot must report rv_ready=true"
+    );
+    assert_eq!(
+        record.exit_trigger_source,
+        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+        "the durable record must preserve the triggering runtime path"
+    );
+    assert_eq!(record.trigger_ts_event_ms, Some(1_200));
+    assert_eq!(record.trigger_ts_init_ms, Some(1_180));
+}
+
+#[test]
+fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    // Re-seed the realized-vol snapshot dated 800ms in the FUTURE relative to the
+    // exit-evaluation clock (the 2026-06-20 incident's root cause shape): as_of 2_000
+    // while the exit is evaluated at now 1_200.
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 2_000);
+
+    strategy
+        .try_submit_exit_order(
+            1_200,
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+            Some(1_190),
+            None,
+        )
+        .expect("exit evaluation should not error with a future-dated realized-vol surface");
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        1,
+        "a future-dated exit evaluation must record exactly one durable evidence record"
+    );
+    let record = &records[0];
+    assert_eq!(
+        record.rv_gate_result,
+        crate::bolt_v3_decision_evidence::BoltV3RvGateResult::RejectedFutureDated,
+        "a snapshot dated after now must classify as RejectedFutureDated"
+    );
+    assert_eq!(record.exit_eval_now_ms, 1_200);
+    assert_eq!(record.rv_as_of_ms, Some(2_000));
+    assert_eq!(
+        record.rv_as_of_minus_now_ms,
+        Some(800),
+        "the durable record must capture the as_of-minus-now delta for RCA"
+    );
+}
+
+#[test]
+fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+
+    // First evaluation submits a would-be exit (one record, outcome key = Exit).
+    strategy
+        .try_submit_exit_order(
+            1_200,
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            Some(1_200),
+            None,
+        )
+        .expect("first shadow exit should pass evidence and admission");
+
+    // The position is now latched as ExitPending. Drive four MORE evaluations: every
+    // one produces the identical latched outcome key (Hold / exit_already_pending /
+    // Accepted). The first latched tick is a key change (one record); the remaining
+    // three are identical and MUST be suppressed by the flood guard.
+    for tick in 1_201..=1_204 {
+        assert_eq!(
+            strategy
+                .try_submit_exit_order(
+                    tick,
+                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                    Some(tick as i64),
+                    None,
+                )
+                .expect("latched exit evaluation should not error"),
+            None,
+            "a latched exit must not submit a repeated would-be order"
+        );
+    }
+
+    let records = recorded_exit_evaluations(&evidence);
+    assert_eq!(
+        records.len(),
+        2,
+        "the flood guard must collapse five identical-outcome exit ticks into one \
+         submit record plus one latched-transition record (without the guard this \
+         would be five records)"
     );
 }

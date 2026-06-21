@@ -244,6 +244,8 @@ def collect_service(unit: str) -> CollectorResult:
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=SYSTEMCTL_TIMEOUT_SECONDS,
         )
     except FileNotFoundError:
@@ -389,7 +391,7 @@ def collect_memory() -> CollectorResult:
 
     path = Path("/proc/meminfo")
     try:
-        raw_lines = path.read_text(encoding="utf-8").splitlines()
+        raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except FileNotFoundError:
         return None, "/proc/meminfo missing"
     except PermissionError as exc:
@@ -498,7 +500,7 @@ def process_status_template(pid: int, identity_ok: bool) -> dict[str, Any]:
 
 
 def read_process_cgroup(pid: int) -> str:
-    return Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+    return Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8", errors="replace")
 
 
 def process_identity_ok(pid: int, unit: str) -> tuple[bool, str | None]:
@@ -519,7 +521,7 @@ def process_identity_ok(pid: int, unit: str) -> tuple[bool, str | None]:
 def parse_proc_status(pid: int) -> tuple[dict[str, int], str | None]:
     path = Path(f"/proc/{pid}/status")
     try:
-        raw_lines = path.read_text(encoding="utf-8").splitlines()
+        raw_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except FileNotFoundError:
         return {}, f"pid {pid} vanished before status read"
     except PermissionError as exc:
@@ -559,7 +561,7 @@ def read_fd_count(pid: int) -> tuple[int | None, str | None]:
 def read_fd_limit_soft(pid: int) -> tuple[int | None, str | None]:
     path = Path(f"/proc/{pid}/limits")
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except FileNotFoundError:
         return None, f"pid {pid} vanished before limits read"
     except PermissionError as exc:
@@ -721,9 +723,13 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
     Raises ``OSError`` (or ``TimeoutError`` on lock contention) on any file-sink
     failure so the caller can fall back to stdout. Never blocks indefinitely.
 
-    On a partial write the file is rolled back (``ftruncate``) to the last clean
-    record boundary so a truncated fragment can never be left behind for the next
-    O_APPEND to glue onto — the stdout fallback becomes the sole copy.
+    Process guarantee: on any write failure the original ``OSError`` propagates
+    so the caller falls back to stdout and the record reaches a sink.
+
+    Data guarantee: after a partial write, the file is rolled back
+    (``ftruncate``) to the last clean record boundary so a fragment is normally
+    not left behind. If the rollback itself fails, the fragment may survive on
+    disk; the viewer tolerates a corrupt trailing line.
     """
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -754,7 +760,7 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
                         f"({offset}/{len(payload)} bytes written)"
                     )
                 offset += written
-        except OSError:
+        except BaseException:
             try:
                 os.ftruncate(fd, clean_boundary)
             except OSError:
@@ -952,14 +958,14 @@ def main(argv: list[str]) -> int:
         # is a normal stream termination, not a failure (B4).
         pass
     finally:
-        # Suppress the interpreter-shutdown "Exception ignored ... BrokenPipeError"
-        # noise: flush stdout now, and if that pipe is gone, point fd 1 at
-        # /dev/null so the interpreter's final flush has somewhere to write. This
-        # cleanup must never itself raise, so a stdout without a real fd (e.g. a
-        # test double) is simply left alone.
+        # Suppress interpreter-shutdown flush noise without changing the outcome:
+        # any flush failure mode (gone pipe, EIO, a test double) must not escape
+        # because a record may already have reached the --out sink. An exception
+        # here would wrongly demote a clean exit to non-zero. Best-effort redirect
+        # fd 1 to /dev/null so the interpreter's final flush cannot re-raise.
         try:
             sys.stdout.flush()
-        except BrokenPipeError:
+        except Exception:
             redirect_stdout_to_devnull()
     return 0
 

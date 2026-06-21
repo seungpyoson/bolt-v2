@@ -578,6 +578,42 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         record = json.loads(out_buf.getvalue().strip())
         self.assertEqual(record["probe"], "item1b")
 
+    def test_baseexception_mid_write_rolls_back_to_clean_boundary(self) -> None:
+        # A BaseException raised after a real prefix lands must still roll back
+        # the file before re-raising. Pre-fix: except OSError missed this path,
+        # leaving the prefix on disk for the next O_APPEND to glue onto.
+        state = {"calls": 0}
+        real_write = os.write
+
+        def prefix_then_interrupt(fd, data):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                prefix = data[:1]
+                real_write(fd, prefix)
+                return len(prefix)
+            raise KeyboardInterrupt("simulated interrupt after partial write")
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix-c.") as temp:
+            target = Path(temp) / "out.jsonl"
+            self.sampler.write_to_file(
+                '{"probe":"first"}\n', str(target), lock_timeout=0.2
+            )
+            clean_boundary = target.stat().st_size
+
+            saved_write = self.sampler.os.write
+            self.sampler.os.write = prefix_then_interrupt
+            try:
+                with self.assertRaises(KeyboardInterrupt):
+                    self.sampler.write_to_file(
+                        '{"probe":"interrupted"}\n', str(target), lock_timeout=0.2
+                    )
+            finally:
+                self.sampler.os.write = saved_write
+
+            self.assertEqual(target.stat().st_size, clean_boundary)
+            lines = target.read_bytes().decode("utf-8").splitlines()
+            self.assertEqual([json.loads(raw) for raw in lines], [{"probe": "first"}])
+
     # F7 -----------------------------------------------------------------
     def test_redirect_stdout_to_devnull_never_raises_on_open_failure(self) -> None:
         # redirect_stdout_to_devnull runs as fail-safe cleanup after a BrokenPipe
@@ -607,6 +643,57 @@ class ReviewRound2HardeningTests(unittest.TestCase):
                 finally:
                     self.sampler.os.open = saved_open
                     sys.stdout = saved_stdout
+
+    def test_main_final_flush_oserror_preserves_file_sink_success(self) -> None:
+        # A file sink can already hold the complete record when final stdout
+        # cleanup runs. A late EIO from stdout.flush must not demote that success
+        # to a non-zero exit. Pre-fix: OSError escaped main()'s finally block.
+        class EioStdout:
+            def write(self, data):
+                return len(data)
+
+            def flush(self):
+                raise OSError(5, "EIO")
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix-a.") as temp:
+            target = Path(temp) / "out.jsonl"
+            saved_stdout = sys.stdout
+            sys.stdout = EioStdout()
+            try:
+                returncode = self.sampler.main(["--out", str(target)])
+            finally:
+                sys.stdout = saved_stdout
+
+            self.assertEqual(returncode, 0)
+            lines = target.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            record = json.loads(lines[0])
+            assert_sample_schema(record)
+
+    def test_main_final_flush_non_oserror_preserves_file_sink_success(self) -> None:
+        # Same clean-exit guarantee for non-OSError flush failures such as a
+        # closed/test-double stdout raising ValueError during shutdown cleanup.
+        class ClosedStdout:
+            def write(self, data):
+                return len(data)
+
+            def flush(self):
+                raise ValueError("I/O operation on closed file")
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix-a-value.") as temp:
+            target = Path(temp) / "out.jsonl"
+            saved_stdout = sys.stdout
+            sys.stdout = ClosedStdout()
+            try:
+                returncode = self.sampler.main(["--out", str(target)])
+            finally:
+                sys.stdout = saved_stdout
+
+            self.assertEqual(returncode, 0)
+            lines = target.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            record = json.loads(lines[0])
+            assert_sample_schema(record)
 
     # F8 -----------------------------------------------------------------
     def test_os_close_failure_keeps_record_in_file_no_stdout_dup(self) -> None:
@@ -819,6 +906,63 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         self.assertIsNone(value)
         self.assertIsNotNone(error)
         self.assertIn("decode error", error)
+
+    def test_collect_service_uses_utf8_replace_and_preserves_service_block(self) -> None:
+        # Simulate the locale-dependent decode path that used to null the whole
+        # service block. With explicit UTF-8 + replacement decoding, systemctl
+        # output remains parseable and collect_service keeps the signal.
+        captured: dict[str, object] = {}
+        systemctl_output = (
+            "LoadState=loaded\n"
+            "ActiveState=active\n"
+            "SubState=running\n"
+            "Result=success\n"
+            "NRestarts=3\n"
+            "MainPID=123\n"
+            "ExecMainPID=123\n"
+            "ExecMainCode=0\n"
+            "ExecMainStatus=0\n"
+            "ExecMainStartTimestamp=Mon 2026-06-22 01:02:03 UTC\n"
+            "InvocationID=abc123\n"
+        )
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured.update(kwargs)
+            if kwargs.get("encoding") != "utf-8" or kwargs.get("errors") != "replace":
+                raise UnicodeDecodeError(
+                    "utf-8",
+                    b"LoadState=loaded\nInvocationID=\xff\n",
+                    30,
+                    31,
+                    "simulated locale decode failure",
+                )
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=systemctl_output,
+                stderr="",
+            )
+
+        saved_run = self.sampler.subprocess.run
+        self.sampler.subprocess.run = fake_run
+        try:
+            service, error = self.sampler.collect_service("bolt-v2.service")
+        finally:
+            self.sampler.subprocess.run = saved_run
+
+        self.assertIsNone(error)
+        self.assertIsInstance(service, dict)
+        self.assertEqual(service["unit"], "bolt-v2.service")
+        self.assertEqual(service["load_state"], "loaded")
+        self.assertEqual(service["active_state"], "active")
+        self.assertEqual(service["sub_state"], "running")
+        self.assertEqual(service["result"], "success")
+        self.assertEqual(service["n_restarts"], 3)
+        self.assertEqual(service["main_pid"], 123)
+        self.assertEqual(service["invocation_id"], "abc123")
+        self.assertEqual(captured["encoding"], "utf-8")
+        self.assertEqual(captured["errors"], "replace")
 
     # ITEM 10 ------------------------------------------------------------
     def test_collect_process_rechecks_identity_after_reads(self) -> None:

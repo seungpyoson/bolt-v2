@@ -33,7 +33,7 @@ Current source code contains the intended single bolt-v3 production path and loc
 
 1. CLI entrypoint
    - `src/main.rs:60-68`
-   - `Run` loads TOML with `load_bolt_v3_config`, builds with `build_bolt_v3_live_node`, then enters NT only through `run_bolt_v3_live_node`.
+   - `ops launch` loads and verifies config via `verify_live_config`, builds with `build_bolt_v3_live_node_with_resolved` from the once-resolved secrets, then enters NT only through `run_bolt_v3_live_node`; plain `Run` is disabled for live arming and redirects to `ops launch`.
    - Trace meaning: production live run should not bypass the bolt-v3 wrapper.
 
 2. Root and strategy TOML load

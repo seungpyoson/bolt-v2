@@ -3564,17 +3564,6 @@ impl std::error::Error for BoltV3LiveNodeError {
     }
 }
 
-pub fn build_bolt_v3_live_node(
-    loaded: &LoadedBoltV3Config,
-) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    // RV source-client validation is owned by the strategy-registration
-    // chokepoint; trade transport must retain the clients it will validate.
-    let transport_loaded =
-        trade_transport_loaded_config(loaded, RealizedVolatilityTransportScope::Subscribed)?;
-    let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
-    build_bolt_v3_live_node_from_resolved_transport(&transport_loaded, &resolved)
-}
-
 pub fn build_bolt_v3_live_node_with_resolved(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
@@ -4926,11 +4915,12 @@ fn classify_live_node_run_and_capture_shutdown(
     }
 }
 
-/// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller
-/// inject the forbidden-environment predicate and the SSM resolver. Production
-/// code must use [`build_bolt_v3_live_node`], which applies the real credential
-/// environment guard and invokes the real Amazon Web Services Systems Manager
-/// resolver.
+/// Test-friendly builder that lets the caller inject the
+/// forbidden-environment predicate and the SSM resolver. Production code
+/// resolves the venue secrets once upstream and uses
+/// [`build_bolt_v3_live_node_with_resolved`], which applies the real credential
+/// environment guard against pre-resolved secrets rather than resolving them
+/// again here.
 pub fn build_bolt_v3_live_node_with<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
@@ -6054,8 +6044,9 @@ pub fn wire_bolt_v3_runtime_capture(
 /// to `node`, bounded by the bolt-v3
 /// `nautilus.timeout_connection_secs` value from `loaded`.
 ///
-/// This boundary is **opt-in**: `build_bolt_v3_live_node` and its
-/// `_with` / `_with_summary` siblings deliberately do not invoke it.
+/// This boundary is **opt-in**: the bolt-v3 node builders
+/// (`build_bolt_v3_live_node_with_resolved` and its `_with` /
+/// `_with_summary` siblings) deliberately do not invoke it.
 /// A caller must explicitly call this function on a node previously
 /// returned by one of those builders. In a bolt-v3-only process, NT's
 /// first-wins logger is initialized by the bolt-v3 `LoggerConfig`
@@ -6401,8 +6392,15 @@ mod tests {
             .count();
         let resolved_clients = Rc::new(RefCell::new(BTreeSet::<String>::new()));
         let resolved_clients_for_resolver = Rc::clone(&resolved_clients);
+        // Count EVERY resolver invocation, not just unique client names: a
+        // re-resolution of an already-seen client would not grow the name set
+        // above, so the per-invocation counter is the load-bearing "resolved
+        // exactly once" guard.
+        let resolver_calls = Rc::new(Cell::new(0u32));
+        let resolver_calls_for_resolver = Rc::clone(&resolver_calls);
 
         let resolved = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            resolver_calls_for_resolver.set(resolver_calls_for_resolver.get() + 1);
             if path.starts_with("/bolt/polymarket/") {
                 resolved_clients_for_resolver
                     .borrow_mut()
@@ -6424,6 +6422,9 @@ mod tests {
         .expect("fixture secrets should resolve once");
         assert_eq!(resolved.clients.len(), secret_bearing_clients);
         assert_eq!(resolved_clients.borrow().len(), secret_bearing_clients);
+        // Snapshot the total resolver invocations performed by the single
+        // upstream resolve; the builders below must not add to this.
+        let resolver_calls_after_resolve = resolver_calls.get();
 
         build_bolt_v3_strategy_free_live_node_with_resolved(&loaded, &resolved)
             .expect("strategy-free health builder must consume pre-resolved secrets");
@@ -6431,9 +6432,10 @@ mod tests {
             .expect("start builder must consume pre-resolved secrets");
 
         assert_eq!(
-            resolved_clients.borrow().len(),
-            secret_bearing_clients,
-            "with-resolved builders must not perform another secret resolution"
+            resolver_calls.get(),
+            resolver_calls_after_resolve,
+            "with-resolved builders must not invoke the secret resolver again, \
+             including re-resolving an already-resolved client"
         );
     }
 

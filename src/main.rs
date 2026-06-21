@@ -332,18 +332,15 @@ struct OpsLaunchStageLog {
 struct OpsLaunchContext {
     profile: String,
     config_root: PathBuf,
-    live_config: PathBuf,
     loaded: Option<LoadedBoltV3Config>,
     resolved_secrets: Option<ResolvedBoltV3Secrets>,
 }
 
 impl OpsLaunchContext {
     fn new(profile: String, config_root: PathBuf) -> Self {
-        let live_config = live_config_path(&config_root);
         Self {
             profile,
             config_root,
-            live_config,
             loaded: None,
             resolved_secrets: None,
         }
@@ -425,7 +422,6 @@ fn run_ops_launch_stage(
     match stage {
         OpsLaunchStage::VerifyConfig => {
             let verification = verify_live_config(&context.config_root, &context.profile)?;
-            context.live_config = verification.deployed_path;
             context.loaded = Some(verification.loaded);
             Ok(())
         }

@@ -40,6 +40,18 @@ fn systemd_unit_delegates_to_ops_launch_without_redundant_prestart_paths() {
         ),
         "systemd unit must enter the same binary-owned ops launch lane as just live"
     );
+    let active_exec_starts: Vec<&str> = unit
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.starts_with("ExecStart="))
+        .collect();
+    assert_eq!(
+        active_exec_starts,
+        vec![
+            "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
+        ],
+        "systemd unit must have exactly one active ExecStart, and it must be the ops launch lane (no second ExecStart bypass)"
+    );
     assert!(
         unit.contains("ExecStartPre=/usr/bin/mountpoint -q /srv/bolt-v2"),
         "systemd unit must keep the /srv/bolt-v2 mount precondition as a host gate"

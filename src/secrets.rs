@@ -49,8 +49,9 @@ fn redact_configured_ssm_path(message: &str, configured_path: &str) -> String {
 ///
 /// 1. `fn main` Secrets Resolve subcommand (`src/main.rs`) — operator
 ///    smoke-test path that resolves and validates configured bolt-v3 venues.
-/// 2. `build_bolt_v3_live_node` (`src/bolt_v3_live_node.rs`) — bolt-v3
-///    LiveNode assembly entry point invoked before the NT runtime starts.
+/// 2. `build_bolt_v3_live_node_with_resolved` (`src/bolt_v3_live_node.rs`) —
+///    bolt-v3 LiveNode assembly entry point invoked before the NT runtime
+///    starts, against secrets already resolved once upstream.
 ///
 /// Current callers resolve bolt-v3 venue secrets by passing `&session` into
 /// `resolve_bolt_v3_secrets` rather than constructing their own session.
@@ -83,7 +84,7 @@ pub struct SsmResolverSession {
 impl SsmResolverSession {
     pub fn new() -> Result<Self, SecretError> {
         // Production startup is synchronous (see `fn main` in src/main.rs and
-        // `bolt_v3_live_node::build_bolt_v3_live_node`), so the AWS SDK's
+        // `bolt_v3_live_node::build_bolt_v3_live_node_with_resolved`), so the AWS SDK's
         // async GetParameter calls are bridged through a single contained
         // current-thread Tokio runtime owned by the session, rather than
         // building a fresh runtime per resolution.

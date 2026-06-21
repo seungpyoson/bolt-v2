@@ -1,0 +1,708 @@
+<!-- Reads JSONL from scripts/host_health_sampler.py; read-only / visibility-only. -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Host Health</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --ink: #152029;
+      --grn: #16834a;
+      --red: #c83232;
+      --amb: #b36b00;
+      --blu: #2468d8;
+      --vio: #6d55c7;
+      --line: #d7dde4;
+      --muted: #637181;
+      --surface: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 76px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 22px;
+      line-height: 1.15;
+    }
+
+    h2 {
+      font-size: 15px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .top-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .filepick {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 0 14px;
+      border: 1px solid var(--blu);
+      border-radius: 6px;
+      color: var(--blu);
+      background: #f8fbff;
+      cursor: pointer;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .filepick input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 18px auto 32px;
+    }
+
+    .section {
+      margin-top: 14px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      overflow-wrap: anywhere;
+    }
+
+    .metric-value {
+      margin-top: 6px;
+      font-size: 18px;
+      font-weight: 720;
+      overflow-wrap: anywhere;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 0 9px;
+      border-radius: 999px;
+      color: #ffffff;
+      font-weight: 720;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .badge.grn {
+      background: var(--grn);
+    }
+
+    .badge.red {
+      background: var(--red);
+    }
+
+    .badge.amb {
+      background: var(--amb);
+    }
+
+    .badge.blu {
+      background: var(--blu);
+    }
+
+    .badge.vio {
+      background: var(--vio);
+    }
+
+    .banner {
+      border-color: rgba(200, 50, 50, 0.45);
+      background: #fff7f6;
+      color: #7b1d1d;
+      font-weight: 720;
+    }
+
+    .banner[hidden] {
+      display: none;
+    }
+
+    .chart-wrap {
+      min-height: 300px;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      min-height: 280px;
+    }
+
+    .axis {
+      stroke: #91a0af;
+      stroke-width: 1;
+    }
+
+    .grid {
+      stroke: #e8edf2;
+      stroke-width: 1;
+    }
+
+    .series-line {
+      fill: none;
+      stroke-width: 2.5;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-swatch {
+      width: 18px;
+      height: 3px;
+      border-radius: 999px;
+    }
+
+    .errors {
+      margin: 0;
+      padding-left: 18px;
+      color: #6d3a00;
+    }
+
+    .empty {
+      display: flex;
+      align-items: center;
+      min-height: 240px;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 6px;
+      padding: 16px;
+    }
+
+    @media (max-width: 880px) {
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      main {
+        width: min(100vw - 20px, 1180px);
+      }
+
+      .summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 520px) {
+      .summary {
+        grid-template-columns: 1fr;
+      }
+
+      .section {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Host Health</h1>
+      <div class="top-meta" id="fileMeta">&mdash;</div>
+    </div>
+    <label class="filepick">
+      Load JSONL
+      <input id="fileInput" type="file" accept=".jsonl,.ndjson,.txt,application/json">
+    </label>
+  </header>
+
+  <main>
+    <section class="section banner" id="eventBanner" hidden></section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Latest Sample</h2>
+        <div class="subtle" id="sampleTime">&mdash;</div>
+      </div>
+      <div class="summary">
+        <div class="metric">
+          <div class="metric-label">service</div>
+          <div class="metric-value" id="serviceState">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">RSS</div>
+          <div class="metric-value" id="rssValue">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">MemAvailable</div>
+          <div class="metric-value" id="memValue">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">disk free</div>
+          <div class="metric-value" id="diskValue">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">auto-restarts (this invocation)</div>
+          <div class="metric-value" id="restartValue">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">host</div>
+          <div class="metric-value" id="hostValue">&mdash;</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Memory / Process</h2>
+        <div class="subtle" id="memoryRange">&mdash;</div>
+      </div>
+      <div class="chart-wrap" id="memoryChart"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Disk</h2>
+        <div class="subtle" id="diskPath">&mdash;</div>
+      </div>
+      <div class="chart-wrap" id="diskChart"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Errors</h2>
+        <div class="subtle" id="errorCount">&mdash;</div>
+      </div>
+      <ul class="errors" id="errorsList"></ul>
+    </section>
+  </main>
+
+  <script>
+    const EMPTY = "\u2014";
+    const state = { records: [], parseErrors: [], fileName: "" };
+
+    const elements = {
+      fileInput: document.getElementById("fileInput"),
+      fileMeta: document.getElementById("fileMeta"),
+      sampleTime: document.getElementById("sampleTime"),
+      serviceState: document.getElementById("serviceState"),
+      rssValue: document.getElementById("rssValue"),
+      memValue: document.getElementById("memValue"),
+      diskValue: document.getElementById("diskValue"),
+      restartValue: document.getElementById("restartValue"),
+      hostValue: document.getElementById("hostValue"),
+      eventBanner: document.getElementById("eventBanner"),
+      memoryChart: document.getElementById("memoryChart"),
+      diskChart: document.getElementById("diskChart"),
+      memoryRange: document.getElementById("memoryRange"),
+      diskPath: document.getElementById("diskPath"),
+      errorCount: document.getElementById("errorCount"),
+      errorsList: document.getElementById("errorsList")
+    };
+
+    elements.fileInput.addEventListener("change", event => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const parsed = parseJsonl(String(reader.result || ""));
+        state.records = parsed.records;
+        state.parseErrors = parsed.errors;
+        state.fileName = file.name;
+        render();
+      };
+      reader.readAsText(file);
+    });
+
+    function parseJsonl(text) {
+      const records = [];
+      const errors = [];
+      text.split(/\r?\n/).forEach((line, index) => {
+        if (!line.trim()) return;
+        try {
+          records.push(JSON.parse(line));
+        } catch (error) {
+          errors.push(`line ${index + 1}: ${error.message}`);
+        }
+      });
+      return { records, errors };
+    }
+
+    function latestRecord() {
+      return state.records.length ? state.records[state.records.length - 1] : null;
+    }
+
+    function formatBytes(value) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return EMPTY;
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let scaled = Number(value);
+      let unitIndex = 0;
+      while (Math.abs(scaled) >= 1024 && unitIndex < units.length - 1) {
+        scaled /= 1024;
+        unitIndex += 1;
+      }
+      const digits = scaled >= 100 || unitIndex === 0 ? 0 : 1;
+      return `${scaled.toFixed(digits)} ${units[unitIndex]}`;
+    }
+
+    function formatNumber(value) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return EMPTY;
+      return Number(value).toLocaleString();
+    }
+
+    function formatPct(value) {
+      if (value === null || value === undefined || !Number.isFinite(Number(value))) return EMPTY;
+      return `${Number(value).toFixed(1)}%`;
+    }
+
+    function diskFreePct(disk) {
+      if (!disk || disk.total_bytes === null || disk.free_bytes === null || !disk.total_bytes) return null;
+      return Number(disk.free_bytes) / Number(disk.total_bytes) * 100;
+    }
+
+    function diskBadgeClass(value) {
+      if (value === null || value === undefined) return "vio";
+      if (value < 10) return "red";
+      if (value < 20) return "amb";
+      return "grn";
+    }
+
+    function serviceBadge(record) {
+      const active = record && record.service ? record.service.active_state : null;
+      const sub = record && record.service ? record.service.sub_state : null;
+      if (!active && !sub) return EMPTY;
+      const text = [active, sub].filter(Boolean).join(" / ");
+      let klass = "vio";
+      if (active === "active") klass = "grn";
+      else if (active === "failed") klass = "red";
+      else if (active === "activating" || active === "deactivating") klass = "amb";
+      return `<span class="badge ${klass}">${escapeHtml(text)}</span>`;
+    }
+
+    function restartIncreased(records) {
+      let previous = null;
+      for (const record of records) {
+        const current = record && record.service ? record.service.n_restarts : null;
+        if (current === null || current === undefined) continue;
+        if (previous !== null && Number(current) > Number(previous)) return true;
+        previous = Number(current);
+      }
+      return false;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, character => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;"
+      })[character]);
+    }
+
+    function render() {
+      const latest = latestRecord();
+      elements.fileMeta.textContent = state.fileName
+        ? `${state.fileName} · ${state.records.length} samples`
+        : EMPTY;
+
+      elements.sampleTime.textContent = latest ? latest.sampled_at || EMPTY : EMPTY;
+      elements.serviceState.innerHTML = latest ? serviceBadge(latest) : EMPTY;
+      elements.rssValue.textContent = latest ? formatBytes(latest.process && latest.process.rss_bytes) : EMPTY;
+      elements.memValue.textContent = latest ? formatBytes(latest.memory && latest.memory.mem_available_bytes) : EMPTY;
+
+      const freePct = latest ? diskFreePct(latest.disk) : null;
+      elements.diskValue.innerHTML = freePct === null
+        ? EMPTY
+        : `<span class="badge ${diskBadgeClass(freePct)}">${formatPct(freePct)}</span>`;
+
+      elements.restartValue.textContent = latest && latest.service
+        ? formatNumber(latest.service.n_restarts)
+        : EMPTY;
+      elements.hostValue.textContent = latest
+        ? [latest.host, latest.platform].filter(Boolean).join(" / ") || EMPTY
+        : EMPTY;
+
+      renderBanner(latest);
+      renderErrors(latest);
+      renderCharts();
+    }
+
+    function renderBanner(latest) {
+      if (!latest) {
+        elements.eventBanner.hidden = true;
+        elements.eventBanner.textContent = "";
+        return;
+      }
+      const reasons = [];
+      if (latest.oom_killed === true) reasons.push("systemd Result=oom-kill");
+      const cgroupOomKills = latest.service ? Number(latest.service.cgroup_oom_kills || 0) : 0;
+      if (cgroupOomKills > 0) reasons.push(`cgroup oom_kill=${cgroupOomKills}`);
+      if (restartIncreased(state.records)) reasons.push("auto-restarts increased in this file");
+
+      elements.eventBanner.hidden = reasons.length === 0;
+      elements.eventBanner.textContent = reasons.length
+        ? `Host health event visible: ${reasons.join(" · ")}`
+        : "";
+    }
+
+    function renderErrors(latest) {
+      const allErrors = [...state.parseErrors];
+      if (latest && Array.isArray(latest.errors)) {
+        allErrors.push(...latest.errors);
+      }
+      elements.errorCount.textContent = allErrors.length ? `${allErrors.length} shown` : EMPTY;
+      elements.errorsList.textContent = "";
+      if (!allErrors.length) {
+        const item = document.createElement("li");
+        item.textContent = EMPTY;
+        elements.errorsList.appendChild(item);
+        return;
+      }
+      allErrors.forEach(error => {
+        const item = document.createElement("li");
+        item.textContent = error;
+        elements.errorsList.appendChild(item);
+      });
+    }
+
+    function renderCharts() {
+      const latest = latestRecord();
+      elements.memoryRange.textContent = state.records.length ? timeRangeText(state.records) : EMPTY;
+      elements.diskPath.textContent = latest && latest.disk ? latest.disk.path || EMPTY : EMPTY;
+
+      drawTimeSeries(elements.memoryChart, {
+        records: state.records,
+        unit: "bytes",
+        formatter: formatBytes,
+        series: [
+          { name: "RSS", color: "var(--blu)", value: record => record.process && record.process.rss_bytes },
+          { name: "MemAvailable", color: "var(--grn)", value: record => record.memory && record.memory.mem_available_bytes }
+        ]
+      });
+
+      drawTimeSeries(elements.diskChart, {
+        records: state.records,
+        unit: "percent",
+        yMin: 0,
+        yMax: 100,
+        formatter: formatPct,
+        series: [
+          { name: "Disk used", color: "var(--amb)", value: record => record.disk && record.disk.used_pct }
+        ]
+      });
+    }
+
+    function timeRangeText(records) {
+      const first = records[0] && records[0].sampled_at;
+      const last = records[records.length - 1] && records[records.length - 1].sampled_at;
+      if (!first && !last) return EMPTY;
+      if (first === last) return first || EMPTY;
+      return `${first || EMPTY} to ${last || EMPTY}`;
+    }
+
+    function drawTimeSeries(container, config) {
+      container.textContent = "";
+      if (!config.records.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No samples loaded";
+        container.appendChild(empty);
+        return;
+      }
+
+      const width = 900;
+      const height = 280;
+      const pad = { left: 64, right: 24, top: 22, bottom: 44 };
+      const plotWidth = width - pad.left - pad.right;
+      const plotHeight = height - pad.top - pad.bottom;
+      const values = [];
+      const pointsBySeries = config.series.map(series => {
+        const points = config.records.map((record, index) => {
+          const raw = series.value(record);
+          const value = raw === null || raw === undefined ? null : Number(raw);
+          if (value !== null && Number.isFinite(value)) values.push(value);
+          return { index, value };
+        });
+        return { ...series, points };
+      });
+
+      if (!values.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = EMPTY;
+        container.appendChild(empty);
+        return;
+      }
+
+      let yMin = config.yMin !== undefined ? config.yMin : Math.min(0, Math.min(...values));
+      let yMax = config.yMax !== undefined ? config.yMax : Math.max(...values);
+      if (yMax === yMin) {
+        yMax += 1;
+        yMin = Math.max(0, yMin - 1);
+      }
+
+      const xFor = index => {
+        if (config.records.length === 1) return pad.left + plotWidth / 2;
+        return pad.left + index / (config.records.length - 1) * plotWidth;
+      };
+      const yFor = value => pad.top + (1 - (value - yMin) / (yMax - yMin)) * plotHeight;
+
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("role", "img");
+
+      for (let tick = 0; tick <= 4; tick += 1) {
+        const y = pad.top + tick / 4 * plotHeight;
+        const grid = svgLine(pad.left, y, width - pad.right, y, "grid");
+        svg.appendChild(grid);
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        const value = yMax - tick / 4 * (yMax - yMin);
+        label.setAttribute("x", "8");
+        label.setAttribute("y", String(y + 4));
+        label.setAttribute("fill", "var(--muted)");
+        label.setAttribute("font-size", "12");
+        label.textContent = config.formatter(value);
+        svg.appendChild(label);
+      }
+
+      svg.appendChild(svgLine(pad.left, pad.top, pad.left, height - pad.bottom, "axis"));
+      svg.appendChild(svgLine(pad.left, height - pad.bottom, width - pad.right, height - pad.bottom, "axis"));
+
+      pointsBySeries.forEach(series => {
+        const pointText = series.points
+          .filter(point => point.value !== null && Number.isFinite(point.value))
+          .map(point => `${xFor(point.index).toFixed(2)},${yFor(point.value).toFixed(2)}`)
+          .join(" ");
+        if (!pointText) return;
+        const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+        polyline.setAttribute("class", "series-line");
+        polyline.setAttribute("stroke", series.color);
+        polyline.setAttribute("points", pointText);
+        svg.appendChild(polyline);
+      });
+
+      const firstLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      firstLabel.setAttribute("x", String(pad.left));
+      firstLabel.setAttribute("y", String(height - 16));
+      firstLabel.setAttribute("fill", "var(--muted)");
+      firstLabel.setAttribute("font-size", "12");
+      firstLabel.textContent = shortTime(config.records[0].sampled_at);
+      svg.appendChild(firstLabel);
+
+      const lastLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      lastLabel.setAttribute("x", String(width - pad.right));
+      lastLabel.setAttribute("y", String(height - 16));
+      lastLabel.setAttribute("text-anchor", "end");
+      lastLabel.setAttribute("fill", "var(--muted)");
+      lastLabel.setAttribute("font-size", "12");
+      lastLabel.textContent = shortTime(config.records[config.records.length - 1].sampled_at);
+      svg.appendChild(lastLabel);
+
+      container.appendChild(svg);
+      const legend = document.createElement("div");
+      legend.className = "legend";
+      config.series.forEach(series => {
+        const item = document.createElement("span");
+        item.className = "legend-item";
+        const swatch = document.createElement("span");
+        swatch.className = "legend-swatch";
+        swatch.style.background = series.color;
+        item.appendChild(swatch);
+        item.appendChild(document.createTextNode(series.name));
+        legend.appendChild(item);
+      });
+      container.appendChild(legend);
+    }
+
+    function svgLine(x1, y1, x2, y2, className) {
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", String(x1));
+      line.setAttribute("y1", String(y1));
+      line.setAttribute("x2", String(x2));
+      line.setAttribute("y2", String(y2));
+      line.setAttribute("class", className);
+      return line;
+    }
+
+    function shortTime(value) {
+      if (!value) return EMPTY;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toISOString().slice(11, 19);
+    }
+
+    render();
+  </script>
+</body>
+</html>

@@ -17,6 +17,7 @@ import argparse
 from datetime import datetime, timezone
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -33,6 +34,11 @@ DEFAULT_SERVICE = "bolt-v2"
 # key ``catalog_directory``; it is overridable for tests and ad hoc checks.
 DEFAULT_DISK_PATH = "/srv/bolt-v2/var/bolt-v3-live/catalog"
 SYSTEMCTL_TIMEOUT_SECONDS = 5
+# Bounded non-blocking flock acquisition: a contended file lock must never wedge
+# the sampler. We retry LOCK_NB every FLOCK_RETRY_SECONDS until FLOCK_TIMEOUT_SECONDS
+# elapses, then treat the file sink as failed and fall back to stdout.
+FLOCK_TIMEOUT_SECONDS = 5.0
+FLOCK_RETRY_SECONDS = 0.05
 KNOWN_NON_OOM_RESULTS = {
     "success",
     "exit-code",
@@ -513,19 +519,58 @@ def sample(service_unit: str = DEFAULT_SERVICE, disk_path: str = DEFAULT_DISK_PA
     }
 
 
-def write_jsonl_line(record: dict[str, Any], out_path: str | None) -> None:
-    line = json.dumps(record, separators=(",", ":")) + "\n"
-    if out_path is None:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-        return
+class RecordUnemittable(Exception):
+    """Raised only when a built record cannot reach ANY sink (file AND stdout).
 
+    This is the sole condition under which the sampler is permitted a non-zero
+    exit: the degraded state it exists to observe could not be surfaced anywhere.
+    """
+
+
+def emit_to_stdout(line: str) -> None:
+    """Write one record line to stdout, flushing so a piped consumer sees it.
+
+    ``BrokenPipeError`` is allowed to propagate so the caller can treat a gone
+    consumer as a clean stream termination (B4). Any other OSError means stdout
+    itself is unusable and the record is truly unemittable.
+    """
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+
+def acquire_flock_bounded(fd: int, timeout: float, retry: float) -> bool:
+    """Acquire an exclusive lock without blocking forever.
+
+    Returns True once LOCK_NB succeeds; returns False if ``timeout`` seconds
+    elapse while the lock stays contended. A contended lock must never wedge the
+    sampler, so we poll LOCK_NB instead of issuing a blocking LOCK_EX.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(retry)
+
+
+def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
+    """Append one record line to ``out_path`` under a bounded exclusive lock.
+
+    Raises ``OSError`` (or ``TimeoutError`` on lock contention) on any file-sink
+    failure so the caller can fall back to stdout. Never blocks indefinitely.
+    """
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        os.write(fd, line.encode("utf-8"))
+        if not acquire_flock_bounded(fd, lock_timeout, FLOCK_RETRY_SECONDS):
+            raise TimeoutError(
+                f"could not acquire file lock on {out_path!r} within {lock_timeout}s"
+            )
+        os.write(fd, record_line.encode("utf-8"))
     finally:
         try:
             try:
@@ -534,6 +579,71 @@ def write_jsonl_line(record: dict[str, Any], out_path: str | None) -> None:
                 pass
         finally:
             os.close(fd)
+
+
+def write_jsonl_line(
+    record: dict[str, Any],
+    out_path: str | None,
+    *,
+    lock_timeout: float = FLOCK_TIMEOUT_SECONDS,
+) -> str | None:
+    """Emit ``record`` to its sink, degrading rather than dropping it.
+
+    Happy path with ``--out``: append under a bounded flock; returns None.
+    On ANY file-sink failure (mkdir, open, lock timeout, write), the SAME line is
+    written to stdout instead and a human-readable warning string is returned so
+    the caller can surface it on stderr while exit stays 0 (B3).
+
+    ``out_path is None`` writes straight to stdout (returns None).
+
+    Raises ``RecordUnemittable`` only when stdout ALSO fails with a real OSError
+    (not ``BrokenPipeError``, which is allowed to propagate for B4).
+    """
+    line = json.dumps(record, separators=(",", ":")) + "\n"
+    if out_path is None:
+        try:
+            emit_to_stdout(line)
+        except BrokenPipeError:
+            raise
+        except OSError as exc:
+            raise RecordUnemittable(f"stdout sink failed: {exc}") from exc
+        return None
+
+    try:
+        write_to_file(line, out_path, lock_timeout)
+        return None
+    except OSError as file_exc:
+        # File sink is unusable (parent-is-file, target-is-dir, permission,
+        # read-only fs, lock timeout, ...). Surface the record on stdout instead
+        # so the very degraded state it describes is not silently lost.
+        try:
+            emit_to_stdout(line)
+        except BrokenPipeError:
+            raise
+        except OSError as stdout_exc:
+            raise RecordUnemittable(
+                f"file sink failed ({file_exc}) and stdout fallback failed ({stdout_exc})"
+            ) from stdout_exc
+        return f"file sink {out_path!r} failed ({file_exc}); fell back to stdout"
+
+
+def nonnegative_finite_float(value: str) -> float:
+    """argparse ``type=`` for --interval: reject nan/inf/negative/non-numeric.
+
+    A bad interval is a config error that must be caught BEFORE any sampling:
+    ``nan`` crashes ``time.sleep`` and ``inf`` makes the sleep loop spin forever.
+    Raising ``ArgumentTypeError`` makes argparse exit 2 with a clean message and
+    no traceback.
+    """
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"invalid float value: {value!r}")
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError(f"--interval must be finite, got {value!r}")
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"--interval must be >= 0, got {value!r}")
+    return parsed
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -549,7 +659,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--out", help="append JSONL output to this path")
     parser.add_argument(
         "--interval",
-        type=float,
+        type=nonnegative_finite_float,
         default=0,
         help="seconds between samples; 0 emits one record",
     )
@@ -578,18 +688,63 @@ def main(argv: list[str]) -> int:
     stop_flag = StopFlag()
     signal.signal(signal.SIGINT, stop_flag.request_stop)
     signal.signal(signal.SIGTERM, stop_flag.request_stop)
+    one_shot = args.interval <= 0
 
     try:
         while not stop_flag.stop:
-            record = sample(service_unit=args.service, disk_path=args.disk_path)
-            write_jsonl_line(record, args.out)
-            if args.interval <= 0:
+            # Per-iteration isolation: a single sample/emit failure must never
+            # kill a long-running daemon (B5). Only one-shot mode propagates the
+            # failure as a non-zero exit; interval mode degrades and continues.
+            try:
+                record = sample(service_unit=args.service, disk_path=args.disk_path)
+                warning = write_jsonl_line(record, args.out)
+                if warning is not None:
+                    print(f"host_health_sampler: {warning}", file=sys.stderr)
+            except BrokenPipeError:
+                # Gone consumer: break out to the clean-termination handler (B4).
+                raise
+            except RecordUnemittable as exc:
+                print(f"host_health_sampler: {exc}", file=sys.stderr)
+                if one_shot:
+                    return 1
+            except Exception as exc:  # noqa: BLE001 - sample()/emit unexpected failure
+                print(f"host_health_sampler: {exc}", file=sys.stderr)
+                if one_shot:
+                    return 1
+            if one_shot:
                 break
             sleep_until_next_sample(args.interval, stop_flag)
-    except Exception as exc:  # noqa: BLE001 - non-zero only if no record/write is possible
-        print(f"host_health_sampler: {exc}", file=sys.stderr)
-        return 1
+    except BrokenPipeError:
+        # The consumer closed the pipe (e.g. ``... | head -1``). A gone consumer
+        # is a normal stream termination, not a failure (B4).
+        pass
+    finally:
+        # Suppress the interpreter-shutdown "Exception ignored ... BrokenPipeError"
+        # noise: flush stdout now, and if that pipe is gone, point fd 1 at
+        # /dev/null so the interpreter's final flush has somewhere to write. This
+        # cleanup must never itself raise, so a stdout without a real fd (e.g. a
+        # test double) is simply left alone.
+        try:
+            sys.stdout.flush()
+        except BrokenPipeError:
+            redirect_stdout_to_devnull()
     return 0
+
+
+def redirect_stdout_to_devnull() -> None:
+    """Point fd 1 at /dev/null so the interpreter's final flush cannot error.
+
+    Best-effort: a stdout that exposes no real OS file descriptor is left as-is.
+    """
+    try:
+        stdout_fd = sys.stdout.fileno()
+    except (AttributeError, OSError, ValueError):
+        return
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, stdout_fd)
+    finally:
+        os.close(devnull)
 
 
 if __name__ == "__main__":

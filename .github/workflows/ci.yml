@@ -49,6 +49,14 @@ on:
         description: "Run full CI for the selected ref"
         required: false
         default: "true"
+  # Merge queue lane: GitHub dispatches merge_group/checks_requested on the
+  # temporary gh-readonly-queue ref carrying the exact to-be-merged commit.
+  # Required checks MUST report on this event or the merge is blocked, and a
+  # skipped required check counts as passing in GitHub — so every heavy lane
+  # runs full CI here. The pull_request context (number and base) is empty on
+  # merge_group; the policy resolver keys on event_name = merge_group.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   group: >-
@@ -60,7 +68,12 @@ concurrency:
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
+        || github.event_name == 'merge_group'
+        && format('mq-{0}', github.ref)
         || format('{0}-{1}', github.ref_name, github.sha) }}
+  # cancel-in-progress is true only for PR and workflow_dispatch full CI runs.
+  # merge_group runs validate an in-flight queue entry and must never be
+  # cancelled, so they fall through to the default (false), like push/tag.
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
         || github.event_name == 'workflow_dispatch' }}
@@ -170,6 +183,11 @@ jobs:
             # push and workflow_dispatch always require a full build: push covers main
             # and tags; workflow_dispatch is the manual lane for oversized PRs where
             # a dispatched run must not produce vacuous evidence.
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            # merge_group validates the exact to-be-merged commit. The build job is
+            # required-capable, so it must run here; a skipped required check counts
+            # as passing in GitHub and would leave a hole in the merge gate.
             echo "value=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ steps.build_inputs_changed.outputs.any_changed }}" == "true" ]]; then
             echo "value=true" >> "$GITHUB_OUTPUT"

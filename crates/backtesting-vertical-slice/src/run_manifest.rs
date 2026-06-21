@@ -2773,9 +2773,9 @@ struct AdmittanceRow {
 /// and `read_back_{quotes,index,mark}`). Snapshot-seeded L2 quote archives now
 /// populate `QuoteTick` through the seeded-L2 quote adapter; the older flat
 /// snapshot-quote, index-price, and mark-price raw normalizers still fail loud
-/// until their source-specific acquisition slices land. Auxiliary status/close
-/// pairing for the three new classes is deliberately omitted here — each new
-/// class carries a single primary row.
+/// until their source-specific acquisition slices land (tracked by bolt-v2
+/// #836/#437). Auxiliary status/close pairing for the three new classes is
+/// deliberately omitted here — each new class carries a single primary row.
 const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
     // TradeReplay: native trade prints are primary; status/close auxiliary.
     AdmittanceRow {
@@ -2891,7 +2891,7 @@ fn fidelity_primary_type(fidelity: SourceProofFidelityClass) -> Option<NautilusD
 /// Parse a catalog-input data-type string into a bolt-admitted [`NautilusDataType`].
 ///
 /// String boundary for the admittance table: `NautilusDataType::from_str` admits
-/// all nine NT variants, then the table filters to bolt-supported types. A type
+/// the pinned NT variants, then the table filters to bolt-supported types. A type
 /// NT knows but the table omits (e.g. `OrderBookDepth10`) and pure junk both
 /// surface the same [`ManifestError::UnsupportedDataType`] with the original
 /// string payload.

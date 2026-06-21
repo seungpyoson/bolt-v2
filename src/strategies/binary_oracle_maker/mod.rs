@@ -350,9 +350,20 @@ impl BinaryOracleMaker {
             bound_by,
             budget,
         );
-        self.context
+        if let Err(error) = self
+            .context
             .decision_evidence()
-            .record_requote_throttle(&evidence)?;
+            .record_requote_throttle(&evidence)
+        {
+            // A requote throttle is declining/limiting action (no new risk): a
+            // telemetry-write failure must never abort the maker quote routing.
+            // Surface the lost write at the highest non-panicking severity and
+            // let the throttle path proceed.
+            log::error!(
+                "binary_oracle_maker requote throttle evidence write failed: strategy_id={} error={error:#}",
+                self.config.strategy_id
+            );
+        }
         self.last_requote_throttle_blocks
             .retain(|existing| !(existing.family_key == family_key && existing.leg == leg));
         self.last_requote_throttle_blocks.push(key);
@@ -694,7 +705,7 @@ fn requote_throttle_bound(
         if now_ms < last_emit_ms {
             return BoltV3RequoteThrottleBound::OutOfOrderTs;
         }
-        if now_ms > last_emit_ms && now_ms - last_emit_ms < budget.min_interval_ms() {
+        if now_ms >= last_emit_ms && now_ms - last_emit_ms < budget.min_interval_ms() {
             return BoltV3RequoteThrottleBound::MinInterval;
         }
     }
@@ -1295,6 +1306,46 @@ mod tests {
                 .map(UsableMu::get),
             Ok(1.0),
             "on_trade must route each tick into the per-instrument μ buffer"
+        );
+    }
+
+    #[test]
+    fn requote_throttle_bound_throttles_same_millisecond_reemit() {
+        // A re-emit at the EXACT same millisecond as the last emit is inside any
+        // non-zero anti-flicker interval (0ms < min_interval_ms) and MUST be bounded
+        // by MinInterval. The pre-fix gate used `now_ms > last_emit_ms`, which is
+        // false at now_ms == last_emit_ms, so the same-tick re-emit fell THROUGH the
+        // MinInterval check and was classified WindowCap (admitted-by-bound) — letting
+        // an unthrottled cancel+resubmit pair re-emit twice in one millisecond. The
+        // out-of-order guard above already rejects `now_ms < last_emit_ms`, so at this
+        // line `now_ms >= last_emit_ms` is guaranteed and the subtraction is
+        // underflow-safe.
+        use crate::bolt_v3_requote_budget::RequoteBudget;
+        let mut budget = RequoteBudgetPair::new(
+            RequoteBudget::new(40, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
+            RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
+        );
+        // Record an emit at now_ms so last_emit_ms == now_ms for the next call.
+        assert!(budget.try_reserve_fresh_submit(1_000));
+        assert_eq!(budget.last_emit_ms(), Some(1_000));
+
+        // Same millisecond as the last emit: 1_000 - 1_000 = 0 < 500 interval.
+        assert_eq!(
+            requote_throttle_bound(BoltV3RequoteActionCostClass::CancelResubmit, &budget, 1_000,),
+            BoltV3RequoteThrottleBound::MinInterval,
+            "a same-millisecond re-emit must be bounded by MinInterval, not admitted"
+        );
+
+        // A tick at the interval boundary clears the floor and is bounded by capacity
+        // (WindowCap), confirming the throttle is interval-driven, not a blanket block.
+        assert_eq!(
+            requote_throttle_bound(
+                BoltV3RequoteActionCostClass::CancelResubmit,
+                &budget,
+                1_000 + TEST_REQUOTE_MIN_INTERVAL_MS,
+            ),
+            BoltV3RequoteThrottleBound::WindowCap,
+            "an emit at the interval boundary is past the floor and admitted-by-bound"
         );
     }
 }

@@ -3032,9 +3032,21 @@ impl BinaryOracleEdgeTaker {
             &fields,
             self.entry_forced_flat_evidence_inputs(),
         );
-        self.context
+        if let Err(error) = self
+            .context
             .decision_evidence()
-            .record_entry_skip(&evidence)?;
+            .record_entry_skip(&evidence)
+        {
+            // An entry skip is declining new risk: a telemetry-write failure
+            // must never abort the strategy callback (which would skip
+            // downstream safety logic such as enforce_one_position_invariant).
+            // Surface the lost write at the highest non-panicking severity and
+            // let the skip path proceed.
+            log::error!(
+                "binary_oracle_edge_taker entry skip evidence write failed: strategy_id={} error={error:#}",
+                self.config.strategy_id
+            );
+        }
         self.last_recorded_entry_skip = Some(key);
         Ok(())
     }
@@ -3098,9 +3110,20 @@ impl BinaryOracleEdgeTaker {
         if self.last_recorded_exit_decision.as_ref() == Some(&key) {
             return Ok(());
         }
-        self.context
+        if let Err(error) = self
+            .context
             .decision_evidence()
-            .record_exit_decision(&evidence)?;
+            .record_exit_decision(&evidence)
+        {
+            // A telemetry-write failure must NEVER block a risk-reducing exit:
+            // record_exit_decision_once is called immediately before the exit
+            // order is built and submitted. Surface the lost write at the
+            // highest non-panicking severity and let the exit proceed.
+            log::error!(
+                "binary_oracle_edge_taker exit decision evidence write failed: strategy_id={} error={error:#}",
+                self.config.strategy_id
+            );
+        }
         self.last_recorded_exit_decision = Some(key);
         Ok(())
     }

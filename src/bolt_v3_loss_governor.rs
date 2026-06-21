@@ -225,7 +225,7 @@ fn loss_snapshot_diagnostics(
     };
     let source_empty = snapshot.source.trim().is_empty();
     let future_dated = snapshot.observed_at_ns > now_ns;
-    let snapshot_age_ns = (!future_dated).then_some(now_ns - snapshot.observed_at_ns);
+    let snapshot_age_ns = (!future_dated).then(|| now_ns - snapshot.observed_at_ns);
     let age_exceeded = snapshot_age_ns.is_some_and(|age| age > policy.max_snapshot_age_ns);
     let missing_required_field = (policy.max_per_trade_loss.is_some()
         && snapshot.per_trade_pnl.is_none())
@@ -277,8 +277,8 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::{
-        LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
-        evaluate_loss_admission,
+        LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotStaleReason,
+        LossSourceObservationTimestamps, evaluate_loss_admission, loss_snapshot_diagnostics,
     };
 
     fn policy() -> LossGovernorPolicy {
@@ -314,6 +314,40 @@ mod tests {
             vec![LossHaltReason::PerTradeLossLimit]
         );
         assert_eq!(decision.halt_reasons[0].as_str(), "per_trade_loss_limit");
+    }
+
+    #[test]
+    fn future_dated_snapshot_diagnostics_are_future_dated_without_underflow() {
+        // A snapshot observed AHEAD of admission `now_ns` (clock skew / replay) is the
+        // exact future-dated path #881 targets. `snapshot_age_ns` must be None (no age
+        // is meaningful for a future timestamp) and the stale reason must be
+        // FutureDated. The pre-fix `then_some(now_ns - observed_at_ns)` evaluated its
+        // argument EAGERLY, so `now_ns - observed_at_ns` underflowed (PANIC in debug /
+        // wrap in release) before `then_some` could discard it — this test panics on
+        // that buggy variant. The lazy `then(|| ...)` only subtracts when the snapshot
+        // is NOT future-dated.
+        let mut snapshot = snapshot();
+        snapshot.observed_at_ns = 10_000;
+        let now_ns = 9_000; // strictly before observed_at_ns -> future-dated
+
+        let diagnostics = loss_snapshot_diagnostics(
+            &policy(),
+            Some(&snapshot),
+            now_ns,
+            LossSourceObservationTimestamps::unobserved(),
+        );
+
+        assert_eq!(
+            diagnostics.stale_reason,
+            Some(LossSnapshotStaleReason::FutureDated)
+        );
+        assert_eq!(
+            diagnostics.snapshot_age_ns, None,
+            "no age is computed for a future-dated snapshot"
+        );
+        assert!(diagnostics.snapshot_present);
+        assert_eq!(diagnostics.snapshot_observed_at_ns, Some(10_000));
+        assert_eq!(diagnostics.admission_now_ns, now_ns);
     }
 
     #[test]

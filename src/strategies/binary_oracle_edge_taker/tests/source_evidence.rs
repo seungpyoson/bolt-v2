@@ -1533,3 +1533,141 @@ fn observe_resolution_strike_window_mismatch_is_observable_and_distinct_from_idl
          (no observable rejection recorded)"
     );
 }
+
+// A minimal entry evaluation that carries no signal — enough to drive
+// `record_entry_skip_once` past evidence assembly to the writer call.
+fn minimal_entry_evaluation() -> EntryEvaluation {
+    EntryEvaluation {
+        gate: EntryGateDecision { blocked_by: vec![] },
+        pricing_blocked_by: vec![],
+        fair_probability_up: None,
+        uncertainty_band_probability: None,
+        up_executable_edge: None,
+        down_executable_edge: None,
+        up_worst_case_ev_bps: None,
+        down_worst_case_ev_bps: None,
+        sized_executable_edge: None,
+        sized_worst_case_ev_bps: None,
+        min_worst_case_ev_bps: None,
+        expected_ev_per_notional: None,
+        book_impact_cap_notional: None,
+        sized_notional: None,
+        selected_side: None,
+    }
+}
+
+fn minimal_entry_submission_decision() -> EntrySubmissionDecision {
+    EntrySubmissionDecision {
+        evaluation: minimal_entry_evaluation(),
+        instrument_id: None,
+        order_side: None,
+        price: None,
+        quantity_value: None,
+        client_order_id: None,
+        blocked_reason: None,
+    }
+}
+
+// A minimal exit decision with a non-`no_open_position` block reason, so it
+// clears the early-return guards in `record_exit_decision_once` and reaches the
+// writer call.
+fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
+    ExitSubmissionDecision {
+        evaluation: ExitEvaluation {
+            position_outcome_side: None,
+            forced_flat_reasons: vec![],
+            hold_ev_bps: None,
+            exit_ev_bps: None,
+            exit_decision: Some(ExitDecision::Hold),
+            blocked_reason: Some(EXIT_BLOCK_REASON_EXIT_HOLD),
+        },
+        instrument_id: None,
+        order_type: None,
+        order_side: None,
+        position_side: None,
+        time_in_force: None,
+        price: None,
+        quantity: None,
+        client_order_id: None,
+        is_post_only: None,
+        is_reduce_only: None,
+        is_quote_quantity: None,
+        expire_time_unix_nanos: None,
+        trigger_price: None,
+        activation_price: None,
+        trigger_type: None,
+        trigger_instrument_id: None,
+        trailing_offset: None,
+        trailing_offset_type: None,
+        blocked_reason: Some(EXIT_BLOCK_REASON_EXIT_HOLD),
+        forced_flat_reasons: vec![],
+    }
+}
+
+#[test]
+fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
+    // A telemetry-write failure on the exit-decision evidence path MUST NOT
+    // propagate: record_exit_decision_once is called at the exit-submit chokepoint
+    // immediately BEFORE the risk-reducing exit order is built and submitted. The
+    // pre-fix `record_exit_decision(&evidence)?` propagated the writer Err, which
+    // would abort the exit-submit callback and BLOCK a risk-reducing exit on a lost
+    // log line. The fix swaps `?` for a `log::error!` + continue, so the helper
+    // returns Ok(()) even when the writer fails. The FailingDecisionEvidenceWriter
+    // returns Err from record_exit_decision, so on the buggy `?` variant this call
+    // returns Err and the assertion below fails — the differential channel is the
+    // helper's Result, which mirrors the exit-submit return.
+    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+        RecordingFeeProvider::cold(),
+        Arc::new(FailingDecisionEvidenceWriter),
+    );
+
+    let decision = minimal_exit_submission_decision();
+    let result = strategy.record_exit_decision_once(
+        1_000,
+        ExitEvaluationTriggerContext::unknown(1_000),
+        &decision,
+    );
+
+    assert!(
+        result.is_ok(),
+        "an exit-decision evidence write failure must not propagate and block the exit: {result:?}"
+    );
+    assert!(
+        strategy.last_recorded_exit_decision.is_some(),
+        "the dedupe key must still be set so the lost write is not retried in a tight loop"
+    );
+}
+
+#[test]
+fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
+    // An entry skip is DECLINING new risk. record_entry_skip_once is called inside
+    // the entry-submit callback immediately before downstream safety logic (e.g.
+    // enforce_one_position_invariant). The pre-fix `record_entry_skip(&evidence)?`
+    // propagated the writer Err, aborting the callback and SKIPPING that downstream
+    // safety logic on a lost log line. The fix swaps `?` for a `log::error!` +
+    // continue, so the helper returns Ok(()) even when the writer fails. The
+    // FailingDecisionEvidenceWriter returns Err from record_entry_skip, so on the
+    // buggy `?` variant this call returns Err and the assertion fails — the
+    // differential channel is the helper's Result.
+    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+        RecordingFeeProvider::cold(),
+        Arc::new(FailingDecisionEvidenceWriter),
+    );
+
+    let decision = minimal_entry_submission_decision();
+    let result = strategy.record_entry_skip_once(
+        1_000,
+        &decision,
+        BoltV3EntrySkipReasonCategory::NoSideSelected,
+        None,
+    );
+
+    assert!(
+        result.is_ok(),
+        "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
+    );
+    assert!(
+        strategy.last_recorded_entry_skip.is_some(),
+        "the dedupe key must still be set so the lost write is not retried in a tight loop"
+    );
+}

@@ -2909,6 +2909,12 @@ source-fence: source-fence-static
 def assert_local_verification_gate_recipes_are_enforced() -> None:
     verifier = load_verifier()
     justfile_text = """
+fmt-check:
+    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner
+
+fmt-check-inner: require-local-verification-gate
+    python3 scripts/test_verify_ci_workflow_hygiene.py
+
 ci-lint-workflow:
     python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
 
@@ -2926,6 +2932,14 @@ ci-lint-workflow-inner: require-local-verification-gate
     ungated_errors = verifier.verify_local_verification_gate_recipes(ungated)
     if not any("justfile ci-lint-workflow must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
         raise AssertionError(f"ci-lint-workflow gate drift was silent, got: {ungated_errors}")
+
+    fmt_ungated = justfile_text.replace(
+        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
+    )
+    fmt_ungated_errors = verifier.verify_local_verification_gate_recipes(fmt_ungated)
+    if not any("justfile fmt-check must run through scripts/local_verification_gate.py" in error for error in fmt_ungated_errors):
+        raise AssertionError(f"fmt-check gate drift was silent, got: {fmt_ungated_errors}")
 
     extra_public_work = justfile_text.replace(
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",

@@ -4737,6 +4737,7 @@ def active_recipe_lines(recipes: dict[str, tuple[list[str], list[str]]], name: s
 
 
 LOCAL_VERIFICATION_GATE_RECIPES = (
+    "fmt-check",
     "source-fence-static",
     "ci-lint-workflow",
 )
@@ -4793,6 +4794,7 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
     recipes = just_recipe_blocks(justfile_text)
     errors: list[str] = []
     for public_name, inner_name in (
+        ("fmt-check", "fmt-check-inner"),
         ("ci-lint-workflow", "ci-lint-workflow-inner"),
     ):
         gated_inner_recipe_name(recipes, public_name, inner_name, errors)

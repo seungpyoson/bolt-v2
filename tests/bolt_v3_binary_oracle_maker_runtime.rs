@@ -3,7 +3,10 @@ mod support;
 use anyhow::Result;
 use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
-    bolt_v3_decision_evidence::BoltV3AdmissionOutcome,
+    bolt_v3_decision_evidence::{
+        BoltV3AdmissionOutcome, BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason,
+        BoltV3RequoteThrottleBound,
+    },
     bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason},
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
@@ -211,6 +214,69 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
     assert_eq!(records[1].strategy_id, "maker-strategy");
     assert_eq!(records[1].instrument_id, "NO.RUNTIME");
     assert_eq!(writer.admission_decisions().len(), 2);
+}
+
+#[test]
+fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.clone()));
+    let mut maker = BinaryOracleMaker::new(
+        maker_config(),
+        maker_context(writer.clone(), admission.clone()),
+    );
+    register_maker_for_order_factory(&mut maker);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
+        .expect("one-submit budget fixture builds");
+    let submit_template = maker_limit_post_only_template();
+
+    let route_input = || BinaryOracleMakerRuntimeQuoteRouteInput {
+        quote: MakerRuntimeQuoteInput {
+            quote_plan: quote_plan_inputs(static_binary_event::KEY),
+            quote_set: quote_set_inputs(),
+            order_plan: order_plan_inputs(),
+        },
+        submit_template: &submit_template,
+        price_precision: 2,
+        quantity_precision: 2,
+        submit_order_prefix: "maker_submit",
+        max_fee_bps: Decimal::ZERO,
+        submit_lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+    };
+
+    maker
+        .route_maker_runtime_quote(&mut market, &mut budget, route_input())
+        .expect("first quote cycle should route the granted leg and record the denied leg");
+    maker
+        .route_maker_runtime_quote(&mut market, &mut budget, route_input())
+        .expect("repeated blocked quote cycle should be deduped");
+
+    let throttles = writer.requote_throttles();
+    assert_eq!(
+        throttles.len(),
+        1,
+        "same blocked leg state must emit one throttle evidence record"
+    );
+    let throttle = &throttles[0];
+    assert_eq!(throttle.strategy_id, "maker-strategy");
+    assert_eq!(throttle.family_key, static_binary_event::KEY);
+    assert_eq!(throttle.leg, "no");
+    assert_eq!(
+        throttle.action_cost_class,
+        BoltV3RequoteActionCostClass::FreshSubmit
+    );
+    assert_eq!(
+        throttle.block_reason,
+        BoltV3RequoteThrottleBlockReason::RequoteBudgetExhausted
+    );
+    assert_eq!(
+        throttle.bound_by,
+        BoltV3RequoteThrottleBound::SubmitCommandWindow
+    );
+    assert_eq!(throttle.submit_commands_in_window, 1);
+    assert_eq!(throttle.submit_command_cap, 1);
+    assert_eq!(throttle.rest_cost_in_window, 1);
+    assert_eq!(throttle.rest_cap_per_minute, 100);
 }
 
 #[test]

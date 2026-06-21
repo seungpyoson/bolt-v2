@@ -713,6 +713,9 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         evidence.clone(),
         submit_admission,
     );
+    strategy.pricing.last_fast_venue_age_ms = Some(17);
+    strategy.pricing.last_fast_venue_jitter_ms = Some(3);
+    strategy.pricing.last_lead_agreement_corr = Some(0.99);
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let error = strategy
@@ -761,6 +764,35 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         Some("condition-MKT-1-MKT-1-DOWN.POLYMARKET")
     );
     assert_eq!(snapshot.selected_side.as_deref(), Some("up"));
+    assert!(
+        snapshot
+            .up_worst_case_edge_basis_points
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok())
+            .is_some(),
+        "admitted entry snapshot must preserve the up-side thin margin"
+    );
+    assert!(
+        snapshot
+            .down_worst_case_edge_basis_points
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok())
+            .is_some(),
+        "admitted entry snapshot must preserve the down-side thin margin"
+    );
+    assert!(snapshot.gate_blocked_by.is_empty());
+    assert!(snapshot.pricing_blocked_by.is_empty());
+    assert_eq!(snapshot.fast_venue_name.as_deref(), Some("bybit"));
+    assert_eq!(snapshot.fast_venue_age_ms, Some(17));
+    assert_eq!(snapshot.fast_venue_jitter_ms, Some(3));
+    assert!(!snapshot.fast_venue_incoherent);
+    assert_eq!(
+        snapshot
+            .lead_agreement_corr
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok()),
+        Some(0.99)
+    );
     assert_eq!(snapshot.submission_instrument_id, intent.instrument_id);
     assert_eq!(snapshot.submission_order_side, intent.order_side);
     assert_eq!(snapshot.submission_price, intent.price);
@@ -915,6 +947,13 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
         "latched shadow exit should block repeated would-be exits"
     );
     assert_eq!(
+        strategy
+            .try_submit_exit_order(1_202)
+            .expect("same latched shadow exit should remain deduped"),
+        None,
+        "same latched shadow exit state should not flood decision evidence"
+    );
+    assert_eq!(
         submit_admission.admitted_order_count(),
         0,
         "shadow exits must record admission evidence without consuming live submit capacity"
@@ -927,6 +966,35 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
             .count(),
         1,
         "latched shadow exit should record one order-intent"
+    );
+    let exit_decisions = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::ExitDecision(decision) => Some(decision),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        exit_decisions.len(),
+        2,
+        "exit action plus one pending-exit block should be recorded once each"
+    );
+    assert_eq!(
+        exit_decisions[0].exit_decision,
+        BoltV3ExitDecisionOutcome::Exit
+    );
+    assert_eq!(
+        exit_decisions[0].forced_flat_reasons,
+        vec![BoltV3ForcedFlatReason::Freeze]
+    );
+    assert_eq!(
+        exit_decisions[1].exit_decision,
+        BoltV3ExitDecisionOutcome::Blocked
+    );
+    assert_eq!(
+        exit_decisions[1].blocked_reason,
+        Some(BoltV3ExitBlockedReason::ExitAlreadyPending)
     );
 }
 
@@ -1135,10 +1203,16 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
             .expect("RV-not-ready pricing block should not attempt submit"),
         None
     );
+    assert_eq!(
+        strategy
+            .try_submit_entry_order(1_201)
+            .expect("same RV-not-ready pricing block should not attempt submit"),
+        None
+    );
 
     let events = evidence.events();
-    let [RecordedDecisionEvidenceEvent::StrategyInput(snapshot)] = events.as_slice() else {
-        panic!("expected only blocked strategy input evidence; got {events:#?}");
+    let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+        panic!("expected blocked strategy input evidence first; got {events:#?}");
     };
     assert_eq!(snapshot.realized_volatility_surface_id, TEST_SURFACE_ID);
     assert_eq!(snapshot.realized_volatility_as_of_ms, Some(1_200));
@@ -1150,6 +1224,33 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
     );
     assert_eq!(snapshot.submission_instrument_id, "");
     assert_eq!(snapshot.client_order_id, "");
+    assert_eq!(
+        snapshot.pricing_blocked_by,
+        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+    );
+    let entry_skips = events
+        .iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_skips.len(),
+        1,
+        "same blocked interval/reason must emit one entry skip record"
+    );
+    let skip = entry_skips[0];
+    assert_eq!(
+        skip.reason_category,
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked
+    );
+    assert_eq!(
+        skip.pricing_blocked_by,
+        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+    );
+    assert_eq!(skip.market_id, strategy.active.market_id);
+    assert_eq!(skip.realized_vol_source_ts_ms, Some(1_200));
 }
 
 #[test]

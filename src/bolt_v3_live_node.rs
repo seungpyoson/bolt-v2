@@ -117,11 +117,12 @@ use crate::{
         resolve_root_relative_path,
     },
     bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM, BoltV3AdmissionDecisionEvidence,
+        BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
+        BoltV3LossGovernorHaltEvidence, BoltV3LossHaltReason, BoltV3OrderIntentEvidence,
         BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        BoltV3TradingState, JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
         read_submit_reservation_recovery_evidence,
     },
     bolt_v3_iv::{
@@ -143,7 +144,10 @@ use crate::{
     bolt_v3_kill_switch_store::{
         KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
     },
-    bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
+    bolt_v3_loss_governor::{
+        LossAdmissionDecision, LossGovernorPolicy, LossHaltReason, LossSnapshot,
+        evaluate_loss_admission,
+    },
     bolt_v3_loss_halt_actions::{
         LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,
         LossGovernorManualRecoveryEvidence, LossGovernorManualRecoveryRequest,
@@ -2397,6 +2401,31 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     fn record_submit_reservation_fill(
         &self,
         _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_entry_skip(
+        &self,
+        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(&self, _halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
     ) -> Result<()> {
         Ok(())
     }
@@ -5168,13 +5197,15 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let seeded_state = protection.borrow().state().clone();
         sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);
     }
-    let loss_halt_action_handler =
-        match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
-            (Some(policy), Some(action_policy)) => Some(
-                loss_governor_halt_action_handler_from_node(&node, policy, *action_policy),
-            ),
-            _ => None,
-        };
+    let loss_halt_action_handler = match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
+        (Some(policy), Some(action_policy)) => Some(loss_governor_halt_action_handler_from_node(
+            &node,
+            policy,
+            *action_policy,
+            decision_evidence.clone(),
+        )),
+        _ => None,
+    };
     let (loss_runtime_feed, loss_runtime_feed_subscription) =
         match loss_governor_runtime_feed_config_from_loaded(loaded)? {
             Some(config) => {
@@ -5761,6 +5792,7 @@ fn loss_governor_halt_action_handler_from_node(
     node: &LiveNode,
     loss_policy: LossGovernorPolicy,
     action_policy: LossGovernorHaltActionPolicy,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> LossGovernorHaltActionHandler {
     let risk_engine = node.kernel().risk_engine().clone();
     Rc::new(move |snapshot, now_ns| {
@@ -5773,9 +5805,85 @@ fn loss_governor_halt_action_handler_from_node(
         if let Some(target_state) =
             next_loss_governor_trading_state(&action_policy, current_state, &decision)
         {
+            let evidence = BoltV3LossGovernorHaltEvidence::from_loss_governor_halt(
+                &loss_policy,
+                snapshot,
+                &decision,
+                current_state,
+                target_state,
+                now_ns,
+            );
+            if let Err(error) = decision_evidence.record_loss_governor_halt(&evidence) {
+                log::warn!(
+                    "bolt-v3 loss governor halt evidence write failed: source={} previous_trading_state={:?} target_trading_state={:?} error={error:#}",
+                    evidence.source,
+                    current_state,
+                    target_state
+                );
+            }
             risk_engine.borrow_mut().set_trading_state(target_state);
         }
     })
+}
+
+impl BoltV3LossGovernorHaltEvidence {
+    fn from_loss_governor_halt(
+        policy: &LossGovernorPolicy,
+        snapshot: Option<&LossSnapshot>,
+        decision: &LossAdmissionDecision,
+        previous_trading_state: TradingState,
+        target_trading_state: TradingState,
+        now_ns: u64,
+    ) -> Self {
+        Self {
+            observed_at_ns: snapshot
+                .map(|snapshot| snapshot.observed_at_ns)
+                .unwrap_or(now_ns),
+            source: snapshot.map_or_else(
+                || BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM.to_string(),
+                |snapshot| snapshot.source.clone(),
+            ),
+            halt_reasons: decision
+                .halt_reasons
+                .iter()
+                .copied()
+                .map(loss_halt_reason_to_evidence)
+                .collect(),
+            per_trade_pnl: snapshot
+                .and_then(|snapshot| snapshot.per_trade_pnl.map(|v| v.to_string())),
+            daily_pnl: snapshot.and_then(|snapshot| snapshot.daily_pnl.map(|v| v.to_string())),
+            rolling_pnl: snapshot.and_then(|snapshot| snapshot.rolling_pnl.map(|v| v.to_string())),
+            current_equity: snapshot
+                .and_then(|snapshot| snapshot.current_equity.map(|v| v.to_string())),
+            peak_equity: snapshot.and_then(|snapshot| snapshot.peak_equity.map(|v| v.to_string())),
+            max_per_trade_loss: policy.max_per_trade_loss.map(|value| value.to_string()),
+            max_daily_loss: policy.max_daily_loss.map(|value| value.to_string()),
+            max_rolling_loss: policy.max_rolling_loss.map(|value| value.to_string()),
+            max_drawdown: policy.max_drawdown.map(|value| value.to_string()),
+            max_snapshot_age_ns: policy.max_snapshot_age_ns,
+            previous_trading_state: trading_state_to_evidence(previous_trading_state),
+            target_trading_state: trading_state_to_evidence(target_trading_state),
+            subsystem: BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM.to_string(),
+        }
+    }
+}
+
+fn trading_state_to_evidence(state: TradingState) -> BoltV3TradingState {
+    match state {
+        TradingState::Active => BoltV3TradingState::Active,
+        TradingState::Halted => BoltV3TradingState::Halted,
+        TradingState::Reducing => BoltV3TradingState::Reducing,
+    }
+}
+
+fn loss_halt_reason_to_evidence(reason: LossHaltReason) -> BoltV3LossHaltReason {
+    match reason {
+        LossHaltReason::PerTradeLossLimit => BoltV3LossHaltReason::PerTradeLossLimit,
+        LossHaltReason::DailyLossLimit => BoltV3LossHaltReason::DailyLossLimit,
+        LossHaltReason::RollingLossLimit => BoltV3LossHaltReason::RollingLossLimit,
+        LossHaltReason::MaxDrawdownLimit => BoltV3LossHaltReason::MaxDrawdownLimit,
+        LossHaltReason::StaleLossSnapshot => BoltV3LossHaltReason::StaleLossSnapshot,
+    }
 }
 
 fn required_loss_governor_decimal(
@@ -6169,6 +6277,76 @@ mod tests {
 
     static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
 
+    #[derive(Debug, Default)]
+    struct RecordingLossGovernorDecisionEvidenceWriter {
+        halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
+    }
+
+    impl RecordingLossGovernorDecisionEvidenceWriter {
+        fn halts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
+            self.halts
+                .lock()
+                .expect("loss governor evidence recorder mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl BoltV3DecisionEvidenceWriter for RecordingLossGovernorDecisionEvidenceWriter {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &BoltV3BasketAdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_loss_governor_halt(&self, halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+            self.halts
+                .lock()
+                .expect("loss governor evidence recorder mutex poisoned")
+                .push(halt.clone());
+            Ok(())
+        }
+    }
+
     #[test]
     fn startup_rebuild_recovers_known_submit_reservation_from_nt_cache() {
         let temp = tempfile::tempdir().expect("tempdir should create");
@@ -6341,6 +6519,69 @@ mod tests {
             .expect("fixture v3 LiveNode should build");
 
         assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
+    }
+
+    #[test]
+    fn loss_governor_halt_handler_records_one_transition_evidence() {
+        let loaded = fixture_loaded_config();
+        let node = make_bolt_v3_live_node_builder(&loaded)
+            .expect("test LiveNodeBuilder should construct")
+            .build()
+            .expect("test LiveNode should build");
+        let policy = LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: None,
+            max_rolling_loss: None,
+            max_drawdown: None,
+        };
+        let action_policy = LossGovernorHaltActionPolicy {
+            on_loss_breach_trading_state: LossGovernorTradingStateAction::Reducing,
+            on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction::Halted,
+            recovery_mode: LossGovernorRecoveryMode::Manual,
+            manual_recovery_evidence_max_path_bytes: 256,
+        };
+        let writer = Arc::new(RecordingLossGovernorDecisionEvidenceWriter::default());
+        let handler = loss_governor_halt_action_handler_from_node(
+            &node,
+            policy,
+            action_policy,
+            writer.clone(),
+        );
+        let snapshot = LossSnapshot {
+            source: "nt_loss_runtime_feed".to_string(),
+            observed_at_ns: 2_000,
+            per_trade_pnl: Some(Decimal::new(-11, 0)),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+        };
+
+        handler(Some(&snapshot), 2_100);
+        handler(Some(&snapshot), 2_101);
+
+        assert_eq!(
+            node.kernel().risk_engine().borrow().trading_state(),
+            TradingState::Reducing
+        );
+        let halts = writer.halts();
+        assert_eq!(
+            halts.len(),
+            1,
+            "repeated evaluation after the same transition must not emit another halt record"
+        );
+        let halt = &halts[0];
+        assert_eq!(halt.observed_at_ns, 2_000);
+        assert_eq!(halt.source, "nt_loss_runtime_feed");
+        assert_eq!(
+            halt.halt_reasons,
+            vec![BoltV3LossHaltReason::PerTradeLossLimit]
+        );
+        assert_eq!(halt.per_trade_pnl.as_deref(), Some("-11"));
+        assert_eq!(halt.max_per_trade_loss.as_deref(), Some("10"));
+        assert_eq!(halt.previous_trading_state, BoltV3TradingState::Active);
+        assert_eq!(halt.target_trading_state, BoltV3TradingState::Reducing);
     }
 
     #[test]

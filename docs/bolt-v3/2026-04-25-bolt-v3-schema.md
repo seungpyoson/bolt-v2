@@ -643,14 +643,14 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local decision-evidence JSONL path under `catalog_directory`
 - must remain relative so a root catalog move changes only one config location
 
-Decision-evidence JSONL records use `schema_version = 11` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` envelopes.
-Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, or `fill`.
-The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, and `submit_reservation_fill` for fill metadata.
+Decision-evidence JSONL records use `schema_version = 12` for `order_intent`, `admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, `submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, and `requote_throttle` envelopes.
+Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, or `requote_throttle`.
+The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, and `requote_throttle` for maker requote budget throttle transitions.
 `order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
 `admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id` and the `execution_client_id` whose submit-admission limits were evaluated.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 `position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.
-Schema 11 also records reference-current-price provenance fields in strategy-input snapshots.
+Schema 12 also records reference-current-price provenance fields in strategy-input snapshots and durable state-change rationale for entry skips, exit decisions, loss-governor halts, and maker requote throttles.
 
 `order_intent.order_fields` fields:
 

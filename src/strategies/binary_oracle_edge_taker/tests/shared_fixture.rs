@@ -227,6 +227,34 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         Ok(())
     }
+
+    fn record_entry_skip(
+        &self,
+        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _halt: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -283,6 +311,34 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         anyhow::bail!("submit reservation fill write failed")
     }
+
+    fn record_entry_skip(
+        &self,
+        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("entry skip write failed")
+    }
+
+    fn record_exit_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("exit decision write failed")
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _halt: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("loss governor halt write failed")
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("requote throttle write failed")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -290,6 +346,8 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     StrategyInput(Box<crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot>),
     OrderIntent(Box<crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>),
     AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
+    EntrySkip(crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence),
+    ExitDecision(crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence),
 }
 
 #[derive(Debug, Default)]
@@ -373,6 +431,30 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_entry_skip(
+        &self,
+        skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::EntrySkip(skip.clone()));
+        Ok(())
+    }
+
+    fn record_exit_decision(
+        &self,
+        decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::ExitDecision(
+                decision.clone(),
+            ));
         Ok(())
     }
 }

@@ -14828,8 +14828,8 @@ reason = "Runtime config schema key or enum label for reference_current_price pa
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''11'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;'''
+literal = '''12'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 12;'''
 classification = "decision_evidence_schema_contract"
 reason = "Decision-evidence JSONL schema/control literal; it defines audit-record compatibility, not operator runtime configuration."
 
@@ -18432,3 +18432,155 @@ literal = '''"order_template"'''
 context = '''"order_template",'''
 classification = '''kill_switch_flatten_order_template_diagnostic_field'''
 reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.entry_skip"'''
+context = '''pub const BOLT_V3_ENTRY_SKIP_GATE_ID: &str = "bolt_v3.entry_skip";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable entry-skip evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.exit_decision"'''
+context = '''pub const BOLT_V3_EXIT_DECISION_GATE_ID: &str = "bolt_v3.exit_decision";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable exit-decision evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.loss_governor_halt"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable loss-governor halt evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.requote_throttle"'''
+context = '''pub const BOLT_V3_REQUOTE_THROTTLE_GATE_ID: &str = "bolt_v3.requote_throttle";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable maker requote-throttle evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"entry_skip"'''
+context = '''pub const BOLT_V3_ENTRY_SKIP_RECORD_KIND: &str = "entry_skip";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for entry-skip evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"exit_decision"'''
+context = '''pub const BOLT_V3_EXIT_DECISION_RECORD_KIND: &str = "exit_decision";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for exit-decision evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"loss_governor_halt"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for loss-governor halt evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"requote_throttle"'''
+context = '''pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for maker requote-throttle evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"loss_governor"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";'''
+classification = '''decision_evidence_subsystem_label'''
+reason = '''Stable subsystem label embedded in durable loss-governor halt evidence so operators can distinguish the firing subsystem; it is evidence schema text, not runtime configuration.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = '''string'''
+literal = '''"historical_entry_fee_unavailable"'''
+context = '''"historical_entry_fee_unavailable";'''
+classification = '''strategy_entry_block_reason_code'''
+reason = '''Stable entry-skip evidence reason code for missing historical fee evidence at the final pre-submit guard; it classifies a decision outcome and does not configure trading behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = '''string'''
+literal = '''"one_position_invariant_violation"'''
+context = '''"one_position_invariant_violation";'''
+classification = '''strategy_entry_block_reason_code'''
+reason = '''Stable entry-skip evidence reason code for one-position invariant races at the final pre-submit guard; it classifies a decision outcome and does not configure trading behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''string'''
+literal = '''"yes"'''
+context = '''const REQUOTE_THROTTLE_LEG_YES: &str = "yes";'''
+classification = '''requote_throttle_evidence_leg_label'''
+reason = '''Canonical maker evidence label for the yes/up quote leg; it records which leg was throttled and does not configure quoting behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''string'''
+literal = '''"no"'''
+context = '''const REQUOTE_THROTTLE_LEG_NO: &str = "no";'''
+classification = '''requote_throttle_evidence_leg_label'''
+reason = '''Canonical maker evidence label for the no/down quote leg; it records which leg was throttled and does not configure quoting behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST: u64 = 1;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A fresh quote submit consumes exactly one submit-command token; this is a structural accounting unit mirrored from RequoteBudget semantics, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST: u64 = 1;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A fresh quote submit consumes exactly one venue REST token; this is a structural accounting unit mirrored from RequoteBudget semantics, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST: u64 = 1;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A cancel/resubmit requote includes one replacement submit command; this is protocol accounting structure, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''2'''
+context = '''const REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST: u64 = 2;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A cancel/resubmit requote includes one cancel REST call and one submit REST call; this is protocol accounting structure, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''const REQUOTE_THROTTLE_CANCEL_SUBMIT_COST: u64 = 0;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A standalone cancel consumes zero submit-command tokens because it does not submit a new order; this is structural accounting, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const REQUOTE_THROTTLE_CANCEL_REST_COST: u64 = 1;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A standalone cancel consumes exactly one venue REST token; this is structural accounting, not an operator-tunable value.'''

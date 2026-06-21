@@ -24,8 +24,8 @@ use bolt_v2::{
     },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_prod_profile::{
-        GENERATOR_FORMAT_VERSION, ProductionInvariants, confirm_production_invariants,
-        generate_live_config, live_config_path, verify_live_config,
+        GENERATOR_FORMAT_VERSION, ProductionInvariants, generate_live_config, live_config_path,
+        verify_live_config,
     },
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
@@ -1340,6 +1340,76 @@ mod tests {
         );
 
         fs::remove_dir_all(&dir).expect("test temp dir should clean up");
+    }
+
+    /// Build an `OpsLaunchContext` whose loaded config has every client
+    /// `[secrets]` block stripped, so the secrets stages never reach SSM.
+    /// `run_loaded_secrets_check` and `run_loaded_secrets_resolve` both skip
+    /// clients without secrets, which lets this test exercise the dispatch
+    /// wiring hermetically (no AWS, no network).
+    fn ops_launch_context_with_secret_free_fixture() -> OpsLaunchContext {
+        let mut loaded =
+            load_bolt_v3_config(std::path::Path::new("tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture root config should load");
+        for client in loaded.root.clients.values_mut() {
+            client.secrets = None;
+        }
+        let mut context =
+            OpsLaunchContext::new("fixture-profile".to_string(), PathBuf::from("config"));
+        context.loaded = Some(loaded);
+        context
+    }
+
+    #[test]
+    fn ops_launch_secrets_check_stage_does_not_resolve_secrets() {
+        let mut context = ops_launch_context_with_secret_free_fixture();
+
+        run_ops_launch_stage(OpsLaunchStage::SecretsCheck, &mut context)
+            .expect("secrets-check stage must pass for a secret-free config");
+
+        assert!(
+            context.resolved_secrets.is_none(),
+            "secrets-check must validate bindings only and never populate resolved secrets; \
+             if resolved_secrets is Some here the SecretsCheck arm is wired to the resolver"
+        );
+    }
+
+    #[test]
+    fn ops_launch_secrets_resolve_stage_populates_resolved_secrets() {
+        let mut context = ops_launch_context_with_secret_free_fixture();
+
+        run_ops_launch_stage(OpsLaunchStage::SecretsResolve, &mut context)
+            .expect("secrets-resolve stage must pass for a secret-free config");
+
+        assert!(
+            context.resolved_secrets.is_some(),
+            "secrets-resolve must populate resolved secrets for the start stage to consume; \
+             if resolved_secrets is None here the SecretsResolve arm is wired to the checker"
+        );
+    }
+
+    #[test]
+    fn ops_launch_secrets_stages_dispatch_to_distinct_helpers() {
+        // Differential guard for the SecretsCheck/SecretsResolve dispatch:
+        // only the resolve stage may populate `resolved_secrets`. Swapping the
+        // two match arms in `run_ops_launch_stage` flips both observations and
+        // fails this test (verified by the swap-proof in the review fix pass).
+        let mut check_context = ops_launch_context_with_secret_free_fixture();
+        run_ops_launch_stage(OpsLaunchStage::SecretsCheck, &mut check_context)
+            .expect("secrets-check stage must pass for a secret-free config");
+
+        let mut resolve_context = ops_launch_context_with_secret_free_fixture();
+        run_ops_launch_stage(OpsLaunchStage::SecretsResolve, &mut resolve_context)
+            .expect("secrets-resolve stage must pass for a secret-free config");
+
+        assert!(
+            check_context.resolved_secrets.is_none()
+                && resolve_context.resolved_secrets.is_some(),
+            "SecretsCheck must not resolve and SecretsResolve must resolve; a swapped dispatch \
+             inverts these (check resolved={:?}, resolve resolved={:?})",
+            check_context.resolved_secrets.is_some(),
+            resolve_context.resolved_secrets.is_some(),
+        );
     }
 
     #[test]

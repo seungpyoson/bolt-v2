@@ -227,6 +227,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         Ok(())
     }
+
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_reject(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -282,6 +303,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
     ) -> Result<()> {
         anyhow::bail!("submit reservation fill write failed")
+    }
+
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("exit evaluation write failed")
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("loss governor halt write failed")
+    }
+
+    fn record_order_reject(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("order reject write failed")
     }
 }
 
@@ -372,6 +414,27 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     fn record_submit_reservation_fill(
         &self,
         _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_reject(
+        &self,
+        _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
     ) -> Result<()> {
         Ok(())
     }

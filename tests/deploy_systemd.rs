@@ -41,8 +41,8 @@ fn systemd_unit_delegates_to_ops_launch_without_redundant_prestart_paths() {
         "systemd unit must enter the same binary-owned ops launch lane as just live"
     );
     assert!(
-        !unit.contains("ExecStartPre="),
-        "systemd must not keep a second launch/preflight path outside ops launch"
+        unit.contains("ExecStartPre=/usr/bin/mountpoint -q /srv/bolt-v2"),
+        "systemd unit must keep the /srv/bolt-v2 mount precondition as a host gate"
     );
     for forbidden in [
         "ops verify-live-config",
@@ -66,6 +66,19 @@ fn systemd_unit_delegates_to_ops_launch_without_redundant_prestart_paths() {
     assert!(
         !unit.contains("ops reference-live-probe"),
         "systemd must not rely on raw WebSocket frame probes as the reference readiness gate"
+    );
+}
+
+#[test]
+fn systemd_unit_requires_srv_mountpoint() {
+    let unit_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
+    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
+
+    assert!(
+        unit.contains("ExecStartPre=/usr/bin/mountpoint -q /srv/bolt-v2"),
+        "systemd unit must fail fast if /srv/bolt-v2 is not a mounted device, so the runtime \
+         catalog never silently lands on the root filesystem when the data volume fails to mount"
     );
 }
 

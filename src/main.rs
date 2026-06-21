@@ -484,9 +484,10 @@ fn run_ops_launch_stage(
             run_loaded_reference_current_price_health(context.loaded()?)
         }
         OpsLaunchStage::Start => {
-            let loaded = context.loaded.take().ok_or_else(
-                || "ops launch start stage requires a loaded config from verify-config",
-            )?;
+            let loaded = context
+                .loaded
+                .take()
+                .ok_or("ops launch start stage requires a loaded config from verify-config")?;
             start_loaded_node(loaded)
         }
     }

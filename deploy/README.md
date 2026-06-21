@@ -37,10 +37,10 @@ enter the run loop until all pass:
 1. `bolt-v2 ops generate-live-config --profile "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config`
    — compose the derived overlay onto root into the runtime config (fail-closed on TOML/schema/composition/invariant errors).
 2. `bolt-v2 ops launch --profile "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config`
-   — verifies config identity, checks secret configuration, resolves every SSM credential without
-   printing values, checks storage/catalog readiness (catalog-prefix containment, non-symlink catalog
-   dir, write probe, free space ≥ `min_free_bytes`), proves reference-current-price health, then
-   enters the live run loop.
+   — verifies config identity, checks secret configuration, performs the `secrets resolve` step to
+   resolve every SSM credential without printing values, checks storage/catalog readiness
+   (catalog-prefix containment, non-symlink catalog dir, write probe, free space ≥ `min_free_bytes`),
+   proves reference-current-price health, then enters the live run loop.
 
 Arming-gate/readiness (#768 step 3d) is structural, not a `prestart-check` duty: the bot starts disarmed
 and will not submit orders until explicitly armed via the operator arming gate

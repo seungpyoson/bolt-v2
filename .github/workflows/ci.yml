@@ -207,28 +207,6 @@ jobs:
             echo "value=true" >> "$GITHUB_OUTPUT"
           fi
 
-  fmt-check:
-    name: fmt-check
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-environment
-        with:
-          just-version: ${{ env.JUST_VERSION }}
-          lint-workflow-contract: "true"
-          toolchain-components: rustfmt
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-        with:
-          python-version: "3.12"
-
-      - name: fmt-check
-        run: just fmt-check
-
   deny:
     name: deny
     needs: detector
@@ -274,7 +252,8 @@ jobs:
         uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
-          toolchain-components: clippy
+          lint-workflow-contract: "true"
+          toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
@@ -291,6 +270,9 @@ jobs:
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
+
+      - name: fmt-check
+        run: just fmt-check
 
       - name: clippy
         run: just clippy
@@ -643,7 +625,7 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
+    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
@@ -662,7 +644,6 @@ jobs:
           python3 scripts/ci_provenance.py emit-full-ci
           --output ci-provenance.json
           --required-job detector=${{ needs.detector.result }}
-          --required-job fmt-check=${{ needs.fmt-check.result }}
           --required-job deny=${{ needs.deny.result }}
           --required-job clippy=${{ needs.clippy.result }}
           --required-job check-aarch64=${{ needs.check-aarch64.result }}
@@ -712,7 +693,7 @@ jobs:
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
@@ -734,10 +715,6 @@ jobs:
           if [[ "$policy_path" == "tag_reuse" ]]; then
             if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
               echo "same-sha-main-evidence did not succeed"
-              exit 1
-            fi
-            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then
-              echo "fmt-check unexpectedly ran during tag reuse"
               exit 1
             fi
             if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
@@ -815,10 +792,6 @@ jobs:
               fi
             fi
           fi
-          if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
-            echo "fmt-check did not succeed"
-            exit 1
-          fi
           if [[ "${{ needs.deny.result }}" != "success" ]]; then
             echo "deny did not succeed"
             exit 1
@@ -854,7 +827,7 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
+    needs: [gate, same-sha-main-evidence, build, detector, deny, clippy, check-aarch64, source-fence, test]
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     permissions:

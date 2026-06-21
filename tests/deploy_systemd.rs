@@ -13,18 +13,6 @@ fn systemd_unit_sets_srv_working_directory() {
 }
 
 #[test]
-fn systemd_unit_requires_srv_mountpoint() {
-    let unit_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
-    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
-
-    assert!(
-        unit.contains("ExecStartPre=/usr/bin/mountpoint -q /srv/bolt-v2"),
-        "systemd unit must fail fast if /srv/bolt-v2 is not mounted"
-    );
-}
-
-#[test]
 fn systemd_unit_allows_reference_health_startup_window() {
     let unit_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
@@ -37,40 +25,48 @@ fn systemd_unit_allows_reference_health_startup_window() {
 }
 
 #[test]
-fn systemd_unit_runs_rust_prestart_storage_check() {
+fn systemd_unit_delegates_to_ops_launch_without_redundant_prestart_paths() {
     let unit_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
     let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
 
-    assert!(
-        unit.contains(
-            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops prestart-check --config /opt/bolt-v2/config/live.toml"
-        ),
-        "systemd unit must reject wrong-disk or low-space live config before starting"
-    );
-}
-
-#[test]
-fn systemd_unit_verifies_live_config_against_profile_before_start() {
-    let unit_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
-    let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
-
-    assert!(
-        unit.contains(
-            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops verify-live-config --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
-        ),
-        "systemd unit must verify the deployed live.toml against the operator-selected tracked profile before start, \
-         so the tracked production config policy is enforced at the prod entry point, not advisory (#768)"
-    );
     assert!(
         unit.contains("EnvironmentFile=/etc/bolt-v2/live.env"),
         "systemd unit must load live profile selection from operator config, not hardcode a venue/market/strategy profile"
     );
     assert!(
-        unit.contains("ExecStartPre=/usr/bin/test -n \"${BOLT_LIVE_PROFILE}\""),
-        "systemd unit must fail closed when BOLT_LIVE_PROFILE is missing or empty"
+        unit.contains(
+            "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
+        ),
+        "systemd unit must enter the same binary-owned ops launch lane as just live"
     );
+    let active_exec_starts: Vec<&str> = unit
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.starts_with("ExecStart="))
+        .collect();
+    assert_eq!(
+        active_exec_starts,
+        vec![
+            "ExecStart=/opt/bolt-v2/bolt-v2 ops launch --profile \"${BOLT_LIVE_PROFILE}\" --config-root /opt/bolt-v2/config"
+        ],
+        "systemd unit must have exactly one active ExecStart, and it must be the ops launch lane (no second ExecStart bypass)"
+    );
+    assert!(
+        unit.contains("ExecStartPre=/usr/bin/mountpoint -q /srv/bolt-v2"),
+        "systemd unit must keep the /srv/bolt-v2 mount precondition as a host gate"
+    );
+    for forbidden in [
+        "ops verify-live-config",
+        "ops prestart-check",
+        "ops reference-current-price-health",
+        "bolt-v2 run --config",
+    ] {
+        assert!(
+            !unit.contains(forbidden),
+            "systemd unit must not bypass ops launch through `{forbidden}`"
+        );
+    }
     assert!(
         !unit.contains("BOLT_CONFIG_ROOT"),
         "systemd must keep /opt/bolt-v2/config structural instead of accepting a config-root env escape"
@@ -79,34 +75,22 @@ fn systemd_unit_verifies_live_config_against_profile_before_start() {
         !unit.contains("--deployed"),
         "systemd verify must derive /opt/bolt-v2/config/live.toml from the structural config root"
     );
-
-    let verify_at = unit
-        .find("ops verify-live-config")
-        .expect("verify-live-config ExecStartPre must be present");
-    let run_at = unit
-        .find("bolt-v2 run --config")
-        .expect("ExecStart run must be present");
     assert!(
-        verify_at < run_at,
-        "verify-live-config must run before the service starts"
+        !unit.contains("ops reference-live-probe"),
+        "systemd must not rely on raw WebSocket frame probes as the reference readiness gate"
     );
 }
 
 #[test]
-fn systemd_unit_runs_reference_current_price_health_before_start() {
+fn systemd_unit_requires_srv_mountpoint() {
     let unit_path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service");
     let unit = fs::read_to_string(&unit_path).expect("systemd unit should exist");
 
     assert!(
-        unit.contains(
-            "ExecStartPre=/opt/bolt-v2/bolt-v2 ops reference-current-price-health --config /opt/bolt-v2/config/live.toml"
-        ),
-        "systemd unit must prove reference_current_price custom data reaches the strategy-free runtime path before starting"
-    );
-    assert!(
-        !unit.contains("ops reference-live-probe"),
-        "systemd must not rely on raw WebSocket frame probes as the reference readiness gate"
+        unit.contains("ExecStartPre=/usr/bin/mountpoint -q /srv/bolt-v2"),
+        "systemd unit must fail fast if /srv/bolt-v2 is not a mounted device, so the runtime \
+         catalog never silently lands on the root filesystem when the data volume fails to mount"
     );
 }
 
@@ -143,8 +127,8 @@ fn install_script_provisions_runtime_catalog_on_srv_volume() {
 
 #[test]
 fn install_script_repairs_whole_config_bundle_for_service_user() {
-    // ExecStartPre runs `ops verify-live-config` as User=bolt and must read the tracked
-    // overlay (under config/profiles/) AND every referenced strategy file (under
+    // `ops launch` runs as User=bolt and must read the tracked overlay (under
+    // config/profiles/) AND every referenced strategy file (under
     // config/strategies/), not just live.toml. Files/dirs copied by root under a restrictive
     // umask can land 0600/0700 root:root; the installer must repair the whole deploy bundle,
     // without broad-scanning ignored legacy files such as config/live.local.toml.

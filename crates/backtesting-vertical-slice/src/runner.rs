@@ -46,8 +46,8 @@ use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::Back
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{
-        Bar, BarSpecification, Data, IndexPriceUpdate, InstrumentClose, MarkPriceUpdate,
-        OrderBookDelta, QuoteTick, TradeTick,
+        Bar, BarSpecification, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentClose,
+        MarkPriceUpdate, OrderBookDelta, QuoteTick, TradeTick,
     },
     enums::{
         AggregationSource, AggressorSide, BookAction, InstrumentCloseType, OrderSide, OrderStatus,
@@ -1637,12 +1637,12 @@ pub(crate) fn assert_quote_read_back_matches(
 }
 
 /// Prove an index-price catalog read-back is value-faithful, mirroring
-/// [`assert_read_back_matches`] for the index family: element-wise in catalog
-/// order, every read-back update must carry the projected instrument id and the
-/// canonical `value` decimal, with `ts_event` the event clock and `ts_init` the
-/// availability-or-capture receipt clock derived through the SAME shared
-/// projection owner the seam uses (NO DUAL PATHS) — this is the load-bearing
-/// `ts_init == capture_time` proof for the index family.
+/// [`assert_read_back_matches`] for the index family: element-wise in stable
+/// read-back order, every read-back update must carry the projected instrument
+/// id and the canonical `value` decimal, with `ts_event` the event clock and
+/// `ts_init` the availability-or-capture receipt clock derived through the SAME
+/// shared projection owner the seam uses (NO DUAL PATHS) — this is the
+/// load-bearing `ts_init == capture_time` proof for the index family.
 pub(crate) fn assert_index_read_back_matches(
     read_back: &[IndexPriceUpdate],
     table: &super::canonical_market_data::CanonicalIndexPricesTable,
@@ -1688,12 +1688,12 @@ pub(crate) fn assert_index_read_back_matches(
 }
 
 /// Prove a mark-price catalog read-back is value-faithful, mirroring
-/// [`assert_read_back_matches`] for the mark family: element-wise in catalog
-/// order, every read-back update must carry the projected instrument id and the
-/// canonical `value` decimal, with `ts_event` the event clock and `ts_init` the
-/// availability-or-capture receipt clock derived through the SAME shared
-/// projection owner the seam uses (NO DUAL PATHS) — this is the load-bearing
-/// `ts_init == capture_time` proof for the mark family.
+/// [`assert_read_back_matches`] for the mark family: element-wise in stable
+/// read-back order, every read-back update must carry the projected instrument
+/// id and the canonical `value` decimal, with `ts_event` the event clock and
+/// `ts_init` the availability-or-capture receipt clock derived through the SAME
+/// shared projection owner the seam uses (NO DUAL PATHS) — this is the
+/// load-bearing `ts_init == capture_time` proof for the mark family.
 pub(crate) fn assert_mark_read_back_matches(
     read_back: &[MarkPriceUpdate],
     table: &super::canonical_market_data::CanonicalMarkPricesTable,
@@ -1732,6 +1732,145 @@ pub(crate) fn assert_mark_read_back_matches(
         ensure!(
             update.ts_init.as_u64() == expected_ts_init,
             "mark read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+            update.ts_init.as_u64()
+        );
+    }
+    Ok(())
+}
+
+/// Prove a funding-rate catalog read-back is value-faithful, mirroring
+/// [`assert_index_read_back_matches`] for the funding family: every read-back
+/// update must carry the projected instrument id, rate, interval, next funding
+/// timestamp, event clock, and availability-or-capture receipt clock derived
+/// through the shared projection owner.
+///
+/// The comparison is order-INDEPENDENT: both sides are sorted here by the SAME
+/// key the projection's `read_back_funding_rates` sorts the read-back by
+/// (`(ts_event, rate, rate.scale(), interval, next_funding_ns, ts_init)`;
+/// instrument id is constant for one instrument so it is omitted from the
+/// discriminator but still checked per element) before the element-wise pass,
+/// so correctness can never silently depend on the canonical table's stored
+/// order matching the read-back's stable sort order.
+pub(crate) fn assert_funding_read_back_matches(
+    read_back: &[FundingRateUpdate],
+    table: &super::canonical_market_data::CanonicalFundingRatesTable,
+    expected_instrument_id: &str,
+) -> Result<()> {
+    ensure!(
+        read_back.len() == table.rows.len(),
+        "funding catalog read-back count {} does not match canonical rows {}",
+        read_back.len(),
+        table.rows.len()
+    );
+    let expected_id = InstrumentId::from_str(expected_instrument_id)
+        .with_context(|| format!("invalid expected_instrument_id {expected_instrument_id:?}"))?;
+
+    // Comparable sort key derived from BOTH sides, mirroring the projection's
+    // `read_back_funding_rates` sort order so neither input's stored order can
+    // influence the pairing. `instrument_id` (the projection's 2nd sort key) is
+    // intentionally omitted: each read-back is single-instrument, so it is
+    // constant on both sides and cannot affect ordering. If this assertion is
+    // ever reused for a multi-instrument read-back, restore instrument_id here.
+    type FundingSortKey = (u64, Decimal, u32, Option<u16>, Option<u64>, u64);
+
+    // Read-back side: fields are already typed; the key is infallible.
+    let mut sorted_read_back: Vec<(FundingSortKey, &FundingRateUpdate)> = read_back
+        .iter()
+        .map(|update| {
+            let key: FundingSortKey = (
+                update.ts_event.as_u64(),
+                update.rate,
+                update.rate.scale(),
+                update.interval,
+                update.next_funding_ns.map(|value| value.as_u64()),
+                update.ts_init.as_u64(),
+            );
+            (key, update)
+        })
+        .collect();
+    sorted_read_back.sort_by_key(|entry| entry.0);
+
+    // Canonical side: key derivation is fallible (timestamp helpers, rate parse,
+    // next-funding cast), so pre-compute keys in a fallible pass before sorting
+    // on the infallible precomputed key.
+    let mut sorted_rows: Vec<(
+        FundingSortKey,
+        &super::canonical_market_data::CanonicalFundingRateRow,
+    )> = table
+        .rows
+        .iter()
+        .map(|row| {
+            let label = format!("funding rate {}", row.event_time);
+            let ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+            let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+            let rate = Decimal::from_str(&row.rate)
+                .with_context(|| format!("canonical rate {:?}", row.rate))?;
+            let next_funding_ns = row
+                .next_funding_time
+                .map(u64::try_from)
+                .transpose()
+                .with_context(|| {
+                    format!("canonical next_funding_time {:?}", row.next_funding_time)
+                })?;
+            let key: FundingSortKey = (
+                ts_event,
+                rate,
+                rate.scale(),
+                row.interval_minutes,
+                next_funding_ns,
+                ts_init,
+            );
+            Ok((key, row))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    sorted_rows.sort_by_key(|entry| entry.0);
+
+    for (index, ((_, update), (_, row))) in
+        sorted_read_back.iter().zip(sorted_rows.iter()).enumerate()
+    {
+        ensure!(
+            update.instrument_id == expected_id,
+            "funding read-back {index} instrument {} does not match projected {expected_instrument_id}",
+            update.instrument_id
+        );
+        let expected_rate = Decimal::from_str(&row.rate)
+            .with_context(|| format!("canonical rate {:?}", row.rate))?;
+        ensure!(
+            update.rate == expected_rate && update.rate.scale() == expected_rate.scale(),
+            "funding read-back {index} rate {} (scale {}) does not match canonical {expected_rate} (scale {})",
+            update.rate,
+            update.rate.scale(),
+            expected_rate.scale()
+        );
+        ensure!(
+            update.interval == row.interval_minutes,
+            "funding read-back {index} interval {:?} does not match canonical {:?}",
+            update.interval,
+            row.interval_minutes
+        );
+        let expected_next = row
+            .next_funding_time
+            .map(u64::try_from)
+            .transpose()
+            .with_context(|| format!("canonical next_funding_time {:?}", row.next_funding_time))?;
+        ensure!(
+            update.next_funding_ns.map(|value| value.as_u64()) == expected_next,
+            "funding read-back {index} next_funding_ns {:?} does not match canonical {:?}",
+            update.next_funding_ns.map(|value| value.as_u64()),
+            expected_next
+        );
+        let label = format!("funding rate {}", row.event_time);
+        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
+        ensure!(
+            update.ts_event.as_u64() == expected_ts_event,
+            "funding read-back {index} ts_event {} does not match canonical {expected_ts_event}",
+            update.ts_event.as_u64()
+        );
+        let expected_ts_init =
+            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+        ensure!(
+            update.ts_init.as_u64() == expected_ts_init,
+            "funding read-back {index} ts_init {} does not match canonical {expected_ts_init}",
             update.ts_init.as_u64()
         );
     }

@@ -89,7 +89,7 @@ jobs:
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
       full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
       reason: ${{ steps.policy.outputs.reason }}
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -113,7 +113,7 @@ jobs:
   # PRs that never touch the crate while `backtester-gate` still reports a verdict.
   detect:
     name: bvs-detect
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     outputs:
       bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
     steps:

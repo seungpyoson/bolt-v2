@@ -32,7 +32,7 @@ Current source code contains the intended single bolt-v3 production path and loc
 ## End-to-End Production Run Path
 
 1. CLI entrypoint
-   - `src/main.rs:219-238`
+   - `src/main.rs`: `fn main` command dispatch → `run_live_node` (Run redirect) / `run_ops_command` (the `ops launch` lane)
    - `ops launch` loads and verifies config via `verify_live_config`, builds with `build_bolt_v3_live_node_with_resolved` from the once-resolved secrets, then enters NT only through `run_bolt_v3_live_node`; plain `Run` is disabled for live arming and redirects to `ops launch`.
    - Trace meaning: production live run should not bypass the bolt-v3 wrapper.
 

@@ -178,6 +178,25 @@ def cgroup_unit_candidates(unit: str) -> list[str]:
     return candidates
 
 
+def cgroup_text_matches_unit(cgroup_text: str, unit: str) -> bool:
+    """True iff a cgroup path segment exactly equals a unit candidate.
+
+    Handles cgroup v2 lines ("0::/system.slice/bolt-v2.service") and v1
+    lines ("4:memory:/system.slice/bolt-v2.service"). Exact segment match
+    avoids substring false-positives (bolt-v2-replica.service must NOT match
+    unit bolt-v2).
+    """
+    candidates = set(cgroup_unit_candidates(unit))
+    for line in cgroup_text.splitlines():
+        # max 3 parts so a path containing ':' is not over-split; the path is last
+        parts = line.split(":", 2)
+        path = parts[-1]
+        segments = path.strip("/").split("/")
+        if candidates.intersection(segments):
+            return True
+    return False
+
+
 def collect_cgroup_oom_kills(unit: str) -> CollectorResult:
     paths = [
         Path("/sys/fs/cgroup/system.slice") / candidate / "memory.events"
@@ -336,9 +355,8 @@ def process_identity_ok(pid: int, unit: str) -> tuple[bool, str | None]:
     except OSError as exc:
         return False, str(exc)
 
-    for candidate in cgroup_unit_candidates(unit):
-        if candidate in cgroup_text:
-            return True, None
+    if cgroup_text_matches_unit(cgroup_text, unit):
+        return True, None
     return False, f"pid recycled: /proc/{pid}/cgroup did not contain unit {unit!r}"
 
 
@@ -372,7 +390,8 @@ def parse_proc_status(pid: int) -> tuple[dict[str, int], str | None]:
 
 def read_fd_count(pid: int) -> tuple[int | None, str | None]:
     try:
-        return len(os.listdir(f"/proc/{pid}/fd")), None
+        with os.scandir(f"/proc/{pid}/fd") as it:
+            return sum(1 for _ in it), None
     except FileNotFoundError:
         return None, f"pid {pid} vanished before fd read"
     except PermissionError as exc:
@@ -509,7 +528,10 @@ def write_jsonl_line(record: dict[str, Any], out_path: str | None) -> None:
         os.write(fd, line.encode("utf-8"))
     finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
         finally:
             os.close(fd)
 

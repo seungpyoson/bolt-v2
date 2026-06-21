@@ -98,6 +98,18 @@ def test_oom_derivation_uses_systemd_result_only() -> None:
         raise AssertionError("ExecMainStatus 137 must not be treated as OOM")
 
 
+def test_cgroup_identity_is_exact_segment_not_substring() -> None:
+    sampler = load_sampler()
+    if sampler.cgroup_text_matches_unit("0::/system.slice/bolt-v2.service", "bolt-v2") is not True:
+        raise AssertionError("unit base name must match exact service segment")
+    if sampler.cgroup_text_matches_unit("0::/system.slice/bolt-v2-replica.service", "bolt-v2") is not False:
+        raise AssertionError("unit base name must not substring-match replica service")
+    if sampler.cgroup_text_matches_unit("5:memory:/system.slice/bolt-v2.service", "bolt-v2") is not True:
+        raise AssertionError("cgroup v1 service segment must match")
+    if sampler.cgroup_text_matches_unit("0::/system.slice/bolt-v2.service", "bolt-v2.service") is not True:
+        raise AssertionError("full unit name must match exact service segment")
+
+
 def test_disk_math_uses_bavail_frsize_and_df_denominator() -> None:
     sampler = load_sampler()
     metrics = sampler.disk_metrics_from_statvfs("/data", FakeStatvfs(), 123)
@@ -184,6 +196,7 @@ def main() -> int:
         test_sample_returns_json_serializable_schema,
         test_sample_timestamp_is_utc_and_schema_version_is_two,
         test_oom_derivation_uses_systemd_result_only,
+        test_cgroup_identity_is_exact_segment_not_substring,
         test_disk_math_uses_bavail_frsize_and_df_denominator,
         test_unknown_service_still_emits_valid_json_and_exits_zero,
         test_failed_collector_becomes_null_error_without_exception,

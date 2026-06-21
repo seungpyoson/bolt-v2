@@ -39,6 +39,12 @@ const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";
 const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
+pub const BOLT_V3_EXIT_EVALUATION_GATE_ID: &str = "bolt_v3.exit_evaluation";
+pub const BOLT_V3_EXIT_EVALUATION_RECORD_KIND: &str = "exit_evaluation";
+pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";
+pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
+pub const BOLT_V3_ORDER_REJECT_GATE_ID: &str = "bolt_v3.order_reject";
+pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";
 
 pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_strategy_input_snapshot(
@@ -64,6 +70,9 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         &self,
         fill: &BoltV3SubmitReservationFillEvidence,
     ) -> Result<()>;
+    fn record_exit_evaluation(&self, evidence: &BoltV3ExitEvaluationEvidence) -> Result<()>;
+    fn record_loss_governor_halt(&self, evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()>;
+    fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,6 +524,173 @@ pub struct BoltV3BasketAdmissionDecisionEvidence {
     pub outcome: BoltV3BasketAdmissionOutcome,
 }
 
+/// Closed taxonomy of the runtime path that triggered an exit evaluation. Used by
+/// `BoltV3ExitEvaluationEvidence` so the durable record explains *which clock base*
+/// produced `exit_eval_now_ms` (the 2026-06-20 incident root cause was a
+/// timestamp-base mismatch between the exit clock and the realized-vol snapshot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitTriggerSource {
+    SignalQuote,
+    BookDelta,
+    SelectionUpdate,
+    ReferenceUpdate,
+}
+
+/// Closed result of the realized-vol staleness gate as observed at exit-evaluation
+/// time. `RejectedFutureDated` and `RejectedNotReady` are split apart here even
+/// though the production gate collapses them into a single `None`, so evidence can
+/// distinguish the incident's future-dated case from a not-yet-warm surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3RvGateResult {
+    Accepted,
+    MissingSnapshot,
+    RejectedFutureDated,
+    RejectedNotReady,
+}
+
+/// Closed exit decision as recorded in evidence. Mirrors the strategy's internal
+/// `ExitDecision` (Hold / Exit / ExitFailClosed) without importing it, keeping the
+/// evidence schema decoupled from strategy internals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitDecisionEvidence {
+    Hold,
+    Exit,
+    ExitFailClosed,
+}
+
+/// Closed taxonomy of *why* a loss-governor snapshot was treated as stale. The
+/// production governor collapses all of these into one `StaleLossSnapshot` halt
+/// reason; this enum is the evidence-only decomposition (behaviour-neutral).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3StaleLossReason {
+    MissingSnapshot,
+    SourceEmpty,
+    FutureDated,
+    AgeExceeded,
+    MissingRequiredField,
+}
+
+/// Closed taxonomy of the layer that rejected an order, for `BoltV3OrderRejectEvidence`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3RejectSource {
+    SubmitAdmission,
+    Venue,
+    NtExecution,
+    Internal,
+}
+
+/// Closed, best-effort classification of a venue/NT order rejection. The raw NT
+/// reason text is preserved separately in `BoltV3OrderRejectEvidence`; this enum is
+/// only the structural bucket so reads stay enum-driven (no free-form reason blobs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3OrderRejectReason {
+    AdmissionRejected,
+    PrecisionRejected,
+    MinSizeRejected,
+    MinNotionalRejected,
+    InsufficientBalance,
+    DuplicateClientOrderId,
+    Other,
+}
+
+/// Durable evidence for a single exit evaluation (RCA #885 root causes 1-4). Decimal
+/// quantities are stored as strings and timestamps as integers, matching the existing
+/// records in this module. Flood-gated by the strategy: emitted on outcome-key change
+/// or actual submission, never per tick.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3ExitEvaluationEvidence {
+    pub position_id: String,
+    pub market_id: String,
+    pub instrument_id: String,
+    pub client_order_id: Option<String>,
+    pub exit_eval_now_ms: i64,
+    pub exit_trigger_source: BoltV3ExitTriggerSource,
+    pub trigger_ts_event_ms: Option<i64>,
+    pub trigger_ts_init_ms: Option<i64>,
+    pub rv_surface_id: String,
+    pub rv_as_of_ms: Option<i64>,
+    pub rv_ready: bool,
+    pub rv_blockers: Vec<String>,
+    pub rv_source_diagnostics: Vec<String>,
+    pub rv_gate_result: BoltV3RvGateResult,
+    pub rv_as_of_minus_now_ms: Option<i64>,
+    pub hold_ev_bps: Option<String>,
+    pub exit_ev_bps: Option<String>,
+    pub exit_decision: BoltV3ExitDecisionEvidence,
+    pub forced_flat_reasons: Vec<String>,
+    pub submission_order_side: Option<String>,
+    pub submission_price: Option<String>,
+    pub submission_quantity: Option<String>,
+    pub submission_blocked_reason: Option<String>,
+}
+
+/// Durable evidence for a loss-governor halt observed at the submit-admission consumer
+/// (RCA #885 root cause 5). Captures snapshot freshness and per-source last-seen
+/// timestamps so a stale halt can be explained from disk. Episode-gated (exponential
+/// sampling keyed by `stable_halt_key`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3LossGovernorHaltEvidence {
+    pub snapshot_present: bool,
+    pub snapshot_observed_at_ns: Option<u64>,
+    pub admission_now_ns: u64,
+    pub snapshot_age_ns: Option<u64>,
+    pub max_snapshot_age_ns: u64,
+    pub snapshot_source: Option<String>,
+    pub has_per_trade_pnl: bool,
+    pub has_daily_pnl: bool,
+    pub has_rolling_pnl: bool,
+    pub has_current_equity: bool,
+    pub has_peak_equity: bool,
+    pub last_account_state_ts_ns: Option<u64>,
+    pub last_portfolio_snapshot_ts_ns: Option<u64>,
+    pub last_position_event_ts_ns: Option<u64>,
+    pub account_state_count: u64,
+    pub portfolio_snapshot_count: u64,
+    pub position_event_count: u64,
+    pub stale_reason: BoltV3StaleLossReason,
+    pub stable_halt_key: String,
+    pub retry_count: u32,
+    pub elapsed_since_first_halt_ns: u64,
+}
+
+/// Durable evidence correlating an order rejection with its retry episode (RCA #885
+/// root causes 6-7). Raw and normalized amounts plus venue precision constraints are
+/// captured best-effort; bolt never computes NT-adapter-internal maker/taker amounts,
+/// so those stay null unless the NT event exposes them. Episode-gated by
+/// `stable_episode_key`, which excludes the per-attempt client_order_id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3OrderRejectEvidence {
+    pub reject_source: BoltV3RejectSource,
+    pub reject_reason: BoltV3OrderRejectReason,
+    pub admission_outcome: Option<BoltV3AdmissionOutcome>,
+    pub raw_reason_text: Option<String>,
+    pub instrument_id: String,
+    pub order_side: Option<String>,
+    pub raw_price: Option<String>,
+    pub raw_quantity: Option<String>,
+    pub raw_maker_amount: Option<String>,
+    pub raw_taker_amount: Option<String>,
+    pub normalized_price: Option<String>,
+    pub normalized_quantity: Option<String>,
+    pub normalized_maker_amount: Option<String>,
+    pub normalized_taker_amount: Option<String>,
+    pub venue_price_precision: Option<u32>,
+    pub venue_size_precision: Option<u32>,
+    pub venue_min_notional: Option<String>,
+    pub prior_client_order_id: Option<String>,
+    pub client_order_id: String,
+    pub retry_count: u32,
+    pub backoff_cooldown_state: Option<String>,
+    pub stable_episode_key: String,
+    pub elapsed_ns: u64,
+}
+
 #[derive(Debug)]
 pub struct JsonlBoltV3DecisionEvidenceWriter {
     file: Mutex<std::fs::File>,
@@ -600,6 +776,21 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         fill: &BoltV3SubmitReservationFillEvidence,
     ) -> Result<()> {
         let line = encode_submit_reservation_fill_line(fill)?;
+        self.append_line(&line)
+    }
+
+    fn record_exit_evaluation(&self, evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
+        let line = encode_exit_evaluation_line(evidence)?;
+        self.append_line(&line)
+    }
+
+    fn record_loss_governor_halt(&self, evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+        let line = encode_loss_governor_halt_line(evidence)?;
+        self.append_line(&line)
+    }
+
+    fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
+        let line = encode_order_reject_line(evidence)?;
         self.append_line(&line)
     }
 }
@@ -826,6 +1017,54 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
+            "exit_evaluation" => {
+                header.validate(
+                    BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+                    BOLT_V3_EXIT_EVALUATION_GATE_ID,
+                    index,
+                )?;
+                let decoded: ExitEvaluationLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 exit evaluation line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+                    BOLT_V3_EXIT_EVALUATION_GATE_ID,
+                    index,
+                )?;
+            }
+            "loss_governor_halt" => {
+                header.validate(
+                    BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+                    BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+                    index,
+                )?;
+                let decoded: LossGovernorHaltLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 loss governor halt line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+                    BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+                    index,
+                )?;
+            }
+            "order_reject" => {
+                header.validate(
+                    BOLT_V3_ORDER_REJECT_RECORD_KIND,
+                    BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
+                let decoded: OrderRejectLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 order reject line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_ORDER_REJECT_RECORD_KIND,
+                    BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
+            }
             other => {
                 return Err(anyhow!(
                     "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
@@ -1018,6 +1257,54 @@ pub fn read_submit_reservation_recovery_evidence(
                     format!("invalid submit reservation fill at line index {index}")
                 })?;
                 fills.push(decoded.fill);
+            }
+            "exit_evaluation" => {
+                header.validate(
+                    BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+                    BOLT_V3_EXIT_EVALUATION_GATE_ID,
+                    index,
+                )?;
+                let decoded: ExitEvaluationLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 exit evaluation line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+                    BOLT_V3_EXIT_EVALUATION_GATE_ID,
+                    index,
+                )?;
+            }
+            "loss_governor_halt" => {
+                header.validate(
+                    BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+                    BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+                    index,
+                )?;
+                let decoded: LossGovernorHaltLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 loss governor halt line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+                    BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+                    index,
+                )?;
+            }
+            "order_reject" => {
+                header.validate(
+                    BOLT_V3_ORDER_REJECT_RECORD_KIND,
+                    BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
+                let decoded: OrderRejectLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 order reject line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_ORDER_REJECT_RECORD_KIND,
+                    BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
             }
             other => {
                 return Err(anyhow!(
@@ -1681,6 +1968,261 @@ fn encode_submit_reservation_fill_line(
         .context("failed to serialize submit reservation fill evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
+}
+
+#[derive(Serialize)]
+struct ExitEvaluationLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    evidence: &'a BoltV3ExitEvaluationEvidence,
+}
+
+#[derive(Deserialize)]
+struct ExitEvaluationLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    evidence: BoltV3ExitEvaluationEvidence,
+}
+
+impl ExitEvaluationLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.evidence;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+fn encode_exit_evaluation_line(evidence: &BoltV3ExitEvaluationEvidence) -> Result<Vec<u8>> {
+    let envelope = ExitEvaluationLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_EXIT_EVALUATION_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+        evidence,
+    };
+    let mut line =
+        serde_json::to_vec(&envelope).context("failed to serialize exit evaluation evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+#[derive(Serialize)]
+struct LossGovernorHaltLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    evidence: &'a BoltV3LossGovernorHaltEvidence,
+}
+
+#[derive(Deserialize)]
+struct LossGovernorHaltLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    evidence: BoltV3LossGovernorHaltEvidence,
+}
+
+impl LossGovernorHaltLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.evidence;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+fn encode_loss_governor_halt_line(evidence: &BoltV3LossGovernorHaltEvidence) -> Result<Vec<u8>> {
+    let envelope = LossGovernorHaltLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+        evidence,
+    };
+    let mut line =
+        serde_json::to_vec(&envelope).context("failed to serialize loss governor halt evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+#[derive(Serialize)]
+struct OrderRejectLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    evidence: &'a BoltV3OrderRejectEvidence,
+}
+
+#[derive(Deserialize)]
+struct OrderRejectLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    evidence: BoltV3OrderRejectEvidence,
+}
+
+impl OrderRejectLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.evidence;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+fn encode_order_reject_line(evidence: &BoltV3OrderRejectEvidence) -> Result<Vec<u8>> {
+    let envelope = OrderRejectLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_ORDER_REJECT_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_ORDER_REJECT_RECORD_KIND,
+        evidence,
+    };
+    let mut line =
+        serde_json::to_vec(&envelope).context("failed to serialize order reject evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+/// Reads every `exit_evaluation` record (current schema) from a decision-evidence
+/// log, in file order. Records of other kinds and older schema versions are skipped,
+/// so this targeted reader is resilient to forward-compatible additions.
+pub fn read_exit_evaluation_evidence(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<Vec<BoltV3ExitEvaluationEvidence>> {
+    read_kind_evidence(
+        path,
+        max_bytes,
+        BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+        BOLT_V3_EXIT_EVALUATION_GATE_ID,
+        |line, index| {
+            let decoded: ExitEvaluationLineOwned =
+                serde_json::from_slice(line).with_context(|| {
+                    format!("failed to parse bolt-v3 exit evaluation line at index {index}")
+                })?;
+            decoded.validate_header(
+                BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+                BOLT_V3_EXIT_EVALUATION_GATE_ID,
+                index,
+            )?;
+            Ok(decoded.evidence)
+        },
+    )
+}
+
+/// Reads every `loss_governor_halt` record (current schema) from a decision-evidence
+/// log, in file order. See [`read_exit_evaluation_evidence`] for skip semantics.
+pub fn read_loss_governor_halt_evidence(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<Vec<BoltV3LossGovernorHaltEvidence>> {
+    read_kind_evidence(
+        path,
+        max_bytes,
+        BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+        BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+        |line, index| {
+            let decoded: LossGovernorHaltLineOwned =
+                serde_json::from_slice(line).with_context(|| {
+                    format!("failed to parse bolt-v3 loss governor halt line at index {index}")
+                })?;
+            decoded.validate_header(
+                BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+                BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+                index,
+            )?;
+            Ok(decoded.evidence)
+        },
+    )
+}
+
+/// Reads every `order_reject` record (current schema) from a decision-evidence log,
+/// in file order. See [`read_exit_evaluation_evidence`] for skip semantics.
+pub fn read_order_reject_evidence(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<Vec<BoltV3OrderRejectEvidence>> {
+    read_kind_evidence(
+        path,
+        max_bytes,
+        BOLT_V3_ORDER_REJECT_RECORD_KIND,
+        BOLT_V3_ORDER_REJECT_GATE_ID,
+        |line, index| {
+            let decoded: OrderRejectLineOwned = serde_json::from_slice(line).with_context(|| {
+                format!("failed to parse bolt-v3 order reject line at index {index}")
+            })?;
+            decoded.validate_header(
+                BOLT_V3_ORDER_REJECT_RECORD_KIND,
+                BOLT_V3_ORDER_REJECT_GATE_ID,
+                index,
+            )?;
+            Ok(decoded.evidence)
+        },
+    )
+}
+
+/// Shared body for the kind-specific evidence readers above. Reads the whole file
+/// under `max_bytes`, then for each non-empty line parses the envelope header,
+/// skips records of other kinds and older schema versions, and decodes matching
+/// lines via `decode`.
+fn read_kind_evidence<T>(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+    target_kind: &str,
+    expected_gate_id: &str,
+    decode: impl Fn(&[u8], usize) -> Result<T>,
+) -> Result<Vec<T>> {
+    let path = path.as_ref();
+    let mut file = open_regular_decision_evidence_file(path)
+        .context("failed to open regular file bolt-v3 decision evidence")?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .context("failed to read bolt-v3 decision evidence file")?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"
+        ));
+    }
+    let mut records = Vec::new();
+    for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let header: DecisionEvidenceEnvelopeHeader =
+            serde_json::from_slice(line).with_context(|| {
+                format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
+            })?;
+        if header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
+            continue;
+        }
+        if header.kind.as_str() != target_kind {
+            continue;
+        }
+        header.validate(target_kind, expected_gate_id, index)?;
+        records.push(decode(line, index)?);
+    }
+    Ok(records)
 }
 
 #[cfg(test)]

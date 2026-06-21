@@ -135,7 +135,7 @@ fn ops_launch_uses_chain_and_lower_level_start_without_calling_run() {
         "ops launch chain must model start as the final stage"
     );
     assert!(
-        stage_fn.contains("start_loaded_node_with_resolved(loaded, resolved)"),
+        stage_fn.contains("start_loaded_node_with_resolved(loaded, &resolved)"),
         "ops launch start stage must use the already-resolved secrets"
     );
     assert!(

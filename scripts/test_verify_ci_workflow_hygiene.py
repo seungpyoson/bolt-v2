@@ -1559,7 +1559,8 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         raise AssertionError(f"expected merge_group detector guard error, got: {detector_errors}")
 
-    # Concurrency must key merge_group on github.ref and must not cancel it.
+    # Concurrency group must match an approved merge_group-safe form and must
+    # not cancel merge_group runs.
     ci_without_concurrency_arm = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n        && format('mq-{0}', github.ref)\n",
@@ -1584,11 +1585,13 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         raise AssertionError(f"expected merge_group cancel-scope error, got: {cancel_errors}")
 
-    # Fail-open guard (ci.yml): a decoupled merge_group arm must be caught even
+    # Decoupled merge_group arm (ci.yml): a merge_group arm must be caught even
     # when 'mq-{0}'/'github.ref' still appear elsewhere. Swap the merge_group and
     # workflow_dispatch format strings so both substrings remain present but the
-    # merge_group arm no longer keys on format('mq-{0}', github.ref). The old
-    # bare-substring check passed this; the anchored regex must reject it.
+    # merge_group arm no longer keys on format('mq-{0}', github.ref). The allowlist
+    # rejects it because the resulting group is not an approved form. (Regression
+    # coverage: the prior expression-analysis verifier rejected this too — NOT a
+    # gap the allowlist uniquely closes.)
     ci_fail_open = replace_once(
         ci_workflow,
         "        || github.event_name == 'workflow_dispatch'\n"
@@ -1608,7 +1611,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         for error in fail_open_errors
     ):
         raise AssertionError(
-            f"anchored merge_group concurrency check must reject a decoupled arm, got: {fail_open_errors}"
+            f"merge_group concurrency allowlist must reject a decoupled arm, got: {fail_open_errors}"
         )
 
     # actionlint concurrency must also isolate merge_group (the reviewer-flagged
@@ -1696,9 +1699,11 @@ def assert_merge_group_support_gaps_are_reported() -> None:
 
     # Decoy-after-fallback (ci.yml): the real merge_group arm is decoupled to a
     # shared key, but a dead keyed arm sits after the always-true fallback (which
-    # GitHub's `||` never reaches). A single .search() for the keyed arm would
-    # still pass; the allowlist rejects it because the decoupled group expression
-    # is not an approved form.
+    # GitHub's `||` never reaches). The allowlist rejects it because the decoupled
+    # group expression is not an approved form. (Regression coverage: the prior
+    # expression-analysis verifier rejected this too — a single .search() for the
+    # keyed arm would have passed, but the count-based check did not — NOT a gap
+    # the allowlist uniquely closes.)
     ci_decoy_after_fallback = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n"
@@ -1725,7 +1730,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # via github['event_name'] and uses a shared key, with a canonical keyed
     # decoy after the fallback. A counter keyed on the literal `github.event_name
     # == 'merge_group'` token never counts the index arm, so the count stays
-    # balanced and it slips through — value-side validation must reject it.
+    # balanced and it slips through — the allowlist rejects it. (Differential: the
+    # prior expression-analysis verifier leaked this; the allowlist uniquely
+    # closes it.)
     ci_index_syntax_escape = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n"
@@ -1751,8 +1758,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # Ref-shape escape (ci.yml): an arm true for the queue ref
     # (startsWith(github.ref, 'refs/heads/gh-readonly-queue')) with a shared key
     # is placed before the canonical arm, so it wins under merge_group. It names
-    # no event literally, so a token counter never sees it; value-side validation
-    # must reject it.
+    # no event literally, so a token counter never sees it; the allowlist rejects
+    # it. (Differential: the prior expression-analysis verifier leaked this; the
+    # allowlist uniquely closes it.)
     ci_ref_shape_escape = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n"
@@ -1834,7 +1842,8 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError("a github.ref wrapped in startsWith() must be rejected")
 
     # `&&` inside a string literal mis-splits a naive value/condition parse; the
-    # whole literal is one constant key to GitHub.
+    # whole literal is one constant key to GitHub. (Differential: the prior
+    # expression-analysis verifier leaked this; the allowlist uniquely closes it.)
     ci_amp_literal = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n"
@@ -1854,7 +1863,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError("an && hidden inside a string literal must be rejected")
 
     # Event-gate text inside a string literal is not a real conjunct; the arm
-    # still wins under merge_group with a shared static key.
+    # still wins under merge_group with a shared static key. (Differential: the
+    # prior expression-analysis verifier leaked this; the allowlist uniquely
+    # closes it.)
     ci_gate_literal = replace_once(
         ci_workflow,
         "        || github.event_name == 'merge_group'\n"
@@ -1885,6 +1896,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # historical check caught which.) load_verifier() returns a fresh module, but
     # restore anyway so the patch cannot leak.
     allowlist_gated_group_mutations = [
+        ("fail_open_swap", ci_fail_open),
         ("decoy_after_fallback", ci_decoy_after_fallback),
         ("index_syntax_escape", ci_index_syntax_escape),
         ("ref_shape_escape", ci_ref_shape_escape),

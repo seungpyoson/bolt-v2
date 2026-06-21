@@ -679,17 +679,43 @@ def top_level_block(workflow_text: str, key: str) -> list[str]:
     return []
 
 
-MERGE_GROUP_CONCURRENCY_GROUP_RE = re.compile(
-    r"github\.event_name\s*==\s*(['\"])merge_group\1"
-    r"\s*&&\s*format\(\s*(['\"])mq-\{0\}\2\s*,\s*github\.ref\s*\)"
-)
+# The merge_group concurrency group must isolate every queue entry on its own
+# ref. We do NOT analyze the group expression to decide that: GitHub's expression
+# language is too expressive for a regex contract to reason about safely. Every
+# analysis attempt was fail-open — an unkeyed arm can select merge_group by an
+# unbounded set of syntaxes (github['event_name'] index form, startsWith on the
+# queue ref, a negation), `&&` and gate text can hide inside string literals,
+# github.ref can be buried inside a constant-collapsing function (startsWith /
+# endsWith / contains) so the value is the same for every entry, and a duplicate
+# top-level `group:` key (GitHub takes the last) escapes any single-expression
+# parse. The only fail-closed contract with no analysis surface is a positive
+# allowlist of the exact group expressions that are known merge_group-safe,
+# compared after whitespace normalization. These are INDEPENDENT constants, not
+# derived from the workflows, so an unsafe edit to a workflow is rejected rather
+# than silently blessed. A new or edited merge_group workflow must add its
+# normalized group expression here after review — that review is the gate.
+def _normalize_concurrency_text(text: str) -> str:
+    """Collapse all runs of whitespace to single spaces so formatting (YAML
+    folding, indentation, line wrapping) does not affect the allowlist match."""
+    return " ".join(text.split())
 
-# Every merge_group arm in the group expression must be the keyed form above.
-# A bare .search() is fail-open: a decoupled real merge_group arm still passes
-# if a dead decoy carrying the keyed substring sits after the always-true
-# fallback (GitHub's `||` short-circuits before reaching it). Counting all
-# merge_group arms and requiring each one to be keyed closes that gap.
-MERGE_GROUP_EVENT_RE = re.compile(r"github\.event_name\s*==\s*['\"]merge_group['\"]")
+
+MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
+    # .github/workflows/ci.yml — merge_group arm format('mq-{0}', github.ref)
+    # wins under merge_group (the PR/workflow_dispatch arms are false then), before
+    # the per-ref/sha fallback; PR-draft-deferral arms are gated off merge_group.
+    "group: >- ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true "
+    "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
+    "&& format('pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
+    "&& format('pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
+    "&& format('{0}-full-ci', github.ref_name) || github.event_name == 'merge_group' "
+    "&& format('mq-{0}', github.ref) || format('{0}-{1}', github.ref_name, github.sha) }}",
+    # .github/workflows/actionlint.yml — simpler prefixed shape, same merge_group
+    # arm before the per-ref/sha fallback.
+    "group: >- actionlint-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
+    "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
+    "|| format('{0}-{1}', github.ref_name, github.sha) }}",
+})
 
 # cancel-in-progress is fail-closed for merge_group only when it is provably
 # false for the merge_group event. A bare substring check missed `true` and
@@ -739,20 +765,27 @@ def concurrency_group_and_cancel(workflow_text: str) -> tuple[str, str] | None:
     cancel_text). group_text is the group expression joined to one line;
     cancel_text is the cancel-in-progress expression. Returns None when no
     concurrency block is defined. Shared by verify_pr_concurrency and
-    verify_merge_group_concurrency so both read the block identically."""
+    verify_merge_group_concurrency so both read the block identically.
+
+    Lines are bucketed by which key (group: / cancel-in-progress:) they fall
+    under, not by their order, so a block that writes cancel-in-progress before
+    group still splits correctly (YAML allows either order). Splitting by first
+    cancel-in-progress occurrence would misclassify the whole group expression
+    as cancel text and emit a misleading diagnostic."""
     block = top_level_block(workflow_text, "concurrency")
     if not block:
         return None
     group_lines: list[str] = []
     cancel_lines: list[str] = []
-    seen_cancel = False
+    current: list[str] | None = None
     for line in block:
-        if line.strip().startswith("cancel-in-progress:"):
-            seen_cancel = True
-        if seen_cancel:
-            cancel_lines.append(line)
-        else:
-            group_lines.append(line)
+        stripped = line.strip()
+        if stripped.startswith("group:"):
+            current = group_lines
+        elif stripped.startswith("cancel-in-progress:"):
+            current = cancel_lines
+        if current is not None:
+            current.append(line)
     group_text = " ".join(line.strip() for line in group_lines if line.strip())
     cancel_text = "\n".join(cancel_lines)
     return group_text, cancel_text
@@ -760,30 +793,103 @@ def concurrency_group_and_cancel(workflow_text: str) -> tuple[str, str] | None:
 
 def merge_group_concurrency_errors(group_text: str, cancel_text: str) -> list[str]:
     """Assert the concurrency block isolates merge_group queue validations on
-    github.ref and never cancels them. Both checks are fail-closed:
+    their own ref and never cancels them. Both checks are fail-closed:
 
-    * Group: every merge_group arm must key on format('mq-{0}', github.ref). A
-      bare-substring or single-match check is fail-open — a decoupled real arm
-      passes if 'mq-{0}'/'github.ref' merely appear in another arm or in a dead
-      decoy after the always-true fallback. We require the count of merge_group
-      arms to equal the count of keyed arms, so any decoupled arm is reported.
-    * Cancel: cancel-in-progress must be provably false for merge_group. A
-      deny-list of literal 'merge_group' missed `true` and negations that cancel
-      the queue run anyway; we require a positive pull_request/workflow_dispatch
-      allowlist instead.
+    * Group: the group expression (whitespace-normalized) must be one of the
+      approved MERGE_GROUP_SAFE_GROUP_FORMS. This is a positive allowlist, not an
+      analysis of the expression — GitHub's expression language defeats every
+      regex contract (an unkeyed arm can select merge_group by unbounded
+      syntaxes, `&&`/gate text can hide in string literals, github.ref can be
+      buried in a constant-collapsing function, and a duplicate `group:` key
+      escapes single-expression parsing). Matching a known-safe form has no
+      analysis surface to bypass; an unrecognized form fails closed.
+    * Cancel: cancel-in-progress must be provably false for merge_group (a
+      positive pull_request/workflow_dispatch allowlist, not a 'merge_group'
+      deny-list which missed `true` and negations).
 
     Either gap would let two queue entries share a concurrency group and cancel
     each other, dropping a required-check report and blocking or corrupting the
     merge."""
     errors: list[str] = []
-    keyed_arms = len(MERGE_GROUP_CONCURRENCY_GROUP_RE.findall(group_text))
-    total_arms = len(MERGE_GROUP_EVENT_RE.findall(group_text))
-    if keyed_arms < 1:
-        errors.append("concurrency group must key merge_group runs on github.ref")
-    elif total_arms != keyed_arms:
-        errors.append("every merge_group concurrency arm must key on github.ref")
+    if _normalize_concurrency_text(group_text) not in MERGE_GROUP_SAFE_GROUP_FORMS:
+        errors.append(
+            "concurrency group must exactly match an approved merge_group-safe form "
+            "(add the normalized group expression to MERGE_GROUP_SAFE_GROUP_FORMS after review)"
+        )
     if not cancel_in_progress_is_merge_group_safe(cancel_text):
         errors.append("cancel-in-progress must not cancel merge_group queue validations")
+    return errors
+
+
+def jobs_with_job_level_concurrency(workflow_text: str) -> list[str]:
+    """Job ids that define a job-level `concurrency:` key. GitHub evaluates
+    job-level concurrency in addition to the workflow-level block, so a required
+    merge_group job under a shared/cancelling job-level group collapses queue
+    entries even when the workflow-level block is safe — and nothing else in this
+    verifier inspects the job level.
+
+    parse_jobs preserves each body line's indentation. A job-level key sits at
+    the shallowest indentation in the job body; deeper lines are step/run content
+    (which may legitimately contain the word `concurrency:`). Match `concurrency:`
+    only at that shallowest key indentation so run-block text is not misread."""
+    result: list[str] = []
+    for job_id, lines in parse_jobs(workflow_text).items():
+        body = [line for line in lines if line.strip()]
+        if not body:
+            continue
+        key_indent = min(len(line) - len(line.lstrip()) for line in body)
+        for line in body:
+            indent = len(line) - len(line.lstrip())
+            if indent == key_indent and line.strip().startswith("concurrency:"):
+                result.append(job_id)
+                break
+    return result
+
+
+def merge_group_concurrency_workflow_errors(workflow_text: str) -> list[str]:
+    """Fail-closed merge_group check that needs the whole workflow, not just the
+    extracted top-level group/cancel text: job-level `concurrency:`.
+
+    GitHub evaluates job-level concurrency in addition to the workflow-level
+    block, so a shared/cancelling job-level group on a required merge_group job
+    collapses queue entries even when the workflow-level group is allowlist-safe —
+    and nothing else in this verifier (nor actionlint) inspects the job level
+    (verified: actionlint exits 0 on a job-level shared/cancelling group). The
+    group allowlist's fail-closed property does not reach this layer, so the check
+    must live here. Realistic drift — a block or flow-style job-level concurrency
+    key — is rejected outright.
+
+    Two related divergences are deliberately NOT re-implemented here:
+
+    * Duplicate top-level `concurrency:` keys (GitHub resolves last-wins, so a
+      first-match line scan could bless the discarded block). actionlint — a
+      required merge_group check this verifier already enforces — rejects
+      duplicate keys in every form (block, flow, and quoted: verified exit 1), so
+      detecting them here too would be incomplete (quoted/anchored YAML key forms
+      defeat any line scan) and duplicate logic actionlint already owns
+      completely. Single source of truth: actionlint owns duplicate-key
+      detection.
+    * Exotic YAML key encodings of a job-level concurrency key (a quoted
+      `"concurrency":`, or a fully flow-style job) are out of this textual
+      checker's scope; parse_jobs is a strict-subset parser and such forms break
+      its other required-job checks first.
+
+    Scope of the residual: a concurrency misconfiguration that slips past every
+    check disrupts queue LIVENESS (queue entries cancel each other, a required
+    check reports cancelled, and that entry's merge is blocked/requeued). It does
+    NOT admit an unvalidated commit — the merge_group heavy CI on the exact
+    to-be-merged commit is the safety gate. The complete, encoding-proof fix is a
+    YAML-faithful parse of the resolved concurrency structure; it is tracked as
+    follow-up rather than carried here to avoid a new runtime dependency for a
+    liveness-only hardening."""
+    errors: list[str] = []
+    for job_id in jobs_with_job_level_concurrency(workflow_text):
+        errors.append(
+            f"job '{job_id}' must not define job-level concurrency in a merge_group "
+            "workflow (job-level concurrency is evaluated in addition to the "
+            "workflow-level block and bypasses the merge_group isolation check; "
+            "use workflow-level concurrency only)"
+        )
     return errors
 
 
@@ -795,7 +901,9 @@ def verify_merge_group_concurrency(workflow_text: str) -> list[str]:
     if split is None:
         return ["workflow must define concurrency for merge_group isolation"]
     group_text, cancel_text = split
-    return merge_group_concurrency_errors(group_text, cancel_text)
+    errors = merge_group_concurrency_errors(group_text, cancel_text)
+    errors.extend(merge_group_concurrency_workflow_errors(workflow_text))
+    return errors
 
 
 def verify_pr_concurrency(workflow_text: str) -> list[str]:
@@ -837,6 +945,7 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     ):
         errors.append("cancel-in-progress must not cancel push, tag, or deploy flows")
     errors.extend(merge_group_concurrency_errors(group_text, cancel_text))
+    errors.extend(merge_group_concurrency_workflow_errors(workflow_text))
     return errors
 
 

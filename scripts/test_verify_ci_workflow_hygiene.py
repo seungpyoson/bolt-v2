@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import importlib.util
 import pathlib
@@ -1374,6 +1375,38 @@ def assert_ci_policy_resolvers_agree() -> None:
         for c in cases
     ):
         raise AssertionError("merge_group must resolve to full in the parity matrix")
+    # force_full_ci override: production keeps it false (asserted elsewhere), so
+    # the matrix above never exercises this branch. Cover it explicitly with a
+    # synthetic forced config on both sides — the verifier reads
+    # policy["override"]["force_full_ci"], the runtime reads config.force_full_ci
+    # — so a future drift in how either reads the override is caught, not just the
+    # default-false path. Both must short-circuit a PR to full CI.
+    forced_policy = {
+        **policy,
+        "override": {**(policy.get("override") or {}), "force_full_ci": True},
+    }
+    forced_prov = dataclasses.replace(prov_config, force_full_ci=True)
+    for event_name, action, draft, ref in [
+        ("pull_request", "opened", True, "refs/pull/1/merge"),
+        ("pull_request", "synchronize", False, "refs/pull/1/merge"),
+    ]:
+        ver = verifier.evaluate_ci_policy(
+            forced_policy, event_name=event_name, action=action, pull_request_draft=draft, ref=ref
+        )
+        prov = provenance.evaluate_ci_policy(
+            forced_prov, event_name=event_name, event_action=action, pull_request_draft=draft, ref=ref
+        )
+        ver_tuple = (ver.ci_policy_path, ver.full_ci_required, ver.full_ci_deferred, ver.reason)
+        prov_tuple = (prov.ci_policy_path, prov.full_ci_required, prov.full_ci_deferred, prov.reason)
+        if ver_tuple != prov_tuple:
+            raise AssertionError(
+                f"ci_policy resolver drift under force_full_ci for {event_name}/{action!r}: "
+                f"verifier={ver_tuple} provenance={prov_tuple}"
+            )
+        if ver_tuple != ("full", True, False, "force_full_ci"):
+            raise AssertionError(
+                f"force_full_ci must short-circuit {event_name}/{action!r} to full CI; got {ver_tuple}"
+            )
 
 
 def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:
@@ -1534,7 +1567,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     )
     concurrency_errors = verifier.verify_workflow(ci_without_concurrency_arm)
     if not any(
-        "concurrency group must key merge_group runs on github.ref" in error
+        "approved merge_group-safe form" in error
         for error in concurrency_errors
     ):
         raise AssertionError(f"expected merge_group concurrency error, got: {concurrency_errors}")
@@ -1571,7 +1604,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError("merge_group fail-open fixture fragment not found in ci.yml")
     fail_open_errors = verifier.verify_workflow(ci_fail_open)
     if not any(
-        "concurrency group must key merge_group runs on github.ref" in error
+        "approved merge_group-safe form" in error
         for error in fail_open_errors
     ):
         raise AssertionError(
@@ -1593,7 +1626,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         {".github/workflows/actionlint.yml": actionlint_no_concurrency_arm}
     )
     if not any(
-        "concurrency group must key merge_group runs on github.ref" in error
+        "approved merge_group-safe form" in error
         for error in actionlint_concurrency_errors
     ):
         raise AssertionError(
@@ -1680,12 +1713,297 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         raise AssertionError("ci.yml decoy-after-fallback fixture fragment not found")
     decoy_errors = verifier.verify_workflow(ci_decoy_after_fallback)
     if not any(
-        "every merge_group concurrency arm must key on github.ref" in error
+        "approved merge_group-safe form" in error
         for error in decoy_errors
     ):
         raise AssertionError(
             f"a decoupled merge_group arm hidden behind a keyed decoy must be rejected, got: {decoy_errors}"
         )
+
+    # Index-syntax escape (ci.yml): the real merge_group arm selects the event
+    # via github['event_name'] and uses a shared key, with a canonical keyed
+    # decoy after the fallback. A counter keyed on the literal `github.event_name
+    # == 'merge_group'` token never counts the index arm, so the count stays
+    # balanced and it slips through — value-side validation must reject it.
+    ci_index_syntax_escape = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+        "        || github['event_name'] == 'merge_group'\n"
+        "        && format('shared-key')\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha)\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref) }}",
+    )
+    if ci_index_syntax_escape == ci_workflow:
+        raise AssertionError("ci.yml index-syntax escape fixture fragment not found")
+    index_errors = verifier.verify_workflow(ci_index_syntax_escape)
+    if not any(
+        "approved merge_group-safe form" in error
+        for error in index_errors
+    ):
+        raise AssertionError(
+            f"an unkeyed merge_group arm using github['event_name'] must be rejected, got: {index_errors}"
+        )
+
+    # Ref-shape escape (ci.yml): an arm true for the queue ref
+    # (startsWith(github.ref, 'refs/heads/gh-readonly-queue')) with a shared key
+    # is placed before the canonical arm, so it wins under merge_group. It names
+    # no event literally, so a token counter never sees it; value-side validation
+    # must reject it.
+    ci_ref_shape_escape = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+        "        || startsWith(github.ref, 'refs/heads/gh-readonly-queue')\n"
+        "        && format('shared-key')\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+    )
+    if ci_ref_shape_escape == ci_workflow:
+        raise AssertionError("ci.yml ref-shape escape fixture fragment not found")
+    ref_shape_errors = verifier.verify_workflow(ci_ref_shape_escape)
+    if not any(
+        "approved merge_group-safe form" in error
+        for error in ref_shape_errors
+    ):
+        raise AssertionError(
+            f"an unkeyed arm true for the queue ref must be rejected, got: {ref_shape_errors}"
+        )
+
+    # Literal-string spoof (ci.yml): the merge_group arm's value is a constant
+    # key that merely contains the text 'github.ref', so every queue entry gets
+    # the same group. A ref-isolation check that matches the bare token would be
+    # fooled; quoted string literals must be stripped before the ref check.
+    ci_literal_spoof = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-github.ref-static')\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha)\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref) }}",
+    )
+    if ci_literal_spoof == ci_workflow:
+        raise AssertionError("ci.yml literal-spoof fixture fragment not found")
+    literal_errors = verifier.verify_workflow(ci_literal_spoof)
+    if not any(
+        "approved merge_group-safe form" in error
+        for error in literal_errors
+    ):
+        raise AssertionError(
+            f"a merge_group arm keyed on a constant string containing 'github.ref' must be "
+            f"rejected, got: {literal_errors}"
+        )
+
+    # The remaining mutations are forms an adversarial pass confirmed fail-open
+    # under any expression-analysis contract; the positive allowlist rejects them
+    # because the normalized group is not an approved form. github.ref wrapped in
+    # a constant-collapsing function (startsWith/endsWith/contains) yields the
+    # same key for every queue ref.
+    ci_collapse = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', startsWith(github.ref, 'refs/heads/gh-readonly-queue'))\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+    )
+    if ci_collapse == ci_workflow:
+        raise AssertionError("ci.yml collapse fixture fragment not found")
+    if not any(
+        "approved merge_group-safe form" in error
+        for error in verifier.verify_workflow(ci_collapse)
+    ):
+        raise AssertionError("a github.ref wrapped in startsWith() must be rejected")
+
+    # `&&` inside a string literal mis-splits a naive value/condition parse; the
+    # whole literal is one constant key to GitHub.
+    ci_amp_literal = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+        "        || format('mq-static && github.ref ', 'x')\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+    )
+    if ci_amp_literal == ci_workflow:
+        raise AssertionError("ci.yml amp-in-literal fixture fragment not found")
+    if not any(
+        "approved merge_group-safe form" in error
+        for error in verifier.verify_workflow(ci_amp_literal)
+    ):
+        raise AssertionError("an && hidden inside a string literal must be rejected")
+
+    # Event-gate text inside a string literal is not a real conjunct; the arm
+    # still wins under merge_group with a shared static key.
+    ci_gate_literal = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+        "        || format(\"skip github.event_name == 'pull_request'\", github.ref) && 'mq-shared-static-group'\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+    )
+    if ci_gate_literal == ci_workflow:
+        raise AssertionError("ci.yml gate-in-literal fixture fragment not found")
+    if not any(
+        "approved merge_group-safe form" in error
+        for error in verifier.verify_workflow(ci_gate_literal)
+    ):
+        raise AssertionError("a gate hidden inside a string literal must be rejected")
+
+    # Duplicate top-level group: key — GitHub takes the last (a constant). The
+    # extractor joins both group: lines, so the normalized text is not approved.
+    dup_block = (
+        "concurrency:\n"
+        "  group: >-\n"
+        "    actionlint-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
+        "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
+        "|| format('{0}-{1}', github.ref_name, github.sha) }}\n"
+        "  group: ci-shared-merge-queue\n"
+        "  cancel-in-progress: false\n"
+    )
+    dup_split = verifier.concurrency_group_and_cancel(dup_block)
+    if dup_split is None:
+        raise AssertionError("duplicate group: block did not parse")
+    dup_errors = verifier.merge_group_concurrency_errors(*dup_split)
+    if not any("approved merge_group-safe form" in error for error in dup_errors):
+        raise AssertionError(f"a duplicate group: key must be rejected, got: {dup_errors}")
+
+    # Reversed key order (actionlint.yml): cancel-in-progress written before
+    # group. The split must bucket by key, not by first cancel occurrence;
+    # otherwise the whole group expression is misread as cancel text and a valid
+    # block draws a spurious "must key merge_group" error.
+    actionlint_reversed = replace_once(
+        actionlint_workflow,
+        "  group: >-\n"
+        "    actionlint-${{ github.event_name == 'pull_request'\n"
+        "      && format('pr-{0}', github.event.number)\n"
+        "      || github.event_name == 'merge_group'\n"
+        "      && format('mq-{0}', github.ref)\n"
+        "      || format('{0}-{1}', github.ref_name, github.sha) }}\n"
+        "  # cancel-in-progress is true only for PR runs; merge_group queue validations\n"
+        "  # must never be cancelled, so they fall through to the default (false).\n"
+        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n"
+        "  group: >-\n"
+        "    actionlint-${{ github.event_name == 'pull_request'\n"
+        "      && format('pr-{0}', github.event.number)\n"
+        "      || github.event_name == 'merge_group'\n"
+        "      && format('mq-{0}', github.ref)\n"
+        "      || format('{0}-{1}', github.ref_name, github.sha) }}",
+    )
+    if actionlint_reversed == actionlint_workflow:
+        raise AssertionError("actionlint reversed key-order fixture fragment not found")
+    reversed_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/actionlint.yml": actionlint_reversed}
+    )
+    if any(
+        "merge_group" in error and "actionlint.yml" in error
+        for error in reversed_errors
+    ):
+        raise AssertionError(
+            f"a valid block with cancel-in-progress before group must not draw a spurious "
+            f"merge_group concurrency error, got: {reversed_errors}"
+        )
+
+    # --- Job-level concurrency fail-open (round-3 adversarial pass) ---
+    # GitHub evaluates job-level `concurrency:` in addition to the workflow-level
+    # block, so a shared/cancelling job-level group on a required merge_group job
+    # collapses queue entries even when the workflow-level group is allowlist-safe.
+    # actionlint does NOT catch this (verified: exit 0), so the verifier must own
+    # it. (Duplicate top-level `concurrency:` keys are deliberately NOT re-detected
+    # here: actionlint — a required merge_group check this verifier already
+    # enforces — rejects them in every form, block/flow/quoted, verified exit 1;
+    # see merge_group_concurrency_workflow_errors for the single-source rationale
+    # and the liveness-only residual.)
+
+    # (a) Job-level concurrency on real actionlint.yml — a shared/cancelling
+    #     job-level group collapses queue entries even with a safe workflow block.
+    #     Exercises the verify_merge_group_concurrency entry point.
+    actionlint_job_level = replace_once(
+        actionlint_workflow,
+        "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n    steps:",
+        "    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}\n"
+        "    concurrency:\n      group: actionlint-shared\n      cancel-in-progress: true\n"
+        "    steps:",
+    )
+    if actionlint_job_level == actionlint_workflow:
+        raise AssertionError("actionlint job-level concurrency fixture fragment not found")
+    job_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/actionlint.yml": actionlint_job_level}
+    )
+    if not any("must not define job-level concurrency" in error for error in job_errors):
+        raise AssertionError(
+            f"job-level concurrency in a merge_group workflow must be rejected, got: {job_errors}"
+        )
+
+    # (b) Job-level concurrency on real ci.yml — exercises the verify_pr_concurrency
+    #     entry point, confirming both merge_group concurrency entry points are
+    #     wired to the job-level check.
+    ci_job_level = replace_once(
+        ci_workflow,
+        "  build:\n    name: build\n    needs: [ci-policy, detector]\n    if:",
+        "  build:\n    name: build\n    needs: [ci-policy, detector]\n"
+        "    concurrency:\n      group: ci-build-shared\n      cancel-in-progress: true\n"
+        "    if:",
+    )
+    if ci_job_level == ci_workflow:
+        raise AssertionError("ci.yml job-level concurrency fixture fragment not found")
+    if not any(
+        "must not define job-level concurrency" in error
+        for error in verifier.verify_workflow(ci_job_level)
+    ):
+        raise AssertionError("job-level concurrency in ci.yml must be rejected")
+
+    # (c) False-positive guard: `concurrency:` appearing as run-block text (deeper
+    #     than the job-key indentation) must NOT be flagged — only a real
+    #     job-level key counts. Proves the indentation discrimination is
+    #     load-bearing (a naive substring scan would wrongly reject this).
+    job_run_block_text = (
+        "name: actionlint\non:\n  merge_group:\n  pull_request:\n"
+        "concurrency:\n"
+        "  group: >-\n"
+        "    actionlint-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number)\n"
+        "    || github.event_name == 'merge_group' && format('mq-{0}', github.ref)\n"
+        "    || format('{0}-{1}', github.ref_name, github.sha) }}\n"
+        "  cancel-in-progress: false\n"
+        "jobs:\n  lint:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n      - run: |\n          echo 'concurrency: not-a-real-key'\n"
+    )
+    if verifier.jobs_with_job_level_concurrency(job_run_block_text):
+        raise AssertionError(
+            "run-block text 'concurrency:' must not be misread as a job-level concurrency key"
+        )
+
+    # (d) Differential proof: stub the whole-workflow check back out (the pre-fix
+    #     behavior) and the bypass passes — proving the job-level check is
+    #     load-bearing, not vacuous. load_verifier() returns a fresh module, but
+    #     restore anyway so the patch cannot leak.
+    original_whole_workflow = verifier.merge_group_concurrency_workflow_errors
+    try:
+        verifier.merge_group_concurrency_workflow_errors = lambda _text: []
+        job_stubbed = verifier.verify_repo_automation_texts(
+            {".github/workflows/actionlint.yml": actionlint_job_level}
+        )
+        if any("must not define job-level concurrency" in error for error in job_stubbed):
+            raise AssertionError(
+                "differential sanity: the job-level error must vanish once the "
+                "job-level check is stubbed out (else the test proves nothing)"
+            )
+    finally:
+        verifier.merge_group_concurrency_workflow_errors = original_whole_workflow
 
 
 def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:

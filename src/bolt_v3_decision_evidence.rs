@@ -652,6 +652,40 @@ pub enum BoltV3LossSnapshotSource {
     Other,
 }
 
+const LOSS_SNAPSHOT_SOURCE_NT_LOSS_RUNTIME_FEED: &str = stringify!(nt_loss_runtime_feed);
+const LOSS_SNAPSHOT_SOURCE_NT_PORTFOLIO_SNAPSHOT: &str = stringify!(nt_portfolio_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_SNAPSHOT: &str = stringify!(nt_account_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_AND_POSITION_SNAPSHOT: &str =
+    stringify!(nt_account_and_position_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT: &str = stringify!(nt_position_event);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED: &str = stringify!(nt_position_changed);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED: &str = stringify!(nt_position_closed);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED: &str = stringify!(nt_position_adjusted);
+const LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE: &str = stringify!(nt_sizing_state);
+const LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT: &str = stringify!(bolt_loss_snapshot);
+const LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR: &str = stringify!(loss_governor);
+
+#[must_use]
+pub fn loss_snapshot_source_to_evidence(source: &str) -> BoltV3LossSnapshotSource {
+    match source {
+        LOSS_SNAPSHOT_SOURCE_NT_LOSS_RUNTIME_FEED => BoltV3LossSnapshotSource::NtLossRuntimeFeed,
+        LOSS_SNAPSHOT_SOURCE_NT_PORTFOLIO_SNAPSHOT => BoltV3LossSnapshotSource::NtPortfolioSnapshot,
+        LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_SNAPSHOT => BoltV3LossSnapshotSource::NtAccountSnapshot,
+        LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_AND_POSITION_SNAPSHOT => {
+            BoltV3LossSnapshotSource::NtAccountAndPositionSnapshot
+        }
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT => BoltV3LossSnapshotSource::NtPositionEvent,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED => BoltV3LossSnapshotSource::NtPositionChanged,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED => BoltV3LossSnapshotSource::NtPositionClosed,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED => BoltV3LossSnapshotSource::NtPositionAdjusted,
+        LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE => BoltV3LossSnapshotSource::NtSizingState,
+        LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT => BoltV3LossSnapshotSource::BoltLossSnapshot,
+        LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR => BoltV3LossSnapshotSource::LossGovernor,
+        _ if source.trim().is_empty() => BoltV3LossSnapshotSource::Unknown,
+        _ => BoltV3LossSnapshotSource::Other,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3LossSnapshotStaleReason {
@@ -678,6 +712,24 @@ pub struct BoltV3LossGovernorHaltEvidence {
     pub snapshot_observed_at_ns: Option<u64>,
     pub admission_now_ns: u64,
     pub snapshot_age_ns: Option<u64>,
+    #[serde(default)]
+    pub snapshot_source: Option<BoltV3LossSnapshotSource>,
+    #[serde(default)]
+    pub per_trade_pnl_present: bool,
+    #[serde(default)]
+    pub daily_pnl_present: bool,
+    #[serde(default)]
+    pub rolling_pnl_present: bool,
+    #[serde(default)]
+    pub current_equity_present: bool,
+    #[serde(default)]
+    pub peak_equity_present: bool,
+    #[serde(default)]
+    pub last_account_state_observed_at_ns: Option<u64>,
+    #[serde(default)]
+    pub last_portfolio_snapshot_observed_at_ns: Option<u64>,
+    #[serde(default)]
+    pub last_position_event_observed_at_ns: Option<u64>,
     pub per_trade_pnl: Option<String>,
     pub daily_pnl: Option<String>,
     pub rolling_pnl: Option<String>,

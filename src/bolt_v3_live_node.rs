@@ -125,7 +125,7 @@ use crate::{
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
         BoltV3SubmitReservationMetadataEvidence, BoltV3TradingState,
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
-        read_submit_reservation_recovery_evidence,
+        loss_snapshot_source_to_evidence, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_iv::{
         config::IvRootConfig,
@@ -149,6 +149,7 @@ use crate::{
     bolt_v3_loss_governor::{
         LossAdmissionDecision, LossGovernorPolicy, LossHaltReason, LossSnapshot,
         LossSnapshotStaleReason, evaluate_loss_admission,
+        evaluate_loss_admission_with_observations,
     },
     bolt_v3_loss_halt_actions::{
         LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,
@@ -5797,8 +5798,13 @@ fn loss_governor_halt_action_handler_from_node(
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> LossGovernorHaltActionHandler {
     let risk_engine = node.kernel().risk_engine().clone();
-    Rc::new(move |snapshot, now_ns| {
-        let decision = evaluate_loss_admission(&loss_policy, snapshot, now_ns);
+    Rc::new(move |snapshot, now_ns, source_observations| {
+        let decision = evaluate_loss_admission_with_observations(
+            &loss_policy,
+            snapshot,
+            now_ns,
+            source_observations,
+        );
         let current_state = risk_engine.borrow().trading_state();
         if current_state == TradingState::Active && decision.accepted {
             return;
@@ -5854,6 +5860,25 @@ impl BoltV3LossGovernorHaltEvidence {
             snapshot_observed_at_ns: decision.diagnostics.snapshot_observed_at_ns,
             admission_now_ns: decision.diagnostics.admission_now_ns,
             snapshot_age_ns: decision.diagnostics.snapshot_age_ns,
+            snapshot_source: decision
+                .diagnostics
+                .snapshot_source
+                .as_deref()
+                .map(loss_snapshot_source_to_evidence),
+            per_trade_pnl_present: decision.diagnostics.per_trade_pnl_present,
+            daily_pnl_present: decision.diagnostics.daily_pnl_present,
+            rolling_pnl_present: decision.diagnostics.rolling_pnl_present,
+            current_equity_present: decision.diagnostics.current_equity_present,
+            peak_equity_present: decision.diagnostics.peak_equity_present,
+            last_account_state_observed_at_ns: decision
+                .diagnostics
+                .last_account_state_observed_at_ns,
+            last_portfolio_snapshot_observed_at_ns: decision
+                .diagnostics
+                .last_portfolio_snapshot_observed_at_ns,
+            last_position_event_observed_at_ns: decision
+                .diagnostics
+                .last_position_event_observed_at_ns,
             per_trade_pnl: snapshot
                 .and_then(|snapshot| snapshot.per_trade_pnl.map(|v| v.to_string())),
             daily_pnl: snapshot.and_then(|snapshot| snapshot.daily_pnl.map(|v| v.to_string())),
@@ -6584,18 +6609,22 @@ mod tests {
             writer.clone(),
         );
         let snapshot = LossSnapshot {
-            source: "nt_loss_runtime_feed".to_string(),
+            source: stringify!(nt_loss_runtime_feed).to_string(),
             observed_at_ns: 2_000,
             per_trade_pnl: Some(Decimal::new(-11, 0)),
             daily_pnl: None,
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
-            source_observations: Default::default(),
+            source_observations: crate::bolt_v3_loss_governor::LossSourceObservationTimestamps {
+                last_account_state_observed_at_ns: Some(1_900),
+                last_portfolio_snapshot_observed_at_ns: Some(2_000),
+                last_position_event_observed_at_ns: Some(1_950),
+            },
         };
 
-        handler(Some(&snapshot), 2_100);
-        handler(Some(&snapshot), 2_101);
+        handler(Some(&snapshot), 2_100, snapshot.source_observations);
+        handler(Some(&snapshot), 2_101, snapshot.source_observations);
 
         assert_eq!(
             node.kernel().risk_engine().borrow().trading_state(),
@@ -6609,15 +6638,100 @@ mod tests {
         );
         let halt = &halts[0];
         assert_eq!(halt.observed_at_ns, 2_000);
-        assert_eq!(halt.source, "nt_loss_runtime_feed");
+        assert_eq!(halt.source, stringify!(nt_loss_runtime_feed));
         assert_eq!(
             halt.halt_reasons,
             vec![BoltV3LossHaltReason::PerTradeLossLimit]
         );
         assert_eq!(halt.per_trade_pnl.as_deref(), Some("-11"));
+        assert_eq!(
+            halt.snapshot_source,
+            Some(crate::bolt_v3_decision_evidence::BoltV3LossSnapshotSource::NtLossRuntimeFeed)
+        );
+        assert!(halt.per_trade_pnl_present);
+        assert!(!halt.daily_pnl_present);
+        assert!(!halt.rolling_pnl_present);
+        assert!(!halt.current_equity_present);
+        assert!(!halt.peak_equity_present);
+        assert_eq!(halt.last_account_state_observed_at_ns, Some(1_900));
+        assert_eq!(halt.last_portfolio_snapshot_observed_at_ns, Some(2_000));
+        assert_eq!(halt.last_position_event_observed_at_ns, Some(1_950));
         assert_eq!(halt.max_per_trade_loss.as_deref(), Some("10"));
         assert_eq!(halt.previous_trading_state, BoltV3TradingState::Active);
         assert_eq!(halt.target_trading_state, BoltV3TradingState::Reducing);
+    }
+
+    #[test]
+    fn loss_governor_halt_handler_records_stale_snapshot_diagnostics() {
+        let loaded = fixture_loaded_config();
+        let node = make_bolt_v3_live_node_builder(&loaded)
+            .expect("test LiveNodeBuilder should construct")
+            .build()
+            .expect("test LiveNode should build");
+        let policy = LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_rolling_loss: Some(Decimal::new(30, 0)),
+            max_drawdown: Some(Decimal::new(40, 0)),
+        };
+        let action_policy = LossGovernorHaltActionPolicy {
+            on_loss_breach_trading_state: LossGovernorTradingStateAction::Reducing,
+            on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction::Halted,
+            recovery_mode: LossGovernorRecoveryMode::Manual,
+            manual_recovery_evidence_max_path_bytes: 256,
+        };
+        let writer = Arc::new(RecordingLossGovernorDecisionEvidenceWriter::default());
+        let handler = loss_governor_halt_action_handler_from_node(
+            &node,
+            policy,
+            action_policy,
+            writer.clone(),
+        );
+        let source_observations = crate::bolt_v3_loss_governor::LossSourceObservationTimestamps {
+            last_account_state_observed_at_ns: Some(1_900),
+            last_portfolio_snapshot_observed_at_ns: Some(2_000),
+            last_position_event_observed_at_ns: Some(1_950),
+        };
+        let snapshot = LossSnapshot {
+            source: stringify!(nt_loss_runtime_feed).to_string(),
+            observed_at_ns: 2_000,
+            per_trade_pnl: Some(Decimal::ZERO),
+            daily_pnl: Some(Decimal::ZERO),
+            rolling_pnl: Some(Decimal::ZERO),
+            current_equity: Some(Decimal::new(1_000, 0)),
+            peak_equity: Some(Decimal::new(1_000, 0)),
+            source_observations,
+        };
+
+        handler(Some(&snapshot), 3_501, source_observations);
+
+        let halts = writer.halts();
+        assert_eq!(halts.len(), 1);
+        let halt = &halts[0];
+        assert_eq!(
+            halt.halt_reasons,
+            vec![BoltV3LossHaltReason::StaleLossSnapshot]
+        );
+        assert_eq!(
+            halt.stale_reason,
+            Some(BoltV3LossSnapshotStaleReason::AgeExceeded)
+        );
+        assert_eq!(halt.snapshot_age_ns, Some(1_501));
+        assert_eq!(halt.max_snapshot_age_ns, 1_000);
+        assert_eq!(
+            halt.snapshot_source,
+            Some(crate::bolt_v3_decision_evidence::BoltV3LossSnapshotSource::NtLossRuntimeFeed)
+        );
+        assert!(halt.per_trade_pnl_present);
+        assert!(halt.daily_pnl_present);
+        assert!(halt.rolling_pnl_present);
+        assert!(halt.current_equity_present);
+        assert!(halt.peak_equity_present);
+        assert_eq!(halt.last_account_state_observed_at_ns, Some(1_900));
+        assert_eq!(halt.last_portfolio_snapshot_observed_at_ns, Some(2_000));
+        assert_eq!(halt.last_position_event_observed_at_ns, Some(1_950));
+        assert_eq!(halt.target_trading_state, BoltV3TradingState::Halted);
     }
 
     #[test]

@@ -104,7 +104,7 @@ pub fn subscribe_loss_governor_runtime_feed(
     let position_feed = Rc::clone(&feed);
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
         let now_ns = position_event_ts_init(event);
-        let (snapshot, handler, should_invoke) = {
+        let (snapshot, handler, source_observations, should_invoke) = {
             let mut feed = position_feed.borrow_mut();
             let should_invoke = position_event_can_carry_loss_fact(event)
                 && position_event_account_id(event) == feed.config.account_id;
@@ -113,11 +113,12 @@ pub fn subscribe_loss_governor_runtime_feed(
                     .then(|| feed.on_position_event_without_halt_action(event))
                     .flatten(),
                 feed.halt_action_handler.clone(),
+                feed.state.source_observations,
                 should_invoke,
             )
         };
         if should_invoke {
-            invoke_loss_halt_action(handler, snapshot.as_ref(), now_ns);
+            invoke_loss_halt_action(handler, snapshot.as_ref(), now_ns, source_observations);
         }
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
@@ -125,7 +126,7 @@ pub fn subscribe_loss_governor_runtime_feed(
     let account_feed = Rc::clone(&feed);
     let account_states = TypedHandler::from(move |state: &AccountState| {
         let now_ns = state.ts_init.as_u64();
-        let (loss_snapshot, handler, should_invoke) = {
+        let (loss_snapshot, handler, source_observations, should_invoke) = {
             let mut feed = account_feed.borrow_mut();
             let should_invoke = state.account_id == feed.config.account_id;
             (
@@ -133,11 +134,12 @@ pub fn subscribe_loss_governor_runtime_feed(
                     .then(|| feed.on_account_state_without_halt_action(state))
                     .flatten(),
                 feed.halt_action_handler.clone(),
+                feed.state.source_observations,
                 should_invoke,
             )
         };
         if should_invoke {
-            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns);
+            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns, source_observations);
         }
     });
     subscribe_account_state(account_states_pattern(), account_states.clone(), None);
@@ -145,7 +147,7 @@ pub fn subscribe_loss_governor_runtime_feed(
     let portfolio_feed = Rc::clone(&feed);
     let portfolio_snapshots = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
         let now_ns = snapshot.ts_init.as_u64();
-        let (loss_snapshot, handler, should_invoke) = {
+        let (loss_snapshot, handler, source_observations, should_invoke) = {
             let mut feed = portfolio_feed.borrow_mut();
             let should_invoke = snapshot.account_id == feed.config.account_id;
             (
@@ -153,11 +155,12 @@ pub fn subscribe_loss_governor_runtime_feed(
                     .then(|| feed.on_portfolio_snapshot_without_halt_action(snapshot))
                     .flatten(),
                 feed.halt_action_handler.clone(),
+                feed.state.source_observations,
                 should_invoke,
             )
         };
         if should_invoke {
-            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns);
+            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns, source_observations);
         }
     });
     subscribe_portfolio_snapshot(
@@ -237,12 +240,12 @@ impl LossGovernorRuntimeFeed {
         }
 
         let observed_at_ns = snapshot.ts_event.as_u64();
-        let daily_pnl = daily_pnl(snapshot, currency)?;
-        let current_equity = total_equity(snapshot, currency)?;
         self.state
             .record_portfolio_snapshot_observed_at_ns(observed_at_ns);
         self.submit_admission
             .update_loss_source_observations(self.state.source_observations);
+        let daily_pnl = daily_pnl(snapshot, currency)?;
+        let current_equity = total_equity(snapshot, currency)?;
         self.state.portfolio_pnl_observed = true;
         self.state.update_rolling_pnl(
             daily_pnl,
@@ -283,10 +286,11 @@ impl LossGovernorRuntimeFeed {
         }
 
         let observed_at_ns = state.ts_event.as_u64();
-        let current_equity = account_total_equity(state, currency)?;
-        self.state.record_account_state_observed_at_ns(observed_at_ns);
+        self.state
+            .record_account_state_observed_at_ns(observed_at_ns);
         self.submit_admission
             .update_loss_source_observations(self.state.source_observations);
+        let current_equity = account_total_equity(state, currency)?;
         if self.state.portfolio_pnl_observed {
             let daily_pnl = self
                 .state
@@ -407,7 +411,7 @@ impl LossGovernorRuntimeFeed {
 
     fn invoke_halt_action(&self, snapshot: Option<&LossSnapshot>, now_ns: u64) {
         if let Some(handler) = self.halt_action_handler.as_ref() {
-            handler(snapshot, now_ns);
+            handler(snapshot, now_ns, self.state.source_observations);
         }
     }
 }
@@ -416,9 +420,10 @@ fn invoke_loss_halt_action(
     handler: Option<LossGovernorHaltActionHandler>,
     snapshot: Option<&LossSnapshot>,
     now_ns: u64,
+    source_observations: LossSourceObservationTimestamps,
 ) {
     if let Some(handler) = handler {
-        handler(snapshot, now_ns);
+        handler(snapshot, now_ns, source_observations);
     }
 }
 

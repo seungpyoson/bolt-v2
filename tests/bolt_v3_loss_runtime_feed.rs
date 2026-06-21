@@ -236,7 +236,7 @@ fn halt_action_handler_receives_snapshot_init_time_as_now() {
     let account_id = AccountId::from("SIM-LOSS-HALT-INIT");
     let calls = Rc::new(RefCell::new(Vec::new()));
     let handler_calls = Rc::clone(&calls);
-    let handler: LossGovernorHaltActionHandler = Rc::new(move |snapshot, now_ns| {
+    let handler: LossGovernorHaltActionHandler = Rc::new(move |snapshot, now_ns, _| {
         handler_calls
             .borrow_mut()
             .push((snapshot.map(|snapshot| snapshot.observed_at_ns), now_ns));
@@ -273,10 +273,12 @@ fn subscribed_untrusted_portfolio_snapshot_invokes_halt_action_with_none() {
     let account_id = AccountId::from("SIM-LOSS-UNTRUSTED");
     let calls = Rc::new(RefCell::new(Vec::new()));
     let handler_calls = Rc::clone(&calls);
-    let handler: LossGovernorHaltActionHandler = Rc::new(move |snapshot, now_ns| {
-        handler_calls
-            .borrow_mut()
-            .push((snapshot.is_none(), now_ns));
+    let handler: LossGovernorHaltActionHandler = Rc::new(move |snapshot, now_ns, observations| {
+        handler_calls.borrow_mut().push((
+            snapshot.is_none(),
+            now_ns,
+            observations.last_portfolio_snapshot_observed_at_ns,
+        ));
     });
     let feed = Rc::new(RefCell::new(
         LossGovernorRuntimeFeed::new(
@@ -299,9 +301,69 @@ fn subscribed_untrusted_portfolio_snapshot_invokes_halt_action_with_none() {
 
     assert_eq!(
         calls.borrow().as_slice(),
-        &[(true, 2_000)],
+        &[(true, 2_000, Some(1_000))],
         "same-account malformed NT loss evidence must trigger the untrusted-snapshot action path"
     );
+}
+
+#[test]
+fn stale_snapshot_admission_records_real_source_observation_diagnostics() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer.clone(),
+        loss_policy(),
+    ));
+    let account_id = AccountId::from(stringify!(SIM_LOSS_STALE_DIAGNOSTICS));
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
+        },
+        admission.clone(),
+    );
+
+    feed.on_account_state(&account_state(account_id, 1_000, 1_000.0))
+        .expect("account state should publish a baseline loss snapshot");
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 2_000, 0.0, 0.0, 1_000.0))
+        .expect("portfolio snapshot should publish loss snapshot facts");
+    feed.on_position_event(&changed_position_event(account_id, 2_500, -1.0))
+        .expect("position event should publish per-trade loss fact");
+
+    let stale_error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 3_501)
+        .expect_err("stale loss snapshot should reject entry admission");
+    assert!(matches!(
+        stale_error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![LossHaltReason::StaleLossSnapshot]
+    ));
+
+    let decisions = writer.admission_decisions();
+    assert_eq!(decisions.len(), 1);
+    let decision = &decisions[0];
+    assert_eq!(
+        decision.outcome,
+        bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+    );
+    assert_eq!(
+        decision.stale_reason,
+        Some(bolt_v2::bolt_v3_decision_evidence::BoltV3LossSnapshotStaleReason::AgeExceeded)
+    );
+    assert_eq!(decision.snapshot_age_ns, Some(1_501));
+    assert_eq!(decision.max_snapshot_age_ns, Some(1_000));
+    assert_eq!(
+        decision.snapshot_source,
+        Some(bolt_v2::bolt_v3_decision_evidence::BoltV3LossSnapshotSource::NtLossRuntimeFeed)
+    );
+    assert!(decision.per_trade_pnl_present);
+    assert!(decision.daily_pnl_present);
+    assert!(decision.rolling_pnl_present);
+    assert!(decision.current_equity_present);
+    assert!(decision.peak_equity_present);
+    assert_eq!(decision.last_account_state_observed_at_ns, Some(1_000));
+    assert_eq!(decision.last_portfolio_snapshot_observed_at_ns, Some(2_000));
+    assert_eq!(decision.last_position_event_observed_at_ns, Some(2_500));
 }
 
 #[test]
@@ -748,7 +810,7 @@ fn published_snapshot_invokes_configured_halt_action_handler() {
     let invocations: Rc<RefCell<Vec<(u64, Option<Decimal>)>>> = Rc::new(RefCell::new(Vec::new()));
     let recorder = invocations.clone();
     let handler: LossGovernorHaltActionHandler = Rc::new(
-        move |snapshot: Option<&LossSnapshot>, observed_at_ns: u64| {
+        move |snapshot: Option<&LossSnapshot>, observed_at_ns: u64, _| {
             recorder.borrow_mut().push((
                 observed_at_ns,
                 snapshot.and_then(|snapshot| snapshot.daily_pnl),

@@ -1015,6 +1015,129 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
 }
 
 #[test]
+fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    set_shadow_order_execution_policy(&mut strategy);
+    strategy.active.phase = SelectionPhase::Freeze;
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let instrument_id = configured_outcome_instruments(&strategy)
+        .into_iter()
+        .next()
+        .expect("ready-to-trade fixture should expose an outcome instrument");
+    let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from(stringify!(P_SHADOW_EXIT_FUTURE_RV)),
+        position_quantity,
+        strategy
+            .active
+            .books
+            .up
+            .best_ask
+            .expect("ready-to-trade fixture should expose an up ask"),
+    );
+    set_managed_position(
+        &mut strategy,
+        position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let exit_eval_now_ms = strategy
+        .active
+        .last_reference_ts_ms
+        .expect("ready-to-trade fixture should carry a reference timestamp");
+    let future_delta_ms = strategy.config.market_exit_interval_ms;
+    let future_as_of_ms = exit_eval_now_ms + future_delta_ms;
+    let realized_vol = strategy
+        .current_realized_vol_at(exit_eval_now_ms)
+        .expect("fixture should start with accepted realized volatility");
+    strategy.pricing.observe_realized_vol_snapshot(
+        crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
+            surface_id: strategy.config.realized_volatility_surface_id.clone(),
+            as_of_ms: future_as_of_ms,
+            annualized_realized_vol_decimal: Some(realized_vol),
+            measured_annualized_realized_vol_decimal: Some(realized_vol),
+            noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
+            continuous_annualized_realized_vol_decimal: Some(realized_vol),
+            jump_annualized_realized_vol_decimal: Some(0.0),
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component:
+                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
+            ready: true,
+            sources_used: vec![TEST_SOURCE_ID.to_string()],
+            source_diagnostics: Vec::new(),
+            horizon_estimates: Vec::new(),
+            unknown_source_rejections: std::collections::BTreeMap::new(),
+            blocked_reasons: Vec::new(),
+            aggregate_method:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            seconds_per_annum: test_realized_volatility_engine_config().seconds_per_annum,
+            config_fingerprint: String::new(),
+        },
+    );
+    assert_eq!(strategy.current_realized_vol_at(exit_eval_now_ms), None);
+
+    let signal_instrument_id = strategy
+        .config
+        .signal_instrument_id
+        .as_deref()
+        .expect("ready-to-trade fixture should configure a signal instrument")
+        .to_string();
+    let signal_bid = strategy
+        .active
+        .price_to_beat
+        .expect("ready-to-trade fixture should carry source-bound price_to_beat");
+    let signal_ask = strategy
+        .pricing
+        .last_reference_current_price()
+        .expect("ready-to-trade fixture should carry a reference current price");
+    strategy
+        .on_quote(&quote_tick(
+            &signal_instrument_id,
+            signal_bid,
+            signal_ask,
+            exit_eval_now_ms,
+        ))
+        .expect("signal quote trigger should process");
+
+    let exit_decisions = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::ExitDecision(decision) => Some(decision),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(exit_decisions.len(), 1);
+    let decision = &exit_decisions[0];
+    assert_eq!(decision.realized_vol, None);
+    assert_eq!(decision.rv_snapshot_as_of_ms, Some(future_as_of_ms));
+    assert!(decision.rv_snapshot_ready);
+    assert_eq!(
+        decision.rv_gate_result,
+        BoltV3ExitRvGateResult::RejectedFutureDated
+    );
+    assert_eq!(decision.rv_future_dating_delta_ms, Some(future_delta_ms));
+    assert_eq!(
+        decision.exit_trigger_source,
+        BoltV3ExitTriggerSource::SignalQuote
+    );
+    assert_eq!(decision.trigger_ts_event_ms, exit_eval_now_ms);
+    assert_eq!(decision.trigger_ts_init_ms, Some(exit_eval_now_ms));
+    assert_eq!(decision.exit_eval_now_ms, exit_eval_now_ms);
+}
+
+#[test]
 fn shadow_policy_surfaces_admission_rejection_and_clears_pending_entry() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());

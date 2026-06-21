@@ -117,10 +117,9 @@ pub fn evaluate_loss_admission(
         policy,
         snapshot,
         now_ns,
-        snapshot.map_or_else(
-            LossSourceObservationTimestamps::default,
-            |snapshot| snapshot.source_observations,
-        ),
+        snapshot.map_or_else(LossSourceObservationTimestamps::default, |snapshot| {
+            snapshot.source_observations
+        }),
     )
 }
 

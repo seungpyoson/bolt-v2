@@ -4,10 +4,10 @@ use crate::bolt_v3_capital_reservation::{
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
     BoltV3BasketAdmissionOutcome, BoltV3DecisionEvidenceWriter, BoltV3LossHaltReason,
-    BoltV3LossSnapshotSource, BoltV3LossSnapshotStaleReason, BoltV3OrderIntentEvidence,
-    BoltV3OrderIntentKind, BoltV3PositionSizerRebuildAuditEvidence,
-    BoltV3RecoveredSubmitReservationEvidence, BoltV3SubmitReservationFillEvidence,
-    BoltV3SubmitReservationMetadataEvidence, compiled_order_price_source,
+    BoltV3LossSnapshotStaleReason, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+    BoltV3PositionSizerRebuildAuditEvidence, BoltV3RecoveredSubmitReservationEvidence,
+    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    compiled_order_price_source, loss_snapshot_source_to_evidence,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_loss_governor::{
@@ -43,19 +43,6 @@ use std::{
 };
 
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
-
-const LOSS_SNAPSHOT_SOURCE_NT_LOSS_RUNTIME_FEED: &str = stringify!(nt_loss_runtime_feed);
-const LOSS_SNAPSHOT_SOURCE_NT_PORTFOLIO_SNAPSHOT: &str = stringify!(nt_portfolio_snapshot);
-const LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_SNAPSHOT: &str = stringify!(nt_account_snapshot);
-const LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_AND_POSITION_SNAPSHOT: &str =
-    stringify!(nt_account_and_position_snapshot);
-const LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT: &str = stringify!(nt_position_event);
-const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED: &str = stringify!(nt_position_changed);
-const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED: &str = stringify!(nt_position_closed);
-const LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED: &str = stringify!(nt_position_adjusted);
-const LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE: &str = stringify!(nt_sizing_state);
-const LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT: &str = stringify!(bolt_loss_snapshot);
-const LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR: &str = stringify!(loss_governor);
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 
@@ -397,6 +384,8 @@ impl BoltV3SubmitAdmissionState {
                 live_kill_switch_forced_reduction_order_count: 0,
                 loss_policy,
                 loss_snapshot: None,
+                // No feed event has been observed at construction time, so all
+                // per-source last-seen timestamps are genuinely unavailable.
                 loss_source_observations: LossSourceObservationTimestamps::default(),
                 position_sizer: position_sizer.map(|config| BoltV3SubmitPositionSizerState {
                     venue_id: config.venue_id,
@@ -426,10 +415,7 @@ impl BoltV3SubmitAdmissionState {
         inner.loss_snapshot = Some(snapshot);
     }
 
-    pub fn update_loss_source_observations(
-        &self,
-        observations: LossSourceObservationTimestamps,
-    ) {
+    pub fn update_loss_source_observations(&self, observations: LossSourceObservationTimestamps) {
         self.inner
             .lock()
             .expect("submit admission state mutex should not be poisoned")
@@ -2043,26 +2029,6 @@ fn loss_snapshot_stale_reason_to_evidence(
         LossSnapshotStaleReason::MissingRequiredField => {
             BoltV3LossSnapshotStaleReason::MissingRequiredField
         }
-    }
-}
-
-fn loss_snapshot_source_to_evidence(source: &str) -> BoltV3LossSnapshotSource {
-    match source {
-        LOSS_SNAPSHOT_SOURCE_NT_LOSS_RUNTIME_FEED => BoltV3LossSnapshotSource::NtLossRuntimeFeed,
-        LOSS_SNAPSHOT_SOURCE_NT_PORTFOLIO_SNAPSHOT => BoltV3LossSnapshotSource::NtPortfolioSnapshot,
-        LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_SNAPSHOT => BoltV3LossSnapshotSource::NtAccountSnapshot,
-        LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_AND_POSITION_SNAPSHOT => {
-            BoltV3LossSnapshotSource::NtAccountAndPositionSnapshot
-        }
-        LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT => BoltV3LossSnapshotSource::NtPositionEvent,
-        LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED => BoltV3LossSnapshotSource::NtPositionChanged,
-        LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED => BoltV3LossSnapshotSource::NtPositionClosed,
-        LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED => BoltV3LossSnapshotSource::NtPositionAdjusted,
-        LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE => BoltV3LossSnapshotSource::NtSizingState,
-        LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT => BoltV3LossSnapshotSource::BoltLossSnapshot,
-        LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR => BoltV3LossSnapshotSource::LossGovernor,
-        _ if source.trim().is_empty() => BoltV3LossSnapshotSource::Unknown,
-        _ => BoltV3LossSnapshotSource::Other,
     }
 }
 

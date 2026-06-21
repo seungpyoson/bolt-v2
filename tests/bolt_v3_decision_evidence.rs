@@ -584,6 +584,18 @@ fn loss_governor_halt_evidence_writes_one_durable_line_and_readers_skip_it() {
         vec![BoltV3LossHaltReason::DailyLossLimit]
     );
     assert_eq!(decoded.max_snapshot_age_ns, 1_000);
+    assert_eq!(
+        decoded.snapshot_source,
+        Some(BoltV3LossSnapshotSource::NtPortfolioSnapshot)
+    );
+    assert!(decoded.per_trade_pnl_present);
+    assert!(decoded.daily_pnl_present);
+    assert!(decoded.rolling_pnl_present);
+    assert!(decoded.current_equity_present);
+    assert!(decoded.peak_equity_present);
+    assert_eq!(decoded.last_account_state_observed_at_ns, Some(9_400));
+    assert_eq!(decoded.last_portfolio_snapshot_observed_at_ns, Some(9_500));
+    assert_eq!(decoded.last_position_event_observed_at_ns, Some(9_450));
     assert_eq!(decoded.target_trading_state, BoltV3TradingState::Reducing);
 
     append_decision_evidence_lines(&evidence_path, &sample_entry_decision_evidence_lines());
@@ -783,6 +795,15 @@ fn sample_loss_governor_halt_evidence() -> BoltV3LossGovernorHaltEvidence {
         snapshot_observed_at_ns: Some(9_500),
         admission_now_ns: 10_000,
         snapshot_age_ns: Some(500),
+        snapshot_source: Some(BoltV3LossSnapshotSource::NtPortfolioSnapshot),
+        per_trade_pnl_present: true,
+        daily_pnl_present: true,
+        rolling_pnl_present: true,
+        current_equity_present: true,
+        peak_equity_present: true,
+        last_account_state_observed_at_ns: Some(9_400),
+        last_portfolio_snapshot_observed_at_ns: Some(9_500),
+        last_position_event_observed_at_ns: Some(9_450),
         per_trade_pnl: Some("-1".to_string()),
         daily_pnl: Some("-20".to_string()),
         rolling_pnl: Some("-20".to_string()),

@@ -8,6 +8,121 @@ const TEST_SOURCE_ID_B: &str = "<SOURCE_ID_B>";
 const TEST_TRADE_SOURCE_ID: &str = "<SOURCE_ID_TRADE>";
 const TEST_RV_INSTRUMENT_ID: &str = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>";
 
+#[derive(Default)]
+struct CapturingLogger {
+    records: std::sync::Mutex<Vec<(log::Level, String)>>,
+}
+
+impl log::Log for CapturingLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .push((record.level(), record.args().to_string()));
+    }
+
+    fn flush(&self) {}
+}
+
+impl CapturingLogger {
+    fn reset(&self) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clear();
+    }
+
+    fn records(&self) -> Vec<(log::Level, String)> {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clone()
+    }
+}
+
+static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> = std::sync::OnceLock::new();
+static CAPTURING_LOGGER_OBSERVERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static NEXT_LOG_CAPTURE_STRATEGY_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+const LOG_CAPTURE_CHILD_ENV: &str = "BOLT_TAKER_SOURCE_EVIDENCE_LOG_CAPTURE";
+
+fn unique_log_capture_strategy_id(prefix: &str) -> String {
+    let id = NEXT_LOG_CAPTURE_STRATEGY_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("BINARYORACLEEDGETAKER-{prefix}-{id}")
+}
+
+fn install_capturing_logger() -> &'static CapturingLogger {
+    static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let logger = CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
+    let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
+    assert!(
+        installed,
+        "capturing logger could not claim the global log slot; another logger is installed"
+    );
+    log::set_max_level(log::LevelFilter::Trace);
+    *logger
+}
+
+fn run_log_capture_test_in_subprocess(test_filter: &str, mode: &str) {
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("current test binary should be available"),
+    )
+    .arg(test_filter)
+    .arg("--nocapture")
+    .arg("--test-threads=1")
+    .env(LOG_CAPTURE_CHILD_ENV, mode)
+    .output()
+    .expect("log-capture child test should launch");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "log-capture child test failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.contains("running 1 test"),
+        "log-capture child filter `{test_filter}` must run exactly one test\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+fn with_captured_error_log<R>(
+    failure_message: &str,
+    strategy_id: &str,
+    action: impl FnOnce() -> R,
+) -> R {
+    let logger = install_capturing_logger();
+    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
+        .lock()
+        .expect("capturing logger observer mutex poisoned");
+    logger.reset();
+
+    let result = action();
+
+    let matching = logger
+        .records()
+        .into_iter()
+        .filter(|(_, message)| message.contains(failure_message) && message.contains(strategy_id))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matching.len(),
+        1,
+        "{failure_message} must be surfaced exactly once for {strategy_id}; got {matching:?}"
+    );
+    assert_eq!(
+        matching[0].0,
+        log::Level::Error,
+        "{failure_message} must be surfaced at error! severity, not warn!"
+    );
+    result
+}
+
 fn test_realized_volatility_engine_config()
 -> crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
     crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
@@ -1393,6 +1508,68 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
 }
 
 #[test]
+fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let mut realized_vol_not_ready = minimal_entry_submission_decision();
+    realized_vol_not_ready.evaluation.pricing_blocked_by =
+        vec![EntryPricingBlockReason::RealizedVolNotReady];
+    let mut fee_unavailable = minimal_entry_submission_decision();
+    fee_unavailable.evaluation.pricing_blocked_by =
+        vec![EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up)];
+
+    strategy
+        .record_entry_skip_once(
+            1_200,
+            &realized_vol_not_ready,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+            None,
+        )
+        .expect("first pricing-blocked skip should record");
+    strategy
+        .record_entry_skip_once(
+            1_201,
+            &fee_unavailable,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+            None,
+        )
+        .expect("distinct pricing blocker in same interval should record");
+
+    let entry_skips = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_skips.len(),
+        2,
+        "same interval/category but different pricing blockers must not dedupe"
+    );
+    assert_eq!(entry_skips[0].market_id, strategy.active.market_id);
+    assert_eq!(entry_skips[1].market_id, strategy.active.market_id);
+    assert_eq!(entry_skips[0].market_id, entry_skips[1].market_id);
+    assert_eq!(
+        entry_skips[0].pricing_blocked_by,
+        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+    );
+    assert_eq!(
+        entry_skips[1].pricing_blocked_by,
+        vec![BoltV3EntryPricingBlockReason::FeeUnavailable(
+            BoltV3OutcomeSide::Up
+        )]
+    );
+}
+
+#[test]
 fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
@@ -1534,6 +1711,57 @@ fn observe_resolution_strike_window_mismatch_is_observable_and_distinct_from_idl
     );
 }
 
+#[test]
+fn parse_config_rejects_non_finite_forced_flat_thin_book_min_liquidity() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert(
+                stringify!(forced_flat_thin_book_min_liquidity).to_string(),
+                toml::Value::Float(bad),
+            );
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("non-finite forced-flat liquidity minimum must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("forced_flat_thin_book_min_liquidity must be finite and >= 0"),
+            "expected forced-flat liquidity finite rejection for {bad}, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn forced_flat_evidence_filters_non_finite_liquidity_values() {
+    let mut strategy = ready_to_trade_strategy();
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.forced_flat_thin_book_min_liquidity = f64::NAN;
+    strategy.active.books.up.liquidity_available = Some(f64::INFINITY);
+    strategy.active.books.down.liquidity_available = Some(f64::INFINITY);
+
+    let entry_inputs = strategy.entry_forced_flat_evidence_inputs();
+    assert_eq!(
+        entry_inputs.min_liquidity_required, None,
+        "non-finite configured minimum must not serialize into forced-flat entry evidence"
+    );
+    assert_eq!(
+        entry_inputs.liquidity_available, None,
+        "non-finite active liquidity must not serialize into forced-flat entry evidence"
+    );
+
+    let exit_inputs = strategy.exit_forced_flat_evidence_inputs();
+    assert_eq!(
+        exit_inputs.min_liquidity_required, None,
+        "non-finite configured minimum must not serialize into forced-flat exit evidence"
+    );
+    assert_eq!(
+        exit_inputs.liquidity_available, None,
+        "non-finite active liquidity must not serialize into forced-flat exit evidence"
+    );
+}
+
 // A minimal entry evaluation that carries no signal — enough to drive
 // `record_entry_skip_once` past evidence assembly to the writer call.
 fn minimal_entry_evaluation() -> EntryEvaluation {
@@ -1616,16 +1844,32 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
     // returns Err from record_exit_decision, so on the buggy `?` variant this call
     // returns Err and the assertion below fails — the differential channel is the
     // helper's Result, which mirrors the exit-submit return.
+    if std::env::var(LOG_CAPTURE_CHILD_ENV).ok().as_deref() != Some("exit") {
+        run_log_capture_test_in_subprocess(
+            "exit_decision_evidence_write_failure_does_not_block_the_exit",
+            "exit",
+        );
+        return;
+    }
+
     let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
         RecordingFeeProvider::cold(),
         Arc::new(FailingDecisionEvidenceWriter),
     );
+    let strategy_id = unique_log_capture_strategy_id("exit");
+    strategy.config.strategy_id = strategy_id.clone();
 
     let decision = minimal_exit_submission_decision();
-    let result = strategy.record_exit_decision_once(
-        1_000,
-        ExitEvaluationTriggerContext::unknown(1_000),
-        &decision,
+    let result = with_captured_error_log(
+        "binary_oracle_edge_taker exit decision evidence write failed",
+        &strategy_id,
+        || {
+            strategy.record_exit_decision_once(
+                1_000,
+                ExitEvaluationTriggerContext::unknown(1_000),
+                &decision,
+            )
+        },
     );
 
     assert!(
@@ -1649,17 +1893,33 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
     // FailingDecisionEvidenceWriter returns Err from record_entry_skip, so on the
     // buggy `?` variant this call returns Err and the assertion fails — the
     // differential channel is the helper's Result.
+    if std::env::var(LOG_CAPTURE_CHILD_ENV).ok().as_deref() != Some("entry") {
+        run_log_capture_test_in_subprocess(
+            "entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback",
+            "entry",
+        );
+        return;
+    }
+
     let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
         RecordingFeeProvider::cold(),
         Arc::new(FailingDecisionEvidenceWriter),
     );
+    let strategy_id = unique_log_capture_strategy_id("entry");
+    strategy.config.strategy_id = strategy_id.clone();
 
     let decision = minimal_entry_submission_decision();
-    let result = strategy.record_entry_skip_once(
-        1_000,
-        &decision,
-        BoltV3EntrySkipReasonCategory::NoSideSelected,
-        None,
+    let result = with_captured_error_log(
+        "binary_oracle_edge_taker entry skip evidence write failed",
+        &strategy_id,
+        || {
+            strategy.record_entry_skip_once(
+                1_000,
+                &decision,
+                BoltV3EntrySkipReasonCategory::NoSideSelected,
+                None,
+            )
+        },
     );
 
     assert!(

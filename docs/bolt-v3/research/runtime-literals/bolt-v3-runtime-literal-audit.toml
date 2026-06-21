@@ -694,14 +694,6 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
-kind = "number"
-literal = '''9'''
-context = '''const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;'''
-classification = "decision_evidence_legacy_schema_version"
-reason = "This is the previous decision-evidence JSONL envelope schema version used only to skip pre-position-sizer-recovery non-recovery lines while preserving fail-closed recovery-record parsing; it is a compatibility marker, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"strategy_input_snapshot"'''
 context = '''pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";'''

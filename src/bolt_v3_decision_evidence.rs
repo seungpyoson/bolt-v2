@@ -42,7 +42,6 @@ const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_de
 const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
 const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
 const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
-const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;
 const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";
 const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";
 const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";
@@ -1135,7 +1134,7 @@ pub fn read_latest_entry_decision_evidence_chain(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
+        if decision_evidence_header_is_below_current_schema(&header) {
             first_older_schema_index.get_or_insert(index);
             continue;
         }
@@ -1393,7 +1392,7 @@ pub fn read_submit_reservation_recovery_evidence(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if is_pre_position_sizer_recovery_non_recovery_record(&header) {
+        if decision_evidence_header_is_below_current_schema_non_recovery_record(&header) {
             continue;
         }
         match header.kind.as_str() {
@@ -1630,10 +1629,24 @@ pub fn read_submit_reservation_recovery_evidence(
     })
 }
 
-fn is_pre_position_sizer_recovery_non_recovery_record(
+fn decision_evidence_header_is_below_current_schema(
     header: &DecisionEvidenceEnvelopeHeader,
 ) -> bool {
-    header.schema_version == PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
+    header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+}
+
+/// Audit-only (non-recovery) record kinds carry no reservation state, so an
+/// older-schema instance is safe to skip rather than fail the entire recovery
+/// read (otherwise one stale audit line poisons recovery of every valid
+/// current-schema reservation after it). Reservation-bearing kinds
+/// (submit_reservation_metadata / submit_reservation_fill) are deliberately NOT
+/// skipped here: an unparseable legacy reservation record must still fail closed
+/// at `header.validate`, so startup degrades to the unreconciled gate instead of
+/// silently ignoring a possibly-open reservation.
+fn decision_evidence_header_is_below_current_schema_non_recovery_record(
+    header: &DecisionEvidenceEnvelopeHeader,
+) -> bool {
+    decision_evidence_header_is_below_current_schema(header)
         && matches!(
             header.kind.as_str(),
             BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND

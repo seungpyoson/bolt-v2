@@ -706,7 +706,10 @@ fn requote_throttle_bound(
         if now_ms < last_emit_ms {
             return BoltV3RequoteThrottleBound::OutOfOrderTs;
         }
-        if now_ms >= last_emit_ms && now_ms - last_emit_ms < budget.min_interval_ms() {
+        // Mirror `RequoteBudget::try_acquire`: the min interval applies only to
+        // distinct requote ticks, so same-millisecond emits fall through to the
+        // sliding-window cap checks below.
+        if now_ms > last_emit_ms && now_ms - last_emit_ms < budget.min_interval_ms() {
             return BoltV3RequoteThrottleBound::MinInterval;
         }
     }
@@ -1312,41 +1315,57 @@ mod tests {
 
     #[test]
     fn requote_throttle_bound_throttles_same_millisecond_reemit() {
-        // A re-emit at the EXACT same millisecond as the last emit is inside any
-        // non-zero anti-flicker interval (0ms < min_interval_ms) and MUST be bounded
-        // by MinInterval. The pre-fix gate used `now_ms > last_emit_ms`, which is
-        // false at now_ms == last_emit_ms, so the same-tick re-emit fell THROUGH the
-        // MinInterval check and was classified WindowCap (admitted-by-bound) — letting
-        // an unthrottled cancel+resubmit pair re-emit twice in one millisecond. The
-        // out-of-order guard above already rejects `now_ms < last_emit_ms`, so at this
-        // line `now_ms >= last_emit_ms` is guaranteed and the subtraction is
-        // underflow-safe.
         use crate::bolt_v3_requote_budget::RequoteBudget;
-        let mut budget = RequoteBudgetPair::new(
+
+        let mut remaining_budget = RequoteBudgetPair::new(
             RequoteBudget::new(40, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
             RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
         );
-        // Record an emit at now_ms so last_emit_ms == now_ms for the next call.
-        assert!(budget.try_reserve_fresh_submit(1_000));
-        assert_eq!(budget.last_emit_ms(), Some(1_000));
+        assert!(remaining_budget.try_reserve_fresh_submit(1_000));
+        assert_eq!(remaining_budget.last_emit_ms(), Some(1_000));
 
-        // Same millisecond as the last emit: 1_000 - 1_000 = 0 < 500 interval.
-        assert_eq!(
-            requote_throttle_bound(BoltV3RequoteActionCostClass::CancelResubmit, &budget, 1_000,),
-            BoltV3RequoteThrottleBound::MinInterval,
-            "a same-millisecond re-emit must be bounded by MinInterval, not admitted"
-        );
-
-        // A tick at the interval boundary clears the floor and is bounded by capacity
-        // (WindowCap), confirming the throttle is interval-driven, not a blanket block.
+        // Same-millisecond emits are exempt from the min-interval floor and must
+        // fall through to the sliding-window classifier. With budget remaining,
+        // that is the admitted-by-bound WindowCap sentinel, not MinInterval.
         assert_eq!(
             requote_throttle_bound(
                 BoltV3RequoteActionCostClass::CancelResubmit,
-                &budget,
-                1_000 + TEST_REQUOTE_MIN_INTERVAL_MS,
+                &remaining_budget,
+                1_000,
             ),
             BoltV3RequoteThrottleBound::WindowCap,
-            "an emit at the interval boundary is past the floor and admitted-by-bound"
+            "same-millisecond emits with budget remaining must not be labeled MinInterval"
+        );
+
+        let mut exhausted_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(1, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
+            RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
+        );
+        assert!(exhausted_budget.try_reserve_fresh_submit(1_000));
+        assert_eq!(exhausted_budget.last_emit_ms(), Some(1_000));
+
+        // Same millisecond, exhausted submit-command budget: the live gate would
+        // refuse on the window cap, so the evidence must name that cap.
+        assert_eq!(
+            requote_throttle_bound(
+                BoltV3RequoteActionCostClass::CancelResubmit,
+                &exhausted_budget,
+                1_000,
+            ),
+            BoltV3RequoteThrottleBound::SubmitCommandWindow,
+            "same-millisecond budget exhaustion must be labeled by the window cap"
+        );
+
+        // A strictly later tick inside the interval still matches the gate's
+        // anti-flicker floor and is classified as MinInterval.
+        assert_eq!(
+            requote_throttle_bound(
+                BoltV3RequoteActionCostClass::CancelResubmit,
+                &remaining_budget,
+                1_001,
+            ),
+            BoltV3RequoteThrottleBound::MinInterval,
+            "strictly-later ticks inside the interval remain bounded by MinInterval"
         );
     }
 }

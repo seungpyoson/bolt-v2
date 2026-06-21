@@ -2978,10 +2978,10 @@ impl BinaryOracleEdgeTaker {
         ForcedFlatEvidenceInputs {
             stale_reference_after_ms: Some(self.effective_stale_reference_after_ms()),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
-            min_liquidity_required: Some(evidence_number(
+            min_liquidity_required: option_evidence_number(Some(
                 self.config.forced_flat_thin_book_min_liquidity,
             )),
-            liquidity_available: self.active.books.minimum_liquidity().map(evidence_number),
+            liquidity_available: option_evidence_number(self.active.books.minimum_liquidity()),
             frozen: self.active.phase == SelectionPhase::Freeze,
             metadata_matches_selection: self.active.books.metadata_matches_selection(),
             fast_venue_incoherent: self.active.fast_venue_incoherent,
@@ -2993,13 +2993,14 @@ impl BinaryOracleEdgeTaker {
         ForcedFlatEvidenceInputs {
             stale_reference_after_ms: Some(self.effective_stale_reference_after_ms()),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
-            min_liquidity_required: Some(evidence_number(
+            min_liquidity_required: option_evidence_number(Some(
                 self.config.forced_flat_thin_book_min_liquidity,
             )),
-            liquidity_available: open_position
-                .and_then(|position| position.book.liquidity_available)
-                .or_else(|| self.active.books.minimum_liquidity())
-                .map(evidence_number),
+            liquidity_available: option_evidence_number(
+                open_position
+                    .and_then(|position| position.book.liquidity_available)
+                    .or_else(|| self.active.books.minimum_liquidity()),
+            ),
             frozen: self.active.phase == SelectionPhase::Freeze,
             metadata_matches_selection: open_position
                 .map(|position| position.book.metadata_matches_selection())
@@ -3018,6 +3019,16 @@ impl BinaryOracleEdgeTaker {
         let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
         let key = EntrySkipDedupeKey {
             reason_category,
+            gate_blocked_by: fields
+                .gate_blocked_by
+                .iter()
+                .map(entry_block_reason_to_evidence)
+                .collect(),
+            pricing_blocked_by: fields
+                .pricing_blocked_by
+                .iter()
+                .map(entry_pricing_block_reason_to_evidence)
+                .collect(),
             market_id: fields.market_id.clone(),
             interval_open: option_evidence_number(fields.interval_open),
         };
@@ -7308,6 +7319,8 @@ enum ExitDecision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EntrySkipDedupeKey {
     reason_category: BoltV3EntrySkipReasonCategory,
+    gate_blocked_by: Vec<BoltV3EntryBlockReason>,
+    pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
     market_id: Option<String>,
     interval_open: Option<String>,
 }

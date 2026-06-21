@@ -470,6 +470,58 @@ fn submit_reservation_recovery_skips_legacy_v9_non_recovery_lines() {
 }
 
 #[test]
+fn submit_reservation_recovery_skips_older_schema_admission_before_payload_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut legacy_admission = sample_entry_decision_evidence_lines()[2].clone();
+    legacy_admission["schema_version"] =
+        serde_json::json!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1);
+    legacy_admission["decision"]
+        .as_object_mut()
+        .expect("legacy admission decision should be an object")
+        .remove("execution_client_id");
+    write_decision_evidence_lines(
+        &evidence_path,
+        &[
+            legacy_admission,
+            serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": 4_i64,
+                "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "submit_reservation_metadata",
+                "metadata": sample_submit_reservation_metadata(),
+            }),
+            serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": 5_i64,
+                "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "submit_reservation_fill",
+                "fill": sample_submit_reservation_fill(),
+            }),
+        ],
+    );
+
+    let recovery = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect("older-schema admission lines must not block reservation recovery");
+    let recovered = recovery
+        .metadata_by_client_order_id
+        .get("client-order-one")
+        .expect("current reservation metadata should recover");
+
+    assert_eq!(
+        recovered.metadata.submit_reservation_id,
+        "client-order-one#1"
+    );
+    assert_eq!(recovered.fill_trade_ids.len(), 1);
+    assert!(
+        recovered.fill_trade_ids.contains("trade-one"),
+        "current reservation fill should recover with the metadata"
+    );
+}
+
+#[test]
 fn submit_reservation_recovery_skips_basket_admission_records() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("decision-evidence.jsonl");
@@ -659,6 +711,10 @@ fn submit_reservation_recovery_rejects_legacy_v9_reservation_metadata() {
         })],
     );
 
+    // A reservation-bearing record below the current schema must FAIL CLOSED, not
+    // be silently skipped: only audit-only (non-recovery) kinds are skip-eligible.
+    // Failing closed degrades startup to the unreconciled gate rather than
+    // silently dropping a possibly-open reservation.
     let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
         .expect_err("legacy v9 reservation metadata must fail closed");
     let rendered = format!("{error:#}");
@@ -1003,6 +1059,20 @@ fn sample_submit_reservation_metadata() -> BoltV3SubmitReservationMetadataEviden
         additive_liability: "0.3".to_string(),
         reserved_liability: "4.3".to_string(),
         observed_at_ns: 1_000,
+        source: "submit_admission".to_string(),
+    }
+}
+
+fn sample_submit_reservation_fill() -> BoltV3SubmitReservationFillEvidence {
+    BoltV3SubmitReservationFillEvidence {
+        client_order_id: "client-order-one".to_string(),
+        submit_reservation_id: "client-order-one#1".to_string(),
+        trade_id: "trade-one".to_string(),
+        instrument_id: "condition-one-yes.POLYMARKET".to_string(),
+        side: "buy".to_string(),
+        fill_quantity: "3".to_string(),
+        observed_at_ns: 1_500,
+        reconciliation: false,
         source: "submit_admission".to_string(),
     }
 }

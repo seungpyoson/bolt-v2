@@ -102,6 +102,12 @@ enum SecretsCommand {
 
 #[derive(clap::Subcommand)]
 enum OpsCommand {
+    Launch {
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        config_root: PathBuf,
+    },
     PrestartCheck {
         #[arg(short, long)]
         config: PathBuf,
@@ -227,6 +233,10 @@ fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_bolt_v3_config(&config)?;
     confirm_production_invariants(&loaded)?;
     run_loaded_prestart_check(&loaded, None)?;
+    start_loaded_node(loaded)
+}
+
+fn start_loaded_node(loaded: LoadedBoltV3Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut node = build_bolt_v3_live_node(&loaded)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -299,6 +309,10 @@ fn verify_runtime_live_config_source(config: &Path) -> Result<(), Box<dyn std::e
 
 fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        OpsCommand::Launch {
+            profile,
+            config_root,
+        } => run_ops_launch(profile, config_root),
         OpsCommand::PrestartCheck {
             config,
             required_catalog_prefix,
@@ -321,6 +335,159 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
         OpsCommand::ReferenceCurrentPriceHealth { config } => {
             run_reference_current_price_health_command(&config)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum OpsLaunchStage {
+    VerifyConfig,
+    SecretsCheck,
+    SecretsResolve,
+    PrestartCheck,
+    ReferenceCurrentPriceHealth,
+    Start,
+}
+
+const OPS_LAUNCH_STAGE_CHAIN: &[OpsLaunchStage] = &[
+    OpsLaunchStage::VerifyConfig,
+    // Slice 1b target-verifier insertion point: run the target verifier here,
+    // after config identity is proven and before secrets or runtime side effects.
+    OpsLaunchStage::SecretsCheck,
+    OpsLaunchStage::SecretsResolve,
+    OpsLaunchStage::PrestartCheck,
+    OpsLaunchStage::ReferenceCurrentPriceHealth,
+    OpsLaunchStage::Start,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum OpsLaunchStageStatus {
+    Completed,
+    Entering,
+    Failed,
+}
+
+#[derive(serde::Serialize)]
+struct OpsLaunchStageLog {
+    ops_launch_stage: OpsLaunchStage,
+    status: OpsLaunchStageStatus,
+    last_completed_stage: Option<OpsLaunchStage>,
+    last_failed_stage: Option<OpsLaunchStage>,
+}
+
+struct OpsLaunchContext {
+    profile: String,
+    config_root: PathBuf,
+    live_config: PathBuf,
+    loaded: Option<LoadedBoltV3Config>,
+}
+
+impl OpsLaunchContext {
+    fn new(profile: String, config_root: PathBuf) -> Self {
+        let live_config = live_config_path(&config_root);
+        Self {
+            profile,
+            config_root,
+            live_config,
+            loaded: None,
+        }
+    }
+
+    fn loaded(&self) -> Result<&LoadedBoltV3Config, Box<dyn std::error::Error>> {
+        self.loaded.as_ref().ok_or_else(|| {
+            "ops launch config must be loaded by verify-config before this stage".into()
+        })
+    }
+}
+
+fn run_ops_launch(profile: String, config_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let mut context = OpsLaunchContext::new(profile, config_root);
+    run_ops_launch_chain_with(|stage| run_ops_launch_stage(stage, &mut context))
+}
+
+fn run_ops_launch_chain_with<F>(mut run_stage: F) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FnMut(OpsLaunchStage) -> Result<(), Box<dyn std::error::Error>>,
+{
+    let mut last_completed_stage = None;
+    for &stage in OPS_LAUNCH_STAGE_CHAIN {
+        if stage == OpsLaunchStage::Start {
+            emit_ops_launch_stage_log(
+                stage,
+                OpsLaunchStageStatus::Entering,
+                last_completed_stage,
+                None,
+            )?;
+        }
+        match run_stage(stage) {
+            Ok(()) => {
+                last_completed_stage = Some(stage);
+                if stage != OpsLaunchStage::Start {
+                    emit_ops_launch_stage_log(
+                        stage,
+                        OpsLaunchStageStatus::Completed,
+                        last_completed_stage,
+                        None,
+                    )?;
+                }
+            }
+            Err(error) => {
+                emit_ops_launch_stage_log(
+                    stage,
+                    OpsLaunchStageStatus::Failed,
+                    last_completed_stage,
+                    Some(stage),
+                )?;
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn emit_ops_launch_stage_log(
+    stage: OpsLaunchStage,
+    status: OpsLaunchStageStatus,
+    last_completed_stage: Option<OpsLaunchStage>,
+    last_failed_stage: Option<OpsLaunchStage>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let log = OpsLaunchStageLog {
+        ops_launch_stage: stage,
+        status,
+        last_completed_stage,
+        last_failed_stage,
+    };
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    serde_json::to_writer(&mut stdout, &log)?;
+    writeln!(&mut stdout)?;
+    Ok(())
+}
+
+fn run_ops_launch_stage(
+    stage: OpsLaunchStage,
+    context: &mut OpsLaunchContext,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match stage {
+        OpsLaunchStage::VerifyConfig => {
+            let verification = verify_live_config(&context.config_root, &context.profile)?;
+            context.live_config = verification.deployed_path;
+            context.loaded = Some(load_bolt_v3_config(&context.live_config)?);
+            Ok(())
+        }
+        OpsLaunchStage::SecretsCheck => run_loaded_secrets_check(context.loaded()?).map(|_| ()),
+        OpsLaunchStage::SecretsResolve => run_loaded_secrets_resolve(context.loaded()?).map(|_| ()),
+        OpsLaunchStage::PrestartCheck => run_loaded_prestart_check(context.loaded()?, None),
+        OpsLaunchStage::ReferenceCurrentPriceHealth => {
+            run_loaded_reference_current_price_health(context.loaded()?)
+        }
+        OpsLaunchStage::Start => {
+            let loaded = context.loaded.take().ok_or_else(
+                || "ops launch start stage requires a loaded config from verify-config",
+            )?;
+            start_loaded_node(loaded)
         }
     }
 }
@@ -376,8 +543,14 @@ fn run_reference_current_price_health_command(
     config: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_bolt_v3_config(config)?;
+    run_loaded_reference_current_price_health(&loaded)
+}
+
+fn run_loaded_reference_current_price_health(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), Box<dyn std::error::Error>> {
     check_no_forbidden_credential_env_vars(&loaded.root)?;
-    let health_run = prepare_reference_current_price_health_run(&loaded)?;
+    let health_run = prepare_reference_current_price_health_run(loaded)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -946,35 +1119,59 @@ fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error
     match command {
         SecretsCommand::Check { config } => {
             let loaded = load_bolt_v3_config(&config)?;
-            check_no_forbidden_credential_env_vars(&loaded.root)?;
-            for (client_key, client) in &loaded.root.clients {
-                if client.secrets.is_some() {
-                    let binding =
-                        binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
-                            format!(
-                                "clients.{client_key}.venue `{}` is not supported by this build",
-                                client.venue.as_str()
-                            )
-                        })?;
-                    println!(
-                        "clients.{client_key}: required secret fields present ({})",
-                        binding.secret_field_names.join(", ")
-                    );
-                }
+            for binding in run_loaded_secrets_check(&loaded)? {
+                println!(
+                    "clients.{}: required secret fields present ({})",
+                    binding.client_key,
+                    binding.secret_field_names.join(", ")
+                );
             }
             Ok(())
         }
         SecretsCommand::Resolve { config } => {
             let loaded = load_bolt_v3_config(&config)?;
-            check_no_forbidden_credential_env_vars(&loaded.root)?;
-            let ssm_resolver_session = SsmResolverSession::new()?;
-            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let resolved = run_loaded_secrets_resolve(&loaded)?;
             for client_key in resolved.clients.keys() {
                 println!("clients.{client_key}: secrets resolved successfully");
             }
             Ok(())
         }
     }
+}
+
+struct SecretCheckReport {
+    client_key: String,
+    secret_field_names: Vec<&'static str>,
+}
+
+fn run_loaded_secrets_check(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Vec<SecretCheckReport>, Box<dyn std::error::Error>> {
+    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let mut reports = Vec::new();
+    for (client_key, client) in &loaded.root.clients {
+        if client.secrets.is_some() {
+            let binding = binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` is not supported by this build",
+                    client.venue.as_str()
+                )
+            })?;
+            reports.push(SecretCheckReport {
+                client_key: client_key.clone(),
+                secret_field_names: binding.secret_field_names.to_vec(),
+            });
+        }
+    }
+    Ok(reports)
+}
+
+fn run_loaded_secrets_resolve(
+    loaded: &LoadedBoltV3Config,
+) -> Result<ResolvedBoltV3Secrets, Box<dyn std::error::Error>> {
+    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let ssm_resolver_session = SsmResolverSession::new()?;
+    resolve_bolt_v3_secrets(&ssm_resolver_session, loaded).map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -1004,6 +1201,81 @@ mod tests {
             }
             _ => panic!("expected ops data-client-probe command"),
         }
+    }
+
+    #[test]
+    fn ops_launch_cli_parses_profile_id_and_config_root() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "launch",
+            "--profile",
+            "example",
+            "--config-root",
+            "/opt/bolt-v2/config",
+        ])
+        .expect("ops launch command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command:
+                    OpsCommand::Launch {
+                        profile,
+                        config_root,
+                    },
+            } => {
+                assert_eq!(profile, "example");
+                assert_eq!(config_root, PathBuf::from("/opt/bolt-v2/config"));
+            }
+            _ => panic!("expected ops launch command"),
+        }
+    }
+
+    #[test]
+    fn ops_launch_chain_runs_prearm_stages_then_start_in_order() {
+        let mut observed = Vec::new();
+
+        run_ops_launch_chain_with(|stage| {
+            observed.push(stage);
+            Ok(())
+        })
+        .expect("fake launch stages should pass");
+
+        assert_eq!(
+            observed,
+            vec![
+                OpsLaunchStage::VerifyConfig,
+                OpsLaunchStage::SecretsCheck,
+                OpsLaunchStage::SecretsResolve,
+                OpsLaunchStage::PrestartCheck,
+                OpsLaunchStage::ReferenceCurrentPriceHealth,
+                OpsLaunchStage::Start,
+            ]
+        );
+    }
+
+    #[test]
+    fn ops_launch_chain_stops_at_failed_stage() {
+        let mut observed = Vec::new();
+
+        let error = run_ops_launch_chain_with(|stage| {
+            observed.push(stage);
+            if stage == OpsLaunchStage::SecretsResolve {
+                return Err("secret resolution failed".into());
+            }
+            Ok(())
+        })
+        .expect_err("failed launch stage must stop the chain");
+
+        assert_eq!(error.to_string(), "secret resolution failed");
+        assert_eq!(
+            observed,
+            vec![
+                OpsLaunchStage::VerifyConfig,
+                OpsLaunchStage::SecretsCheck,
+                OpsLaunchStage::SecretsResolve,
+            ]
+        );
     }
 
     #[test]

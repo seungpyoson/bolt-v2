@@ -74,6 +74,99 @@ fn main_runs_bolt_v3_runner_inside_local_set() {
 }
 
 #[test]
+fn run_live_node_stays_noncanonical_primitive_without_launch_chain() {
+    let source = include_str!("../src/main.rs");
+    let run_fn = top_level_function_body(source, "fn run_live_node");
+
+    assert!(
+        run_fn.contains("verify_runtime_live_config_source(&config)?"),
+        "plain run must keep its existing generated-live.toml guard"
+    );
+    assert!(
+        run_fn.contains("confirm_production_invariants(&loaded)?"),
+        "plain run must keep its existing production invariant guard"
+    );
+    assert!(
+        run_fn.contains("run_loaded_prestart_check(&loaded, None)?"),
+        "plain run must keep its existing storage prestart guard"
+    );
+    assert!(
+        run_fn.contains("start_loaded_node(loaded)"),
+        "plain run should delegate only the final node start"
+    );
+
+    for forbidden in ["run_ops_launch", "run_ops_launch_chain", "OpsLaunchStage"] {
+        assert!(
+            !run_fn.contains(forbidden),
+            "plain run must not call the canonical ops launch chain via `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn ops_launch_uses_chain_and_lower_level_start_without_calling_run() {
+    let source = include_str!("../src/main.rs");
+
+    assert!(
+        source.contains("fn start_loaded_node(loaded: LoadedBoltV3Config)"),
+        "production binary must expose the lower-level loaded-node start boundary"
+    );
+
+    let launch_fn = top_level_function_body(source, "fn run_ops_launch");
+    assert!(
+        launch_fn.contains("run_ops_launch_chain_with"),
+        "ops launch must run through the ordered launch chain"
+    );
+    assert!(
+        !launch_fn.contains("run_live_node"),
+        "ops launch must not call plain run and re-enter its preflight"
+    );
+
+    let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+    assert!(
+        stage_fn.contains("OpsLaunchStage::Start"),
+        "ops launch chain must model start as the final stage"
+    );
+    assert!(
+        stage_fn.contains("start_loaded_node(loaded)"),
+        "ops launch start stage must enter the extracted loaded-node runner"
+    );
+    assert!(
+        !stage_fn.contains("run_live_node"),
+        "ops launch stage execution must not call plain run"
+    );
+}
+
+#[test]
+fn just_live_delegates_to_ops_launch() {
+    let justfile = include_str!("../justfile");
+    let live_recipe = justfile
+        .split("\nlive: live-generate\n")
+        .nth(1)
+        .expect("justfile must define the live recipe after live-generate")
+        .split("\n\n")
+        .next()
+        .expect("live recipe body must be bounded by a blank line");
+
+    assert!(
+        live_recipe.contains("-- ops launch --profile \"{{live_profile}}\" --config-root config"),
+        "just live must delegate to ops launch with the selected profile and config root"
+    );
+    assert!(
+        !live_recipe.contains("-- run --config"),
+        "just live must not bypass ops launch through plain run"
+    );
+    assert!(
+        !live_recipe.contains("secrets check") && !live_recipe.contains("secrets resolve"),
+        "just live must not keep a second pre-arm implementation outside ops launch"
+    );
+    assert!(
+        !justfile.contains("\nlive-check:") && !justfile.contains("\nlive-resolve:"),
+        "justfile must not keep redundant live secret-check/resolve pre-arm recipes"
+    );
+}
+
+#[test]
 fn data_client_probe_builds_node_before_entering_tokio_runtime() {
     let source = include_str!("../src/main.rs");
     let probe_fn = source

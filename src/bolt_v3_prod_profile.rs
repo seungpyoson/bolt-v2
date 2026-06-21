@@ -39,14 +39,14 @@
 //!   alone cannot catch a key the current binary has dropped.
 //!
 //! `verify_live_config` covers the config-identity half of pre-arm. The full
-//! pre-arm gate chains it with live secret resolution and the arming-gate/readiness
-//! check: `generate-live-config` → `verify-live-config` → `secrets resolve` →
-//! `ops prestart-check` (see `deploy/README.md`). The single source of truth is the
-//! base template plus the tracked overlay selected by profile ID; the base owns the shared infrastructure
-//! blocks and the overlay owns the pilot deltas, so neither is duplicated.
-//! The production systemd unit runs `verify-live-config` as `ExecStartPre`, so the
-//! load-against-this-binary check runs on the bytes actually present on the box at
-//! the live entry point, not advisory.
+//! launch gate chains it inside `ops launch` with secret checks, live secret
+//! resolution, storage prestart, reference-current-price health, and the run-loop
+//! start (see `deploy/README.md`). The single source of truth is the base template
+//! plus the tracked overlay selected by profile ID; the base owns the shared
+//! infrastructure blocks and the overlay owns the pilot deltas, so neither is
+//! duplicated. The production systemd unit runs `ops launch` as `ExecStart`, so
+//! the load-against-this-binary check runs on the bytes actually present on the
+//! box at the live entry point, not advisory.
 //!
 //! ## What ties the deployed config to the reviewed revision
 //!
@@ -168,6 +168,8 @@ pub struct LiveConfigVerification {
     pub profile_id: String,
     pub profile_path: PathBuf,
     pub deployed_path: PathBuf,
+    #[serde(skip)]
+    pub loaded: LoadedBoltV3Config,
     pub profile_bundle_sha256: String,
     /// Production invariants re-confirmed on the *deployed* file.
     pub invariants: ProductionInvariants,
@@ -865,6 +867,7 @@ pub fn verify_live_config(
         profile_id: profile_id.as_str().to_string(),
         profile_path,
         deployed_path,
+        loaded: deployed_loaded,
         profile_bundle_sha256: generated.profile_bundle_sha256,
         invariants,
         matches_profile: true,

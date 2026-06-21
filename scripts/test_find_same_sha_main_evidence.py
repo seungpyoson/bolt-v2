@@ -61,7 +61,6 @@ def record_payload(**overrides: object) -> dict[str, object]:
         "pull_request": {"number": None, "base_sha": None},
         "required_jobs": {
             "detector": "success",
-            "fmt-check": "success",
             "deny": "success",
             "clippy": "success",
             "check-aarch64": "success",
@@ -105,7 +104,6 @@ def job(name: str, conclusion: object = "success") -> dict[str, object]:
 def jobs(gate_conclusion: object = "success") -> list[dict[str, object]]:
     return [
         job("detector"),
-        job("fmt-check"),
         job("deny"),
         job("clippy"),
         job("check-aarch64"),

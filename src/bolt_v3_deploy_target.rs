@@ -50,7 +50,7 @@ const IMDS_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Parsed `deploy.toml`. The `[target]` table is optional so an absent or
 /// empty binding is a first-class "no target configured" state.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployTargetConfig {
     pub target: Option<TargetBinding>,
@@ -58,7 +58,7 @@ pub struct DeployTargetConfig {
 
 /// Optional deploy target binding. Every field is optional; a field left unset
 /// is simply not enforced by `TargetVerify`.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TargetBinding {
     pub region: Option<String>,
@@ -80,7 +80,7 @@ impl TargetBinding {
 /// because a given metadata path may be unavailable on some hosts; an absent
 /// observed value for a configured field is treated as a mismatch (fail
 /// closed) rather than a silent pass.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedHostFacts {
     pub region: Option<String>,
     pub availability_zone: Option<String>,
@@ -174,7 +174,7 @@ pub fn load_deploy_target(config_root: &Path) -> Result<DeployTargetConfig, Depl
         Err(ConfigFileReadError::Open { source, .. })
             if source.kind() == std::io::ErrorKind::NotFound =>
         {
-            return Ok(DeployTargetConfig::default());
+            return Ok(DeployTargetConfig { target: None });
         }
         Err(error) => {
             return Err(DeployTargetError::Read {
@@ -209,19 +209,19 @@ pub fn verify_deploy_target(
 
     let mut mismatches = Vec::new();
     compare_field(
-        "region",
+        stringify!(region),
         binding.region.as_deref(),
         observed.region.as_deref(),
         &mut mismatches,
     );
     compare_field(
-        "availability_zone",
+        stringify!(availability_zone),
         binding.availability_zone.as_deref(),
         observed.availability_zone.as_deref(),
         &mut mismatches,
     );
     compare_field(
-        "instance_id",
+        stringify!(instance_id),
         binding.instance_id.as_deref(),
         observed.instance_id.as_deref(),
         &mut mismatches,
@@ -313,9 +313,11 @@ impl HostFactsSource for Imdsv2HostFactsSource {
                 .operation_timeout(IMDS_FETCH_TIMEOUT)
                 .build();
 
-            let instance_id = fetch_metadata(&client, IMDS_INSTANCE_ID_PATH).await?;
-            let availability_zone = fetch_metadata(&client, IMDS_AVAILABILITY_ZONE_PATH).await?;
-            let region = fetch_metadata(&client, IMDS_REGION_PATH).await?;
+            let (instance_id, availability_zone, region) = tokio::try_join!(
+                fetch_metadata(&client, IMDS_INSTANCE_ID_PATH),
+                fetch_metadata(&client, IMDS_AVAILABILITY_ZONE_PATH),
+                fetch_metadata(&client, IMDS_REGION_PATH),
+            )?;
 
             Ok(ObservedHostFacts {
                 region,
@@ -326,8 +328,11 @@ impl HostFactsSource for Imdsv2HostFactsSource {
     }
 }
 
-/// Fetch one IMDS metadata leaf, mapping a not-found to `None` and any other
-/// failure to a fail-closed `DeployTargetError`.
+/// Fetch one IMDS metadata leaf. On success returns the trimmed value as
+/// `Some`; any failure — including a missing/not-found path — maps to a
+/// fail-closed `DeployTargetError::Observe`, because an unobservable host
+/// fact means we cannot prove the host is the configured target, so the
+/// launch must stop.
 async fn fetch_metadata(
     client: &aws_config::imds::Client,
     path: &'static str,
@@ -401,7 +406,9 @@ mod tests {
         let config = DeployTargetConfig {
             target: Some(TargetBinding {
                 name_tag: Some("informational-only".to_string()),
-                ..TargetBinding::default()
+                region: None,
+                availability_zone: None,
+                instance_id: None,
             }),
         };
         let source = FakeHostFactsSource::erroring();
@@ -451,10 +458,16 @@ mod tests {
         let config = DeployTargetConfig {
             target: Some(TargetBinding {
                 instance_id: Some("instance-target".to_string()),
-                ..TargetBinding::default()
+                region: None,
+                availability_zone: None,
+                name_tag: None,
             }),
         };
-        let source = FakeHostFactsSource::facts(ObservedHostFacts::default());
+        let source = FakeHostFactsSource::facts(ObservedHostFacts {
+            region: None,
+            availability_zone: None,
+            instance_id: None,
+        });
 
         let outcome = verify_deploy_target(&config, &source)
             .expect("a missing observed value is a mismatch, not an error");

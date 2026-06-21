@@ -18458,30 +18458,6 @@ classification = '''imdsv2_fetch_safety_timeout'''
 reason = '''Deliberate fixed fail-fast preflight bound on the link-local IMDSv2 handshake (the service is reachable with no network hops), so TargetVerify fails closed quickly when host facts are unreachable. Not asserted to be operator-irrelevant; promoting it to a configured value is deferred to a follow-up if operations ever observe transient-slowness false-fails.'''
 
 [[allowed]]
-path = '''src/bolt_v3_deploy_target.rs'''
-kind = '''string'''
-literal = '''"region"'''
-context = '''"region",'''
-classification = '''deploy_target_field_label'''
-reason = '''Names the deploy-target region field when recording a configured-vs-observed mismatch; a diagnostic field label, not an operator runtime value.'''
-
-[[allowed]]
-path = '''src/bolt_v3_deploy_target.rs'''
-kind = '''string'''
-literal = '''"availability_zone"'''
-context = '''"availability_zone",'''
-classification = '''deploy_target_field_label'''
-reason = '''Names the deploy-target availability-zone field when recording a configured-vs-observed mismatch; a diagnostic field label, not an operator runtime value.'''
-
-[[allowed]]
-path = '''src/bolt_v3_deploy_target.rs'''
-kind = '''string'''
-literal = '''"instance_id"'''
-context = '''"instance_id",'''
-classification = '''deploy_target_field_label'''
-reason = '''Names the deploy-target instance-id field when recording a configured-vs-observed mismatch; a diagnostic field label, not an operator runtime value.'''
-
-[[allowed]]
 path = '''src/main.rs'''
 kind = '''string'''
 literal = '''"ops_launch_target_verify"'''

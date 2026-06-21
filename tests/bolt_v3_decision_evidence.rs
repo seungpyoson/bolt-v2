@@ -671,9 +671,9 @@ fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Va
 fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvidence {
     if populated {
         BoltV3ExitEvaluationEvidence {
-            position_id: "position-one".to_string(),
-            market_id: "market-one".to_string(),
-            instrument_id: "instrument-up".to_string(),
+            position_id: Some("position-one".to_string()),
+            market_id: Some("market-one".to_string()),
+            instrument_id: Some("instrument-up".to_string()),
             client_order_id: Some("client-order-one".to_string()),
             exit_eval_now_ms: 1_700_000_000_000,
             exit_trigger_source: BoltV3ExitTriggerSource::ReferenceUpdate,
@@ -697,9 +697,9 @@ fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvide
         }
     } else {
         BoltV3ExitEvaluationEvidence {
-            position_id: "position-two".to_string(),
-            market_id: "market-two".to_string(),
-            instrument_id: "instrument-down".to_string(),
+            position_id: None,
+            market_id: None,
+            instrument_id: None,
             client_order_id: None,
             exit_eval_now_ms: 1_700_000_100_000,
             exit_trigger_source: BoltV3ExitTriggerSource::SignalQuote,

@@ -720,6 +720,10 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
 
     Raises ``OSError`` (or ``TimeoutError`` on lock contention) on any file-sink
     failure so the caller can fall back to stdout. Never blocks indefinitely.
+
+    On a partial write the file is rolled back (``ftruncate``) to the last clean
+    record boundary so a truncated fragment can never be left behind for the next
+    O_APPEND to glue onto — the stdout fallback becomes the sole copy.
     """
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -735,16 +739,27 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
         # O_APPEND would glue onto the fragment with no exception fired (no stdout
         # fallback). Loop until every byte lands; a 0-byte return means no
         # progress is possible, so raise OSError to trigger the stdout fallback.
+        # On any failure roll the file back to clean_boundary so no fragment
+        # survives. We hold the exclusive flock throughout, so no other writer
+        # can append between the size snapshot and the rollback.
         payload = record_line.encode("utf-8")
+        clean_boundary = os.fstat(fd).st_size
         offset = 0
-        while offset < len(payload):
-            written = os.write(fd, payload[offset:])
-            if written <= 0:
-                raise OSError(
-                    f"os.write made no progress writing to {out_path!r} "
-                    f"({offset}/{len(payload)} bytes written)"
-                )
-            offset += written
+        try:
+            while offset < len(payload):
+                written = os.write(fd, payload[offset:])
+                if written <= 0:
+                    raise OSError(
+                        f"os.write made no progress writing to {out_path!r} "
+                        f"({offset}/{len(payload)} bytes written)"
+                    )
+                offset += written
+        except OSError:
+            try:
+                os.ftruncate(fd, clean_boundary)
+            except OSError:
+                pass
+            raise
     finally:
         try:
             try:
@@ -752,7 +767,10 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
             except OSError:
                 pass
         finally:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def sanitize_non_finite(obj: Any) -> Any:
@@ -949,17 +967,28 @@ def main(argv: list[str]) -> int:
 def redirect_stdout_to_devnull() -> None:
     """Point fd 1 at /dev/null so the interpreter's final flush cannot error.
 
-    Best-effort: a stdout that exposes no real OS file descriptor is left as-is.
+    Best-effort and total: every OS call is guarded so this fail-safe cleanup can
+    never itself raise (it runs after a BrokenPipe when the record already
+    reached the file sink — an escaping OSError would flip a clean exit to
+    non-zero). A stdout that exposes no real OS file descriptor is left as-is.
     """
     try:
         stdout_fd = sys.stdout.fileno()
     except (AttributeError, OSError, ValueError):
         return
-    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
     try:
         os.dup2(devnull, stdout_fd)
+    except OSError:
+        pass
     finally:
-        os.close(devnull)
+        try:
+            os.close(devnull)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

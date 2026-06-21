@@ -442,23 +442,41 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         self.sampler = load_sampler()
 
     # ITEM 1 -------------------------------------------------------------
-    def test_partial_os_write_raises_so_caller_can_fall_back(self) -> None:
+    def test_partial_os_write_rolls_back_to_clean_boundary(self) -> None:
         # A short os.write (writes a PREFIX then can make no further progress)
         # must surface as OSError so write_jsonl_line falls back to stdout instead
         # of silently truncating the JSONL line. Pre-fix: the single os.write call
         # ignored its short return -> truncation, no exception, no fallback.
+        #
+        # F1 hardening: the partial bytes must NOT survive on disk. The writer
+        # rolls the file back (ftruncate) to the last clean record boundary so the
+        # next O_APPEND cannot glue onto a fragment. Here the boundary is one
+        # previously-written complete record; after the failed partial write the
+        # file must still contain ONLY that record, with no trailing fragment, and
+        # every line must parse as JSON.
         captured: dict[str, object] = {}
+        # Capture the real os.write BEFORE patching: patching self.sampler.os.write
+        # mutates the shared os module, so a bare os.write inside short_write would
+        # re-enter short_write instead of landing a byte.
+        real_write = os.write
 
         def short_write(fd, data):
             # Write only the first byte, then refuse further progress (return 0).
             if not captured.get("first_done"):
                 captured["first_done"] = True
-                os.write(fd, data[:1])  # land a genuine prefix on disk
+                real_write(fd, data[:1])  # land a genuine prefix on disk
                 return 1
             return 0  # no progress -> writer must raise
 
         with tempfile.TemporaryDirectory(prefix="host-health-item1.") as temp:
             target = Path(temp) / "out.jsonl"
+            # Lay down one CLEAN complete record first; this is the boundary the
+            # rollback must preserve.
+            self.sampler.write_to_file(
+                '{"probe":"first"}\n', str(target), lock_timeout=0.2
+            )
+            boundary_bytes = target.read_bytes()
+
             saved_write = self.sampler.os.write
             self.sampler.os.write = short_write
             try:
@@ -468,10 +486,61 @@ class ReviewRound2HardeningTests(unittest.TestCase):
                     )
             finally:
                 self.sampler.os.write = saved_write
-            # The file holds only the 1-byte prefix; crucially the writer did NOT
-            # report success on a truncated line.
+
+            # The file was rolled back to the clean boundary: it holds ONLY the
+            # previously-written complete record(s), with NO trailing fragment.
             on_disk = target.read_bytes()
-            self.assertLess(len(on_disk), len(b'{"probe":"item1"}\n'))
+            self.assertEqual(on_disk, boundary_bytes)
+            # Every line in the file parses (no corruption).
+            for raw in on_disk.decode("utf-8").splitlines():
+                json.loads(raw)
+            self.assertEqual(
+                [json.loads(r) for r in on_disk.decode("utf-8").splitlines()],
+                [{"probe": "first"}],
+            )
+
+    def test_next_append_after_partial_write_stays_parseable(self) -> None:
+        # The real downstream regression: after a partial-write failure rolls the
+        # file back, the NEXT sample appends a fresh complete record and EVERY line
+        # in the file must still parse. Pre-fix (fragment left behind) the next
+        # O_APPEND glues onto the fragment, producing one unparseable concatenated
+        # line.
+        captured: dict[str, object] = {}
+        # Capture the real os.write before patching (see sibling test above).
+        real_write = os.write
+
+        def short_write(fd, data):
+            if not captured.get("first_done"):
+                captured["first_done"] = True
+                real_write(fd, data[:1])  # land a genuine prefix on disk
+                return 1
+            return 0  # no progress -> writer must raise
+
+        with tempfile.TemporaryDirectory(prefix="host-health-item1c.") as temp:
+            target = Path(temp) / "out.jsonl"
+            self.sampler.write_to_file(
+                '{"probe":"first"}\n', str(target), lock_timeout=0.2
+            )
+
+            saved_write = self.sampler.os.write
+            self.sampler.os.write = short_write
+            try:
+                with self.assertRaises(OSError):
+                    self.sampler.write_to_file(
+                        '{"probe":"partial"}\n', str(target), lock_timeout=0.2
+                    )
+            finally:
+                self.sampler.os.write = saved_write
+
+            # Next sample: a fresh COMPLETE record with the real os.write restored.
+            self.sampler.write_to_file(
+                '{"probe":"second"}\n', str(target), lock_timeout=0.2
+            )
+
+            lines = target.read_bytes().decode("utf-8").splitlines()
+            parsed = [json.loads(raw) for raw in lines]  # raises on any corruption
+            self.assertIn({"probe": "second"}, parsed)
+            self.assertEqual(parsed, [{"probe": "first"}, {"probe": "second"}])
 
     def test_partial_write_makes_caller_fall_back_to_stdout(self) -> None:
         # End-to-end: with a short os.write, write_jsonl_line must emit the FULL
@@ -508,6 +577,93 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         # Full, untruncated record on stdout.
         record = json.loads(out_buf.getvalue().strip())
         self.assertEqual(record["probe"], "item1b")
+
+    # F7 -----------------------------------------------------------------
+    def test_redirect_stdout_to_devnull_never_raises_on_open_failure(self) -> None:
+        # redirect_stdout_to_devnull runs as fail-safe cleanup after a BrokenPipe
+        # (record already in the file sink). If os.open(/dev/null) fails (fd
+        # exhaustion / no /dev/null) it MUST swallow the OSError -- an escaping
+        # error would flip a clean exit to non-zero. Pre-fix: the os.open call was
+        # unguarded and the OSError propagated.
+        #
+        # sys.stdout must expose a real fileno() so we get past the early return
+        # into the guarded os.open; a temp file's stream provides one.
+        saved_open = self.sampler.os.open
+
+        def boom_on_devnull(path, *args, **kwargs):
+            if path == os.devnull:
+                raise OSError("simulated fd exhaustion opening /dev/null")
+            return saved_open(path, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory(prefix="host-health-f7.") as temp:
+            stdout_path = Path(temp) / "stdout.txt"
+            saved_stdout = sys.stdout
+            with open(stdout_path, "w", encoding="utf-8") as real_stream:
+                sys.stdout = real_stream
+                self.sampler.os.open = boom_on_devnull
+                try:
+                    # Must return normally, NOT raise.
+                    self.assertIsNone(self.sampler.redirect_stdout_to_devnull())
+                finally:
+                    self.sampler.os.open = saved_open
+                    sys.stdout = saved_stdout
+
+    # F8 -----------------------------------------------------------------
+    def test_os_close_failure_keeps_record_in_file_no_stdout_dup(self) -> None:
+        # A successful os.write followed by an os.close that raises OSError must
+        # NOT be treated as a file-sink failure: the record landed in the file, so
+        # write_jsonl_line must return None (no "fell back to stdout" warning) and
+        # must NOT also emit the record to stdout. Pre-fix: the unguarded os.close
+        # in write_to_file's finally propagated the OSError, write_jsonl_line's
+        # except OSError caught it, and the record was duplicated to stdout.
+        with tempfile.TemporaryDirectory(prefix="host-health-f8.") as temp:
+            target = Path(temp) / "out.jsonl"
+            target_fds: set[int] = set()
+            saved_open = self.sampler.os.open
+            saved_close = self.sampler.os.close
+
+            def tracking_open(path, *args, **kwargs):
+                fd = saved_open(path, *args, **kwargs)
+                # Record only the fd opened against the target file so we raise on
+                # close of exactly that fd, never on unrelated fds.
+                if os.fspath(path) == str(target):
+                    target_fds.add(fd)
+                return fd
+
+            def close_raises_on_target(fd):
+                if fd in target_fds:
+                    target_fds.discard(fd)
+                    # Close it for real so we leak nothing, then raise as if the
+                    # close syscall itself failed.
+                    saved_close(fd)
+                    raise OSError("simulated os.close failure after write")
+                return saved_close(fd)
+
+            out_buf = io.StringIO()
+            saved_stdout = sys.stdout
+            self.sampler.os.open = tracking_open
+            self.sampler.os.close = close_raises_on_target
+            sys.stdout = out_buf
+            try:
+                result = self.sampler.write_jsonl_line(
+                    {"probe": "f8"}, str(target), lock_timeout=0.2
+                )
+            finally:
+                self.sampler.os.open = saved_open
+                self.sampler.os.close = saved_close
+                sys.stdout = saved_stdout
+            # Read the file while the temp dir still exists (assertions below run
+            # after the dir is torn down).
+            on_disk = target.read_bytes()
+            stdout_dump = out_buf.getvalue()
+
+        # Success: no fallback warning returned.
+        self.assertIsNone(result)
+        # The record is in the file, intact.
+        lines = on_disk.decode("utf-8").splitlines()
+        self.assertEqual([json.loads(raw) for raw in lines], [{"probe": "f8"}])
+        # It was NOT also duplicated to stdout.
+        self.assertEqual(stdout_dump, "")
 
     # ITEM 2 -------------------------------------------------------------
     def test_non_finite_floats_emit_strict_json_null(self) -> None:

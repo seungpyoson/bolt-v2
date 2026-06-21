@@ -26,12 +26,22 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: [main]
+  # Merge queue lane: actionlint is a required check, so it must report on the
+  # merge_group/checks_requested event or the merge is blocked. The job needs no
+  # PR context. github.event.number is empty on merge_group, so the concurrency
+  # group keys on github.ref instead.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   group: >-
     actionlint-${{ github.event_name == 'pull_request'
       && format('pr-{0}', github.event.number)
+      || github.event_name == 'merge_group'
+      && format('mq-{0}', github.ref)
       || format('{0}-{1}', github.ref_name, github.sha) }}
+  # cancel-in-progress is true only for PR runs; merge_group queue validations
+  # must never be cancelled, so they fall through to the default (false).
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

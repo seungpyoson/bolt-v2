@@ -40,6 +40,7 @@ POLICY_ROWS = (
     "ready_for_review",
     "workflow_dispatch",
     "main_push",
+    "merge_group",
     "tag",
     "unknown_event",
 )
@@ -369,7 +370,13 @@ def evaluate_ci_policy(
     pull_request_draft: bool,
     ref: str,
 ) -> CiPolicyResult:
-    if event_name == "push" and ref.startswith("refs/tags/v"):
+    if event_name == "merge_group":
+        # The merge queue validates the exact to-be-merged commit on a temporary
+        # gh-readonly-queue ref. Resolve on event_name alone so the queue ref
+        # shape can never be misclassified as a tag or main_push; always run full.
+        path = config.policy["merge_group"]
+        reason = "merge_group"
+    elif event_name == "push" and ref.startswith("refs/tags/v"):
         path = config.policy["tag"]
         reason = "tag"
     elif event_name == "workflow_dispatch":

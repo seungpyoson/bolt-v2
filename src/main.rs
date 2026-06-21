@@ -16,6 +16,9 @@ use std::{
 use bolt_v2::{
     bolt_v3_atomic_io::{RUNTIME_CONFIG_FILE_MODE, write_atomic_file_with_mode},
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_deploy_target::{
+        Imdsv2HostFactsSource, TargetVerifyOutcome, load_deploy_target, verify_deploy_target,
+    },
     bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_live_node::{
         BoltV3LiveNodeRuntime, build_bolt_v3_live_node_with_resolved,
@@ -295,6 +298,7 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
 #[serde(rename_all = "kebab-case")]
 enum OpsLaunchStage {
     VerifyConfig,
+    TargetVerify,
     SecretsCheck,
     SecretsResolve,
     PrestartCheck,
@@ -304,8 +308,7 @@ enum OpsLaunchStage {
 
 const OPS_LAUNCH_STAGE_CHAIN: &[OpsLaunchStage] = &[
     OpsLaunchStage::VerifyConfig,
-    // Slice 1b target-verifier insertion point: run the target verifier here,
-    // after config identity is proven and before secrets or runtime side effects.
+    OpsLaunchStage::TargetVerify,
     OpsLaunchStage::SecretsCheck,
     OpsLaunchStage::SecretsResolve,
     OpsLaunchStage::PrestartCheck,
@@ -425,6 +428,7 @@ fn run_ops_launch_stage(
             context.loaded = Some(verification.loaded);
             Ok(())
         }
+        OpsLaunchStage::TargetVerify => run_loaded_target_verify(&context.config_root),
         OpsLaunchStage::SecretsCheck => run_loaded_secrets_check(context.loaded()?).map(|_| ()),
         OpsLaunchStage::SecretsResolve => {
             context.resolved_secrets = Some(run_loaded_secrets_resolve(context.loaded()?)?);
@@ -1117,6 +1121,46 @@ struct SecretCheckReport {
     secret_field_names: Vec<&'static str>,
 }
 
+/// Prove the running host matches the configured deploy target before
+/// secrets or runtime side effects. Reads `deploy.toml` from `config_root`
+/// (a separate load path from the live-config bundle), observes host facts
+/// over IMDSv2 only when a gating binding is configured, and fails closed on
+/// a mismatch or an unobservable host. An unconfigured target degrades to a
+/// successful no-op so the lane works before any instance is provisioned.
+fn run_loaded_target_verify(config_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let config = load_deploy_target(config_root)?;
+    let source = Imdsv2HostFactsSource::new();
+    let outcome = verify_deploy_target(&config, &source)?;
+    let log = match &outcome {
+        TargetVerifyOutcome::NoTargetConfigured => serde_json::json!({
+            "ops_launch_target_verify": "no-target-configured",
+        }),
+        TargetVerifyOutcome::Matched => serde_json::json!({
+            "ops_launch_target_verify": "matched",
+        }),
+        TargetVerifyOutcome::Mismatched(mismatches) => serde_json::json!({
+            "ops_launch_target_verify": "mismatched",
+            "field_mismatches": mismatches
+                .iter()
+                .map(|mismatch| serde_json::json!({
+                    "field": mismatch.field,
+                    "configured": mismatch.configured,
+                    "observed": mismatch.observed,
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    };
+    println!("{}", serde_json::to_string(&log)?);
+    match outcome {
+        TargetVerifyOutcome::NoTargetConfigured | TargetVerifyOutcome::Matched => Ok(()),
+        TargetVerifyOutcome::Mismatched(mismatches) => Err(format!(
+            "deploy target verification failed: {} configured field(s) do not match the running host",
+            mismatches.len()
+        )
+        .into()),
+    }
+}
+
 fn run_loaded_secrets_check(
     loaded: &LoadedBoltV3Config,
 ) -> Result<Vec<SecretCheckReport>, Box<dyn std::error::Error>> {
@@ -1219,6 +1263,7 @@ mod tests {
             observed,
             vec![
                 OpsLaunchStage::VerifyConfig,
+                OpsLaunchStage::TargetVerify,
                 OpsLaunchStage::SecretsCheck,
                 OpsLaunchStage::SecretsResolve,
                 OpsLaunchStage::PrestartCheck,
@@ -1246,9 +1291,30 @@ mod tests {
             observed,
             vec![
                 OpsLaunchStage::VerifyConfig,
+                OpsLaunchStage::TargetVerify,
                 OpsLaunchStage::SecretsCheck,
                 OpsLaunchStage::SecretsResolve,
             ]
+        );
+    }
+
+    #[test]
+    fn ops_launch_chain_stops_when_target_verify_fails_before_secrets_check() {
+        let mut observed = Vec::new();
+
+        let error = run_ops_launch_chain_with(|stage| {
+            observed.push(stage);
+            if stage == OpsLaunchStage::TargetVerify {
+                return Err("deploy target verification failed".into());
+            }
+            Ok(())
+        })
+        .expect_err("a failed target-verify stage must stop the chain before secrets");
+
+        assert_eq!(error.to_string(), "deploy target verification failed");
+        assert_eq!(
+            observed,
+            vec![OpsLaunchStage::VerifyConfig, OpsLaunchStage::TargetVerify]
         );
     }
 

@@ -18504,3 +18504,157 @@ literal = '''"order_template"'''
 context = '''"order_template",'''
 classification = '''kill_switch_flatten_order_template_diagnostic_field'''
 reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''
+
+# --- #885 Slice 2: loss-governor stale-halt evidence (RCA #885) ---
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "0"
+context = '''account_state_count: 0,'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Raw-event freshness counter starts at zero for a fresh loss-governor runtime feed state; it records how many raw venue events were observed (RCA #885 evidence) and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "0"
+context = '''portfolio_snapshot_count: 0,'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Raw-event freshness counter starts at zero for a fresh loss-governor runtime feed state; it records how many raw venue events were observed (RCA #885 evidence) and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "0"
+context = '''position_event_count: 0,'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Raw-event freshness counter starts at zero for a fresh loss-governor runtime feed state; it records how many raw venue events were observed (RCA #885 evidence) and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "1"
+context = '''self.account_state_count = self.account_state_count.saturating_add(1);'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Increments the raw-event freshness counter by one per observed venue event; the step is a structural identity, not a config-owned runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "1"
+context = '''self.portfolio_snapshot_count = self.portfolio_snapshot_count.saturating_add(1);'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Increments the raw-event freshness counter by one per observed venue event; the step is a structural identity, not a config-owned runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "1"
+context = '''self.position_event_count = self.position_event_count.saturating_add(1);'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Increments the raw-event freshness counter by one per observed venue event; the step is a structural identity, not a config-owned runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"missing_snapshot"'''
+context = '''BoltV3StaleLossReason::MissingSnapshot => "missing_snapshot",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"source_empty"'''
+context = '''BoltV3StaleLossReason::SourceEmpty => "source_empty",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"future_dated"'''
+context = '''BoltV3StaleLossReason::FutureDated => "future_dated",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"age_exceeded"'''
+context = '''BoltV3StaleLossReason::AgeExceeded => "age_exceeded",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"missing_required_field"'''
+context = '''BoltV3StaleLossReason::MissingRequiredField => "missing_required_field",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''account_state_count: 0,'''
+classification = "submit_admission_loss_freshness_counter_identity"
+reason = "The submit-admission loss-freshness telemetry starts empty for a fresh runtime state; counts are populated from observed raw venue events (RCA #885 evidence), not operator runtime values."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''portfolio_snapshot_count: 0,'''
+classification = "submit_admission_loss_freshness_counter_identity"
+reason = "The submit-admission loss-freshness telemetry starts empty for a fresh runtime state; counts are populated from observed raw venue events (RCA #885 evidence), not operator runtime values."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''position_event_count: 0,'''
+classification = "submit_admission_loss_freshness_counter_identity"
+reason = "The submit-admission loss-freshness telemetry starts empty for a fresh runtime state; counts are populated from observed raw venue events (RCA #885 evidence), not operator runtime values."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"none"'''
+context = '''.unwrap_or("none");'''
+classification = "loss_governor_stale_halt_key_absent_source_sentinel"
+reason = "Sentinel component of the stale loss-governor halt key used when no snapshot source is present; it is an evidence key element (RCA #885), not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = '''episode.count = episode.count.saturating_add(1);'''
+classification = "submit_admission_loss_halt_episode_identity"
+reason = "Increments the stale loss-governor halt episode count by one per repeated halt; structural identity, not a config-owned value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = '''count: 1,'''
+classification = "submit_admission_loss_halt_episode_identity"
+reason = "First stale loss-governor halt in an episode is recorded as count one; the episode counter is observability state (RCA #885), not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = '''(1, 0)'''
+classification = "submit_admission_loss_halt_episode_identity"
+reason = "A new stale loss-governor halt episode initializes its count to one (first halt); observability identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''(1, 0)'''
+classification = "submit_admission_loss_halt_episode_identity"
+reason = "A new stale loss-governor halt episode initializes elapsed-since-first-halt to zero (no prior halt yet); observability identity, not an operator runtime value."
+

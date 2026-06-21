@@ -988,6 +988,22 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
         exit_decisions[0].forced_flat_reasons,
         vec![BoltV3ForcedFlatReason::Freeze]
     );
+    assert_eq!(exit_decisions[0].exit_eval_now_ms, 1_200);
+    assert_eq!(
+        exit_decisions[0].exit_trigger_source,
+        BoltV3ExitTriggerSource::Unknown
+    );
+    assert_eq!(exit_decisions[0].trigger_ts_event_ms, 1_200);
+    assert_eq!(exit_decisions[0].trigger_ts_init_ms, None);
+    assert_eq!(exit_decisions[0].rv_surface_id, TEST_SURFACE_ID);
+    assert_eq!(exit_decisions[0].rv_snapshot_as_of_ms, Some(1_200));
+    assert!(exit_decisions[0].rv_snapshot_ready);
+    assert_eq!(exit_decisions[0].rv_snapshot_blockers, Vec::new());
+    assert_eq!(
+        exit_decisions[0].rv_gate_result,
+        BoltV3ExitRvGateResult::Accepted
+    );
+    assert_eq!(exit_decisions[0].rv_future_dating_delta_ms, None);
     assert_eq!(
         exit_decisions[1].exit_decision,
         BoltV3ExitDecisionOutcome::Blocked

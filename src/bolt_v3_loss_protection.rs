@@ -934,9 +934,11 @@ mod tests {
     use crate::{
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-            BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
-            BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
-            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+            BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
+            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
+            BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
+            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+            BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
@@ -1055,6 +1057,22 @@ mod tests {
             _fill: &BoltV3SubmitReservationFillEvidence,
         ) -> Result<()> {
             Ok(())
+        }
+
+        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received entry-skip evidence")
+        }
+
+        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received exit-decision evidence")
+        }
+
+        fn record_loss_governor_halt(&self, _halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received loss-governor-halt evidence")
+        }
+
+        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received requote-throttle evidence")
         }
     }
 }

@@ -7,7 +7,7 @@ use bolt_v2::{
         BoltV3AdmissionOutcome, BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason,
         BoltV3RequoteThrottleBound,
     },
-    bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason},
+    bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshotDiagnostics},
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
@@ -1095,6 +1095,7 @@ fn accepted_loss_decision() -> LossAdmissionDecision {
     LossAdmissionDecision {
         accepted: true,
         halt_reasons: Vec::new(),
+        diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
     }
 }
 
@@ -1102,6 +1103,7 @@ fn rejected_loss_decision(reason: LossHaltReason) -> LossAdmissionDecision {
     LossAdmissionDecision {
         accepted: false,
         halt_reasons: vec![reason],
+        diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
     }
 }
 

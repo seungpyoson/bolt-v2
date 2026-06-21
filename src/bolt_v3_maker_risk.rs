@@ -8,7 +8,7 @@
 //! claimed as implemented.
 
 use crate::{
-    bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason},
+    bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshotDiagnostics},
     bolt_v3_quote_lifecycle::{Leg, MarketAction, MarketQuote},
 };
 
@@ -137,6 +137,7 @@ mod tests {
         LossAdmissionDecision {
             accepted: true,
             halt_reasons: Vec::new(),
+            diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
         }
     }
 
@@ -144,6 +145,7 @@ mod tests {
         LossAdmissionDecision {
             accepted: false,
             halt_reasons: vec![reason],
+            diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
         }
     }
 

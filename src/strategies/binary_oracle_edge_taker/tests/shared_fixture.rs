@@ -348,6 +348,8 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
     EntrySkip(crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence),
     ExitDecision(crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence),
+    LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
+    RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
 }
 
 #[derive(Debug, Default)]
@@ -454,6 +456,32 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .expect("recording evidence writer mutex poisoned")
             .push(RecordedDecisionEvidenceEvent::ExitDecision(
                 decision.clone(),
+            ));
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        halt: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::LossGovernorHalt(
+                halt.clone(),
+            ));
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::RequoteThrottle(
+                throttle.clone(),
             ));
         Ok(())
     }
@@ -1457,6 +1485,7 @@ pub(super) fn fast_spot(venue_name: &str, price: f64, observed_ts_ms: u64) -> Fa
         venue: venue_name.to_string(),
         price,
         observed_ts_ms,
+        received_ts_ms: None,
     }
 }
 

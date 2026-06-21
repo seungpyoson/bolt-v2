@@ -1368,4 +1368,32 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn record_entry_skip(
+        &self,
+        _skip: &bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("basket execution noop writer received entry-skip evidence")
+    }
+
+    fn record_exit_decision(
+        &self,
+        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("basket execution noop writer received exit-decision evidence")
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _halt: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("basket execution noop writer received loss-governor-halt evidence")
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("basket execution noop writer received requote-throttle evidence")
+    }
 }

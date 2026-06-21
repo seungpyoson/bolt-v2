@@ -514,6 +514,41 @@ pub enum BoltV3ExitDecisionOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitTriggerSource {
+    SignalQuote,
+    ReferenceUpdate,
+    SelectionUpdate,
+    BookDelta,
+    Unknown,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitRvSnapshotBlocker {
+    InvalidConfig,
+    QuorumNotReady,
+    SourceStale,
+    CoverageBelowMinimum,
+    InterSampleGapExceeded,
+    SourceClassMismatch,
+    SampleKindMismatch,
+    CrossSourceDispersion,
+    AnnualizationBasisInvalid,
+    NotWarm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitRvGateResult {
+    Accepted,
+    RejectedFutureDated,
+    RejectedNotReady,
+    MissingSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BoltV3ExitBlockedReason {
     NoOpenPosition,
     ExitAlreadyPending,
@@ -530,28 +565,59 @@ pub enum BoltV3ExitBlockedReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3ExitDecisionEvidence {
     pub strategy_id: String,
-    pub market_id: Option<String>,
-    pub position_id: Option<String>,
-    pub position_instrument_id: Option<String>,
-    pub position_outcome_side: Option<BoltV3OutcomeSide>,
-    pub forced_flat_reasons: Vec<BoltV3ForcedFlatReason>,
-    pub hold_ev_bps: Option<String>,
-    pub exit_ev_bps: Option<String>,
-    pub realized_vol: Option<String>,
-    pub realized_vol_source_venue: Option<String>,
-    pub realized_vol_source_ts_ms: Option<u64>,
     #[serde(default)]
-    pub realized_volatility_source_diagnostics:
-        Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    pub market_id: Option<String>,
+    #[serde(default)]
+    pub position_id: Option<String>,
+    #[serde(default)]
+    pub position_instrument_id: Option<String>,
+    #[serde(default)]
+    pub position_outcome_side: Option<BoltV3OutcomeSide>,
+    #[serde(default)]
+    pub forced_flat_reasons: Vec<BoltV3ForcedFlatReason>,
+    #[serde(default)]
+    pub hold_ev_bps: Option<String>,
+    #[serde(default)]
+    pub exit_ev_bps: Option<String>,
+    #[serde(default)]
+    pub realized_vol: Option<String>,
+    #[serde(default)]
+    pub realized_vol_source_venue: Option<String>,
+    #[serde(default)]
+    pub realized_vol_source_ts_ms: Option<u64>,
+    pub exit_eval_now_ms: u64,
+    pub exit_trigger_source: BoltV3ExitTriggerSource,
+    pub trigger_ts_event_ms: u64,
+    #[serde(default)]
+    pub trigger_ts_init_ms: Option<u64>,
+    pub rv_surface_id: String,
+    #[serde(default)]
+    pub rv_snapshot_as_of_ms: Option<u64>,
+    #[serde(default)]
+    pub rv_snapshot_ready: bool,
+    #[serde(default)]
+    pub rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
+    #[serde(default, alias = "realized_volatility_source_diagnostics")]
+    pub rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    pub rv_gate_result: BoltV3ExitRvGateResult,
+    #[serde(default)]
+    pub rv_future_dating_delta_ms: Option<u64>,
     pub exit_hysteresis_bps: String,
     pub exit_decision: BoltV3ExitDecisionOutcome,
+    #[serde(default)]
     pub blocked_reason: Option<BoltV3ExitBlockedReason>,
+    #[serde(default)]
     pub client_order_id: Option<String>,
+    #[serde(default)]
     pub seconds_to_market_end: Option<u64>,
     pub ts_ms: u64,
+    #[serde(default)]
     pub stale_reference_after_ms: Option<u64>,
+    #[serde(default)]
     pub last_reference_ts_ms: Option<u64>,
+    #[serde(default)]
     pub min_liquidity_required: Option<String>,
+    #[serde(default)]
     pub liquidity_available: Option<String>,
     pub frozen: bool,
     pub metadata_matches_selection: bool,
@@ -570,6 +636,34 @@ pub enum BoltV3LossHaltReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum BoltV3LossSnapshotSource {
+    NtLossRuntimeFeed,
+    NtPortfolioSnapshot,
+    NtAccountSnapshot,
+    NtAccountAndPositionSnapshot,
+    NtPositionEvent,
+    NtPositionChanged,
+    NtPositionClosed,
+    NtPositionAdjusted,
+    NtSizingState,
+    BoltLossSnapshot,
+    LossGovernor,
+    Unknown,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3LossSnapshotStaleReason {
+    MissingSnapshot,
+    SourceEmpty,
+    FutureDated,
+    AgeExceeded,
+    MissingRequiredField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BoltV3TradingState {
     Active,
     Halted,
@@ -581,6 +675,9 @@ pub struct BoltV3LossGovernorHaltEvidence {
     pub observed_at_ns: u64,
     pub source: String,
     pub halt_reasons: Vec<BoltV3LossHaltReason>,
+    pub snapshot_observed_at_ns: Option<u64>,
+    pub admission_now_ns: u64,
+    pub snapshot_age_ns: Option<u64>,
     pub per_trade_pnl: Option<String>,
     pub daily_pnl: Option<String>,
     pub rolling_pnl: Option<String>,
@@ -591,6 +688,7 @@ pub struct BoltV3LossGovernorHaltEvidence {
     pub max_rolling_loss: Option<String>,
     pub max_drawdown: Option<String>,
     pub max_snapshot_age_ns: u64,
+    pub stale_reason: Option<BoltV3LossSnapshotStaleReason>,
     pub previous_trading_state: BoltV3TradingState,
     pub target_trading_state: BoltV3TradingState,
     pub subsystem: String,
@@ -734,9 +832,23 @@ pub struct BoltV3AdmissionDecisionEvidence {
     pub intent_kind: BoltV3SubmitIntentKind,
     pub outcome: BoltV3AdmissionOutcome,
     pub loss_halt_reasons: Vec<BoltV3LossHaltReason>,
+    pub snapshot_present: bool,
+    pub snapshot_observed_at_ns: Option<u64>,
+    pub admission_now_ns: u64,
+    pub snapshot_age_ns: Option<u64>,
+    pub max_snapshot_age_ns: Option<u64>,
+    pub snapshot_source: Option<BoltV3LossSnapshotSource>,
+    pub per_trade_pnl_present: bool,
+    pub daily_pnl_present: bool,
+    pub rolling_pnl_present: bool,
+    pub current_equity_present: bool,
+    pub peak_equity_present: bool,
+    pub last_account_state_observed_at_ns: Option<u64>,
+    pub last_portfolio_snapshot_observed_at_ns: Option<u64>,
+    pub last_position_event_observed_at_ns: Option<u64>,
+    pub stale_reason: Option<BoltV3LossSnapshotStaleReason>,
     pub loss_snapshot_observed_at_ns: Option<u64>,
     pub loss_eval_now_ns: Option<u64>,
-    pub max_snapshot_age_ns: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2654,10 +2766,27 @@ mod tests {
                 outcome: outcome.clone(),
                 loss_halt_reasons: match &outcome {
                     BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
-                        vec!["stale_loss_snapshot".to_string()]
+                        vec![BoltV3LossHaltReason::StaleLossSnapshot]
                     }
                     _ => Vec::new(),
                 },
+                snapshot_present: true,
+                snapshot_observed_at_ns: Some(1_000),
+                admission_now_ns: 1_200,
+                snapshot_age_ns: Some(200),
+                max_snapshot_age_ns: Some(1_000),
+                snapshot_source: Some(BoltV3LossSnapshotSource::NtPortfolioSnapshot),
+                per_trade_pnl_present: true,
+                daily_pnl_present: true,
+                rolling_pnl_present: true,
+                current_equity_present: true,
+                peak_equity_present: true,
+                last_account_state_observed_at_ns: None,
+                last_portfolio_snapshot_observed_at_ns: None,
+                last_position_event_observed_at_ns: None,
+                stale_reason: None,
+                loss_snapshot_observed_at_ns: Some(1_000),
+                loss_eval_now_ns: Some(1_200),
             };
 
             let line = encode_admission_decision_line(&decision).expect("decision should encode");

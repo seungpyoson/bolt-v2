@@ -1117,19 +1117,19 @@ mod tests {
         }
 
         fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            Ok(())
+            anyhow::bail!("maker noop writer received entry-skip evidence")
         }
 
         fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            Ok(())
+            anyhow::bail!("maker noop writer received exit-decision evidence")
         }
 
         fn record_loss_governor_halt(&self, _halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
-            Ok(())
+            anyhow::bail!("maker noop writer received loss-governor-halt evidence")
         }
 
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            Ok(())
+            anyhow::bail!("maker noop writer received requote-throttle evidence")
         }
     }
 

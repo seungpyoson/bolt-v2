@@ -18,7 +18,7 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::{
-    bolt_v3_loss_governor::LossSnapshot,
+    bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps},
     bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     nt_runtime_capture::{
@@ -66,6 +66,7 @@ struct LossGovernorRuntimeFeedState {
     account_state_equity_baseline: Option<TimedDecimal>,
     portfolio_pnl_observed: bool,
     latest_snapshot: Option<LossSnapshot>,
+    source_observations: LossSourceObservationTimestamps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +239,10 @@ impl LossGovernorRuntimeFeed {
         let observed_at_ns = snapshot.ts_event.as_u64();
         let daily_pnl = daily_pnl(snapshot, currency)?;
         let current_equity = total_equity(snapshot, currency)?;
+        self.state
+            .record_portfolio_snapshot_observed_at_ns(observed_at_ns);
+        self.submit_admission
+            .update_loss_source_observations(self.state.source_observations);
         self.state.portfolio_pnl_observed = true;
         self.state.update_rolling_pnl(
             daily_pnl,
@@ -279,6 +284,9 @@ impl LossGovernorRuntimeFeed {
 
         let observed_at_ns = state.ts_event.as_u64();
         let current_equity = account_total_equity(state, currency)?;
+        self.state.record_account_state_observed_at_ns(observed_at_ns);
+        self.submit_admission
+            .update_loss_source_observations(self.state.source_observations);
         if self.state.portfolio_pnl_observed {
             let daily_pnl = self
                 .state
@@ -347,6 +355,11 @@ impl LossGovernorRuntimeFeed {
             return None;
         }
 
+        self.state
+            .record_position_event_observed_at_ns(position_event_ts_init(event));
+        self.submit_admission
+            .update_loss_source_observations(self.state.source_observations);
+
         if let Some(per_trade_pnl) = position_fact.per_trade_pnl {
             self.state.record_position_pnl(
                 position_fact.position_id,
@@ -385,6 +398,7 @@ impl LossGovernorRuntimeFeed {
             rolling_pnl: Some(rolling_pnl.value),
             current_equity: Some(current_equity.value),
             peak_equity: Some(peak_equity.value),
+            source_observations: self.state.source_observations,
         };
         self.submit_admission.update_loss_snapshot(snapshot.clone());
         self.state.latest_snapshot = Some(snapshot.clone());
@@ -441,7 +455,21 @@ impl LossGovernorRuntimeFeedState {
             account_state_equity_baseline: None,
             portfolio_pnl_observed: false,
             latest_snapshot: None,
+            source_observations: LossSourceObservationTimestamps::default(),
         }
+    }
+
+    fn record_account_state_observed_at_ns(&mut self, observed_at_ns: u64) {
+        self.source_observations.last_account_state_observed_at_ns = Some(observed_at_ns);
+    }
+
+    fn record_portfolio_snapshot_observed_at_ns(&mut self, observed_at_ns: u64) {
+        self.source_observations
+            .last_portfolio_snapshot_observed_at_ns = Some(observed_at_ns);
+    }
+
+    fn record_position_event_observed_at_ns(&mut self, observed_at_ns: u64) {
+        self.source_observations.last_position_event_observed_at_ns = Some(observed_at_ns);
     }
 
     fn accept_currency(&mut self, currency: Currency) -> bool {

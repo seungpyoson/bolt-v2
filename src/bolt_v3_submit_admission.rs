@@ -3,14 +3,17 @@ use crate::bolt_v3_capital_reservation::{
 };
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3BasketAdmissionOutcome, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+    BoltV3BasketAdmissionOutcome, BoltV3DecisionEvidenceWriter, BoltV3LossHaltReason,
+    BoltV3LossSnapshotSource, BoltV3LossSnapshotStaleReason, BoltV3OrderIntentEvidence,
     BoltV3OrderIntentKind, BoltV3PositionSizerRebuildAuditEvidence,
     BoltV3RecoveredSubmitReservationEvidence, BoltV3SubmitReservationFillEvidence,
     BoltV3SubmitReservationMetadataEvidence, compiled_order_price_source,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_loss_governor::{
-    LossGovernorPolicy, LossHaltReason, LossSnapshot, evaluate_loss_admission,
+    LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotDiagnostics,
+    LossSnapshotStaleReason, LossSourceObservationTimestamps,
+    evaluate_loss_admission_with_observations,
 };
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
 use crate::bolt_v3_observed_dedupe::prune_observed_dedupe_entries;
@@ -40,6 +43,19 @@ use std::{
 };
 
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
+
+const LOSS_SNAPSHOT_SOURCE_NT_LOSS_RUNTIME_FEED: &str = stringify!(nt_loss_runtime_feed);
+const LOSS_SNAPSHOT_SOURCE_NT_PORTFOLIO_SNAPSHOT: &str = stringify!(nt_portfolio_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_SNAPSHOT: &str = stringify!(nt_account_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_AND_POSITION_SNAPSHOT: &str =
+    stringify!(nt_account_and_position_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT: &str = stringify!(nt_position_event);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED: &str = stringify!(nt_position_changed);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED: &str = stringify!(nt_position_closed);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED: &str = stringify!(nt_position_adjusted);
+const LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE: &str = stringify!(nt_sizing_state);
+const LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT: &str = stringify!(bolt_loss_snapshot);
+const LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR: &str = stringify!(loss_governor);
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 
@@ -116,6 +132,7 @@ struct BoltV3SubmitAdmissionInner {
     live_kill_switch_forced_reduction_order_count: u32,
     loss_policy: Option<LossGovernorPolicy>,
     loss_snapshot: Option<LossSnapshot>,
+    loss_source_observations: LossSourceObservationTimestamps,
     position_sizer: Option<BoltV3SubmitPositionSizerState>,
 }
 
@@ -380,6 +397,7 @@ impl BoltV3SubmitAdmissionState {
                 live_kill_switch_forced_reduction_order_count: 0,
                 loss_policy,
                 loss_snapshot: None,
+                loss_source_observations: LossSourceObservationTimestamps::default(),
                 position_sizer: position_sizer.map(|config| BoltV3SubmitPositionSizerState {
                     venue_id: config.venue_id,
                     account_id: config.account_id,
@@ -400,10 +418,22 @@ impl BoltV3SubmitAdmissionState {
     }
 
     pub fn update_loss_snapshot(&self, snapshot: LossSnapshot) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        inner.loss_source_observations = snapshot.source_observations;
+        inner.loss_snapshot = Some(snapshot);
+    }
+
+    pub fn update_loss_source_observations(
+        &self,
+        observations: LossSourceObservationTimestamps,
+    ) {
         self.inner
             .lock()
             .expect("submit admission state mutex should not be poisoned")
-            .loss_snapshot = Some(snapshot);
+            .loss_source_observations = observations;
     }
 
     pub fn loss_governor_policy(&self) -> Option<LossGovernorPolicy> {
@@ -1461,8 +1491,81 @@ impl BoltV3SubmitAdmissionState {
             loss_halt_reasons: evaluation
                 .loss_halt_reasons
                 .iter()
-                .map(|reason| reason.as_str().to_string())
+                .copied()
+                .map(loss_halt_reason_to_evidence)
                 .collect(),
+            snapshot_present: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .is_some_and(|diagnostics| diagnostics.snapshot_present),
+            snapshot_observed_at_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.snapshot_observed_at_ns),
+            admission_now_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .map_or(evaluation.admission_now_ns, |diagnostics| {
+                    diagnostics.admission_now_ns
+                }),
+            snapshot_age_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.snapshot_age_ns),
+            max_snapshot_age_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.max_snapshot_age_ns),
+            snapshot_source: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.snapshot_source.as_deref())
+                .map(loss_snapshot_source_to_evidence),
+            per_trade_pnl_present: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .is_some_and(|diagnostics| diagnostics.per_trade_pnl_present),
+            daily_pnl_present: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .is_some_and(|diagnostics| diagnostics.daily_pnl_present),
+            rolling_pnl_present: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .is_some_and(|diagnostics| diagnostics.rolling_pnl_present),
+            current_equity_present: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .is_some_and(|diagnostics| diagnostics.current_equity_present),
+            peak_equity_present: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .is_some_and(|diagnostics| diagnostics.peak_equity_present),
+            last_account_state_observed_at_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.last_account_state_observed_at_ns),
+            last_portfolio_snapshot_observed_at_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.last_portfolio_snapshot_observed_at_ns),
+            last_position_event_observed_at_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.last_position_event_observed_at_ns),
+            stale_reason: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.stale_reason)
+                .map(loss_snapshot_stale_reason_to_evidence),
+            loss_snapshot_observed_at_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.snapshot_observed_at_ns),
+            loss_eval_now_ns: evaluation
+                .loss_snapshot_diagnostics
+                .as_ref()
+                .map(|diagnostics| diagnostics.admission_now_ns),
         };
         self.decision_evidence.record_admission_decision(&evidence)
     }
@@ -1736,6 +1839,7 @@ impl BoltV3SubmitAdmissionState {
         if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 Self::evaluate_kill_switch_forced_reduction(inner, request),
+                now_ns,
             );
         }
         if matches!(
@@ -1745,29 +1849,42 @@ impl BoltV3SubmitAdmissionState {
         {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedKillSwitchLatched,
+                now_ns,
             );
         }
         if !request.lifecycle_policy.allows(request.intent_kind) {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
+                now_ns,
             );
         }
+        let mut loss_snapshot_diagnostics = None;
         if let Some(loss_policy) = inner.loss_policy.as_ref()
             && matches!(
                 request.intent_kind,
                 BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
             )
         {
-            let decision =
-                evaluate_loss_admission(loss_policy, inner.loss_snapshot.as_ref(), now_ns);
+            let decision = evaluate_loss_admission_with_observations(
+                loss_policy,
+                inner.loss_snapshot.as_ref(),
+                now_ns,
+                inner.loss_source_observations,
+            );
+            loss_snapshot_diagnostics = Some(decision.diagnostics.clone());
             if !decision.accepted {
-                return BoltV3SubmitAdmissionEvaluation::loss_halt(decision.halt_reasons);
+                return BoltV3SubmitAdmissionEvaluation::loss_halt(
+                    decision.halt_reasons,
+                    decision.diagnostics,
+                );
             }
         }
         if request.notional <= Decimal::ZERO {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
-            );
+                now_ns,
+            )
+            .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
         }
         if let Some(limits) = inner
             .live_submit_approval_limits
@@ -1776,7 +1893,9 @@ impl BoltV3SubmitAdmissionState {
             if request.notional > limits.max_order_notional {
                 return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                     BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
-                );
+                    now_ns,
+                )
+                .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
             }
             let current_count = inner
                 .admitted_order_count_by_execution_client
@@ -1788,7 +1907,9 @@ impl BoltV3SubmitAdmissionState {
             {
                 return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                     BoltV3AdmissionOutcome::RejectedCountCapExhausted,
-                );
+                    now_ns,
+                )
+                .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
             }
         }
         match request.intent_kind {
@@ -1797,7 +1918,9 @@ impl BoltV3SubmitAdmissionState {
                 let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
                     return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                         BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
-                    );
+                        now_ns,
+                    )
+                    .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
                 };
                 if !proof.is_valid_for_shape(
                     &request.instrument_id,
@@ -1806,7 +1929,9 @@ impl BoltV3SubmitAdmissionState {
                 ) {
                     return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                         BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
-                    );
+                        now_ns,
+                    )
+                    .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
                 }
             }
             BoltV3SubmitIntentKind::ReplaceSubmit => {}
@@ -1824,14 +1949,21 @@ impl BoltV3SubmitAdmissionState {
         {
             let decision = evaluate_position_sizer_submit(inner, request, now_ns);
             if !decision.accepted {
-                return BoltV3SubmitAdmissionEvaluation::position_sizer_rejected(decision.reason);
+                return BoltV3SubmitAdmissionEvaluation::position_sizer_rejected(
+                    decision.reason,
+                    now_ns,
+                )
+                .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
             }
             return BoltV3SubmitAdmissionEvaluation::admitted_with_rollback(
                 decision.rollback,
                 decision.reservation_metadata,
-            );
+                now_ns,
+            )
+            .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
         }
-        BoltV3SubmitAdmissionEvaluation::without_loss_halt(BoltV3AdmissionOutcome::Admitted)
+        BoltV3SubmitAdmissionEvaluation::without_loss_halt(BoltV3AdmissionOutcome::Admitted, now_ns)
+            .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics)
     }
 
     fn evaluate_kill_switch_forced_reduction(
@@ -1887,6 +2019,50 @@ fn basket_outcome_from_submit_outcome(
         | BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
             BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
         }
+    }
+}
+
+fn loss_halt_reason_to_evidence(reason: LossHaltReason) -> BoltV3LossHaltReason {
+    match reason {
+        LossHaltReason::PerTradeLossLimit => BoltV3LossHaltReason::PerTradeLossLimit,
+        LossHaltReason::DailyLossLimit => BoltV3LossHaltReason::DailyLossLimit,
+        LossHaltReason::RollingLossLimit => BoltV3LossHaltReason::RollingLossLimit,
+        LossHaltReason::MaxDrawdownLimit => BoltV3LossHaltReason::MaxDrawdownLimit,
+        LossHaltReason::StaleLossSnapshot => BoltV3LossHaltReason::StaleLossSnapshot,
+    }
+}
+
+fn loss_snapshot_stale_reason_to_evidence(
+    reason: LossSnapshotStaleReason,
+) -> BoltV3LossSnapshotStaleReason {
+    match reason {
+        LossSnapshotStaleReason::MissingSnapshot => BoltV3LossSnapshotStaleReason::MissingSnapshot,
+        LossSnapshotStaleReason::SourceEmpty => BoltV3LossSnapshotStaleReason::SourceEmpty,
+        LossSnapshotStaleReason::FutureDated => BoltV3LossSnapshotStaleReason::FutureDated,
+        LossSnapshotStaleReason::AgeExceeded => BoltV3LossSnapshotStaleReason::AgeExceeded,
+        LossSnapshotStaleReason::MissingRequiredField => {
+            BoltV3LossSnapshotStaleReason::MissingRequiredField
+        }
+    }
+}
+
+fn loss_snapshot_source_to_evidence(source: &str) -> BoltV3LossSnapshotSource {
+    match source {
+        LOSS_SNAPSHOT_SOURCE_NT_LOSS_RUNTIME_FEED => BoltV3LossSnapshotSource::NtLossRuntimeFeed,
+        LOSS_SNAPSHOT_SOURCE_NT_PORTFOLIO_SNAPSHOT => BoltV3LossSnapshotSource::NtPortfolioSnapshot,
+        LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_SNAPSHOT => BoltV3LossSnapshotSource::NtAccountSnapshot,
+        LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_AND_POSITION_SNAPSHOT => {
+            BoltV3LossSnapshotSource::NtAccountAndPositionSnapshot
+        }
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT => BoltV3LossSnapshotSource::NtPositionEvent,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED => BoltV3LossSnapshotSource::NtPositionChanged,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED => BoltV3LossSnapshotSource::NtPositionClosed,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED => BoltV3LossSnapshotSource::NtPositionAdjusted,
+        LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE => BoltV3LossSnapshotSource::NtSizingState,
+        LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT => BoltV3LossSnapshotSource::BoltLossSnapshot,
+        LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR => BoltV3LossSnapshotSource::LossGovernor,
+        _ if source.trim().is_empty() => BoltV3LossSnapshotSource::Unknown,
+        _ => BoltV3LossSnapshotSource::Other,
     }
 }
 
@@ -1980,37 +2156,52 @@ struct BoltV3SubmitAdmissionCounterRollback {
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionEvaluation {
     outcome: BoltV3AdmissionOutcome,
+    admission_now_ns: u64,
     loss_halt_reasons: Vec<LossHaltReason>,
+    loss_snapshot_diagnostics: Option<LossSnapshotDiagnostics>,
     position_sizer_rejection: Option<BoltV3PositionSizerRejectReason>,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
     reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
 }
 
 impl BoltV3SubmitAdmissionEvaluation {
-    fn without_loss_halt(outcome: BoltV3AdmissionOutcome) -> Self {
+    fn without_loss_halt(outcome: BoltV3AdmissionOutcome, admission_now_ns: u64) -> Self {
         Self {
             outcome,
+            admission_now_ns,
             loss_halt_reasons: Vec::new(),
+            loss_snapshot_diagnostics: None,
             position_sizer_rejection: None,
             rollback: None,
             reservation_metadata: None,
         }
     }
 
-    fn loss_halt(loss_halt_reasons: Vec<LossHaltReason>) -> Self {
+    fn loss_halt(
+        loss_halt_reasons: Vec<LossHaltReason>,
+        diagnostics: LossSnapshotDiagnostics,
+    ) -> Self {
+        let admission_now_ns = diagnostics.admission_now_ns;
         Self {
             outcome: BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
+            admission_now_ns,
             loss_halt_reasons,
+            loss_snapshot_diagnostics: Some(diagnostics),
             position_sizer_rejection: None,
             rollback: None,
             reservation_metadata: None,
         }
     }
 
-    fn position_sizer_rejected(reason: BoltV3PositionSizerRejectReason) -> Self {
+    fn position_sizer_rejected(
+        reason: BoltV3PositionSizerRejectReason,
+        admission_now_ns: u64,
+    ) -> Self {
         Self {
             outcome: BoltV3AdmissionOutcome::RejectedPositionSizing,
+            admission_now_ns,
             loss_halt_reasons: Vec::new(),
+            loss_snapshot_diagnostics: None,
             position_sizer_rejection: Some(reason),
             rollback: None,
             reservation_metadata: None,
@@ -2020,14 +2211,27 @@ impl BoltV3SubmitAdmissionEvaluation {
     fn admitted_with_rollback(
         rollback: Option<BoltV3PositionSizerReservationRollback>,
         reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
+        admission_now_ns: u64,
     ) -> Self {
         Self {
             outcome: BoltV3AdmissionOutcome::Admitted,
+            admission_now_ns,
             loss_halt_reasons: Vec::new(),
+            loss_snapshot_diagnostics: None,
             position_sizer_rejection: None,
             rollback,
             reservation_metadata,
         }
+    }
+
+    fn with_loss_snapshot_diagnostics(
+        mut self,
+        diagnostics: Option<LossSnapshotDiagnostics>,
+    ) -> Self {
+        if diagnostics.is_some() {
+            self.loss_snapshot_diagnostics = diagnostics;
+        }
+        self
     }
 }
 

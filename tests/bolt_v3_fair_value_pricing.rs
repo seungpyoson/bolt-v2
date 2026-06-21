@@ -99,6 +99,7 @@ fn observe_ready_fair_value_state() -> FairValuePricingState {
         venue: "<SPOT_SOURCE_ID>".to_string(),
         price: 3_105.0,
         observed_ts_ms: TARGET_READY_TS_MS,
+        received_ts_ms: None,
     });
     state.observe_realized_vol_snapshot(ready_snapshot(
         TARGET_SURFACE_ID,
@@ -208,6 +209,7 @@ fn fair_value_pricing_reports_no_source_venue_when_snapshot_sources_are_empty() 
         venue: "<SPOT_SOURCE_ID>".to_string(),
         price: 3_105.0,
         observed_ts_ms: TARGET_READY_TS_MS,
+        received_ts_ms: None,
     });
     state.observe_realized_vol_snapshot(snapshot(
         TARGET_SURFACE_ID,

@@ -430,6 +430,34 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn record_entry_skip(
+            &self,
+            _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received entry-skip evidence")
+        }
+
+        fn record_exit_decision(
+            &self,
+            _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received exit-decision evidence")
+        }
+
+        fn record_loss_governor_halt(
+            &self,
+            _halt: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received loss-governor-halt evidence")
+        }
+
+        fn record_requote_throttle(
+            &self,
+            _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received requote-throttle evidence")
+        }
     }
 
     #[derive(Debug)]

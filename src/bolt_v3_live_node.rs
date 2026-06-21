@@ -119,10 +119,12 @@ use crate::{
     bolt_v3_decision_evidence::{
         BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM, BoltV3AdmissionDecisionEvidence,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3LossGovernorHaltEvidence, BoltV3LossHaltReason, BoltV3OrderIntentEvidence,
-        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-        BoltV3TradingState, JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3LossGovernorHaltEvidence,
+        BoltV3LossHaltReason, BoltV3LossSnapshotStaleReason, BoltV3OrderIntentEvidence,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+        BoltV3SubmitReservationMetadataEvidence, BoltV3TradingState,
+        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
         read_submit_reservation_recovery_evidence,
     },
     bolt_v3_iv::{
@@ -146,7 +148,7 @@ use crate::{
     },
     bolt_v3_loss_governor::{
         LossAdmissionDecision, LossGovernorPolicy, LossHaltReason, LossSnapshot,
-        evaluate_loss_admission,
+        LossSnapshotStaleReason, evaluate_loss_admission,
     },
     bolt_v3_loss_halt_actions::{
         LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,
@@ -5849,6 +5851,9 @@ impl BoltV3LossGovernorHaltEvidence {
                 .copied()
                 .map(loss_halt_reason_to_evidence)
                 .collect(),
+            snapshot_observed_at_ns: decision.diagnostics.snapshot_observed_at_ns,
+            admission_now_ns: decision.diagnostics.admission_now_ns,
+            snapshot_age_ns: decision.diagnostics.snapshot_age_ns,
             per_trade_pnl: snapshot
                 .and_then(|snapshot| snapshot.per_trade_pnl.map(|v| v.to_string())),
             daily_pnl: snapshot.and_then(|snapshot| snapshot.daily_pnl.map(|v| v.to_string())),
@@ -5861,6 +5866,10 @@ impl BoltV3LossGovernorHaltEvidence {
             max_rolling_loss: policy.max_rolling_loss.map(|value| value.to_string()),
             max_drawdown: policy.max_drawdown.map(|value| value.to_string()),
             max_snapshot_age_ns: policy.max_snapshot_age_ns,
+            stale_reason: decision
+                .diagnostics
+                .stale_reason
+                .map(loss_snapshot_stale_reason_to_evidence),
             previous_trading_state: trading_state_to_evidence(previous_trading_state),
             target_trading_state: trading_state_to_evidence(target_trading_state),
             subsystem: BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM.to_string(),
@@ -5883,6 +5892,20 @@ fn loss_halt_reason_to_evidence(reason: LossHaltReason) -> BoltV3LossHaltReason 
         LossHaltReason::RollingLossLimit => BoltV3LossHaltReason::RollingLossLimit,
         LossHaltReason::MaxDrawdownLimit => BoltV3LossHaltReason::MaxDrawdownLimit,
         LossHaltReason::StaleLossSnapshot => BoltV3LossHaltReason::StaleLossSnapshot,
+    }
+}
+
+fn loss_snapshot_stale_reason_to_evidence(
+    reason: LossSnapshotStaleReason,
+) -> BoltV3LossSnapshotStaleReason {
+    match reason {
+        LossSnapshotStaleReason::MissingSnapshot => BoltV3LossSnapshotStaleReason::MissingSnapshot,
+        LossSnapshotStaleReason::SourceEmpty => BoltV3LossSnapshotStaleReason::SourceEmpty,
+        LossSnapshotStaleReason::FutureDated => BoltV3LossSnapshotStaleReason::FutureDated,
+        LossSnapshotStaleReason::AgeExceeded => BoltV3LossSnapshotStaleReason::AgeExceeded,
+        LossSnapshotStaleReason::MissingRequiredField => {
+            BoltV3LossSnapshotStaleReason::MissingRequiredField
+        }
     }
 }
 
@@ -6338,12 +6361,24 @@ mod tests {
             Ok(())
         }
 
+        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+            anyhow::bail!("loss-governor recorder received entry-skip evidence")
+        }
+
+        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+            anyhow::bail!("loss-governor recorder received exit-decision evidence")
+        }
+
         fn record_loss_governor_halt(&self, halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
             self.halts
                 .lock()
                 .expect("loss governor evidence recorder mutex poisoned")
                 .push(halt.clone());
             Ok(())
+        }
+
+        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+            anyhow::bail!("loss-governor recorder received requote-throttle evidence")
         }
     }
 
@@ -6556,6 +6591,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
+            source_observations: Default::default(),
         };
 
         handler(Some(&snapshot), 2_100);
@@ -6604,6 +6640,7 @@ mod tests {
             rolling_pnl: Some(Decimal::ZERO),
             current_equity: Some(Decimal::new(100, 0)),
             peak_equity: Some(Decimal::new(100, 0)),
+            source_observations: Default::default(),
         });
         let evidence = LossGovernorManualRecoveryEvidence::new(
             "operator-primary",

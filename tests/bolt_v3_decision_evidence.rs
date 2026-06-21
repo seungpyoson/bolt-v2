@@ -12,9 +12,11 @@ use bolt_v2::{
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
         BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
-        BoltV3ExitDecisionOutcome, BoltV3ForcedFlatReason, BoltV3LossGovernorHaltEvidence,
-        BoltV3LossHaltReason, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3OutcomeSide, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3ExitDecisionOutcome, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
+        BoltV3ExitTriggerSource, BoltV3ForcedFlatReason, BoltV3LossGovernorHaltEvidence,
+        BoltV3LossHaltReason, BoltV3LossSnapshotSource, BoltV3LossSnapshotStaleReason,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
+        BoltV3OutcomeSide, BoltV3PositionSizerRebuildAuditEvidence,
         BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RequoteActionCostClass,
         BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
         BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
@@ -543,7 +545,10 @@ fn exit_decision_evidence_writes_one_durable_line_and_readers_skip_it() {
         serde_json::from_value(lines[0]["exit_decision"].clone())
             .expect("exit decision should decode");
     assert_eq!(decoded, evidence);
-    assert_eq!(decoded.exit_decision, BoltV3ExitDecisionOutcome::Exit);
+    assert_eq!(
+        decoded.exit_decision,
+        BoltV3ExitDecisionOutcome::ExitFailClosed
+    );
     assert_eq!(
         decoded.forced_flat_reasons,
         vec![BoltV3ForcedFlatReason::StaleReference]
@@ -740,8 +745,22 @@ fn sample_exit_decision_evidence() -> BoltV3ExitDecisionEvidence {
         forced_flat_reasons: vec![BoltV3ForcedFlatReason::StaleReference],
         hold_ev_bps: Some("2.5".to_string()),
         exit_ev_bps: Some("3.5".to_string()),
+        realized_vol: None,
+        realized_vol_source_venue: None,
+        realized_vol_source_ts_ms: None,
+        exit_eval_now_ms: 1_200,
+        exit_trigger_source: BoltV3ExitTriggerSource::SignalQuote,
+        trigger_ts_event_ms: 1_200,
+        trigger_ts_init_ms: Some(1_201),
+        rv_surface_id: "surface-one".to_string(),
+        rv_snapshot_as_of_ms: Some(1_250),
+        rv_snapshot_ready: true,
+        rv_snapshot_blockers: vec![BoltV3ExitRvSnapshotBlocker::QuorumNotReady],
+        rv_source_diagnostics: Vec::new(),
+        rv_gate_result: BoltV3ExitRvGateResult::RejectedFutureDated,
+        rv_future_dating_delta_ms: Some(50),
         exit_hysteresis_bps: "1".to_string(),
-        exit_decision: BoltV3ExitDecisionOutcome::Exit,
+        exit_decision: BoltV3ExitDecisionOutcome::ExitFailClosed,
         blocked_reason: None,
         client_order_id: Some("client-order-exit".to_string()),
         seconds_to_market_end: Some(240),
@@ -761,6 +780,9 @@ fn sample_loss_governor_halt_evidence() -> BoltV3LossGovernorHaltEvidence {
         observed_at_ns: 10_000,
         source: "nt_portfolio_snapshot".to_string(),
         halt_reasons: vec![BoltV3LossHaltReason::DailyLossLimit],
+        snapshot_observed_at_ns: Some(9_500),
+        admission_now_ns: 10_000,
+        snapshot_age_ns: Some(500),
         per_trade_pnl: Some("-1".to_string()),
         daily_pnl: Some("-20".to_string()),
         rolling_pnl: Some("-20".to_string()),
@@ -771,6 +793,7 @@ fn sample_loss_governor_halt_evidence() -> BoltV3LossGovernorHaltEvidence {
         max_rolling_loss: Some("30".to_string()),
         max_drawdown: Some("40".to_string()),
         max_snapshot_age_ns: 1_000,
+        stale_reason: Some(BoltV3LossSnapshotStaleReason::AgeExceeded),
         previous_trading_state: BoltV3TradingState::Active,
         target_trading_state: BoltV3TradingState::Reducing,
         subsystem: "loss_governor".to_string(),
@@ -896,6 +919,23 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::Admitted,
         loss_halt_reasons: Vec::new(),
+        snapshot_present: true,
+        snapshot_observed_at_ns: Some(1_000),
+        admission_now_ns: 1_200,
+        snapshot_age_ns: Some(200),
+        max_snapshot_age_ns: Some(1_000),
+        snapshot_source: Some(BoltV3LossSnapshotSource::NtPortfolioSnapshot),
+        per_trade_pnl_present: true,
+        daily_pnl_present: true,
+        rolling_pnl_present: true,
+        current_equity_present: true,
+        peak_equity_present: true,
+        last_account_state_observed_at_ns: None,
+        last_portfolio_snapshot_observed_at_ns: None,
+        last_position_event_observed_at_ns: None,
+        stale_reason: None,
+        loss_snapshot_observed_at_ns: Some(1_000),
+        loss_eval_now_ns: Some(1_200),
     };
     [
         serde_json::json!({
@@ -1023,6 +1063,22 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         _fill: &BoltV3SubmitReservationFillEvidence,
     ) -> Result<()> {
         Ok(())
+    }
+
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+        anyhow::bail!("decision evidence path noop writer received entry-skip evidence")
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+        anyhow::bail!("decision evidence path noop writer received exit-decision evidence")
+    }
+
+    fn record_loss_governor_halt(&self, _halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+        anyhow::bail!("decision evidence path noop writer received loss-governor-halt evidence")
+    }
+
+    fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+        anyhow::bail!("decision evidence path noop writer received requote-throttle evidence")
     }
 }
 

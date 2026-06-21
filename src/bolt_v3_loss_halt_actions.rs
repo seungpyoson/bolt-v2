@@ -295,7 +295,9 @@ mod tests {
         LossGovernorRecoveryMode, LossGovernorTradingStateAction,
         next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
     };
-    use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
+    use crate::bolt_v3_loss_governor::{
+        LossAdmissionDecision, LossHaltReason, LossSnapshot, LossSnapshotDiagnostics,
+    };
     use nautilus_model::enums::TradingState;
     use rust_decimal::Decimal;
 
@@ -315,6 +317,7 @@ mod tests {
         LossAdmissionDecision {
             accepted: false,
             halt_reasons,
+            diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
         }
     }
 
@@ -322,6 +325,7 @@ mod tests {
         LossAdmissionDecision {
             accepted: true,
             halt_reasons: Vec::new(),
+            diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
         }
     }
 
@@ -334,6 +338,7 @@ mod tests {
             rolling_pnl: Some(Decimal::ZERO),
             current_equity: Some(Decimal::new(100, 0)),
             peak_equity: Some(Decimal::new(100, 0)),
+            source_observations: Default::default(),
         }
     }
 

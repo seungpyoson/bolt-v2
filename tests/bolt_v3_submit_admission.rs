@@ -4,9 +4,11 @@ use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-    BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
-    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
+    BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+    BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
+    BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+    BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -1085,6 +1087,30 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("synthetic entry-skip write failure"))
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("synthetic exit-decision write failure"))
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _halt: &BoltV3LossGovernorHaltEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "synthetic loss-governor-halt write failure"
+        ))
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("synthetic requote-throttle write failure"))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1193,6 +1219,36 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
         _fill: &BoltV3SubmitReservationFillEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "blocking admission writer received entry-skip evidence"
+        ))
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "blocking admission writer received exit-decision evidence"
+        ))
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _halt: &BoltV3LossGovernorHaltEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "blocking admission writer received loss-governor-halt evidence"
+        ))
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "blocking admission writer received requote-throttle evidence"
+        ))
     }
 }
 

@@ -233,7 +233,7 @@ jobs:
     name: deny
     needs: detector
     if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -409,7 +409,7 @@ jobs:
     name: nextest fingerprint
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     outputs:
       nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
     steps:
@@ -645,7 +645,7 @@ jobs:
     name: ci-provenance-emit
     needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
-    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

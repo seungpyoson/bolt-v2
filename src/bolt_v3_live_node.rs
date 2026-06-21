@@ -5822,13 +5822,19 @@ fn loss_governor_halt_action_handler_from_node(
                 now_ns,
             );
             if let Err(error) = decision_evidence.record_loss_governor_halt(&evidence) {
-                log::warn!(
+                // Surface a lost halt-evidence write at the highest non-panicking
+                // severity. The loss-governor halt itself MUST still fire below; an
+                // evidence-write failure must never be allowed to scroll past as a
+                // low-severity warning or, worse, be silently swallowed.
+                log::error!(
                     "bolt-v3 loss governor halt evidence write failed: source={} previous_trading_state={:?} target_trading_state={:?} error={error:#}",
                     evidence.source,
                     current_state,
                     target_state
                 );
             }
+            // A logging/evidence-write failure must NEVER skip a loss-governor halt:
+            // apply the trading-state transition unconditionally.
             risk_engine.borrow_mut().set_trading_state(target_state);
         }
     })
@@ -6339,6 +6345,160 @@ mod tests {
         }
     }
 
+    /// Decision-evidence writer test-double whose loss-governor halt write always
+    /// fails, while still capturing the evidence it was handed. Used to prove the
+    /// halt path neither swallows the write failure nor skips the state flip.
+    #[derive(Debug, Default)]
+    struct FailingLossGovernorDecisionEvidenceWriter {
+        halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
+    }
+
+    impl FailingLossGovernorDecisionEvidenceWriter {
+        fn halts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
+            self.halts
+                .lock()
+                .expect("loss governor evidence recorder mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl BoltV3DecisionEvidenceWriter for FailingLossGovernorDecisionEvidenceWriter {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &BoltV3BasketAdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_loss_governor_halt(&self, halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+            self.halts
+                .lock()
+                .expect("loss governor evidence recorder mutex poisoned")
+                .push(halt.clone());
+            anyhow::bail!("injected loss-governor halt evidence write failure")
+        }
+
+        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Process-global `log` sink that retains the level and message text of every
+    /// record emitted while installed. Installed exactly once per test process via
+    /// [`install_capturing_logger`]; observing tests serialize on
+    /// [`CAPTURING_LOGGER_OBSERVERS`] and filter to their own unique message so the
+    /// captured-record assertions are deterministic across the shared global logger.
+    #[derive(Default)]
+    struct CapturingLogger {
+        records: Mutex<Vec<(log::Level, String)>>,
+    }
+
+    impl log::Log for CapturingLogger {
+        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            self.records
+                .lock()
+                .expect("capturing logger mutex poisoned")
+                .push((record.level(), record.args().to_string()));
+        }
+
+        fn flush(&self) {}
+    }
+
+    impl CapturingLogger {
+        fn reset(&self) {
+            self.records
+                .lock()
+                .expect("capturing logger mutex poisoned")
+                .clear();
+        }
+
+        fn records(&self) -> Vec<(log::Level, String)> {
+            self.records
+                .lock()
+                .expect("capturing logger mutex poisoned")
+                .clone()
+        }
+    }
+
+    static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> =
+        std::sync::OnceLock::new();
+
+    /// Serializes tests that observe the process-global capturing logger so their
+    /// reset/snapshot windows never interleave with one another. Other modules'
+    /// tests may also emit through the global logger, so observing tests filter the
+    /// captured records to their own unique message rather than asserting counts.
+    static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
+
+    /// Installs (once) and returns the process-global capturing logger, ensuring
+    /// every level reaches it. Idempotent across the many tests in this module.
+    ///
+    /// Panics (fail loud) if some other logger already owns the global slot, since
+    /// the level-severity assertions in the dependent test would otherwise silently
+    /// observe an empty capture and produce a misleading failure.
+    fn install_capturing_logger() -> &'static CapturingLogger {
+        static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let logger =
+            CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
+        let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
+        assert!(
+            installed,
+            "capturing logger could not claim the global log slot; another logger is installed"
+        );
+        log::set_max_level(log::LevelFilter::Trace);
+        logger
+    }
+
     impl BoltV3DecisionEvidenceWriter for RecordingLossGovernorDecisionEvidenceWriter {
         fn record_strategy_input_snapshot(
             &self,
@@ -6732,6 +6892,114 @@ mod tests {
         assert_eq!(halt.last_portfolio_snapshot_observed_at_ns, Some(2_000));
         assert_eq!(halt.last_position_event_observed_at_ns, Some(1_950));
         assert_eq!(halt.target_trading_state, BoltV3TradingState::Halted);
+    }
+
+    #[test]
+    fn loss_governor_halt_fires_and_surfaces_evidence_write_failure_at_error() {
+        // Regression guard for the fail-loud invariant on the loss-governor halt
+        // path: when the durable halt-evidence write fails, the halt MUST still
+        // fire (trading state flips) AND the failure MUST be surfaced at error!
+        // severity (never swallowed, never demoted to warn!).
+        let logger = install_capturing_logger();
+        let _observer_guard = CAPTURING_LOGGER_OBSERVERS
+            .lock()
+            .expect("capturing logger observer mutex poisoned");
+        logger.reset();
+
+        let loaded = fixture_loaded_config();
+        let node = make_bolt_v3_live_node_builder(&loaded)
+            .expect("test LiveNodeBuilder should construct")
+            .build()
+            .expect("test LiveNode should build");
+        let policy = LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: None,
+            max_rolling_loss: None,
+            max_drawdown: None,
+        };
+        let action_policy = LossGovernorHaltActionPolicy {
+            on_loss_breach_trading_state: LossGovernorTradingStateAction::Reducing,
+            on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction::Halted,
+            recovery_mode: LossGovernorRecoveryMode::Manual,
+            manual_recovery_evidence_max_path_bytes: 256,
+        };
+        // Use a process-unique snapshot source so the captured-record filter never
+        // collides with concurrent tests emitting through the shared global logger.
+        let unique_source = format!(
+            "loss_halt_evidence_write_failure_source_{}",
+            NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::SeqCst)
+        );
+        let writer = Arc::new(FailingLossGovernorDecisionEvidenceWriter::default());
+        let handler = loss_governor_halt_action_handler_from_node(
+            &node,
+            policy,
+            action_policy,
+            writer.clone(),
+        );
+        let source_observations = LossSourceObservationTimestamps {
+            last_account_state_observed_at_ns: Some(1_900),
+            last_portfolio_snapshot_observed_at_ns: Some(2_000),
+            last_position_event_observed_at_ns: Some(1_950),
+        };
+        let snapshot = LossSnapshot {
+            source: unique_source.clone(),
+            observed_at_ns: 2_000,
+            per_trade_pnl: Some(Decimal::new(-11, 0)),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+            source_observations,
+        };
+
+        assert_eq!(
+            node.kernel().risk_engine().borrow().trading_state(),
+            TradingState::Active,
+            "node should start Active before the halt"
+        );
+
+        handler(Some(&snapshot), 2_100, source_observations);
+
+        // (a) The halt fired despite the durable evidence write returning Err: a
+        // logging/write failure must NEVER skip a loss-governor halt.
+        assert_eq!(
+            node.kernel().risk_engine().borrow().trading_state(),
+            TradingState::Reducing,
+            "loss-governor halt must fire even when evidence write fails"
+        );
+
+        // The failure path was actually entered with the halt evidence (the writer
+        // was handed the halt and then failed), proving we did not skip the write.
+        let halts = writer.halts();
+        assert_eq!(
+            halts.len(),
+            1,
+            "the failing writer must have been handed the halt evidence"
+        );
+        assert_eq!(halts[0].source, unique_source);
+
+        // (b) The write failure was surfaced — and at error! severity, not a
+        // swallowed/demoted warn!. Filter to this test's unique source so other
+        // tests' records on the shared global logger cannot perturb the assertion.
+        let matching: Vec<(log::Level, String)> = logger
+            .records()
+            .into_iter()
+            .filter(|(_, message)| {
+                message.contains("loss governor halt evidence write failed")
+                    && message.contains(&unique_source)
+            })
+            .collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "the halt evidence-write failure must be surfaced exactly once, not swallowed; got {matching:?}"
+        );
+        assert_eq!(
+            matching[0].0,
+            log::Level::Error,
+            "the halt evidence-write failure must be surfaced at error! severity, not warn!"
+        );
     }
 
     #[test]

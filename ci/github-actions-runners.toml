@@ -181,6 +181,7 @@ ready_pr = "full"
 ready_for_review = "full"
 workflow_dispatch = "full"
 main_push = "full"
+merge_group = "full"
 tag = "tag_reuse"
 unknown_event = "full"
 

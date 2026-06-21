@@ -132,6 +132,9 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 - Do not use CI pushes as a formatting loop; run local non-compile gates first.
 - Current `CI_DEBUG_SSH_WAIT_MINUTES` is `30`. Do not raise it for normal debugging; cancel `ci-runner-debug` runs immediately after use.
 - During the first week, run the meter daily and compare the runner-minute trend to the Ubicloud dashboard. After the first week, run weekly or before/after CI topology changes.
+- Default to a **draft** PR while iterating. Draft pushes run the cheap deferred lane and publish `gate-deferred`, not the required `gate`, so a draft cannot merge — iterate on it freely. Mark the PR ready only when its head is the intended merge candidate; `ready_for_review` then triggers the full-CI merge proof on that exact head SHA. This is the largest run-volume lever: full validation of intermediate commits that a later push replaces is the dominant avoidable spend.
+- Do not push exploratory or fixup commits to a **ready** PR. Each push re-runs full heavy CI on the new SHA and a prior green does not carry over, so return the PR to draft (or keep iterating on draft) until the next coherent slice.
+- Treat `just verify-remote` / full CI as a final-proof run once per coherent slice, not a debug loop. Use draft deferred runs or `just rust-probe` (max two, per the Rust Probe Policy) for mid-iteration feedback rather than repeated full dispatches.
 
 ## Lever Decisions
 

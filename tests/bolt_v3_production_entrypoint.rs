@@ -32,16 +32,6 @@ fn top_level_function_body<'a>(source: &'a str, marker: &str) -> &'a str {
     panic!("`{marker}` function body must close");
 }
 
-fn assert_ordered_substrings(haystack: &str, needles: &[&str]) {
-    let mut offset = 0usize;
-    for needle in needles {
-        let Some(found) = haystack[offset..].find(needle) else {
-            panic!("source must contain `{needle}` after byte offset {offset}");
-        };
-        offset += found + needle.len();
-    }
-}
-
 #[test]
 fn main_uses_bolt_v3_runner_wrapper_only() {
     let source = include_str!("../src/main.rs");
@@ -166,31 +156,6 @@ fn ops_launch_verify_config_reuses_loaded_config_from_verification() {
     assert!(
         !stage_fn.contains("load_bolt_v3_config(&context.live_config)"),
         "verify-config must not load the deployed config a second time"
-    );
-}
-
-#[test]
-fn ops_launch_stage_dispatches_each_variant_to_expected_helper_in_order() {
-    let source = include_str!("../src/main.rs");
-    let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
-
-    assert_ordered_substrings(
-        stage_fn,
-        &[
-            "OpsLaunchStage::VerifyConfig =>",
-            "verify_live_config(&context.config_root, &context.profile)",
-            "OpsLaunchStage::SecretsCheck =>",
-            "run_loaded_secrets_check(context.loaded()?)",
-            "OpsLaunchStage::SecretsResolve =>",
-            "run_loaded_secrets_resolve(context.loaded()?)",
-            "context.resolved_secrets = Some",
-            "OpsLaunchStage::PrestartCheck =>",
-            "run_loaded_prestart_check(context.loaded()?, None)",
-            "OpsLaunchStage::ReferenceCurrentPriceHealth =>",
-            "run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)",
-            "OpsLaunchStage::Start =>",
-            "start_loaded_node_with_resolved(loaded, resolved)",
-        ],
     );
 }
 

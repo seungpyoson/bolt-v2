@@ -1403,8 +1403,7 @@ mod tests {
             .expect("secrets-resolve stage must pass for a secret-free config");
 
         assert!(
-            check_context.resolved_secrets.is_none()
-                && resolve_context.resolved_secrets.is_some(),
+            check_context.resolved_secrets.is_none() && resolve_context.resolved_secrets.is_some(),
             "SecretsCheck must not resolve and SecretsResolve must resolve; a swapped dispatch \
              inverts these (check resolved={:?}, resolve resolved={:?})",
             check_context.resolved_secrets.is_some(),

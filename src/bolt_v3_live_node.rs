@@ -3782,7 +3782,8 @@ fn build_bolt_v3_strategy_free_live_node_from_resolved_transport(
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let adapters = strategy_free_transport_adapter_configs(transport_loaded, resolved)?;
     let strategy_free_loaded = strategy_free_transport_loaded_config(transport_loaded);
-    let (runtime, _summary) = build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)?;
+    let (runtime, _summary) =
+        build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)?;
     Ok(runtime)
 }
 
@@ -6382,10 +6383,16 @@ mod tests {
 
     #[test]
     fn with_resolved_health_and_start_builds_reuse_one_secret_resolution() {
-        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
             "tests/fixtures/bolt_v3/root.toml",
         ))
         .expect("fixture config should load");
+        // Keep the real node builders hermetic: redirect the decision-evidence
+        // catalog directory under a tempdir so registration does not touch the
+        // production `/var/lib/bolt` path, which is unwritable in CI. The
+        // one-resolution property below is unaffected by this storage path.
+        loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
         let secret_bearing_clients = loaded
             .root
             .clients
@@ -6667,8 +6674,7 @@ mod tests {
     fn fixture_secret_value(path: &str) -> Result<String, &'static str> {
         if path == "/bolt/binance_reference/api_secret" {
             return Ok(
-                "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f"
-                    .to_string(),
+                "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string(),
             );
         }
         if path == "/bolt/binance_reference/api_key" {

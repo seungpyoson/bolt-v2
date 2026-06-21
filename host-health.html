@@ -439,6 +439,21 @@
       return `${Number(value).toFixed(1)}%`;
     }
 
+    function arrayExtent(values) {
+      // Min/max via a single accumulator pass — NOT Math.min(...values) /
+      // Math.max(...values) (F). A long-running JSONL file makes `values` huge
+      // (110K+ samples); spreading it as call arguments overflows V8's argument
+      // limit and throws RangeError: Maximum call stack size exceeded, which
+      // aborts render() mid-run and blanks the UI. A loop has no such ceiling.
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const value of values) {
+        if (value < lo) lo = value;
+        if (value > hi) hi = value;
+      }
+      return { lo, hi };
+    }
+
     function diskFreePct(disk) {
       // Derive free% from the same df-convention used_pct the disk CHART plots,
       // so card-free% + chart-used% == 100 (D3). A missing or non-finite used_pct
@@ -470,22 +485,42 @@
 
       // No usable service data is a degraded/unknown state, never a blank dash
       // (item 5): a blank badge reads as "fine" at a glance. Show an explicit
-      // degraded badge instead.
+      // degraded badge instead. This stays the FIRST check: a record with no
+      // service block is unknown (violet), not red (E2).
       if (serviceDataMissing(service)) {
         return `<span class="badge vio">service unknown</span>`;
       }
 
       const text = [active, sub].filter(Boolean).join(" / ");
+
+      // An OOM kill forces RED for ANY active_state (E2): a service that was
+      // OOM-killed is degraded whether systemd now reports it inactive,
+      // activating, or active. Hoisting this above the active_state branch
+      // stops an OOM victim from rendering violet (inactive) or amber
+      // (activating) while the kill is the most important signal.
+      if (record && record.oom_killed === true) {
+        return `<span class="badge red">${escapeHtml(text)}</span>`;
+      }
+
       let klass = "vio";
       if (active === "active") {
         // "active" is NOT unconditionally green (item 5): a service that is
-        // active right now but was just OOM-killed or has restarted is degraded.
-        // Downgrade so an active-after-OOM never renders healthy green.
+        // active right now but failed its last run, restarted, or whose main
+        // process has exited is degraded. Downgrade so none of those render
+        // healthy green.
         const restarts = Number(service.n_restarts);
-        if (record && record.oom_killed === true) {
+        if (isFailureResult(service.result)) {
           klass = "red";
-        } else if (isFailureResult(service.result)) {
-          klass = "red";
+        } else if (sub !== "running") {
+          // active/exited, active/dead, etc.: systemd still calls the unit
+          // active but its main process is not running. Not green (E1).
+          klass = "amb";
+        } else if (service.n_restarts !== null && service.n_restarts !== undefined && !Number.isFinite(restarts)) {
+          // A PRESENT but non-finite/non-numeric n_restarts is suspect restart
+          // data: treat unknown restart state as degraded, never green (E4).
+          // A missing/null n_restarts (field absent) is acceptable and stays
+          // eligible for green below.
+          klass = "amb";
         } else if (Number.isFinite(restarts) && restarts > 0) {
           klass = "amb";
         } else {
@@ -500,14 +535,11 @@
     }
 
     function restartIncreased(records) {
-      let previous = null;
-      for (const record of records) {
-        const current = record && record.service ? record.service.n_restarts : null;
-        if (current === null || current === undefined) continue;
-        if (previous !== null && Number(current) > Number(previous)) return true;
-        previous = Number(current);
-      }
-      return false;
+      // Single source of truth (G): delegate to counterIncreased so the
+      // Number.isFinite finite-guard applies identically. Without it a
+      // non-numeric n_restarts poisoned `previous`=NaN and silently disabled
+      // restart-increase detection for the rest of the scan.
+      return counterIncreased(records, service => service.n_restarts);
     }
 
     function counterIncreased(records, pick) {
@@ -575,6 +607,15 @@
       // (item 5): surface it so a no-service sample still raises the banner.
       if (serviceDataMissing(service)) {
         reasons.push("service status unavailable");
+      }
+
+      // A null/absent disk block means the sampler could not stat the requested
+      // catalog path (a vanished path is a serious degraded signal). render()
+      // already shows a violet disk chip, but a quiet chip is easy to miss;
+      // raise it in the banner too (E3), parallel to "service status
+      // unavailable".
+      if (latest.disk === null || latest.disk === undefined) {
+        reasons.push("disk status unavailable");
       }
 
       // Standing degraded state from the latest sample (D2): flag it even when
@@ -662,10 +703,13 @@
     }
 
     function renderErrors(latest) {
-      const allErrors = [...state.parseErrors];
-      if (latest && Array.isArray(latest.errors)) {
-        allErrors.push(...latest.errors);
-      }
+      // concat / per-element push, never push(...arr) or [...arr] (F): a large
+      // parseErrors or latest.errors array spread as call arguments overflows
+      // V8's argument limit and throws, blanking the errors section. concat and
+      // a plain loop have no such ceiling.
+      const allErrors = state.parseErrors.concat(
+        latest && Array.isArray(latest.errors) ? latest.errors : []
+      );
       elements.errorCount.textContent = allErrors.length ? `${allErrors.length} shown` : EMPTY;
       elements.errorsList.textContent = "";
       if (!allErrors.length) {
@@ -750,8 +794,13 @@
         return;
       }
 
-      let yMin = config.yMin !== undefined ? config.yMin : Math.min(0, Math.min(...values));
-      let yMax = config.yMax !== undefined ? config.yMax : Math.max(...values);
+      // arrayExtent replaces Math.min(...values)/Math.max(...values): the
+      // spreads overflow the call-argument limit on a long file (F). The memory
+      // chart still floors yMin at 0 (Math.min(0, lo)); an explicit config
+      // yMin/yMax still wins.
+      const extent = arrayExtent(values);
+      let yMin = config.yMin !== undefined ? config.yMin : Math.min(0, extent.lo);
+      let yMax = config.yMax !== undefined ? config.yMax : extent.hi;
       if (yMax === yMin) {
         yMax += 1;
         yMin = Math.max(0, yMin - 1);

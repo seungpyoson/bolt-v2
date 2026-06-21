@@ -34,6 +34,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable, Optional, Tuple
 
@@ -110,11 +111,30 @@ def discover_catalog_directory(start: Path | None = None) -> str:
 # standalone fallback. Overridable per-run via ``--disk-path``.
 DEFAULT_DISK_PATH = discover_catalog_directory()
 SYSTEMCTL_TIMEOUT_SECONDS = 5
+# Outer per-collector wall-clock backstop. Every collector runs through
+# ``run_collector`` -> ``run_with_deadline`` in a daemon thread; if it does not
+# finish within this many seconds the daemon thread is ABANDONED (never joined)
+# and the collector degrades to a null+timeout error. This bounds the otherwise
+# unbounded blocking syscalls a degraded host can wedge on: a D-state subprocess
+# that survives SIGKILL (EBS/disk I/O stall), or os.stat/os.statvfs/realpath/
+# Path.exists against a hung filesystem. It is strictly GREATER than
+# SYSTEMCTL_TIMEOUT_SECONDS so a collector's own inner subprocess timeout fires
+# first with its clean message; this outer deadline is the last-resort backstop
+# for the truly-wedged case where even SIGKILL cannot reap the child.
+COLLECTOR_TIMEOUT_SECONDS = 10
 # Bounded non-blocking flock acquisition: a contended file lock must never wedge
 # the sampler. We retry LOCK_NB every FLOCK_RETRY_SECONDS until FLOCK_TIMEOUT_SECONDS
 # elapses, then treat the file sink as failed and fall back to stdout.
 FLOCK_TIMEOUT_SECONDS = 5.0
 FLOCK_RETRY_SECONDS = 0.05
+# Outer wall-clock backstop for the FILE SINK, mirroring COLLECTOR_TIMEOUT_SECONDS
+# on the write side. write_to_file is bounded by run_with_deadline so an EBS/disk
+# stall DURING os.open/os.write (which the bounded LOCK_NB flock cannot catch —
+# the flock is acquired only after the open returns) can never hang the writer.
+# Strictly GREATER than FLOCK_TIMEOUT_SECONDS so the existing bounded LOCK_NB
+# acquire fires first with its clean TimeoutError; this is the last-resort guard
+# for a stall in the syscalls the flock loop does not cover.
+SINK_TIMEOUT_SECONDS = 8.0
 KNOWN_NON_OOM_RESULTS = {
     "success",
     "exit-code",
@@ -238,29 +258,54 @@ def collect_service(unit: str) -> CollectorResult:
         unit,
         *(f"--property={property_name}" for property_name in properties),
     ]
+    # subprocess.run(timeout=...) would, on TimeoutExpired, internally kill the
+    # child and then issue an UNBOUNDED wait() to reap it. A systemctl wedged in
+    # uninterruptible D-state (realistic during an EBS/disk I/O stall) survives
+    # SIGKILL until the kernel unblocks it, so that wait() can hang forever. We
+    # use Popen + a single bounded communicate(); on timeout we kill and ABANDON
+    # the child WITHOUT a second blocking wait. On a one-shot run the process
+    # exits and the OS reaps the orphan; the outer run_with_deadline backstop
+    # bounds even the rare case where this call itself does not return promptly.
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=SYSTEMCTL_TIMEOUT_SECONDS,
         )
     except FileNotFoundError:
         return None, "systemctl unavailable"
+    except Exception as exc:  # pragma: no cover - subprocess spawn edge cases
+        return None, f"systemctl show failed: {exc}"
+
+    try:
+        stdout_text, stderr_text = proc.communicate(timeout=SYSTEMCTL_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
+        # Kill and abandon: no second blocking communicate()/wait() that could
+        # hang on a SIGKILL-immune D-state child. A single non-blocking poll()
+        # lets the OS reap it if it has already died, but never blocks.
+        try:
+            proc.kill()
+        except Exception:  # pragma: no cover - child may already be gone
+            pass
+        try:
+            proc.poll()
+        except Exception:  # pragma: no cover - poll is non-blocking, defensive
+            pass
         return None, f"systemctl show timed out after {SYSTEMCTL_TIMEOUT_SECONDS}s"
     except Exception as exc:  # pragma: no cover - subprocess edge cases
         return None, f"systemctl show failed: {exc}"
 
-    if result.returncode != 0:
-        reason = result.stderr.strip().splitlines()[0] if result.stderr.strip() else "no stderr"
-        return None, f"systemctl show exited {result.returncode}: {reason}"
+    returncode = proc.returncode
+    if returncode != 0:
+        stderr_stripped = stderr_text.strip() if stderr_text else ""
+        reason = stderr_stripped.splitlines()[0] if stderr_stripped else "no stderr"
+        return None, f"systemctl show exited {returncode}: {reason}"
 
     parsed: dict[str, str] = {}
-    for raw_line in result.stdout.splitlines():
+    for raw_line in stdout_text.splitlines():
         if "=" not in raw_line:
             continue
         key, value = raw_line.split("=", 1)
@@ -324,15 +369,26 @@ def parse_memory_events_oom_kills(text: str) -> int | None:
     return None
 
 
-# cgroup-v2 lives under the unified hierarchy; cgroup-v1 exposes the same
-# ``oom_kill`` counter under the dedicated ``memory`` controller mount. The real
-# deploy is cgroup-v2; the v1 path is a best-effort portability fallback only.
+# The two cgroup versions expose the per-unit oom_kill counter in DIFFERENT
+# files. cgroup-v2 (the real deploy, unified hierarchy) puts it in
+# ``memory.events`` as an ``oom_kill <N>`` line. cgroup-v1 does NOT expose
+# oom_kill in ``memory.events`` at all; it lives in ``memory.oom_control`` under
+# the dedicated ``memory`` controller mount, also as an ``oom_kill <N>`` line.
+# ``parse_memory_events_oom_kills`` parses that same ``oom_kill`` line from either
+# file. The v1 path is a best-effort portability fallback only.
 CGROUP_V2_SYSTEM_SLICE = Path("/sys/fs/cgroup/system.slice")
 CGROUP_V1_MEMORY_SYSTEM_SLICE = Path("/sys/fs/cgroup/memory/system.slice")
+CGROUP_V2_OOM_KILL_FILE = "memory.events"
+CGROUP_V1_OOM_KILL_FILE = "memory.oom_control"
 
 
-def cgroup_memory_events_paths(unit: str) -> list[Path]:
-    """Ordered candidate ``memory.events`` paths: cgroup-v2 first, then v1.
+def cgroup_oom_kill_paths(unit: str) -> list[Path]:
+    """Ordered candidate oom-kill-counter paths: cgroup-v2 first, then v1.
+
+    The two versions use different files: cgroup-v2 reads ``memory.events`` and
+    cgroup-v1 reads ``memory.oom_control`` (cgroup-v1 does NOT carry the oom_kill
+    counter in ``memory.events``). Both contain an ``oom_kill <N>`` line that
+    ``parse_memory_events_oom_kills`` parses identically.
 
     Scope: only units living DIRECTLY under ``system.slice`` are resolved. A unit
     placed in a custom ``Slice=`` or a nested scope lives at a different cgroup
@@ -342,14 +398,14 @@ def cgroup_memory_events_paths(unit: str) -> list[Path]:
     (reading the unit's actual ControlGroup) is tracked as follow-up.
     """
     candidates = cgroup_unit_candidates(unit)
-    v2 = [CGROUP_V2_SYSTEM_SLICE / candidate / "memory.events" for candidate in candidates]
-    v1 = [CGROUP_V1_MEMORY_SYSTEM_SLICE / candidate / "memory.events" for candidate in candidates]
+    v2 = [CGROUP_V2_SYSTEM_SLICE / candidate / CGROUP_V2_OOM_KILL_FILE for candidate in candidates]
+    v1 = [CGROUP_V1_MEMORY_SYSTEM_SLICE / candidate / CGROUP_V1_OOM_KILL_FILE for candidate in candidates]
     return v2 + v1
 
 
 def collect_cgroup_oom_kills(unit: str) -> CollectorResult:
     missing: list[str] = []
-    for path in cgroup_memory_events_paths(unit):
+    for path in cgroup_oom_kill_paths(unit):
         try:
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -360,7 +416,7 @@ def collect_cgroup_oom_kills(unit: str) -> CollectorResult:
         except OSError as exc:
             return None, str(exc)
         except (UnicodeDecodeError, ValueError) as exc:
-            # A malformed/non-UTF-8 memory.events raises UnicodeDecodeError, which
+            # A malformed/non-UTF-8 counter file raises UnicodeDecodeError, which
             # is a ValueError (NOT an OSError) and would otherwise escape this try
             # to be caught only by the outer run_collector guard. Catch it here so
             # it degrades to a clean null+error and the sample still emits.
@@ -372,7 +428,7 @@ def collect_cgroup_oom_kills(unit: str) -> CollectorResult:
         if oom_kills is not None:
             return oom_kills, None
         missing.append(f"{path} (no oom_kill line)")
-    return None, "memory.events unavailable at " + ", ".join(missing)
+    return None, "oom_kill counter unavailable at " + ", ".join(missing)
 
 
 def parse_kb_line(value: str) -> int | None:
@@ -428,20 +484,16 @@ def resolve_measured_disk_path(requested_path: str) -> tuple[Path | None, str | 
     if not candidate.is_absolute():
         candidate = Path.cwd() / candidate
 
-    missing_original = not candidate.exists()
-    current = candidate
-    while not current.exists():
-        parent = current.parent
-        if parent == current:
-            return None, f"disk path {requested_path!r} and ancestors are missing"
-        current = parent
-
-    if missing_original:
-        return current, (
-            f"requested disk path {requested_path!r} missing; "
-            f"measured nearest existing ancestor {current}"
-        )
-    return current, None
+    # FIX E: the requested path itself is the only valid measurement target. A
+    # missing path is a hard degraded signal (the catalog dir vanished), so we do
+    # NOT walk to a parent and measure that — reporting an ancestor's fullness for
+    # a path that no longer exists reads as a misleadingly-healthy disk. Return
+    # null + an accurate error; collect_disk emits disk: null. (This previously
+    # measured the nearest existing ancestor, but that measurement is no longer
+    # used, so the old "measured nearest existing ancestor" wording was false.)
+    if not candidate.exists():
+        return None, f"requested disk path {requested_path!r} missing; disk metrics unavailable"
+    return candidate, None
 
 
 def disk_metrics_from_statvfs(path: str, statvfs_result: os.statvfs_result, st_dev: int) -> dict[str, Any]:
@@ -456,7 +508,19 @@ def disk_metrics_from_statvfs(path: str, statvfs_result: os.statvfs_result, st_d
     used_bytes = (statvfs_result.f_blocks - statvfs_result.f_bfree) * fragment_size
     available_bytes = statvfs_result.f_bavail * fragment_size
     denominator = used_bytes + available_bytes
-    used_pct = round(used_bytes / denominator * 100, 2) if denominator > 0 else None
+    # Metric-sanity guard (FIX E5): a corrupted statvfs must never yield a
+    # used_pct the viewer would render as misleadingly healthy. f_bfree > f_blocks
+    # is non-physical (more free blocks than exist) and produces a negative
+    # used_bytes -> a negative used_pct; null it out. Otherwise clamp the computed
+    # value into the inclusive [0, 100] range so neither a negative nor a >100
+    # used_pct can ever reach the viewer (which reads low used_pct as green).
+    if statvfs_result.f_bfree > statvfs_result.f_blocks:
+        used_pct = None
+    elif denominator > 0:
+        used_pct = round(used_bytes / denominator * 100, 2)
+        used_pct = max(0.0, min(100.0, used_pct))
+    else:
+        used_pct = None
     return {
         "path": os.path.realpath(path),
         "device": st_dev,
@@ -471,6 +535,9 @@ def disk_metrics_from_statvfs(path: str, statvfs_result: os.statvfs_result, st_d
 def collect_disk(requested_path: str) -> CollectorResult:
     measured_path, path_error = resolve_measured_disk_path(requested_path)
     if measured_path is None:
+        # FIX E: the requested catalog path is missing. Emit disk: null plus the
+        # error rather than measuring a parent directory, so a vanished catalog
+        # dir reads as a hard signal, not as a misleadingly-healthy ancestor disk.
         return None, path_error
     try:
         stat_result = os.stat(measured_path)
@@ -483,7 +550,7 @@ def collect_disk(requested_path: str) -> CollectorResult:
         return None, str(exc)
 
     disk = disk_metrics_from_statvfs(str(measured_path), statvfs_result, stat_result.st_dev)
-    return disk, path_error
+    return disk, None
 
 
 def process_status_template(pid: int, identity_ok: bool) -> dict[str, Any]:
@@ -623,9 +690,50 @@ def collect_process(unit: str, main_pid: int | None, exec_main_pid: int | None) 
     return process, "; ".join(errors) if errors else None
 
 
+def run_with_deadline(function: Callable[..., Any], timeout_seconds: float, *args: Any) -> Any:
+    """Run ``function(*args)`` with a hard wall-clock deadline.
+
+    The function runs in a ``daemon`` thread which is joined for at most
+    ``timeout_seconds``. If it finishes in time, its return value is returned and
+    any exception it raised is re-raised unchanged in the caller. If it does NOT
+    finish, ``TimeoutError`` is raised and the daemon thread is ABANDONED — never
+    joined again — so a syscall wedged in uninterruptible D-state (e.g. a hung
+    filesystem or a SIGKILL-immune child) can never block the sampler's exit. The
+    abandoned thread dies with the interpreter.
+
+    This is the single backstop that bounds every otherwise-unbounded blocking
+    syscall a collector can issue (subprocess wait, os.stat/os.statvfs/realpath,
+    Path.exists). It deliberately does not attempt to cancel the work — Python has
+    no safe thread-cancel — it only stops *waiting* for it.
+    """
+    box: dict[str, Any] = {}
+
+    def worker() -> None:
+        try:
+            box["value"] = function(*args)
+        except BaseException as exc:  # noqa: BLE001 - propagated to the caller below
+            box["error"] = exc
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        raise TimeoutError(f"timed out after {timeout_seconds}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def run_collector(source: str, function: Callable[..., CollectorResult], *args: Any) -> CollectorResult:
+    # Single chokepoint for EVERY collector: bound it with run_with_deadline so a
+    # wedged blocking syscall (D-state subprocess, hung-filesystem stat/statvfs)
+    # degrades to a timeout error instead of hanging the whole sampler. The outer
+    # deadline is strictly greater than the in-collector subprocess timeout so the
+    # collector's own clean message normally wins; this is the last-resort guard.
     try:
-        value, error = function(*args)
+        value, error = run_with_deadline(function, COLLECTOR_TIMEOUT_SECONDS, *args)
+    except TimeoutError:
+        return None, f"{source}: timed out after {COLLECTOR_TIMEOUT_SECONDS}s"
     except Exception as exc:  # noqa: BLE001 - final guard so sample always emits
         return None, f"{source}: {exc}"
     if error:
@@ -691,9 +799,12 @@ class RecordUnemittable(Exception):
 def emit_to_stdout(line: str) -> None:
     """Write one record line to stdout, flushing so a piped consumer sees it.
 
-    ``BrokenPipeError`` is allowed to propagate so the caller can treat a gone
-    consumer as a clean stream termination (B4). Any other OSError means stdout
-    itself is unusable and the record is truly unemittable.
+    Raises whatever the underlying write/flush raises; the caller classifies it.
+    On the PRIMARY streaming path ``BrokenPipeError`` is a clean stream
+    termination (a gone consumer) and propagates (B4); a closed/broken stdout
+    raises ``OSError`` or ``ValueError`` and becomes ``RecordUnemittable``. On the
+    FALLBACK path (after the file sink already failed) ANY failure here — broken
+    pipe included — means the record is lost, so it becomes ``RecordUnemittable``.
     """
     sys.stdout.write(line)
     sys.stdout.flush()
@@ -733,7 +844,14 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
     """
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    # O_NONBLOCK on the sink open: if ``out_path`` resolves to a FIFO with no
+    # reader, a blocking os.open(O_WRONLY) hangs forever; O_NONBLOCK makes it
+    # raise ENXIO (an OSError) immediately, which write_jsonl_line's existing
+    # ``except OSError`` turns into a stdout fallback. For a REGULAR file
+    # O_NONBLOCK is a no-op: the open returns immediately and regular-file writes
+    # never return EAGAIN, so the normal path and the write-all loop below are
+    # unchanged.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NONBLOCK, 0o644)
     try:
         if not acquire_flock_bounded(fd, lock_timeout, FLOCK_RETRY_SECONDS):
             raise TimeoutError(
@@ -811,8 +929,12 @@ def write_jsonl_line(
 
     ``out_path is None`` writes straight to stdout (returns None).
 
-    Raises ``RecordUnemittable`` only when stdout ALSO fails with a real OSError
-    (not ``BrokenPipeError``, which is allowed to propagate for B4).
+    Raises ``RecordUnemittable`` when the record reaches NO sink:
+    - primary stdout (``out_path is None``) failing with a closed/broken stream
+      (``OSError`` or ``ValueError``); a primary ``BrokenPipeError`` instead
+      propagates as a clean stream termination (B4).
+    - fallback stdout (after the file sink failed) failing with ANY error,
+      ``BrokenPipeError`` included, since there is no other sink left.
     """
     # Sanitize first, then dump with allow_nan=False so the line is ALWAYS strict
     # JSON: a stray non-finite float (NaN/Infinity) would otherwise serialise to
@@ -820,26 +942,45 @@ def write_jsonl_line(
     # never emit non-JSON). Non-finite values become null.
     line = json.dumps(sanitize_non_finite(record), separators=(",", ":"), allow_nan=False) + "\n"
     if out_path is None:
+        # PRIMARY streaming stdout. A BrokenPipeError here means a streaming
+        # consumer (e.g. ``| head -1``) went away — a CLEAN stream termination —
+        # so it propagates and main() exits 0. ANY other stdout failure means
+        # stdout itself is unusable and the record is lost: a CLOSED stdout raises
+        # ValueError("I/O operation on closed file") which is NOT an OSError, so
+        # we catch (OSError, ValueError) together — otherwise the ValueError would
+        # escape RecordUnemittable and reach main()'s generic handler (wrong path).
         try:
             emit_to_stdout(line)
         except BrokenPipeError:
             raise
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             raise RecordUnemittable(f"stdout sink failed: {exc}") from exc
         return None
 
     try:
-        write_to_file(line, out_path, lock_timeout)
+        # Bound the file sink with the same daemon-thread deadline used for
+        # collectors: an EBS/disk stall DURING os.open/os.write is not covered by
+        # the bounded LOCK_NB flock (the flock is acquired only after open
+        # returns), so without this an open/write that wedges would hang the
+        # writer forever. run_with_deadline raises TimeoutError on overrun, and
+        # TimeoutError is a subclass of OSError, so the existing
+        # ``except OSError as file_exc`` below catches it and falls back to
+        # stdout — no new except branch is needed. On a genuine stall the
+        # abandoned worker thread may still hold the flock/fd; that is acceptable:
+        # one-shot exits immediately, and a continuous run's next write hits the
+        # bounded LOCK_NB acquire, which times out and falls back to stdout
+        # rather than deadlocking.
+        run_with_deadline(write_to_file, SINK_TIMEOUT_SECONDS, line, out_path, lock_timeout)
         return None
     except OSError as file_exc:
-        # File sink is unusable (parent-is-file, target-is-dir, permission,
-        # read-only fs, lock timeout, ...). Surface the record on stdout instead
-        # so the very degraded state it describes is not silently lost.
+        # FALLBACK stdout: this is a last-resort sink AFTER the file sink already
+        # failed. Any stdout failure here — INCLUDING BrokenPipeError — means the
+        # record reached NO sink and is lost, so it is RecordUnemittable. Unlike
+        # the primary path, a broken pipe is NOT a clean termination here: there
+        # is no longer any other place the record could have landed.
         try:
             emit_to_stdout(line)
-        except BrokenPipeError:
-            raise
-        except OSError as stdout_exc:
+        except (OSError, ValueError) as stdout_exc:
             raise RecordUnemittable(
                 f"file sink failed ({file_exc}) and stdout fallback failed ({stdout_exc})"
             ) from stdout_exc

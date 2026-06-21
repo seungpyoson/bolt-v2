@@ -161,13 +161,17 @@ class SamplerBehaviourTests(unittest.TestCase):
             parse("oom_kill not-an-int\n")
 
     def test_cgroup_oom_kills_falls_back_to_v1_path(self) -> None:
-        # Only the cgroup-v1 memory.events file exists; the v2 path is absent.
-        # The collector must still read the v1 oom_kill counter.
+        # Only the cgroup-v1 counter file exists; the v2 path is absent. The
+        # collector must still read the v1 oom_kill counter. FIX C: cgroup-v1
+        # exposes oom_kill in memory.oom_control (NOT memory.events), so the v1
+        # fixture is laid down as memory.oom_control with the systemd-style body.
         with tempfile.TemporaryDirectory(prefix="host-health-cgv1.") as temp:
             root = Path(temp)
             v1_dir = root / "memory" / "system.slice" / "bolt-v2.service"
             v1_dir.mkdir(parents=True)
-            (v1_dir / "memory.events").write_text("oom 4\noom_kill 9\n", encoding="utf-8")
+            (v1_dir / "memory.oom_control").write_text(
+                "oom_kill_disable 0\nunder_oom 0\noom_kill 9\n", encoding="utf-8"
+            )
             saved_v2 = self.sampler.CGROUP_V2_SYSTEM_SLICE
             saved_v1 = self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE
             # Point v2 at a guaranteed-absent dir and v1 at the fake tree.
@@ -189,9 +193,11 @@ class SamplerBehaviourTests(unittest.TestCase):
             v2_dir = root / "unified" / "system.slice" / "bolt-v2.service"
             v2_dir.mkdir(parents=True)
             (v2_dir / "memory.events").write_text("oom_kill 3\n", encoding="utf-8")
+            # FIX C: the v1 counter lives in memory.oom_control. Lay it down with a
+            # divergent value so a v2-over-v1 regression (reading v1) is caught.
             v1_dir = root / "memory" / "system.slice" / "bolt-v2.service"
             v1_dir.mkdir(parents=True)
-            (v1_dir / "memory.events").write_text("oom_kill 99\n", encoding="utf-8")
+            (v1_dir / "memory.oom_control").write_text("oom_kill 99\n", encoding="utf-8")
             saved_v2 = self.sampler.CGROUP_V2_SYSTEM_SLICE
             saved_v1 = self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE
             self.sampler.CGROUP_V2_SYSTEM_SLICE = root / "unified" / "system.slice"
@@ -911,6 +917,11 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         # Simulate the locale-dependent decode path that used to null the whole
         # service block. With explicit UTF-8 + replacement decoding, systemctl
         # output remains parseable and collect_service keeps the signal.
+        #
+        # FIX B: collect_service now uses subprocess.Popen + a bounded
+        # communicate(timeout=...) (instead of subprocess.run) so a wedged child
+        # cannot trigger an unbounded post-kill wait(). The encoding/errors must
+        # still be passed UTF-8 + replace, so this patches Popen and asserts both.
         captured: dict[str, object] = {}
         systemctl_output = (
             "LoadState=loaded\n"
@@ -926,30 +937,37 @@ class ReviewRound2HardeningTests(unittest.TestCase):
             "InvocationID=abc123\n"
         )
 
-        def fake_run(command, **kwargs):
-            captured["command"] = command
-            captured.update(kwargs)
-            if kwargs.get("encoding") != "utf-8" or kwargs.get("errors") != "replace":
-                raise UnicodeDecodeError(
-                    "utf-8",
-                    b"LoadState=loaded\nInvocationID=\xff\n",
-                    30,
-                    31,
-                    "simulated locale decode failure",
-                )
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=systemctl_output,
-                stderr="",
-            )
+        class FakeProc:
+            def __init__(self, command, **kwargs):
+                captured["command"] = command
+                captured.update(kwargs)
+                self.returncode = None
+                if kwargs.get("encoding") != "utf-8" or kwargs.get("errors") != "replace":
+                    raise UnicodeDecodeError(
+                        "utf-8",
+                        b"LoadState=loaded\nInvocationID=\xff\n",
+                        30,
+                        31,
+                        "simulated locale decode failure",
+                    )
 
-        saved_run = self.sampler.subprocess.run
-        self.sampler.subprocess.run = fake_run
+            def communicate(self, timeout=None):
+                captured["timeout"] = timeout
+                self.returncode = 0
+                return systemctl_output, ""
+
+            def kill(self):  # pragma: no cover - not exercised on the happy path
+                pass
+
+            def poll(self):  # pragma: no cover - not exercised on the happy path
+                return self.returncode
+
+        saved_popen = self.sampler.subprocess.Popen
+        self.sampler.subprocess.Popen = FakeProc
         try:
             service, error = self.sampler.collect_service("bolt-v2.service")
         finally:
-            self.sampler.subprocess.run = saved_run
+            self.sampler.subprocess.Popen = saved_popen
 
         self.assertIsNone(error)
         self.assertIsInstance(service, dict)
@@ -963,6 +981,8 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         self.assertEqual(service["invocation_id"], "abc123")
         self.assertEqual(captured["encoding"], "utf-8")
         self.assertEqual(captured["errors"], "replace")
+        # The bounded inner timeout is honoured (no unbounded wait on the child).
+        self.assertEqual(captured["timeout"], self.sampler.SYSTEMCTL_TIMEOUT_SECONDS)
 
     # ITEM 10 ------------------------------------------------------------
     def test_collect_process_rechecks_identity_after_reads(self) -> None:
@@ -1049,6 +1069,455 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         self.assertEqual(extract('required_catalog_prefix = "/only/prefix"\n'), None)
         # Single-quote form is accepted too.
         self.assertEqual(extract("catalog_directory = '/single'\n"), "/single")
+
+
+class FakeStatvfsCustom:
+    """A minimal statvfs stand-in with caller-supplied block fields.
+
+    Only the attributes ``disk_metrics_from_statvfs`` reads are provided; the
+    inode fields are fixed sentinels (irrelevant to the used_pct math under test).
+    """
+
+    def __init__(self, f_blocks: int, f_bfree: int, f_bavail: int, f_frsize: int = 4096) -> None:
+        self.f_frsize = f_frsize
+        self.f_bsize = f_frsize
+        self.f_blocks = f_blocks
+        self.f_bfree = f_bfree
+        self.f_bavail = f_bavail
+        self.f_files = 1000
+        self.f_favail = 700
+
+
+class ReviewRound3HardeningTests(unittest.TestCase):
+    """Review-driven CLASS fixes B/A/C/E: bounded execution, stdout sink-failure
+    classification, cgroup-v1 oom counter file, and disk:null on a vanished
+    catalog path plus a metric-sanity guard."""
+
+    def setUp(self) -> None:
+        self.sampler = load_sampler()
+
+    # FIX B --------------------------------------------------------------
+    def test_run_collector_times_out_slow_collector_within_deadline(self) -> None:
+        # A collector that sleeps well past the outer deadline must surface as a
+        # null + "timed out" error within roughly the deadline, and must NOT hang
+        # the caller (the daemon worker thread is abandoned). Pre-fix: run_collector
+        # called the function directly with no deadline, so this would block for the
+        # full sleep duration (here: never, in test time).
+        #
+        # We shrink the constant to keep the test fast; the behaviour (bounded by
+        # COLLECTOR_TIMEOUT_SECONDS, daemon thread abandoned) is identical.
+        saved_timeout = self.sampler.COLLECTOR_TIMEOUT_SECONDS
+        self.sampler.COLLECTOR_TIMEOUT_SECONDS = 0.2
+        finished = threading.Event()
+
+        def slow_collector():
+            time.sleep(30)  # far longer than the (shrunk) deadline
+            finished.set()
+            return "should-never-return", None
+
+        try:
+            started = time.monotonic()
+            value, error = self.sampler.run_collector("slow", slow_collector)
+            elapsed = time.monotonic() - started
+        finally:
+            self.sampler.COLLECTOR_TIMEOUT_SECONDS = saved_timeout
+
+        self.assertIsNone(value)
+        self.assertIsNotNone(error)
+        self.assertIn("timed out", error)
+        self.assertIn("slow", error)
+        # Bounded: it returned in roughly the deadline, not after the 30s sleep.
+        self.assertLess(elapsed, 5.0, "run_collector did not honour the outer deadline")
+        # The slow worker never completed (it was abandoned, not joined).
+        self.assertFalse(finished.is_set(), "slow collector should have been abandoned")
+
+    def test_run_with_deadline_returns_value_and_reraises_exception(self) -> None:
+        # Fast function: its return value comes back unchanged.
+        result = self.sampler.run_with_deadline(lambda a, b: a + b, 5.0, 2, 3)
+        self.assertEqual(result, 5)
+
+        # A function that raises: the SAME exception instance/type is re-raised in
+        # the caller (not swallowed, not wrapped). Pre-fix there was no helper at
+        # all; this pins the contract that the worker's exception propagates.
+        sentinel = ValueError("collector blew up")
+
+        def boom():
+            raise sentinel
+
+        with self.assertRaises(ValueError) as ctx:
+            self.sampler.run_with_deadline(boom, 5.0)
+        self.assertIs(ctx.exception, sentinel)
+
+    def test_collect_service_timeout_does_not_wait_after_kill(self) -> None:
+        # FIX B: on TimeoutExpired collect_service must kill the child and return
+        # the timeout error WITHOUT a second blocking communicate()/wait(). Pre-fix
+        # subprocess.run's internal post-kill wait() could hang forever on a
+        # D-state child. We assert: timeout error returned, kill() called, and NO
+        # blocking wait()/second communicate() was issued.
+        events: dict[str, int] = {"communicate": 0, "kill": 0, "wait": 0}
+
+        class WedgedProc:
+            def __init__(self, command, **kwargs):
+                self.returncode = None
+
+            def communicate(self, timeout=None):
+                events["communicate"] += 1
+                # First (and only) communicate times out, as a wedged child would.
+                raise subprocess.TimeoutExpired(cmd="systemctl", timeout=timeout)
+
+            def kill(self):
+                events["kill"] += 1
+
+            def wait(self, timeout=None):  # must never be called post-kill
+                events["wait"] += 1
+                raise AssertionError("collect_service issued a blocking wait() after kill")
+
+            def poll(self):
+                return None
+
+        saved_popen = self.sampler.subprocess.Popen
+        self.sampler.subprocess.Popen = WedgedProc
+        try:
+            service, error = self.sampler.collect_service("bolt-v2.service")
+        finally:
+            self.sampler.subprocess.Popen = saved_popen
+
+        self.assertIsNone(service)
+        self.assertIsNotNone(error)
+        self.assertIn("timed out", error)
+        self.assertEqual(events["communicate"], 1, "must not re-issue a blocking communicate")
+        self.assertEqual(events["kill"], 1, "the wedged child must be killed")
+        self.assertEqual(events["wait"], 0, "must not block on wait() after kill")
+
+    # FIX B (sink side) --------------------------------------------------
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "os.mkfifo not available on this platform")
+    def test_fifo_sink_with_no_reader_falls_back_to_stdout(self) -> None:
+        # A --out that resolves to a FIFO with no reader must NOT hang the writer.
+        # Pre-fix: write_to_file's blocking os.open(O_WRONLY) on a readerless FIFO
+        # blocks forever (and the call is not deadline-wrapped), so write_jsonl_line
+        # never returns. Post-fix: O_NONBLOCK makes the open raise ENXIO (OSError)
+        # immediately, write_jsonl_line falls back to stdout and returns the
+        # file-sink-failed warning with the record on stdout.
+        #
+        # Run under a watchdog thread so a regression fails fast instead of hanging
+        # the whole suite. We also shrink SINK_TIMEOUT_SECONDS so that even if the
+        # open path somehow blocked, the deadline backstop would fire quickly.
+        sampler = self.sampler
+        saved_sink_timeout = sampler.SINK_TIMEOUT_SECONDS
+        sampler.SINK_TIMEOUT_SECONDS = 0.5
+        with tempfile.TemporaryDirectory(prefix="host-health-fifo.") as temp:
+            fifo_path = Path(temp) / "sink.fifo"
+            os.mkfifo(fifo_path)
+            out_buf = io.StringIO()
+            box: dict[str, object] = {}
+
+            def call() -> None:
+                saved_stdout = sys.stdout
+                sys.stdout = out_buf
+                try:
+                    box["warning"] = sampler.write_jsonl_line(
+                        {"probe": "fifo-no-reader"}, str(fifo_path)
+                    )
+                finally:
+                    sys.stdout = saved_stdout
+                box["done"] = True
+
+            worker = threading.Thread(target=call, daemon=True)
+            worker.start()
+            worker.join(timeout=5.0)
+            try:
+                self.assertTrue(box.get("done"), "writer hung on a readerless FIFO sink")
+                self.assertIsInstance(box.get("warning"), str)
+                self.assertIn("fell back to stdout", box["warning"])
+                record = json.loads(out_buf.getvalue().strip())
+                self.assertEqual(record["probe"], "fifo-no-reader")
+            finally:
+                sampler.SINK_TIMEOUT_SECONDS = saved_sink_timeout
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "os.mkfifo not available on this platform")
+    def test_write_to_file_fifo_no_reader_raises_fast_pins_o_nonblock(self) -> None:
+        # Isolates O_NONBLOCK from the deadline wrap. Calls write_to_file DIRECTLY
+        # (not through write_jsonl_line), so run_with_deadline is NOT in the path
+        # and cannot mask a blocking open. With O_NONBLOCK, os.open(O_WRONLY) on a
+        # readerless FIFO raises ENXIO (OSError) immediately, so write_to_file
+        # fails fast. Pre-fix (O_NONBLOCK removed): the blocking open hangs forever,
+        # the watchdog never sees box["done"], and this test fails fast instead of
+        # hanging the suite. This pins O_NONBLOCK alone, while
+        # test_stalled_file_sink_bounded_by_deadline_falls_back_to_stdout pins the
+        # deadline wrap.
+        sampler = self.sampler
+        with tempfile.TemporaryDirectory(prefix="host-health-fifo-direct.") as temp:
+            fifo_path = Path(temp) / "sink.fifo"
+            os.mkfifo(fifo_path)
+            box: dict[str, object] = {}
+
+            def call() -> None:
+                try:
+                    sampler.write_to_file(
+                        '{"probe":"fifo-direct"}\n',
+                        str(fifo_path),
+                        sampler.FLOCK_TIMEOUT_SECONDS,
+                    )
+                    box["raised"] = None
+                except OSError as exc:
+                    box["raised"] = exc
+                box["done"] = True
+
+            worker = threading.Thread(target=call, daemon=True)
+            worker.start()
+            worker.join(timeout=5.0)
+            self.assertTrue(
+                box.get("done"),
+                "write_to_file hung on a readerless FIFO (O_NONBLOCK missing)",
+            )
+            self.assertIsInstance(
+                box.get("raised"),
+                OSError,
+                "readerless-FIFO open must raise OSError (ENXIO) immediately",
+            )
+
+    def test_stalled_file_sink_bounded_by_deadline_falls_back_to_stdout(self) -> None:
+        # A file sink that STALLS (e.g. an EBS/disk hang during os.open/os.write)
+        # must be bounded by SINK_TIMEOUT_SECONDS and fall back to stdout, not hang.
+        # We monkeypatch write_to_file to sleep far longer than a shrunk
+        # SINK_TIMEOUT_SECONDS. Pre-fix: write_jsonl_line called write_to_file
+        # DIRECTLY (unwrapped), so this sleep would block the writer for the full
+        # 30s (effectively forever). Post-fix: run_with_deadline raises TimeoutError
+        # (a subclass of OSError) at the deadline, the existing OSError handler
+        # falls back to stdout, and the call returns within roughly the deadline.
+        sampler = self.sampler
+        saved_write_to_file = sampler.write_to_file
+        saved_sink_timeout = sampler.SINK_TIMEOUT_SECONDS
+        sampler.SINK_TIMEOUT_SECONDS = 0.2
+
+        def stalling_write_to_file(record_line, out_path, lock_timeout):
+            time.sleep(30)  # far longer than the shrunk deadline
+
+        out_buf = io.StringIO()
+        box: dict[str, object] = {}
+
+        def call() -> None:
+            saved_stdout = sys.stdout
+            sys.stdout = out_buf
+            try:
+                started = time.monotonic()
+                box["warning"] = sampler.write_jsonl_line(
+                    {"probe": "stalled-sink"}, "/tmp/host-health-stall-irrelevant.jsonl"
+                )
+                box["elapsed"] = time.monotonic() - started
+            finally:
+                sys.stdout = saved_stdout
+            box["done"] = True
+
+        sampler.write_to_file = stalling_write_to_file
+        try:
+            worker = threading.Thread(target=call, daemon=True)
+            worker.start()
+            worker.join(timeout=5.0)
+            self.assertTrue(box.get("done"), "writer hung on a stalled file sink")
+            self.assertLess(box["elapsed"], 3.0, "writer did not honour the sink deadline")
+            self.assertIsInstance(box.get("warning"), str)
+            self.assertIn("fell back to stdout", box["warning"])
+            record = json.loads(out_buf.getvalue().strip())
+            self.assertEqual(record["probe"], "stalled-sink")
+        finally:
+            sampler.write_to_file = saved_write_to_file
+            sampler.SINK_TIMEOUT_SECONDS = saved_sink_timeout
+
+    # FIX A --------------------------------------------------------------
+    def test_primary_stdout_closed_value_error_is_record_unemittable(self) -> None:
+        # out_path is None (primary streaming stdout). A CLOSED stdout raises
+        # ValueError("I/O operation on closed file"), which is NOT an OSError.
+        # Post-fix the primary catch is (OSError, ValueError) so this becomes
+        # RecordUnemittable. Pre-fix only OSError was caught, so the ValueError
+        # escaped to main()'s generic handler (wrong path).
+        class ClosedStdout:
+            def write(self, _data):
+                raise ValueError("I/O operation on closed file")
+
+            def flush(self):
+                raise ValueError("I/O operation on closed file")
+
+        saved_stdout = sys.stdout
+        sys.stdout = ClosedStdout()
+        try:
+            with self.assertRaises(self.sampler.RecordUnemittable):
+                self.sampler.write_jsonl_line({"probe": "closed-primary"}, None)
+        finally:
+            sys.stdout = saved_stdout
+
+    def test_fallback_stdout_brokenpipe_is_record_unemittable(self) -> None:
+        # File sink fails (forced via write_to_file raising OSError) AND the
+        # fallback stdout raises BrokenPipeError. Post-fix: the record reached NO
+        # sink, so this is RecordUnemittable. Pre-fix: the fallback branch re-raised
+        # BrokenPipeError as a "clean" termination, which main() turned into exit 0
+        # with the record silently lost.
+        saved_write_to_file = self.sampler.write_to_file
+
+        def failing_write_to_file(record_line, out_path, lock_timeout):
+            raise OSError("simulated file sink failure")
+
+        class BrokenStdout:
+            def write(self, _data):
+                raise BrokenPipeError("simulated gone consumer on fallback")
+
+            def flush(self):
+                raise BrokenPipeError("simulated gone consumer on fallback")
+
+        saved_stdout = sys.stdout
+        self.sampler.write_to_file = failing_write_to_file
+        sys.stdout = BrokenStdout()
+        try:
+            with self.assertRaises(self.sampler.RecordUnemittable):
+                self.sampler.write_jsonl_line(
+                    {"probe": "fallback-brokenpipe"}, "/tmp/host-health-irrelevant.jsonl"
+                )
+        finally:
+            sys.stdout = saved_stdout
+            self.sampler.write_to_file = saved_write_to_file
+
+    def test_fallback_stdout_brokenpipe_yields_exit_1_through_main(self) -> None:
+        # End-to-end via main([...]) in one-shot: a file sink that fails and a
+        # fallback stdout BrokenPipe must exit 1 (record unemittable), NOT 0.
+        # Pre-fix the fallback BrokenPipe was treated as clean -> exit 0.
+        saved_write_to_file = self.sampler.write_to_file
+
+        def failing_write_to_file(record_line, out_path, lock_timeout):
+            raise OSError("simulated file sink failure")
+
+        class BrokenStdout:
+            def write(self, _data):
+                raise BrokenPipeError("simulated gone consumer on fallback")
+
+            def flush(self):
+                raise BrokenPipeError("simulated gone consumer on fallback")
+
+        saved_out, saved_err = sys.stdout, sys.stderr
+        err_buf = io.StringIO()
+        self.sampler.write_to_file = failing_write_to_file
+        sys.stdout = BrokenStdout()
+        sys.stderr = err_buf
+        try:
+            returncode = self.sampler.main(["--out", "/tmp/host-health-irrelevant.jsonl"])
+        except SystemExit as exc:  # pragma: no cover - main returns int
+            returncode = exc.code
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+            self.sampler.write_to_file = saved_write_to_file
+        self.assertEqual(returncode, 1)
+
+    def test_primary_stdout_brokenpipe_still_propagates_clean_exit_zero(self) -> None:
+        # Regression guard: a PRIMARY (out_path None) stdout BrokenPipe is still a
+        # clean stream termination -> main() exits 0. This must NOT be reclassified
+        # as RecordUnemittable by the FIX A change.
+        class BrokenStdout:
+            def write(self, _data):
+                raise BrokenPipeError("simulated gone streaming consumer")
+
+            def flush(self):
+                raise BrokenPipeError("simulated gone streaming consumer")
+
+        saved_stdout = sys.stdout
+        sys.stdout = BrokenStdout()
+        try:
+            returncode = self.sampler.main(["--interval", "0.1"])
+        finally:
+            sys.stdout = saved_stdout
+        self.assertEqual(returncode, 0)
+
+    # FIX C --------------------------------------------------------------
+    def test_cgroup_v1_reads_oom_control_not_memory_events(self) -> None:
+        # A fake cgroup-v1 hierarchy exposing the counter in memory.oom_control
+        # (the REAL v1 file) with the v2 path absent must yield (3, None). Pre-fix
+        # the v1 candidate pointed at memory.events, which cgroup-v1 does not carry
+        # the oom_kill counter in, so the collector returned (None, <unavailable>).
+        with tempfile.TemporaryDirectory(prefix="host-health-fixc.") as temp:
+            root = Path(temp)
+            v1_dir = root / "memory" / "system.slice" / "bolt-v2.service"
+            v1_dir.mkdir(parents=True)
+            (v1_dir / "memory.oom_control").write_text(
+                "oom_kill_disable 0\nunder_oom 0\noom_kill 3\n", encoding="utf-8"
+            )
+            saved_v2 = self.sampler.CGROUP_V2_SYSTEM_SLICE
+            saved_v1 = self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE
+            # v2 points at a guaranteed-absent dir; v1 at the fake oom_control tree.
+            self.sampler.CGROUP_V2_SYSTEM_SLICE = root / "unified" / "system.slice"
+            self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE = root / "memory" / "system.slice"
+            try:
+                value, error = self.sampler.collect_cgroup_oom_kills("bolt-v2")
+            finally:
+                self.sampler.CGROUP_V2_SYSTEM_SLICE = saved_v2
+                self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE = saved_v1
+        self.assertEqual(value, 3, error)
+        self.assertIsNone(error)
+
+    # FIX E --------------------------------------------------------------
+    def test_collect_disk_missing_requested_path_emits_null(self) -> None:
+        # A requested catalog path that does not exist must yield (None, <error
+        # mentioning the requested path missing>) WITHOUT measuring a parent
+        # directory. Pre-fix collect_disk statvfs'd the ancestor and returned a
+        # non-None disk dict (the ancestor's fullness) for a path that has
+        # vanished.
+        missing = "/definitely/missing/host-health-" + str(os.getpid()) + "/catalog"
+        value, error = self.sampler.collect_disk(missing)
+        self.assertIsNone(value)
+        self.assertIsNotNone(error)
+        self.assertIn("missing", error)
+        self.assertIn(missing, error)
+        # The error must NOT claim it measured an ancestor: disk is null, so a
+        # "measured nearest existing ancestor" message would contradict the null
+        # disk and read as if ancestor data existed (a live smoke run caught the
+        # stale wording).
+        self.assertNotIn("ancestor", error)
+        self.assertIn("disk metrics unavailable", error)
+
+    def test_collect_disk_existing_path_still_measures(self) -> None:
+        # Guard the other half of FIX E: an EXISTING path still produces a disk
+        # dict with no path_error (unchanged behaviour).
+        with tempfile.TemporaryDirectory(prefix="host-health-fixe-ok.") as temp:
+            value, error = self.sampler.collect_disk(temp)
+        self.assertIsNotNone(value)
+        self.assertIsNone(error)
+        self.assertIsNotNone(value["used_pct"])
+
+    def test_disk_metrics_non_physical_free_blocks_nulls_used_pct(self) -> None:
+        # FIX E5: f_bfree > f_blocks is non-physical (more free than total) and
+        # would compute a NEGATIVE used_pct. The guard nulls it. Pre-fix the math
+        # produced a negative used_pct the viewer reads as green.
+        fake = FakeStatvfsCustom(f_blocks=100, f_bfree=120, f_bavail=110)
+        metrics = self.sampler.disk_metrics_from_statvfs("/data", fake, 7)
+        self.assertIsNone(metrics["used_pct"])
+
+    def test_disk_metrics_used_pct_clamped_to_100(self) -> None:
+        # FIX E5: a fully-used filesystem (no blocks available to the user) reports
+        # exactly 100, and the clamp guarantees used_pct can never round above 100.
+        # f_blocks=100, f_bfree=0 -> used=100 blocks; f_bavail=0 -> avail=0;
+        # denominator=100 blocks; used_pct=100.
+        fake_full = FakeStatvfsCustom(f_blocks=100, f_bfree=0, f_bavail=0)
+        metrics_full = self.sampler.disk_metrics_from_statvfs("/data", fake_full, 7)
+        self.assertEqual(metrics_full["used_pct"], 100)
+        self.assertLessEqual(metrics_full["used_pct"], 100)
+
+    def test_disk_metrics_clamp_caps_overflow_used_pct(self) -> None:
+        # Directly prove the upper clamp is load-bearing: feed a statvfs whose
+        # raw df-denominator math yields > 100 (constructed so used_bytes exceeds
+        # the used+available denominator) and assert the returned value is capped
+        # at 100. Pre-fix (no clamp) this returns a value > 100 that the viewer
+        # misreads. We bypass the f_bfree>f_blocks branch (which would null first)
+        # by keeping f_bfree <= f_blocks while making available negative via a
+        # subclass that reports a smaller f_bavail than physically consistent.
+        class OverflowStatvfs(FakeStatvfsCustom):
+            # used = (f_blocks - f_bfree) = 99 blocks; df denominator = used + avail.
+            # Force avail negative so used/(used+avail) > 100 pre-clamp, while
+            # keeping f_bfree (1) <= f_blocks (100) so the non-physical branch
+            # (f_bfree > f_blocks) does not pre-empt the clamp.
+            pass
+
+        fake = OverflowStatvfs(f_blocks=100, f_bfree=1, f_bavail=-10)
+        # used=99 blocks, avail=-10 blocks, denominator=89 blocks (>0),
+        # raw used_pct = 99/89*100 ~= 111.24 -> must be clamped to 100.0.
+        metrics = self.sampler.disk_metrics_from_statvfs("/data", fake, 7)
+        self.assertEqual(metrics["used_pct"], 100.0)
 
 
 if __name__ == "__main__":

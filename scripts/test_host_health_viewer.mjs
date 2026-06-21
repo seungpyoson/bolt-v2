@@ -210,7 +210,11 @@ check("D2 bannerReasons flags failure result", () => {
 });
 check("D2 bannerReasons clean record -> no reasons", () => {
   const bannerReasons = requireFn(ctx, "bannerReasons");
-  const latest = { oom_killed: null, service: { active_state: "active", n_restarts: 0, result: "success" } };
+  // A genuinely clean record now includes a present disk block: an absent/null
+  // disk is itself a degraded signal (E3) that the render path already shows as
+  // a violet chip and the banner now surfaces. "Clean" means service healthy
+  // AND disk present.
+  const latest = { oom_killed: null, disk: { used_pct: 20 }, service: { active_state: "active", n_restarts: 0, result: "success" } };
   const reasons = bannerReasons(latest, [latest]);
   assertEqual(reasons.length, 0, "a clean record must not raise a banner");
 });
@@ -309,6 +313,167 @@ check("R2-7 authoritative oom-kill keeps authoritative wording", () => {
   const latest = { oom_killed: true, service: { active_state: "failed", result: "oom-kill", cgroup_oom_kills: 1 } };
   const reasons = bannerReasons(latest, [latest]);
   assertTrue(reasons.some(r => /authoritative/.test(r)), "systemd oom-kill stays authoritative");
+});
+
+// === PR #886 review round 3 (fail-closed hardening E1/E2/E4/E3/F/G) ==========
+
+// E1: active/exited (or any active sub_state != "running") is degraded, never
+// green: systemd still calls the unit active but its main process has exited.
+// Pre-fix the active branch went straight to grn on a 0-restart success.
+check("E1 serviceBadge active/exited -> amb, not green", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ service: { active_state: "active", sub_state: "exited", result: "success", n_restarts: 0 } });
+  assertTrue(/badge amb/.test(html), "active/exited must be amber");
+  assertTrue(!/badge grn/.test(html), "active/exited must NOT be green");
+});
+check("E1 serviceBadge active/running clean -> green (unchanged)", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } });
+  assertTrue(/badge grn/.test(html), "clean active/running is still green");
+});
+
+// E2: an OOM kill forces RED for ANY active_state. Pre-fix the oom_killed check
+// lived INSIDE the active branch, so an OOM victim now inactive rendered violet
+// and one now activating rendered amber.
+check("E2 serviceBadge oom_killed + inactive -> red (pre-fix: vio)", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ oom_killed: true, service: { active_state: "inactive", sub_state: "dead", result: "signal" } });
+  assertTrue(/badge red/.test(html), "OOM victim now inactive must be red");
+  assertTrue(!/badge vio/.test(html), "must NOT be violet");
+  assertTrue(!/badge grn/.test(html), "must NOT be green");
+});
+check("E2 serviceBadge oom_killed + activating -> red (pre-fix: amb)", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ oom_killed: true, service: { active_state: "activating", sub_state: "start", result: "signal" } });
+  assertTrue(/badge red/.test(html), "OOM victim now activating must be red");
+  assertTrue(!/badge amb/.test(html), "must NOT be amber");
+  assertTrue(!/badge grn/.test(html), "must NOT be green");
+});
+
+// E4: a PRESENT but non-finite n_restarts in the green-eligible path is suspect
+// restart data -> degraded (amber), never green. Pre-fix Number("garbage")=NaN
+// failed the `> 0` test and fell through to grn.
+check("E4 serviceBadge non-finite n_restarts -> not green", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ service: { active_state: "active", sub_state: "running", result: "success", n_restarts: "garbage" } });
+  assertTrue(/badge amb/.test(html), "suspect restart data must be amber");
+  assertTrue(!/badge grn/.test(html), "must NOT be green");
+});
+check("E4 serviceBadge null n_restarts stays green-eligible", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ service: { active_state: "active", sub_state: "running", result: "success", n_restarts: null } });
+  assertTrue(/badge grn/.test(html), "null/absent restart field may stay green");
+});
+
+// E3: a null/absent disk block (sampler could not stat the catalog path) must
+// raise a banner reason, parallel to "service status unavailable". Pre-fix
+// bannerReasons emitted nothing for a null disk (only a quiet violet chip).
+check("E3 bannerReasons flags null disk", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { disk: null, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /disk status unavailable/.test(r)), "null disk raises a banner reason");
+});
+check("E3 bannerReasons: present disk does not raise the disk reason", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { disk: { used_pct: 20 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(!reasons.some(r => /disk status unavailable/.test(r)), "a present disk must not raise the reason");
+});
+
+// F: min/max must come from an accumulator loop, not Math.min(...values). The
+// spread overflows V8's argument limit at ~110K+ elements and throws RangeError,
+// aborting render() and blanking the UI. arrayExtent has no such ceiling.
+check("F arrayExtent handles 200k elements without throwing", () => {
+  const arrayExtent = requireFn(ctx, "arrayExtent");
+  const big = new Array(200000);
+  for (let i = 0; i < big.length; i += 1) big[i] = i;
+  // Pre-fix evidence: Math.min(...big) throws here. arrayExtent must not.
+  let threw = false;
+  let extent;
+  try {
+    extent = arrayExtent(big);
+  } catch (error) {
+    threw = true;
+  }
+  assertTrue(!threw, "arrayExtent must not throw on a huge array");
+  assertEqual(extent.lo, 0, "min of 0..199999 is 0");
+  assertEqual(extent.hi, 199999, "max of 0..199999 is 199999");
+});
+check("F Math.min(...arr) DOES overflow at 200k (pre-fix failure mode)", () => {
+  // Anchors WHY the fix is load-bearing: the spread the fix removed throws here.
+  const big = new Array(200000).fill(1);
+  let threw = false;
+  try {
+    Math.min(...big);
+  } catch (error) {
+    threw = true;
+  }
+  assertTrue(threw, "Math.min(...big) overflows the call-argument limit");
+});
+check("F drawTimeSeries survives 200k records via the real render path", () => {
+  // Integration evidence that the SHIPPED drawTimeSeries (not just the extracted
+  // helper) no longer spreads a huge array. Pre-fix this throws RangeError from
+  // Math.min(...values) and aborts render(); post-fix it runs to completion.
+  const drawTimeSeries = requireFn(ctx, "drawTimeSeries");
+  const records = new Array(200000);
+  for (let i = 0; i < records.length; i += 1) {
+    records[i] = { sampled_at: "2026-06-22T00:00:00Z", process: { rss_bytes: i } };
+  }
+  const container = ctx.document.createElement("div");
+  let threw = false;
+  try {
+    drawTimeSeries(container, {
+      records,
+      unit: "bytes",
+      formatter: ctx.formatBytes,
+      series: [{ name: "RSS", color: "var(--blu)", value: record => record.process && record.process.rss_bytes }]
+    });
+  } catch (error) {
+    threw = true;
+  }
+  assertTrue(!threw, "drawTimeSeries must not throw on 200k records");
+  assertTrue(container.children.length > 0, "it appended chart output, did not abort early");
+});
+check("F arrayExtent matches inline min/max on a small input", () => {
+  const arrayExtent = requireFn(ctx, "arrayExtent");
+  const extent = arrayExtent([3, -2, 7, 0, 5]);
+  assertEqual(extent.lo, -2, "min preserved on a normal-size input");
+  assertEqual(extent.hi, 7, "max preserved on a normal-size input");
+});
+
+// G: restartIncreased must apply the same Number.isFinite finite-guard as its
+// sibling counterIncreased. Pre-fix, a non-numeric n_restarts was NOT skipped:
+// it set previous=Number("x")=NaN, masking the very next comparison. With a
+// non-numeric value sitting BETWEEN two valid samples (5, "x", 6), the real
+// 5->6 increase is hidden because the pre-fix code compares 6 against NaN
+// instead of against the last VALID value 5. Post-fix delegates to
+// counterIncreased, which `continue`s past the non-numeric and keeps previous=5,
+// so 6>5 is detected.
+check("G restartIncreased: non-numeric between valids must not mask the increase", () => {
+  const restartIncreased = requireFn(ctx, "restartIncreased");
+  const records = [
+    { service: { n_restarts: 5 } },
+    { service: { n_restarts: "x" } },
+    { service: { n_restarts: 6 } }
+  ];
+  assertEqual(restartIncreased(records), true, "non-numeric must not poison the next comparison");
+});
+check("G restartIncreased: clean increasing sequence -> true", () => {
+  const restartIncreased = requireFn(ctx, "restartIncreased");
+  const records = [
+    { service: { n_restarts: 0 } },
+    { service: { n_restarts: 1 } }
+  ];
+  assertEqual(restartIncreased(records), true, "increasing restarts detected");
+});
+check("G restartIncreased: flat sequence -> false", () => {
+  const restartIncreased = requireFn(ctx, "restartIncreased");
+  const records = [
+    { service: { n_restarts: 2 } },
+    { service: { n_restarts: 2 } }
+  ];
+  assertEqual(restartIncreased(records), false, "no increase on a flat sequence");
 });
 
 // --- report ------------------------------------------------------------------

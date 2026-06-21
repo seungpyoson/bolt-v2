@@ -75,8 +75,8 @@ configured reference-current-price sources. The prestart check requires `persist
 to stay under the TOML-configured `persistence.required_catalog_prefix` and requires the catalog
 filesystem to have at least the TOML-configured `persistence.min_free_bytes` available.
 For live EC2 operation, start Bolt through the systemd unit or `just live`; direct
-`bolt-v2 run --config ...` remains a non-canonical primitive for a generated `live.toml` path and
-keeps only its minimal generated-config, invariant, and storage prestart guards.
+`bolt-v2 run --config ...` is disabled for live arming: it refuses to start the node and redirects
+operators to `bolt-v2 ops launch --profile <profile-id> --config-root <config-root>`.
 
 ## Supervised live checklist
 

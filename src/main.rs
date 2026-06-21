@@ -18,15 +18,14 @@ use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_live_node::{
-        build_bolt_v3_live_node, build_bolt_v3_strategy_free_data_client_probe_live_node,
-        current_build_head_sha, run_bolt_v3_data_client_census, run_bolt_v3_data_client_probe,
-        run_bolt_v3_live_node,
+        BoltV3LiveNodeRuntime, build_bolt_v3_live_node_with_resolved,
+        build_bolt_v3_strategy_free_data_client_probe_live_node, current_build_head_sha,
+        run_bolt_v3_data_client_census, run_bolt_v3_data_client_probe, run_bolt_v3_live_node,
     },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_prod_profile::{
-        GENERATED_MARKER_PREFIX, GENERATOR_FORMAT_VERSION, LIVE_CONFIG_FILE_NAME,
-        ProductionInvariants, confirm_production_invariants, generate_live_config,
-        live_config_path, verify_live_config,
+        GENERATOR_FORMAT_VERSION, ProductionInvariants, confirm_production_invariants,
+        generate_live_config, live_config_path, verify_live_config,
     },
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
@@ -36,7 +35,9 @@ use bolt_v2::{
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
     bolt_v3_reference_price_health::{
-        ReferenceCurrentPriceHealthReport, prepare_reference_current_price_health_run,
+        ReferenceCurrentPriceHealthReport, ReferenceCurrentPriceHealthRun,
+        prepare_reference_current_price_health_run,
+        prepare_reference_current_price_health_run_with_resolved,
         run_prepared_reference_current_price_health,
     },
     bolt_v3_secrets::{
@@ -51,8 +52,6 @@ use bolt_v2::bolt_v3_reference_price_health::ReferenceCurrentPriceSourceUpdateOb
 
 const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
     "clob_v2_balance_allowance_cache_sync_completed";
-const LIVE_LOCAL_CONFIG_FILE_NAME: &str = "live.local.toml";
-const BOLT_LIVE_PROFILE_ENV: &str = "BOLT_LIVE_PROFILE";
 const CLOB_V2_CACHE_SYNC_EXECUTION_CLIENT_OUTPUT_FIELD: &str = "execution_client_id";
 const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
 const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
@@ -229,15 +228,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_live_node(config: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    verify_runtime_live_config_source(&config)?;
-    let loaded = load_bolt_v3_config(&config)?;
-    confirm_production_invariants(&loaded)?;
-    run_loaded_prestart_check(&loaded, None)?;
-    start_loaded_node(loaded)
+    Err(format!(
+        "plain `bolt-v2 run --config {}` is disabled for live arming; use \
+         `bolt-v2 ops launch --profile <profile-id> --config-root <config-root>`",
+        config.display()
+    )
+    .into())
 }
 
-fn start_loaded_node(loaded: LoadedBoltV3Config) -> Result<(), Box<dyn std::error::Error>> {
-    let mut node = build_bolt_v3_live_node(&loaded)?;
+fn start_loaded_node_with_resolved(
+    loaded: LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let node = build_bolt_v3_live_node_with_resolved(&loaded, resolved)?;
+    run_built_node(node, loaded)
+}
+
+fn run_built_node(
+    mut node: BoltV3LiveNodeRuntime,
+    loaded: LoadedBoltV3Config,
+) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -247,64 +257,6 @@ fn start_loaded_node(loaded: LoadedBoltV3Config) -> Result<(), Box<dyn std::erro
         Ok(())
     };
     runtime.block_on(local.run_until(app))
-}
-
-fn verify_runtime_live_config_source(config: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let file_name = config.file_name().and_then(|name| name.to_str());
-    if file_name == Some(LIVE_LOCAL_CONFIG_FILE_NAME) {
-        return Err(format!(
-            "runtime config `{}` is the legacy live.local.toml path; run \
-             `bolt-v2 ops generate-live-config` from a reviewed profile ID instead",
-            config.display()
-        )
-        .into());
-    }
-    if file_name != Some(LIVE_CONFIG_FILE_NAME) {
-        return Err(format!(
-            "runtime config `{}` is not the generated live.toml path; run \
-             `bolt-v2 ops generate-live-config` from a reviewed profile ID and start from live.toml",
-            config.display()
-        )
-        .into());
-    }
-    let text = std::fs::read_to_string(config).map_err(|source| {
-        std::io::Error::new(
-            source.kind(),
-            format!(
-                "runtime config `{}` is not readable before live start: {source}",
-                config.display()
-            ),
-        )
-    })?;
-    if !text.starts_with(GENERATED_MARKER_PREFIX) {
-        return Err(format!(
-            "runtime config `{}` is named live.toml but is not a generated live config; \
-             run `bolt-v2 ops generate-live-config` from a reviewed profile ID instead of \
-             hand-editing or using live.local.toml",
-            config.display()
-        )
-        .into());
-    }
-    let profile = std::env::var(BOLT_LIVE_PROFILE_ENV).map_err(|_| {
-        format!(
-            "{BOLT_LIVE_PROFILE_ENV} must be set to the reviewed profile ID before running \
-             generated live.toml"
-        )
-    })?;
-    if profile.is_empty() {
-        return Err(format!(
-            "{BOLT_LIVE_PROFILE_ENV} must be non-empty before running generated live.toml"
-        )
-        .into());
-    }
-    let config_root = config.parent().ok_or_else(|| {
-        format!(
-            "runtime config `{}` must be inside the deployed config root",
-            config.display()
-        )
-    })?;
-    verify_live_config(config_root, &profile)?;
-    Ok(())
 }
 
 fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -382,6 +334,7 @@ struct OpsLaunchContext {
     config_root: PathBuf,
     live_config: PathBuf,
     loaded: Option<LoadedBoltV3Config>,
+    resolved_secrets: Option<ResolvedBoltV3Secrets>,
 }
 
 impl OpsLaunchContext {
@@ -392,6 +345,7 @@ impl OpsLaunchContext {
             config_root,
             live_config,
             loaded: None,
+            resolved_secrets: None,
         }
     }
 
@@ -413,14 +367,12 @@ where
 {
     let mut last_completed_stage = None;
     for &stage in OPS_LAUNCH_STAGE_CHAIN {
-        if stage == OpsLaunchStage::Start {
-            emit_ops_launch_stage_log(
-                stage,
-                OpsLaunchStageStatus::Entering,
-                last_completed_stage,
-                None,
-            )?;
-        }
+        emit_ops_launch_stage_log(
+            stage,
+            OpsLaunchStageStatus::Entering,
+            last_completed_stage,
+            None,
+        )?;
         match run_stage(stage) {
             Ok(()) => {
                 last_completed_stage = Some(stage);
@@ -474,21 +426,31 @@ fn run_ops_launch_stage(
         OpsLaunchStage::VerifyConfig => {
             let verification = verify_live_config(&context.config_root, &context.profile)?;
             context.live_config = verification.deployed_path;
-            context.loaded = Some(load_bolt_v3_config(&context.live_config)?);
+            context.loaded = Some(verification.loaded);
             Ok(())
         }
         OpsLaunchStage::SecretsCheck => run_loaded_secrets_check(context.loaded()?).map(|_| ()),
-        OpsLaunchStage::SecretsResolve => run_loaded_secrets_resolve(context.loaded()?).map(|_| ()),
+        OpsLaunchStage::SecretsResolve => {
+            context.resolved_secrets = Some(run_loaded_secrets_resolve(context.loaded()?)?);
+            Ok(())
+        }
         OpsLaunchStage::PrestartCheck => run_loaded_prestart_check(context.loaded()?, None),
         OpsLaunchStage::ReferenceCurrentPriceHealth => {
-            run_loaded_reference_current_price_health(context.loaded()?)
+            let resolved = context.resolved_secrets.as_ref().ok_or(
+                "ops launch secrets-resolve stage must run before reference-current-price-health",
+            )?;
+            run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)
         }
         OpsLaunchStage::Start => {
             let loaded = context
                 .loaded
                 .take()
                 .ok_or("ops launch start stage requires a loaded config from verify-config")?;
-            start_loaded_node(loaded)
+            let resolved = context
+                .resolved_secrets
+                .take()
+                .ok_or("ops launch start stage requires resolved secrets from secrets-resolve")?;
+            start_loaded_node_with_resolved(loaded, &resolved)
         }
     }
 }
@@ -552,6 +514,20 @@ fn run_loaded_reference_current_price_health(
 ) -> Result<(), Box<dyn std::error::Error>> {
     check_no_forbidden_credential_env_vars(&loaded.root)?;
     let health_run = prepare_reference_current_price_health_run(loaded)?;
+    run_reference_current_price_health(health_run)
+}
+
+fn run_loaded_reference_current_price_health_with_resolved(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let health_run = prepare_reference_current_price_health_run_with_resolved(loaded, resolved)?;
+    run_reference_current_price_health(health_run)
+}
+
+fn run_reference_current_price_health(
+    health_run: ReferenceCurrentPriceHealthRun,
+) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -1178,6 +1154,7 @@ fn run_loaded_secrets_resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bolt_v2::bolt_v3_prod_profile::GENERATED_MARKER_PREFIX;
     use std::fs;
 
     #[test]
@@ -1336,55 +1313,30 @@ mod tests {
     }
 
     #[test]
-    fn live_config_run_guard_requires_verified_generated_live_toml() {
+    fn run_live_node_redirects_to_ops_launch_without_arming() {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("bolt-v2-live-marker-test-{suffix}"));
+        let dir = std::env::temp_dir().join(format!("bolt-v2-run-redirect-test-{suffix}"));
         fs::create_dir_all(&dir).expect("test temp dir should create");
         let live = dir.join("live.toml");
-        fs::write(&live, "[runtime]\n").expect("hand-edited live.toml should write");
-
-        let error = verify_runtime_live_config_source(&live)
-            .expect_err("live.toml without generated marker must be rejected");
-        assert!(
-            error.to_string().contains("is not a generated live config"),
-            "error should explain the generated-marker requirement, got: {error}"
-        );
-
         fs::write(
             &live,
             format!("{GENERATED_MARKER_PREFIX}{GENERATOR_FORMAT_VERSION}\n"),
         )
-        .expect("generated marker should write");
-        if std::env::var_os(BOLT_LIVE_PROFILE_ENV).is_none() {
-            let error = verify_runtime_live_config_source(&live)
-                .expect_err("generated live.toml without a profile ID must be rejected");
-            assert!(
-                error.to_string().contains(BOLT_LIVE_PROFILE_ENV),
-                "error should require the selected profile ID, got: {error}"
-            );
-        }
+        .expect("generated live.toml marker should write");
 
-        let root = dir.join("root.toml");
-        fs::write(&root, "[runtime]\n").expect("non-live config should write");
-        let error = verify_runtime_live_config_source(&root)
-            .expect_err("run must reject non-live.toml runtime config paths");
+        let error =
+            run_live_node(live).expect_err("plain run must redirect before any live arming");
         assert!(
-            error
-                .to_string()
-                .contains("not the generated live.toml path"),
-            "error should require generated live.toml, got: {error}"
+            error.to_string().contains("ops launch"),
+            "plain run must direct operators to ops launch, got: {error}"
         );
-
-        let live_local = dir.join("live.local.toml");
-        fs::write(&live_local, "[runtime]\n").expect("legacy live.local.toml should write");
-        let error = verify_runtime_live_config_source(&live_local)
-            .expect_err("live.local.toml must be rejected as a runtime config source");
         assert!(
-            error.to_string().contains("legacy live.local.toml"),
-            "error should identify live.local.toml as legacy drift, got: {error}"
+            error.to_string().contains("ops launch --profile")
+                && error.to_string().contains("--config-root"),
+            "redirect must name the required profile and config-root flags, got: {error}"
         );
 
         fs::remove_dir_all(&dir).expect("test temp dir should clean up");

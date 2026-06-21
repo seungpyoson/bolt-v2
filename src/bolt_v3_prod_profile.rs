@@ -168,6 +168,8 @@ pub struct LiveConfigVerification {
     pub profile_id: String,
     pub profile_path: PathBuf,
     pub deployed_path: PathBuf,
+    #[serde(skip)]
+    pub loaded: LoadedBoltV3Config,
     pub profile_bundle_sha256: String,
     /// Production invariants re-confirmed on the *deployed* file.
     pub invariants: ProductionInvariants,
@@ -865,6 +867,7 @@ pub fn verify_live_config(
         profile_id: profile_id.as_str().to_string(),
         profile_path,
         deployed_path,
+        loaded: deployed_loaded,
         profile_bundle_sha256: generated.profile_bundle_sha256,
         invariants,
         matches_profile: true,

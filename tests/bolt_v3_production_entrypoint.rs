@@ -32,6 +32,16 @@ fn top_level_function_body<'a>(source: &'a str, marker: &str) -> &'a str {
     panic!("`{marker}` function body must close");
 }
 
+fn assert_ordered_substrings(haystack: &str, needles: &[&str]) {
+    let mut offset = 0usize;
+    for needle in needles {
+        let Some(found) = haystack[offset..].find(needle) else {
+            panic!("source must contain `{needle}` after byte offset {offset}");
+        };
+        offset += found + needle.len();
+    }
+}
+
 #[test]
 fn main_uses_bolt_v3_runner_wrapper_only() {
     let source = include_str!("../src/main.rs");
@@ -53,52 +63,59 @@ fn main_uses_bolt_v3_runner_wrapper_only() {
 fn main_runs_bolt_v3_runner_inside_local_set() {
     let source = include_str!("../src/main.rs");
 
-    let build_live_node = source
-        .find("let mut node = build_bolt_v3_live_node(&loaded)?;")
-        .expect("production entrypoint must build the LiveNode");
-    let build_runtime = source
-        .find("let runtime = tokio::runtime::Builder::new_multi_thread()")
-        .expect("production entrypoint must build the Tokio runtime");
+    let start_fn = top_level_function_body(source, "fn start_loaded_node_with_resolved");
+    let run_fn = top_level_function_body(source, "fn run_built_node");
+
     assert!(
-        build_live_node < build_runtime,
-        "production entrypoint must resolve SSM and build the LiveNode before entering Tokio runtime"
+        start_fn.contains("build_bolt_v3_live_node_with_resolved(&loaded, resolved)?"),
+        "ops launch must build the LiveNode from already-resolved secrets"
     );
     assert!(
-        source.contains("tokio::task::LocalSet::new()"),
+        start_fn.contains("run_built_node(node, loaded)"),
+        "the with-resolved start boundary must delegate only the runner loop"
+    );
+
+    let build_runtime = run_fn
+        .find("let runtime = tokio::runtime::Builder::new_multi_thread()")
+        .expect("production entrypoint must build the Tokio runtime in run_built_node");
+    let run_bolt_v3 = run_fn
+        .find("run_bolt_v3_live_node(&mut node, &loaded).await?")
+        .expect("production entrypoint must enter the bolt-v3 runner wrapper");
+    assert!(
+        build_runtime < run_bolt_v3,
+        "production entrypoint must build the Tokio runtime before entering the runner future"
+    );
+    assert!(
+        run_fn.contains("tokio::task::LocalSet::new()"),
         "production entrypoint must create a LocalSet for NT's thread-local runner context"
     );
     assert!(
-        source.contains("runtime.block_on(local.run_until(app))"),
+        run_fn.contains("runtime.block_on(local.run_until(app))"),
         "production entrypoint must enter the bolt-v3 runner future through LocalSet::run_until"
     );
 }
 
 #[test]
-fn run_live_node_stays_noncanonical_primitive_without_launch_chain() {
+fn run_live_node_redirects_to_ops_launch_without_starting_node() {
     let source = include_str!("../src/main.rs");
     let run_fn = top_level_function_body(source, "fn run_live_node");
 
     assert!(
-        run_fn.contains("verify_runtime_live_config_source(&config)?"),
-        "plain run must keep its existing generated-live.toml guard"
-    );
-    assert!(
-        run_fn.contains("confirm_production_invariants(&loaded)?"),
-        "plain run must keep its existing production invariant guard"
-    );
-    assert!(
-        run_fn.contains("run_loaded_prestart_check(&loaded, None)?"),
-        "plain run must keep its existing storage prestart guard"
-    );
-    assert!(
-        run_fn.contains("start_loaded_node(loaded)"),
-        "plain run should delegate only the final node start"
+        run_fn.contains("ops launch --profile") && run_fn.contains("--config-root"),
+        "plain run must redirect operators to the canonical ops launch lane"
     );
 
-    for forbidden in ["run_ops_launch", "run_ops_launch_chain", "OpsLaunchStage"] {
+    for forbidden in [
+        "verify_runtime_live_config_source",
+        "load_bolt_v3_config",
+        "confirm_production_invariants",
+        "run_loaded_prestart_check",
+        "start_loaded_node",
+        "build_bolt_v3_live_node",
+    ] {
         assert!(
             !run_fn.contains(forbidden),
-            "plain run must not call the canonical ops launch chain via `{forbidden}`"
+            "plain run must not arm through `{forbidden}`"
         );
     }
 }
@@ -108,8 +125,8 @@ fn ops_launch_uses_chain_and_lower_level_start_without_calling_run() {
     let source = include_str!("../src/main.rs");
 
     assert!(
-        source.contains("fn start_loaded_node(loaded: LoadedBoltV3Config)"),
-        "production binary must expose the lower-level loaded-node start boundary"
+        source.contains("fn start_loaded_node_with_resolved"),
+        "production binary must expose the lower-level with-resolved loaded-node start boundary"
     );
 
     let launch_fn = top_level_function_body(source, "fn run_ops_launch");
@@ -128,12 +145,52 @@ fn ops_launch_uses_chain_and_lower_level_start_without_calling_run() {
         "ops launch chain must model start as the final stage"
     );
     assert!(
-        stage_fn.contains("start_loaded_node(loaded)"),
-        "ops launch start stage must enter the extracted loaded-node runner"
+        stage_fn.contains("start_loaded_node_with_resolved(loaded, resolved)"),
+        "ops launch start stage must use the already-resolved secrets"
     );
     assert!(
         !stage_fn.contains("run_live_node"),
         "ops launch stage execution must not call plain run"
+    );
+}
+
+#[test]
+fn ops_launch_verify_config_reuses_loaded_config_from_verification() {
+    let source = include_str!("../src/main.rs");
+    let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+
+    assert!(
+        stage_fn.contains("context.loaded = Some(verification.loaded)"),
+        "verify-config must store the config already loaded by verify_live_config"
+    );
+    assert!(
+        !stage_fn.contains("load_bolt_v3_config(&context.live_config)"),
+        "verify-config must not load the deployed config a second time"
+    );
+}
+
+#[test]
+fn ops_launch_stage_dispatches_each_variant_to_expected_helper_in_order() {
+    let source = include_str!("../src/main.rs");
+    let stage_fn = top_level_function_body(source, "fn run_ops_launch_stage");
+
+    assert_ordered_substrings(
+        stage_fn,
+        &[
+            "OpsLaunchStage::VerifyConfig =>",
+            "verify_live_config(&context.config_root, &context.profile)",
+            "OpsLaunchStage::SecretsCheck =>",
+            "run_loaded_secrets_check(context.loaded()?)",
+            "OpsLaunchStage::SecretsResolve =>",
+            "run_loaded_secrets_resolve(context.loaded()?)",
+            "context.resolved_secrets = Some",
+            "OpsLaunchStage::PrestartCheck =>",
+            "run_loaded_prestart_check(context.loaded()?, None)",
+            "OpsLaunchStage::ReferenceCurrentPriceHealth =>",
+            "run_loaded_reference_current_price_health_with_resolved(context.loaded()?, resolved)",
+            "OpsLaunchStage::Start =>",
+            "start_loaded_node_with_resolved(loaded, resolved)",
+        ],
     );
 }
 

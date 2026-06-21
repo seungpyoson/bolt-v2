@@ -9,6 +9,15 @@ development runs still emit a valid degraded record instead of going silent.
 Every collector returns ``(value, error_or_none)`` and collection failures are
 reported in the row's ``errors`` array. Collector errors never prevent the
 sampler from writing a JSON record.
+
+Prime directive (scope): ONCE SAMPLING HAS BEGUN the sampler must never crash,
+hang, exit non-zero, or emit non-JSON on the degraded host states it observes;
+the only permitted non-zero exit is when a built record reaches NO sink at all
+(see :class:`RecordUnemittable`). This guarantee starts after argv/config
+validation: argparse and the ``--interval`` type-checker
+(:func:`nonnegative_finite_float`) fail FAST with exit code 2 on a bad invocation
+*before* any sampling, which is intentional and outside the never-non-zero
+guarantee.
 """
 
 from __future__ import annotations
@@ -20,19 +29,86 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import signal
 import socket
 import subprocess
 import sys
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional, Tuple
 
 
 SCHEMA_VERSION = 2
 DEFAULT_SERVICE = "bolt-v2"
-# This is the bot's catalog/data dir whose source of truth is config/root.toml
-# key ``catalog_directory``; it is overridable for tests and ad hoc checks.
-DEFAULT_DISK_PATH = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+# Single source of truth for the bot's catalog/data dir is
+# ``config/root.toml`` key ``catalog_directory`` (under ``[persistence]``).
+# ``discover_catalog_directory()`` reads it from the repo at runtime so this
+# script never drifts from the bot config. ``DISK_PATH_FALLBACK`` is the
+# standalone-box fallback used ONLY when that file cannot be found/parsed (e.g. a
+# bare EC2 host that has the binary but not the repo checkout). The literal here
+# must mirror config/root.toml:catalog_directory.
+DISK_PATH_FALLBACK = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+# Matches ``catalog_directory = "<value>"`` (single OR double quoted), tolerant of
+# surrounding whitespace. Anchored on ``catalog_directory`` as a whole word so the
+# neighbouring ``required_catalog_prefix`` key cannot match. Deliberately a
+# line-scan regex, not ``tomllib`` (added in 3.11) — must parse on Python 3.8+.
+_CATALOG_DIRECTORY_RE = re.compile(
+    r'^\s*catalog_directory\s*=\s*["\'](?P<value>[^"\']+)["\']\s*$'
+)
+
+
+def extract_catalog_directory(toml_text: str) -> str | None:
+    """Return the ``catalog_directory`` value from a root.toml body, or None.
+
+    Pure line-scan so it works on Python 3.8+ (no ``tomllib``). Returns the first
+    matching key's value; ``required_catalog_prefix`` and other keys are ignored.
+    """
+    for line in toml_text.splitlines():
+        match = _CATALOG_DIRECTORY_RE.match(line)
+        if match:
+            return match.group("value")
+    return None
+
+
+def discover_catalog_directory(start: Path | None = None) -> str:
+    """Resolve the bot catalog dir from ``config/root.toml``, walking upward.
+
+    Searches ``config/root.toml`` from each origin directory and its ancestors.
+    When ``start`` is given it is the sole origin (used by tests); otherwise the
+    origins are this script's directory and the current working directory. The
+    first file whose ``catalog_directory`` parses wins. Any failure (file absent,
+    unreadable, no key) silently yields :data:`DISK_PATH_FALLBACK` so a standalone
+    box without the repo still runs.
+    """
+    try:
+        if start is not None:
+            origins = [Path(start).resolve()]
+        else:
+            origins = [Path(__file__).resolve().parent, Path.cwd().resolve()]
+        roots: list[Path] = []
+        seen: set[Path] = set()
+        for origin in origins:
+            for directory in (origin, *origin.parents):
+                if directory not in seen:
+                    seen.add(directory)
+                    roots.append(directory)
+        for directory in roots:
+            candidate = directory / "config" / "root.toml"
+            try:
+                text = candidate.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            value = extract_catalog_directory(text)
+            if value:
+                return value
+    except Exception:  # noqa: BLE001 - discovery must never break sampling
+        return DISK_PATH_FALLBACK
+    return DISK_PATH_FALLBACK
+
+
+# Discovered once at import: the live value when the repo is present, else the
+# standalone fallback. Overridable per-run via ``--disk-path``.
+DEFAULT_DISK_PATH = discover_catalog_directory()
 SYSTEMCTL_TIMEOUT_SECONDS = 5
 # Bounded non-blocking flock acquisition: a contended file lock must never wedge
 # the sampler. We retry LOCK_NB every FLOCK_RETRY_SECONDS until FLOCK_TIMEOUT_SECONDS
@@ -57,7 +133,12 @@ KNOWN_NON_OOM_RESULTS = {
 OOM_AMBIGUOUS_RESULTS = {"signal", "core-dump"}
 
 
-CollectorResult = tuple[Any, str | None]
+# This alias is a RUNTIME value (its RHS is evaluated at import), so it must use
+# typing.Tuple/Optional rather than the PEP 604 ``str | None`` / builtin-generic
+# ``tuple[...]`` forms, which raise TypeError at import on Python < 3.10. Function
+# *signature* annotations stay lazy via ``from __future__ import annotations``;
+# only this top-level assignment is eager. Minimum supported runtime: Python 3.8.
+CollectorResult = Tuple[Any, Optional[str]]
 
 
 def service_template(unit: str) -> dict[str, Any]:
@@ -249,7 +330,15 @@ CGROUP_V1_MEMORY_SYSTEM_SLICE = Path("/sys/fs/cgroup/memory/system.slice")
 
 
 def cgroup_memory_events_paths(unit: str) -> list[Path]:
-    """Ordered candidate ``memory.events`` paths: cgroup-v2 first, then v1."""
+    """Ordered candidate ``memory.events`` paths: cgroup-v2 first, then v1.
+
+    Scope: only units living DIRECTLY under ``system.slice`` are resolved. A unit
+    placed in a custom ``Slice=`` or a nested scope lives at a different cgroup
+    path, so these candidates miss it and ``collect_cgroup_oom_kills`` returns
+    FileNotFound -> null. This is fail-safe by design: a missing path yields a
+    null oom counter, never a false-positive count. Full custom-slice resolution
+    (reading the unit's actual ControlGroup) is tracked as follow-up.
+    """
     candidates = cgroup_unit_candidates(unit)
     v2 = [CGROUP_V2_SYSTEM_SLICE / candidate / "memory.events" for candidate in candidates]
     v1 = [CGROUP_V1_MEMORY_SYSTEM_SLICE / candidate / "memory.events" for candidate in candidates]
@@ -268,6 +357,12 @@ def collect_cgroup_oom_kills(unit: str) -> CollectorResult:
             return None, str(exc)
         except OSError as exc:
             return None, str(exc)
+        except (UnicodeDecodeError, ValueError) as exc:
+            # A malformed/non-UTF-8 memory.events raises UnicodeDecodeError, which
+            # is a ValueError (NOT an OSError) and would otherwise escape this try
+            # to be caught only by the outer run_collector guard. Catch it here so
+            # it degrades to a clean null+error and the sample still emits.
+            return None, f"{path} decode error: {exc}"
         try:
             oom_kills = parse_memory_events_oom_kills(text)
         except ValueError as exc:
@@ -350,6 +445,11 @@ def resolve_measured_disk_path(requested_path: str) -> tuple[Path | None, str | 
 def disk_metrics_from_statvfs(path: str, statvfs_result: os.statvfs_result, st_dev: int) -> dict[str, Any]:
     fragment_size = statvfs_result.f_frsize
     total_bytes = statvfs_result.f_blocks * fragment_size
+    # free_bytes deliberately uses f_bavail (space available to unprivileged
+    # users == df "Available"), NOT f_bfree, which includes the root-reserved
+    # blocks an operator's process cannot actually use. This matches the
+    # df-convention denominator (used + available) used for used_pct below, so
+    # the reported free space and the used% stay internally consistent.
     free_bytes = statvfs_result.f_bavail * fragment_size
     used_bytes = (statvfs_result.f_blocks - statvfs_result.f_bfree) * fragment_size
     available_bytes = statvfs_result.f_bavail * fragment_size
@@ -510,6 +610,14 @@ def collect_process(unit: str, main_pid: int | None, exec_main_pid: int | None) 
     if limit_error:
         errors.append(limit_error)
 
+    # Re-check identity AFTER reading the metrics (TOCTOU guard): the pid may have
+    # exited and been recycled to an unrelated process between the first
+    # process_identity_ok() and these reads, in which case the metrics above
+    # belong to the wrong process. If identity no longer holds, discard them.
+    recheck_ok, recheck_error = process_identity_ok(pid, unit)
+    if not recheck_ok:
+        return None, recheck_error or "pid recycled during read"
+
     return process, "; ".join(errors) if errors else None
 
 
@@ -621,7 +729,22 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
             raise TimeoutError(
                 f"could not acquire file lock on {out_path!r} within {lock_timeout}s"
             )
-        os.write(fd, record_line.encode("utf-8"))
+        # Write-all loop: a single os.write may write only a PREFIX (notably on
+        # ENOSPC mid-write to a regular file) and return the short count without
+        # raising. Ignoring it would truncate the JSONL line, and the next
+        # O_APPEND would glue onto the fragment with no exception fired (no stdout
+        # fallback). Loop until every byte lands; a 0-byte return means no
+        # progress is possible, so raise OSError to trigger the stdout fallback.
+        payload = record_line.encode("utf-8")
+        offset = 0
+        while offset < len(payload):
+            written = os.write(fd, payload[offset:])
+            if written <= 0:
+                raise OSError(
+                    f"os.write made no progress writing to {out_path!r} "
+                    f"({offset}/{len(payload)} bytes written)"
+                )
+            offset += written
     finally:
         try:
             try:
@@ -630,6 +753,23 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
                 pass
         finally:
             os.close(fd)
+
+
+def sanitize_non_finite(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN/Infinity) with ``None``.
+
+    Walks dicts and lists/tuples so a non-finite value nested anywhere in the
+    record is neutralised before serialisation. This guarantees ``json.dumps(...,
+    allow_nan=False)`` can never raise on a stray non-finite float and that the
+    emitted line is always strict JSON. Non-float values pass through unchanged.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {key: sanitize_non_finite(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_non_finite(value) for value in obj]
+    return obj
 
 
 def write_jsonl_line(
@@ -650,7 +790,11 @@ def write_jsonl_line(
     Raises ``RecordUnemittable`` only when stdout ALSO fails with a real OSError
     (not ``BrokenPipeError``, which is allowed to propagate for B4).
     """
-    line = json.dumps(record, separators=(",", ":")) + "\n"
+    # Sanitize first, then dump with allow_nan=False so the line is ALWAYS strict
+    # JSON: a stray non-finite float (NaN/Infinity) would otherwise serialise to
+    # the bare tokens NaN/Infinity, which the viewer's JSON.parse rejects (we must
+    # never emit non-JSON). Non-finite values become null.
+    line = json.dumps(sanitize_non_finite(record), separators=(",", ":"), allow_nan=False) + "\n"
     if out_path is None:
         try:
             emit_to_stdout(line)
@@ -685,6 +829,11 @@ def nonnegative_finite_float(value: str) -> float:
     ``nan`` crashes ``time.sleep`` and ``inf`` makes the sleep loop spin forever.
     Raising ``ArgumentTypeError`` makes argparse exit 2 with a clean message and
     no traceback.
+
+    This is argv validation, so exit code 2 here is intentional and out of scope
+    for the prime directive: the never-non-zero guarantee applies only AFTER
+    sampling has begun (see the module docstring). A malformed invocation must
+    still fail fast rather than silently sampling on a poisoned interval.
     """
     try:
         parsed = float(value)
@@ -734,6 +883,19 @@ def sleep_until_next_sample(seconds: float, stop_flag: StopFlag) -> None:
         time.sleep(min(remaining, 0.5))
 
 
+def log_stderr(msg: str) -> None:
+    """Best-effort stderr write that NEVER raises.
+
+    A failing stderr (closed/full pipe) must never change the sampler's exit
+    code: if a record already reached a sink, a logging failure cannot demote
+    that success to a non-zero exit. Any exception here is swallowed.
+    """
+    try:
+        print(msg, file=sys.stderr)
+    except Exception:  # noqa: BLE001 - logging must never affect exit status
+        pass
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     stop_flag = StopFlag()
@@ -750,16 +912,18 @@ def main(argv: list[str]) -> int:
                 record = sample(service_unit=args.service, disk_path=args.disk_path)
                 warning = write_jsonl_line(record, args.out)
                 if warning is not None:
-                    print(f"host_health_sampler: {warning}", file=sys.stderr)
+                    # Route through log_stderr: a record already reached a sink, so
+                    # a stderr write failure here must NOT demote exit 0 to 1.
+                    log_stderr(f"host_health_sampler: {warning}")
             except BrokenPipeError:
                 # Gone consumer: break out to the clean-termination handler (B4).
                 raise
             except RecordUnemittable as exc:
-                print(f"host_health_sampler: {exc}", file=sys.stderr)
+                log_stderr(f"host_health_sampler: {exc}")
                 if one_shot:
                     return 1
             except Exception as exc:  # noqa: BLE001 - sample()/emit unexpected failure
-                print(f"host_health_sampler: {exc}", file=sys.stderr)
+                log_stderr(f"host_health_sampler: {exc}")
                 if one_shot:
                     return 1
             if one_shot:

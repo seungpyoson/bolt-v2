@@ -233,6 +233,84 @@ check("D4 bannerReasons: fresh increase wording", () => {
   assertTrue(reasons.some(r => /increased to 2 in this file/.test(r)), "fresh kill flagged distinctly");
 });
 
+// === PR #886 review round 2 ===================================================
+
+// Item 6: ANY non-success Result is degraded (not just an allow-list). A
+// timeout/exit-code/resources result with active_state="active" must raise a
+// banner reason. Pre-fix FAILURE_RESULTS omitted these.
+check("R2-6 isFailureResult predicate", () => {
+  const isFailureResult = requireFn(ctx, "isFailureResult");
+  assertEqual(isFailureResult("success"), false, "success is healthy");
+  assertEqual(isFailureResult(""), false, "empty result is not a failure signal");
+  assertEqual(isFailureResult(null), false, "null result is not a failure signal");
+  assertEqual(isFailureResult("timeout"), true, "timeout is degraded");
+  assertEqual(isFailureResult("exit-code"), true, "exit-code is degraded");
+  assertEqual(isFailureResult("resources"), true, "resources is degraded");
+  assertEqual(isFailureResult("protocol"), true, "protocol is degraded");
+  assertEqual(isFailureResult("assert"), true, "assert is degraded");
+});
+check("R2-6 bannerReasons flags result=timeout under active", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { service: { active_state: "active", result: "timeout" } };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /result=timeout/.test(r)), "timeout result raises a reason");
+});
+
+// Item 5: serviceBadge must never render green when the latest sample is
+// degraded, and must never blank out when service data is missing.
+check("R2-5 serviceBadge active+oom_killed -> red, not green", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ oom_killed: true, service: { active_state: "active", sub_state: "running" } });
+  assertTrue(/badge red/.test(html), "active-after-OOM must be red");
+  assertTrue(!/badge grn/.test(html), "must NOT be green");
+});
+check("R2-5 serviceBadge active+failure-result -> red", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ service: { active_state: "active", sub_state: "running", result: "timeout" } });
+  assertTrue(/badge red/.test(html), "active with a failure result must be red");
+  assertTrue(!/badge grn/.test(html), "must NOT be green");
+});
+check("R2-5 serviceBadge active+n_restarts>0 -> amb", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ service: { active_state: "active", sub_state: "running", n_restarts: 2 } });
+  assertTrue(/badge amb/.test(html), "active-after-restart must be amber");
+  assertTrue(!/badge grn/.test(html), "must NOT be green");
+});
+check("R2-5 serviceBadge clean active -> green", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ oom_killed: null, service: { active_state: "active", sub_state: "running", n_restarts: 0, result: "success" } });
+  assertTrue(/badge grn/.test(html), "a clean active service is still green");
+});
+check("R2-5 serviceBadge no service data -> degraded, never blank", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ service: null });
+  assertTrue(/badge vio/.test(html), "missing service is a degraded badge");
+  assertTrue(/service unknown/.test(html), "labelled, never blank");
+});
+check("R2-5 bannerReasons flags missing service data", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { service: null };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /service status unavailable/.test(r)), "no-service sample raises banner");
+});
+
+// Item 7: OOM banner wording must name its evidence source. An OOM derived from
+// result=signal + cgroup counter must NOT be mislabelled as the authoritative
+// systemd Result=oom-kill.
+check("R2-7 OOM from signal+cgroup names result and count", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { oom_killed: true, service: { active_state: "active", result: "signal", cgroup_oom_kills: 3 } };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /result=signal/.test(r) && /oom_kill=3/.test(r)), "cgroup-corroborated wording");
+  assertTrue(!reasons.some(r => /^systemd Result=oom-kill \(authoritative\)$/.test(r)), "not mislabelled authoritative");
+});
+check("R2-7 authoritative oom-kill keeps authoritative wording", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { oom_killed: true, service: { active_state: "failed", result: "oom-kill", cgroup_oom_kills: 1 } };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /authoritative/.test(r)), "systemd oom-kill stays authoritative");
+});
+
 // --- report ------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {

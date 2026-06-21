@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import typing
 import unittest
 
 
@@ -430,6 +431,324 @@ def assert_sample_schema_minimal(record: dict[str, object]) -> None:
     json.dumps(record)
     if not isinstance(record, dict):
         raise AssertionError(f"record is not a dict: {record!r}")
+
+
+class ReviewRound2HardeningTests(unittest.TestCase):
+    """PR #886 review round 2 (#884): partial-write loss, non-strict JSON,
+    stderr-flips-exit, py3.8 import, UnicodeDecodeError, pid-recycle TOCTOU,
+    and catalog-path single-source discovery."""
+
+    def setUp(self) -> None:
+        self.sampler = load_sampler()
+
+    # ITEM 1 -------------------------------------------------------------
+    def test_partial_os_write_raises_so_caller_can_fall_back(self) -> None:
+        # A short os.write (writes a PREFIX then can make no further progress)
+        # must surface as OSError so write_jsonl_line falls back to stdout instead
+        # of silently truncating the JSONL line. Pre-fix: the single os.write call
+        # ignored its short return -> truncation, no exception, no fallback.
+        captured: dict[str, object] = {}
+
+        def short_write(fd, data):
+            # Write only the first byte, then refuse further progress (return 0).
+            if not captured.get("first_done"):
+                captured["first_done"] = True
+                os.write(fd, data[:1])  # land a genuine prefix on disk
+                return 1
+            return 0  # no progress -> writer must raise
+
+        with tempfile.TemporaryDirectory(prefix="host-health-item1.") as temp:
+            target = Path(temp) / "out.jsonl"
+            saved_write = self.sampler.os.write
+            self.sampler.os.write = short_write
+            try:
+                with self.assertRaises(OSError):
+                    self.sampler.write_to_file(
+                        '{"probe":"item1"}\n', str(target), lock_timeout=0.2
+                    )
+            finally:
+                self.sampler.os.write = saved_write
+            # The file holds only the 1-byte prefix; crucially the writer did NOT
+            # report success on a truncated line.
+            on_disk = target.read_bytes()
+            self.assertLess(len(on_disk), len(b'{"probe":"item1"}\n'))
+
+    def test_partial_write_makes_caller_fall_back_to_stdout(self) -> None:
+        # End-to-end: with a short os.write, write_jsonl_line must emit the FULL
+        # line to stdout (never a truncated fragment) and return the fallback
+        # warning so exit stays 0.
+        state = {"calls": 0}
+        real_write = os.write
+
+        def short_then_zero(fd, data):
+            # Only sabotage the regular-file sink (fd != 1); let stdout writes
+            # (item-2 path uses sys.stdout.write, not os.write) be unaffected.
+            state["calls"] += 1
+            if state["calls"] == 1:
+                real_write(fd, data[:1])
+                return 1
+            return 0
+
+        with tempfile.TemporaryDirectory(prefix="host-health-item1b.") as temp:
+            target = Path(temp) / "out.jsonl"
+            out_buf = io.StringIO()
+            saved_write = self.sampler.os.write
+            saved_stdout = sys.stdout
+            self.sampler.os.write = short_then_zero
+            sys.stdout = out_buf
+            try:
+                warning = self.sampler.write_jsonl_line(
+                    {"probe": "item1b"}, str(target), lock_timeout=0.2
+                )
+            finally:
+                self.sampler.os.write = saved_write
+                sys.stdout = saved_stdout
+        self.assertIsInstance(warning, str)
+        self.assertIn("fell back to stdout", warning)
+        # Full, untruncated record on stdout.
+        record = json.loads(out_buf.getvalue().strip())
+        self.assertEqual(record["probe"], "item1b")
+
+    # ITEM 2 -------------------------------------------------------------
+    def test_non_finite_floats_emit_strict_json_null(self) -> None:
+        # A record with NaN/Infinity nested in a dict AND a list must serialise to
+        # strict JSON (no NaN/Infinity tokens) with the non-finite values nulled.
+        # Pre-fix: json.dumps(allow_nan=True) emitted bare NaN/Infinity tokens.
+        record = {
+            "schema_version": 2,
+            "memory": {"mem_available_bytes": float("nan")},
+            "series": [1.0, float("inf"), float("-inf"), 3.0],
+            "nested": {"deep": [{"x": float("nan")}]},
+        }
+        out_buf = io.StringIO()
+        saved_stdout = sys.stdout
+        sys.stdout = out_buf
+        try:
+            result = self.sampler.write_jsonl_line(record, None)
+        finally:
+            sys.stdout = saved_stdout
+        self.assertIsNone(result)
+        line = out_buf.getvalue().strip()
+        # No non-finite tokens leaked into the wire format.
+        self.assertNotIn("NaN", line)
+        self.assertNotIn("Infinity", line)
+        # Strict parse must succeed and the non-finite values became null.
+        parsed = json.loads(line)
+        self.assertIsNone(parsed["memory"]["mem_available_bytes"])
+        self.assertEqual(parsed["series"], [1.0, None, None, 3.0])
+        self.assertIsNone(parsed["nested"]["deep"][0]["x"])
+
+    def test_sanitize_non_finite_is_recursive_and_pure(self) -> None:
+        sanitize = self.sampler.sanitize_non_finite
+        self.assertIsNone(sanitize(float("nan")))
+        self.assertIsNone(sanitize(float("inf")))
+        self.assertEqual(sanitize(1.5), 1.5)
+        self.assertEqual(sanitize({"a": float("nan"), "b": 2}), {"a": None, "b": 2})
+        self.assertEqual(sanitize([float("inf"), "s", 4]), [None, "s", 4])
+
+    # ITEM 3 -------------------------------------------------------------
+    def test_stderr_write_failure_does_not_flip_exit_code(self) -> None:
+        # One-shot, --out failing (so a warning is produced) AND a stderr that
+        # raises on every write. The record reached stdout, so exit MUST stay 0;
+        # pre-fix the unguarded print(file=sys.stderr) was caught by the loop's
+        # broad except -> return 1.
+        class RaisingStderr:
+            def write(self, _data):
+                raise OSError("stderr is full")
+
+            def flush(self):
+                raise OSError("stderr is full")
+
+        with tempfile.TemporaryDirectory(prefix="host-health-item3.") as temp:
+            # Parent of --out is a regular file -> file sink fails -> stdout
+            # fallback + warning -> log_stderr is exercised.
+            parent_file = Path(temp) / "parent_is_a_file"
+            parent_file.write_text("not a directory")
+            target = parent_file / "child.jsonl"
+            out_buf = io.StringIO()
+            saved_out, saved_err = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = out_buf, RaisingStderr()
+            try:
+                returncode = self.sampler.main(["--out", str(target)])
+            except SystemExit as exc:  # pragma: no cover - main returns int
+                returncode = exc.code
+            finally:
+                sys.stdout, sys.stderr = saved_out, saved_err
+        self.assertEqual(returncode, 0)
+        record = json.loads(out_buf.getvalue().strip())
+        assert_sample_schema(record)
+
+    def test_log_stderr_swallows_write_failure(self) -> None:
+        class RaisingStderr:
+            def write(self, _data):
+                raise OSError("boom")
+
+            def flush(self):
+                raise OSError("boom")
+
+        saved_err = sys.stderr
+        sys.stderr = RaisingStderr()
+        try:
+            # Must not raise.
+            self.sampler.log_stderr("anything")
+        finally:
+            sys.stderr = saved_err
+
+    # ITEM 4 -------------------------------------------------------------
+    def test_collector_result_alias_is_importable_runtime_value(self) -> None:
+        # The module imported successfully (it's loaded in setUp); assert the
+        # CollectorResult alias is a usable runtime typing value.
+        alias = self.sampler.CollectorResult
+        # typing.Tuple[...] exposes __origin__ == tuple and the element types in
+        # __args__; the second element is Optional[str] == Union[str, None].
+        self.assertEqual(alias.__origin__, tuple)
+        args = alias.__args__
+        self.assertIs(args[0], typing.Any)
+        self.assertIn(str, args[1].__args__)
+        self.assertIn(type(None), args[1].__args__)
+
+    def test_collector_result_alias_rhs_is_py38_safe(self) -> None:
+        # Differential guard for the py<3.10 import crash: the CollectorResult
+        # assignment's RHS is evaluated EAGERLY at import, so it must NOT use the
+        # PEP 604 ``X | Y`` union or the builtin-generic ``tuple[...]`` subscript
+        # (both TypeError on Python 3.8/3.9). Inspect the AST of the actual source
+        # so this fails on the pre-fix HEAD regardless of the running interpreter.
+        import ast
+
+        source = SCRIPT_PATH.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        rhs = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+                if "CollectorResult" in targets:
+                    rhs = node.value
+                    break
+        self.assertIsNotNone(rhs, "CollectorResult assignment not found in source")
+        offenders = []
+        for sub in ast.walk(rhs):
+            # PEP 604 union: ``A | B`` is a BinOp with a BitOr op.
+            if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr):
+                offenders.append("PEP 604 'X | Y' union")
+            # Builtin-generic subscript: ``tuple[...]`` / ``list[...]`` etc.
+            if isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name):
+                if sub.value.id in {"tuple", "list", "dict", "set", "frozenset", "type"}:
+                    offenders.append(f"builtin-generic '{sub.value.id}[...]'")
+        self.assertEqual(
+            offenders,
+            [],
+            f"CollectorResult RHS uses py3.10+ runtime syntax: {offenders}",
+        )
+
+    # ITEM 8 -------------------------------------------------------------
+    def test_malformed_utf8_memory_events_yields_null_error(self) -> None:
+        # A non-UTF-8 memory.events raises UnicodeDecodeError (a ValueError, not
+        # OSError). Pre-fix it escaped collect_cgroup_oom_kills' try. Post-fix it
+        # degrades to null+error and the surrounding sample still emits.
+        with tempfile.TemporaryDirectory(prefix="host-health-item8.") as temp:
+            root = Path(temp)
+            v2_dir = root / "unified" / "system.slice" / "bolt-v2.service"
+            v2_dir.mkdir(parents=True)
+            # 0xFF is not valid UTF-8.
+            (v2_dir / "memory.events").write_bytes(b"oom_kill 1\n\xff\xfe bad bytes\n")
+            saved_v2 = self.sampler.CGROUP_V2_SYSTEM_SLICE
+            saved_v1 = self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE
+            self.sampler.CGROUP_V2_SYSTEM_SLICE = root / "unified" / "system.slice"
+            self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE = root / "memory" / "system.slice"
+            try:
+                value, error = self.sampler.collect_cgroup_oom_kills("bolt-v2")
+            finally:
+                self.sampler.CGROUP_V2_SYSTEM_SLICE = saved_v2
+                self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE = saved_v1
+        self.assertIsNone(value)
+        self.assertIsNotNone(error)
+        self.assertIn("decode error", error)
+
+    # ITEM 10 ------------------------------------------------------------
+    def test_collect_process_rechecks_identity_after_reads(self) -> None:
+        # The pid-recycle TOCTOU guard: identity_ok True on the first (pre-read)
+        # check, False on the post-read re-check -> the pid was recycled mid-read,
+        # so collect_process must DISCARD the metrics and return None + a recycle
+        # error. Pre-fix it returned the wrong process's metrics. Platform-
+        # agnostic: every I/O helper is stubbed and the platform gate is spoofed
+        # to "linux" so the ONLY behaviour under test is the re-check.
+        sampler = self.sampler
+        calls = {"identity": 0}
+
+        def identity(pid, unit):
+            calls["identity"] += 1
+            # First call (pre-read) ok; second call (post-read) recycled.
+            return (True, None) if calls["identity"] == 1 else (
+                False,
+                f"pid recycled: /proc/{pid}/cgroup did not contain unit {unit!r}",
+            )
+
+        saved = {
+            "identity": sampler.process_identity_ok,
+            "status": sampler.parse_proc_status,
+            "fd": sampler.read_fd_count,
+            "limit": sampler.read_fd_limit_soft,
+            "platform": sampler.sys.platform,
+        }
+        sampler.process_identity_ok = identity
+        sampler.parse_proc_status = lambda pid: ({"VmRSS": 1024}, None)
+        sampler.read_fd_count = lambda pid: (3, None)
+        sampler.read_fd_limit_soft = lambda pid: (1024, None)
+        sampler.sys.platform = "linux"
+        try:
+            value, error = sampler.collect_process("bolt-v2", 4321, None)
+        finally:
+            sampler.process_identity_ok = saved["identity"]
+            sampler.parse_proc_status = saved["status"]
+            sampler.read_fd_count = saved["fd"]
+            sampler.read_fd_limit_soft = saved["limit"]
+            sampler.sys.platform = saved["platform"]
+        self.assertEqual(calls["identity"], 2, "identity must be re-checked after reads")
+        self.assertIsNone(value, "recycled pid metrics must be discarded")
+        self.assertIn("recycled", error)
+
+    # ITEM 12 ------------------------------------------------------------
+    def test_catalog_discovery_reads_root_toml_value(self) -> None:
+        # A fake <tmp>/config/root.toml with a DIVERGENT catalog_directory value
+        # must be discovered (proving discovery reads the file, not the fallback).
+        with tempfile.TemporaryDirectory(prefix="host-health-item12.") as temp:
+            root = Path(temp)
+            (root / "config").mkdir()
+            (root / "config" / "root.toml").write_text(
+                "[persistence]\n"
+                'catalog_directory = "/discovered/catalog/path"\n'
+                'required_catalog_prefix = "/discovered"\n',
+                encoding="utf-8",
+            )
+            found = self.sampler.discover_catalog_directory(start=root)
+            self.assertEqual(found, "/discovered/catalog/path")
+
+    def test_catalog_discovery_falls_back_when_absent(self) -> None:
+        # An isolated subtree under the tempdir with NO config/root.toml at the
+        # start dir or any ancestor (up to /) -> discovery yields the standalone
+        # fallback constant. Using ``start=`` confines the search to this subtree
+        # (the script's own repo ancestors are not consulted).
+        with tempfile.TemporaryDirectory(prefix="host-health-item12b.") as temp:
+            isolated = Path(temp) / "a" / "b" / "c"
+            isolated.mkdir(parents=True)
+            found = self.sampler.discover_catalog_directory(start=isolated)
+        self.assertEqual(found, self.sampler.DISK_PATH_FALLBACK)
+        self.assertEqual(
+            self.sampler.DISK_PATH_FALLBACK, "/srv/bolt-v2/var/bolt-v3-live/catalog"
+        )
+
+    def test_extract_catalog_directory_ignores_neighbor_key(self) -> None:
+        extract = self.sampler.extract_catalog_directory
+        toml_text = (
+            "[persistence]\n"
+            'catalog_directory = "/a/b/c"\n'
+            'required_catalog_prefix = "/a"\n'
+        )
+        self.assertEqual(extract(toml_text), "/a/b/c")
+        # The neighbouring key must never be picked up by accident.
+        self.assertEqual(extract('required_catalog_prefix = "/only/prefix"\n'), None)
+        # Single-quote form is accepted too.
+        self.assertEqual(extract("catalog_directory = '/single'\n"), "/single")
 
 
 if __name__ == "__main__":

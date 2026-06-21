@@ -387,8 +387,10 @@
     function parseJsonl(text) {
       const records = [];
       const errors = [];
-      // Strip a leading UTF-8 BOM so the first record is not dropped (D5).
-      text = text.replace(/^﻿/, "");
+      // Strip a leading UTF-8 BOM (U+FEFF) so the first record is not dropped
+      // (D5). Match it via the \uFEFF escape, never a literal invisible BOM
+      // glyph in source — byte-identical match, but reviewable and copy-safe.
+      text = text.replace(/^\uFEFF/, "");
       text.split(/\r?\n/).forEach((line, index) => {
         if (!line.trim()) return;
         let parsed;
@@ -462,14 +464,38 @@
     }
 
     function serviceBadge(record) {
-      const active = record && record.service ? record.service.active_state : null;
-      const sub = record && record.service ? record.service.sub_state : null;
-      if (!active && !sub) return EMPTY;
+      const service = record && record.service ? record.service : null;
+      const active = service ? service.active_state : null;
+      const sub = service ? service.sub_state : null;
+
+      // No usable service data is a degraded/unknown state, never a blank dash
+      // (item 5): a blank badge reads as "fine" at a glance. Show an explicit
+      // degraded badge instead.
+      if (serviceDataMissing(service)) {
+        return `<span class="badge vio">service unknown</span>`;
+      }
+
       const text = [active, sub].filter(Boolean).join(" / ");
       let klass = "vio";
-      if (active === "active") klass = "grn";
-      else if (active === "failed") klass = "red";
-      else if (active === "activating" || active === "deactivating") klass = "amb";
+      if (active === "active") {
+        // "active" is NOT unconditionally green (item 5): a service that is
+        // active right now but was just OOM-killed or has restarted is degraded.
+        // Downgrade so an active-after-OOM never renders healthy green.
+        const restarts = Number(service.n_restarts);
+        if (record && record.oom_killed === true) {
+          klass = "red";
+        } else if (isFailureResult(service.result)) {
+          klass = "red";
+        } else if (Number.isFinite(restarts) && restarts > 0) {
+          klass = "amb";
+        } else {
+          klass = "grn";
+        }
+      } else if (active === "failed") {
+        klass = "red";
+      } else if (active === "activating" || active === "deactivating") {
+        klass = "amb";
+      }
       return `<span class="badge ${klass}">${escapeHtml(text)}</span>`;
     }
 
@@ -502,15 +528,23 @@
       return counterIncreased(records, service => service.cgroup_oom_kills);
     }
 
-    // Service results that signal a degraded/abnormal stop in the LATEST sample,
-    // independent of any in-file increase (a stale latch is still degraded).
-    const FAILURE_RESULTS = new Set([
-      "oom-kill",
-      "start-limit-hit",
-      "watchdog",
-      "core-dump",
-      "signal"
-    ]);
+    // A systemd Result is degraded if it is present and anything OTHER than
+    // "success". An allow-list of known-bad results (oom-kill/signal/...) is a
+    // trap: any result not in the list (exit-code, timeout, resources, protocol,
+    // assert, watchdog, future systemd values) would read as healthy. Treating
+    // "anything that isn't success" as degraded is the safe default — a stale
+    // failure latch in the LATEST sample is degraded regardless of in-file
+    // change.
+    function isFailureResult(result) {
+      return Boolean(result) && result !== "success";
+    }
+
+    function serviceDataMissing(service) {
+      // The service collector produced nothing usable: null block, or a block
+      // with neither an active_state nor a sub_state (the two fields that make a
+      // record interpretable). A no-service sample must NOT read as healthy.
+      return !service || (!service.active_state && !service.sub_state);
+    }
 
     function bannerReasons(latest, records) {
       // Pure: returns the list of human-readable banner reasons for a record set.
@@ -519,7 +553,29 @@
       if (!latest) return reasons;
       const service = latest.service || null;
 
-      if (latest.oom_killed === true) reasons.push("systemd Result=oom-kill");
+      // OOM banner wording must name its EVIDENCE source (item 7): only a
+      // systemd Result=oom-kill is authoritative; otherwise the sampler derived
+      // OOM from an ambiguous result (signal/core-dump) corroborated by the
+      // cgroup oom_kill counter, so say so rather than mislabel it as the
+      // authoritative systemd verdict.
+      if (latest.oom_killed === true) {
+        const result = service ? service.result : null;
+        const rawCgroup = service ? Number(service.cgroup_oom_kills) : NaN;
+        const cgroupCount = Number.isFinite(rawCgroup) ? rawCgroup : 0;
+        if (result === "oom-kill") {
+          reasons.push("systemd Result=oom-kill (authoritative)");
+        } else {
+          reasons.push(
+            `OOM detected (result=${result || "?"}, cgroup oom_kill=${cgroupCount})`
+          );
+        }
+      }
+
+      // A missing/unavailable service collector is itself a degraded signal
+      // (item 5): surface it so a no-service sample still raises the banner.
+      if (serviceDataMissing(service)) {
+        reasons.push("service status unavailable");
+      }
 
       // Standing degraded state from the latest sample (D2): flag it even when
       // nothing changed within the loaded file.
@@ -527,7 +583,8 @@
         if (service.active_state === "failed") {
           reasons.push("service active_state=failed");
         }
-        if (service.result && FAILURE_RESULTS.has(service.result)) {
+        // Any non-success Result is degraded (item 6), not just an allow-list.
+        if (isFailureResult(service.result)) {
           reasons.push(`service result=${service.result}`);
         }
         const restarts = Number(service.n_restarts);

@@ -831,6 +831,78 @@ reason = "This is the stable gate identifier stamped on each strategy-input snap
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"exit_evaluation"'''
+context = '''pub const BOLT_V3_EXIT_EVALUATION_RECORD_KIND: &str = "exit_evaluation";'''
+classification = "decision_evidence_record_kind"
+reason = "JSONL envelope discriminator for exit-evaluation records; part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"exit_evaluation"'''
+context = '''"exit_evaluation" => {'''
+classification = "decision_evidence_record_kind_match"
+reason = "recovery/chain reader match arm for the exit-evaluation JSONL discriminator; stable audit schema label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.exit_evaluation"'''
+context = '''pub const BOLT_V3_EXIT_EVALUATION_GATE_ID: &str = "bolt_v3.exit_evaluation";'''
+classification = "decision_evidence_gate_id"
+reason = "stable gate identifier stamped on each exit-evaluation evidence record; part of the audit-record contract."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"loss_governor_halt"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";'''
+classification = "decision_evidence_record_kind"
+reason = "JSONL envelope discriminator for loss-governor-halt records; part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"loss_governor_halt"'''
+context = '''"loss_governor_halt" => {'''
+classification = "decision_evidence_record_kind_match"
+reason = "recovery/chain reader match arm for the loss-governor-halt JSONL discriminator; stable audit schema label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.loss_governor_halt"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";'''
+classification = "decision_evidence_gate_id"
+reason = "stable gate identifier stamped on each loss-governor-halt evidence record; part of the audit-record contract."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_reject"'''
+context = '''pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";'''
+classification = "decision_evidence_record_kind"
+reason = "JSONL envelope discriminator for order-reject records; part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_reject"'''
+context = '''"order_reject" => {'''
+classification = "decision_evidence_record_kind_match"
+reason = "recovery/chain reader match arm for the order-reject JSONL discriminator; stable audit schema label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.order_reject"'''
+context = '''pub const BOLT_V3_ORDER_REJECT_GATE_ID: &str = "bolt_v3.order_reject";'''
+classification = "decision_evidence_gate_id"
+reason = "stable gate identifier stamped on each order-reject evidence record; part of the audit-record contract."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"current"'''
 context = '''pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";'''
 classification = "strategy_evidence_market_selection_outcome"

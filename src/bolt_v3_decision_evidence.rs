@@ -2632,4 +2632,161 @@ mod tests {
             env!("CARGO_PKG_VERSION")
         );
     }
+
+    fn sample_exit_evaluation_evidence_encode() -> BoltV3ExitEvaluationEvidence {
+        BoltV3ExitEvaluationEvidence {
+            position_id: "position-one".to_string(),
+            market_id: "market-one".to_string(),
+            instrument_id: "instrument-up".to_string(),
+            client_order_id: Some("client-order-one".to_string()),
+            exit_eval_now_ms: 1_700_000_000_000,
+            exit_trigger_source: BoltV3ExitTriggerSource::ReferenceUpdate,
+            trigger_ts_event_ms: Some(1_699_999_999_500),
+            trigger_ts_init_ms: Some(1_699_999_999_800),
+            rv_surface_id: "surface-one".to_string(),
+            rv_as_of_ms: Some(1_699_999_995_000),
+            rv_ready: true,
+            rv_blockers: vec!["source_stale".to_string()],
+            rv_source_diagnostics: vec!["source-a:ready".to_string()],
+            rv_gate_result: BoltV3RvGateResult::RejectedFutureDated,
+            rv_as_of_minus_now_ms: Some(-5_000),
+            hold_ev_bps: Some("12.5".to_string()),
+            exit_ev_bps: Some("-3.0".to_string()),
+            exit_decision: BoltV3ExitDecisionEvidence::ExitFailClosed,
+            forced_flat_reasons: vec!["rv_gate_rejected".to_string()],
+            submission_order_side: Some("Sell".to_string()),
+            submission_price: Some("0.49".to_string()),
+            submission_quantity: Some("1".to_string()),
+            submission_blocked_reason: Some("rv_gate_rejected".to_string()),
+        }
+    }
+
+    fn sample_loss_governor_halt_evidence_encode() -> BoltV3LossGovernorHaltEvidence {
+        BoltV3LossGovernorHaltEvidence {
+            snapshot_present: true,
+            snapshot_observed_at_ns: Some(1_700_000_000_000_000_000),
+            admission_now_ns: 1_700_000_005_000_000_000,
+            snapshot_age_ns: Some(5_000_000_000),
+            max_snapshot_age_ns: 5_000_000_000,
+            snapshot_source: Some("portfolio_snapshot".to_string()),
+            has_per_trade_pnl: true,
+            has_daily_pnl: true,
+            has_rolling_pnl: false,
+            has_current_equity: true,
+            has_peak_equity: false,
+            last_account_state_ts_ns: Some(1_699_999_999_000_000_000),
+            last_portfolio_snapshot_ts_ns: Some(1_700_000_000_000_000_000),
+            last_position_event_ts_ns: Some(1_699_999_998_000_000_000),
+            account_state_count: 3,
+            portfolio_snapshot_count: 1,
+            position_event_count: 7,
+            stale_reason: BoltV3StaleLossReason::AgeExceeded,
+            stable_halt_key: "halt-key-one".to_string(),
+            retry_count: 2,
+            elapsed_since_first_halt_ns: 10_000_000_000,
+        }
+    }
+
+    fn sample_order_reject_evidence_encode() -> BoltV3OrderRejectEvidence {
+        BoltV3OrderRejectEvidence {
+            reject_source: BoltV3RejectSource::Venue,
+            reject_reason: BoltV3OrderRejectReason::MinNotionalRejected,
+            admission_outcome: Some(BoltV3AdmissionOutcome::Admitted),
+            raw_reason_text: Some("min notional not met".to_string()),
+            instrument_id: "instrument-up".to_string(),
+            order_side: Some("Buy".to_string()),
+            raw_price: Some("0.50".to_string()),
+            raw_quantity: Some("1".to_string()),
+            raw_maker_amount: None,
+            raw_taker_amount: None,
+            normalized_price: Some("0.50".to_string()),
+            normalized_quantity: Some("1".to_string()),
+            normalized_maker_amount: None,
+            normalized_taker_amount: None,
+            venue_price_precision: Some(2),
+            venue_size_precision: Some(0),
+            venue_min_notional: Some("1.0".to_string()),
+            prior_client_order_id: Some("client-order-zero".to_string()),
+            client_order_id: "client-order-one".to_string(),
+            retry_count: 1,
+            backoff_cooldown_state: Some("cooling".to_string()),
+            stable_episode_key: "episode-key-one".to_string(),
+            elapsed_ns: 2_000_000_000,
+        }
+    }
+
+    #[test]
+    fn encode_exit_evaluation_line_round_trips_through_owned_line() {
+        let evidence = sample_exit_evaluation_evidence_encode();
+
+        let line = encode_exit_evaluation_line(&evidence).expect("evidence should encode");
+        assert!(line.ends_with(b"\n"), "encoded line must end with newline");
+        let decoded: ExitEvaluationLineOwned =
+            serde_json::from_slice(&line[..line.len() - 1]).expect("line should decode");
+        decoded
+            .validate_header(
+                BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+                BOLT_V3_EXIT_EVALUATION_GATE_ID,
+                0,
+            )
+            .expect("encoded exit-evaluation header should validate");
+
+        assert_eq!(
+            decoded.header.schema_version,
+            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(decoded.header.gate_id, BOLT_V3_EXIT_EVALUATION_GATE_ID);
+        assert_eq!(decoded.header.kind, BOLT_V3_EXIT_EVALUATION_RECORD_KIND);
+        assert_eq!(decoded.evidence, evidence);
+    }
+
+    #[test]
+    fn encode_loss_governor_halt_line_round_trips_through_owned_line() {
+        let evidence = sample_loss_governor_halt_evidence_encode();
+
+        let line = encode_loss_governor_halt_line(&evidence).expect("evidence should encode");
+        assert!(line.ends_with(b"\n"), "encoded line must end with newline");
+        let decoded: LossGovernorHaltLineOwned =
+            serde_json::from_slice(&line[..line.len() - 1]).expect("line should decode");
+        decoded
+            .validate_header(
+                BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+                BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+                0,
+            )
+            .expect("encoded loss-governor-halt header should validate");
+
+        assert_eq!(
+            decoded.header.schema_version,
+            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(decoded.header.gate_id, BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID);
+        assert_eq!(decoded.header.kind, BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND);
+        assert_eq!(decoded.evidence, evidence);
+    }
+
+    #[test]
+    fn encode_order_reject_line_round_trips_through_owned_line() {
+        let evidence = sample_order_reject_evidence_encode();
+
+        let line = encode_order_reject_line(&evidence).expect("evidence should encode");
+        assert!(line.ends_with(b"\n"), "encoded line must end with newline");
+        let decoded: OrderRejectLineOwned =
+            serde_json::from_slice(&line[..line.len() - 1]).expect("line should decode");
+        decoded
+            .validate_header(
+                BOLT_V3_ORDER_REJECT_RECORD_KIND,
+                BOLT_V3_ORDER_REJECT_GATE_ID,
+                0,
+            )
+            .expect("encoded order-reject header should validate");
+
+        assert_eq!(
+            decoded.header.schema_version,
+            BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+        );
+        assert_eq!(decoded.header.gate_id, BOLT_V3_ORDER_REJECT_GATE_ID);
+        assert_eq!(decoded.header.kind, BOLT_V3_ORDER_REJECT_RECORD_KIND);
+        assert_eq!(decoded.evidence, evidence);
+    }
 }

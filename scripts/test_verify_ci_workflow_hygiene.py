@@ -20,7 +20,7 @@ VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_NEEDS = "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
+GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
 GATE_NAME = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
@@ -38,7 +38,7 @@ GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_de
             exit 0
           fi
 """
-DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]"
+DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
@@ -58,7 +58,6 @@ fingerprint_source = "meter"
 [ci_provenance.full_ci]
 required_jobs = [
   "detector",
-  "fmt-check",
   "deny",
   "clippy",
   "check-aarch64",
@@ -72,9 +71,6 @@ conditional_job_outputs = { build = "detector.build_required" }
 
 [ci_provenance.full_ci.jobs.detector]
 check_name = "detector"
-
-[ci_provenance.full_ci.jobs.fmt-check]
-check_name = "fmt-check"
 
 [ci_provenance.full_ci.jobs.deny]
 check_name = "deny"
@@ -319,19 +315,6 @@ jobs:
             echo "value=true" >> "$GITHUB_OUTPUT"
           fi
 
-  fmt-check:
-    name: fmt-check
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: ./.github/actions/setup-environment
-        id: setup
-        with:
-          just-version: ${{ env.JUST_VERSION }}
-          lint-workflow-contract: "true"
-          toolchain-components: rustfmt
-      - run: just fmt-check
-
   deny:
     name: deny
     needs: detector
@@ -365,7 +348,8 @@ jobs:
       - uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
-          toolchain-components: clippy
+          lint-workflow-contract: "true"
+          toolchain-components: clippy, rustfmt
           include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
@@ -380,6 +364,7 @@ jobs:
           key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
           restore-keys: |
             managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-
+      - run: just fmt-check
       - run: just clippy
 
   check-aarch64:
@@ -643,7 +628,7 @@ jobs:
 
   ci-provenance-emit:
     name: ci-provenance-emit
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
+    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -652,7 +637,6 @@ jobs:
           python3 scripts/ci_provenance.py emit-full-ci
           --output ci-provenance.json
           --required-job detector=${{ needs.detector.result }}
-          --required-job fmt-check=${{ needs.fmt-check.result }}
           --required-job deny=${{ needs.deny.result }}
           --required-job clippy=${{ needs.clippy.result }}
           --required-job check-aarch64=${{ needs.check-aarch64.result }}
@@ -693,7 +677,7 @@ jobs:
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
           || 'gate' }}
-    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -710,9 +694,6 @@ jobs:
           fi
           if [[ "$policy_path" == "tag_reuse" ]]; then
             if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then
               exit 1
             fi
             if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
@@ -777,9 +758,6 @@ jobs:
               fi
             fi
           fi
-          if [[ "${{ needs.fmt-check.result }}" != "success" ]]; then
-            exit 1
-          fi
           if [[ "${{ needs.deny.result }}" != "success" ]]; then
             exit 1
           fi
@@ -807,7 +785,7 @@ jobs:
 
   deploy:
     name: deploy
-    needs: [gate, same-sha-main-evidence, build, detector, fmt-check, deny, clippy, check-aarch64, source-fence, test]
+    needs: [gate, same-sha-main-evidence, build, detector, deny, clippy, check-aarch64, source-fence, test]
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.gate.result == 'success' && needs.same-sha-main-evidence.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -2131,16 +2109,16 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "ci-provenance-emit needs ci-policy",
             replace_once(
                 workflow,
-                "needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
-                "needs: [detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
+                "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
+                "needs: [detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
             ),
         ),
         (
             "ci-provenance-emit must gate on full_ci_required",
             replace_once(
                 workflow,
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
         (
@@ -2403,12 +2381,12 @@ def assert_runner_contract_rejects_missing_and_extra_jobs() -> None:
     verifier = load_verifier()
     workflow_name = ".github/workflows/ci.yml"
     workflow = repo_workflow_text(workflow_name)
-    renamed = replace_once(workflow, "  fmt-check:\n", "  fmt-renamed:\n")
+    renamed = replace_once(workflow, "  deny:\n", "  deny-renamed:\n")
     errors = verifier.verify_github_actions_runner_contract({workflow_name: renamed})
-    if not any("fmt-check" in error and "missing from workflow" in error for error in errors):
+    if not any("deny" in error and "missing from workflow" in error for error in errors):
         raise AssertionError(f"runner contract must reject TOML job without workflow job, got: {errors}")
     if not any(
-        "fmt-renamed" in error and "ci/github-actions-runners.toml" in error
+        "deny-renamed" in error and "ci/github-actions-runners.toml" in error
         for error in errors
     ):
         raise AssertionError(f"runner contract must reject workflow job without TOML mapping, got: {errors}")
@@ -2900,7 +2878,7 @@ source-fence: source-fence-static
 
     nested_public_gate = justfile_text.replace(
         "    python3 scripts/test_local_verification_gate.py",
-        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
+        "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
     )
     nested_public_errors = verifier.verify_source_fence_static_recipe(nested_public_gate)
     if not any("source-fence-static-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
@@ -2908,7 +2886,7 @@ source-fence: source-fence-static
 
     nested_public_dependency = justfile_text.replace(
         "source-fence-static-inner: require-local-verification-gate",
-        "source-fence-static-inner: require-local-verification-gate fmt-check",
+        "source-fence-static-inner: require-local-verification-gate ci-lint-workflow",
     )
     nested_dependency_errors = verifier.verify_source_fence_static_recipe(nested_public_dependency)
     if not any("source-fence-static-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
@@ -2931,12 +2909,6 @@ source-fence: source-fence-static
 def assert_local_verification_gate_recipes_are_enforced() -> None:
     verifier = load_verifier()
     justfile_text = """
-fmt-check:
-    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner
-
-fmt-check-inner: require-local-verification-gate check-workspace
-    python3 scripts/rust_verification.py cargo --repo . -- fmt --check
-
 ci-lint-workflow:
     python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner
 
@@ -2948,25 +2920,25 @@ ci-lint-workflow-inner: require-local-verification-gate
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
 
     ungated = justfile_text.replace(
-        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
-        "    python3 scripts/rust_verification.py cargo --repo . -- fmt --check",
+        "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
+        "    python3 scripts/test_verify_ci_workflow_hygiene.py",
     )
     ungated_errors = verifier.verify_local_verification_gate_recipes(ungated)
-    if not any("justfile fmt-check must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
-        raise AssertionError(f"fmt-check gate drift was silent, got: {ungated_errors}")
+    if not any("justfile ci-lint-workflow must run through scripts/local_verification_gate.py" in error for error in ungated_errors):
+        raise AssertionError(f"ci-lint-workflow gate drift was silent, got: {ungated_errors}")
 
     extra_public_work = justfile_text.replace(
-        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner",
-        "    python3 scripts/local_verification_gate.py fmt-check -- just fmt-check-inner\n"
+        "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
+        "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner\n"
         "    python3 scripts/test_verify_ci_workflow_hygiene.py",
     )
     extra_public_errors = verifier.verify_local_verification_gate_recipes(extra_public_work)
-    if not any("justfile fmt-check must contain only the local verification gate command" in error for error in extra_public_errors):
-        raise AssertionError(f"fmt-check public recipe extra work was silent, got: {extra_public_errors}")
+    if not any("justfile ci-lint-workflow must contain only the local verification gate command" in error for error in extra_public_errors):
+        raise AssertionError(f"ci-lint-workflow public recipe extra work was silent, got: {extra_public_errors}")
 
     nested_public_gate = justfile_text.replace(
         "    python3 scripts/test_verify_ci_workflow_hygiene.py",
-        "    just fmt-check",
+        "    just ci-lint-workflow",
     )
     nested_public_errors = verifier.verify_local_verification_gate_recipes(nested_public_gate)
     if not any("justfile ci-lint-workflow-inner must not invoke local verification gate recipes" in error for error in nested_public_errors):
@@ -2974,19 +2946,16 @@ ci-lint-workflow-inner: require-local-verification-gate
 
     nested_public_dependency = justfile_text.replace(
         "ci-lint-workflow-inner: require-local-verification-gate",
-        "ci-lint-workflow-inner: require-local-verification-gate fmt-check",
+        "ci-lint-workflow-inner: require-local-verification-gate ci-lint-workflow",
     )
     nested_dependency_errors = verifier.verify_local_verification_gate_recipes(nested_public_dependency)
     if not any("justfile ci-lint-workflow-inner must not depend on local verification gate recipes" in error for error in nested_dependency_errors):
         raise AssertionError(f"ci-lint-workflow nested public gate dependency was silent, got: {nested_dependency_errors}")
 
-    missing_guard = justfile_text.replace(
-        "fmt-check-inner: require-local-verification-gate check-workspace",
-        "fmt-check-inner: check-workspace",
-    )
+    missing_guard = justfile_text.replace("ci-lint-workflow-inner: require-local-verification-gate", "ci-lint-workflow-inner:")
     missing_guard_errors = verifier.verify_local_verification_gate_recipes(missing_guard)
-    if not any("justfile fmt-check-inner must require the local verification gate" in error for error in missing_guard_errors):
-        raise AssertionError(f"fmt-check inner guard drift was silent, got: {missing_guard_errors}")
+    if not any("justfile ci-lint-workflow-inner must require the local verification gate" in error for error in missing_guard_errors):
+        raise AssertionError(f"ci-lint-workflow inner guard drift was silent, got: {missing_guard_errors}")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -6528,7 +6497,6 @@ def main() -> int:
     assert_nextest_live_node_group_covers_bolt_v3_builders()
     for job in (
         "detector",
-        "fmt-check",
         "deny",
         "clippy",
         "check-aarch64",
@@ -6542,7 +6510,7 @@ def main() -> int:
         "deploy",
     ):
         assert_error(f"missing required job {job}", without_job(BASE_WORKFLOW, job))
-    for job in ("detector", "fmt-check", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
+    for job in ("detector", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
         assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
         if job == "build":
             continue
@@ -6568,7 +6536,6 @@ def main() -> int:
         "same-sha-main-evidence",
         "build",
         "detector",
-        "fmt-check",
         "deny",
         "clippy",
         "check-aarch64",
@@ -6878,8 +6845,8 @@ def main() -> int:
         "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -6912,8 +6879,8 @@ def main() -> int:
     assert_clean(
         workflow=replace_once(
             BASE_WORKFLOW,
-            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "          restore-keys: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "          restore-keys: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     # #400 parser tightness: a restore-keys block-scalar declaring an unrelated
@@ -6922,8 +6889,8 @@ def main() -> int:
         "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
         replace_once(
             BASE_WORKFLOW,
-            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "          restore-keys: |\n            nextest-archive-v1-\n      - run: just clippy",
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "          restore-keys: |\n            nextest-archive-v1-\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     # #400 parser tightness: an empty block-scalar body (no prefix line under
@@ -6932,8 +6899,8 @@ def main() -> int:
         "clippy managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-",
         replace_once(
             BASE_WORKFLOW,
-            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "          restore-keys: |\n      - run: just clippy",
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "          restore-keys: |\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     # #400 parser tightness: YAML 1.2 §8.1.1 allows a block-scalar header to
@@ -6949,8 +6916,8 @@ def main() -> int:
     assert_clean(
         workflow=replace_once(
             BASE_WORKFLOW,
-            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "          restore-keys: |2\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "          restore-keys: |2\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     # #400 parser tightness: the body-scan that locates the `restore-keys:`
@@ -6968,8 +6935,8 @@ def main() -> int:
     assert_clean(
         workflow=replace_once(
             BASE_WORKFLOW,
-            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
-            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
+            "      - uses: actions/cache@example\n        name: \"Cache with restore-keys: probe\"\n        with:\n          path: ${{ steps.setup.outputs.managed_target_dir }}\n          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
         ),
     )
     assert_error(
@@ -7217,14 +7184,6 @@ def main() -> int:
         ),
     )
     assert_error(
-        "fmt-check must not need detector",
-        replace_once(
-            BASE_WORKFLOW,
-            "  fmt-check:\n    name: fmt-check",
-            "  fmt-check:\n    name: fmt-check\n    needs: detector",
-        ),
-    )
-    assert_error(
         "source-fence needs detector",
         replace_once(
             BASE_WORKFLOW,
@@ -7236,7 +7195,7 @@ def main() -> int:
         "source-fence must run just source-fence",
         replace_once(BASE_WORKFLOW, "- run: just source-fence", "- run: echo source-fence"),
     )
-    for job in ("fmt-check", "deny", "clippy", "source-fence", "nextest-fingerprint", "test-archive", "nextest-fingerprint-reuse", "test"):
+    for job in ("deny", "clippy", "source-fence", "nextest-fingerprint", "test-archive", "nextest-fingerprint-reuse", "test"):
         assert_error(f"{job} must skip on tag reuse", without_job_if(BASE_WORKFLOW, job))
     assert_error(
         "nextest-fingerprint-reuse must skip main branch",
@@ -7251,8 +7210,16 @@ def main() -> int:
         ),
     )
     assert_error(
-        "fmt-check must run just fmt-check",
+        "clippy must run just fmt-check",
         replace_once(BASE_WORKFLOW, "- run: just fmt-check", "- run: echo skip fmt-check"),
+    )
+    assert_error(
+        ".github/workflows/ci.yml clippy must enable workflow contract lint",
+        replace_once(BASE_WORKFLOW, '          lint-workflow-contract: "true"\n', ""),
+    )
+    assert_error(
+        ".github/workflows/ci.yml clippy must install rustfmt component",
+        replace_once(BASE_WORKFLOW, "          toolchain-components: clippy, rustfmt", "          toolchain-components: clippy"),
     )
     assert_error(
         "deny must run just deny",
@@ -7330,16 +7297,16 @@ def main() -> int:
         "ci-provenance-emit needs source-fence",
         replace_once(
             BASE_WORKFLOW,
-            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
-            "    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
+            "    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
+            "    needs: [ci-policy, detector, deny, clippy, check-aarch64, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]",
         ),
     )
     assert_error(
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
         ),
     )
     assert_error(
@@ -7450,14 +7417,6 @@ def main() -> int:
             BASE_WORKFLOW,
             '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
             '          exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
-        ),
-    )
-    assert_error(
-        "gate must require fmt-check skipped on tag reuse",
-        replace_once(
-            BASE_WORKFLOW,
-            '            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then\n              exit 1\n',
-            '            if [[ "${{ needs.fmt-check.result }}" != "skipped" ]]; then\n              true && exit 0\n              exit 1\n',
         ),
     )
     assert_error(
@@ -8167,7 +8126,7 @@ def main() -> int:
         ),
     )
     assert_error(
-        "ci.yml fmt-check must not compile cargo-zigbuild from source",
+        "ci.yml clippy must not compile cargo-zigbuild from source",
         replace_once(
             BASE_WORKFLOW,
             "      - run: just fmt-check",
@@ -8416,11 +8375,11 @@ def main() -> int:
         ),
     )
     assert_error(
-        "fmt-check opts into managed target dir but does not use it",
+        "deny opts into managed target dir but does not use it",
         replace_once(
             BASE_WORKFLOW,
-            "          toolchain-components: rustfmt",
-            '          toolchain-components: rustfmt\n          include-managed-target-dir: "true"',
+            '          include-deny-version: "true"',
+            '          include-deny-version: "true"\n          include-managed-target-dir: "true"',
         ),
     )
     assert_error(

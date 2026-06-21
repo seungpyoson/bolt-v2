@@ -42,8 +42,6 @@ FLOCK_RETRY_SECONDS = 0.05
 KNOWN_NON_OOM_RESULTS = {
     "success",
     "exit-code",
-    "signal",
-    "core-dump",
     "timeout",
     "watchdog",
     "start-limit-hit",
@@ -51,6 +49,12 @@ KNOWN_NON_OOM_RESULTS = {
     "protocol",
     "assert",
 }
+# A SIGKILL delivered by the kernel OOM killer is indistinguishable from any
+# other signal at the systemd ``Result`` level on systemd <243 / non-oom-kill
+# configs: both surface as Result="signal" (or "core-dump"). These results are
+# therefore ambiguous — they can only be confirmed or denied with corroborating
+# evidence (the cgroup ``memory.events`` oom_kill counter), never asserted False.
+OOM_AMBIGUOUS_RESULTS = {"signal", "core-dump"}
 
 
 CollectorResult = tuple[Any, str | None]
@@ -76,13 +80,33 @@ def service_template(unit: str) -> dict[str, Any]:
     }
 
 
-def derive_oom_killed(result: str | None) -> bool | None:
-    """Derive OOM solely from systemd's authoritative Result field."""
+def derive_oom_killed(result: str | None, cgroup_oom_kills: int | None) -> bool | None:
+    """Derive OOM from systemd's Result, corroborated by the cgroup oom counter.
+
+    A kernel OOM kill is delivered as SIGKILL and may surface as systemd
+    ``Result="signal"`` (or ``"core-dump"``) rather than ``"oom-kill"`` on systemd
+    <243 or non-oom-kill configs, so an ambiguous signal result must NEVER be
+    reported as a confident ``False``. Semantics:
+
+    - ``result == "oom-kill"`` -> ``True`` (systemd authoritative).
+    - ``result`` in :data:`OOM_AMBIGUOUS_RESULTS` -> ``True`` if
+      ``cgroup_oom_kills`` is not None and > 0, else ``None`` (cannot confirm or
+      deny without the cgroup counter).
+    - ``result`` in :data:`KNOWN_NON_OOM_RESULTS` -> ``False`` (authoritatively
+      not an OOM). The cgroup counter deliberately does NOT override a clean
+      systemd result: a child process being OOM-killed must not false-positive a
+      clean main-process exit.
+    - otherwise (unknown/missing result) -> ``True`` if ``cgroup_oom_kills`` is
+      not None and > 0, else ``None``.
+    """
     if result == "oom-kill":
         return True
     if result in KNOWN_NON_OOM_RESULTS:
         return False
-    return None
+    corroborated = cgroup_oom_kills is not None and cgroup_oom_kills > 0
+    if result in OOM_AMBIGUOUS_RESULTS:
+        return True if corroborated else None
+    return True if corroborated else None
 
 
 def parse_int(value: str | None, *, zero_is_null: bool = False) -> int | None:
@@ -203,28 +227,54 @@ def cgroup_text_matches_unit(cgroup_text: str, unit: str) -> bool:
     return False
 
 
+def parse_memory_events_oom_kills(text: str) -> int | None:
+    """Return the ``oom_kill`` counter from a cgroup ``memory.events`` body.
+
+    The file is whitespace-separated ``key value`` lines. Returns None if no
+    ``oom_kill`` line is present. Raises ``ValueError`` if the counter is not an
+    integer, matching the caller's error handling.
+    """
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "oom_kill":
+            return int(fields[1])
+    return None
+
+
+# cgroup-v2 lives under the unified hierarchy; cgroup-v1 exposes the same
+# ``oom_kill`` counter under the dedicated ``memory`` controller mount. The real
+# deploy is cgroup-v2; the v1 path is a best-effort portability fallback only.
+CGROUP_V2_SYSTEM_SLICE = Path("/sys/fs/cgroup/system.slice")
+CGROUP_V1_MEMORY_SYSTEM_SLICE = Path("/sys/fs/cgroup/memory/system.slice")
+
+
+def cgroup_memory_events_paths(unit: str) -> list[Path]:
+    """Ordered candidate ``memory.events`` paths: cgroup-v2 first, then v1."""
+    candidates = cgroup_unit_candidates(unit)
+    v2 = [CGROUP_V2_SYSTEM_SLICE / candidate / "memory.events" for candidate in candidates]
+    v1 = [CGROUP_V1_MEMORY_SYSTEM_SLICE / candidate / "memory.events" for candidate in candidates]
+    return v2 + v1
+
+
 def collect_cgroup_oom_kills(unit: str) -> CollectorResult:
-    paths = [
-        Path("/sys/fs/cgroup/system.slice") / candidate / "memory.events"
-        for candidate in cgroup_unit_candidates(unit)
-    ]
     missing: list[str] = []
-    for path in paths:
+    for path in cgroup_memory_events_paths(unit):
         try:
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    fields = line.split()
-                    if len(fields) == 2 and fields[0] == "oom_kill":
-                        return int(fields[1]), None
-                return None, f"{path} did not contain oom_kill"
+            text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             missing.append(str(path))
+            continue
         except PermissionError as exc:
             return None, str(exc)
-        except ValueError as exc:
-            return None, f"{path} parse error: {exc}"
         except OSError as exc:
             return None, str(exc)
+        try:
+            oom_kills = parse_memory_events_oom_kills(text)
+        except ValueError as exc:
+            return None, f"{path} parse error: {exc}"
+        if oom_kills is not None:
+            return oom_kills, None
+        missing.append(f"{path} (no oom_kill line)")
     return None, "memory.events unavailable at " + ", ".join(missing)
 
 
@@ -505,6 +555,7 @@ def sample(service_unit: str = DEFAULT_SERVICE, disk_path: str = DEFAULT_DISK_PA
     append_error(errors, error)
 
     service_result = service.get("result") if isinstance(service, dict) else None
+    service_oom_kills = service.get("cgroup_oom_kills") if isinstance(service, dict) else None
     return {
         "schema_version": SCHEMA_VERSION,
         "sampled_at": datetime.now(timezone.utc).isoformat(),
@@ -514,7 +565,7 @@ def sample(service_unit: str = DEFAULT_SERVICE, disk_path: str = DEFAULT_DISK_PA
         "process": process,
         "memory": memory,
         "disk": disk,
-        "oom_killed": derive_oom_killed(service_result),
+        "oom_killed": derive_oom_killed(service_result, service_oom_kills),
         "errors": errors,
     }
 

@@ -387,12 +387,24 @@
     function parseJsonl(text) {
       const records = [];
       const errors = [];
+      // Strip a leading UTF-8 BOM so the first record is not dropped (D5).
+      text = text.replace(/^﻿/, "");
       text.split(/\r?\n/).forEach((line, index) => {
         if (!line.trim()) return;
+        let parsed;
         try {
-          records.push(JSON.parse(line));
+          parsed = JSON.parse(line);
         } catch (error) {
           errors.push(`line ${index + 1}: ${error.message}`);
+          return;
+        }
+        // A record must be a plain JSON object. A bare number/string/array/null
+        // is valid JSON but not a sample row; accepting it would manufacture a
+        // fake record that later crashes latest.service access (D6).
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          records.push(parsed);
+        } else {
+          errors.push(`line ${index + 1}: not a JSON object`);
         }
       });
       return { records, errors };
@@ -426,12 +438,24 @@
     }
 
     function diskFreePct(disk) {
-      if (!disk || disk.total_bytes === null || disk.free_bytes === null || !disk.total_bytes) return null;
-      return Number(disk.free_bytes) / Number(disk.total_bytes) * 100;
+      // Derive free% from the same df-convention used_pct the disk CHART plots,
+      // so card-free% + chart-used% == 100 (D3). A missing or non-finite used_pct
+      // yields null, which the render path surfaces as a degraded (never green)
+      // badge. Guard the raw value first: Number(null) is 0, which would wrongly
+      // read as a finite "100% free".
+      if (!disk || disk.used_pct === null || disk.used_pct === undefined || disk.used_pct === "") {
+        return null;
+      }
+      const usedPct = Number(disk.used_pct);
+      if (!Number.isFinite(usedPct)) return null;
+      return 100 - usedPct;
     }
 
     function diskBadgeClass(value) {
-      if (value === null || value === undefined) return "vio";
+      // Any non-finite input (null/undefined/NaN) is an unknown/degraded disk
+      // status, never green: a NaN previously slipped past `< 10`/`< 20` and
+      // rendered GREEN (D1). Treat it as degraded BEFORE the numeric thresholds.
+      if (!Number.isFinite(value)) return "vio";
       if (value < 10) return "red";
       if (value < 20) return "amb";
       return "grn";
@@ -460,6 +484,73 @@
       return false;
     }
 
+    function counterIncreased(records, pick) {
+      // True if a monotonic per-service counter strictly increased across the
+      // loaded records (same shape used for restarts and cgroup oom_kills).
+      let previous = null;
+      for (const record of records) {
+        const raw = record && record.service ? pick(record.service) : null;
+        if (raw === null || raw === undefined || !Number.isFinite(Number(raw))) continue;
+        const current = Number(raw);
+        if (previous !== null && current > previous) return true;
+        previous = current;
+      }
+      return false;
+    }
+
+    function oomIncreased(records) {
+      return counterIncreased(records, service => service.cgroup_oom_kills);
+    }
+
+    // Service results that signal a degraded/abnormal stop in the LATEST sample,
+    // independent of any in-file increase (a stale latch is still degraded).
+    const FAILURE_RESULTS = new Set([
+      "oom-kill",
+      "start-limit-hit",
+      "watchdog",
+      "core-dump",
+      "signal"
+    ]);
+
+    function bannerReasons(latest, records) {
+      // Pure: returns the list of human-readable banner reasons for a record set.
+      // Kept testable so the false-green / standing-state cases are verifiable.
+      const reasons = [];
+      if (!latest) return reasons;
+      const service = latest.service || null;
+
+      if (latest.oom_killed === true) reasons.push("systemd Result=oom-kill");
+
+      // Standing degraded state from the latest sample (D2): flag it even when
+      // nothing changed within the loaded file.
+      if (service) {
+        if (service.active_state === "failed") {
+          reasons.push("service active_state=failed");
+        }
+        if (service.result && FAILURE_RESULTS.has(service.result)) {
+          reasons.push(`service result=${service.result}`);
+        }
+        const restarts = Number(service.n_restarts);
+        if (Number.isFinite(restarts) && restarts > 0) {
+          reasons.push(`service auto-restarted ${restarts} time(s) this invocation`);
+        }
+      }
+
+      // cgroup oom_kill: distinguish a fresh in-window kill from a stale latch
+      // of the cumulative counter (D4).
+      const cgroupOomKills = service ? Number(service.cgroup_oom_kills) : NaN;
+      const cumulative = Number.isFinite(cgroupOomKills) ? cgroupOomKills : 0;
+      if (oomIncreased(records)) {
+        reasons.push(`cgroup oom_kill increased to ${cumulative} in this file`);
+      } else if (cumulative > 0) {
+        reasons.push(`cgroup oom_kill=${cumulative} (cumulative)`);
+      }
+
+      if (restartIncreased(records)) reasons.push("auto-restarts increased in this file");
+
+      return reasons;
+    }
+
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, character => ({
         "&": "&amp;",
@@ -482,8 +573,10 @@
       elements.memValue.textContent = latest ? formatBytes(latest.memory && latest.memory.mem_available_bytes) : EMPTY;
 
       const freePct = latest ? diskFreePct(latest.disk) : null;
+      // An unknown/degraded disk status is a visible signal: show a degraded
+      // (never green, never blank) badge rather than a silent dash (D1+D3).
       elements.diskValue.innerHTML = freePct === null
-        ? EMPTY
+        ? `<span class="badge vio">${EMPTY}</span>`
         : `<span class="badge ${diskBadgeClass(freePct)}">${formatPct(freePct)}</span>`;
 
       elements.restartValue.textContent = latest && latest.service
@@ -504,12 +597,7 @@
         elements.eventBanner.textContent = "";
         return;
       }
-      const reasons = [];
-      if (latest.oom_killed === true) reasons.push("systemd Result=oom-kill");
-      const cgroupOomKills = latest.service ? Number(latest.service.cgroup_oom_kills || 0) : 0;
-      if (cgroupOomKills > 0) reasons.push(`cgroup oom_kill=${cgroupOomKills}`);
-      if (restartIncreased(state.records)) reasons.push("auto-restarts increased in this file");
-
+      const reasons = bannerReasons(latest, state.records);
       elements.eventBanner.hidden = reasons.length === 0;
       elements.eventBanner.textContent = reasons.length
         ? `Host health event visible: ${reasons.join(" · ")}`

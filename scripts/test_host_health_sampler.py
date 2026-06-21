@@ -125,13 +125,83 @@ class SamplerBehaviourTests(unittest.TestCase):
         self.assertIsNotNone(parsed.tzinfo)
         self.assertEqual(parsed.utcoffset().total_seconds(), 0)
 
-    def test_oom_derivation_uses_systemd_result_only(self) -> None:
-        self.assertIs(self.sampler.derive_oom_killed("oom-kill"), True)
-        self.assertIs(self.sampler.derive_oom_killed("exit-code"), False)
-        self.assertIs(self.sampler.derive_oom_killed("success"), False)
-        self.assertIsNone(self.sampler.derive_oom_killed(None))
+    def test_oom_derivation_is_corroboration_aware(self) -> None:
+        derive = self.sampler.derive_oom_killed
+        # systemd-authoritative results stand on their own (cgroup counter unused).
+        self.assertIs(derive("oom-kill", None), True)
+        self.assertIs(derive("exit-code", None), False)
+        self.assertIs(derive("success", 0), False)
+        self.assertIsNone(derive(None, None))
+        # A clean systemd Result must NOT be flipped to True by a child-process
+        # OOM showing up in the cgroup counter (avoid false positives).
+        self.assertIs(derive("exit-code", 5), False)
         service = {"result": "exit-code", "exec_main_status": 137}
-        self.assertIsNot(self.sampler.derive_oom_killed(service["result"]), True)
+        self.assertIsNot(derive(service["result"], None), True)
+
+    def test_oom_ambiguous_signal_results_are_never_false(self) -> None:
+        # THE BUG FIX: a SIGKILL-from-OOM surfaces as Result="signal"/"core-dump"
+        # on systemd <243. Without the cgroup counter it is unknown (None), never
+        # a confident False; with a positive cgroup counter it is confirmed True.
+        derive = self.sampler.derive_oom_killed
+        self.assertIsNone(derive("signal", None))
+        self.assertIsNone(derive("signal", 0))
+        self.assertIs(derive("signal", 2), True)
+        self.assertIs(derive("core-dump", 1), True)
+        self.assertIsNone(derive("core-dump", None))
+        # Unknown/missing results corroborate the same way.
+        self.assertIs(derive("totally-unknown-result", 3), True)
+        self.assertIsNone(derive("totally-unknown-result", None))
+
+    def test_cgroup_oom_kills_parse_helper(self) -> None:
+        parse = self.sampler.parse_memory_events_oom_kills
+        self.assertEqual(parse("low 0\nhigh 0\nmax 0\noom 1\noom_kill 7\n"), 7)
+        self.assertIsNone(parse("low 0\nhigh 0\noom 0\n"))
+        with self.assertRaises(ValueError):
+            parse("oom_kill not-an-int\n")
+
+    def test_cgroup_oom_kills_falls_back_to_v1_path(self) -> None:
+        # Only the cgroup-v1 memory.events file exists; the v2 path is absent.
+        # The collector must still read the v1 oom_kill counter.
+        with tempfile.TemporaryDirectory(prefix="host-health-cgv1.") as temp:
+            root = Path(temp)
+            v1_dir = root / "memory" / "system.slice" / "bolt-v2.service"
+            v1_dir.mkdir(parents=True)
+            (v1_dir / "memory.events").write_text("oom 4\noom_kill 9\n", encoding="utf-8")
+            saved_v2 = self.sampler.CGROUP_V2_SYSTEM_SLICE
+            saved_v1 = self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE
+            # Point v2 at a guaranteed-absent dir and v1 at the fake tree.
+            self.sampler.CGROUP_V2_SYSTEM_SLICE = root / "unified" / "system.slice"
+            self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE = root / "memory" / "system.slice"
+            try:
+                value, error = self.sampler.collect_cgroup_oom_kills("bolt-v2")
+            finally:
+                self.sampler.CGROUP_V2_SYSTEM_SLICE = saved_v2
+                self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE = saved_v1
+            self.assertEqual(value, 9, error)
+            self.assertIsNone(error)
+
+    def test_cgroup_oom_kills_v2_path_preferred_over_v1(self) -> None:
+        # When both exist, the v2 (unified) counter wins — no v1 regression of the
+        # real cgroup-v2 deploy.
+        with tempfile.TemporaryDirectory(prefix="host-health-cgv2.") as temp:
+            root = Path(temp)
+            v2_dir = root / "unified" / "system.slice" / "bolt-v2.service"
+            v2_dir.mkdir(parents=True)
+            (v2_dir / "memory.events").write_text("oom_kill 3\n", encoding="utf-8")
+            v1_dir = root / "memory" / "system.slice" / "bolt-v2.service"
+            v1_dir.mkdir(parents=True)
+            (v1_dir / "memory.events").write_text("oom_kill 99\n", encoding="utf-8")
+            saved_v2 = self.sampler.CGROUP_V2_SYSTEM_SLICE
+            saved_v1 = self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE
+            self.sampler.CGROUP_V2_SYSTEM_SLICE = root / "unified" / "system.slice"
+            self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE = root / "memory" / "system.slice"
+            try:
+                value, error = self.sampler.collect_cgroup_oom_kills("bolt-v2")
+            finally:
+                self.sampler.CGROUP_V2_SYSTEM_SLICE = saved_v2
+                self.sampler.CGROUP_V1_MEMORY_SYSTEM_SLICE = saved_v1
+            self.assertEqual(value, 3, error)
+            self.assertIsNone(error)
 
     def test_cgroup_identity_is_exact_segment_not_substring(self) -> None:
         match = self.sampler.cgroup_text_matches_unit

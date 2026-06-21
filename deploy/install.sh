@@ -99,8 +99,8 @@ repair_config_file() {
     fi
 }
 
-# The bolt service user runs verify-live-config / prestart-check / run (ExecStartPre +
-# ExecStart) and must read the ENTIRE deployed config bundle: the tracked overlay (under
+# The bolt service user runs ops launch and must read the ENTIRE deployed config bundle:
+# the tracked overlay (under
 # config/profiles/), its base root.toml, the generated live.toml, AND every referenced
 # strategy file. Files/dirs copied by root under a restrictive umask (e.g. 077) can land
 # 0600/0700 root:root and lock the service user out before start (issue #768) — the same

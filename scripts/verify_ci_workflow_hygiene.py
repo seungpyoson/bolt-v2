@@ -106,7 +106,6 @@ class CiPolicyResult(NamedTuple):
 REQUIRED_JOBS = (
     "ci-policy",
     "detector",
-    "fmt-check",
     "deny",
     "clippy",
     "check-aarch64",
@@ -123,7 +122,6 @@ REQUIRED_JOBS = (
 )
 GATE_REQUIRED = (
     "detector",
-    "fmt-check",
     "deny",
     "clippy",
     "check-aarch64",
@@ -136,7 +134,6 @@ DEPLOY_REQUIRED_NEEDS = (
     "same-sha-main-evidence",
     "build",
     "detector",
-    "fmt-check",
     "deny",
     "clippy",
     "check-aarch64",
@@ -145,7 +142,6 @@ DEPLOY_REQUIRED_NEEDS = (
 )
 CI_PROVENANCE_REQUIRED_JOBS = (
     "detector",
-    "fmt-check",
     "deny",
     "clippy",
     "check-aarch64",
@@ -187,7 +183,6 @@ assert set(CI_PROVENANCE_POLICY_ROWS) == set(
     CI_PROVENANCE_POLICY_EXPECTED
 ), "CI_PROVENANCE_POLICY_ROWS and CI_PROVENANCE_POLICY_EXPECTED keys must match"
 TAG_SKIPPED_JOBS = (
-    "fmt-check",
     "deny",
     "clippy",
     "source-fence",
@@ -197,7 +192,6 @@ TAG_SKIPPED_JOBS = (
     "ci-provenance-emit",
 )
 TAG_SKIP_REQUIRED_JOBS = (
-    "fmt-check",
     "deny",
     "clippy",
     "source-fence",
@@ -210,7 +204,6 @@ TAG_SKIP_REQUIRED_JOBS = (
 TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 JOB_REQUIRED_JUST_RECIPE = {
-    "fmt-check": "fmt-check",
     "deny": "deny",
     "clippy": "clippy",
     "check-aarch64": "check-aarch64",
@@ -516,7 +509,7 @@ MANAGED_TARGET_CACHE_KEYS = {
 }
 JUST_LANE_RE = re.compile(
     r"(^|[^A-Za-z0-9_./-])just\s+"
-    r"(fmt-check|deny|deny-advisories|clippy|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
+    r"(deny|deny-advisories|clippy|test-archive-run|test-archive|test|build|check-aarch64|source-fence)"
     r"([^A-Za-z0-9_]|$)"
 )
 REPO_LOCAL_ARTIFACT_RE = re.compile(r"(^|[^A-Za-z0-9_./-])target/(?:.*/)?release/bolt-v2(?:\.sha256)?([^A-Za-z0-9_./-]|$)")
@@ -1359,6 +1352,15 @@ def block_input_value(block: list[str], name: str) -> str | None:
 
 def job_has_setup_input(job_lines: list[str], name: str, value: str | None = None) -> bool:
     return any(block_has_input(block, name, value) for block in setup_action_blocks(job_lines))
+
+
+def job_has_toolchain_component(job_lines: list[str], component: str) -> bool:
+    for block in setup_action_blocks(job_lines):
+        for value in block_input_values(block, "toolchain-components"):
+            components = {item.strip() for item in value.split(",") if item.strip()}
+            if component in components:
+                return True
+    return False
 
 
 def job_uses_managed_target_dir(job_lines: list[str]) -> bool:
@@ -8412,8 +8414,6 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if job not in jobs:
             errors.append(f"missing required job {job}")
 
-    if "fmt-check" in jobs and "detector" in extract_needs(jobs["fmt-check"]):
-        errors.append("fmt-check must not need detector")
     if "detector" in jobs and not detector_forces_build_on_workflow_dispatch(jobs["detector"]):
         errors.append("detector must force build_required=true for workflow_dispatch full CI")
     if "detector" in jobs and not detector_forces_build_on_merge_group(jobs["detector"]):
@@ -8456,6 +8456,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
 
     if "clippy" in jobs:
         clippy_text = uncommented_text(jobs["clippy"])
+        if not job_runs_command(jobs["clippy"], "just fmt-check"):
+            errors.append("clippy must run just fmt-check")
+        if not job_has_setup_input(jobs["clippy"], "lint-workflow-contract", '"true"'):
+            errors.append(".github/workflows/ci.yml clippy must enable workflow contract lint")
+        if not job_has_toolchain_component(jobs["clippy"], "rustfmt"):
+            errors.append(".github/workflows/ci.yml clippy must install rustfmt component")
         if "just check-aarch64" in clippy_text:
             errors.append("clippy must not run check-aarch64")
         if clippy_installs_aarch64_toolchain(jobs["clippy"]):
@@ -8769,12 +8775,7 @@ def verify_managed_workflow(workflow_text: str, workflow_name: str) -> list[str]
             continue
         if not job_has_setup_input(lines, "just-version", "${{ env.JUST_VERSION }}"):
             errors.append(f"{workflow_name} {job} setup just-version must come from env.JUST_VERSION")
-        if "fmt-check" in lanes:
-            if not job_has_setup_input(lines, "lint-workflow-contract", '"true"'):
-                errors.append(f"{workflow_name} {job} must enable workflow contract lint")
-            if not job_has_setup_input(lines, "toolchain-components", "rustfmt"):
-                errors.append(f"{workflow_name} {job} must install rustfmt component")
-        if "clippy" in lanes and not job_has_setup_input(lines, "toolchain-components", "clippy"):
+        if "clippy" in lanes and not job_has_toolchain_component(lines, "clippy"):
             errors.append(f"{workflow_name} {job} must install clippy component")
         if lanes.intersection({"deny", "deny-advisories"}):
             if not job_has_setup_input(lines, "include-deny-version", '"true"'):

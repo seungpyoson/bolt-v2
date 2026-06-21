@@ -18,27 +18,26 @@ label = "ubicloud-standard-2"
 [workflows.ci]
 ci-policy = "github_hosted"
 detector = "github_hosted"
-fmt-check = "managed_light"
-deny = "github_hosted"
+deny = "managed_light"
 # NT develop increased the restored managed target enough that full-repo clippy
 # now refuses on the light tier before compilation with disk_pressure. Keep it
 # on the heavy tier, matching other NT-heavy compile lanes.
 clippy = "managed_heavy"
 check-aarch64 = "managed_heavy"
 source-fence = "managed_heavy"
-nextest-fingerprint = "github_hosted"
+nextest-fingerprint = "managed_light"
 test-archive = "managed_heavy"
 nextest-fingerprint-reuse = "github_hosted"
 test = "github_hosted"
 build = "managed_heavy"
-ci-provenance-emit = "github_hosted"
+ci-provenance-emit = "managed_light"
 same-sha-main-evidence = "github_hosted"
 gate = "github_hosted"
 deploy = "github_hosted"
 
 [workflows.backtester_ci]
-ci-policy = "github_hosted"
-detect = "github_hosted"
+ci-policy = "managed_light"
+detect = "managed_light"
 fmt = "managed_light"
 # clippy compiles the full NT-heavy crate (same footprint as test) and rides above the disk-pressure
 # floor only on the heavy tier; on managed_light (ubicloud-standard-2) the preflight refused at
@@ -109,7 +108,6 @@ fingerprint_source = "meter"
 [ci_provenance.full_ci]
 required_jobs = [
   "detector",
-  "fmt-check",
   "deny",
   "clippy",
   "check-aarch64",
@@ -123,9 +121,6 @@ conditional_job_outputs = { build = "detector.build_required" }
 
 [ci_provenance.full_ci.jobs.detector]
 check_name = "detector"
-
-[ci_provenance.full_ci.jobs.fmt-check]
-check_name = "fmt-check"
 
 [ci_provenance.full_ci.jobs.deny]
 check_name = "deny"

@@ -684,6 +684,55 @@ MERGE_GROUP_CONCURRENCY_GROUP_RE = re.compile(
     r"\s*&&\s*format\(\s*(['\"])mq-\{0\}\2\s*,\s*github\.ref\s*\)"
 )
 
+# Every merge_group arm in the group expression must be the keyed form above.
+# A bare .search() is fail-open: a decoupled real merge_group arm still passes
+# if a dead decoy carrying the keyed substring sits after the always-true
+# fallback (GitHub's `||` short-circuits before reaching it). Counting all
+# merge_group arms and requiring each one to be keyed closes that gap.
+MERGE_GROUP_EVENT_RE = re.compile(r"github\.event_name\s*==\s*['\"]merge_group['\"]")
+
+# cancel-in-progress is fail-closed for merge_group only when it is provably
+# false for the merge_group event. A bare substring check missed `true` and
+# negations (`!= 'push'`, `!startsWith(github.ref, ...)`) that evaluate true for
+# the queue ref and so cancel a queue validation. A positive allowlist — the
+# literal false, or solely pull_request/workflow_dispatch equality arms — is the
+# only form we can prove never cancels a merge_group run.
+SAFE_CANCEL_EVENT_RE = re.compile(
+    r"github\.event_name\s*==\s*(['\"])(pull_request|workflow_dispatch)\1"
+)
+
+
+def _cancel_in_progress_value(cancel_text: str) -> str:
+    """Extract the cancel-in-progress scalar as one normalized line, dropping
+    the key and any YAML folding indicator (>-, |, …)."""
+    marker = "cancel-in-progress:"
+    idx = cancel_text.find(marker)
+    raw = cancel_text[idx + len(marker):] if idx != -1 else cancel_text
+    tokens = raw.split()
+    if tokens and tokens[0] in {">-", ">+", ">", "|-", "|+", "|"}:
+        tokens = tokens[1:]
+    return " ".join(tokens)
+
+
+def cancel_in_progress_is_merge_group_safe(cancel_text: str) -> bool:
+    """True only when cancel-in-progress is provably false for the merge_group
+    event: the literal false, or a ${{ }} expression whose only truthy operands
+    are pull_request/workflow_dispatch equality arms. Any negation, function
+    call, literal true, or other event name leaves residue and fails closed."""
+    value = _cancel_in_progress_value(cancel_text)
+    if value == "false":
+        return True
+    match = re.fullmatch(r"\$\{\{(.*)\}\}", value, re.DOTALL)
+    if not match:
+        return False
+    inner = match.group(1)
+    if "!" in inner:
+        return False
+    residue = SAFE_CANCEL_EVENT_RE.sub("", inner)
+    for token in ("||", "(", ")"):
+        residue = residue.replace(token, " ")
+    return residue.strip() == ""
+
 
 def concurrency_group_and_cancel(workflow_text: str) -> tuple[str, str] | None:
     """Split a workflow's top-level concurrency block into (group_text,
@@ -711,19 +760,29 @@ def concurrency_group_and_cancel(workflow_text: str) -> tuple[str, str] | None:
 
 def merge_group_concurrency_errors(group_text: str, cancel_text: str) -> list[str]:
     """Assert the concurrency block isolates merge_group queue validations on
-    github.ref and never cancels them. The group check is anchored to the
-    merge_group arm via regex (not bare substrings): a broken merge_group arm
-    must not pass just because 'mq-{0}'/'github.ref' also appear in another arm.
-    That fail-open gap would let two queue entries share a concurrency group and
-    cancel each other, dropping a required-check report and blocking or
-    corrupting the merge."""
+    github.ref and never cancels them. Both checks are fail-closed:
+
+    * Group: every merge_group arm must key on format('mq-{0}', github.ref). A
+      bare-substring or single-match check is fail-open — a decoupled real arm
+      passes if 'mq-{0}'/'github.ref' merely appear in another arm or in a dead
+      decoy after the always-true fallback. We require the count of merge_group
+      arms to equal the count of keyed arms, so any decoupled arm is reported.
+    * Cancel: cancel-in-progress must be provably false for merge_group. A
+      deny-list of literal 'merge_group' missed `true` and negations that cancel
+      the queue run anyway; we require a positive pull_request/workflow_dispatch
+      allowlist instead.
+
+    Either gap would let two queue entries share a concurrency group and cancel
+    each other, dropping a required-check report and blocking or corrupting the
+    merge."""
     errors: list[str] = []
-    if not MERGE_GROUP_CONCURRENCY_GROUP_RE.search(group_text):
+    keyed_arms = len(MERGE_GROUP_CONCURRENCY_GROUP_RE.findall(group_text))
+    total_arms = len(MERGE_GROUP_EVENT_RE.findall(group_text))
+    if keyed_arms < 1:
         errors.append("concurrency group must key merge_group runs on github.ref")
-    if (
-        "github.event_name == 'merge_group'" in cancel_text
-        or 'github.event_name == "merge_group"' in cancel_text
-    ):
+    elif total_arms != keyed_arms:
+        errors.append("every merge_group concurrency arm must key on github.ref")
+    if not cancel_in_progress_is_merge_group_safe(cancel_text):
         errors.append("cancel-in-progress must not cancel merge_group queue validations")
     return errors
 

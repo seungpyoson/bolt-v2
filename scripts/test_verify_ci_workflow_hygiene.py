@@ -150,6 +150,19 @@ def load_verifier(
     return module
 
 
+def load_provenance(
+    path: pathlib.Path = REPO_ROOT / "scripts" / "ci_provenance.py",
+    module_name: str = "ci_provenance",
+):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load ci_provenance.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_sync_ci_debug_ssh_script(
     path: pathlib.Path = SYNC_CI_DEBUG_SSH_PATH, module_name: str = "sync_ci_debug_ssh_secret"
 ):
@@ -1298,6 +1311,71 @@ def assert_ci_policy_matrix() -> None:
         raise AssertionError(f"force_full_ci must force PR events to full, got {forced_result}")
 
 
+def assert_ci_policy_resolvers_agree() -> None:
+    # The runtime resolver (ci_provenance.evaluate_ci_policy) and the static
+    # contract resolver (verify_ci_workflow_hygiene.evaluate_ci_policy) are
+    # independent hand-maintained mirrors with no shared implementation. #848
+    # adds a merge_group row to both; this parity lock fails loud if the two ever
+    # diverge on any event, so a future drift cannot let the verifier certify a
+    # workflow the runtime actually under-validates (a skipped required check
+    # counts as passing in GitHub). Both are fed the real production config.
+    verifier = load_verifier()
+    provenance = load_provenance()
+    config_path = REPO_ROOT / "ci" / "github-actions-runners.toml"
+    config_text = config_path.read_text()
+    policy = verifier.validate_ci_provenance_config(verifier.tomllib.loads(config_text))["policy"]
+    prov_config = provenance.load_config(config_path)
+    cases = [
+        ("push", "", False, "refs/heads/main"),
+        ("push", "", False, "refs/tags/v1.2.3"),
+        ("pull_request", "opened", True, "refs/pull/1/merge"),
+        ("pull_request", "synchronize", True, "refs/pull/1/merge"),
+        ("pull_request", "reopened", True, "refs/pull/1/merge"),
+        ("pull_request", "edited", True, "refs/pull/1/merge"),
+        ("pull_request", "converted_to_draft", True, "refs/pull/1/merge"),
+        ("pull_request", "opened", False, "refs/pull/1/merge"),
+        ("pull_request", "ready_for_review", True, "refs/pull/1/merge"),
+        ("workflow_dispatch", "", True, "refs/heads/codex/branch"),
+        ("merge_group", "checks_requested", False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef"),
+        ("unknown_event", "", True, "refs/heads/codex/branch"),
+    ]
+    saw_full = saw_defer = False
+    for event_name, action, draft, ref in cases:
+        ver = verifier.evaluate_ci_policy(
+            policy, event_name=event_name, action=action, pull_request_draft=draft, ref=ref
+        )
+        prov = provenance.evaluate_ci_policy(
+            prov_config,
+            event_name=event_name,
+            event_action=action,
+            pull_request_draft=draft,
+            ref=ref,
+        )
+        ver_tuple = (ver.ci_policy_path, ver.full_ci_required, ver.full_ci_deferred, ver.reason)
+        prov_tuple = (prov.ci_policy_path, prov.full_ci_required, prov.full_ci_deferred, prov.reason)
+        if ver_tuple != prov_tuple:
+            raise AssertionError(
+                f"ci_policy resolver drift for {event_name}/{action!r}: "
+                f"verifier={ver_tuple} provenance={prov_tuple}"
+            )
+        saw_full = saw_full or ver.ci_policy_path == "full"
+        saw_defer = saw_defer or ver.ci_policy_path == "defer"
+    # Non-vacuous: the matrix must exercise both a full and a deferred resolution
+    # so the parity assertion compares real divergent branches, not a constant.
+    if not (saw_full and saw_defer):
+        raise AssertionError("parity matrix must cover both full and defer resolutions")
+    # The merge_group row #848 adds must resolve to full on both sides.
+    if not any(
+        c[0] == "merge_group"
+        and verifier.evaluate_ci_policy(
+            policy, event_name=c[0], action=c[1], pull_request_draft=c[2], ref=c[3]
+        ).ci_policy_path
+        == "full"
+        for c in cases
+    ):
+        raise AssertionError("merge_group must resolve to full in the parity matrix")
+
+
 def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:
     verifier = load_verifier()
     workflow = """\
@@ -1540,6 +1618,73 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         raise AssertionError(
             f"expected actionlint merge_group cancel-scope error, got: {actionlint_cancel_errors}"
+        )
+
+    # cancel-in-progress: true cancels merge_group queue runs while naming no
+    # event literally — the old bare-substring check missed it. (Reviewer-flagged
+    # fail-open class: GPT/GLM.) The positive allowlist must reject it.
+    actionlint_cancel_true = replace_once(
+        actionlint_workflow,
+        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        "  cancel-in-progress: true",
+    )
+    if actionlint_cancel_true == actionlint_workflow:
+        raise AssertionError("actionlint cancel-in-progress: true fixture fragment not found")
+    cancel_true_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/actionlint.yml": actionlint_cancel_true}
+    )
+    if not any(
+        "cancel-in-progress must not cancel merge_group queue validations" in error
+        for error in cancel_true_errors
+    ):
+        raise AssertionError(
+            f"cancel-in-progress: true must be rejected for merge_group, got: {cancel_true_errors}"
+        )
+
+    # A negation true for the queue ref (!= 'push') cancels the run while naming
+    # no event literally — also fail-open under a substring deny-list.
+    actionlint_cancel_negation = replace_once(
+        actionlint_workflow,
+        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        "  cancel-in-progress: ${{ github.event_name != 'push' }}",
+    )
+    if actionlint_cancel_negation == actionlint_workflow:
+        raise AssertionError("actionlint cancel negation fixture fragment not found")
+    cancel_negation_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/actionlint.yml": actionlint_cancel_negation}
+    )
+    if not any(
+        "cancel-in-progress must not cancel merge_group queue validations" in error
+        for error in cancel_negation_errors
+    ):
+        raise AssertionError(
+            f"cancel negation true for merge_group must be rejected, got: {cancel_negation_errors}"
+        )
+
+    # Decoy-after-fallback (ci.yml): the real merge_group arm is decoupled to a
+    # shared key, but a dead keyed arm sits after the always-true fallback (which
+    # GitHub's `||` never reaches). A single .search() would still pass; the
+    # every-arm-keyed check must reject the decoupled real arm.
+    ci_decoy_after_fallback = replace_once(
+        ci_workflow,
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref)\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha) }}",
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('shared-key')\n"
+        "        || format('{0}-{1}', github.ref_name, github.sha)\n"
+        "        || github.event_name == 'merge_group'\n"
+        "        && format('mq-{0}', github.ref) }}",
+    )
+    if ci_decoy_after_fallback == ci_workflow:
+        raise AssertionError("ci.yml decoy-after-fallback fixture fragment not found")
+    decoy_errors = verifier.verify_workflow(ci_decoy_after_fallback)
+    if not any(
+        "every merge_group concurrency arm must key on github.ref" in error
+        for error in decoy_errors
+    ):
+        raise AssertionError(
+            f"a decoupled merge_group arm hidden behind a keyed decoy must be rejected, got: {decoy_errors}"
         )
 
 
@@ -8063,6 +8208,7 @@ def main() -> int:
     assert_local_verification_gate_recipes_are_enforced()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
+    assert_ci_policy_resolvers_agree()
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_detector_forces_build_on_workflow_dispatch()

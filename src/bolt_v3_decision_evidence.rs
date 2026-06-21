@@ -605,9 +605,9 @@ pub enum BoltV3OrderRejectReason {
 /// or actual submission, never per tick.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3ExitEvaluationEvidence {
-    pub position_id: String,
-    pub market_id: String,
-    pub instrument_id: String,
+    pub position_id: Option<String>,
+    pub market_id: Option<String>,
+    pub instrument_id: Option<String>,
     pub client_order_id: Option<String>,
     pub exit_eval_now_ms: i64,
     pub exit_trigger_source: BoltV3ExitTriggerSource,
@@ -2636,9 +2636,9 @@ mod tests {
 
     fn sample_exit_evaluation_evidence_encode() -> BoltV3ExitEvaluationEvidence {
         BoltV3ExitEvaluationEvidence {
-            position_id: "position-one".to_string(),
-            market_id: "market-one".to_string(),
-            instrument_id: "instrument-up".to_string(),
+            position_id: Some("position-one".to_string()),
+            market_id: Some("market-one".to_string()),
+            instrument_id: Some("instrument-up".to_string()),
             client_order_id: Some("client-order-one".to_string()),
             exit_eval_now_ms: 1_700_000_000_000,
             exit_trigger_source: BoltV3ExitTriggerSource::ReferenceUpdate,

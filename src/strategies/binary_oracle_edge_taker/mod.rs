@@ -5007,15 +5007,9 @@ impl BinaryOracleEdgeTaker {
         }
 
         let evidence = BoltV3ExitEvaluationEvidence {
-            position_id: log_fields
-                .position_id
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
-            market_id: log_fields.market_id.clone().unwrap_or_default(),
-            instrument_id: log_fields
-                .position_instrument_id
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
+            position_id: log_fields.position_id.map(|id| id.to_string()),
+            market_id: log_fields.market_id.clone(),
+            instrument_id: log_fields.position_instrument_id.map(|id| id.to_string()),
             client_order_id: decision.client_order_id.map(|id| id.to_string()),
             exit_eval_now_ms,
             exit_trigger_source: trigger_source,

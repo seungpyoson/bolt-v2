@@ -1,0 +1,19 @@
+[Unit]
+Description=bolt-v2 live node
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=bolt
+Group=bolt
+WorkingDirectory=@BOLT_HOME@
+TimeoutStartSec=180
+EnvironmentFile=@LIVE_ENV_FILE@
+ExecStartPre=/usr/bin/mountpoint -q @BOLT_HOME@
+ExecStart=@BOLT_BIN@ ops launch --profile "${BOLT_LIVE_PROFILE}" --config-root @BOLT_CONFIG_DIR@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,11 @@
 directories under `/srv/bolt-v2/var`, installs `deploy/systemd/bolt-v2.service`, and installs the
 minimal journald cap drop-in.
 
+The install paths live in exactly one place, `deploy/install-layout.env` (sourced by
+`deploy/install.sh`). `deploy/systemd/bolt-v2.service` is a **generated** artifact rendered from
+that layout and `deploy/systemd/bolt-v2.service.in` via `just generate-unit`; never hand-edit the
+unit (drift is caught by source-fence).
+
 Recommended sequence:
 
 1. Copy the prebuilt binary to `/opt/bolt-v2/bolt-v2` with mode `0755`; do not use the EC2

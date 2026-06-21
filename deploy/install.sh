@@ -4,16 +4,15 @@ shopt -s nullglob
 
 BOLT_USER="${BOLT_USER:-bolt}"
 BOLT_GROUP="${BOLT_GROUP:-$BOLT_USER}"
-BOLT_HOME="/srv/bolt-v2"
-BOLT_INSTALL_ROOT="/opt/bolt-v2"
 BOLT_DATA_DEVICE="${BOLT_DATA_DEVICE:?set BOLT_DATA_DEVICE=/dev/<data-volume-device>}"
 BOLT_DATA_FS_TYPE="${BOLT_DATA_FS_TYPE:-ext4}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=install-layout.env
+source "${SCRIPT_DIR}/install-layout.env"   # BOLT_HOME, BOLT_INSTALL_ROOT, LIVE_ENV_DIR (single source; see deploy/install-layout.env)
 SYSTEMD_SRC_DIR="${SCRIPT_DIR}/systemd"
 UNIT_DST="/etc/systemd/system/bolt-v2.service"
 JOURNALD_DST="/etc/systemd/journald.conf.d/journald-bolt-v2.conf"
-LIVE_ENV_DIR="/etc/bolt-v2"
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "deploy/install.sh must run as root" >&2

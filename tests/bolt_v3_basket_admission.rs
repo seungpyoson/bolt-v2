@@ -17,11 +17,10 @@ use bolt_v2::{
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence,
-        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-        BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-        BoltV3SubmitReservationMetadataEvidence,
+        BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
+        BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_outcome_group_scanner::{OutcomeGroupLegScanEvidence, OutcomeGroupScanEvidence},
@@ -827,10 +826,7 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
         Ok(())
     }
 
-    fn record_order_reject(
-        &self,
-        _evidence: &BoltV3OrderRejectEvidence,
-    ) -> anyhow::Result<()> {
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
         Ok(())
     }
 }

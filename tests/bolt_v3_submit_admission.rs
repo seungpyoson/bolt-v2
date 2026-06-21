@@ -1101,10 +1101,7 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_order_reject(
-        &self,
-        _evidence: &BoltV3OrderRejectEvidence,
-    ) -> anyhow::Result<()> {
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -1231,10 +1228,7 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
         Ok(())
     }
 
-    fn record_order_reject(
-        &self,
-        _evidence: &BoltV3OrderRejectEvidence,
-    ) -> anyhow::Result<()> {
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
         Ok(())
     }
 }

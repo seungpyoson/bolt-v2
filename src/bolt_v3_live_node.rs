@@ -118,12 +118,12 @@ use crate::{
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-        BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence,
-        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-        BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-        BoltV3SubmitReservationMetadataEvidence, JsonlBoltV3DecisionEvidenceWriter,
-        decision_evidence_path, read_submit_reservation_recovery_evidence,
+        BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
+        BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        read_submit_reservation_recovery_evidence,
     },
     bolt_v3_iv::{
         config::IvRootConfig,
@@ -2402,24 +2402,15 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_exit_evaluation(
-        &self,
-        _evidence: &BoltV3ExitEvaluationEvidence,
-    ) -> Result<()> {
+    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
         Ok(())
     }
 
-    fn record_loss_governor_halt(
-        &self,
-        _evidence: &BoltV3LossGovernorHaltEvidence,
-    ) -> Result<()> {
+    fn record_loss_governor_halt(&self, _evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
         Ok(())
     }
 
-    fn record_order_reject(
-        &self,
-        _evidence: &BoltV3OrderRejectEvidence,
-    ) -> Result<()> {
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
         Ok(())
     }
 }

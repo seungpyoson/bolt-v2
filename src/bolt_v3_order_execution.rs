@@ -1048,10 +1048,7 @@ mod tests {
             Ok(())
         }
 
-        fn record_exit_evaluation(
-            &self,
-            _evidence: &BoltV3ExitEvaluationEvidence,
-        ) -> Result<()> {
+        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
             Ok(())
         }
 
@@ -1062,10 +1059,7 @@ mod tests {
             Ok(())
         }
 
-        fn record_order_reject(
-            &self,
-            _evidence: &BoltV3OrderRejectEvidence,
-        ) -> Result<()> {
+        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
             Ok(())
         }
     }

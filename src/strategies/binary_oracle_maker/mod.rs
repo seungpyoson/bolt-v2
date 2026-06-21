@@ -805,10 +805,9 @@ mod tests {
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
             BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence,
-            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-            BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
+            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
+            BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_maker_mu_estimator::{MuHealthReason, UsableMu},
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
@@ -900,10 +899,7 @@ mod tests {
             Ok(())
         }
 
-        fn record_exit_evaluation(
-            &self,
-            _evidence: &BoltV3ExitEvaluationEvidence,
-        ) -> Result<()> {
+        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
             Ok(())
         }
 
@@ -914,10 +910,7 @@ mod tests {
             Ok(())
         }
 
-        fn record_order_reject(
-            &self,
-            _evidence: &BoltV3OrderRejectEvidence,
-        ) -> Result<()> {
+        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
             Ok(())
         }
     }

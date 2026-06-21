@@ -1039,8 +1039,8 @@ pub fn read_latest_entry_decision_evidence_chain(
                     BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
                     index,
                 )?;
-                let decoded: LossGovernorHaltLineOwned =
-                    serde_json::from_slice(line).with_context(|| {
+                let decoded: LossGovernorHaltLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
                         format!("failed to parse bolt-v3 loss governor halt line at index {index}")
                     })?;
                 decoded.validate_header(
@@ -1280,8 +1280,8 @@ pub fn read_submit_reservation_recovery_evidence(
                     BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
                     index,
                 )?;
-                let decoded: LossGovernorHaltLineOwned =
-                    serde_json::from_slice(line).with_context(|| {
+                let decoded: LossGovernorHaltLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
                         format!("failed to parse bolt-v3 loss governor halt line at index {index}")
                     })?;
                 decoded.validate_header(
@@ -2167,9 +2167,10 @@ pub fn read_order_reject_evidence(
         BOLT_V3_ORDER_REJECT_RECORD_KIND,
         BOLT_V3_ORDER_REJECT_GATE_ID,
         |line, index| {
-            let decoded: OrderRejectLineOwned = serde_json::from_slice(line).with_context(|| {
-                format!("failed to parse bolt-v3 order reject line at index {index}")
-            })?;
+            let decoded: OrderRejectLineOwned =
+                serde_json::from_slice(line).with_context(|| {
+                    format!("failed to parse bolt-v3 order reject line at index {index}")
+                })?;
             decoded.validate_header(
                 BOLT_V3_ORDER_REJECT_RECORD_KIND,
                 BOLT_V3_ORDER_REJECT_GATE_ID,

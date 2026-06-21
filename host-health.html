@@ -456,15 +456,16 @@
 
     function diskFreePct(disk) {
       // Derive free% from the same df-convention used_pct the disk CHART plots,
-      // so card-free% + chart-used% == 100 (D3). A missing or non-finite used_pct
-      // yields null, which the render path surfaces as a degraded (never green)
-      // badge. Guard the raw value first: Number(null) is 0, which would wrongly
-      // read as a finite "100% free".
+      // so card-free% + chart-used% == 100 (D3). A missing, non-finite, or
+      // out-of-range used_pct yields null, which the render path surfaces as a
+      // degraded (never green) badge. Guard the raw value first: Number(null) is
+      // 0, which would wrongly read as a finite "100% free".
       if (!disk || disk.used_pct === null || disk.used_pct === undefined || disk.used_pct === "") {
         return null;
       }
       const usedPct = Number(disk.used_pct);
       if (!Number.isFinite(usedPct)) return null;
+      if (usedPct < 0 || usedPct > 100) return null;
       return 100 - usedPct;
     }
 
@@ -482,24 +483,22 @@
       const service = record && record.service ? record.service : null;
       const active = service ? service.active_state : null;
       const sub = service ? service.sub_state : null;
-
-      // No usable service data is a degraded/unknown state, never a blank dash
-      // (item 5): a blank badge reads as "fine" at a glance. Show an explicit
-      // degraded badge instead. This stays the FIRST check: a record with no
-      // service block is unknown (violet), not red (E2).
-      if (serviceDataMissing(service)) {
-        return `<span class="badge vio">service unknown</span>`;
-      }
-
       const text = [active, sub].filter(Boolean).join(" / ");
 
       // An OOM kill forces RED for ANY active_state (E2): a service that was
       // OOM-killed is degraded whether systemd now reports it inactive,
-      // activating, or active. Hoisting this above the active_state branch
-      // stops an OOM victim from rendering violet (inactive) or amber
-      // (activating) while the kill is the most important signal.
+      // activating, active, or supplies no usable service state. Hoisting this
+      // above the missing-data branch keeps the kill as the most important
+      // signal.
       if (record && record.oom_killed === true) {
         return `<span class="badge red">${escapeHtml(text)}</span>`;
+      }
+
+      // No usable service data is a degraded/unknown state, never a blank dash
+      // (item 5): a blank badge reads as "fine" at a glance. Show an explicit
+      // degraded badge instead.
+      if (serviceDataMissing(service)) {
+        return `<span class="badge vio">service unknown</span>`;
       }
 
       let klass = "vio";
@@ -583,6 +582,11 @@
       // Kept testable so the false-green / standing-state cases are verifiable.
       const reasons = [];
       if (!latest) return reasons;
+      // Preserve visibility for additive/future records, but fail loud when the
+      // sample schema is not the schema-2 shape this viewer expects.
+      if (latest.schema_version !== undefined && latest.schema_version !== 2) {
+        reasons.push(`unexpected schema_version=${latest.schema_version} (viewer expects 2)`);
+      }
       const service = latest.service || null;
 
       // OOM banner wording must name its EVIDENCE source (item 7): only a
@@ -616,6 +620,8 @@
       // unavailable".
       if (latest.disk === null || latest.disk === undefined) {
         reasons.push("disk status unavailable");
+      } else if (latest.disk.used_pct === null || latest.disk.used_pct === undefined) {
+        reasons.push("disk metric unavailable");
       }
 
       // Standing degraded state from the latest sample (D2): flag it even when

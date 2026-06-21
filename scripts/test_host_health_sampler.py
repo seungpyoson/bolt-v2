@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import typing
 import unittest
 
@@ -1499,25 +1500,292 @@ class ReviewRound3HardeningTests(unittest.TestCase):
         self.assertLessEqual(metrics_full["used_pct"], 100)
 
     def test_disk_metrics_clamp_caps_overflow_used_pct(self) -> None:
-        # Directly prove the upper clamp is load-bearing: feed a statvfs whose
-        # raw df-denominator math yields > 100 (constructed so used_bytes exceeds
-        # the used+available denominator) and assert the returned value is capped
-        # at 100. Pre-fix (no clamp) this returns a value > 100 that the viewer
-        # misreads. We bypass the f_bfree>f_blocks branch (which would null first)
-        # by keeping f_bfree <= f_blocks while making available negative via a
-        # subclass that reports a smaller f_bavail than physically consistent.
+        # Round-4 tightening: the previous overflow construction used a negative
+        # f_bavail to make raw df-denominator math exceed 100. Negative available
+        # blocks are now rejected by the physical-invariant guard before clamping,
+        # because the viewer would otherwise render a corrupt metric as healthy.
         class OverflowStatvfs(FakeStatvfsCustom):
-            # used = (f_blocks - f_bfree) = 99 blocks; df denominator = used + avail.
-            # Force avail negative so used/(used+avail) > 100 pre-clamp, while
-            # keeping f_bfree (1) <= f_blocks (100) so the non-physical branch
-            # (f_bfree > f_blocks) does not pre-empt the clamp.
             pass
 
         fake = OverflowStatvfs(f_blocks=100, f_bfree=1, f_bavail=-10)
-        # used=99 blocks, avail=-10 blocks, denominator=89 blocks (>0),
-        # raw used_pct = 99/89*100 ~= 111.24 -> must be clamped to 100.0.
         metrics = self.sampler.disk_metrics_from_statvfs("/data", fake, 7)
-        self.assertEqual(metrics["used_pct"], 100.0)
+        self.assertIsNone(metrics["used_pct"])
+
+
+class ReviewRound4HardeningTests(unittest.TestCase):
+    """Round-4 visibility-only hardening: bounded stdout, broad sink-failure
+    classification, stricter disk invariants, pre-existing fragment quarantine,
+    cgroup OOM independence, malformed restart surfacing, and TOML comments."""
+
+    def setUp(self) -> None:
+        self.sampler = load_sampler()
+
+    def test_primary_stdout_full_pipe_times_out_as_record_unemittable(self) -> None:
+        sampler = self.sampler
+        saved_sink_timeout = sampler.SINK_TIMEOUT_SECONDS
+        saved_stdout = sys.stdout
+        read_fd, write_fd = os.pipe()
+        original_flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+        fcntl.fcntl(write_fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+        try:
+            while True:
+                try:
+                    os.write(write_fd, b"x" * 65536)
+                except BlockingIOError:
+                    break
+        finally:
+            fcntl.fcntl(write_fd, fcntl.F_SETFL, original_flags)
+
+        class PipeStdout:
+            def write(self, data):
+                return os.write(write_fd, data.encode("utf-8"))
+
+            def flush(self):
+                return None
+
+        box: dict[str, object] = {}
+
+        def call() -> None:
+            sys.stdout = PipeStdout()
+            try:
+                sampler.write_jsonl_line({"payload": "x" * 70000}, None)
+            except BaseException as exc:  # noqa: BLE001 - captured for assertion
+                box["raised"] = exc
+            finally:
+                sys.stdout = saved_stdout
+            box["done"] = True
+
+        sampler.SINK_TIMEOUT_SECONDS = 0.2
+        worker = threading.Thread(target=call, daemon=True)
+        started = time.monotonic()
+        try:
+            worker.start()
+            worker.join(timeout=sampler.SINK_TIMEOUT_SECONDS + 2.0)
+            elapsed = time.monotonic() - started
+            finished_before_cleanup = not worker.is_alive()
+        finally:
+            sampler.SINK_TIMEOUT_SECONDS = saved_sink_timeout
+            sys.stdout = saved_stdout
+            os.close(read_fd)
+            os.close(write_fd)
+            worker.join(timeout=1.0)
+
+        self.assertTrue(finished_before_cleanup, "primary stdout write hung on a full pipe")
+        self.assertLess(elapsed, 3.0)
+        self.assertIsInstance(box.get("raised"), sampler.RecordUnemittable)
+
+    def test_file_sink_thread_start_failure_falls_back_to_stdout(self) -> None:
+        sampler = self.sampler
+        saved_thread = sampler.threading.Thread
+        saved_stdout = sys.stdout
+        out_buf = io.StringIO()
+        starts = {"count": 0}
+
+        class StartFailsOnceThread(saved_thread):
+            def start(self):
+                starts["count"] += 1
+                if starts["count"] == 1:
+                    raise RuntimeError("can't start new thread")
+                return super().start()
+
+        sampler.threading.Thread = StartFailsOnceThread
+        sys.stdout = out_buf
+        try:
+            with tempfile.TemporaryDirectory(prefix="host-health-thread-start.") as temp:
+                warning = sampler.write_jsonl_line(
+                    {"probe": "thread-start-fallback"},
+                    str(Path(temp) / "health.jsonl"),
+                )
+        finally:
+            sys.stdout = saved_stdout
+            sampler.threading.Thread = saved_thread
+
+        self.assertIsInstance(warning, str)
+        self.assertIn("fell back to stdout", warning)
+        self.assertEqual(json.loads(out_buf.getvalue())["probe"], "thread-start-fallback")
+
+    def test_primary_stdout_none_is_record_unemittable(self) -> None:
+        saved_stdout = sys.stdout
+        sys.stdout = None
+        try:
+            with self.assertRaises(self.sampler.RecordUnemittable):
+                self.sampler.write_jsonl_line({"probe": "stdout-none"}, None)
+        finally:
+            sys.stdout = saved_stdout
+
+    def test_shutdown_flush_is_deadline_bounded(self) -> None:
+        # The record reaches the --out FILE sink, so stdout is touched ONLY by
+        # main()'s finally flush. With a stdout whose flush blocks forever, an
+        # unbounded finally flush would wedge shutdown (a held BufferedWriter lock
+        # from an abandoned writer is the real-world trigger). The bounded flush
+        # must abandon it and let main() return. signal.signal only works on the
+        # main thread, so it is stubbed to run main() in a worker.
+        sampler = self.sampler
+        saved_timeout = sampler.SINK_TIMEOUT_SECONDS
+        saved_stdout = sys.stdout
+        saved_signal = sampler.signal.signal
+        sampler.SINK_TIMEOUT_SECONDS = 0.3
+        sampler.signal.signal = lambda *args, **kwargs: None
+
+        class BlockingFlushStdout:
+            def write(self, data):
+                return len(data)
+
+            def flush(self):
+                time.sleep(30)  # blocks well past the deadline; thread abandoned
+
+        box: dict[str, object] = {}
+        try:
+            with tempfile.TemporaryDirectory(prefix="host-health-shutdown.") as temp:
+                out_path = Path(temp) / "health.jsonl"
+
+                def call() -> None:
+                    sys.stdout = BlockingFlushStdout()
+                    try:
+                        box["rc"] = sampler.main(["--out", str(out_path)])
+                    except BaseException as exc:  # noqa: BLE001 - captured
+                        box["raised"] = exc
+                    finally:
+                        sys.stdout = saved_stdout
+                    box["done"] = True
+
+                worker = threading.Thread(target=call, daemon=True)
+                started = time.monotonic()
+                worker.start()
+                worker.join(timeout=sampler.SINK_TIMEOUT_SECONDS + 4.0)
+                finished = not worker.is_alive()
+                elapsed = time.monotonic() - started
+                content = out_path.read_text(encoding="utf-8").strip()
+        finally:
+            sampler.SINK_TIMEOUT_SECONDS = saved_timeout
+            sampler.signal.signal = saved_signal
+            sys.stdout = saved_stdout
+
+        self.assertTrue(finished, "shutdown flush hung on a blocked stdout")
+        self.assertLess(elapsed, 6.0)
+        self.assertEqual(box.get("rc"), 0)
+        self.assertIsNone(box.get("raised"))
+        # The record still reached the file sink (shutdown bounding did not drop it).
+        self.assertEqual(json.loads(content.splitlines()[-1])["schema_version"], 2)
+
+    def test_disk_metrics_rejects_non_physical_bavail_and_preserves_normal_case(self) -> None:
+        impossible = SimpleNamespace(
+            f_blocks=100,
+            f_bfree=100,
+            f_bavail=200,
+            f_frsize=4096,
+            f_files=10,
+            f_favail=10,
+        )
+        impossible_metrics = self.sampler.disk_metrics_from_statvfs("/data", impossible, 7)
+        self.assertIsNone(impossible_metrics["used_pct"])
+
+        half_full = SimpleNamespace(
+            f_blocks=100,
+            f_bfree=50,
+            f_bavail=50,
+            f_frsize=4096,
+            f_files=10,
+            f_favail=5,
+        )
+        half_full_metrics = self.sampler.disk_metrics_from_statvfs("/data", half_full, 7)
+        self.assertEqual(half_full_metrics["used_pct"], 50.0)
+
+    def test_write_to_file_quarantines_preexisting_trailing_fragment(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="host-health-fragment.") as temp:
+            out_path = Path(temp) / "health.jsonl"
+            out_path.write_text('{"partial":', encoding="utf-8")
+
+            self.sampler.write_to_file(
+                '{"probe":"second"}\n',
+                str(out_path),
+                self.sampler.FLOCK_TIMEOUT_SECONDS,
+            )
+
+            lines = [line for line in out_path.read_text(encoding="utf-8").splitlines() if line]
+
+        self.assertEqual(lines, ['{"partial":', '{"probe":"second"}'])
+        self.assertEqual(json.loads(lines[-1])["probe"], "second")
+
+    def test_sample_collects_cgroup_oom_when_service_collection_fails(self) -> None:
+        sampler = self.sampler
+        saved_collectors = {
+            "collect_host": sampler.collect_host,
+            "collect_service": sampler.collect_service,
+            "collect_cgroup_oom_kills": sampler.collect_cgroup_oom_kills,
+            "collect_process": sampler.collect_process,
+            "collect_memory": sampler.collect_memory,
+            "collect_disk": sampler.collect_disk,
+        }
+        calls = {"cgroup": 0}
+
+        def collect_service(_unit):
+            return None, "timed out"
+
+        def collect_cgroup_oom_kills(_unit):
+            calls["cgroup"] += 1
+            return 9, None
+
+        sampler.collect_host = lambda: ("host", None)
+        sampler.collect_service = collect_service
+        sampler.collect_cgroup_oom_kills = collect_cgroup_oom_kills
+        sampler.collect_process = lambda _unit, _main_pid, _exec_main_pid: (None, None)
+        sampler.collect_memory = lambda: (None, None)
+        sampler.collect_disk = lambda _path: (None, None)
+        try:
+            record = sampler.sample()
+        finally:
+            for name, value in saved_collectors.items():
+                setattr(sampler, name, value)
+
+        self.assertEqual(calls["cgroup"], 1)
+        self.assertIs(record["oom_killed"], sampler.derive_oom_killed(None, 9))
+        self.assertIn("service: timed out", record["errors"])
+
+    def test_collect_service_reports_malformed_nrestarts(self) -> None:
+        sampler = self.sampler
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return (
+                    "LoadState=loaded\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "Result=success\n"
+                    "NRestarts=not-an-int\n"
+                    "MainPID=123\n"
+                    "ExecMainPID=123\n"
+                    "ExecMainCode=0\n"
+                    "ExecMainStatus=0\n"
+                    "ExecMainStartTimestamp=Mon 2026-01-01 00:00:00 UTC\n"
+                    "InvocationID=abc\n",
+                    "",
+                )
+
+        saved_popen = sampler.subprocess.Popen
+        sampler.subprocess.Popen = lambda _command, **_kwargs: FakeProc()
+        try:
+            service, error = sampler.collect_service("bolt-v2")
+        finally:
+            sampler.subprocess.Popen = saved_popen
+
+        self.assertIsInstance(service, dict)
+        self.assertIsNone(service["n_restarts"])
+        # A malformed restart count must NOT also drop the later fields: the
+        # remaining systemd properties are still parsed before the fail-loud
+        # return (guards against regressing to an early return).
+        self.assertEqual(service["main_pid"], 123)
+        self.assertEqual(service["invocation_id"], "abc")
+        self.assertIsNotNone(error)
+        self.assertIn("NRestarts malformed", error)
+
+    def test_extract_catalog_directory_allows_trailing_comment(self) -> None:
+        self.assertEqual(
+            self.sampler.extract_catalog_directory('catalog_directory = "/srv/foo" # data dir'),
+            "/srv/foo",
+        )
 
 
 if __name__ == "__main__":

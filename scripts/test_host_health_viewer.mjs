@@ -476,6 +476,52 @@ check("G restartIncreased: flat sequence -> false", () => {
   assertEqual(restartIncreased(records), false, "no increase on a flat sequence");
 });
 
+// === Round 4 fail-closed hardening ===========================================
+
+check("Fix 4 diskFreePct rejects out-of-range used_pct", () => {
+  const diskFreePct = requireFn(ctx, "diskFreePct");
+  const diskBadgeClass = requireFn(ctx, "diskBadgeClass");
+  assertEqual(diskFreePct({ used_pct: -5 }), null, "negative used_pct is invalid");
+  assertEqual(diskBadgeClass(diskFreePct({ used_pct: -5 })), "vio", "invalid disk metric must be violet");
+  assertEqual(diskFreePct({ used_pct: 150 }), null, "over-100 used_pct is invalid");
+  assertEqual(diskFreePct({ used_pct: 40 }), 60, "normal used_pct still maps to free pct");
+});
+
+check("Fix 8 serviceBadge OOM wins over missing service data", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ service: { active_state: null, sub_state: null, result: "oom-kill" }, oom_killed: true });
+  assertTrue(/badge red/.test(html), "OOM must render red");
+  assertTrue(!/badge vio/.test(html), "OOM must not be hidden as unknown");
+});
+
+check("Fix 9 bannerReasons flags unavailable disk metric", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const metricMissing = { disk: { used_pct: null }, service: { active_state: "active", sub_state: "running", result: "success" } };
+  const diskMissing = { disk: null, service: { active_state: "active", sub_state: "running", result: "success" } };
+  assertTrue(
+    bannerReasons(metricMissing, [metricMissing]).some(r => /disk metric unavailable/.test(r)),
+    "present disk with null used_pct raises metric reason"
+  );
+  assertTrue(
+    bannerReasons(diskMissing, [diskMissing]).some(r => /disk status unavailable/.test(r)),
+    "null disk still raises status reason"
+  );
+});
+
+check("Fix 10 bannerReasons flags unexpected schema_version", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const schemaOne = { schema_version: 1, disk: { used_pct: 20 }, service: { active_state: "active", sub_state: "running", result: "success" } };
+  const schemaTwo = { schema_version: 2, disk: { used_pct: 20 }, service: { active_state: "active", sub_state: "running", result: "success" } };
+  assertTrue(
+    bannerReasons(schemaOne, [schemaOne]).some(r => /unexpected schema_version=1/.test(r)),
+    "schema v1 raises fail-loud banner reason"
+  );
+  assertTrue(
+    !bannerReasons(schemaTwo, [schemaTwo]).some(r => /unexpected schema_version=2/.test(r)),
+    "schema v2 does not raise schema banner reason"
+  );
+});
+
 // --- report ------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {

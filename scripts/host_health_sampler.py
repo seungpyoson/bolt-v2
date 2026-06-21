@@ -54,7 +54,7 @@ DISK_PATH_FALLBACK = "/srv/bolt-v2/var/bolt-v3-live/catalog"
 # neighbouring ``required_catalog_prefix`` key cannot match. Deliberately a
 # line-scan regex, not ``tomllib`` (added in 3.11) — must parse on Python 3.8+.
 _CATALOG_DIRECTORY_RE = re.compile(
-    r'^\s*catalog_directory\s*=\s*["\'](?P<value>[^"\']+)["\']\s*$'
+    r'^\s*catalog_directory\s*=\s*["\'](?P<value>[^"\']+)["\']\s*(?:#.*)?$'
 )
 
 
@@ -319,13 +319,21 @@ def collect_service(unit: str) -> CollectorResult:
     service["active_state"] = parsed.get("ActiveState") or None
     service["sub_state"] = parsed.get("SubState") or None
     service["result"] = parsed.get("Result") or None
-    service["n_restarts"] = parse_int(parsed.get("NRestarts"))
+    raw_restarts = parsed.get("NRestarts")
+    service["n_restarts"] = parse_int(raw_restarts)
+    # A present-but-unparseable NRestarts is fail-loud (reported below) rather
+    # than silently treated as "absent" (which renders green). Detect it now but
+    # still populate the remaining fields first, so a corrupt restart counter
+    # never also drops MainPID/ExecMain* from the record.
+    nrestarts_malformed = raw_restarts not in (None, "") and service["n_restarts"] is None
     service["main_pid"] = parse_int(parsed.get("MainPID"), zero_is_null=True)
     service["exec_main_pid"] = parse_int(parsed.get("ExecMainPID"), zero_is_null=True)
     service["exec_main_code"] = parse_int(parsed.get("ExecMainCode"))
     service["exec_main_status"] = parse_int(parsed.get("ExecMainStatus"))
     service["exec_main_start"] = parse_timestamp(parsed.get("ExecMainStartTimestamp"))
     service["invocation_id"] = parsed.get("InvocationID") or None
+    if nrestarts_malformed:
+        return service, f"NRestarts malformed: {raw_restarts!r}"
     return service, None
 
 
@@ -509,12 +517,14 @@ def disk_metrics_from_statvfs(path: str, statvfs_result: os.statvfs_result, st_d
     available_bytes = statvfs_result.f_bavail * fragment_size
     denominator = used_bytes + available_bytes
     # Metric-sanity guard (FIX E5): a corrupted statvfs must never yield a
-    # used_pct the viewer would render as misleadingly healthy. f_bfree > f_blocks
-    # is non-physical (more free blocks than exist) and produces a negative
-    # used_bytes -> a negative used_pct; null it out. Otherwise clamp the computed
-    # value into the inclusive [0, 100] range so neither a negative nor a >100
-    # used_pct can ever reach the viewer (which reads low used_pct as green).
-    if statvfs_result.f_bfree > statvfs_result.f_blocks:
+    # used_pct the viewer would render as misleadingly healthy. Reject ANY
+    # violation of the physical invariant 0 <= f_bavail <= f_bfree <= f_blocks;
+    # otherwise clamp the computed value into the inclusive [0, 100] range so
+    # neither a negative nor a >100 used_pct can ever reach the viewer.
+    fb = statvfs_result.f_blocks
+    bf = statvfs_result.f_bfree
+    ba = statvfs_result.f_bavail
+    if not (0 <= ba <= bf <= fb):
         used_pct = None
     elif denominator > 0:
         used_pct = round(used_bytes / denominator * 100, 2)
@@ -754,11 +764,14 @@ def sample(service_unit: str = DEFAULT_SERVICE, disk_path: str = DEFAULT_DISK_PA
 
     service, error = run_collector("service", collect_service, service_unit)
     append_error(errors, error)
-    if service is not None:
-        cgroup_oom_kills, cgroup_error = run_collector(
-            "cgroup_oom_kills", collect_cgroup_oom_kills, service_unit
-        )
-        append_error(errors, cgroup_error)
+    # OOM detection must not depend on systemctl success: the same degraded host
+    # state that wedges systemctl can still leave a readable cgroup oom_kill
+    # counter.
+    cgroup_oom_kills, cgroup_error = run_collector(
+        "cgroup_oom_kills", collect_cgroup_oom_kills, service_unit
+    )
+    append_error(errors, cgroup_error)
+    if isinstance(service, dict):
         service["cgroup_oom_kills"] = cgroup_oom_kills
 
     main_pid = service.get("main_pid") if isinstance(service, dict) else None
@@ -773,7 +786,7 @@ def sample(service_unit: str = DEFAULT_SERVICE, disk_path: str = DEFAULT_DISK_PA
     append_error(errors, error)
 
     service_result = service.get("result") if isinstance(service, dict) else None
-    service_oom_kills = service.get("cgroup_oom_kills") if isinstance(service, dict) else None
+    service_oom_kills = cgroup_oom_kills
     return {
         "schema_version": SCHEMA_VERSION,
         "sampled_at": datetime.now(timezone.utc).isoformat(),
@@ -799,12 +812,15 @@ class RecordUnemittable(Exception):
 def emit_to_stdout(line: str) -> None:
     """Write one record line to stdout, flushing so a piped consumer sees it.
 
-    Raises whatever the underlying write/flush raises; the caller classifies it.
-    On the PRIMARY streaming path ``BrokenPipeError`` is a clean stream
-    termination (a gone consumer) and propagates (B4); a closed/broken stdout
-    raises ``OSError`` or ``ValueError`` and becomes ``RecordUnemittable``. On the
-    FALLBACK path (after the file sink already failed) ANY failure here — broken
-    pipe included — means the record is lost, so it becomes ``RecordUnemittable``.
+    ``write_jsonl_line`` calls this through ``run_with_deadline`` so the stdout
+    sink is deadline-bounded: a wedged full-pipe write raises ``TimeoutError`` (an
+    ``OSError`` subclass) and becomes ``RecordUnemittable`` on the primary path.
+    A None/closed stdout (``AttributeError``/``ValueError``) is likewise
+    classified as ``RecordUnemittable`` rather than escaping. A worker that
+    abandons a stdout write stuck on a full pipe may hold the ``BufferedWriter``
+    lock so subsequent emits also time out (bounded, never hang), matching the
+    accepted file-sink tradeoff. ``KeyboardInterrupt``/``SystemExit`` still
+    propagate because callers catch ``Exception``, not ``BaseException``.
     """
     sys.stdout.write(line)
     sys.stdout.flush()
@@ -837,7 +853,9 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
     Process guarantee: on any write failure the original ``OSError`` propagates
     so the caller falls back to stdout and the record reaches a sink.
 
-    Data guarantee: after a partial write, the file is rolled back
+    Data guarantee: a pre-existing trailing fragment is quarantined by appending
+    a newline before this record, so the new JSON line is not glued to old
+    non-JSON bytes. After a partial write, the file is rolled back
     (``ftruncate``) to the last clean record boundary so a fragment is normally
     not left behind. If the rollback itself fails, the fragment may survive on
     disk; the viewer tolerates a corrupt trailing line.
@@ -868,6 +886,22 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
         # can append between the size snapshot and the rollback.
         payload = record_line.encode("utf-8")
         clean_boundary = os.fstat(fd).st_size
+        if clean_boundary > 0:
+            try:
+                peek_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                try:
+                    last_byte = os.pread(peek_fd, 1, clean_boundary - 1)
+                finally:
+                    os.close(peek_fd)
+            except OSError:
+                last_byte = b"\n"
+            if last_byte and last_byte != b"\n":
+                # Prior torn fragment: terminate it (O_APPEND => atomic append at
+                # EOF) so this record is NOT glued onto a non-JSON fragment. The
+                # fragment becomes its own line, which the viewer reports as a
+                # parse error.
+                os.write(fd, b"\n")
+                clean_boundary = os.fstat(fd).st_size
         offset = 0
         try:
             while offset < len(payload):
@@ -927,12 +961,21 @@ def write_jsonl_line(
     written to stdout instead and a human-readable warning string is returned so
     the caller can surface it on stderr while exit stays 0 (B3).
 
-    ``out_path is None`` writes straight to stdout (returns None).
+    ``out_path is None`` writes straight to stdout (returns None). The stdout
+    sink is deadline-bounded by ``run_with_deadline``: a wedged full-pipe write
+    raises ``TimeoutError`` (an ``OSError`` subclass) and becomes
+    ``RecordUnemittable`` on the primary path. A None/closed stdout
+    (``AttributeError``/``ValueError``) is likewise classified as
+    ``RecordUnemittable`` rather than escaping. A worker that abandons a stdout
+    write stuck on a full pipe may hold the ``BufferedWriter`` lock so subsequent
+    emits also time out (bounded, never hang), matching the accepted file-sink
+    tradeoff. ``KeyboardInterrupt``/``SystemExit`` still propagate because this
+    function catches ``Exception``, not ``BaseException``.
 
     Raises ``RecordUnemittable`` when the record reaches NO sink:
-    - primary stdout (``out_path is None``) failing with a closed/broken stream
-      (``OSError`` or ``ValueError``); a primary ``BrokenPipeError`` instead
-      propagates as a clean stream termination (B4).
+    - primary stdout (``out_path is None``) failing with any non-BrokenPipe
+      ``Exception``; a primary ``BrokenPipeError`` instead propagates as a clean
+      stream termination (B4).
     - fallback stdout (after the file sink failed) failing with ANY error,
       ``BrokenPipeError`` included, since there is no other sink left.
     """
@@ -945,15 +988,12 @@ def write_jsonl_line(
         # PRIMARY streaming stdout. A BrokenPipeError here means a streaming
         # consumer (e.g. ``| head -1``) went away — a CLEAN stream termination —
         # so it propagates and main() exits 0. ANY other stdout failure means
-        # stdout itself is unusable and the record is lost: a CLOSED stdout raises
-        # ValueError("I/O operation on closed file") which is NOT an OSError, so
-        # we catch (OSError, ValueError) together — otherwise the ValueError would
-        # escape RecordUnemittable and reach main()'s generic handler (wrong path).
+        # stdout itself is unusable and the record is lost.
         try:
-            emit_to_stdout(line)
+            run_with_deadline(emit_to_stdout, SINK_TIMEOUT_SECONDS, line)
         except BrokenPipeError:
             raise
-        except (OSError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 - classify any stdout sink failure
             raise RecordUnemittable(f"stdout sink failed: {exc}") from exc
         return None
 
@@ -962,25 +1002,22 @@ def write_jsonl_line(
         # collectors: an EBS/disk stall DURING os.open/os.write is not covered by
         # the bounded LOCK_NB flock (the flock is acquired only after open
         # returns), so without this an open/write that wedges would hang the
-        # writer forever. run_with_deadline raises TimeoutError on overrun, and
-        # TimeoutError is a subclass of OSError, so the existing
-        # ``except OSError as file_exc`` below catches it and falls back to
-        # stdout — no new except branch is needed. On a genuine stall the
-        # abandoned worker thread may still hold the flock/fd; that is acceptable:
-        # one-shot exits immediately, and a continuous run's next write hits the
-        # bounded LOCK_NB acquire, which times out and falls back to stdout
-        # rather than deadlocking.
+        # writer forever. Any wrapper or sink failure falls back to stdout. On a
+        # genuine stall the abandoned worker thread may still hold the flock/fd;
+        # that is acceptable: one-shot exits immediately, and a continuous run's
+        # next write hits the bounded LOCK_NB acquire, which times out and falls
+        # back to stdout rather than deadlocking.
         run_with_deadline(write_to_file, SINK_TIMEOUT_SECONDS, line, out_path, lock_timeout)
         return None
-    except OSError as file_exc:
+    except Exception as file_exc:  # noqa: BLE001 - ANY file sink failure falls back
         # FALLBACK stdout: this is a last-resort sink AFTER the file sink already
         # failed. Any stdout failure here — INCLUDING BrokenPipeError — means the
         # record reached NO sink and is lost, so it is RecordUnemittable. Unlike
         # the primary path, a broken pipe is NOT a clean termination here: there
         # is no longer any other place the record could have landed.
         try:
-            emit_to_stdout(line)
-        except (OSError, ValueError) as stdout_exc:
+            run_with_deadline(emit_to_stdout, SINK_TIMEOUT_SECONDS, line)
+        except Exception as stdout_exc:  # noqa: BLE001 - no sink remains
             raise RecordUnemittable(
                 f"file sink failed ({file_exc}) and stdout fallback failed ({stdout_exc})"
             ) from stdout_exc
@@ -1104,8 +1141,14 @@ def main(argv: list[str]) -> int:
         # because a record may already have reached the --out sink. An exception
         # here would wrongly demote a clean exit to non-zero. Best-effort redirect
         # fd 1 to /dev/null so the interpreter's final flush cannot re-raise.
+        #
+        # The flush is deadline-bounded for the same reason the emit sink is: an
+        # abandoned stdout writer (one that timed out on a full pipe) may still
+        # hold the BufferedWriter lock, so an unbounded flush here could wedge
+        # shutdown. run_with_deadline abandons a blocked flush and we fall through
+        # to the fd-level /dev/null redirect, which never blocks. (never-hang.)
         try:
-            sys.stdout.flush()
+            run_with_deadline(sys.stdout.flush, SINK_TIMEOUT_SECONDS)
         except Exception:
             redirect_stdout_to_devnull()
     return 0

@@ -5,11 +5,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub(crate) const PRIVATE_ARTIFACT_FILE_MODE: u32 = 0o600;
 pub const ENTRY_DECISION_ZERO_TIMESTAMP_MS: u64 = 0;
+const LAUNCH_IDENTITY_FILE_NAME: &str = "launch-identity.json";
+const LAUNCH_IDENTITY_MAX_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrittenOperatorArtifact {
@@ -41,6 +43,14 @@ pub enum BoltV3OperatorArtifactError {
         path: PathBuf,
         source: io::Error,
     },
+    Read {
+        path: PathBuf,
+        source: io::Error,
+    },
+    Parse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
 }
 
 impl fmt::Display for BoltV3OperatorArtifactError {
@@ -70,6 +80,12 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::Write { path, source } => {
                 write!(f, "failed to write artifact `{}`: {source}", path.display())
             }
+            Self::Read { path, source } => {
+                write!(f, "failed to read artifact `{}`: {source}", path.display())
+            }
+            Self::Parse { path, source } => {
+                write!(f, "failed to parse artifact `{}`: {source}", path.display())
+            }
         }
     }
 }
@@ -79,9 +95,66 @@ impl Error for BoltV3OperatorArtifactError {
         match self {
             Self::Serialize(source) => Some(source),
             Self::Write { source, .. } => Some(source),
+            Self::Read { source, .. } => Some(source),
+            Self::Parse { source, .. } => Some(source),
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchIdentity {
+    /// Git HEAD SHA the running binary was built from, or `None` when the
+    /// build did not embed it (see `current_build_head_sha`).
+    pub build_head_sha: Option<String>,
+    /// Profile name this launch was started with.
+    pub profile: String,
+    /// Checksum of the exact config bundle that was loaded for this launch.
+    pub config_bundle_checksum: String,
+    /// Wall-clock launch time, seconds since the Unix epoch.
+    pub launched_at_unix_secs: u64,
+}
+
+pub fn launch_identity_path(catalog_directory: &Path) -> PathBuf {
+    catalog_directory.join(LAUNCH_IDENTITY_FILE_NAME)
+}
+
+pub fn write_launch_identity(
+    catalog_directory: &Path,
+    identity: &LaunchIdentity,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let path = launch_identity_path(catalog_directory);
+    let mut bytes =
+        serde_json::to_vec_pretty(identity).map_err(BoltV3OperatorArtifactError::Serialize)?;
+    bytes.push(b'\n');
+    crate::bolt_v3_atomic_io::write_atomic_file_with_mode(
+        &path,
+        &bytes,
+        crate::bolt_v3_atomic_io::RUNTIME_CONFIG_FILE_MODE,
+    )
+    .map_err(|error| BoltV3OperatorArtifactError::Write {
+        path: error.path,
+        source: error.source,
+    })?;
+    Ok(WrittenOperatorArtifact {
+        path,
+        sha256: sha256_hex(&bytes),
+    })
+}
+
+pub fn read_launch_identity(
+    catalog_directory: &Path,
+) -> Result<Option<LaunchIdentity>, BoltV3OperatorArtifactError> {
+    let path = launch_identity_path(catalog_directory);
+    let bytes = match read_file_bounded(&path, LAUNCH_IDENTITY_MAX_BYTES) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(BoltV3OperatorArtifactError::Read { path, source }),
+    };
+    let identity = serde_json::from_slice(&bytes)
+        .map_err(|source| BoltV3OperatorArtifactError::Parse { path, source })?;
+    Ok(Some(identity))
 }
 
 pub fn is_lowercase_sha256(value: &str) -> bool {
@@ -139,6 +212,72 @@ mod tests {
             assert!(is_lowercase_git_sha(build_head_sha));
             assert!(build_head_sha_matches_current(build_head_sha));
         }
+    }
+
+    #[test]
+    fn launch_identity_round_trips_through_catalog_directory() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let identity = LaunchIdentity {
+            build_head_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            profile: "round-trip-profile".to_string(),
+            config_bundle_checksum:
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            launched_at_unix_secs: 1_700_000_000,
+        };
+        write_launch_identity(temp.path(), &identity).expect("write should succeed");
+        let read_back = read_launch_identity(temp.path()).expect("read should succeed");
+        assert_eq!(read_back, Some(identity));
+    }
+
+    #[test]
+    fn read_launch_identity_is_none_when_file_absent() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let read_back = read_launch_identity(temp.path()).expect("read should succeed");
+        assert_eq!(read_back, None);
+    }
+
+    #[test]
+    fn write_launch_identity_overwrites_previous() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let first = LaunchIdentity {
+            build_head_sha: None,
+            profile: "first-profile".to_string(),
+            config_bundle_checksum: "aaaa".to_string(),
+            launched_at_unix_secs: 1,
+        };
+        let second = LaunchIdentity {
+            build_head_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            profile: "second-profile".to_string(),
+            config_bundle_checksum: "bbbb".to_string(),
+            launched_at_unix_secs: 2,
+        };
+        write_launch_identity(temp.path(), &first).expect("first write should succeed");
+        write_launch_identity(temp.path(), &second).expect("second write should succeed");
+        let read_back = read_launch_identity(temp.path()).expect("read should succeed");
+        assert_eq!(read_back, Some(second));
+    }
+
+    #[test]
+    fn launch_identity_rejects_unknown_fields() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = launch_identity_path(temp.path());
+        std::fs::write(
+            &path,
+            br#"{"build_head_sha":null,"profile":"p","config_bundle_checksum":"c","launched_at_unix_secs":1,"unexpected":true}"#,
+        )
+        .expect("write fixture should succeed");
+        match read_launch_identity(temp.path()) {
+            Err(BoltV3OperatorArtifactError::Parse { .. }) => {}
+            other => panic!("expected Parse error for unknown field, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn launch_identity_path_is_under_catalog_directory_with_expected_name() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = launch_identity_path(temp.path());
+        assert_eq!(path, temp.path().join("launch-identity.json"));
+        assert!(path.ends_with("launch-identity.json"));
     }
 }
 

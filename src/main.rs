@@ -25,7 +25,7 @@ use bolt_v2::{
         build_bolt_v3_strategy_free_data_client_probe_live_node, current_build_head_sha,
         run_bolt_v3_data_client_census, run_bolt_v3_data_client_probe, run_bolt_v3_live_node,
     },
-    bolt_v3_operator_artifacts::WrittenOperatorArtifact,
+    bolt_v3_operator_artifacts::{LaunchIdentity, WrittenOperatorArtifact, write_launch_identity},
     bolt_v3_prod_profile::{
         GENERATOR_FORMAT_VERSION, ProductionInvariants, generate_live_config, live_config_path,
         verify_live_config,
@@ -450,8 +450,40 @@ fn run_ops_launch_stage(
                 .resolved_secrets
                 .take()
                 .ok_or("ops launch start stage requires resolved secrets from secrets-resolve")?;
+            record_launch_identity_best_effort(&context.profile, &loaded);
             start_loaded_node_with_resolved(loaded, &resolved)
         }
+    }
+}
+
+fn record_launch_identity_best_effort(profile: &str, loaded: &LoadedBoltV3Config) {
+    let launched_at_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let identity = LaunchIdentity {
+        build_head_sha: current_build_head_sha().map(str::to_owned),
+        profile: profile.to_owned(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        launched_at_unix_secs,
+    };
+    let catalog_directory = Path::new(&loaded.root.persistence.catalog_directory);
+    match write_launch_identity(catalog_directory, &identity) {
+        Ok(written) => println!(
+            "{}",
+            serde_json::json!({
+                "ops_launch_identity": "written",
+                "path": written.path.display().to_string(),
+                "sha256": written.sha256,
+            })
+        ),
+        Err(error) => eprintln!(
+            "{}",
+            serde_json::json!({
+                "ops_launch_identity": "write-failed",
+                "error": error.to_string(),
+            })
+        ),
     }
 }
 

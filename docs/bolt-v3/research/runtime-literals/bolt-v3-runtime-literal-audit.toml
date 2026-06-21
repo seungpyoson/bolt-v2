@@ -18426,6 +18426,78 @@ classification = '''deploy_target_config_file_name'''
 reason = '''Fixed name of the tracked deploy-target binding file loaded from the ops config root; a stable config-file name, not an operator runtime value.'''
 
 [[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"launch-identity.json"'''
+context = '''const LAUNCH_IDENTITY_FILE_NAME: &str = "launch-identity.json";'''
+classification = '''launch_identity_artifact_file_name'''
+reason = '''Fixed name of the durable launch-identity artifact written at node start under the catalog directory and read by ops status; a stable artifact-file name, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''const LAUNCH_IDENTITY_MAX_BYTES: u64 = 64 * 1024;'''
+classification = '''launch_identity_artifact_byte_cap'''
+reason = '''Upper-bound byte cap (64 KiB) on the bounded read of the launch-identity artifact to guard against a corrupt or oversized file; a defensive read limit, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1024'''
+context = '''const LAUNCH_IDENTITY_MAX_BYTES: u64 = 64 * 1024;'''
+classification = '''launch_identity_artifact_byte_cap'''
+reason = '''KiB multiplier composing the 64 KiB byte cap on the bounded read of the launch-identity artifact; a defensive read limit, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''.unwrap_or(0);'''
+classification = '''launch_identity_epoch_seconds_fallback'''
+reason = '''Saturating fallback launch timestamp when the system clock is before the Unix epoch while recording the best-effort launch-identity artifact; a defensive clock fallback, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_identity"'''
+context = '''"ops_launch_identity": "written",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary status field emitted when the best-effort launch-identity artifact is written; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"written"'''
+context = '''"ops_launch_identity": "written",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Stable CLI JSON summary status value reported when the best-effort launch-identity artifact is written; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"path"'''
+context = '''"path": written.path.display().to_string(),'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary path field for the written launch-identity artifact; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"sha256"'''
+context = '''"sha256": written.sha256,'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary SHA-256 field for the written launch-identity artifact; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_identity"'''
+context = '''"ops_launch_identity": "write-failed",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary status field emitted to stderr when the best-effort launch-identity write fails; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
 path = '''src/bolt_v3_deploy_target.rs'''
 kind = '''string'''
 literal = '''"/latest/meta-data/instance-id"'''

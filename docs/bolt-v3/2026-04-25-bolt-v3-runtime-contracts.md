@@ -1379,7 +1379,7 @@ The bolt-v3 build path returns a `LiveNode` in `Idle` state with NT data and exe
 
 Controlled-connect boundary contract:
 
-- opt-in: `build_bolt_v3_live_node` and its `_with` / `_with_summary` siblings do not invoke this boundary; a caller must call it explicitly on a node previously returned by one of those builders
+- opt-in: the bolt-v3 node builders (`build_bolt_v3_live_node_with_resolved` and its `_with` / `_with_summary` siblings) do not invoke this boundary; a caller must call it explicitly on a node previously returned by one of those builders
 - bounded: the dispatched engine-level connect futures are wrapped in `tokio::time::timeout` driven by `nautilus.timeout_connection_secs`; on timeout the boundary returns `BoltV3LiveNodeError::ConnectTimeout { timeout_secs }` and the caller owns subsequent disconnect/teardown via `disconnect_bolt_v3_clients`
 - dispatch + connected check: the pinned NT `DataEngine::connect` and `ExecutionEngine::connect` dispatchers swallow individual client `connect()` errors and only log them, so after the dispatch returns the boundary consults `NautilusKernel::check_engines_connected()` and returns `BoltV3LiveNodeError::ConnectIncomplete` if any registered client did not transition to `is_connected`; this slice intentionally keeps the error variant generic and does not synthesize a per-client failure list
 - not NT cache or instrument readiness: the boundary does not gate on NT cache contents, instrument-availability checks, or any readiness predicate beyond `kernel.check_engines_connected()`; cache/instrument readiness is owned by a future slice

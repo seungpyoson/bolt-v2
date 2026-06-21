@@ -864,6 +864,7 @@ fn deploy_readme_documents_the_full_pre_arm_gate() {
     for needle in [
         "generate-live-config",
         "verify-live-config",
+        "ops launch",
         "secrets resolve",
         "prestart-check",
         "arming",
@@ -872,6 +873,17 @@ fn deploy_readme_documents_the_full_pre_arm_gate() {
         assert!(
             readme.contains(needle),
             "deploy/README.md must document `{needle}` in the pre-arm sequence (#768 step 3)"
+        );
+    }
+
+    for forbidden in [
+        "bolt-v2 run --config ...` remains a non-canonical primitive",
+        "keeps only its minimal generated-config, invariant, and storage prestart guards",
+        "verify-live-config / prestart-check / reference-current-price-health / run",
+    ] {
+        assert!(
+            !readme.contains(forbidden),
+            "deploy/README.md must not present the old separate live-arming lane `{forbidden}`"
         );
     }
 }

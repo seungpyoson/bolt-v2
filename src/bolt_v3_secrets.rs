@@ -883,8 +883,9 @@ transport_backend = "sockudo"
     #[test]
     fn resolve_bolt_v3_secrets_takes_session_and_loaded_config() {
         // Per #252 design review: production startup owns the
-        // `SsmResolverSession` at the `build_bolt_v3_live_node` boundary
-        // and threads it down explicitly. Letting
+        // `SsmResolverSession` at the upstream secrets-resolve boundary,
+        // then threads the once-resolved secrets into
+        // `build_bolt_v3_live_node_with_resolved` explicitly. Letting
         // `resolve_bolt_v3_secrets` build its own session internally
         // hides the session lifetime from the caller and prevents the
         // startup boundary from sharing one session across all bolt-v3

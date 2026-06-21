@@ -2997,7 +2997,7 @@ impl BinaryOracleEdgeTaker {
                 self.config.forced_flat_thin_book_min_liquidity,
             )),
             liquidity_available: open_position
-                .map(|position| position.book.liquidity_available)
+                .and_then(|position| position.book.liquidity_available)
                 .or_else(|| self.active.books.minimum_liquidity())
                 .map(evidence_number),
             frozen: self.active.phase == SelectionPhase::Freeze,

@@ -3564,19 +3564,28 @@ impl std::error::Error for BoltV3LiveNodeError {
     }
 }
 
-pub fn build_bolt_v3_live_node(
+pub fn build_bolt_v3_live_node_with_resolved(
     loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     // RV source-client validation is owned by the strategy-registration
     // chokepoint; trade transport must retain the clients it will validate.
     let transport_loaded =
         trade_transport_loaded_config(loaded, RealizedVolatilityTransportScope::Subscribed)?;
-    let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
+    check_no_forbidden_credential_env_vars(&transport_loaded.root)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    build_bolt_v3_live_node_from_resolved_transport(&transport_loaded, resolved)
+}
+
+fn build_bolt_v3_live_node_from_resolved_transport(
+    transport_loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let bundle =
-        live_node_adapter_bundle_with_provider_live_submit_approvals(&transport_loaded, &resolved)?;
+        live_node_adapter_bundle_with_provider_live_submit_approvals(transport_loaded, resolved)?;
     let (runtime, _summary) = build_live_node_with_clients_and_submit_approval_limits(
-        &transport_loaded,
-        &resolved,
+        transport_loaded,
+        resolved,
         bundle.configs,
         bundle.live_submit_approval_limits,
     )?;
@@ -3742,10 +3751,28 @@ pub fn build_bolt_v3_strategy_free_live_node(
     let transport_loaded =
         trade_transport_loaded_config(loaded, RealizedVolatilityTransportScope::NotSubscribed)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
-    let adapters = strategy_free_transport_adapter_configs(&transport_loaded, &resolved)?;
-    let strategy_free_loaded = strategy_free_transport_loaded_config(&transport_loaded);
+    build_bolt_v3_strategy_free_live_node_from_resolved_transport(&transport_loaded, &resolved)
+}
+
+pub fn build_bolt_v3_strategy_free_live_node_with_resolved(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let transport_loaded =
+        trade_transport_loaded_config(loaded, RealizedVolatilityTransportScope::NotSubscribed)?;
+    check_no_forbidden_credential_env_vars(&transport_loaded.root)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    build_bolt_v3_strategy_free_live_node_from_resolved_transport(&transport_loaded, resolved)
+}
+
+fn build_bolt_v3_strategy_free_live_node_from_resolved_transport(
+    transport_loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let adapters = strategy_free_transport_adapter_configs(transport_loaded, resolved)?;
+    let strategy_free_loaded = strategy_free_transport_loaded_config(transport_loaded);
     let (runtime, _summary) =
-        build_live_node_with_clients(&strategy_free_loaded, &resolved, adapters)?;
+        build_live_node_with_clients(&strategy_free_loaded, resolved, adapters)?;
     Ok(runtime)
 }
 
@@ -4888,11 +4915,12 @@ fn classify_live_node_run_and_capture_shutdown(
     }
 }
 
-/// Test-friendly variant of [`build_bolt_v3_live_node`] which lets the caller
-/// inject the forbidden-environment predicate and the SSM resolver. Production
-/// code must use [`build_bolt_v3_live_node`], which applies the real credential
-/// environment guard and invokes the real Amazon Web Services Systems Manager
-/// resolver.
+/// Test-friendly builder that lets the caller inject the
+/// forbidden-environment predicate and the SSM resolver. Production code
+/// resolves the venue secrets once upstream and uses
+/// [`build_bolt_v3_live_node_with_resolved`], which applies the real credential
+/// environment guard against pre-resolved secrets rather than resolving them
+/// again here.
 pub fn build_bolt_v3_live_node_with<F, R, E>(
     loaded: &LoadedBoltV3Config,
     env_is_set: F,
@@ -6016,8 +6044,9 @@ pub fn wire_bolt_v3_runtime_capture(
 /// to `node`, bounded by the bolt-v3
 /// `nautilus.timeout_connection_secs` value from `loaded`.
 ///
-/// This boundary is **opt-in**: `build_bolt_v3_live_node` and its
-/// `_with` / `_with_summary` siblings deliberately do not invoke it.
+/// This boundary is **opt-in**: the bolt-v3 node builders
+/// (`build_bolt_v3_live_node_with_resolved` and its `_with` /
+/// `_with_summary` siblings) deliberately do not invoke it.
 /// A caller must explicitly call this function on a node previously
 /// returned by one of those builders. In a bolt-v3-only process, NT's
 /// first-wins logger is initialized by the bolt-v3 `LoggerConfig`
@@ -6344,6 +6373,73 @@ mod tests {
     }
 
     #[test]
+    fn with_resolved_health_and_start_builds_reuse_one_secret_resolution() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        // Keep the real node builders hermetic: redirect the decision-evidence
+        // catalog directory under a tempdir so registration does not touch the
+        // production `/var/lib/bolt` path, which is unwritable in CI. The
+        // one-resolution property below is unaffected by this storage path.
+        loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+        let secret_bearing_clients = loaded
+            .root
+            .clients
+            .values()
+            .filter(|client| client.secrets.is_some())
+            .count();
+        let resolved_clients = Rc::new(RefCell::new(BTreeSet::<String>::new()));
+        let resolved_clients_for_resolver = Rc::clone(&resolved_clients);
+        // Count EVERY resolver invocation, not just unique client names: a
+        // re-resolution of an already-seen client would not grow the name set
+        // above, so the per-invocation counter is the load-bearing "resolved
+        // exactly once" guard.
+        let resolver_calls = Rc::new(Cell::new(0u32));
+        let resolver_calls_for_resolver = Rc::clone(&resolver_calls);
+
+        let resolved = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
+            resolver_calls_for_resolver.set(resolver_calls_for_resolver.get() + 1);
+            if path.starts_with("/bolt/polymarket/") {
+                resolved_clients_for_resolver
+                    .borrow_mut()
+                    .insert("polymarket_main".to_string());
+            } else if path.starts_with("/bolt/testnet/chainlink/") {
+                let mut clients = resolved_clients_for_resolver.borrow_mut();
+                if !clients.contains("chainlink_reference") {
+                    clients.insert("chainlink_reference".to_string());
+                } else {
+                    clients.insert("chainlink_strike".to_string());
+                }
+            } else if path.starts_with("/bolt/polyresearch/") {
+                resolved_clients_for_resolver
+                    .borrow_mut()
+                    .insert("polyresearch_reference".to_string());
+            }
+            fixture_secret_value(path)
+        })
+        .expect("fixture secrets should resolve once");
+        assert_eq!(resolved.clients.len(), secret_bearing_clients);
+        assert_eq!(resolved_clients.borrow().len(), secret_bearing_clients);
+        // Snapshot the total resolver invocations performed by the single
+        // upstream resolve; the builders below must not add to this.
+        let resolver_calls_after_resolve = resolver_calls.get();
+
+        build_bolt_v3_strategy_free_live_node_with_resolved(&loaded, &resolved)
+            .expect("strategy-free health builder must consume pre-resolved secrets");
+        build_bolt_v3_live_node_with_resolved(&loaded, &resolved)
+            .expect("start builder must consume pre-resolved secrets");
+
+        assert_eq!(
+            resolver_calls.get(),
+            resolver_calls_after_resolve,
+            "with-resolved builders must not invoke the secret resolver again, \
+             including re-resolving an already-resolved client"
+        );
+    }
+
+    #[test]
     fn manual_recovery_evidence_clears_live_reducing_state_after_fresh_snapshot() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
@@ -6574,19 +6670,33 @@ mod tests {
     }
 
     fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
-        match path {
-            "/bolt/polymarket_main/private_key" => Ok(
-                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
-            ),
-            "/bolt/polymarket_main/api_key" => Ok("polymarket-api-key".to_string()),
-            "/bolt/polymarket_main/api_secret" => Ok("YWJj".to_string()),
-            "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
-            "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
-            "/bolt/binance_reference/api_secret" => {
-                Ok("MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string())
-            }
-            _ => Err("unexpected SSM path requested by bolt-v3 fake resolver"),
+        fixture_secret_value(path)
+    }
+
+    fn fixture_secret_value(path: &str) -> Result<String, &'static str> {
+        if path == "/bolt/binance_reference/api_secret" {
+            return Ok(
+                "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string(),
+            );
         }
+        if path == "/bolt/binance_reference/api_key" {
+            return Ok("binance-api-key".to_string());
+        }
+        if path.contains("private-key") || path.contains("private_key") {
+            return Ok(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            );
+        }
+        if path.contains("api-secret") || path.contains("api_secret") {
+            return Ok("YWJj".to_string());
+        }
+        if path.contains("api-passphrase") || path.contains("passphrase") {
+            return Ok("polymarket-passphrase".to_string());
+        }
+        if path.contains("api-key") || path.contains("api_key") {
+            return Ok("fixture-api-key".to_string());
+        }
+        Err("unexpected SSM path requested by bolt-v3 fake resolver")
     }
 
     fn seed_cached_account_state(

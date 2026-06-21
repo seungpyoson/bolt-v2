@@ -20,7 +20,10 @@ use serde::Serialize;
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_config::ReferencePriceSourceBlock,
-    bolt_v3_live_node::{BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node},
+    bolt_v3_live_node::{
+        BoltV3LiveNodeRuntime, build_bolt_v3_strategy_free_live_node,
+        build_bolt_v3_strategy_free_live_node_with_resolved,
+    },
     bolt_v3_providers::{ReferencePriceIdentifierKind, reference_price_provider_metadata},
     bolt_v3_reference_price::{
         REFERENCE_PRICE_ASSET_PARAM, REFERENCE_PRICE_INSTRUMENT_ID_PARAM,
@@ -28,6 +31,7 @@ use crate::{
         REFERENCE_PRICE_SYMBOL_PARAM, ReferencePriceUpdate,
         reference_price_source_is_runtime_available,
     },
+    bolt_v3_secrets::ResolvedBoltV3Secrets,
 };
 
 const SOURCE_UPDATE_OBSERVATION_STATUS_OBSERVED: &str = "observed";
@@ -163,6 +167,20 @@ pub fn prepare_reference_current_price_health_run(
 ) -> Result<ReferenceCurrentPriceHealthRun> {
     let plan = reference_current_price_health_plan(loaded)?;
     let runtime = build_bolt_v3_strategy_free_live_node(loaded)?;
+
+    Ok(ReferenceCurrentPriceHealthRun {
+        plan,
+        runtime,
+        loaded: loaded.clone(),
+    })
+}
+
+pub fn prepare_reference_current_price_health_run_with_resolved(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<ReferenceCurrentPriceHealthRun> {
+    let plan = reference_current_price_health_plan(loaded)?;
+    let runtime = build_bolt_v3_strategy_free_live_node_with_resolved(loaded, resolved)?;
 
     Ok(ReferenceCurrentPriceHealthRun {
         plan,

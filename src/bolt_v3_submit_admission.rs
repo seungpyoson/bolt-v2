@@ -4,8 +4,9 @@ use crate::bolt_v3_capital_reservation::{
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
     BoltV3BasketAdmissionOutcome, BoltV3DecisionEvidenceWriter, BoltV3LossGovernorHaltEvidence,
-    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3PositionSizerRebuildAuditEvidence,
-    BoltV3RecoveredSubmitReservationEvidence, BoltV3StaleLossReason,
+    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
+    BoltV3OrderRejectReason, BoltV3PositionSizerRebuildAuditEvidence,
+    BoltV3RecoveredSubmitReservationEvidence, BoltV3RejectSource, BoltV3StaleLossReason,
     BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     compiled_order_price_source,
 };
@@ -112,9 +113,42 @@ fn stale_loss_reason_key(reason: BoltV3StaleLossReason) -> &'static str {
     }
 }
 
+fn admission_outcome_key(outcome: &BoltV3AdmissionOutcome) -> &'static str {
+    match outcome {
+        BoltV3AdmissionOutcome::Admitted => "admitted",
+        BoltV3AdmissionOutcome::RejectedKillSwitchLatched => "rejected_kill_switch_latched",
+        BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
+            "rejected_submit_lifecycle_disallowed"
+        }
+        BoltV3AdmissionOutcome::RejectedLossGovernorHalted => "rejected_loss_governor_halted",
+        BoltV3AdmissionOutcome::RejectedNonPositiveNotional => "rejected_non_positive_notional",
+        BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => "rejected_notional_cap_exceeded",
+        BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
+            "rejected_invalid_risk_reducing_exit_proof"
+        }
+        BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
+        BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
+            "rejected_kill_switch_forced_reduction_proof_invalid"
+        }
+        BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
+            "rejected_kill_switch_forced_reduction_cap_exceeded"
+        }
+        BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",
+    }
+}
+
+fn submit_admission_order_side_key(side: OrderSide) -> &'static str {
+    match side {
+        OrderSide::Buy => "buy",
+        OrderSide::Sell => "sell",
+        OrderSide::NoOrderSide => "no_order_side",
+    }
+}
+
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
     inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
+    reject_episodes: Mutex<BTreeMap<String, RejectEpisode>>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 }
 
@@ -145,6 +179,13 @@ impl BoltV3LossFreshness {
 struct LossHaltEpisode {
     count: u32,
     first_halt_ns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RejectEpisode {
+    count: u32,
+    first_ns: u64,
+    last_client_order_id: String,
 }
 
 #[derive(Debug)]
@@ -440,6 +481,7 @@ impl BoltV3SubmitAdmissionState {
                     client_order_reservations: BTreeMap::new(),
                 }),
             })),
+            reject_episodes: Mutex::new(BTreeMap::new()),
             decision_evidence,
         }
     }
@@ -1329,7 +1371,7 @@ impl BoltV3SubmitAdmissionState {
                     rollback_position_sizer_reservation(&mut inner, rollback);
                 }
                 evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                if let Err(err) = self.record_admission_decision(request, &evaluation) {
+                if let Err(err) = self.record_admission_decision(request, &evaluation, now_ns) {
                     return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                         reason: format!("{err:#}"),
                     });
@@ -1347,34 +1389,35 @@ impl BoltV3SubmitAdmissionState {
                     rollback_position_sizer_reservation(&mut inner, rollback);
                 }
                 evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                if let Err(err) = self.record_admission_decision(request, &evaluation) {
+                if let Err(err) = self.record_admission_decision(request, &evaluation, now_ns) {
                     return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                         reason: format!("{err:#}"),
                     });
                 }
                 return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
             };
-            let next_forced_reduction_count =
-                if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
-                    let Some(next) = inner
-                        .live_kill_switch_forced_reduction_order_count
-                        .checked_add(1)
-                    else {
-                        if let Some(rollback) = evaluation.rollback.as_ref() {
-                            rollback_position_sizer_reservation(&mut inner, rollback);
-                        }
-                        evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
-                        if let Err(err) = self.record_admission_decision(request, &evaluation) {
-                            return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                                reason: format!("{err:#}"),
-                            });
-                        }
-                        return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
-                    };
-                    next
-                } else {
-                    inner.live_kill_switch_forced_reduction_order_count
+            let next_forced_reduction_count = if request.intent_kind
+                == BoltV3SubmitIntentKind::KillSwitchForcedReduction
+            {
+                let Some(next) = inner
+                    .live_kill_switch_forced_reduction_order_count
+                    .checked_add(1)
+                else {
+                    if let Some(rollback) = evaluation.rollback.as_ref() {
+                        rollback_position_sizer_reservation(&mut inner, rollback);
+                    }
+                    evaluation.outcome = BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                    if let Err(err) = self.record_admission_decision(request, &evaluation, now_ns) {
+                        return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                            reason: format!("{err:#}"),
+                        });
+                    }
+                    return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
                 };
+                next
+            } else {
+                inner.live_kill_switch_forced_reduction_order_count
+            };
             let counter_rollback = BoltV3SubmitAdmissionCounterRollback {
                 execution_client_id: request.execution_client_id.clone(),
                 order_count: next_admitted_order_count.saturating_sub(admitted_order_count_before),
@@ -1401,7 +1444,7 @@ impl BoltV3SubmitAdmissionState {
                 reason: format!("{err:#}"),
             });
         }
-        if let Err(err) = self.record_admission_decision(request, &evaluation) {
+        if let Err(err) = self.record_admission_decision(request, &evaluation, now_ns) {
             if let Some(rollback) = evaluation.rollback.as_ref() {
                 rollback_position_sizer_reservation(&mut inner, rollback);
             }
@@ -1484,8 +1527,9 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        let evaluation = self.evaluate(&mut inner, request, current_unix_ns()?);
-        let record_result = self.record_admission_decision(request, &evaluation);
+        let now_ns = current_unix_ns()?;
+        let evaluation = self.evaluate(&mut inner, request, now_ns);
+        let record_result = self.record_admission_decision(request, &evaluation, now_ns);
         if let Some(rollback) = evaluation.rollback.as_ref() {
             rollback_position_sizer_reservation(&mut inner, rollback);
         }
@@ -1501,6 +1545,7 @@ impl BoltV3SubmitAdmissionState {
         &self,
         request: &BoltV3SubmitAdmissionRequest,
         evaluation: &BoltV3SubmitAdmissionEvaluation,
+        now_ns: u64,
     ) -> Result<(), anyhow::Error> {
         let evidence = BoltV3AdmissionDecisionEvidence {
             strategy_id: request.strategy_id.clone(),
@@ -1516,7 +1561,101 @@ impl BoltV3SubmitAdmissionState {
                 .map(|reason| reason.as_str().to_string())
                 .collect(),
         };
-        self.decision_evidence.record_admission_decision(&evidence)
+        let result = self.decision_evidence.record_admission_decision(&evidence);
+        if evaluation.outcome == BoltV3AdmissionOutcome::Admitted {
+            self.reject_episodes
+                .lock()
+                .expect("submit admission state mutex should not be poisoned")
+                .clear();
+        } else {
+            self.record_submit_admission_order_reject(request, evaluation, now_ns);
+        }
+        result
+    }
+
+    fn record_submit_admission_order_reject(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        evaluation: &BoltV3SubmitAdmissionEvaluation,
+        now_ns: u64,
+    ) {
+        let side_key = submit_admission_order_side_key(request.order_side);
+        let stable_episode_key = format!(
+            "{}/{}/{}",
+            request.instrument_id,
+            side_key,
+            admission_outcome_key(&evaluation.outcome)
+        );
+        let (prior_client_order_id, retry_count, elapsed_ns, should_emit) = {
+            let mut reject_episodes = self
+                .reject_episodes
+                .lock()
+                .expect("submit admission state mutex should not be poisoned");
+            if !reject_episodes.contains_key(&stable_episode_key) {
+                reject_episodes.insert(
+                    stable_episode_key.clone(),
+                    RejectEpisode {
+                        count: 0,
+                        first_ns: now_ns,
+                        last_client_order_id: String::new(),
+                    },
+                );
+            }
+            let episode = reject_episodes
+                .get_mut(&stable_episode_key)
+                .expect("reject episode should exist after insertion");
+            let prior_client_order_id = if episode.count > 0 {
+                Some(episode.last_client_order_id.clone())
+            } else {
+                None
+            };
+            episode.count = episode.count.saturating_add(1);
+            episode.last_client_order_id = request.client_order_id.clone();
+            let elapsed_ns = now_ns.saturating_sub(episode.first_ns);
+            (
+                prior_client_order_id,
+                episode.count,
+                elapsed_ns,
+                episode.count.is_power_of_two(),
+            )
+        };
+        if !should_emit {
+            return;
+        }
+
+        let evidence = BoltV3OrderRejectEvidence {
+            reject_source: BoltV3RejectSource::SubmitAdmission,
+            reject_reason: BoltV3OrderRejectReason::AdmissionRejected,
+            admission_outcome: Some(evaluation.outcome.clone()),
+            raw_reason_text: None,
+            instrument_id: request.instrument_id.clone(),
+            order_side: Some(side_key.to_string()),
+            raw_price: None,
+            raw_quantity: Some(request.order_quantity.to_string()),
+            raw_maker_amount: None,
+            raw_taker_amount: None,
+            normalized_price: None,
+            normalized_quantity: None,
+            normalized_maker_amount: None,
+            normalized_taker_amount: None,
+            venue_price_precision: None,
+            venue_size_precision: None,
+            venue_min_notional: None,
+            prior_client_order_id,
+            client_order_id: request.client_order_id.clone(),
+            retry_count,
+            backoff_cooldown_state: None,
+            stable_episode_key,
+            elapsed_ns,
+        };
+        if let Err(err) = self.decision_evidence.record_order_reject(&evidence) {
+            log::warn!(
+                "bolt-v3 order reject evidence write failed: stable_episode_key={} admission_outcome={:?} prior_client_order_id={:?}: {err:#}",
+                evidence.stable_episode_key,
+                evidence.admission_outcome,
+                evidence.prior_client_order_id
+            );
+        }
     }
 
     fn record_stale_loss_governor_halt(

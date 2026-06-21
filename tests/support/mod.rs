@@ -54,6 +54,7 @@ pub struct RecordingDecisionEvidenceWriter {
     records: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>>,
     admission_decisions:
         Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence>>,
+    order_rejects: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence>>,
 }
 
 impl RecordingDecisionEvidenceWriter {
@@ -68,6 +69,15 @@ impl RecordingDecisionEvidenceWriter {
         &self,
     ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence> {
         self.admission_decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn order_rejects(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence> {
+        self.order_rejects
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -150,8 +160,12 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
 
     fn record_order_reject(
         &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
+        evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
     ) -> anyhow::Result<()> {
+        self.order_rejects
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(evidence.clone());
         Ok(())
     }
 }

@@ -6,8 +6,9 @@ use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
     BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
     BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
-    BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
-    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    BoltV3OrderRejectReason, BoltV3PositionSizerRebuildAuditEvidence, BoltV3RejectSource,
+    BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+    BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -1233,6 +1234,109 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
     }
 }
 
+#[derive(Debug)]
+struct OrderRejectFailingDecisionEvidenceWriter {
+    admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
+    order_reject_attempts: Mutex<Vec<BoltV3OrderRejectEvidence>>,
+}
+
+impl OrderRejectFailingDecisionEvidenceWriter {
+    fn new() -> Self {
+        Self {
+            admission_decisions: Mutex::new(Vec::new()),
+            order_reject_attempts: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
+        self.admission_decisions
+            .lock()
+            .expect("order-reject failing writer mutex should not be poisoned")
+            .clone()
+    }
+
+    fn order_reject_attempts(&self) -> Vec<BoltV3OrderRejectEvidence> {
+        self.order_reject_attempts
+            .lock()
+            .expect("order-reject failing writer mutex should not be poisoned")
+            .clone()
+    }
+}
+
+impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        self.admission_decisions
+            .lock()
+            .expect("order-reject failing writer mutex should not be poisoned")
+            .push(decision.clone());
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &BoltV3ExitEvaluationEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _evidence: &BoltV3LossGovernorHaltEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
+        self.order_reject_attempts
+            .lock()
+            .expect("order-reject failing writer mutex should not be poisoned")
+            .push(evidence.clone());
+        Err(anyhow::anyhow!("synthetic order-reject write failure"))
+    }
+}
+
 #[test]
 fn admit_records_admission_decision_evidence_on_admit_outcome() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
@@ -1259,6 +1363,182 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
     assert_eq!(decisions[0].instrument_id, request.instrument_id);
     assert_eq!(decisions[0].notional, request.notional.to_string());
     assert_eq!(decisions[0].intent_kind, request.intent_kind);
+}
+
+#[test]
+fn single_order_reject_records_order_reject_evidence_on_reject_outcome() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 0, Decimal::new(1, 0));
+
+    let request = submit_request(Decimal::new(1, 0));
+    let error = admission
+        .admit_at(&request, 1_000)
+        .expect_err("zero live-order cap should reject the first submit");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    assert!(
+        writer.records().is_empty(),
+        "order-reject evidence must not use the order-intent channel"
+    );
+    assert_eq!(
+        writer.admission_decisions().len(),
+        1,
+        "existing admission-decision evidence remains independently recorded"
+    );
+    let rejects = writer.order_rejects();
+    assert_eq!(rejects.len(), 1);
+    let reject = &rejects[0];
+    assert_eq!(reject.reject_source, BoltV3RejectSource::SubmitAdmission);
+    assert_eq!(
+        reject.reject_reason,
+        BoltV3OrderRejectReason::AdmissionRejected
+    );
+    assert_eq!(
+        reject.admission_outcome,
+        Some(BoltV3AdmissionOutcome::RejectedCountCapExhausted)
+    );
+    assert_eq!(reject.raw_reason_text, None);
+    assert_eq!(reject.instrument_id, request.instrument_id);
+    assert_eq!(reject.order_side.as_deref(), Some("buy"));
+    assert_eq!(reject.raw_price, None);
+    assert_eq!(reject.raw_quantity.as_deref(), Some("1"));
+    assert_eq!(reject.raw_maker_amount, None);
+    assert_eq!(reject.raw_taker_amount, None);
+    assert_eq!(reject.normalized_price, None);
+    assert_eq!(reject.normalized_quantity, None);
+    assert_eq!(reject.normalized_maker_amount, None);
+    assert_eq!(reject.normalized_taker_amount, None);
+    assert_eq!(reject.venue_price_precision, None);
+    assert_eq!(reject.venue_size_precision, None);
+    assert_eq!(reject.venue_min_notional, None);
+    assert_eq!(reject.prior_client_order_id, None);
+    assert_eq!(reject.client_order_id, request.client_order_id);
+    assert_eq!(reject.retry_count, 1);
+    assert_eq!(reject.backoff_cooldown_state, None);
+    assert_eq!(
+        reject.stable_episode_key,
+        "instrument-1/buy/rejected_count_cap_exhausted"
+    );
+    assert_eq!(reject.elapsed_ns, 0);
+}
+
+#[test]
+fn single_order_reject_evidence_samples_power_of_two_attempts_and_links_churn() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 0, Decimal::new(1, 0));
+
+    for attempt in 1_u32..=8 {
+        let mut request = submit_request(Decimal::new(1, 0));
+        request.client_order_id = format!("client-order-{attempt}");
+
+        let error = admission
+            .admit_at(&request, 1_000 + u64::from(attempt))
+            .expect_err("zero live-order cap should reject every submit attempt");
+        assert!(matches!(
+            error,
+            BoltV3SubmitAdmissionError::CountCapExhausted
+        ));
+    }
+
+    let rejects = writer.order_rejects();
+    let retry_counts: Vec<u32> = rejects.iter().map(|reject| reject.retry_count).collect();
+    assert_eq!(retry_counts, vec![1, 2, 4, 8]);
+    for reject in rejects {
+        let expected_prior = if reject.retry_count == 1 {
+            None
+        } else {
+            Some(format!("client-order-{}", reject.retry_count - 1))
+        };
+        assert_eq!(
+            reject.prior_client_order_id, expected_prior,
+            "emitted reject at count {} should point to the immediately preceding attempt",
+            reject.retry_count
+        );
+    }
+}
+
+#[test]
+fn single_order_reject_episode_resets_after_admitted_submit() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = limited_admission_with_writer(writer.clone(), 2, Decimal::new(1, 0));
+
+    for attempt in 1_u32..=3 {
+        let mut request = submit_request(Decimal::new(2, 0));
+        request.client_order_id = format!("reject-before-accept-{attempt}");
+
+        let error = admission
+            .admit_at(&request, 1_000 + u64::from(attempt))
+            .expect_err("above-cap notional should reject before the accept reset");
+        assert!(matches!(
+            error,
+            BoltV3SubmitAdmissionError::NotionalCapExceeded
+        ));
+    }
+
+    let mut accepted = submit_request(Decimal::new(1, 0));
+    accepted.client_order_id = "accepted-client-order".to_string();
+    admission
+        .admit_at(&accepted, 2_000)
+        .expect("within-cap submit should reset reject episodes")
+        .commit_submitted();
+
+    let mut rejected_after_accept = submit_request(Decimal::new(2, 0));
+    rejected_after_accept.client_order_id = "reject-after-accept".to_string();
+    let error = admission
+        .admit_at(&rejected_after_accept, 3_000)
+        .expect_err("above-cap notional should reject after the accept reset");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::NotionalCapExceeded
+    ));
+
+    let rejects = writer.order_rejects();
+    let retry_counts: Vec<u32> = rejects.iter().map(|reject| reject.retry_count).collect();
+    assert_eq!(retry_counts, vec![1, 2, 1]);
+    let reset_reject = rejects
+        .last()
+        .expect("reject after accept should restart the episode");
+    assert_eq!(reset_reject.retry_count, 1);
+    assert_eq!(reset_reject.prior_client_order_id, None);
+    assert_eq!(reset_reject.client_order_id, "reject-after-accept");
+}
+
+#[test]
+fn order_reject_evidence_write_failure_preserves_admission_behavior() {
+    let request = submit_request(Decimal::new(1, 0));
+    let normal_writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let normal_admission =
+        limited_admission_with_writer(normal_writer.clone(), 0, Decimal::new(1, 0));
+    let failing_writer = Arc::new(OrderRejectFailingDecisionEvidenceWriter::new());
+    let failing_admission =
+        limited_admission_with_writer(failing_writer.clone(), 0, Decimal::new(1, 0));
+
+    let normal_error = normal_admission
+        .admit_at(&request, 1_000)
+        .expect_err("baseline zero live-order cap should reject");
+    let failing_error = failing_admission
+        .admit_at(&request, 1_000)
+        .expect_err("order-reject write failure must not mask admission rejection");
+
+    assert!(matches!(
+        normal_error,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    assert!(matches!(
+        failing_error,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    assert_eq!(
+        normal_writer.admission_decisions(),
+        failing_writer.admission_decisions()
+    );
+    assert_eq!(
+        normal_writer.order_rejects(),
+        failing_writer.order_reject_attempts()
+    );
 }
 
 #[test]

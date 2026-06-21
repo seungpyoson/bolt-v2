@@ -18658,3 +18658,130 @@ context = '''(1, 0)'''
 classification = "submit_admission_loss_halt_episode_identity"
 reason = "A new stale loss-governor halt episode initializes elapsed-since-first-halt to zero (no prior halt yet); observability identity, not an operator runtime value."
 
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"admitted"'''
+context = '''BoltV3AdmissionOutcome::Admitted => "admitted",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for the admitted submit-admission outcome; used only to keep the hand-written outcome mapping exhaustive for RCA #885 order-reject episodes."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_kill_switch_latched"'''
+context = '''BoltV3AdmissionOutcome::RejectedKillSwitchLatched => "rejected_kill_switch_latched",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a kill-switch-latched submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_submit_lifecycle_disallowed"'''
+context = '''"rejected_submit_lifecycle_disallowed"'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a lifecycle-policy submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_loss_governor_halted"'''
+context = '''BoltV3AdmissionOutcome::RejectedLossGovernorHalted => "rejected_loss_governor_halted",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a loss-governor submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_non_positive_notional"'''
+context = '''BoltV3AdmissionOutcome::RejectedNonPositiveNotional => "rejected_non_positive_notional",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a non-positive-notional submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_notional_cap_exceeded"'''
+context = '''BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => "rejected_notional_cap_exceeded",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a notional-cap submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_invalid_risk_reducing_exit_proof"'''
+context = '''"rejected_invalid_risk_reducing_exit_proof"'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for an invalid risk-reducing-exit proof rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_count_cap_exhausted"'''
+context = '''BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a count-cap submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_kill_switch_forced_reduction_proof_invalid"'''
+context = '''"rejected_kill_switch_forced_reduction_proof_invalid"'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for an invalid forced-reduction proof rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_kill_switch_forced_reduction_cap_exceeded"'''
+context = '''"rejected_kill_switch_forced_reduction_cap_exceeded"'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a forced-reduction cap rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_position_sizing"'''
+context = '''BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a position-sizing submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"buy"'''
+context = '''OrderSide::Buy => "buy",'''
+classification = "submit_admission_order_reject_side_key"
+reason = "Stable evidence side label for buy-side submit-admission order-reject records; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"sell"'''
+context = '''OrderSide::Sell => "sell",'''
+classification = "submit_admission_order_reject_side_key"
+reason = "Stable evidence side label for sell-side submit-admission order-reject records; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"no_order_side"'''
+context = '''OrderSide::NoOrderSide => "no_order_side",'''
+classification = "submit_admission_order_reject_side_absent_sentinel"
+reason = "Stable evidence sentinel for an unspecified NT order side in submit-admission order-reject records; it preserves observability without changing admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"{}/{}/{}"'''
+context = '''"{}/{}/{}",'''
+classification = "submit_admission_order_reject_episode_key_template"
+reason = "Stable episode-key template joining instrument, side, and admission outcome while intentionally excluding client_order_id so RCA #885 client-order-id churn remains correlated."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''count: 0,'''
+classification = "submit_admission_order_reject_episode_counter_identity"
+reason = "A new submit-admission order-reject episode starts at count zero before the first observed rejection increments it to one; this is observability state, not an operator runtime value."

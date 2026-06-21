@@ -1567,7 +1567,8 @@ impl BoltV3SubmitAdmissionState {
                 .lock()
                 .expect("submit admission state mutex should not be poisoned")
                 .clear();
-        } else {
+        } else if evaluation.outcome != BoltV3AdmissionOutcome::RejectedLossGovernorHalted {
+            // Loss-governor halts are MECE with order-level rejects; RC5 records loss halts.
             self.record_submit_admission_order_reject(request, evaluation, now_ns);
         }
         result

@@ -58,6 +58,14 @@ pub struct RecordingDecisionEvidenceWriter {
 }
 
 impl RecordingDecisionEvidenceWriter {
+    pub fn new() -> Self {
+        Self {
+            records: Mutex::new(Vec::new()),
+            admission_decisions: Mutex::new(Vec::new()),
+            order_rejects: Mutex::new(Vec::new()),
+        }
+    }
+
     pub fn records(&self) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence> {
         self.records
             .lock()

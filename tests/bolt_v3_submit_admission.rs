@@ -12,6 +12,7 @@ use bolt_v2::bolt_v3_decision_evidence::{
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
+use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
 use bolt_v2::bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingPolicy};
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
@@ -1423,6 +1424,69 @@ fn single_order_reject_records_order_reject_evidence_on_reject_outcome() {
         "instrument-1/buy/rejected_count_cap_exhausted"
     );
     assert_eq!(reject.elapsed_ns, 0);
+}
+
+#[test]
+fn loss_governor_halt_is_mece_with_order_reject_evidence() {
+    let loss_writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let loss_admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
+        loss_writer.clone(),
+        LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_rolling_loss: Some(Decimal::new(30, 0)),
+            max_drawdown: Some(Decimal::new(40, 0)),
+        },
+    );
+    loss_admission.update_loss_snapshot(LossSnapshot {
+        source: "nt_loss_runtime_feed".to_string(),
+        observed_at_ns: 1_000,
+        per_trade_pnl: Some(Decimal::ZERO),
+        daily_pnl: Some(Decimal::ZERO),
+        rolling_pnl: Some(Decimal::ZERO),
+        current_equity: Some(Decimal::new(1_000, 0)),
+        peak_equity: Some(Decimal::new(1_000, 0)),
+    });
+
+    let loss_error = loss_admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 2_101)
+        .expect_err("stale loss snapshot should reject through the loss governor");
+
+    assert!(matches!(
+        loss_error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![LossHaltReason::StaleLossSnapshot]
+    ));
+    assert_eq!(loss_writer.admission_decisions().len(), 1);
+    assert_eq!(
+        loss_writer.admission_decisions()[0].outcome,
+        BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+    );
+    assert!(
+        loss_writer.order_rejects().is_empty(),
+        "loss-governor halts are recorded by loss-halt evidence, not order-reject evidence"
+    );
+
+    let count_cap_writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let count_cap_admission =
+        limited_admission_with_writer(count_cap_writer.clone(), 0, Decimal::new(1, 0));
+
+    let count_cap_error = count_cap_admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_000)
+        .expect_err("zero live-order cap should still emit order-reject evidence");
+
+    assert!(matches!(
+        count_cap_error,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    assert_eq!(count_cap_writer.admission_decisions().len(), 1);
+    let count_cap_rejects = count_cap_writer.order_rejects();
+    assert_eq!(count_cap_rejects.len(), 1);
+    assert_eq!(
+        count_cap_rejects[0].admission_outcome,
+        Some(BoltV3AdmissionOutcome::RejectedCountCapExhausted)
+    );
 }
 
 #[test]

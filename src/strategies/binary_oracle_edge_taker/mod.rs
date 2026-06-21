@@ -3105,7 +3105,7 @@ impl BinaryOracleEdgeTaker {
             position_id: evidence.position_id.clone(),
             forced_flat_reasons: evidence.forced_flat_reasons.clone(),
             exit_decision: evidence.exit_decision,
-            blocked_reason: evidence.blocked_reason.clone(),
+            blocked_reason: evidence.blocked_reason,
         };
         if self.last_recorded_exit_decision.as_ref() == Some(&key) {
             return Ok(());
@@ -5121,6 +5121,7 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
+    #[cfg(test)]
     fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
         self.try_submit_exit_order_for_trigger(
             now_ms,

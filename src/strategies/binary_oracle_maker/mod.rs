@@ -140,6 +140,7 @@ struct RequoteThrottleDedupeKey {
 }
 
 impl BoltV3RequoteThrottleEvidence {
+    #[allow(clippy::too_many_arguments)]
     fn from_requote_throttle(
         strategy_id: String,
         family_key: &str,

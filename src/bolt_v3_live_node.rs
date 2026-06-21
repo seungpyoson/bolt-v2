@@ -2408,17 +2408,11 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_entry_skip(
-        &self,
-        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
-    ) -> Result<()> {
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
         Ok(())
     }
 
-    fn record_exit_decision(
-        &self,
-        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
-    ) -> Result<()> {
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
         Ok(())
     }
 
@@ -2426,10 +2420,7 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_requote_throttle(
-        &self,
-        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
-    ) -> Result<()> {
+    fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
         Ok(())
     }
 }

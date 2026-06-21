@@ -18416,3 +18416,155 @@ literal = '''"order_template"'''
 context = '''"order_template",'''
 classification = '''kill_switch_flatten_order_template_diagnostic_field'''
 reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"deploy.toml"'''
+context = '''const DEPLOY_TARGET_FILE_NAME: &str = "deploy.toml";'''
+classification = '''deploy_target_config_file_name'''
+reason = '''Fixed name of the tracked deploy-target binding file loaded from the ops config root; a stable config-file name, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/instance-id"'''
+context = '''const IMDS_INSTANCE_ID_PATH: &str = "/latest/meta-data/instance-id";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host instance-id; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/placement/availability-zone"'''
+context = '''const IMDS_AVAILABILITY_ZONE_PATH: &str = "/latest/meta-data/placement/availability-zone";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host availability zone; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/placement/region"'''
+context = '''const IMDS_REGION_PATH: &str = "/latest/meta-data/placement/region";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host region; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''number'''
+literal = '''2'''
+context = '''const IMDS_FETCH_TIMEOUT: Duration = Duration::from_secs(2);'''
+classification = '''imdsv2_fetch_safety_timeout'''
+reason = '''Fixed short fail-closed ceiling on the IMDSv2 handshake so TargetVerify fails fast when host facts are unreachable; an internal protocol-safety bound, not an operator-tunable runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"region"'''
+context = '''"region",'''
+classification = '''deploy_target_field_label'''
+reason = '''Names the deploy-target region field when recording a configured-vs-observed mismatch; a diagnostic field label, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"availability_zone"'''
+context = '''"availability_zone",'''
+classification = '''deploy_target_field_label'''
+reason = '''Names the deploy-target availability-zone field when recording a configured-vs-observed mismatch; a diagnostic field label, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"instance_id"'''
+context = '''"instance_id",'''
+classification = '''deploy_target_field_label'''
+reason = '''Names the deploy-target instance-id field when recording a configured-vs-observed mismatch; a diagnostic field label, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "no-target-configured",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"no-target-configured"'''
+context = '''"ops_launch_target_verify": "no-target-configured",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that no deploy target was configured and TargetVerify degraded; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "matched",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"matched"'''
+context = '''"ops_launch_target_verify": "matched",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that the configured deploy target matched the running host; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "mismatched",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"mismatched"'''
+context = '''"ops_launch_target_verify": "mismatched",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that a configured deploy-target field did not match the running host; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"field_mismatches"'''
+context = '''"field_mismatches": mismatches'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log array of per-field mismatches in a TargetVerify mismatch outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"field"'''
+context = '''"field": mismatch.field,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying a mismatched deploy-target field name; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"configured"'''
+context = '''"configured": mismatch.configured,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying the configured value of a mismatched deploy-target field; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"observed"'''
+context = '''"observed": mismatch.observed,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying the observed value of a mismatched deploy-target field; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"{}"'''
+context = '''println!("{}", serde_json::to_string(&log)?);'''
+classification = '''ops_launch_target_verify_log_format'''
+reason = '''Stdout format token printing the already-serialized TargetVerify outcome JSON line; not an operator runtime value.'''

@@ -70,8 +70,8 @@ STALE_STATUS_MAP_PHRASES = (
 
 REQUIRED_STATUS_MAP_PHRASES = (
     "| 7 | Bolt-v3 binary / CLI entrypoint | Implemented for current binary path |",
-    "src/main.rs` `Command::Run` loads `load_bolt_v3_config`",
-    "`build_bolt_v3_live_node(&loaded)?`",
+    "src/main.rs` `Command::Ops` `ops launch` loads `load_bolt_v3_config`",
+    "`build_bolt_v3_live_node_with_resolved(&loaded, resolved)?`",
     "`run_bolt_v3_live_node(&mut node, &loaded).await?`",
     "| 49 | Provider-leak verifier for adapter/secrets/registration | Implemented as current source-scan gate |",
     "`scripts/verify_bolt_v3_provider_leaks.py`",
@@ -241,7 +241,7 @@ def main() -> int:
 
     for phrase in (
         "load_bolt_v3_config(&config)?",
-        "build_bolt_v3_live_node(&loaded)?",
+        "build_bolt_v3_live_node_with_resolved(&loaded, resolved)?",
         "run_bolt_v3_live_node(&mut node, &loaded).await?",
     ):
         if phrase not in main_rs:

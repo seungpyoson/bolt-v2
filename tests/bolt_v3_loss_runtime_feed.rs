@@ -8,7 +8,9 @@ use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3RequoteThrottleEvidence, BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
     BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
-use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
+use bolt_v2::bolt_v3_loss_governor::{
+    LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
+};
 use bolt_v2::bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler;
 use bolt_v2::bolt_v3_loss_runtime_feed::{
     LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig, subscribe_loss_governor_runtime_feed,
@@ -1204,6 +1206,7 @@ fn loss_snapshot_at(observed_at_ns: u64) -> LossSnapshot {
         rolling_pnl: Some(Decimal::ZERO),
         current_equity: Some(Decimal::new(1_000, 0)),
         peak_equity: Some(Decimal::new(1_000, 0)),
+        source_observations: LossSourceObservationTimestamps::unobserved(),
     }
 }
 

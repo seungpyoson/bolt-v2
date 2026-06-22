@@ -13,7 +13,9 @@ use bolt_v2::bolt_v3_decision_evidence::{
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
-use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
+use bolt_v2::bolt_v3_loss_governor::{
+    LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
+};
 use bolt_v2::bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingPolicy};
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
@@ -1573,6 +1575,7 @@ fn loss_halt_evidence_write_failure_does_not_change_admission_outcome() {
         rolling_pnl: Some(Decimal::ZERO),
         current_equity: Some(Decimal::new(1_000, 0)),
         peak_equity: Some(Decimal::new(1_000, 0)),
+        source_observations: LossSourceObservationTimestamps::unobserved(),
     };
 
     let control_writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
@@ -1673,6 +1676,7 @@ fn stale_loss_halt_records_future_dated_reason_with_no_age() {
         rolling_pnl: Some(Decimal::ZERO),
         current_equity: Some(Decimal::new(1_000, 0)),
         peak_equity: Some(Decimal::new(1_000, 0)),
+        source_observations: LossSourceObservationTimestamps::unobserved(),
     });
 
     let error = admission
@@ -1807,6 +1811,7 @@ fn loss_governor_halt_is_mece_with_order_reject_evidence() {
         rolling_pnl: Some(Decimal::ZERO),
         current_equity: Some(Decimal::new(1_000, 0)),
         peak_equity: Some(Decimal::new(1_000, 0)),
+        source_observations: LossSourceObservationTimestamps::unobserved(),
     });
 
     let loss_error = loss_admission

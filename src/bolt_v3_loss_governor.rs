@@ -296,6 +296,7 @@ pub fn loss_snapshot_stale_reason(
     None
 }
 
+#[cfg(test)]
 fn snapshot_is_stale(policy: &LossGovernorPolicy, snapshot: &LossSnapshot, now_ns: u64) -> bool {
     loss_snapshot_stale_reason(policy, snapshot, now_ns).is_some()
 }

@@ -146,8 +146,7 @@ use crate::{
         KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
     },
     bolt_v3_loss_governor::{
-        LossGovernorPolicy, LossSnapshot, evaluate_loss_admission,
-        evaluate_loss_admission_with_observations,
+        LossGovernorPolicy, evaluate_loss_admission, evaluate_loss_admission_with_observations,
     },
     bolt_v3_loss_halt_actions::{
         LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,

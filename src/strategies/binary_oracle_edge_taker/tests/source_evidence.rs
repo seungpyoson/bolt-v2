@@ -1041,11 +1041,13 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     );
 
     let first_client_order_id = strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-            Some(1_200),
-            None,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                1_200,
+                None,
+            ),
         )
         .expect("first shadow exit should pass evidence and admission")
         .expect("first shadow exit should produce a would-be client order id");
@@ -1061,11 +1063,13 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
 
     assert_eq!(
         strategy
-            .try_submit_exit_order(
+            .try_submit_exit_order_for_trigger(
                 1_201,
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-                Some(1_201),
-                None,
+                ExitEvaluationTriggerContext::new(
+                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                    1_201,
+                    None,
+                ),
             )
             .expect("latched shadow exit should not fail"),
         None,
@@ -1116,7 +1120,7 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     assert_eq!(exit_decisions[0].exit_eval_now_ms, 1_200);
     assert_eq!(
         exit_decisions[0].exit_trigger_source,
-        BoltV3ExitTriggerSource::Unknown
+        BoltV3ExitTriggerSource::SelectionUpdate
     );
     assert_eq!(exit_decisions[0].trigger_ts_event_ms, 1_200);
     assert_eq!(exit_decisions[0].trigger_ts_init_ms, None);
@@ -1991,11 +1995,13 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     let control_result = control_strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-            Some(1_200),
-            Some(1_180),
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                Some(1_180),
+            ),
         )
         .expect("control exit evaluation should not error with a ready realized-vol surface");
 
@@ -2006,11 +2012,13 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     let failing_result = failing_strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-            Some(1_200),
-            Some(1_180),
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                Some(1_180),
+            ),
         )
         .expect("a failing exit-evaluation sink must be swallowed, not propagated");
 
@@ -2085,11 +2093,13 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
 
     strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-            Some(1_200),
-            Some(1_180),
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                Some(1_180),
+            ),
         )
         .expect("exit evaluation should not error with a ready realized-vol surface");
 
@@ -2131,11 +2141,13 @@ fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 2_000);
 
     strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
-            Some(1_190),
-            None,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+                1_190,
+                None,
+            ),
         )
         .expect("exit evaluation should not error with a future-dated realized-vol surface");
 
@@ -2169,11 +2181,13 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
 
     // First evaluation submits a would-be exit (one record, outcome key = Exit).
     strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-            Some(1_200),
-            None,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                None,
+            ),
         )
         .expect("first shadow exit should pass evidence and admission");
 
@@ -2184,11 +2198,13 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
     for tick in 1_201..=1_204 {
         assert_eq!(
             strategy
-                .try_submit_exit_order(
+                .try_submit_exit_order_for_trigger(
                     tick,
-                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-                    Some(tick as i64),
-                    None,
+                    ExitEvaluationTriggerContext::new(
+                        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                        tick,
+                        None,
+                    ),
                 )
                 .expect("latched exit evaluation should not error"),
             None,

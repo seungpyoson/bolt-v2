@@ -80,8 +80,13 @@ def test_unknown_marker_in_template_errors() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         layout_path = Path(tmp) / "install-layout.env"
+        # A COMPLETE, valid layout so the renderer reaches the unknown-marker
+        # check; it must carry every REQUIRED_LAYOUT_KEY (incl. BOLT_USER/
+        # BOLT_GROUP) or load_layout fails first and this test stops isolating
+        # the marker behavior it is meant to exercise.
         layout_path.write_text(
-            "BOLT_HOME=/srv/bolt-v2\nBOLT_INSTALL_ROOT=/opt/bolt-v2\nLIVE_ENV_DIR=/etc/bolt-v2\n",
+            "BOLT_HOME=/srv/bolt-v2\nBOLT_INSTALL_ROOT=/opt/bolt-v2\n"
+            "LIVE_ENV_DIR=/etc/bolt-v2\nBOLT_USER=bolt\nBOLT_GROUP=bolt\n",
             encoding="utf-8",
         )
         template_path = Path(tmp) / "unit.in"

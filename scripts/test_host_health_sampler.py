@@ -2225,6 +2225,151 @@ class ReviewRound4HardeningTests(unittest.TestCase):
         )
 
 
+class DeadlineBreakerTests(unittest.TestCase):
+    """Deadline circuit-breaker coverage for persistently wedged interval sinks."""
+
+    def setUp(self) -> None:
+        self.sampler = load_sampler()
+
+    def _wait_for_thread_delta_at_most(
+        self,
+        baseline: int,
+        limit: int,
+        *,
+        timeout: float = 2.0,
+    ) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if threading.active_count() - baseline <= limit:
+                return True
+            time.sleep(0.01)
+        return threading.active_count() - baseline <= limit
+
+    def test_differential_wedged_stdout_sink_bounds_abandoned_threads(self) -> None:
+        sampler = self.sampler
+        saved_emit = sampler.emit_to_stdout
+        saved_timeout = sampler.SINK_TIMEOUT_SECONDS
+        release = threading.Event()
+
+        def wedged_emit(record_line: str) -> None:
+            release.wait()
+
+        sampler.emit_to_stdout = wedged_emit
+        sampler.SINK_TIMEOUT_SECONDS = 0.3
+        baseline = threading.active_count()
+        try:
+            for attempt in range(5):
+                with self.assertRaises(sampler.RecordUnemittable):
+                    sampler.write_jsonl_line({"probe": "wedged-stdout", "attempt": attempt}, None)
+            self.assertLessEqual(
+                threading.active_count() - baseline,
+                1,
+                "persistently wedged stdout sink must bound abandoned deadline threads",
+            )
+        finally:
+            release.set()
+            self._wait_for_thread_delta_at_most(baseline, 0)
+            sampler.emit_to_stdout = saved_emit
+            sampler.SINK_TIMEOUT_SECONDS = saved_timeout
+
+    def test_differential_wedged_file_sink_bounds_abandoned_threads(self) -> None:
+        sampler = self.sampler
+        saved_write_to_file = sampler.write_to_file
+        saved_emit = sampler.emit_to_stdout
+        saved_timeout = sampler.SINK_TIMEOUT_SECONDS
+        release = threading.Event()
+        emitted: list[str] = []
+
+        def wedged_write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
+            release.wait()
+
+        def working_emit(record_line: str) -> None:
+            emitted.append(record_line)
+
+        sampler.write_to_file = wedged_write_to_file
+        sampler.emit_to_stdout = working_emit
+        sampler.SINK_TIMEOUT_SECONDS = 0.3
+        baseline = threading.active_count()
+        try:
+            for attempt in range(5):
+                warning = sampler.write_jsonl_line(
+                    {"probe": "wedged-file", "attempt": attempt},
+                    "/tmp/hh_breaker_probe.jsonl",
+                )
+                self.assertIsInstance(warning, str)
+                self.assertIn("fell back to stdout", warning)
+            self.assertEqual(len(emitted), 5)
+            self.assertLessEqual(
+                threading.active_count() - baseline,
+                1,
+                "persistently wedged file sink must bound abandoned deadline threads",
+            )
+        finally:
+            release.set()
+            self._wait_for_thread_delta_at_most(baseline, 0)
+            sampler.write_to_file = saved_write_to_file
+            sampler.emit_to_stdout = saved_emit
+            sampler.SINK_TIMEOUT_SECONDS = saved_timeout
+
+    def test_guard_deadline_breaker_recovers_after_stdout_wedge_clears(self) -> None:
+        sampler = self.sampler
+        if not hasattr(sampler, "_DEADLINE_BREAKERS"):
+            self.skipTest("deadline breaker registry exists only after the breaker fix")
+
+        saved_emit = sampler.emit_to_stdout
+        saved_timeout = sampler.SINK_TIMEOUT_SECONDS
+        release = threading.Event()
+        emitted: list[str] = []
+
+        def wedged_emit(record_line: str) -> None:
+            release.wait()
+
+        def working_emit(record_line: str) -> None:
+            emitted.append(record_line)
+
+        sampler.emit_to_stdout = wedged_emit
+        sampler.SINK_TIMEOUT_SECONDS = 0.3
+        baseline = threading.active_count()
+        try:
+            for attempt in range(2):
+                with self.assertRaises(sampler.RecordUnemittable):
+                    sampler.write_jsonl_line({"probe": "recovering-stdout", "attempt": attempt}, None)
+            self.assertLessEqual(threading.active_count() - baseline, 1)
+
+            outstanding = sampler._DEADLINE_BREAKERS.get("sink:stdout")
+            self.assertIsNotNone(outstanding)
+            release.set()
+            deadline = time.monotonic() + 2.0
+            while outstanding.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(outstanding.is_alive(), "stdout breaker worker did not drain")
+
+            sampler.emit_to_stdout = working_emit
+            self.assertIsNone(sampler.write_jsonl_line({"probe": "stdout-recovered"}, None))
+            self.assertEqual(len(emitted), 1)
+            self.assertNotIn("sink:stdout", sampler._DEADLINE_BREAKERS)
+        finally:
+            release.set()
+            self._wait_for_thread_delta_at_most(baseline, 0)
+            sampler.emit_to_stdout = saved_emit
+            sampler.SINK_TIMEOUT_SECONDS = saved_timeout
+
+    def test_guard_run_with_deadline_without_breaker_key_still_times_out(self) -> None:
+        sampler = self.sampler
+        release = threading.Event()
+        baseline = threading.active_count()
+
+        def slow_fn() -> None:
+            release.wait()
+
+        try:
+            with self.assertRaises(TimeoutError):
+                sampler.run_with_deadline(slow_fn, 0.1)
+        finally:
+            release.set()
+            self._wait_for_thread_delta_at_most(baseline, 0)
+
+
 def load_sampler_from(path: Path):
     """Load a sampler module from an ARBITRARY path under a unique module name.
 

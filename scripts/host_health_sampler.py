@@ -63,6 +63,10 @@ DEFAULT_SERVICE = "bolt-v2"
 # overridable at runtime via ``--disk-path``. It is deliberately NOT wired to the
 # TOML config loader so the script stays self-contained and runnable anywhere.
 DISK_PATH_FALLBACK = "/srv/bolt-v2/var/bolt-v3-live/catalog"
+# Keyed deadline calls are production main-loop chokepoints. The registry is
+# mutated only by those caller threads; deadline worker threads never pass a
+# breaker_key, so no lock is required for the single-main-thread runtime path.
+_DEADLINE_BREAKERS: dict[str, threading.Thread] = {}
 # Matches ``catalog_directory = "<value>"`` (single OR double quoted), tolerant of
 # surrounding whitespace. Anchored on ``catalog_directory`` as a whole word so the
 # neighbouring ``required_catalog_prefix`` key cannot match. Deliberately a
@@ -740,7 +744,12 @@ def collect_process(unit: str, main_pid: int | None, exec_main_pid: int | None) 
     return process, "; ".join(errors) if errors else None
 
 
-def run_with_deadline(function: Callable[..., Any], timeout_seconds: float, *args: Any) -> Any:
+def run_with_deadline(
+    function: Callable[..., Any],
+    timeout_seconds: float,
+    *args: Any,
+    breaker_key: str | None = None,
+) -> Any:
     """Run ``function(*args)`` with a hard wall-clock deadline.
 
     The function runs in a ``daemon`` thread which is joined for at most
@@ -751,11 +760,21 @@ def run_with_deadline(function: Callable[..., Any], timeout_seconds: float, *arg
     filesystem or a SIGKILL-immune child) can never block the sampler's exit. The
     abandoned thread dies with the interpreter.
 
-    This is the single backstop that bounds every otherwise-unbounded blocking
-    syscall a collector can issue (subprocess wait, os.stat/os.statvfs/realpath,
-    Path.exists). It deliberately does not attempt to cancel the work — Python has
-    no safe thread-cancel — it only stops *waiting* for it.
+    Unkeyed calls preserve the original abandon-and-forget behavior for
+    once-per-process work. Keyed calls are a deadline circuit-breaker: if the
+    previous timed-out worker for the same key is still alive, fail immediately
+    instead of spawning another abandoned daemon. When that worker completes, the
+    next keyed call discards its stale result and tries the current operation
+    normally. This bounds both per-call latency and abandoned worker count while
+    still recovering automatically once the wedged operation drains.
     """
+    if breaker_key is not None:
+        outstanding = _DEADLINE_BREAKERS.get(breaker_key)
+        if outstanding is not None:
+            if outstanding.is_alive():
+                raise TimeoutError(f"timed out after {timeout_seconds}s")
+            _DEADLINE_BREAKERS.pop(breaker_key, None)
+
     box: dict[str, Any] = {}
 
     def worker() -> None:
@@ -768,7 +787,11 @@ def run_with_deadline(function: Callable[..., Any], timeout_seconds: float, *arg
     thread.start()
     thread.join(timeout_seconds)
     if thread.is_alive():
+        if breaker_key is not None:
+            _DEADLINE_BREAKERS[breaker_key] = thread
         raise TimeoutError(f"timed out after {timeout_seconds}s")
+    if breaker_key is not None:
+        _DEADLINE_BREAKERS.pop(breaker_key, None)
     if "error" in box:
         raise box["error"]
     return box.get("value")
@@ -781,7 +804,12 @@ def run_collector(source: str, function: Callable[..., CollectorResult], *args: 
     # deadline is strictly greater than the in-collector subprocess timeout so the
     # collector's own clean message normally wins; this is the last-resort guard.
     try:
-        value, error = run_with_deadline(function, COLLECTOR_TIMEOUT_SECONDS, *args)
+        value, error = run_with_deadline(
+            function,
+            COLLECTOR_TIMEOUT_SECONDS,
+            *args,
+            breaker_key=f"collector:{source}",
+        )
     except TimeoutError:
         return None, f"{source}: timed out after {COLLECTOR_TIMEOUT_SECONDS}s"
     except Exception as exc:  # noqa: BLE001 - final guard so sample always emits
@@ -1192,9 +1220,10 @@ def write_jsonl_line(
     (``AttributeError``/``ValueError``) is likewise classified as
     ``RecordUnemittable`` rather than escaping. A worker that abandons a stdout
     write stuck on a full pipe may hold the ``BufferedWriter`` lock so subsequent
-    emits also time out (bounded, never hang), matching the accepted file-sink
-    tradeoff. ``KeyboardInterrupt``/``SystemExit`` still propagate because this
-    function catches ``Exception``, not ``BaseException``.
+    emits use the shared stdout breaker and fast-fail until the abandoned write
+    drains. That bounds both latency and abandoned worker count, matching the
+    accepted file-sink tradeoff. ``KeyboardInterrupt``/``SystemExit`` still
+    propagate because this function catches ``Exception``, not ``BaseException``.
 
     Raises ``RecordUnemittable`` when the record reaches NO sink:
     - primary stdout (``out_path is None``) failing with any non-BrokenPipe
@@ -1227,7 +1256,12 @@ def write_jsonl_line(
         # so it propagates and main() exits 0. ANY other stdout failure means
         # stdout itself is unusable and the record is lost.
         try:
-            run_with_deadline(emit_to_stdout, SINK_TIMEOUT_SECONDS, line)
+            run_with_deadline(
+                emit_to_stdout,
+                SINK_TIMEOUT_SECONDS,
+                line,
+                breaker_key="sink:stdout",
+            )
         except BrokenPipeError:
             raise
         except Exception as exc:  # noqa: BLE001 - classify any stdout sink failure
@@ -1242,9 +1276,16 @@ def write_jsonl_line(
         # writer forever. Any wrapper or sink failure falls back to stdout. On a
         # genuine stall the abandoned worker thread may still hold the flock/fd;
         # that is acceptable: one-shot exits immediately, and a continuous run's
-        # next write hits the bounded LOCK_NB acquire, which times out and falls
-        # back to stdout rather than deadlocking.
-        run_with_deadline(write_to_file, SINK_TIMEOUT_SECONDS, line, out_path, lock_timeout)
+        # next file-sink write fast-fails on the shared file breaker until the
+        # abandoned worker drains, then resumes normal writes automatically.
+        run_with_deadline(
+            write_to_file,
+            SINK_TIMEOUT_SECONDS,
+            line,
+            out_path,
+            lock_timeout,
+            breaker_key="sink:file",
+        )
         return None
     except Exception as file_exc:  # noqa: BLE001 - ANY file sink failure falls back
         # FALLBACK stdout: this is a last-resort sink AFTER the file sink already
@@ -1253,7 +1294,12 @@ def write_jsonl_line(
         # the primary path, a broken pipe is NOT a clean termination here: there
         # is no longer any other place the record could have landed.
         try:
-            run_with_deadline(emit_to_stdout, SINK_TIMEOUT_SECONDS, line)
+            run_with_deadline(
+                emit_to_stdout,
+                SINK_TIMEOUT_SECONDS,
+                line,
+                breaker_key="sink:stdout",
+            )
         except Exception as stdout_exc:  # noqa: BLE001 - no sink remains
             raise RecordUnemittable(
                 f"file sink failed ({file_exc}) and stdout fallback failed ({stdout_exc})"
@@ -1357,6 +1403,7 @@ def log_stderr(msg: str) -> None:
             run_with_deadline(
                 lambda: (sys.stderr.write(msg + "\n"), sys.stderr.flush()),
                 SINK_TIMEOUT_SECONDS,
+                breaker_key="sink:stderr",
             )
             return
         data = (msg + "\n").encode("utf-8", "replace")
@@ -1367,7 +1414,13 @@ def log_stderr(msg: str) -> None:
             # stderr, so a hung-FS write would block forever without this. The
             # abandoned writer holds no lock (raw fd), so abandoning is safe.
             try:
-                run_with_deadline(os.write, SINK_TIMEOUT_SECONDS, fd, data)
+                run_with_deadline(
+                    os.write,
+                    SINK_TIMEOUT_SECONDS,
+                    fd,
+                    data,
+                    breaker_key="sink:stderr",
+                )
             except OSError:
                 # EAGAIN/broken pipe (pipe) OR TimeoutError (regular-file stall):
                 # both are OSError subclasses -> drop the line, never block/raise.

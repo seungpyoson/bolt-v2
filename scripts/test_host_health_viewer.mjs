@@ -214,7 +214,7 @@ check("D2 bannerReasons clean record -> no reasons", () => {
   // disk is itself a degraded signal (E3) that the render path already shows as
   // a violet chip and the banner now surfaces. "Clean" means service healthy
   // AND disk present.
-  const latest = { oom_killed: null, disk: { used_pct: 20 }, service: { active_state: "active", n_restarts: 0, result: "success" } };
+  const latest = { schema_version: 2, oom_killed: null, disk: { used_pct: 20 }, service: { active_state: "active", n_restarts: 0, result: "success" } };
   const reasons = bannerReasons(latest, [latest]);
   assertEqual(reasons.length, 0, "a clean record must not raise a banner");
 });
@@ -235,6 +235,22 @@ check("D4 bannerReasons: fresh increase wording", () => {
   ];
   const reasons = bannerReasons(records[records.length - 1], records);
   assertTrue(reasons.some(r => /increased to 2 in this file/.test(r)), "fresh kill flagged distinctly");
+});
+check("Fix B bannerReasons detects top-level cgroup OOM increase with service null", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const records = [
+    { oom_killed: true, service: null, cgroup_oom_kills: 5, schema_version: 2, disk: { used_pct: 1 } },
+    { oom_killed: true, service: null, cgroup_oom_kills: 9, schema_version: 2, disk: { used_pct: 1 } }
+  ];
+  const reasons = bannerReasons(records[records.length - 1], records);
+  assertTrue(
+    reasons.some(r => /cgroup oom_kill increased to 9/.test(r)),
+    "top-level cgroup increase must raise the fresh-increase banner reason"
+  );
+  assertTrue(
+    !reasons.some(r => /cumulative/.test(r)),
+    "fresh top-level increase must not be downgraded to cumulative wording"
+  );
 });
 
 // === PR #886 review round 2 ===================================================
@@ -331,6 +347,20 @@ check("R4 OOM count back-compat: nested-only count still read", () => {
   const reasons = bannerReasons(latest, [latest]);
   assertTrue(reasons.some(r => /oom_kill=4/.test(r)), "nested count read when top-level field absent");
 });
+check("Fix H cgroupOomCount never under-reports conflicting top and nested counts", () => {
+  const cgroupOomCount = requireFn(ctx, "cgroupOomCount");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = {
+    oom_killed: true,
+    cgroup_oom_kills: 0,
+    service: { active_state: "active", sub_state: "running", result: "signal", cgroup_oom_kills: 9 },
+    schema_version: 2,
+    disk: { used_pct: 1 }
+  };
+  const reasons = bannerReasons(latest, [latest]);
+  assertEqual(cgroupOomCount(latest), 9, "conflicting finite counts surface the larger value");
+  assertTrue(!reasons.some(r => /oom_kill=0\b/.test(r)), "banner must not report contradictory zero OOM count");
+});
 
 // === PR #886 review round 3 (fail-closed hardening E1/E2/E4/E3/F/G) ==========
 
@@ -393,7 +423,7 @@ check("E3 bannerReasons flags null disk", () => {
 });
 check("E3 bannerReasons: present disk does not raise the disk reason", () => {
   const bannerReasons = requireFn(ctx, "bannerReasons");
-  const latest = { disk: { used_pct: 20 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const latest = { schema_version: 2, disk: { used_pct: 20 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
   const reasons = bannerReasons(latest, [latest]);
   assertTrue(!reasons.some(r => /disk status unavailable/.test(r)), "a present disk must not raise the reason");
 });
@@ -527,15 +557,41 @@ check("Fix 9 bannerReasons flags unavailable disk metric", () => {
 
 check("Fix 10 bannerReasons flags unexpected schema_version", () => {
   const bannerReasons = requireFn(ctx, "bannerReasons");
-  const schemaOne = { schema_version: 1, disk: { used_pct: 20 }, service: { active_state: "active", sub_state: "running", result: "success" } };
+  const schemaOne = { schema_version: 99, disk: { used_pct: 20 }, service: { active_state: "active", sub_state: "running", result: "success" } };
   const schemaTwo = { schema_version: 2, disk: { used_pct: 20 }, service: { active_state: "active", sub_state: "running", result: "success" } };
   assertTrue(
-    bannerReasons(schemaOne, [schemaOne]).some(r => /unexpected schema_version=1/.test(r)),
-    "schema v1 raises fail-loud banner reason"
+    bannerReasons(schemaOne, [schemaOne]).some(r => /unexpected schema_version=99/.test(r)),
+    "schema v99 raises fail-loud banner reason"
   );
   assertTrue(
     !bannerReasons(schemaTwo, [schemaTwo]).some(r => /unexpected schema_version=2/.test(r)),
     "schema v2 does not raise schema banner reason"
+  );
+});
+check("Fix F bannerReasons surfaces sampler collector errors", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = {
+    schema_version: 2,
+    errors: ["service: NRestarts malformed: 'x'"],
+    disk: { used_pct: 20 },
+    service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 }
+  };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(
+    reasons.some(r => /collector error/.test(r)),
+    "sampler collector errors must raise a prominent banner reason"
+  );
+});
+check("Fix G bannerReasons flags missing schema_version", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = {
+    disk: { used_pct: 20 },
+    service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 }
+  };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(
+    reasons.some(r => /schema_version missing/.test(r)),
+    "missing schema_version must fail closed in the banner"
   );
 });
 

@@ -538,15 +538,15 @@
       // Number.isFinite finite-guard applies identically. Without it a
       // non-numeric n_restarts poisoned `previous`=NaN and silently disabled
       // restart-increase detection for the rest of the scan.
-      return counterIncreased(records, service => service.n_restarts);
+      return counterIncreased(records, record => record && record.service ? record.service.n_restarts : null);
     }
 
     function counterIncreased(records, pick) {
-      // True if a monotonic per-service counter strictly increased across the
+      // True if a monotonic per-record counter strictly increased across the
       // loaded records (same shape used for restarts and cgroup oom_kills).
       let previous = null;
       for (const record of records) {
-        const raw = record && record.service ? pick(record.service) : null;
+        const raw = pick(record);
         if (raw === null || raw === undefined || !Number.isFinite(Number(raw))) continue;
         const current = Number(raw);
         if (previous !== null && current > previous) return true;
@@ -556,7 +556,7 @@
     }
 
     function oomIncreased(records) {
-      return counterIncreased(records, service => service.cgroup_oom_kills);
+      return counterIncreased(records, record => cgroupOomCount(record));
     }
 
     function cgroupOomCount(record) {
@@ -568,11 +568,17 @@
       // Returns a Number, or NaN when no count is available.
       if (!record) return NaN;
       const top = record.cgroup_oom_kills;
-      if (top !== null && top !== undefined) return Number(top);
+      const topPresent = top !== null && top !== undefined;
       const svc = record.service;
-      if (svc && svc.cgroup_oom_kills !== null && svc.cgroup_oom_kills !== undefined) {
-        return Number(svc.cgroup_oom_kills);
+      const nested = svc ? svc.cgroup_oom_kills : undefined;
+      const nestedPresent = nested !== null && nested !== undefined;
+      const topCount = Number(top);
+      const nestedCount = Number(nested);
+      if (topPresent && nestedPresent && Number.isFinite(topCount) && Number.isFinite(nestedCount)) {
+        return Math.max(topCount, nestedCount);
       }
+      if (topPresent) return topCount;
+      if (nestedPresent) return nestedCount;
       return NaN;
     }
 
@@ -601,8 +607,13 @@
       if (!latest) return reasons;
       // Preserve visibility for additive/future records, but fail loud when the
       // sample schema is not the schema-2 shape this viewer expects.
-      if (latest.schema_version !== undefined && latest.schema_version !== 2) {
+      if (latest.schema_version === undefined || latest.schema_version === null) {
+        reasons.push("schema_version missing (viewer expects 2)");
+      } else if (latest.schema_version !== 2) {
         reasons.push(`unexpected schema_version=${latest.schema_version} (viewer expects 2)`);
+      }
+      if (Array.isArray(latest.errors) && latest.errors.length) {
+        reasons.push(`sampler reported ${latest.errors.length} collector error(s)`);
       }
       const service = latest.service || null;
 

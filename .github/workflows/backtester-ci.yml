@@ -132,8 +132,17 @@ jobs:
           fi
           base_sha="${{ github.event.pull_request.base.sha }}"
           echo "comparing ${base_sha}...HEAD"
+          # Dependency surface: the backtester is a separate crate that compiles
+          # against the root bolt-v3 package, so a change to root src/**,
+          # Cargo.toml, or Cargo.lock can break its compile even when no
+          # crates/backtesting-vertical-slice file changed (this is exactly how
+          # #903 reached main — see #915). Do not drop these; removing them
+          # re-opens the gate to root-API drift.
           changed="$(git diff --name-only "${base_sha}...HEAD" -- \
             'crates/backtesting-vertical-slice/**' \
+            'src/**' \
+            Cargo.toml \
+            Cargo.lock \
             justfile \
             scripts/rust_verification.py \
             scripts/command_understanding.py \

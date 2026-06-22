@@ -730,6 +730,23 @@ enum IntendedShaStatus {
     UnknownInstalled,
 }
 
+/// Operator-actionable recommendation derived from installed-vs-intended SHA and
+/// launch-identity liveness. Variant names are the kebab-case JSON values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum StateAdvisory {
+    /// Installed binary == intended AND a launch identity shows it is running with
+    /// the requested profile.
+    NoOp,
+    /// Installed binary == intended but no/divergent launch identity (right binary
+    /// installed, not currently launched on it with the requested profile).
+    LaunchNeeded,
+    /// Installed binary != intended (a newer/different version must be deployed).
+    DeployNeeded,
+    /// Intended or installed SHA unknown/malformed — cannot recommend.
+    Unknown,
+}
+
 /// Deployed-runtime-config row of the advisory.
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "status", rename_all = "kebab-case")]
@@ -739,6 +756,7 @@ enum ConfigStatus {
         config_bundle_checksum: String,
         matches_profile: bool,
         loads_against_binary: bool,
+        deployed_config_path: String,
     },
     Error {
         error: String,
@@ -801,6 +819,7 @@ struct OpsStatusBody {
     installed_binary_sha: Option<String>,
     intended_sha: Option<String>,
     intended_sha_status: IntendedShaStatus,
+    state_advisory: StateAdvisory,
     config: ConfigStatus,
     launch_identity: LaunchIdentityStatus,
     deploy_target: DeployTargetStatus,
@@ -824,6 +843,31 @@ fn intended_sha_status(intended: Option<&str>, installed: Option<&str>) -> Inten
         Some(installed) if installed == intended => IntendedShaStatus::Match,
         Some(_) => IntendedShaStatus::Mismatch,
         None => IntendedShaStatus::UnknownInstalled,
+    }
+}
+
+/// Derive the advisory. Pure: depends only on its arguments, so it is unit-testable.
+fn derive_state_advisory(
+    intended: Option<&str>,
+    installed: Option<&str>,
+    launch_identity: &LaunchIdentityStatus,
+) -> StateAdvisory {
+    let (Some(intended), Some(installed)) = (intended, installed) else {
+        return StateAdvisory::Unknown;
+    };
+    if !is_lowercase_git_sha(intended) {
+        return StateAdvisory::Unknown;
+    }
+    if installed != intended {
+        return StateAdvisory::DeployNeeded;
+    }
+    match launch_identity {
+        LaunchIdentityStatus::Present {
+            matches_installed_binary: Some(true),
+            matches_requested_profile: true,
+            ..
+        } => StateAdvisory::NoOp,
+        _ => StateAdvisory::LaunchNeeded,
     }
 }
 
@@ -913,6 +957,7 @@ fn run_ops_status(
                 Path::new(&verification.loaded.root.persistence.catalog_directory).to_path_buf();
             let current_checksum = verification.loaded.config_bundle_checksum.clone();
             let config = ConfigStatus::Verified {
+                deployed_config_path: verification.deployed_path.display().to_string(),
                 profile_bundle_sha256: verification.profile_bundle_sha256,
                 config_bundle_checksum: current_checksum.clone(),
                 matches_profile: verification.matches_profile,
@@ -934,6 +979,8 @@ fn run_ops_status(
         ),
     };
 
+    let state_advisory = derive_state_advisory(intended_sha, installed_sha, &launch_identity);
+
     let deploy_target = deploy_target_status(config_root, &Imdsv2HostFactsSource::new());
 
     let report = OpsStatusReport {
@@ -942,6 +989,7 @@ fn run_ops_status(
             installed_binary_sha: installed_sha.map(str::to_string),
             intended_sha: intended_sha.map(str::to_string),
             intended_sha_status: intended_sha_status(intended_sha, installed_sha),
+            state_advisory,
             config,
             launch_identity,
             deploy_target,
@@ -2472,5 +2520,127 @@ mod tests {
             status,
             DeployTargetStatus::HostFactsUnavailable { .. }
         ));
+    }
+
+    /// Build a `Present` launch identity with every field explicit so the advisory
+    /// truth table exercises each match flag independently.
+    fn present_launch_identity(
+        matches_installed_binary: Option<bool>,
+        matches_requested_profile: bool,
+    ) -> LaunchIdentityStatus {
+        LaunchIdentityStatus::Present {
+            build_head_sha: Some(well_formed_git_sha('a')),
+            profile: "example".to_string(),
+            config_bundle_checksum: "checksum-abc".to_string(),
+            launched_at_unix_secs: 1,
+            matches_installed_binary,
+            matches_requested_profile,
+            matches_current_config: true,
+        }
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_intended_absent() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(None, Some(sha.as_str()), &LaunchIdentityStatus::Absent),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_installed_absent() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(Some(sha.as_str()), None, &LaunchIdentityStatus::Absent),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_intended_malformed() {
+        assert_eq!(
+            derive_state_advisory(
+                Some("not-a-sha"),
+                Some(well_formed_git_sha('a').as_str()),
+                &LaunchIdentityStatus::Absent
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_deploy_needed_when_installed_differs() {
+        assert_eq!(
+            derive_state_advisory(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str()),
+                &present_launch_identity(Some(true), true)
+            ),
+            StateAdvisory::DeployNeeded
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_no_op_when_installed_matches_and_identity_live() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true)
+            ),
+            StateAdvisory::NoOp
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_launch_needed_when_installed_matches_but_identity_absent() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &LaunchIdentityStatus::Absent
+            ),
+            StateAdvisory::LaunchNeeded
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_launch_needed_when_identity_diverges() {
+        let sha = well_formed_git_sha('a');
+        // Right binary installed, but the launch identity disagrees on the binary,
+        // the profile, or cannot prove the binary — each forces `launch-needed`.
+        for identity in [
+            present_launch_identity(Some(false), true),
+            present_launch_identity(Some(true), false),
+            present_launch_identity(None, true),
+        ] {
+            assert_eq!(
+                derive_state_advisory(Some(sha.as_str()), Some(sha.as_str()), &identity),
+                StateAdvisory::LaunchNeeded
+            );
+        }
+    }
+
+    #[test]
+    fn state_advisory_serializes_to_kebab_case_variants() {
+        assert_eq!(
+            serde_json::to_string(&StateAdvisory::NoOp).expect("serialize no-op"),
+            "\"no-op\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StateAdvisory::LaunchNeeded).expect("serialize launch-needed"),
+            "\"launch-needed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StateAdvisory::DeployNeeded).expect("serialize deploy-needed"),
+            "\"deploy-needed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StateAdvisory::Unknown).expect("serialize unknown"),
+            "\"unknown\""
+        );
     }
 }

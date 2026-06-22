@@ -89,6 +89,10 @@ FORBIDDEN_DEFAULTS = (
         "production derive Default",
     ),
     (
+        re.compile(r"\bimpl\s+Default\s+for\b"),
+        "production impl Default",
+    ),
+    (
         re.compile(r"#\s*\[\s*default\s*\]"),
         "production enum default",
     ),

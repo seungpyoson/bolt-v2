@@ -262,6 +262,10 @@ fn compare_field(
 /// guarantee holds because `observe` runs on the synchronous startup thread.
 pub struct Imdsv2HostFactsSource;
 
+// The bolt-v3 legacy-default fence forbids a `Default` impl on the production
+// surface, so the no-argument `new` is sanctioned with an explicit allow rather
+// than satisfying `clippy::new_without_default` by adding a forbidden `Default`.
+#[allow(clippy::new_without_default)]
 impl Imdsv2HostFactsSource {
     pub fn new() -> Self {
         Self
@@ -285,12 +289,6 @@ impl Imdsv2HostFactsSource {
             ));
         }
         Ok(())
-    }
-}
-
-impl Default for Imdsv2HostFactsSource {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

@@ -135,6 +135,29 @@ fn install_script_provisions_runtime_catalog_on_srv_volume() {
 }
 
 #[test]
+fn install_and_unit_share_the_same_config_subdir_component() {
+    // The unit's `--config-root` is rendered from render_install_unit.py's
+    // `@BOLT_CONFIG_DIR@` = `{install_root}/config`; install.sh provisions and
+    // repairs the same bundle under `${BOLT_INSTALL_ROOT}/config`. Pin the shared
+    // `config` component in both places so renaming the config subdir in one
+    // surface without the other fails CI instead of silently splitting the path.
+    let render_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/render_install_unit.py");
+    let render = fs::read_to_string(&render_path).expect("render script should exist");
+    assert!(
+        render.contains("\"@BOLT_CONFIG_DIR@\": f\"{install_root}/config\""),
+        "unit render must derive --config-root from the install root's `config` subdir"
+    );
+
+    let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
+    let install = fs::read_to_string(&install_path).expect("install script should exist");
+    assert!(
+        install.contains("\"${BOLT_INSTALL_ROOT}/config\""),
+        "install script must provision the same `config` subdir the unit's --config-root targets"
+    );
+}
+
+#[test]
 fn install_script_repairs_whole_config_bundle_for_service_user() {
     // `ops launch` runs as User=bolt and must read the tracked overlay (under
     // config/profiles/) AND every referenced strategy file (under

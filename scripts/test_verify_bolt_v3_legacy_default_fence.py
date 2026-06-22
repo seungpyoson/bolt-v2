@@ -372,6 +372,10 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "let cursor = usize::default();",
                 "let value = maybe_value.unwrap_or_default();",
                 "entry.or_default();",
+                # A hand-written `impl Default` bypasses the derive/`::default(`
+                # patterns, so the fence matches the `impl Default for` form
+                # directly (the StrategyRegistry/Imdsv2HostFactsSource class).
+                "impl Default for RuntimeState {",
             ]
         )
 
@@ -391,6 +395,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "production type default",
                 "production unwrap_or_default",
                 "production or_default",
+                "production impl Default",
             ],
         )
 

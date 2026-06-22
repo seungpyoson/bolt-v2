@@ -674,24 +674,28 @@
       };
     }
 
-    function cgroupMalformed(record) {
-      // A present-but-invalid value at EITHER mirror is malformed -- a VALID
-      // mirror must NOT mask a garbage one. cgroup_oom_kills is dual-location
-      // (top-level canonical + nested back-compat); requiring BOTH invalid let
-      // hostile JSONL with one corrupt mirror render green + banner-silent
-      // (e.g. top="abc", nested=0). Flag if either present location fails
-      // validation, so a single garbage mirror is always surfaced.
+    function cgroupMalformedRaws(record) {
+      // Every present-but-invalid cgroup mirror's raw value, for banner wording.
+      // cgroup_oom_kills is dual-location (top-level canonical + nested
+      // back-compat) and BOTH mirrors can be garbage with DIFFERENT values under
+      // hostile JSONL (e.g. top="abc", nested="xyz"); collect each so a second
+      // corrupt mirror is never hidden behind the first. Order: top-level first,
+      // then nested. Empty == no present mirror failed validation.
       const views = cgroupViews(record);
-      return (views.top.present && !views.top.valid) || (views.nested.present && !views.nested.valid);
+      const raws = [];
+      if (views.top.present && !views.top.valid) raws.push(views.top.raw);
+      if (views.nested.present && !views.nested.valid) raws.push(views.nested.raw);
+      return raws;
     }
 
-    function cgroupMalformedRaw(record) {
-      // The malformed location's raw value, for banner wording. When malformed,
-      // at least one present mirror is invalid; name the top-level one first,
-      // else the nested one (the only remaining invalid mirror).
-      const views = cgroupViews(record);
-      if (views.top.present && !views.top.valid) return views.top.raw;
-      return views.nested.raw;
+    function cgroupMalformed(record) {
+      // A present-but-invalid value at EITHER mirror is malformed -- a VALID
+      // mirror must NOT mask a garbage one. Requiring BOTH invalid let hostile
+      // JSONL with one corrupt mirror render green + banner-silent (e.g.
+      // top="abc", nested=0). Derived from cgroupMalformedRaws so the predicate
+      // and the banner wording share ONE source: malformed iff at least one
+      // mirror raw is present-invalid, so a single garbage mirror is surfaced.
+      return cgroupMalformedRaws(record).length > 0;
     }
 
     // Single registry of single-location numeric health fields whose present-but-
@@ -761,8 +765,10 @@
       if (isMalformedOomKilled(record.oom_killed)) {
         reasons.push(`oom_killed field malformed (expected boolean, got ${typeof record.oom_killed})`);
       }
-      if (cgroupMalformed(record)) {
-        reasons.push(`cgroup oom_kill count malformed (cgroup_oom_kills=${JSON.stringify(cgroupMalformedRaw(record))})`);
+      const cgroupRaws = cgroupMalformedRaws(record);
+      if (cgroupRaws.length > 0) {
+        const named = cgroupRaws.map(raw => JSON.stringify(raw)).join(", ");
+        reasons.push(`cgroup oom_kill count malformed (cgroup_oom_kills=${named})`);
       }
       // Class closure: every single-location numeric health field (process rss,
       // memory available) surfaces a malformed value through this same SSOT, so a
@@ -827,8 +833,12 @@
         // An UNAVAILABLE cgroup count is not zero: coercing a missing count to 0
         // would misrepresent absent corroborating evidence as a real zero kill
         // count. Render "?" so the reader distinguishes "no count available" from
-        // "the count is zero".
-        const cgroupDisplay = Number.isFinite(rawCgroup) ? rawCgroup : "?";
+        // "the count is zero". A malformed mirror set (cgroupMalformed) makes the
+        // count untrustworthy too -- render "?" rather than a concrete number that
+        // would contradict the "cgroup oom_kill count malformed" integrity reason
+        // raised at the record level (self-contradictory signal, viewer contract).
+        const cgroupDisplay =
+          !cgroupMalformed(latest) && Number.isFinite(rawCgroup) ? rawCgroup : "?";
         if (result === "oom-kill") {
           reasons.push("systemd Result=oom-kill (authoritative)");
         } else {
@@ -877,13 +887,19 @@
       }
 
       // cgroup oom_kill: distinguish a fresh in-window kill from a stale latch
-      // of the cumulative counter (D4).
-      const cgroupOomKills = cgroupOomCount(latest);
-      const cumulative = Number.isFinite(cgroupOomKills) ? cgroupOomKills : 0;
-      if (oomIncreased(records)) {
-        reasons.push(`cgroup oom_kill increased to ${cumulative} in this file`);
-      } else if (cumulative > 0) {
-        reasons.push(`cgroup oom_kill=${cumulative} (cumulative)`);
+      // of the cumulative counter (D4). Suppressed entirely when the latest
+      // record's cgroup mirrors are malformed: the count is untrustworthy and a
+      // concrete number here would contradict the "cgroup oom_kill count
+      // malformed" integrity reason already raised above (self-contradictory
+      // signal, viewer contract). The malformed reason alone carries the signal.
+      if (!cgroupMalformed(latest)) {
+        const cgroupOomKills = cgroupOomCount(latest);
+        const cumulative = Number.isFinite(cgroupOomKills) ? cgroupOomKills : 0;
+        if (oomIncreased(records)) {
+          reasons.push(`cgroup oom_kill increased to ${cumulative} in this file`);
+        } else if (cumulative > 0) {
+          reasons.push(`cgroup oom_kill=${cumulative} (cumulative)`);
+        }
       }
 
       if (restartIncreased(records)) reasons.push("auto-restarts increased in this file");

@@ -28,6 +28,48 @@ function extractInlineScript(html) {
   return match[1];
 }
 
+function stripComments(scriptText) {
+  return scriptText.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+// CANONICAL numeric-health field set, DERIVED from the fieldView chokepoint in
+// SOURCE (never a hand list). ONE source of truth shared by FENCE2 (raw-access
+// ban) and the anti-regrowth structural check (malformed-surfacing) so the two
+// guards cannot drift -- adding a field via fieldView forces BOTH.
+//
+// Robust to receiver name (`record`/`r`/...) and quote style ("k"/'k'), closing
+// the round-6 GLM "different receiver / single-quoted key slips the scan" hole.
+//
+// It also REJECTS a fieldView call that hides its field behind a NON-literal key
+// on a literal parent (`fieldView(record, "process", varKey, ...)`): that form
+// is invisible to any name-based source scan and would leave a field silently
+// unsurfaced (round-6 GPT variable-key bypass). The ONLY sanctioned non-literal
+// call is the INTEGRITY_NUMERIC_FIELDS registry loop, whose PARENT is a member
+// access (`f.parentKey`), not a literal -- so it is not matched and needs no
+// exemption. A future field must therefore be read with a literal key (caught by
+// this scan + FENCE2) or registered in INTEGRITY_NUMERIC_FIELDS; a variable-key
+// literal-parent read fails CI here rather than slipping through.
+function fieldViewKeys(html) {
+  const script = stripComments(extractInlineScript(html));
+  // Reject literal-parent calls whose field key is not a string literal.
+  const litParentRe = /fieldView\s*\(\s*\w+\s*,\s*(?:null|["'][^"']*["'])\s*,\s*([^,)]+)/g;
+  let m;
+  while ((m = litParentRe.exec(script)) !== null) {
+    const keyArg = m[1].trim();
+    if (!/^["']/.test(keyArg)) {
+      throw new Error(
+        `fieldView call with a literal parent must use a STRING-LITERAL field key ` +
+          `(a variable key slips the anti-regrowth source scan and can stay unsurfaced); found key arg: ${keyArg}`,
+      );
+    }
+  }
+  // Collect literal field keys (any receiver identifier, single or double quotes).
+  const keys = new Set();
+  const litKeyRe = /fieldView\s*\(\s*\w+\s*,\s*(?:null|["'][^"']*["'])\s*,\s*["']([^"']+)["']/g;
+  while ((m = litKeyRe.exec(script)) !== null) keys.add(m[1]);
+  return keys;
+}
+
 // --- Minimal DOM stub: enough for the script to run render() to completion. ---
 function makeNode() {
   const node = {
@@ -1090,7 +1132,13 @@ check("FENCE2: raw numeric health-field property access only inside the fieldVie
   // Banner WORDING (`used_pct=`) and the string ARGUMENTS to fieldView ("used_pct")
   // are data, not property access, so they are deliberately not matched.
   // Regex covers literal-key raw access; computed keys are governed by the fieldView chokepoint plus review.
-  const FIELDS = ["used_pct", "n_restarts", "rss_bytes", "mem_available_bytes", "cgroup_oom_kills"];
+  // The banned field set is DERIVED from the fieldView chokepoint (fieldViewKeys),
+  // NOT a hand list, so a NEW numeric field read through fieldView is automatically
+  // raw-access-banned here too -- FENCE2 and the structural anti-regrowth check
+  // share one derivation and cannot drift (round-6 GLM "hand list omits the new
+  // field" coupling hole).
+  const FIELDS = [...fieldViewKeys(html)];
+  assertTrue(FIELDS.length > 0, "fieldViewKeys derived no fields -- the source scan drifted from the code");
   const offenders = [];
   for (const field of FIELDS) {
     const dot = script.match(new RegExp("\\.\\s*" + field + "\\b", "g")) || [];
@@ -1272,6 +1320,68 @@ check("CLASS guard: two VALID cgroup mirrors (even if different) are not flagged
   );
 });
 
+check("CLASS: malformed cgroup mirror never co-renders a concrete count (no self-contradictory banner)", () => {
+  // Round-6 (Kimi): when ONE mirror is garbage and the OTHER is a valid count
+  // >0, the record is correctly flagged malformed AND the badge capped -- but the
+  // cumulative-count banner line independently read the valid mirror and ALSO
+  // emitted "cgroup oom_kill=N (cumulative)", so the banner simultaneously said
+  // the count is garbage AND reported a concrete number (self-contradictory
+  // signal, viewer contract). The malformed reason alone must carry the signal.
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const recs = [
+    // top valid (=5), nested garbage
+    { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: 5, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: "abc" } },
+    // top garbage, nested valid (=5)
+    { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: "abc", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: 5 } },
+  ];
+  for (const rec of recs) {
+    const reasons = bannerReasons(rec, [rec]);
+    assertTrue(!/badge grn/.test(serviceBadge(rec)), `malformed cgroup mirror must cap green; got ${serviceBadge(rec)}`);
+    assertTrue(
+      reasons.some(r => /cgroup oom_kill count malformed/.test(r)),
+      `banner must carry the malformed reason; got ${JSON.stringify(reasons)}`,
+    );
+    assertTrue(
+      !reasons.some(r => /\(cumulative\)/.test(r) || /increased to/.test(r)),
+      `a malformed cgroup record must NOT also render a concrete cumulative/increased count; got ${JSON.stringify(reasons)}`,
+    );
+  }
+});
+
+check("CLASS: malformed cgroup + oom_killed renders '?' not a concrete count (no self-contradiction)", () => {
+  // The OOM-detected corroboration line also reads cgroupOomCount; with a valid
+  // mirror present it would print a concrete "cgroup oom_kill=5" alongside the
+  // malformed reason. A malformed mirror set must render "?" there too.
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  // oom_killed true, result NOT oom-kill (so the derived-evidence wording runs),
+  // top mirror garbage, nested mirror a valid 5.
+  const rec = { schema_version: 2, sampled_at: "t", oom_killed: true, disk: { used_pct: 50 }, cgroup_oom_kills: "abc", service: { active_state: "active", sub_state: "running", result: "signal", n_restarts: 0, cgroup_oom_kills: 5 } };
+  const reasons = bannerReasons(rec, [rec]);
+  const oomLine = reasons.find(r => /OOM detected/.test(r));
+  assertTrue(Boolean(oomLine), `expected an OOM-detected line; got ${JSON.stringify(reasons)}`);
+  assertTrue(
+    /cgroup oom_kill=\?/.test(oomLine) && !/cgroup oom_kill=5/.test(oomLine),
+    `OOM line must render '?' for a malformed cgroup count, not a concrete number; got ${JSON.stringify(oomLine)}`,
+  );
+});
+
+check("CLASS: BOTH garbage cgroup mirrors are each named (no second corrupt mirror hidden)", () => {
+  // Round-6 (GLM): when BOTH mirrors are garbage with DIFFERENT values, the
+  // malformed reason named only the top-level one and silently dropped the
+  // nested. Not false-healthy (record is flagged), but an incomplete diagnostic;
+  // every present-invalid mirror must be named.
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: "abc", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: "xyz" } };
+  const reasons = bannerReasons(rec, [rec]);
+  const malformed = reasons.find(r => /cgroup oom_kill count malformed/.test(r));
+  assertTrue(Boolean(malformed), `expected a malformed reason; got ${JSON.stringify(reasons)}`);
+  assertTrue(
+    malformed.includes('"abc"') && malformed.includes('"xyz"'),
+    `both garbage mirrors must be named; got ${JSON.stringify(malformed)}`,
+  );
+});
+
 check("CLASS (behavioral): each KNOWN numeric health field surfaces a present-invalid value", () => {
   // Behavioral check over the numeric fields that exist TODAY. This is a hand
   // list -- it proves the known fields surface, but it cannot catch a NEW field
@@ -1314,19 +1424,18 @@ check("CLASS (behavioral): each KNOWN numeric health field surfaces a present-in
 });
 
 check("CLASS (structural): every fieldView-read field has malformed surfacing (anti-regrowth)", () => {
-  // Mechanical anti-regrowth guard derived from SOURCE, not a hand list: extract
-  // the fieldKey of every literal fieldView(record, <parent>, "<key>", ...) call
-  // in host-health.html and assert each is covered by malformed surfacing. A NEW
-  // numeric field read through the fieldView chokepoint but given NO surfacing
-  // fails THIS test -- closing the "the hand list above silently misses it" hole.
+  // Mechanical anti-regrowth guard derived from SOURCE, not a hand list: every
+  // field read through the fieldView chokepoint must be covered by malformed
+  // surfacing. A NEW numeric field read through fieldView but given NO surfacing
+  // fails THIS test. readKeys comes from the SHARED fieldViewKeys() derivation
+  // (robust to receiver/quote style, and rejecting variable-key literal-parent
+  // calls), the SAME source of truth FENCE2 uses -- so the two guards cannot drift.
   const html = readFileSync(htmlPath, "utf8");
   const scriptText = extractInlineScript(html);
+  const strippedScript = stripComments(scriptText);
 
-  const readKeys = new Set();
-  const callRe = /fieldView\s*\(\s*record\s*,\s*(?:null|"[^"]*")\s*,\s*"([^"]+)"/g;
-  let m;
-  while ((m = callRe.exec(scriptText)) !== null) readKeys.add(m[1]);
-  assertTrue(readKeys.size > 0, "source-scan found no literal fieldView call sites -- regex drifted from the code");
+  const readKeys = fieldViewKeys(html);
+  assertTrue(readKeys.size > 0, "source-scan found no fieldView call sites -- the derivation drifted from the code");
 
   // Surfaced via the INTEGRITY_NUMERIC_FIELDS registry, derived from source.
   const registryKeys = new Set();
@@ -1336,10 +1445,18 @@ check("CLASS (structural): every fieldView-read field has malformed surfacing (a
     let k;
     while ((k = keyRe.exec(regBlock[1])) !== null) registryKeys.add(k[1]);
   }
-  // Fields with DEDICATED (non-registry) surfacing -- each has a bespoke
-  // bannerReasons/serviceBadge path proven by its own tests. Adding a key here
-  // is a deliberate claim that real surfacing exists; do not pad it.
+  // Fields with DEDICATED (non-registry) surfacing. A key here is NOT taken on
+  // trust (round-6 Kimi "lie in `dedicated`" bypass): each is PROVEN below to
+  // have a real "...malformed (<key>=${...})" wording site in source, so the set
+  // cannot be padded to silence a genuinely unsurfaced field.
   const dedicated = new Set(["used_pct", "n_restarts", "cgroup_oom_kills"]);
+  for (const key of dedicated) {
+    const esc = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assertTrue(
+      new RegExp("malformed[^`]*" + esc + "=\\$\\{").test(strippedScript),
+      `dedicated key "${key}" claims bespoke surfacing, but no "malformed (...${key}=\${...})" wording exists in source`,
+    );
+  }
   const surfaced = new Set([...registryKeys, ...dedicated]);
 
   const unsurfaced = [...readKeys].filter(key => !surfaced.has(key));
@@ -1347,9 +1464,11 @@ check("CLASS (structural): every fieldView-read field has malformed surfacing (a
     unsurfaced.length === 0,
     `fieldView-read fields with NO malformed surfacing (add to INTEGRITY_NUMERIC_FIELDS or give a dedicated path): ${JSON.stringify(unsurfaced)}`,
   );
-  // The registry must not carry a key that is never actually read.
+  // Neither surfacing set may carry a key that is never actually read.
   const deadRegistry = [...registryKeys].filter(key => !readKeys.has(key));
   assertTrue(deadRegistry.length === 0, `INTEGRITY_NUMERIC_FIELDS keys never read via fieldView: ${JSON.stringify(deadRegistry)}`);
+  const deadDedicated = [...dedicated].filter(key => !readKeys.has(key));
+  assertTrue(deadDedicated.length === 0, `dedicated keys never read via fieldView: ${JSON.stringify(deadDedicated)}`);
 });
 
 check("CONSENSUS: malformed rss_bytes caps badge green and names the malformed field", () => {

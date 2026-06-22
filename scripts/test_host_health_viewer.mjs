@@ -1240,7 +1240,44 @@ check("CONSENSUS: absent cgroup count stays green-eligible + banner silent", () 
   );
 });
 
-check("CONSENSUS: every present-invalid numeric health field is surfaced in the banner", () => {
+check("CLASS: ONE garbage cgroup mirror is surfaced even when the other mirror is valid", () => {
+  // Hostile JSONL where exactly one of the two cgroup_oom_kills mirrors is
+  // garbage and the other is a valid number must NOT render green + silent: a
+  // valid mirror cannot mask a corrupt one (the round-5 false-healthy GPT found).
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const recs = [
+    // top-level garbage, nested valid
+    { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: "abc", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: 0 } },
+    // top-level valid, nested garbage
+    { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: 0, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: "abc" } },
+  ];
+  for (const rec of recs) {
+    assertTrue(!/badge grn/.test(serviceBadge(rec)), `a garbage cgroup mirror must cap the green badge; got ${serviceBadge(rec)}`);
+    assertTrue(
+      bannerReasons(rec, [rec]).some(r => /cgroup oom_kill count malformed/.test(r) && r.includes('cgroup_oom_kills="abc"')),
+      `banner must name the garbage cgroup mirror; got ${JSON.stringify(bannerReasons(rec, [rec]))}`,
+    );
+  }
+});
+
+check("CLASS guard: two VALID cgroup mirrors (even if different) are not flagged malformed", () => {
+  // The any-invalid rule must not over-flag: two present, valid mirrors are a
+  // real (if disagreeing) count, never a malformed reason.
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: 5, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: 3 } };
+  assertTrue(
+    !bannerReasons(rec, [rec]).some(r => /cgroup oom_kill count malformed/.test(r)),
+    `two valid cgroup mirrors must not be flagged malformed; got ${JSON.stringify(bannerReasons(rec, [rec]))}`,
+  );
+});
+
+check("CLASS (behavioral): each KNOWN numeric health field surfaces a present-invalid value", () => {
+  // Behavioral check over the numeric fields that exist TODAY. This is a hand
+  // list -- it proves the known fields surface, but it cannot catch a NEW field
+  // added later (that is the job of the structural source-scan check below).
+  // Collects ALL silent fields before asserting, so it reports every regression
+  // in one run rather than short-circuiting on the first.
   const bannerReasons = requireFn(ctx, "bannerReasons");
 
   const cleanRecord = () => ({
@@ -1261,15 +1298,58 @@ check("CONSENSUS: every present-invalid numeric health field is surfaced in the 
     { field: "mem_available_bytes", mutate: rec => { rec.memory.mem_available_bytes = "abc"; } }
   ];
 
+  const silent = [];
   for (const c of cases) {
     const rec = cleanRecord();
     c.mutate(rec);
     const reasons = bannerReasons(rec, [rec]);
-    assertTrue(
-      reasons.some(reason => reason.includes(c.field) && /malformed|unavailable|degraded/.test(reason)),
-      `present-invalid ${c.field} must surface in banner reasons; got ${JSON.stringify(reasons)}`,
-    );
+    if (!reasons.some(reason => reason.includes(c.field) && /malformed|unavailable|degraded/.test(reason))) {
+      silent.push(c.field);
+    }
   }
+  assertTrue(
+    silent.length === 0,
+    `known numeric fields that stayed banner-silent on a present-invalid value: ${JSON.stringify(silent)}`,
+  );
+});
+
+check("CLASS (structural): every fieldView-read field has malformed surfacing (anti-regrowth)", () => {
+  // Mechanical anti-regrowth guard derived from SOURCE, not a hand list: extract
+  // the fieldKey of every literal fieldView(record, <parent>, "<key>", ...) call
+  // in host-health.html and assert each is covered by malformed surfacing. A NEW
+  // numeric field read through the fieldView chokepoint but given NO surfacing
+  // fails THIS test -- closing the "the hand list above silently misses it" hole.
+  const html = readFileSync(htmlPath, "utf8");
+  const scriptText = extractInlineScript(html);
+
+  const readKeys = new Set();
+  const callRe = /fieldView\s*\(\s*record\s*,\s*(?:null|"[^"]*")\s*,\s*"([^"]+)"/g;
+  let m;
+  while ((m = callRe.exec(scriptText)) !== null) readKeys.add(m[1]);
+  assertTrue(readKeys.size > 0, "source-scan found no literal fieldView call sites -- regex drifted from the code");
+
+  // Surfaced via the INTEGRITY_NUMERIC_FIELDS registry, derived from source.
+  const registryKeys = new Set();
+  const regBlock = scriptText.match(/INTEGRITY_NUMERIC_FIELDS\s*=\s*\[([\s\S]*?)\]/);
+  if (regBlock) {
+    const keyRe = /fieldKey:\s*"([^"]+)"/g;
+    let k;
+    while ((k = keyRe.exec(regBlock[1])) !== null) registryKeys.add(k[1]);
+  }
+  // Fields with DEDICATED (non-registry) surfacing -- each has a bespoke
+  // bannerReasons/serviceBadge path proven by its own tests. Adding a key here
+  // is a deliberate claim that real surfacing exists; do not pad it.
+  const dedicated = new Set(["used_pct", "n_restarts", "cgroup_oom_kills"]);
+  const surfaced = new Set([...registryKeys, ...dedicated]);
+
+  const unsurfaced = [...readKeys].filter(key => !surfaced.has(key));
+  assertTrue(
+    unsurfaced.length === 0,
+    `fieldView-read fields with NO malformed surfacing (add to INTEGRITY_NUMERIC_FIELDS or give a dedicated path): ${JSON.stringify(unsurfaced)}`,
+  );
+  // The registry must not carry a key that is never actually read.
+  const deadRegistry = [...registryKeys].filter(key => !readKeys.has(key));
+  assertTrue(deadRegistry.length === 0, `INTEGRITY_NUMERIC_FIELDS keys never read via fieldView: ${JSON.stringify(deadRegistry)}`);
 });
 
 check("CONSENSUS: malformed rss_bytes caps badge green and names the malformed field", () => {

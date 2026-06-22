@@ -675,13 +675,23 @@
     }
 
     function cgroupMalformed(record) {
+      // A present-but-invalid value at EITHER mirror is malformed -- a VALID
+      // mirror must NOT mask a garbage one. cgroup_oom_kills is dual-location
+      // (top-level canonical + nested back-compat); requiring BOTH invalid let
+      // hostile JSONL with one corrupt mirror render green + banner-silent
+      // (e.g. top="abc", nested=0). Flag if either present location fails
+      // validation, so a single garbage mirror is always surfaced.
       const views = cgroupViews(record);
-      return (views.top.present || views.nested.present) && !views.top.valid && !views.nested.valid;
+      return (views.top.present && !views.top.valid) || (views.nested.present && !views.nested.valid);
     }
 
     function cgroupMalformedRaw(record) {
+      // The malformed location's raw value, for banner wording. When malformed,
+      // at least one present mirror is invalid; name the top-level one first,
+      // else the nested one (the only remaining invalid mirror).
       const views = cgroupViews(record);
-      return views.top.present ? views.top.raw : views.nested.raw;
+      if (views.top.present && !views.top.valid) return views.top.raw;
+      return views.nested.raw;
     }
 
     // Single registry of single-location numeric health fields whose present-but-

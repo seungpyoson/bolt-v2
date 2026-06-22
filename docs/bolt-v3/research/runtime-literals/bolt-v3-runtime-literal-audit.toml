@@ -831,6 +831,78 @@ reason = "This is the stable gate identifier stamped on each strategy-input snap
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"exit_evaluation"'''
+context = '''pub const BOLT_V3_EXIT_EVALUATION_RECORD_KIND: &str = "exit_evaluation";'''
+classification = "decision_evidence_record_kind"
+reason = "JSONL envelope discriminator for exit-evaluation records; part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"exit_evaluation"'''
+context = '''"exit_evaluation" => {'''
+classification = "decision_evidence_record_kind_match"
+reason = "recovery/chain reader match arm for the exit-evaluation JSONL discriminator; stable audit schema label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.exit_evaluation"'''
+context = '''pub const BOLT_V3_EXIT_EVALUATION_GATE_ID: &str = "bolt_v3.exit_evaluation";'''
+classification = "decision_evidence_gate_id"
+reason = "stable gate identifier stamped on each exit-evaluation evidence record; part of the audit-record contract."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"loss_governor_halt"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";'''
+classification = "decision_evidence_record_kind"
+reason = "JSONL envelope discriminator for loss-governor-halt records; part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"loss_governor_halt"'''
+context = '''"loss_governor_halt" => {'''
+classification = "decision_evidence_record_kind_match"
+reason = "recovery/chain reader match arm for the loss-governor-halt JSONL discriminator; stable audit schema label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.loss_governor_halt"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";'''
+classification = "decision_evidence_gate_id"
+reason = "stable gate identifier stamped on each loss-governor-halt evidence record; part of the audit-record contract."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_reject"'''
+context = '''pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";'''
+classification = "decision_evidence_record_kind"
+reason = "JSONL envelope discriminator for order-reject records; part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_reject"'''
+context = '''"order_reject" => {'''
+classification = "decision_evidence_record_kind_match"
+reason = "recovery/chain reader match arm for the order-reject JSONL discriminator; stable audit schema label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"bolt_v3.order_reject"'''
+context = '''pub const BOLT_V3_ORDER_REJECT_GATE_ID: &str = "bolt_v3.order_reject";'''
+classification = "decision_evidence_gate_id"
+reason = "stable gate identifier stamped on each order-reject evidence record; part of the audit-record contract."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"current"'''
 context = '''pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";'''
 classification = "strategy_evidence_market_selection_outcome"
@@ -18624,3 +18696,515 @@ literal = '''"{}"'''
 context = '''println!("{}", serde_json::to_string(&log)?);'''
 classification = '''ops_launch_target_verify_log_format'''
 reason = '''Stdout format token printing the already-serialized TargetVerify outcome JSON line; not an operator runtime value.'''
+# --- #885 Slice 2: loss-governor stale-halt evidence (RCA #885) ---
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "0"
+context = '''account_state_count: 0,'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Raw-event freshness counter starts at zero for a fresh loss-governor runtime feed state; it records how many raw venue events were observed (RCA #885 evidence) and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "0"
+context = '''portfolio_snapshot_count: 0,'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Raw-event freshness counter starts at zero for a fresh loss-governor runtime feed state; it records how many raw venue events were observed (RCA #885 evidence) and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "0"
+context = '''position_event_count: 0,'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Raw-event freshness counter starts at zero for a fresh loss-governor runtime feed state; it records how many raw venue events were observed (RCA #885 evidence) and is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "1"
+context = '''self.account_state_count = self.account_state_count.saturating_add(1);'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Increments the raw-event freshness counter by one per observed venue event; the step is a structural identity, not a config-owned runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "1"
+context = '''self.portfolio_snapshot_count = self.portfolio_snapshot_count.saturating_add(1);'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Increments the raw-event freshness counter by one per observed venue event; the step is a structural identity, not a config-owned runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_runtime_feed.rs"
+kind = "number"
+literal = "1"
+context = '''self.position_event_count = self.position_event_count.saturating_add(1);'''
+classification = "loss_runtime_feed_freshness_counter_identity"
+reason = "Increments the raw-event freshness counter by one per observed venue event; the step is a structural identity, not a config-owned runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"missing_snapshot"'''
+context = '''BoltV3StaleLossReason::MissingSnapshot => "missing_snapshot",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"source_empty"'''
+context = '''BoltV3StaleLossReason::SourceEmpty => "source_empty",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"future_dated"'''
+context = '''BoltV3StaleLossReason::FutureDated => "future_dated",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"age_exceeded"'''
+context = '''BoltV3StaleLossReason::AgeExceeded => "age_exceeded",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"missing_required_field"'''
+context = '''BoltV3StaleLossReason::MissingRequiredField => "missing_required_field",'''
+classification = "loss_governor_stale_reason_code"
+reason = "Stable evidence reason code mapping a BoltV3StaleLossReason variant to its snake_case label for the RCA #885 stale-halt key; the freshness bound and policy remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''account_state_count: 0,'''
+classification = "submit_admission_loss_freshness_counter_identity"
+reason = "The submit-admission loss-freshness telemetry starts empty for a fresh runtime state; counts are populated from observed raw venue events (RCA #885 evidence), not operator runtime values."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''portfolio_snapshot_count: 0,'''
+classification = "submit_admission_loss_freshness_counter_identity"
+reason = "The submit-admission loss-freshness telemetry starts empty for a fresh runtime state; counts are populated from observed raw venue events (RCA #885 evidence), not operator runtime values."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''position_event_count: 0,'''
+classification = "submit_admission_loss_freshness_counter_identity"
+reason = "The submit-admission loss-freshness telemetry starts empty for a fresh runtime state; counts are populated from observed raw venue events (RCA #885 evidence), not operator runtime values."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"none"'''
+context = '''.unwrap_or("none");'''
+classification = "loss_governor_stale_halt_key_absent_source_sentinel"
+reason = "Sentinel component of the stale loss-governor halt key used when no snapshot source is present; it is an evidence key element (RCA #885), not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = '''episode.count = episode.count.saturating_add(1);'''
+classification = "submit_admission_loss_halt_episode_identity"
+reason = "Increments the stale loss-governor halt episode count by one per repeated halt; structural identity, not a config-owned value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = '''count: 1,'''
+classification = "submit_admission_loss_halt_episode_identity"
+reason = "First stale loss-governor halt in an episode is recorded as count one; the episode counter is observability state (RCA #885), not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = '''(1, 0)'''
+classification = "submit_admission_loss_halt_episode_identity"
+reason = "A new stale loss-governor halt episode initializes its count to one (first halt); observability identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''(1, 0)'''
+classification = "submit_admission_loss_halt_episode_identity"
+reason = "A new stale loss-governor halt episode initializes elapsed-since-first-halt to zero (no prior halt yet); observability identity, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"admitted"'''
+context = '''BoltV3AdmissionOutcome::Admitted => "admitted",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for the admitted submit-admission outcome; used only to keep the hand-written outcome mapping exhaustive for RCA #885 order-reject episodes."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_kill_switch_latched"'''
+context = '''BoltV3AdmissionOutcome::RejectedKillSwitchLatched => "rejected_kill_switch_latched",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a kill-switch-latched submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_submit_lifecycle_disallowed"'''
+context = '''"rejected_submit_lifecycle_disallowed"'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a lifecycle-policy submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_loss_governor_halted"'''
+context = '''BoltV3AdmissionOutcome::RejectedLossGovernorHalted => "rejected_loss_governor_halted",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a loss-governor submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_non_positive_notional"'''
+context = '''BoltV3AdmissionOutcome::RejectedNonPositiveNotional => "rejected_non_positive_notional",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a non-positive-notional submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_notional_cap_exceeded"'''
+context = '''BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => "rejected_notional_cap_exceeded",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a notional-cap submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_invalid_risk_reducing_exit_proof"'''
+context = '''"rejected_invalid_risk_reducing_exit_proof"'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for an invalid risk-reducing-exit proof rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_count_cap_exhausted"'''
+context = '''BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a count-cap submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_kill_switch_forced_reduction_proof_invalid"'''
+context = '''"rejected_kill_switch_forced_reduction_proof_invalid"'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for an invalid forced-reduction proof rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_kill_switch_forced_reduction_cap_exceeded"'''
+context = '''"rejected_kill_switch_forced_reduction_cap_exceeded"'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a forced-reduction cap rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"rejected_position_sizing"'''
+context = '''BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",'''
+classification = "submit_admission_order_reject_outcome_key"
+reason = "Stable evidence key label for a position-sizing submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"buy"'''
+context = '''OrderSide::Buy => "buy",'''
+classification = "submit_admission_order_reject_side_key"
+reason = "Stable evidence side label for buy-side submit-admission order-reject records; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"sell"'''
+context = '''OrderSide::Sell => "sell",'''
+classification = "submit_admission_order_reject_side_key"
+reason = "Stable evidence side label for sell-side submit-admission order-reject records; it classifies durable RCA #885 evidence and does not configure admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"no_order_side"'''
+context = '''OrderSide::NoOrderSide => "no_order_side",'''
+classification = "submit_admission_order_reject_side_absent_sentinel"
+reason = "Stable evidence sentinel for an unspecified NT order side in submit-admission order-reject records; it preserves observability without changing admission behavior."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"{}/{}/{}"'''
+context = '''"{}/{}/{}",'''
+classification = "submit_admission_order_reject_episode_key_template"
+reason = "Stable episode-key template joining instrument, side, and admission outcome while intentionally excluding client_order_id so RCA #885 client-order-id churn remains correlated."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = '''count: 0,'''
+classification = "submit_admission_order_reject_episode_counter_identity"
+reason = "A new submit-admission order-reject episode starts at count zero before the first observed rejection increments it to one; this is observability state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"submit_admission"'''
+context = '''const REJECT_SOURCE_SUBMIT_ADMISSION_KEY: &str = "submit_admission";'''
+classification = "order_reject_observer_source_key"
+reason = "Stable reject-source key for durable RCA #885 episode grouping; it labels evidence records and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"venue"'''
+context = '''const REJECT_SOURCE_VENUE_KEY: &str = "venue";'''
+classification = "order_reject_observer_source_key"
+reason = "Stable venue reject-source key for durable RCA #885 episode grouping; it labels evidence records and does not configure venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"nt_execution"'''
+context = '''const REJECT_SOURCE_NT_EXECUTION_KEY: &str = "nt_execution";'''
+classification = "order_reject_observer_source_key"
+reason = "Stable NT-execution reject-source key for durable RCA #885 episode grouping; it labels evidence records and does not configure NT behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"internal"'''
+context = '''const REJECT_SOURCE_INTERNAL_KEY: &str = "internal";'''
+classification = "order_reject_observer_source_key"
+reason = "Stable internal reject-source key for durable RCA #885 episode grouping; it labels evidence records and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"admission_rejected"'''
+context = '''const REJECT_REASON_ADMISSION_REJECTED_KEY: &str = "admission_rejected";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable reject-reason key mirroring the evidence enum for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"precision_rejected"'''
+context = '''const REJECT_REASON_PRECISION_REJECTED_KEY: &str = "precision_rejected";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable precision reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"min_size_rejected"'''
+context = '''const REJECT_REASON_MIN_SIZE_REJECTED_KEY: &str = "min_size_rejected";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable minimum-size reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"min_notional_rejected"'''
+context = '''const REJECT_REASON_MIN_NOTIONAL_REJECTED_KEY: &str = "min_notional_rejected";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable minimum-notional reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"insufficient_balance"'''
+context = '''const REJECT_REASON_INSUFFICIENT_BALANCE_KEY: &str = "insufficient_balance";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable insufficient-balance reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"duplicate_client_order_id"'''
+context = '''const REJECT_REASON_DUPLICATE_CLIENT_ORDER_ID_KEY: &str = "duplicate_client_order_id";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable duplicate-client-order-id reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"other"'''
+context = '''const REJECT_REASON_OTHER_KEY: &str = "other";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable fallback reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"precision"'''
+context = '''const REJECT_REASON_PRECISION_NEEDLE: &str = "precision";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"min"'''
+context = '''const REJECT_REASON_MIN_NEEDLE: &str = "min";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"notional"'''
+context = '''const REJECT_REASON_NOTIONAL_NEEDLE: &str = "notional";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"size"'''
+context = '''const REJECT_REASON_SIZE_NEEDLE: &str = "size";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"too small"'''
+context = '''const REJECT_REASON_TOO_SMALL_NEEDLE: &str = "too small";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"insufficient"'''
+context = '''const REJECT_REASON_INSUFFICIENT_NEEDLE: &str = "insufficient";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"balance"'''
+context = '''const REJECT_REASON_BALANCE_NEEDLE: &str = "balance";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"duplicate"'''
+context = '''const REJECT_REASON_DUPLICATE_NEEDLE: &str = "duplicate";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "0"
+context = '''const REJECT_OBSERVER_INITIAL_EPISODE_COUNT: u32 = 0;'''
+classification = "order_reject_observer_episode_counter_identity"
+reason = "A new venue/NT order-reject observer episode starts at count zero before the first observed rejection increments it to one; this is observability state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "1"
+context = '''const REJECT_OBSERVER_EPISODE_INCREMENT: u32 = 1;'''
+classification = "order_reject_observer_episode_counter_increment"
+reason = "Each observed venue/NT order rejection increments the durable RCA #885 episode counter by one; this is sampling state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"{}/{}/{}"'''
+context = '''"{}/{}/{}",'''
+classification = "order_reject_observer_episode_key_template"
+reason = "Stable episode-key template joining instrument, reject source, and reject reason while intentionally excluding client_order_id so RCA #885 client-order-id churn remains correlated."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "number"
+literal = "4096"
+context = '''pub(crate) const BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES: usize = 4096;'''
+classification = "reject_evidence_episode_map_bound"
+reason = "Single-source upper bound on retained reject-episode maps (submit-admission reject episodes and the venue/NT order-reject observer feed) so the durable RCA #885 observability maps cannot grow unbounded under high-cardinality instrument ids; oldest-first eviction discards only a sampling counter and never gates submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"[redacted-addr]"'''
+context = '''const REJECT_REASON_ADDR_PLACEHOLDER: &str = "[redacted-addr]";'''
+classification = "order_reject_observer_reason_redaction_placeholder"
+reason = "Fixed placeholder substituted for wallet/proxy address runs in the verbatim venue reject text before it is recorded for RCA #885; it scrubs identity from evidence and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"[redacted-num]"'''
+context = '''const REJECT_REASON_NUM_PLACEHOLDER: &str = "[redacted-num]";'''
+classification = "order_reject_observer_reason_redaction_placeholder"
+reason = "Fixed placeholder substituted for long digit runs in the verbatim venue reject text before it is recorded for RCA #885; it scrubs potential account/order identity from evidence and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "40"
+context = '''const REJECT_REASON_ADDR_HEX_MIN_LEN: usize = 40;'''
+classification = "order_reject_observer_reason_redaction_threshold"
+reason = "Minimum bare-hex run length treated as an address during RCA #885 reject-text redaction; it tunes evidence scrubbing only and does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "12"
+context = '''const REJECT_REASON_NUM_MIN_LEN: usize = 12;'''
+classification = "order_reject_observer_reason_redaction_threshold"
+reason = "Minimum digit-run length treated as a redactable number during RCA #885 reject-text redaction; it tunes evidence scrubbing only and does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "256"
+context = '''const REJECT_REASON_MAX_LEN: usize = 256;'''
+classification = "order_reject_observer_reason_length_cap"
+reason = "Maximum retained character length of the redacted RCA #885 reject reason so a pathological venue message cannot bloat an evidence record; it bounds observability storage and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"..."'''
+context = '''const REJECT_REASON_TRUNCATION_MARKER: &str = "...";'''
+classification = "order_reject_observer_reason_truncation_marker"
+reason = "Marker appended when the redacted RCA #885 reject reason is truncated at the length cap; it labels truncated evidence text and does not configure order behavior."

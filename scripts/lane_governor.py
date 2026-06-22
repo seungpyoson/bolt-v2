@@ -17,6 +17,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -36,6 +37,8 @@ _LOCAL_GATE_LANE_PREFIX = "local-gate:"
 # Handles held for the lifetime of the process; flock releases on exit/kill.
 _HELD_HANDLES: list[object] = []
 _LOCK_BUSY_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
+_SAFE_LANE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+_LOCK_LABEL_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class LaneLockTimeout(SystemExit):
@@ -140,6 +143,96 @@ def _read_holder(lock_path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _cheap_lane_max_concurrent(lane_policy: dict) -> int | None:
+    value = lane_policy.get("cheap_lane_max_concurrent", 0)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return None
+    return value
+
+
+def _cheap_lane_config(lane_policy: dict, label: str) -> int | None:
+    labels = lane_policy.get("cheap_lane_labels")
+    if not isinstance(labels, list):
+        return None
+    for item in labels:
+        if not isinstance(item, str) or not _SAFE_LANE_LABEL_RE.match(item):
+            return None
+    if label not in labels:
+        return None
+    return _cheap_lane_max_concurrent(lane_policy)
+
+
+def _lock_safe_label(label: str) -> str:
+    sanitized = _LOCK_LABEL_UNSAFE_RE.sub("_", label).strip("._")
+    return sanitized or "unknown-lane"
+
+
+def _record_holder(handle, label: str) -> None:
+    handle.seek(0)
+    handle.truncate(0)
+    json.dump({"pid": os.getpid(), "lane": label, "started_at": time.time()}, handle)
+    handle.write("\n")
+    handle.flush()
+    _HELD_HANDLES.append(handle)
+
+
+def _acquire_unbounded_cheap_lane(directory: Path, namespace: str, label: str):
+    lock_path = directory / f"{namespace}.cheap.{_lock_safe_label(label)}.lock"
+    handle = open(lock_path, "a+", encoding="utf-8")
+    _record_holder(handle, label)
+    return handle
+
+
+def _acquire_bounded_cheap_lane(
+    directory: Path,
+    namespace: str,
+    label: str,
+    max_concurrent: int,
+    timeout: float,
+    heartbeat: float,
+    poll: float,
+):
+    safe_label = _lock_safe_label(label)
+    lock_paths = [
+        directory / f"{namespace}.cheap.{safe_label}.{slot}.lock" for slot in range(max_concurrent)
+    ]
+    started = time.monotonic()
+    last_heartbeat = started
+    while True:
+        for lock_path in lock_paths:
+            handle = open(lock_path, "a+", encoding="utf-8")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                handle.close()
+                if exc.errno in _LOCK_BUSY_ERRNOS:
+                    continue
+                raise OSError(
+                    exc.errno,
+                    f"lane-governor: failed to lock {lock_path}: {exc.strerror or exc}",
+                    exc.filename,
+                ) from exc
+            _record_holder(handle, label)
+            return handle
+        now = time.monotonic()
+        waited = now - started
+        if waited >= timeout:
+            print(
+                f"lane-governor: FAILED to acquire cheap lane {label!r} after {waited:.0f}s; "
+                f"{max_concurrent} local verification lane(s) with that label are already running.",
+                file=sys.stderr,
+            )
+            raise LaneLockTimeout(1)
+        if now - last_heartbeat >= heartbeat:
+            print(
+                f"lane-governor: waiting for cheap lane {label!r} "
+                f"({waited:.0f}s elapsed)",
+                file=sys.stderr,
+            )
+            last_heartbeat = now
+        time.sleep(poll)
+
+
 def release(handle) -> None:
     """Release a held lane lock handle and unregister the lifetime reference."""
     if handle is None:
@@ -186,6 +279,19 @@ def acquire(
     heartbeat = heartbeat_seconds if heartbeat_seconds is not None else lane_policy["heartbeat_seconds"]
     poll = poll_interval_seconds if poll_interval_seconds is not None else lane_policy["poll_interval_seconds"]
     directory.mkdir(parents=True, exist_ok=True)
+    cheap_lane_max_concurrent = _cheap_lane_config(lane_policy, label)
+    if cheap_lane_max_concurrent is not None:
+        if cheap_lane_max_concurrent == 0:
+            return _acquire_unbounded_cheap_lane(directory, policy["target_namespace"], label)
+        return _acquire_bounded_cheap_lane(
+            directory,
+            policy["target_namespace"],
+            label,
+            cheap_lane_max_concurrent,
+            timeout,
+            heartbeat,
+            poll,
+        )
     lock_path = directory / f"{policy['target_namespace']}.lane.lock"
     handle = open(lock_path, "a+", encoding="utf-8")
     started = time.monotonic()

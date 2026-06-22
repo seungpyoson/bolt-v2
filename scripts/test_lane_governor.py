@@ -38,6 +38,14 @@ def _valid_lane_policy() -> dict:
         "acquire_timeout_seconds": 900,
         "heartbeat_seconds": 15,
         "poll_interval_seconds": 1,
+        "cheap_lane_labels": [
+            "local-gate:fmt-check",
+            "local-gate:source-fence-static",
+            "local-gate:ci-lint-workflow",
+            "test_lane_governor.py",
+            "verify_lane_governance.py",
+        ],
+        "cheap_lane_max_concurrent": 0,
     }
 
 
@@ -98,6 +106,26 @@ def test_non_positive_intervals_rejected() -> None:
         policy = _valid_lane_policy()
         policy[key] = 0
         _expect_policy_error({"local_lane_policy": policy}, key)
+
+
+def test_cheap_lane_labels_must_be_a_string_list() -> None:
+    for bad in ("local-gate:fmt-check", [True], [""], ["../escape"]):
+        policy = _valid_lane_policy()
+        policy["cheap_lane_labels"] = bad
+        _expect_policy_error({"local_lane_policy": policy}, "cheap_lane_labels")
+
+
+def test_cheap_lane_max_concurrent_must_be_a_non_negative_integer() -> None:
+    for bad in (True, -1, "2"):
+        policy = _valid_lane_policy()
+        policy["cheap_lane_max_concurrent"] = bad
+        _expect_policy_error({"local_lane_policy": policy}, "cheap_lane_max_concurrent")
+
+
+def test_unknown_lane_policy_keys_rejected() -> None:
+    policy = _valid_lane_policy()
+    policy["cheap_lane_label_prefixes"] = ["verify_"]
+    _expect_policy_error({"local_lane_policy": policy}, "cheap_lane_label_prefixes")
 
 
 def test_repo_policy_file_declares_lane_policy() -> None:
@@ -167,6 +195,64 @@ handle = lane_governor.acquire(
 Path(sentinel).write_text(str(time.time()), encoding="utf-8")
 time.sleep(hold)
 print("released", time.time())
+"""
+
+LABEL_HOLD_RUNNER = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+label, lock_dir, sentinel, hold = sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5])
+handle = lane_governor.acquire(
+    label, lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=30, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+Path(sentinel).write_text(str(time.time()), encoding="utf-8")
+time.sleep(hold)
+print("released", time.time())
+"""
+
+LABEL_ONCE_RUNNER = """
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+label, lock_dir, timeout = sys.argv[2], sys.argv[3], float(sys.argv[4])
+t0 = time.monotonic()
+handle = lane_governor.acquire(
+    label, lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=timeout, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("acquired", handle is not None, time.monotonic() - t0)
+"""
+
+LOCAL_GATE_RUNNER = """
+import sys
+sys.path.insert(0, sys.argv[1])
+import local_verification_gate
+gate, lock_dir = sys.argv[2], sys.argv[3]
+rc = local_verification_gate.run_gate(
+    gate,
+    [sys.executable, "-c", "print('gate-ran')"],
+    lock_dir=lock_dir,
+    honor_ci_env=False,
+)
+print("gate-rc", rc)
+raise SystemExit(rc)
+"""
+
+NAMESPACE_ONCE_RUNNER = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import lane_governor
+label, repo_root, lock_dir, timeout = sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5])
+lane_governor.REPO_ROOT = Path(repo_root)
+t0 = time.monotonic()
+handle = lane_governor.acquire(
+    label, lock_dir=lock_dir, honor_ci_env=False,
+    acquire_timeout_seconds=timeout, heartbeat_seconds=1, poll_interval_seconds=0.1,
+)
+print("acquired", handle is not None, time.monotonic() - t0)
 """
 
 FORGED_GATE_ENV_RUNNER = """
@@ -361,6 +447,76 @@ def test_second_acquire_queues_until_release() -> None:
         assert waiter.returncode == 0, err
         assert "acquired" in out
         assert waited >= 2.0, f"waiter should queue behind holder, waited only {waited:.2f}s"
+
+
+def test_distinct_cheap_lanes_acquire_concurrently() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(
+            LABEL_HOLD_RUNNER,
+            "local-gate:source-fence-static",
+            tmp,
+            str(sentinel),
+            "4",
+        )
+        _wait_for(sentinel)
+        start = time.monotonic()
+        waiter = _spawn(LABEL_ONCE_RUNNER, "local-gate:fmt-check", tmp, "1")
+        out, err = waiter.communicate(timeout=10)
+        elapsed = time.monotonic() - start
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 0, f"distinct cheap lanes must not contend: {out}\n{err}"
+        assert "acquired True" in out
+        assert elapsed < 2.0, f"cheap waiter should not queue behind another cheap lane: {elapsed:.2f}s"
+
+
+def test_front_door_cheap_gate_runs_while_cheap_lane_holds() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(
+            LABEL_HOLD_RUNNER,
+            "local-gate:source-fence-static",
+            tmp,
+            str(sentinel),
+            "4",
+        )
+        _wait_for(sentinel)
+        gate = _spawn(LOCAL_GATE_RUNNER, "fmt-check", tmp)
+        out, err = gate.communicate(timeout=10)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert gate.returncode == 0, f"front-door cheap gate must run under cheap contention: {out}\n{err}"
+        assert "gate-ran" in out
+        assert "gate-rc 0" in out
+
+
+def test_unlisted_label_uses_heavy_single_flight() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(LABEL_HOLD_RUNNER, "unlisted-heavy-holder", tmp, str(sentinel), "10")
+        _wait_for(sentinel)
+        waiter = _spawn(LABEL_ONCE_RUNNER, "unlisted-heavy-waiter", tmp, "1")
+        out, err = waiter.communicate(timeout=10)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 1, f"unlisted labels must remain heavy single-flight: {out}"
+        assert "FAILED to acquire" in err
+        assert "unlisted-heavy-holder" in err
+
+
+def test_bvs_namespace_lane_is_independent_of_bolt_v2_namespace() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(LABEL_HOLD_RUNNER, "namespace-heavy", tmp, str(sentinel), "4")
+        _wait_for(sentinel)
+        subcrate_root = REPO_ROOT / "crates/backtesting-vertical-slice"
+        waiter = _spawn(NAMESPACE_ONCE_RUNNER, "namespace-heavy", str(subcrate_root), tmp, "1")
+        out, err = waiter.communicate(timeout=10)
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 0, f"BVS namespace must not contend with bolt-v2 namespace: {out}\n{err}"
+        assert "acquired True" in out
 
 
 def test_holder_metadata_written() -> None:
@@ -587,10 +743,17 @@ def main() -> int:
         test_heartbeat_must_be_below_timeout,
         test_poll_interval_must_not_exceed_heartbeat,
         test_non_positive_intervals_rejected,
+        test_cheap_lane_labels_must_be_a_string_list,
+        test_cheap_lane_max_concurrent_must_be_a_non_negative_integer,
+        test_unknown_lane_policy_keys_rejected,
         test_repo_policy_file_declares_lane_policy,
         test_subcrate_lane_policy_matches_repo_policy,
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,
+        test_distinct_cheap_lanes_acquire_concurrently,
+        test_front_door_cheap_gate_runs_while_cheap_lane_holds,
+        test_unlisted_label_uses_heavy_single_flight,
+        test_bvs_namespace_lane_is_independent_of_bolt_v2_namespace,
         test_holder_metadata_written,
         test_timeout_fails_loud_with_holder_info,
         test_fail_fast_refuses_busy_lane_without_queueing,

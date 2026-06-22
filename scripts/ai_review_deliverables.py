@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import textwrap
 import tomllib
 import urllib.error
@@ -52,6 +54,8 @@ class FallbackConfig:
     provider: str = "GLM"
     deliverable_markers: tuple[str, ...] = PR_AGENT_MARKERS
     expected_bot_login: str = "github-actions[bot]"
+    comment_marker: str = ""
+    review_intro: str = ""
 
 
 @dataclass(frozen=True)
@@ -212,6 +216,67 @@ class OpenAIChatClient:
         if not isinstance(content, str) or not content.strip():
             raise RuntimeError(f"{self.provider} API response content was empty")
         return content.strip()
+
+
+class KimiCliClient:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        api_base: str,
+        model: str,
+        provider: str,
+        timeout_seconds: int = 180,
+        binary: str = "kimi",
+    ) -> None:
+        self.api_key = api_key
+        self.api_base = api_base.rstrip("/")
+        self.model = model
+        self.provider = provider
+        self.timeout_seconds = timeout_seconds
+        self.binary = binary
+        self.kimi_home = os.environ.get("KIMI_CODE_HOME") or tempfile.mkdtemp(prefix="kimi-code-")
+
+    def review_chunk(self, *, system_prompt: str, user_prompt: str) -> str:
+        kimi_home = Path(self.kimi_home)
+        kimi_home.mkdir(parents=True, exist_ok=True)
+        config_path = kimi_home / "config.toml"
+        if not config_path.exists():
+            config_path.write_text("telemetry = false\n", encoding="utf-8")
+
+        env = os.environ.copy()
+        env.update(
+            {
+                "KIMI_CODE_HOME": str(kimi_home),
+                "KIMI_DISABLE_TELEMETRY": "1",
+                "KIMI_MODEL_NAME": self.model,
+                "KIMI_MODEL_API_KEY": self.api_key,
+                "KIMI_MODEL_BASE_URL": self.api_base,
+                "KIMI_MODEL_PROVIDER_TYPE": "kimi",
+                "KIMI_MODEL_MAX_CONTEXT_SIZE": "262144",
+                "KIMI_MODEL_DEFAULT_THINKING": "true",
+            }
+        )
+        prompt = f"{system_prompt}\n\n{user_prompt}"
+        try:
+            completed = subprocess.run(
+                [self.binary, "-p", prompt],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"{self.provider} CLI review timed out after {self.timeout_seconds} seconds") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"{self.provider} CLI binary {self.binary!r} was not found") from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
+            raise RuntimeError(f"{self.provider} CLI review failed: {detail}")
+        content = completed.stdout.strip()
+        if not content:
+            raise RuntimeError(f"{self.provider} CLI review produced empty output")
+        return content
 
 
 def parse_iso_timestamp(value: str) -> datetime:
@@ -503,19 +568,27 @@ def render_review_comment_body(
     title = f"## {config.provider} PR Review"
     if part_index is not None and part_total is not None:
         title += f" (part {part_index}/{part_total})"
-    parts = [
+    intro = config.review_intro or (
+        f"The primary {config.provider} review action completed without a visible deliverable after this run started, "
+        f"so the fallback reviewer split the PR diff and reviewed each chunk with {config.provider}."
+    )
+    parts = []
+    if config.comment_marker:
+        parts.extend([config.comment_marker, ""])
+    parts.extend(
+        [
         title,
         "",
-        f"The primary {config.provider} review action completed without a visible deliverable after this run started, "
-        f"so the fallback reviewer split the PR diff and reviewed each chunk with {config.provider}.",
+        intro,
         "",
         f"- Review chunks: {total_chunks}",
         f"- Per-chunk character budget: {config.max_chunk_chars}",
         f"- Action run: {config.run_url}",
-        "",
-    ]
+        ]
+    )
     if part_index is not None and part_total is not None:
-        parts.insert(6, f"- Comment part: {part_index}/{part_total}")
+        parts.append(f"- Comment part: {part_index}/{part_total}")
+    parts.append("")
     parts.extend(sections)
     return "\n".join(parts).strip() + "\n"
 
@@ -618,6 +691,29 @@ def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseE
     ).strip()
 
 
+def post_split_review(*, github: Any, reviewer: Any, config: FallbackConfig) -> str:
+    review_files = [ReviewFile.from_api_payload(payload) for payload in github.list_pr_files()]
+    chunks = pack_review_chunks(review_files, max_chars=config.max_chunk_chars)
+    if not chunks:
+        marker = f"{config.comment_marker}\n\n" if config.comment_marker else ""
+        github.post_issue_comment(
+            f"{marker}## {config.provider} PR Review\n\nNo reviewable file diff was available from the GitHub API.\n"
+        )
+        return "no-reviewable-diff"
+
+    system_prompt = build_system_prompt(config.instructions)
+    responses = [
+        reviewer.review_chunk(
+            system_prompt=system_prompt,
+            user_prompt=build_user_prompt(chunk, index, len(chunks)),
+        )
+        for index, chunk in enumerate(chunks, start=1)
+    ]
+    for comment in render_review_comments(config=config, chunks=chunks, responses=responses):
+        github.post_issue_comment(comment)
+    return "review-posted"
+
+
 def render_notice(provider: str, pr_number: int, run_url: str, message: str) -> str:
     sanitized_message = sanitize_detail(message.strip())
     return textwrap.dedent(
@@ -645,25 +741,8 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
         ):
             return "existing-review-deliverable"
 
-        review_files = [ReviewFile.from_api_payload(payload) for payload in github.list_pr_files()]
-        chunks = pack_review_chunks(review_files, max_chars=config.max_chunk_chars)
-        if not chunks:
-            github.post_issue_comment(
-                f"## {config.provider} PR Review\n\nNo reviewable file diff was available from the GitHub API.\n"
-            )
-            return "no-reviewable-diff"
-
-        system_prompt = build_system_prompt(config.instructions)
-        responses = [
-            reviewer.review_chunk(
-                system_prompt=system_prompt,
-                user_prompt=build_user_prompt(chunk, index, len(chunks)),
-            )
-            for index, chunk in enumerate(chunks, start=1)
-        ]
-        for comment in render_review_comments(config=config, chunks=chunks, responses=responses):
-            github.post_issue_comment(comment)
-        return "fallback-posted"
+        result = post_split_review(github=github, reviewer=reviewer, config=config)
+        return "fallback-posted" if result == "review-posted" else result
     except Exception as exc:
         try:
             github.post_issue_comment(render_failure_notice(provider=config.provider, config=config, error=exc))
@@ -706,6 +785,10 @@ def build_github_client(repo: str, pr_number: int) -> GitHubClient:
     )
 
 
+def run_url_for(repo: str) -> str:
+    return os.environ.get("GITHUB_SERVER_URL", "https://github.com") + f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+
+
 def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
     repo = env_required("GITHUB_REPOSITORY")
     pr_number = int(env_required("PR_NUMBER"))
@@ -719,8 +802,7 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
         instructions=pr_agent_instructions(Path(args.instructions_file)),
         max_chunk_chars=int_env("GLM_REVIEW_MAX_CHUNK_CHARS", DEFAULT_MAX_CHUNK_CHARS),
         max_comment_chars=int_env("AI_REVIEW_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS),
-        run_url=os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-        + f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
+        run_url=run_url_for(repo),
         provider="GLM",
         deliverable_markers=PR_AGENT_MARKERS,
     )
@@ -748,24 +830,61 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
     return 0
 
 
-def run_kimi_fallback_from_env(args: argparse.Namespace) -> int:
-    repo = env_required("GITHUB_REPOSITORY")
-    pr_number = int(env_required("PR_NUMBER"))
-    github = build_github_client(repo, pr_number)
-
-    api_key = os.environ.get("KIMI_API_KEY", "")
-    config = FallbackConfig(
+def build_kimi_config_from_env(args: argparse.Namespace, *, repo: str, pr_number: int, review_intro: str = "") -> FallbackConfig:
+    marker = os.environ.get("KIMI_DELIVERABLE_MARKER", "<!-- ai-pr-reviewer-kimi -->")
+    return FallbackConfig(
         repo=repo,
         pr_number=pr_number,
         started_at=args.started_at,
         instructions=Path(args.instructions_file).read_text(encoding="utf-8"),
         max_chunk_chars=int_env("KIMI_REVIEW_MAX_CHUNK_CHARS", DEFAULT_MAX_CHUNK_CHARS),
         max_comment_chars=int_env("AI_REVIEW_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS),
-        run_url=os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-        + f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
+        run_url=run_url_for(repo),
         provider="Kimi",
-        deliverable_markers=(os.environ.get("KIMI_DELIVERABLE_MARKER", "<!-- ai-pr-reviewer-kimi -->"),),
+        deliverable_markers=(marker,),
+        comment_marker=marker,
+        review_intro=review_intro,
     )
+
+
+def build_kimi_reviewer_from_env(api_key: str) -> KimiCliClient:
+    return KimiCliClient(
+        api_key=api_key,
+        api_base=os.environ.get("KIMI_MODEL_BASE_URL", DEFAULT_KIMI_API_BASE),
+        model=os.environ.get("KIMI_MODEL_NAME", DEFAULT_KIMI_MODEL),
+        provider="Kimi",
+        timeout_seconds=int_env("KIMI_CLI_TIMEOUT_SECONDS", 180),
+        binary=os.environ.get("KIMI_CLI_BIN", "kimi"),
+    )
+
+
+def run_kimi_review_from_env(args: argparse.Namespace) -> int:
+    repo = env_required("GITHUB_REPOSITORY")
+    pr_number = int(env_required("PR_NUMBER"))
+    github = build_github_client(repo, pr_number)
+    api_key = env_required("KIMI_API_KEY")
+    config = build_kimi_config_from_env(
+        args,
+        repo=repo,
+        pr_number=pr_number,
+        review_intro="The Kimi CLI reviewer split the PR diff and reviewed each chunk with Kimi.",
+    )
+    try:
+        result = post_split_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key), config=config)
+    except Exception as exc:
+        print(f"Kimi primary review failed: {sanitize_detail(truncate_text(str(exc), 1200))}", file=sys.stderr)
+        return 1
+    print(result)
+    return 0
+
+
+def run_kimi_fallback_from_env(args: argparse.Namespace) -> int:
+    repo = env_required("GITHUB_REPOSITORY")
+    pr_number = int(env_required("PR_NUMBER"))
+    github = build_github_client(repo, pr_number)
+
+    api_key = os.environ.get("KIMI_API_KEY", "")
+    config = build_kimi_config_from_env(args, repo=repo, pr_number=pr_number)
     if not api_key:
         github.post_issue_comment_for(
             pr_number,
@@ -778,14 +897,7 @@ def run_kimi_fallback_from_env(args: argparse.Namespace) -> int:
         )
         return 0
 
-    reviewer = OpenAIChatClient(
-        api_key=api_key,
-        api_base=os.environ.get("KIMI_API_BASE", DEFAULT_KIMI_API_BASE),
-        model=os.environ.get("KIMI_MODEL", DEFAULT_KIMI_MODEL),
-        provider="Kimi",
-        timeout_seconds=int_env("KIMI_API_TIMEOUT_SECONDS", 180),
-    )
-    result = run_fallback_review(github=github, reviewer=reviewer, config=config)
+    result = run_fallback_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key), config=config)
     print(result)
     return 0
 
@@ -794,7 +906,7 @@ def post_notice_from_env(args: argparse.Namespace) -> int:
     repo = env_required("GITHUB_REPOSITORY")
     pr_number = int(env_required("PR_NUMBER"))
     github = build_github_client(repo, pr_number)
-    run_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com") + f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+    run_url = run_url_for(repo)
     github.post_issue_comment_for(pr_number, render_notice(args.provider, pr_number, run_url, args.message))
     return 0
 
@@ -811,6 +923,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     kimi_fallback.add_argument("--started-at", required=True)
     kimi_fallback.add_argument("--instructions-file", required=True)
 
+    kimi_review = subparsers.add_parser("kimi-review")
+    kimi_review.add_argument("--started-at", required=True)
+    kimi_review.add_argument("--instructions-file", required=True)
+
     notice = subparsers.add_parser("notice")
     notice.add_argument("--provider", required=True)
     notice.add_argument("--message", required=True)
@@ -824,6 +940,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_glm_fallback_from_env(args)
     if args.mode == "kimi-fallback":
         return run_kimi_fallback_from_env(args)
+    if args.mode == "kimi-review":
+        return run_kimi_review_from_env(args)
     if args.mode == "notice":
         return post_notice_from_env(args)
     raise RuntimeError(f"unknown mode {args.mode!r}")

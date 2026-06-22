@@ -401,13 +401,15 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     files = [file_payload(f"src/kimi_{idx}.rs", "+" + ("k" * 80)) for idx in range(5)]
     github = FakeGitHub(files=files)
     kimi = FakeProvider()
+    marker = "<!-- ai-pr-reviewer-kimi -->"
 
     result = module.run_fallback_review(
         github=github,
         reviewer=kimi,
         config=module.FallbackConfig(
             provider="Kimi",
-            deliverable_markers=("## Kimi PR Review", "Kimi Misospace"),
+            deliverable_markers=(marker,),
+            comment_marker=marker,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -420,6 +422,7 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     assert result == "fallback-posted"
     assert len(kimi.prompts) >= 3, len(kimi.prompts)
     assert len(github.posted) == 1, github.posted
+    assert github.posted[0].startswith(marker)
     assert "## Kimi PR Review" in github.posted[0]
     assert "Review chunks:" in github.posted[0]
 
@@ -521,7 +524,8 @@ def test_posts_failure_notice_when_kimi_fallback_fails() -> None:
             reviewer=kimi,
             config=module.FallbackConfig(
                 provider="Kimi",
-                deliverable_markers=("## Kimi PR Review", "Kimi Misospace"),
+                deliverable_markers=("<!-- ai-pr-reviewer-kimi -->",),
+                comment_marker="<!-- ai-pr-reviewer-kimi -->",
                 repo="seungpyoson/bolt-v2",
                 pr_number=895,
                 started_at="2026-06-22T12:21:00Z",
@@ -555,7 +559,8 @@ def test_redacts_kimi_api_key_from_failure_notice() -> None:
                 reviewer=kimi,
                 config=module.FallbackConfig(
                     provider="Kimi",
-                    deliverable_markers=("## Kimi PR Review", "Kimi Misospace"),
+                    deliverable_markers=("<!-- ai-pr-reviewer-kimi -->",),
+                    comment_marker="<!-- ai-pr-reviewer-kimi -->",
                     repo="seungpyoson/bolt-v2",
                     pr_number=895,
                     started_at="2026-06-22T12:21:00Z",
@@ -577,6 +582,64 @@ def test_redacts_kimi_api_key_from_failure_notice() -> None:
     assert len(github.posted) == 1, github.posted
     assert secret not in github.posted[0]
     assert "provider echoed ***" in github.posted[0]
+
+
+def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
+    module = load_script()
+    calls: list[dict[str, object]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "OK\n"
+        stderr = ""
+
+    def fake_run(argv, *, capture_output, text, timeout, env):
+        calls.append(
+            {
+                "argv": argv,
+                "capture_output": capture_output,
+                "text": text,
+                "timeout": timeout,
+                "env": env,
+            }
+        )
+        return Completed()
+
+    original_run = module.subprocess.run
+    with tempfile.TemporaryDirectory() as kimi_home:
+        previous_home = os.environ.get("KIMI_CODE_HOME")
+        os.environ["KIMI_CODE_HOME"] = kimi_home
+        module.subprocess.run = fake_run
+        try:
+            client = module.KimiCliClient(
+                api_key="fake-kimi-secret",
+                api_base="https://api.kimi.com/coding/v1",
+                model="kimi-for-coding",
+                provider="Kimi",
+                timeout_seconds=9,
+            )
+            response = client.review_chunk(system_prompt="system", user_prompt="user")
+        finally:
+            module.subprocess.run = original_run
+            if previous_home is None:
+                os.environ.pop("KIMI_CODE_HOME", None)
+            else:
+                os.environ["KIMI_CODE_HOME"] = previous_home
+
+    assert response == "OK"
+    assert len(calls) == 1
+    call = calls[0]
+    argv = call["argv"]
+    assert argv == ["kimi", "-p", "system\n\nuser"]
+    assert "fake-kimi-secret" not in " ".join(argv)
+    env = call["env"]
+    assert env["KIMI_MODEL_NAME"] == "kimi-for-coding"
+    assert env["KIMI_MODEL_API_KEY"] == "fake-kimi-secret"
+    assert env["KIMI_MODEL_BASE_URL"] == "https://api.kimi.com/coding/v1"
+    assert env["KIMI_MODEL_PROVIDER_TYPE"] == "kimi"
+    assert env["KIMI_MODEL_MAX_CONTEXT_SIZE"] == "262144"
+    assert env["KIMI_MODEL_DEFAULT_THINKING"] == "true"
+    assert env["KIMI_DISABLE_TELEMETRY"] == "1"
 
 
 def test_render_notice_redacts_secret_values() -> None:
@@ -641,6 +704,7 @@ def main() -> int:
     test_split_model_response_keeps_markdown_fences_balanced()
     test_posts_failure_notice_when_kimi_fallback_fails()
     test_redacts_kimi_api_key_from_failure_notice()
+    test_kimi_cli_client_uses_documented_env_auth_path()
     test_render_notice_redacts_secret_values()
     test_render_notice_redacts_new_provider_secret_env_names()
     print("GLM fallback self-tests OK")

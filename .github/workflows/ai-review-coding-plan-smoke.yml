@@ -136,12 +136,12 @@ jobs:
           }
 
           smoke_openai_chat "GLM" "https://api.z.ai/api/coding/paas/v4" "glm-5.2" "$GLM_API_KEY" || status=1
-          smoke_openai_chat "Kimi direct OpenAI" "https://api.kimi.com/coding/v1" "kimi-for-coding" "$KIMI_API_KEY" || status=1
+          smoke_openai_chat "Kimi direct OpenAI" "https://api.kimi.com/coding/v1" "kimi-for-coding" "$KIMI_API_KEY" || true
           smoke_kimi_cli || status=1
 
           {
             echo
-            echo "This is a smoke test only. It verifies authentication and one minimal OpenAI-compatible chat completion call on the coding-plan endpoints."
+            echo "This is a smoke test only. It verifies GLM coding-plan API auth and Kimi Code CLI auth. Generic Kimi HTTP is reported for diagnostics but is not the supported CI path."
           } >> "$body_file"
 
           cat "$body_file"

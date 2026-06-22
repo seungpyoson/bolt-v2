@@ -135,7 +135,6 @@ KIMI_BASE_GOVERNANCE_SNIPPETS = (
     "sparse-checkout: |",
     "AGENTS.md",
     "cat .ai-review/base/AGENTS.md",
-    "standards_file: .ai-review/standards/kimi-review-standards.md",
 )
 
 GLM_DELIVERABLE_SNIPPETS = (
@@ -158,15 +157,30 @@ GLM_DELIVERABLE_SNIPPETS = (
 )
 
 KIMI_DELIVERABLE_SNIPPETS = (
+    "AI Review - Kimi CLI",
+    "group: ai-review-kimi-cli-pr-${{ github.event.pull_request.number }}",
+    "kimi-cli-review:",
+    "name: Kimi CLI review",
     "id: kimi-review",
-    "timeout-minutes: 8",
+    "timeout-minutes: 20",
+    "uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0",
+    "node-version: \"24\"",
+    "npm install -g @moonshot-ai/kimi-code@0.19.0",
     "https://api.kimi.com/coding/v1",
     "kimi-for-coding",
+    "KIMI_CODE_HOME: ${{ runner.temp }}/kimi-code",
+    "KIMI_DISABLE_TELEMETRY: \"1\"",
+    "KIMI_MODEL_NAME: kimi-for-coding",
+    "KIMI_MODEL_API_KEY: ${{ env.KIMI_API_KEY }}",
+    "KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1",
+    "KIMI_MODEL_PROVIDER_TYPE: kimi",
+    "KIMI_MODEL_MAX_CONTEXT_SIZE: \"262144\"",
+    "KIMI_MODEL_DEFAULT_THINKING: \"true\"",
+    ".ai-review/base/scripts/ai_review_deliverables.py kimi-review",
     "Capture Kimi review window",
     "Ensure Kimi deliverable or post split fallback",
     "id: kimi_fallback",
     ".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback",
-    'comment_marker: "<!-- ai-pr-reviewer-kimi -->"',
     'KIMI_DELIVERABLE_MARKER: "<!-- ai-pr-reviewer-kimi -->"',
     "KIMI_REVIEW_MAX_CHUNK_CHARS",
     "AI_REVIEW_MAX_COMMENT_CHARS",
@@ -179,6 +193,13 @@ KIMI_DELIVERABLE_SNIPPETS = (
 )
 
 KIMI_FORBIDDEN_INPUTS = (
+    "misospace/pr-reviewer-action",
+    "Kimi Misospace",
+    "Run Misospace review",
+    "ai_base_url:",
+    "ai_api_format:",
+    "ai_api_key:",
+    "KIMI_API_BASE:",
     "system_prompt:",
     "system_prompt_file:",
     "system_prompt_mode:",
@@ -261,7 +282,7 @@ def verify_texts(
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_DELIVERABLE_SNIPPETS))
     for snippet in KIMI_FORBIDDEN_INPUTS:
         if snippet in kimi_workflow:
-            findings.append(f"Kimi workflow must not override the bundled prompt with {snippet!r}")
+            findings.append(f"Kimi workflow must use the official Kimi CLI path, not {snippet!r}")
 
     return findings
 
@@ -271,7 +292,7 @@ def verify_repo(repo_root: Path) -> list[str]:
         agents_md=read_text(repo_root / "AGENTS.md"),
         pr_agent_toml=read_text(repo_root / ".pr_agent.toml"),
         glm_workflow=read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml"),
-        kimi_workflow=read_text(repo_root / ".github/workflows/ai-review-kimi-misospace.yml"),
+        kimi_workflow=read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml"),
     )
 
 
@@ -284,7 +305,7 @@ def run_self_tests(repo_root: Path) -> None:
     agents = read_text(repo_root / "AGENTS.md")
     pr_agent = read_text(repo_root / ".pr_agent.toml")
     glm = read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml")
-    kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-misospace.yml")
+    kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml")
 
     baseline = verify_texts(
         agents_md=agents,
@@ -350,13 +371,21 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("Kimi head governance", kimi_head_governance, "Kimi workflow missing expected snippet")
 
+    kimi_misospace_action = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        glm_workflow=glm,
+        kimi_workflow=kimi + "\n      - uses: misospace/pr-reviewer-action@deadbeef\n",
+    )
+    assert_finding("Kimi Misospace action", kimi_misospace_action, "must use the official Kimi CLI path")
+
     kimi_prompt_override = verify_texts(
         agents_md=agents,
         pr_agent_toml=pr_agent,
         glm_workflow=glm,
         kimi_workflow=kimi + "\n          system_prompt_mode: append\n",
     )
-    assert_finding("Kimi prompt override", kimi_prompt_override, "must not override the bundled prompt")
+    assert_finding("Kimi prompt override", kimi_prompt_override, "must use the official Kimi CLI path")
 
     kimi_missing_fallback = verify_texts(
         agents_md=agents,

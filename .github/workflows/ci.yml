@@ -8,9 +8,10 @@ on:
     # trigger CI. GitHub's edited event also fires on title/body edits; the
     # policy resolver sends ready no-code edits to gate-noop while keeping
     # base-ref edits on the full, cancelling proof path.
-    # If the merge commit changed since the last full proof, gate-noop does not
-    # refresh it; branch protection stays pending until dispatch, push, or merge
-    # queue runs a new full proof.
+    # If main advances after the last full proof, gate-noop preserves the prior
+    # head-SHA gate conclusion instead of re-proving the new merge commit. With
+    # the current non-strict ruleset, stale-green can still merge; require base
+    # freshness with a push, manual dispatch, merge queue, or strict checks.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
     # paths-ignore is intentionally narrow: only explicitly-listed root-level
     # agent docs and pure-config dirs whose contents are NOT consumed by any

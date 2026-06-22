@@ -47,9 +47,11 @@ on:
     # GitHub's edited event also fires on title/body edits. The policy resolver
     # sends ready no-code edits to backtester-gate-noop while keeping base-ref
     # edits on the full, cancelling proof path.
-    # If the merge commit changed since the last full proof, backtester-gate-noop
-    # does not refresh it; branch protection stays pending until dispatch, push,
-    # or merge queue runs a new full proof.
+    # If main advances after the last full proof, backtester-gate-noop preserves
+    # the prior head-SHA gate conclusion instead of re-proving the new merge
+    # commit. With the current non-strict ruleset, stale-green can still merge;
+    # require base freshness with a push, manual dispatch, merge queue, or
+    # strict checks.
     # converted_to_draft is included so the gate records an explicit deferred
     # backtester verdict when a ready PR is moved back to draft.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]

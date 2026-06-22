@@ -18,6 +18,7 @@ label = "ubicloud-standard-2"
 [workflows.ci]
 ci-policy = "github_hosted"
 detector = "github_hosted"
+host-health = "github_hosted"
 deny = "managed_light"
 # NT develop increased the restored managed target enough that full-repo clippy
 # now refuses on the light tier before compilation with disk_pressure. Keep it

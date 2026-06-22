@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tomllib
@@ -119,12 +120,18 @@ def cargo_dependency_names(path: Path) -> set[str]:
 
 
 def cargo_manifest_paths() -> list[Path]:
+    # Prune ignored directories at walk time instead of REPO_ROOT.rglob("Cargo.toml")
+    # + post-filter. rglob is eager: it descends into .worktrees/ (one subtree per
+    # active worktree), .git/, and target/ before the filter discards them, paying a
+    # full traversal of tens of thousands of files -- while holding the verification
+    # lane -- just to keep a couple of manifests. os.walk with in-place dirnames
+    # pruning skips those subtrees entirely. The result set is identical: any
+    # Cargo.toml under an ignored directory is unreachable either way.
     paths: list[Path] = []
-    for path in REPO_ROOT.rglob("Cargo.toml"):
-        rel_parts = path.relative_to(REPO_ROOT).parts
-        if any(part in IGNORED_MANIFEST_DIRS for part in rel_parts):
-            continue
-        paths.append(path)
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_MANIFEST_DIRS]
+        if "Cargo.toml" in filenames:
+            paths.append(Path(dirpath) / "Cargo.toml")
     return sorted(paths)
 
 

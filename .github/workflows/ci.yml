@@ -164,7 +164,10 @@ jobs:
           changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
+            ci/nextest-fingerprint.toml \
             ci/github-actions-runners.toml \
+            scripts/nextest_fingerprint.py \
+            scripts/test_nextest_fingerprint.py \
             scripts/ci_provenance.py \
             scripts/test_ci_provenance.py \
             scripts/verify_ci_workflow_hygiene.py \
@@ -393,22 +396,36 @@ jobs:
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     outputs:
+      nextest_digest: ${{ steps.nextest-fingerprint.outputs.nextest_digest }}
       nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
+      nextest_fingerprint_artifact_name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}
+      nextest_archive_prefix: ${{ steps.nextest-fingerprint.outputs.nextest_archive_prefix }}
+      nextest_schema: ${{ steps.nextest-fingerprint.outputs.nextest_schema }}
+      nextest_profile: ${{ steps.nextest-fingerprint.outputs.nextest_profile }}
+      nextest_shards: ${{ steps.nextest-fingerprint.outputs.nextest_shards }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
       - name: Publish nextest archive fingerprint
         id: nextest-fingerprint
+        shell: bash
         run: |
-          fingerprint="nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}"
-          mkdir -p .nextest-archive-fingerprint
-          printf '%s\n' "$fingerprint" > .nextest-archive-fingerprint/cache-key.txt
-          echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          python3 scripts/nextest_fingerprint.py \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --config ci/nextest-fingerprint.toml \
+            --runners-config ci/github-actions-runners.toml \
+            --runner-os "${{ runner.os }}" \
+            --runner-arch "${{ runner.arch }}" \
+            --output-path .nextest-archive-fingerprint/cache-key.txt
 
       - name: Upload nextest archive fingerprint
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}
           path: .nextest-archive-fingerprint/cache-key.txt
           if-no-files-found: error
           retention-days: 30
@@ -464,7 +481,7 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -495,17 +512,22 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
-          key: nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', '.config/nextest.toml', '.config/**', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', 'build.rs', 'src/**', 'tests/**', 'benches/**', 'examples/**', 'crates/**', '.github/**', 'scripts/**', 'specs/**/*.md', 'specs/023-nt-order-intent-layer/**', 'specs/023-nt-research-analytics-platform/reference/**', 'config/**', 'contracts/**', 'docs/bolt-v3/**', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
+          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
 
       - name: Run nextest archive partitions
         shell: bash
         run: |
+          shards="${{ needs.nextest-fingerprint.outputs.nextest_shards }}"
+          if [[ ! "$shards" =~ ^[1-9][0-9]*$ ]]; then
+            echo "invalid nextest shard count: ${shards}"
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/nextest-archive-extract"
           status=0
-          for shard in 1 2 3 4; do
-            echo "::group::nextest archive partition ${shard}/4"
-            echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <extract-root> --partition count:${shard}/4"
-            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/4"; then
+          for shard in $(seq 1 "$shards"); do
+            echo "::group::nextest archive partition ${shard}/${shards}"
+            echo "reproduce locally: just test-archive-run .nextest-archive/nextest-archive.tar.zst <extract-root> --partition count:${shard}/${shards}"
+            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"; then
               status=1
             fi
             echo "::endgroup::"

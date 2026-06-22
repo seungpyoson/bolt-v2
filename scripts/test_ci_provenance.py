@@ -26,8 +26,8 @@ SHA = "a1a6be0d94e887538ebcd9afced6c94046a557d6"
 OTHER_SHA = "b" * 40
 RUN_ID = 24623219988
 CHECK_SUITE_ID = 65233803543
-NEXTEST_FINGERPRINT = f"nextest-archive-v1-Linux-X64-test-profile-shards-4-{'a' * 64}"
-NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-{'a' * 64}"
+NEXTEST_FINGERPRINT = f"nextest-archive-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
+NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-{'a' * 64}"
 
 CONFIG_TOML = """
 schema_version = 1
@@ -695,7 +695,7 @@ def assert_fingerprint_reuse_requires_exact_fingerprint_components() -> None:
             NEXTEST_FINGERPRINT.replace("X64", "ARM64"),
             NEXTEST_FINGERPRINT.replace("test-profile", "default-profile"),
             NEXTEST_FINGERPRINT.replace("shards-4", "shards-8"),
-            NEXTEST_FINGERPRINT.replace("v1", "v2", 1),
+            NEXTEST_FINGERPRINT.replace("v2", "v3", 1),
         ]
         for fingerprint in variants:
             record = record_with_fingerprint(module, config, fingerprint=fingerprint)

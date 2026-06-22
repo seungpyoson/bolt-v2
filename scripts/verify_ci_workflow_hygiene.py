@@ -311,7 +311,10 @@ git fetch --no-tags origin \\
 changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
   .github/workflows/ci.yml \\
   .github/actions/setup-environment/action.yml \\
+  ci/nextest-fingerprint.toml \\
   ci/github-actions-runners.toml \\
+  scripts/nextest_fingerprint.py \\
+  scripts/test_nextest_fingerprint.py \\
   scripts/ci_provenance.py \\
   scripts/test_ci_provenance.py \\
   scripts/verify_ci_workflow_hygiene.py \\
@@ -344,7 +347,10 @@ echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.output
 FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     ".github/workflows/ci.yml",
     ".github/actions/setup-environment/action.yml",
+    "ci/nextest-fingerprint.toml",
     "ci/github-actions-runners.toml",
+    "scripts/nextest_fingerprint.py",
+    "scripts/test_nextest_fingerprint.py",
     "scripts/ci_provenance.py",
     "scripts/test_ci_provenance.py",
     "scripts/verify_ci_workflow_hygiene.py",
@@ -428,17 +434,19 @@ SETUP_ACTION_ORDERED_STEPS = (
 TEST_PARTITION_COMMAND = (
     'just test-archive-run "$NEXTEST_ARCHIVE_PATH" '
     '"$RUNNER_TEMP/nextest-archive-extract" '
-    '--partition "count:${shard}/4"'
+    '--partition "count:${shard}/${shards}"'
 )
 TEST_REPRODUCTION_COMMAND = (
     "just test-archive-run .nextest-archive/nextest-archive.tar.zst "
     "<extract-root> "
-    "--partition count:${shard}/4"
+    "--partition count:${shard}/${shards}"
 )
 TEST_REPRODUCTION_ECHO = f'echo "reproduce locally: {TEST_REPRODUCTION_COMMAND}"'
 TEST_ARCHIVE_EXTRACT_ROOT_INIT = 'mkdir -p "$RUNNER_TEMP/nextest-archive-extract"'
-TEST_ARCHIVE_PARTITION_LOOP = "for shard in 1 2 3 4; do"
-TEST_ARCHIVE_PARTITION_GROUP = 'echo "::group::nextest archive partition ${shard}/4"'
+TEST_ARCHIVE_SHARDS_ASSIGNMENT = 'shards="${{ needs.nextest-fingerprint.outputs.nextest_shards }}"'
+TEST_ARCHIVE_SHARDS_ASSERT = 'if [[ ! "$shards" =~ ^[1-9][0-9]*$ ]]; then'
+TEST_ARCHIVE_PARTITION_LOOP = 'for shard in $(seq 1 "$shards"); do'
+TEST_ARCHIVE_PARTITION_GROUP = 'echo "::group::nextest archive partition ${shard}/${shards}"'
 TEST_ARCHIVE_PARTITION_STATUS_INIT = "status=0"
 TEST_ARCHIVE_PARTITION_STATUS_MARK = "status=1"
 TEST_ARCHIVE_PARTITION_STATUS_EXIT = 'exit "$status"'
@@ -473,15 +481,41 @@ TEST_ARCHIVE_KEY_INPUTS = (
     "'contracts/**'",
     "'docs/bolt-v3/**'",
 )
-TEST_ARCHIVE_KEY_PREFIX = "nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
-TEST_ARCHIVE_FINGERPRINT_PREFIX = "nextest-archive-fingerprint-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles("
+TEST_ARCHIVE_CACHE_KEY = (
+    "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
+    "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
+    "-${{ runner.os }}-${{ runner.arch }}"
+    "-${{ needs.nextest-fingerprint.outputs.nextest_profile }}"
+    "-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}"
+    "-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+)
 TEST_ARCHIVE_FINGERPRINT_PATH = ".nextest-archive-fingerprint/cache-key.txt"
 TEST_ARCHIVE_FINGERPRINT_OUTPUT = "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
 TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT = (
     "nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}"
 )
+TEST_ARCHIVE_FINGERPRINT_REQUIRED_JOB_OUTPUTS = (
+    "nextest_digest: ${{ steps.nextest-fingerprint.outputs.nextest_digest }}",
+    TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT,
+    "nextest_fingerprint_artifact_name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}",
+    "nextest_archive_prefix: ${{ steps.nextest-fingerprint.outputs.nextest_archive_prefix }}",
+    "nextest_schema: ${{ steps.nextest-fingerprint.outputs.nextest_schema }}",
+    "nextest_profile: ${{ steps.nextest-fingerprint.outputs.nextest_profile }}",
+    "nextest_shards: ${{ steps.nextest-fingerprint.outputs.nextest_shards }}",
+)
 TEST_ARCHIVE_FINGERPRINT_STEP_ID = "id: nextest-fingerprint"
-TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE = 'echo "nextest_fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"'
+TEST_ARCHIVE_FINGERPRINT_SCRIPT = "python3 scripts/nextest_fingerprint.py"
+TEST_ARCHIVE_FINGERPRINT_SCRIPT_ARGS = (
+    '--repo-root "$GITHUB_WORKSPACE"',
+    "--config ci/nextest-fingerprint.toml",
+    "--runners-config ci/github-actions-runners.toml",
+    '--runner-os "${{ runner.os }}"',
+    '--runner-arch "${{ runner.arch }}"',
+    "--output-path .nextest-archive-fingerprint/cache-key.txt",
+)
+TEST_ARCHIVE_FINGERPRINT_ARTIFACT_NAME_OUTPUT = (
+    "name: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}"
+)
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
     "'.github/actions/setup-environment/action.yml'",
@@ -1691,8 +1725,7 @@ def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list
     run_block_indices = [
         index
         for index, block in enumerate(blocks)
-        if TEST_ARCHIVE_FINGERPRINT_PATH in uncommented_text(block)
-        and TEST_ARCHIVE_KEY_PREFIX in uncommented_text(block)
+        if TEST_ARCHIVE_FINGERPRINT_SCRIPT in uncommented_text(block)
     ]
     run_blocks = [blocks[index] for index in run_block_indices]
     upload_block_indices = [
@@ -1705,23 +1738,26 @@ def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list
         blocks[index]
         for index in upload_block_indices
     ]
-    upload_names = [block_input_value(block, "name") or "" for block in upload_blocks]
 
     if not run_blocks or not upload_blocks:
         return ["nextest-fingerprint must publish nextest archive fingerprint"]
-    if not any(TEST_ARCHIVE_FINGERPRINT_PREFIX in name for name in upload_names):
-        return ["nextest-fingerprint must publish nextest archive fingerprint"]
 
     run_text = "\n".join(uncommented_text(block) for block in run_blocks)
-    names_text = "\n".join(upload_names)
-    if (
-        TEST_ARCHIVE_FINGERPRINT_JOB_OUTPUT not in job_text
-        or TEST_ARCHIVE_FINGERPRINT_STEP_ID not in run_text
-        or TEST_ARCHIVE_FINGERPRINT_OUTPUT_WRITE not in run_text
-    ):
+    if any(output not in job_text for output in TEST_ARCHIVE_FINGERPRINT_REQUIRED_JOB_OUTPUTS):
         return ["nextest-fingerprint must expose secure nextest fingerprint output"]
-    if run_text.count("nextest_fingerprint=") != 1 or run_text.count("$GITHUB_OUTPUT") != 1:
-        return ["nextest-fingerprint must expose exactly one secure nextest fingerprint output"]
+    if TEST_ARCHIVE_FINGERPRINT_STEP_ID not in run_text:
+        return ["nextest-fingerprint must expose secure nextest fingerprint output"]
+    if any(argument not in run_text for argument in TEST_ARCHIVE_FINGERPRINT_SCRIPT_ARGS):
+        return ["nextest-fingerprint must run the canonical producer script"]
+    if TEST_ARCHIVE_FINGERPRINT_PATH not in run_text:
+        return ["nextest-fingerprint must publish nextest archive fingerprint"]
+    if any("hashFiles(" in uncommented_text(block) for block in run_blocks + upload_blocks):
+        return ["nextest-fingerprint must not inline nextest hashFiles"]
+    if not any(
+        block_has_input(block, "name", "${{ steps.nextest-fingerprint.outputs.nextest_fingerprint_artifact_name }}")
+        for block in upload_blocks
+    ):
+        return ["nextest-fingerprint artifact name must come from producer output"]
     repo_controlled_indices = [
         index
         for index, block in enumerate(blocks)
@@ -1733,23 +1769,10 @@ def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list
         or min(upload_block_indices) >= min(repo_controlled_indices)
     ):
         return ["nextest-fingerprint must publish nextest fingerprint before repo-controlled steps"]
-    if not all(fragment in run_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
-        return ["nextest-fingerprint must include Rust and test graph inputs"]
-    if not all(fragment in names_text for fragment in TEST_ARCHIVE_KEY_INPUTS):
-        return ["nextest-fingerprint must include Rust and test graph inputs"]
-
-    key_identities = [
-        identity
-        for identity in (
-            [nextest_archive_key_identity(block_input_value(block, "key") or "") for block in cache_blocks]
-            + [nextest_archive_key_identity(uncommented_text(block)) for block in run_blocks]
-            + [nextest_archive_key_identity(name) for name in upload_names]
-        )
-        if identity is not None
-    ]
-    expected_key_count = len(cache_blocks) + len(run_blocks) + len(upload_names)
-    if len(key_identities) != expected_key_count or len(set(key_identities)) != 1:
-        return ["nextest archive cache and fingerprint keys must match"]
+    if not cache_blocks or not all(block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY) for block in cache_blocks):
+        return ["nextest archive cache key must use nextest fingerprint output"]
+    if any("hashFiles(" in (block_input_value(block, "key") or "") for block in cache_blocks):
+        return ["nextest archive cache key must use nextest fingerprint output"]
     return []
 
 
@@ -8527,13 +8550,12 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
         if not archive_cache_blocks or not all(
-            block_key_value_contains_all(
-                block,
-                (TEST_ARCHIVE_KEY_PREFIX, *TEST_ARCHIVE_KEY_INPUTS),
-            )
+            block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY)
             for block in archive_cache_blocks
         ):
-            errors.append("test-archive cache key must include Rust and test graph inputs")
+            errors.append("nextest archive cache key must use nextest fingerprint output")
+        if any("hashFiles(" in (block_input_value(block, "key") or "") for block in archive_cache_blocks):
+            errors.append("nextest archive cache key must use nextest fingerprint output")
         if "include-managed-target-dir:" in archive_text:
             errors.append("test-archive must not opt into managed target dir")
         if "nextest-archive-build-v1" in archive_text:
@@ -8554,6 +8576,10 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must build through just test-archive")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
+        if TEST_ARCHIVE_SHARDS_ASSIGNMENT not in archive_text or TEST_ARCHIVE_SHARDS_ASSERT not in archive_text:
+            errors.append("test-archive must fail closed on invalid nextest shard count")
+        if "for shard in 1 2 3 4" in archive_text or "count:${shard}/4" in archive_text or "{1..$shards}" in archive_text:
+            errors.append("test-archive partition count must come from nextest fingerprint output")
         if TEST_ARCHIVE_PARTITION_LOOP not in archive_text:
             errors.append("test-archive must run all nextest archive partitions")
         if TEST_ARCHIVE_PARTITION_GROUP not in archive_text or TEST_REPRODUCTION_ECHO not in archive_text:

@@ -20,7 +20,7 @@ use rust_decimal::Decimal;
 use crate::{
     bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps},
     bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler,
-    bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    bolt_v3_submit_admission::{BoltV3LossFreshness, BoltV3SubmitAdmissionState},
     nt_runtime_capture::{
         account_states_pattern, portfolio_snapshots_pattern, position_events_pattern,
     },
@@ -65,6 +65,12 @@ struct LossGovernorRuntimeFeedState {
     peak_equity: Option<TimedDecimal>,
     account_state_equity_baseline: Option<TimedDecimal>,
     portfolio_pnl_observed: bool,
+    account_state_count: u64,
+    portfolio_snapshot_count: u64,
+    position_event_count: u64,
+    last_account_state_ts_ns: Option<u64>,
+    last_portfolio_snapshot_ts_ns: Option<u64>,
+    last_position_event_ts_ns: Option<u64>,
     latest_snapshot: Option<LossSnapshot>,
     source_observations: LossSourceObservationTimestamps,
 }
@@ -234,12 +240,17 @@ impl LossGovernorRuntimeFeed {
             return None;
         }
 
+        let observed_at_ns = snapshot.ts_event.as_u64();
+        self.state
+            .record_portfolio_snapshot_freshness(observed_at_ns);
+        self.submit_admission
+            .update_loss_freshness(self.state.freshness());
+
         let currency = portfolio_currency(snapshot)?;
         if !self.state.accept_currency(currency) {
             return None;
         }
 
-        let observed_at_ns = snapshot.ts_event.as_u64();
         self.state
             .record_portfolio_snapshot_observed_at_ns(observed_at_ns);
         self.submit_admission
@@ -280,12 +291,16 @@ impl LossGovernorRuntimeFeed {
             return None;
         }
 
+        let observed_at_ns = state.ts_event.as_u64();
+        self.state.record_account_state_freshness(observed_at_ns);
+        self.submit_admission
+            .update_loss_freshness(self.state.freshness());
+
         let currency = account_currency(state)?;
         if !self.state.accept_currency(currency) {
             return None;
         }
 
-        let observed_at_ns = state.ts_event.as_u64();
         self.state
             .record_account_state_observed_at_ns(observed_at_ns);
         self.submit_admission
@@ -351,6 +366,15 @@ impl LossGovernorRuntimeFeed {
         &mut self,
         event: &PositionEvent,
     ) -> Option<LossSnapshot> {
+        if position_event_account_id(event) != self.config.account_id {
+            return None;
+        }
+
+        let observed_at_ns = position_event_ts_event(event);
+        self.state.record_position_event_freshness(observed_at_ns);
+        self.submit_admission
+            .update_loss_freshness(self.state.freshness());
+
         let position_fact = position_pnl_fact(event)?;
         if position_fact.account_id != self.config.account_id {
             return None;
@@ -459,6 +483,12 @@ impl LossGovernorRuntimeFeedState {
             peak_equity: None,
             account_state_equity_baseline: None,
             portfolio_pnl_observed: false,
+            account_state_count: 0,
+            portfolio_snapshot_count: 0,
+            position_event_count: 0,
+            last_account_state_ts_ns: None,
+            last_portfolio_snapshot_ts_ns: None,
+            last_position_event_ts_ns: None,
             latest_snapshot: None,
             source_observations: LossSourceObservationTimestamps::unobserved(),
         }
@@ -475,6 +505,32 @@ impl LossGovernorRuntimeFeedState {
 
     fn record_position_event_observed_at_ns(&mut self, observed_at_ns: u64) {
         self.source_observations.last_position_event_observed_at_ns = Some(observed_at_ns);
+    }
+
+    fn freshness(&self) -> BoltV3LossFreshness {
+        BoltV3LossFreshness {
+            account_state_count: self.account_state_count,
+            portfolio_snapshot_count: self.portfolio_snapshot_count,
+            position_event_count: self.position_event_count,
+            last_account_state_ts_ns: self.last_account_state_ts_ns,
+            last_portfolio_snapshot_ts_ns: self.last_portfolio_snapshot_ts_ns,
+            last_position_event_ts_ns: self.last_position_event_ts_ns,
+        }
+    }
+
+    fn record_account_state_freshness(&mut self, observed_at_ns: u64) {
+        self.account_state_count = self.account_state_count.saturating_add(1);
+        self.last_account_state_ts_ns = Some(observed_at_ns);
+    }
+
+    fn record_portfolio_snapshot_freshness(&mut self, observed_at_ns: u64) {
+        self.portfolio_snapshot_count = self.portfolio_snapshot_count.saturating_add(1);
+        self.last_portfolio_snapshot_ts_ns = Some(observed_at_ns);
+    }
+
+    fn record_position_event_freshness(&mut self, observed_at_ns: u64) {
+        self.position_event_count = self.position_event_count.saturating_add(1);
+        self.last_position_event_ts_ns = Some(observed_at_ns);
     }
 
     fn accept_currency(&mut self, currency: Currency) -> bool {
@@ -675,6 +731,15 @@ fn position_event_ts_init(event: &PositionEvent) -> u64 {
         PositionEvent::PositionChanged(changed) => changed.ts_init.as_u64(),
         PositionEvent::PositionClosed(closed) => closed.ts_init.as_u64(),
         PositionEvent::PositionAdjusted(adjusted) => adjusted.ts_init.as_u64(),
+    }
+}
+
+fn position_event_ts_event(event: &PositionEvent) -> u64 {
+    match event {
+        PositionEvent::PositionOpened(opened) => opened.ts_event.as_u64(),
+        PositionEvent::PositionChanged(changed) => changed.ts_event.as_u64(),
+        PositionEvent::PositionClosed(closed) => closed.ts_event.as_u64(),
+        PositionEvent::PositionAdjusted(adjusted) => adjusted.ts_event.as_u64(),
     }
 }
 

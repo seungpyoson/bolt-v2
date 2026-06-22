@@ -1043,6 +1043,20 @@ impl BoltV3DecisionEvidenceWriter for FailingRequoteThrottleDecisionEvidenceWrit
             .push(throttle.clone());
         anyhow::bail!("{}", self.failure_message)
     }
+
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_reject(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]

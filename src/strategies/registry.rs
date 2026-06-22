@@ -445,11 +445,25 @@ mod tests {
             anyhow::bail!("registry noop writer received exit-decision evidence")
         }
 
+        fn record_exit_evaluation(
+            &self,
+            _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn record_loss_governor_halt(
             &self,
-            _halt: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+            _evidence: &crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
         ) -> Result<()> {
-            anyhow::bail!("registry noop writer received loss-governor-halt evidence")
+            Ok(())
+        }
+
+        fn record_order_reject(
+            &self,
+            _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
+        ) -> Result<()> {
+            Ok(())
         }
 
         fn record_requote_throttle(

@@ -1,5 +1,13 @@
 mod support;
 
+use bolt_v2::bolt_v3_decision_evidence::{
+    BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
+    BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
+    BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
+    BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+    BoltV3RequoteThrottleEvidence, BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+};
 use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
 use bolt_v2::bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler;
 use bolt_v2::bolt_v3_loss_runtime_feed::{
@@ -21,7 +29,11 @@ use nautilus_model::identifiers::{
 };
 use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
 use rust_decimal::Decimal;
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 #[test]
 fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission() {
@@ -364,6 +376,180 @@ fn stale_snapshot_admission_records_real_source_observation_diagnostics() {
     assert_eq!(decision.last_account_state_observed_at_ns, Some(1_000));
     assert_eq!(decision.last_portfolio_snapshot_observed_at_ns, Some(2_000));
     assert_eq!(decision.last_position_event_observed_at_ns, Some(2_500));
+}
+
+#[test]
+fn stale_loss_halt_emits_populated_loss_governor_halt_evidence() {
+    let writer = Arc::new(RecordingLossHaltEvidenceWriter::new());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer.clone(),
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-RCA-EVIDENCE");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
+        },
+        admission.clone(),
+    );
+
+    assert!(
+        feed.on_position_event(&changed_position_event(account_id, 1_600, -1.0))
+            .is_none(),
+        "position-only raw facts should not publish a complete loss snapshot"
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot_without_pnl(
+            account_id, 1_500, 1_500, 1_000.0,
+        ))
+        .is_none(),
+        "malformed portfolio raw facts should update freshness without publishing"
+    );
+    feed.on_account_state(&account_state(account_id, 1_700, 1_000.0))
+        .expect(
+            "account facts complete the feed state before the stale manual snapshot is installed",
+        );
+    admission.update_loss_snapshot(loss_snapshot_at(1_000));
+
+    let error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 2_101)
+        .expect_err("aged loss snapshot should halt entry submit");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![LossHaltReason::StaleLossSnapshot]
+    ));
+
+    let records = writer.loss_governor_halts();
+    assert_eq!(records.len(), 1);
+    let evidence = &records[0];
+    assert_eq!(evidence.stale_reason, BoltV3StaleLossReason::AgeExceeded);
+    assert!(evidence.snapshot_present);
+    assert_eq!(evidence.snapshot_observed_at_ns, Some(1_000));
+    assert_eq!(evidence.admission_now_ns, 2_101);
+    assert_eq!(evidence.snapshot_age_ns, Some(1_101));
+    assert_eq!(evidence.max_snapshot_age_ns, 1_000);
+    assert_eq!(
+        evidence.snapshot_source.as_deref(),
+        Some("nt_loss_runtime_feed")
+    );
+    assert!(evidence.has_per_trade_pnl);
+    assert!(evidence.has_daily_pnl);
+    assert!(evidence.has_rolling_pnl);
+    assert!(evidence.has_current_equity);
+    assert!(evidence.has_peak_equity);
+    assert_eq!(evidence.account_state_count, 1);
+    assert_eq!(evidence.portfolio_snapshot_count, 1);
+    assert_eq!(evidence.position_event_count, 1);
+    assert_eq!(evidence.last_account_state_ts_ns, Some(1_700));
+    assert_eq!(evidence.last_portfolio_snapshot_ts_ns, Some(1_500));
+    assert_eq!(evidence.last_position_event_ts_ns, Some(1_600));
+    assert_eq!(
+        evidence.stable_halt_key,
+        "age_exceeded:nt_loss_runtime_feed"
+    );
+    assert_eq!(evidence.retry_count, 1);
+    assert_eq!(evidence.elapsed_since_first_halt_ns, 0);
+    assert_eq!(writer.loss_halt_channel_count(), 1);
+    assert_eq!(writer.other_evidence_channel_count(), 0);
+}
+
+#[test]
+fn stale_loss_halt_evidence_exponentially_samples_and_resets_after_accept() {
+    let writer = Arc::new(RecordingLossHaltEvidenceWriter::new());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer.clone(),
+        loss_policy(),
+    ));
+    admission.update_loss_snapshot(loss_snapshot_at(1_000));
+
+    for attempt in 1..=20 {
+        let now_ns = 2_100 + attempt;
+        let error = admission
+            .admit_at(&submit_request(Decimal::new(1, 0)), now_ns)
+            .expect_err("identical stale loss snapshots should keep halting");
+        assert!(matches!(
+            error,
+            BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+                if reasons == vec![LossHaltReason::StaleLossSnapshot]
+        ));
+    }
+
+    let records = writer.loss_governor_halts();
+    let retry_counts: Vec<u32> = records.iter().map(|record| record.retry_count).collect();
+    assert_eq!(retry_counts, vec![1, 2, 4, 8, 16]);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.stable_halt_key == "age_exceeded:nt_loss_runtime_feed")
+    );
+
+    admission.update_loss_snapshot(loss_snapshot_at(3_000));
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 3_100)
+        .expect("fresh loss snapshot should reset stale-halt sampling")
+        .commit_submitted();
+    admission.update_loss_snapshot(loss_snapshot_at(3_000));
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 4_001)
+        .expect_err("recurring stale loss snapshot should restart sampling at one");
+
+    let reset_records = writer.loss_governor_halts();
+    assert_eq!(reset_records.len(), 6);
+    assert_eq!(reset_records[5].retry_count, 1);
+    assert_eq!(reset_records[5].elapsed_since_first_halt_ns, 0);
+}
+
+#[test]
+fn freshness_counts_advance_when_raw_events_do_not_publish_loss_snapshot() {
+    let writer = Arc::new(RecordingLossHaltEvidenceWriter::new());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer.clone(),
+        loss_policy(),
+    ));
+    let stale_snapshot = loss_snapshot_at(1_000);
+    admission.update_loss_snapshot(stale_snapshot.clone());
+    let account_id = AccountId::from("SIM-LOSS-FRESHNESS-DECOUPLED");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+            active_position_pnl_max_entries: 64,
+        },
+        admission.clone(),
+    );
+
+    assert!(
+        feed.on_position_event(&changed_position_event(account_id, 1_500, -1.0))
+            .is_none(),
+        "a raw position event alone must not publish a complete loss snapshot"
+    );
+    assert!(
+        feed.latest_snapshot().is_none(),
+        "publish_if_complete should remain blocked without equity and rolling facts"
+    );
+    assert_eq!(
+        admission.loss_snapshot(),
+        Some(stale_snapshot),
+        "raw freshness updates must not replace the last published loss snapshot"
+    );
+
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 2_101)
+        .expect_err("unchanged aged loss snapshot should still halt");
+
+    let records = writer.loss_governor_halts();
+    assert_eq!(records.len(), 1);
+    let evidence = &records[0];
+    assert_eq!(evidence.snapshot_observed_at_ns, Some(1_000));
+    assert_eq!(evidence.position_event_count, 1);
+    assert_eq!(evidence.last_position_event_ts_ns, Some(1_500));
+    assert_eq!(evidence.account_state_count, 0);
+    assert_eq!(evidence.last_account_state_ts_ns, None);
+    assert_eq!(evidence.portfolio_snapshot_count, 0);
+    assert_eq!(evidence.last_portfolio_snapshot_ts_ns, None);
 }
 
 #[test]
@@ -845,6 +1031,160 @@ fn published_snapshot_invokes_configured_halt_action_handler() {
     assert_eq!(recorded[0], (1_000, Some(Decimal::new(-50, 0))));
 }
 
+#[derive(Debug)]
+struct RecordingLossHaltEvidenceWriter {
+    loss_halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
+    loss_halt_channel_count: Mutex<usize>,
+    admission_decision_count: Mutex<usize>,
+    other_evidence_channel_count: Mutex<usize>,
+}
+
+impl RecordingLossHaltEvidenceWriter {
+    fn new() -> Self {
+        Self {
+            loss_halts: Mutex::new(Vec::new()),
+            loss_halt_channel_count: Mutex::new(0),
+            admission_decision_count: Mutex::new(0),
+            other_evidence_channel_count: Mutex::new(0),
+        }
+    }
+
+    fn loss_governor_halts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
+        self.loss_halts
+            .lock()
+            .expect("loss halt evidence mutex should not be poisoned")
+            .clone()
+    }
+
+    fn loss_halt_channel_count(&self) -> usize {
+        *self
+            .loss_halt_channel_count
+            .lock()
+            .expect("loss halt channel count mutex should not be poisoned")
+    }
+
+    fn other_evidence_channel_count(&self) -> usize {
+        *self
+            .other_evidence_channel_count
+            .lock()
+            .expect("other evidence channel count mutex should not be poisoned")
+    }
+
+    fn increment_other_evidence_channel(&self) {
+        let mut count = self
+            .other_evidence_channel_count
+            .lock()
+            .expect("other evidence channel count mutex should not be poisoned");
+        *count += 1;
+    }
+}
+
+impl BoltV3DecisionEvidenceWriter for RecordingLossHaltEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        _decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        let mut count = self
+            .admission_decision_count
+            .lock()
+            .expect("admission decision count mutex should not be poisoned");
+        *count += 1;
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &BoltV3ExitEvaluationEvidence,
+    ) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        evidence: &BoltV3LossGovernorHaltEvidence,
+    ) -> anyhow::Result<()> {
+        self.loss_halts
+            .lock()
+            .expect("loss halt evidence mutex should not be poisoned")
+            .push(evidence.clone());
+        let mut count = self
+            .loss_halt_channel_count
+            .lock()
+            .expect("loss halt channel count mutex should not be poisoned");
+        *count += 1;
+        Ok(())
+    }
+
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        self.increment_other_evidence_channel();
+        Ok(())
+    }
+}
+
 fn loss_policy() -> LossGovernorPolicy {
     LossGovernorPolicy {
         max_snapshot_age_ns: 1_000,
@@ -852,6 +1192,18 @@ fn loss_policy() -> LossGovernorPolicy {
         max_daily_loss: Some(Decimal::new(25, 0)),
         max_rolling_loss: Some(Decimal::new(30, 0)),
         max_drawdown: Some(Decimal::new(40, 0)),
+    }
+}
+
+fn loss_snapshot_at(observed_at_ns: u64) -> LossSnapshot {
+    LossSnapshot {
+        source: "nt_loss_runtime_feed".to_string(),
+        observed_at_ns,
+        per_trade_pnl: Some(Decimal::ZERO),
+        daily_pnl: Some(Decimal::ZERO),
+        rolling_pnl: Some(Decimal::ZERO),
+        current_equity: Some(Decimal::new(1_000, 0)),
+        peak_equity: Some(Decimal::new(1_000, 0)),
     }
 }
 

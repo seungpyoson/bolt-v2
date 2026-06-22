@@ -1383,11 +1383,18 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         anyhow::bail!("basket execution noop writer received exit-decision evidence")
     }
 
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_loss_governor_halt(
         &self,
-        _halt: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
     ) -> anyhow::Result<()> {
-        anyhow::bail!("basket execution noop writer received loss-governor-halt evidence")
+        Ok(())
     }
 
     fn record_requote_throttle(
@@ -1395,5 +1402,12 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         _throttle: &bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
     ) -> anyhow::Result<()> {
         anyhow::bail!("basket execution noop writer received requote-throttle evidence")
+    }
+
+    fn record_order_reject(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 }

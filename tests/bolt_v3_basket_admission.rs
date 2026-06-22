@@ -18,10 +18,10 @@ use bolt_v2::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
-        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-        BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-        BoltV3SubmitReservationMetadataEvidence,
+        BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
+        BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     },
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_outcome_group_scanner::{OutcomeGroupLegScanEvidence, OutcomeGroupScanEvidence},
@@ -821,11 +821,22 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
         anyhow::bail!("basket admission writer received exit-decision evidence")
     }
 
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &BoltV3ExitEvaluationEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_loss_governor_halt(
         &self,
-        _halt: &BoltV3LossGovernorHaltEvidence,
+        _evidence: &BoltV3LossGovernorHaltEvidence,
     ) -> anyhow::Result<()> {
-        anyhow::bail!("basket admission writer received loss-governor-halt evidence")
+        Ok(())
+    }
+
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
+        Ok(())
     }
 
     fn record_requote_throttle(

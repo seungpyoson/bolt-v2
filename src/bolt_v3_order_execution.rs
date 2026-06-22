@@ -739,11 +739,11 @@ mod tests {
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
             BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3LossGovernorHaltEvidence,
-            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-            BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
+            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+            BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+            BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
         bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
@@ -1057,8 +1057,19 @@ mod tests {
             anyhow::bail!("recording order-execution writer received exit-decision evidence")
         }
 
-        fn record_loss_governor_halt(&self, _halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
-            anyhow::bail!("recording order-execution writer received loss-governor-halt evidence")
+        fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_loss_governor_halt(
+            &self,
+            _evidence: &BoltV3LossGovernorHaltEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
+            Ok(())
         }
 
         fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {

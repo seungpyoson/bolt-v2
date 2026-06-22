@@ -84,7 +84,7 @@ use nautilus_model::{
         TradeTick, option_chain::StrikeRange,
     },
     enums::{BarIntervalType, BookType},
-    identifiers::{ClientId, InstrumentId, OptionSeriesId, StrategyId, Venue},
+    identifiers::{AccountId, ClientId, InstrumentId, OptionSeriesId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     types::Price,
 };
@@ -117,15 +117,14 @@ use crate::{
         resolve_root_relative_path,
     },
     bolt_v3_decision_evidence::{
-        BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM, BoltV3AdmissionDecisionEvidence,
-        BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3LossGovernorHaltEvidence,
-        BoltV3LossHaltReason, BoltV3LossSnapshotStaleReason, BoltV3OrderIntentEvidence,
-        BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-        BoltV3SubmitReservationMetadataEvidence, BoltV3TradingState,
+        BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
+        BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
+        BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
+        BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
-        loss_snapshot_source_to_evidence, read_submit_reservation_recovery_evidence,
+        read_submit_reservation_recovery_evidence,
     },
     bolt_v3_iv::{
         config::IvRootConfig,
@@ -147,8 +146,7 @@ use crate::{
         KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
     },
     bolt_v3_loss_governor::{
-        LossAdmissionDecision, LossGovernorPolicy, LossHaltReason, LossSnapshot,
-        LossSnapshotStaleReason, evaluate_loss_admission,
+        LossGovernorPolicy, LossSnapshot, evaluate_loss_admission,
         evaluate_loss_admission_with_observations,
     },
     bolt_v3_loss_halt_actions::{
@@ -164,6 +162,10 @@ use crate::{
     bolt_v3_loss_runtime_feed::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
+    },
+    bolt_v3_order_reject_observer_feed::{
+        BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
+        subscribe_order_reject_observer_feed,
     },
     bolt_v3_position_sizer::{
         FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
@@ -217,6 +219,8 @@ pub struct BoltV3LiveNodeRuntime {
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
+    order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     position_sizer_venue_spendability_source:
@@ -2416,7 +2420,15 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_loss_governor_halt(&self, _halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(&self, _evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
         Ok(())
     }
 
@@ -2430,6 +2442,8 @@ struct BoltV3LiveNodeRuntimeFeeds {
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
+    order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     position_sizer_venue_spendability_source:
@@ -2455,6 +2469,8 @@ impl BoltV3LiveNodeRuntime {
             loss_halt_action_policy: feeds.loss_halt_action_policy,
             loss_runtime_feed: feeds.loss_runtime_feed,
             loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
+            order_reject_observer_feed: feeds.order_reject_observer_feed,
+            order_reject_observer_feed_subscription: feeds.order_reject_observer_feed_subscription,
             position_sizer_runtime_feed: feeds.position_sizer_runtime_feed,
             position_sizer_runtime_feed_subscription: feeds
                 .position_sizer_runtime_feed_subscription,
@@ -2930,6 +2946,11 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn loss_governor_runtime_feed_configured(&self) -> bool {
         self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
+    }
+
+    pub fn order_reject_observer_feed_configured(&self) -> bool {
+        self.order_reject_observer_feed.is_some()
+            && self.order_reject_observer_feed_subscription.is_some()
     }
 
     pub fn nt_risk_trading_state(&self) -> TradingState {
@@ -5079,6 +5100,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let position_sizer_runtime_feed_config =
         position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
+    let order_reject_observer_account_id = order_reject_observer_account_id_from_loaded(loaded);
     let position_sizer_venue_spendability_source =
         position_sizer_venue_spendability_source_config_from_loaded(loaded)?;
     let submit_reservation_recovery = if position_sizer_runtime_feed_config.is_some() {
@@ -5108,6 +5130,18 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                     submit_admission.clone(),
                 )));
                 let subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
+    let (order_reject_observer_feed, order_reject_observer_feed_subscription) =
+        match order_reject_observer_account_id {
+            Some(account_id) => {
+                let feed = Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
+                    decision_evidence.clone(),
+                    account_id,
+                )));
+                let subscription = subscribe_order_reject_observer_feed(feed.clone());
                 (Some(feed), Some(subscription))
             }
             None => (None, None),
@@ -5219,15 +5253,13 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         let seeded_state = protection.borrow().state().clone();
         sync_nt_trading_state_for_kill_switch(&mut node, &seeded_state);
     }
-    let loss_halt_action_handler = match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
-        (Some(policy), Some(action_policy)) => Some(loss_governor_halt_action_handler_from_node(
-            &node,
-            policy,
-            *action_policy,
-            decision_evidence.clone(),
-        )),
-        _ => None,
-    };
+    let loss_halt_action_handler =
+        match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
+            (Some(policy), Some(action_policy)) => Some(
+                loss_governor_halt_action_handler_from_node(&node, policy, *action_policy),
+            ),
+            _ => None,
+        };
     let (loss_runtime_feed, loss_runtime_feed_subscription) =
         match loss_governor_runtime_feed_config_from_loaded(loaded)? {
             Some(config) => {
@@ -5251,6 +5283,8 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             loss_halt_action_policy,
             loss_runtime_feed,
             loss_runtime_feed_subscription,
+            order_reject_observer_feed,
+            order_reject_observer_feed_subscription,
             position_sizer_runtime_feed,
             position_sizer_runtime_feed_subscription,
             position_sizer_venue_spendability_source,
@@ -5310,6 +5344,12 @@ fn position_sizer_runtime_feed_config_from_loaded(
         startup_observed_at_ns,
         dedupe_retention_ns: pool.dedupe_retention_ns,
     })
+}
+
+fn order_reject_observer_account_id_from_loaded(loaded: &LoadedBoltV3Config) -> Option<AccountId> {
+    let pools = loaded.root.risk.capital_pools.as_ref()?;
+    let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
+    Some(pool.account_id)
 }
 
 fn position_sizer_venue_spendability_source_config_from_loaded(
@@ -5814,14 +5854,13 @@ fn loss_governor_halt_action_handler_from_node(
     node: &LiveNode,
     loss_policy: LossGovernorPolicy,
     action_policy: LossGovernorHaltActionPolicy,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> LossGovernorHaltActionHandler {
     // The handler only needs to read and flip NT's `RiskEngine` trading state; the
     // node is solely the source of that engine handle. Delegate to the node-free
-    // core via trading-state accessors so the halt behaviour (including the
-    // fail-loud evidence-write error path) can be exercised without building a
-    // `NautilusKernel`, whose logging init claims the process-global `log` slot and
-    // is mutually exclusive with a test's capturing logger.
+    // core via trading-state accessors so the halt behaviour can be exercised
+    // without building a `NautilusKernel`, whose logging init claims the
+    // process-global `log` slot and is mutually exclusive with a test's
+    // capturing logger.
     let read_engine = node.kernel().risk_engine().clone();
     let write_engine = read_engine.clone();
     loss_governor_halt_action_handler(
@@ -5829,7 +5868,6 @@ fn loss_governor_halt_action_handler_from_node(
         Rc::new(move |state| write_engine.borrow_mut().set_trading_state(state)),
         loss_policy,
         action_policy,
-        decision_evidence,
     )
 }
 
@@ -5842,7 +5880,6 @@ fn loss_governor_halt_action_handler(
     set_trading_state: Rc<dyn Fn(TradingState)>,
     loss_policy: LossGovernorPolicy,
     action_policy: LossGovernorHaltActionPolicy,
-    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> LossGovernorHaltActionHandler {
     Rc::new(move |snapshot, now_ns, source_observations| {
         let decision = evaluate_loss_admission_with_observations(
@@ -5859,131 +5896,11 @@ fn loss_governor_halt_action_handler(
         if let Some(target_state) =
             next_loss_governor_trading_state(&action_policy, current_state, &decision)
         {
-            let evidence = BoltV3LossGovernorHaltEvidence::from_loss_governor_halt(
-                &loss_policy,
-                snapshot,
-                &decision,
-                current_state,
-                target_state,
-                now_ns,
-            );
-            if let Err(error) = decision_evidence.record_loss_governor_halt(&evidence) {
-                // Surface a lost halt-evidence write at the highest non-panicking
-                // severity. The loss-governor halt itself MUST still fire below; an
-                // evidence-write failure must never be allowed to scroll past as a
-                // low-severity warning or, worse, be silently swallowed.
-                log::error!(
-                    "bolt-v3 loss governor halt evidence write failed: source={} previous_trading_state={:?} target_trading_state={:?} error={error:#}",
-                    evidence.source,
-                    current_state,
-                    target_state
-                );
-            }
-            // A logging/evidence-write failure must NEVER skip a loss-governor halt:
-            // apply the trading-state transition unconditionally.
+            // Apply the trading-state transition unconditionally — the
+            // loss-governor halt itself MUST always fire.
             set_trading_state(target_state);
         }
     })
-}
-
-impl BoltV3LossGovernorHaltEvidence {
-    fn from_loss_governor_halt(
-        policy: &LossGovernorPolicy,
-        snapshot: Option<&LossSnapshot>,
-        decision: &LossAdmissionDecision,
-        previous_trading_state: TradingState,
-        target_trading_state: TradingState,
-        now_ns: u64,
-    ) -> Self {
-        Self {
-            observed_at_ns: snapshot
-                .map(|snapshot| snapshot.observed_at_ns)
-                .unwrap_or(now_ns),
-            source: snapshot.map_or_else(
-                || BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM.to_string(),
-                |snapshot| snapshot.source.clone(),
-            ),
-            halt_reasons: decision
-                .halt_reasons
-                .iter()
-                .copied()
-                .map(loss_halt_reason_to_evidence)
-                .collect(),
-            snapshot_observed_at_ns: decision.diagnostics.snapshot_observed_at_ns,
-            admission_now_ns: decision.diagnostics.admission_now_ns,
-            snapshot_age_ns: decision.diagnostics.snapshot_age_ns,
-            snapshot_source: decision
-                .diagnostics
-                .snapshot_source
-                .as_deref()
-                .map(loss_snapshot_source_to_evidence),
-            per_trade_pnl_present: decision.diagnostics.per_trade_pnl_present,
-            daily_pnl_present: decision.diagnostics.daily_pnl_present,
-            rolling_pnl_present: decision.diagnostics.rolling_pnl_present,
-            current_equity_present: decision.diagnostics.current_equity_present,
-            peak_equity_present: decision.diagnostics.peak_equity_present,
-            last_account_state_observed_at_ns: decision
-                .diagnostics
-                .last_account_state_observed_at_ns,
-            last_portfolio_snapshot_observed_at_ns: decision
-                .diagnostics
-                .last_portfolio_snapshot_observed_at_ns,
-            last_position_event_observed_at_ns: decision
-                .diagnostics
-                .last_position_event_observed_at_ns,
-            per_trade_pnl: snapshot
-                .and_then(|snapshot| snapshot.per_trade_pnl.map(|v| v.to_string())),
-            daily_pnl: snapshot.and_then(|snapshot| snapshot.daily_pnl.map(|v| v.to_string())),
-            rolling_pnl: snapshot.and_then(|snapshot| snapshot.rolling_pnl.map(|v| v.to_string())),
-            current_equity: snapshot
-                .and_then(|snapshot| snapshot.current_equity.map(|v| v.to_string())),
-            peak_equity: snapshot.and_then(|snapshot| snapshot.peak_equity.map(|v| v.to_string())),
-            max_per_trade_loss: policy.max_per_trade_loss.map(|value| value.to_string()),
-            max_daily_loss: policy.max_daily_loss.map(|value| value.to_string()),
-            max_rolling_loss: policy.max_rolling_loss.map(|value| value.to_string()),
-            max_drawdown: policy.max_drawdown.map(|value| value.to_string()),
-            max_snapshot_age_ns: policy.max_snapshot_age_ns,
-            stale_reason: decision
-                .diagnostics
-                .stale_reason
-                .map(loss_snapshot_stale_reason_to_evidence),
-            previous_trading_state: trading_state_to_evidence(previous_trading_state),
-            target_trading_state: trading_state_to_evidence(target_trading_state),
-            subsystem: BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM.to_string(),
-        }
-    }
-}
-
-fn trading_state_to_evidence(state: TradingState) -> BoltV3TradingState {
-    match state {
-        TradingState::Active => BoltV3TradingState::Active,
-        TradingState::Halted => BoltV3TradingState::Halted,
-        TradingState::Reducing => BoltV3TradingState::Reducing,
-    }
-}
-
-fn loss_halt_reason_to_evidence(reason: LossHaltReason) -> BoltV3LossHaltReason {
-    match reason {
-        LossHaltReason::PerTradeLossLimit => BoltV3LossHaltReason::PerTradeLossLimit,
-        LossHaltReason::DailyLossLimit => BoltV3LossHaltReason::DailyLossLimit,
-        LossHaltReason::RollingLossLimit => BoltV3LossHaltReason::RollingLossLimit,
-        LossHaltReason::MaxDrawdownLimit => BoltV3LossHaltReason::MaxDrawdownLimit,
-        LossHaltReason::StaleLossSnapshot => BoltV3LossHaltReason::StaleLossSnapshot,
-    }
-}
-
-fn loss_snapshot_stale_reason_to_evidence(
-    reason: LossSnapshotStaleReason,
-) -> BoltV3LossSnapshotStaleReason {
-    match reason {
-        LossSnapshotStaleReason::MissingSnapshot => BoltV3LossSnapshotStaleReason::MissingSnapshot,
-        LossSnapshotStaleReason::SourceEmpty => BoltV3LossSnapshotStaleReason::SourceEmpty,
-        LossSnapshotStaleReason::FutureDated => BoltV3LossSnapshotStaleReason::FutureDated,
-        LossSnapshotStaleReason::AgeExceeded => BoltV3LossSnapshotStaleReason::AgeExceeded,
-        LossSnapshotStaleReason::MissingRequiredField => {
-            BoltV3LossSnapshotStaleReason::MissingRequiredField
-        }
-    }
 }
 
 fn required_loss_governor_decimal(
@@ -6378,242 +6295,6 @@ mod tests {
 
     static NEXT_TEST_CATALOG_ID: AtomicU64 = AtomicU64::new(0);
 
-    #[derive(Debug, Default)]
-    struct RecordingLossGovernorDecisionEvidenceWriter {
-        halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
-    }
-
-    impl RecordingLossGovernorDecisionEvidenceWriter {
-        fn halts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
-            self.halts
-                .lock()
-                .expect("loss governor evidence recorder mutex poisoned")
-                .clone()
-        }
-    }
-
-    /// Decision-evidence writer test-double whose loss-governor halt write always
-    /// fails, while still capturing the evidence it was handed. Used to prove the
-    /// halt path neither swallows the write failure nor skips the state flip.
-    #[derive(Debug, Default)]
-    struct FailingLossGovernorDecisionEvidenceWriter {
-        halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
-    }
-
-    impl FailingLossGovernorDecisionEvidenceWriter {
-        fn halts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
-            self.halts
-                .lock()
-                .expect("loss governor evidence recorder mutex poisoned")
-                .clone()
-        }
-    }
-
-    impl BoltV3DecisionEvidenceWriter for FailingLossGovernorDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_position_sizer_rebuild_audit(
-            &self,
-            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_loss_governor_halt(&self, halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
-            self.halts
-                .lock()
-                .expect("loss governor evidence recorder mutex poisoned")
-                .push(halt.clone());
-            anyhow::bail!("injected loss-governor halt evidence write failure")
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    /// Process-global `log` sink that retains the level and message text of every
-    /// record emitted while installed. Installed exactly once per test process via
-    /// [`install_capturing_logger`]; observing tests serialize on
-    /// [`CAPTURING_LOGGER_OBSERVERS`] and filter to their own unique message so the
-    /// captured-record assertions are deterministic across the shared global logger.
-    #[derive(Default)]
-    struct CapturingLogger {
-        records: Mutex<Vec<(log::Level, String)>>,
-    }
-
-    impl log::Log for CapturingLogger {
-        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
-            true
-        }
-
-        fn log(&self, record: &log::Record<'_>) {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .push((record.level(), record.args().to_string()));
-        }
-
-        fn flush(&self) {}
-    }
-
-    impl CapturingLogger {
-        fn reset(&self) {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .clear();
-        }
-
-        fn records(&self) -> Vec<(log::Level, String)> {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .clone()
-        }
-    }
-
-    static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> =
-        std::sync::OnceLock::new();
-
-    /// Serializes tests that observe the process-global capturing logger so their
-    /// reset/snapshot windows never interleave with one another. Other modules'
-    /// tests may also emit through the global logger, so observing tests filter the
-    /// captured records to their own unique message rather than asserting counts.
-    static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
-
-    /// Installs (once) and returns the process-global capturing logger, ensuring
-    /// every level reaches it. Idempotent across the many tests in this module.
-    ///
-    /// Panics (fail loud) if some other logger already owns the global slot, since
-    /// the level-severity assertions in the dependent test would otherwise silently
-    /// observe an empty capture and produce a misleading failure.
-    fn install_capturing_logger() -> &'static CapturingLogger {
-        static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let logger =
-            CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
-        let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
-        assert!(
-            installed,
-            "capturing logger could not claim the global log slot; another logger is installed"
-        );
-        log::set_max_level(log::LevelFilter::Trace);
-        logger
-    }
-
-    impl BoltV3DecisionEvidenceWriter for RecordingLossGovernorDecisionEvidenceWriter {
-        fn record_strategy_input_snapshot(
-            &self,
-            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_admission_decision(
-            &self,
-            _decision: &BoltV3AdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_basket_admission_decision(
-            &self,
-            _decision: &BoltV3BasketAdmissionDecisionEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_position_sizer_rebuild_audit(
-            &self,
-            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_metadata(
-            &self,
-            _metadata: &BoltV3SubmitReservationMetadataEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_submit_reservation_fill(
-            &self,
-            _fill: &BoltV3SubmitReservationFillEvidence,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
-            anyhow::bail!("loss-governor recorder received entry-skip evidence")
-        }
-
-        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
-            anyhow::bail!("loss-governor recorder received exit-decision evidence")
-        }
-
-        fn record_loss_governor_halt(&self, halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
-            self.halts
-                .lock()
-                .expect("loss governor evidence recorder mutex poisoned")
-                .push(halt.clone());
-            Ok(())
-        }
-
-        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
-            anyhow::bail!("loss-governor recorder received requote-throttle evidence")
-        }
-    }
-
     #[test]
     fn startup_rebuild_recovers_known_submit_reservation_from_nt_cache() {
         let temp = tempfile::tempdir().expect("tempdir should create");
@@ -6786,277 +6467,6 @@ mod tests {
             .expect("fixture v3 LiveNode should build");
 
         assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
-    }
-
-    #[test]
-    fn loss_governor_halt_handler_records_one_transition_evidence() {
-        let loaded = fixture_loaded_config();
-        let node = make_bolt_v3_live_node_builder(&loaded)
-            .expect("test LiveNodeBuilder should construct")
-            .build()
-            .expect("test LiveNode should build");
-        let policy = LossGovernorPolicy {
-            max_snapshot_age_ns: 1_000,
-            max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: None,
-            max_rolling_loss: None,
-            max_drawdown: None,
-        };
-        let action_policy = LossGovernorHaltActionPolicy {
-            on_loss_breach_trading_state: LossGovernorTradingStateAction::Reducing,
-            on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction::Halted,
-            recovery_mode: LossGovernorRecoveryMode::Manual,
-            manual_recovery_evidence_max_path_bytes: 256,
-        };
-        let writer = Arc::new(RecordingLossGovernorDecisionEvidenceWriter::default());
-        let handler = loss_governor_halt_action_handler_from_node(
-            &node,
-            policy,
-            action_policy,
-            writer.clone(),
-        );
-        let snapshot = LossSnapshot {
-            source: stringify!(nt_loss_runtime_feed).to_string(),
-            observed_at_ns: 2_000,
-            per_trade_pnl: Some(Decimal::new(-11, 0)),
-            daily_pnl: None,
-            rolling_pnl: None,
-            current_equity: None,
-            peak_equity: None,
-            source_observations: crate::bolt_v3_loss_governor::LossSourceObservationTimestamps {
-                last_account_state_observed_at_ns: Some(1_900),
-                last_portfolio_snapshot_observed_at_ns: Some(2_000),
-                last_position_event_observed_at_ns: Some(1_950),
-            },
-        };
-
-        handler(Some(&snapshot), 2_100, snapshot.source_observations);
-        handler(Some(&snapshot), 2_101, snapshot.source_observations);
-
-        assert_eq!(
-            node.kernel().risk_engine().borrow().trading_state(),
-            TradingState::Reducing
-        );
-        let halts = writer.halts();
-        assert_eq!(
-            halts.len(),
-            1,
-            "repeated evaluation after the same transition must not emit another halt record"
-        );
-        let halt = &halts[0];
-        assert_eq!(halt.observed_at_ns, 2_000);
-        assert_eq!(halt.source, stringify!(nt_loss_runtime_feed));
-        assert_eq!(
-            halt.halt_reasons,
-            vec![BoltV3LossHaltReason::PerTradeLossLimit]
-        );
-        assert_eq!(halt.per_trade_pnl.as_deref(), Some("-11"));
-        assert_eq!(
-            halt.snapshot_source,
-            Some(crate::bolt_v3_decision_evidence::BoltV3LossSnapshotSource::NtLossRuntimeFeed)
-        );
-        assert!(halt.per_trade_pnl_present);
-        assert!(!halt.daily_pnl_present);
-        assert!(!halt.rolling_pnl_present);
-        assert!(!halt.current_equity_present);
-        assert!(!halt.peak_equity_present);
-        assert_eq!(halt.last_account_state_observed_at_ns, Some(1_900));
-        assert_eq!(halt.last_portfolio_snapshot_observed_at_ns, Some(2_000));
-        assert_eq!(halt.last_position_event_observed_at_ns, Some(1_950));
-        assert_eq!(halt.max_per_trade_loss.as_deref(), Some("10"));
-        assert_eq!(halt.previous_trading_state, BoltV3TradingState::Active);
-        assert_eq!(halt.target_trading_state, BoltV3TradingState::Reducing);
-    }
-
-    #[test]
-    fn loss_governor_halt_handler_records_stale_snapshot_diagnostics() {
-        let loaded = fixture_loaded_config();
-        let node = make_bolt_v3_live_node_builder(&loaded)
-            .expect("test LiveNodeBuilder should construct")
-            .build()
-            .expect("test LiveNode should build");
-        let policy = LossGovernorPolicy {
-            max_snapshot_age_ns: 1_000,
-            max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: Some(Decimal::new(25, 0)),
-            max_rolling_loss: Some(Decimal::new(30, 0)),
-            max_drawdown: Some(Decimal::new(40, 0)),
-        };
-        let action_policy = LossGovernorHaltActionPolicy {
-            on_loss_breach_trading_state: LossGovernorTradingStateAction::Reducing,
-            on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction::Halted,
-            recovery_mode: LossGovernorRecoveryMode::Manual,
-            manual_recovery_evidence_max_path_bytes: 256,
-        };
-        let writer = Arc::new(RecordingLossGovernorDecisionEvidenceWriter::default());
-        let handler = loss_governor_halt_action_handler_from_node(
-            &node,
-            policy,
-            action_policy,
-            writer.clone(),
-        );
-        let source_observations = crate::bolt_v3_loss_governor::LossSourceObservationTimestamps {
-            last_account_state_observed_at_ns: Some(1_900),
-            last_portfolio_snapshot_observed_at_ns: Some(2_000),
-            last_position_event_observed_at_ns: Some(1_950),
-        };
-        let snapshot = LossSnapshot {
-            source: stringify!(nt_loss_runtime_feed).to_string(),
-            observed_at_ns: 2_000,
-            per_trade_pnl: Some(Decimal::ZERO),
-            daily_pnl: Some(Decimal::ZERO),
-            rolling_pnl: Some(Decimal::ZERO),
-            current_equity: Some(Decimal::new(1_000, 0)),
-            peak_equity: Some(Decimal::new(1_000, 0)),
-            source_observations,
-        };
-
-        handler(Some(&snapshot), 3_501, source_observations);
-
-        let halts = writer.halts();
-        assert_eq!(halts.len(), 1);
-        let halt = &halts[0];
-        assert_eq!(
-            halt.halt_reasons,
-            vec![BoltV3LossHaltReason::StaleLossSnapshot]
-        );
-        assert_eq!(
-            halt.stale_reason,
-            Some(BoltV3LossSnapshotStaleReason::AgeExceeded)
-        );
-        assert_eq!(halt.snapshot_age_ns, Some(1_501));
-        assert_eq!(halt.max_snapshot_age_ns, 1_000);
-        assert_eq!(
-            halt.snapshot_source,
-            Some(crate::bolt_v3_decision_evidence::BoltV3LossSnapshotSource::NtLossRuntimeFeed)
-        );
-        assert!(halt.per_trade_pnl_present);
-        assert!(halt.daily_pnl_present);
-        assert!(halt.rolling_pnl_present);
-        assert!(halt.current_equity_present);
-        assert!(halt.peak_equity_present);
-        assert_eq!(halt.last_account_state_observed_at_ns, Some(1_900));
-        assert_eq!(halt.last_portfolio_snapshot_observed_at_ns, Some(2_000));
-        assert_eq!(halt.last_position_event_observed_at_ns, Some(1_950));
-        assert_eq!(halt.target_trading_state, BoltV3TradingState::Halted);
-    }
-
-    #[test]
-    fn loss_governor_halt_fires_and_surfaces_evidence_write_failure_at_error() {
-        // Regression guard for the fail-loud invariant on the loss-governor halt
-        // path: when the durable halt-evidence write fails, the halt MUST still
-        // fire (trading state flips) AND the failure MUST be surfaced at error!
-        // severity (never swallowed, never demoted to warn!).
-        let logger = install_capturing_logger();
-        let _observer_guard = CAPTURING_LOGGER_OBSERVERS
-            .lock()
-            .expect("capturing logger observer mutex poisoned");
-        logger.reset();
-
-        // This test installs a process-global capturing logger (above) to assert the
-        // evidence-write failure is surfaced at error!. Building a LiveNode would
-        // initialize NT kernel logging via `log::set_boxed_logger`, which is mutually
-        // exclusive with the capturing logger and fails the build with "a non-Nautilus
-        // logger is already registered" (NT checks this before honoring
-        // bypass_logging). The halt handler only needs to read and flip the trading
-        // state, so exercise the node-free core (`loss_governor_halt_action_handler`)
-        // against a plain trading-state cell — no kernel, no NT logging init, no
-        // conflict. The evidence-write error is still emitted via `log::error!`, so it
-        // reaches the capturing logger. The from-node wrapper is a thin adapter over
-        // this core and stays covered by the kernel-built halt tests above.
-        let trading_state = Rc::new(RefCell::new(TradingState::Active));
-        let policy = LossGovernorPolicy {
-            max_snapshot_age_ns: 1_000,
-            max_per_trade_loss: Some(Decimal::new(10, 0)),
-            max_daily_loss: None,
-            max_rolling_loss: None,
-            max_drawdown: None,
-        };
-        let action_policy = LossGovernorHaltActionPolicy {
-            on_loss_breach_trading_state: LossGovernorTradingStateAction::Reducing,
-            on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction::Halted,
-            recovery_mode: LossGovernorRecoveryMode::Manual,
-            manual_recovery_evidence_max_path_bytes: 256,
-        };
-        // Use a process-unique snapshot source so the captured-record filter never
-        // collides with concurrent tests emitting through the shared global logger.
-        let unique_source = format!(
-            "loss_halt_evidence_write_failure_source_{}",
-            NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::SeqCst)
-        );
-        let writer = Arc::new(FailingLossGovernorDecisionEvidenceWriter::default());
-        let read_state = trading_state.clone();
-        let write_state = trading_state.clone();
-        let handler = loss_governor_halt_action_handler(
-            Rc::new(move || *read_state.borrow()),
-            Rc::new(move |state| *write_state.borrow_mut() = state),
-            policy,
-            action_policy,
-            writer.clone(),
-        );
-        let source_observations = LossSourceObservationTimestamps {
-            last_account_state_observed_at_ns: Some(1_900),
-            last_portfolio_snapshot_observed_at_ns: Some(2_000),
-            last_position_event_observed_at_ns: Some(1_950),
-        };
-        let snapshot = LossSnapshot {
-            source: unique_source.clone(),
-            observed_at_ns: 2_000,
-            per_trade_pnl: Some(Decimal::new(-11, 0)),
-            daily_pnl: None,
-            rolling_pnl: None,
-            current_equity: None,
-            peak_equity: None,
-            source_observations,
-        };
-
-        assert_eq!(
-            *trading_state.borrow(),
-            TradingState::Active,
-            "trading state should start Active before the halt"
-        );
-
-        handler(Some(&snapshot), 2_100, source_observations);
-
-        // (a) The halt fired despite the durable evidence write returning Err: a
-        // logging/write failure must NEVER skip a loss-governor halt.
-        assert_eq!(
-            *trading_state.borrow(),
-            TradingState::Reducing,
-            "loss-governor halt must fire even when evidence write fails"
-        );
-
-        // The failure path was actually entered with the halt evidence (the writer
-        // was handed the halt and then failed), proving we did not skip the write.
-        let halts = writer.halts();
-        assert_eq!(
-            halts.len(),
-            1,
-            "the failing writer must have been handed the halt evidence"
-        );
-        assert_eq!(halts[0].source, unique_source);
-
-        // (b) The write failure was surfaced — and at error! severity, not a
-        // swallowed/demoted warn!. Filter to this test's unique source so other
-        // tests' records on the shared global logger cannot perturb the assertion.
-        let matching: Vec<(log::Level, String)> = logger
-            .records()
-            .into_iter()
-            .filter(|(_, message)| {
-                message.contains("loss governor halt evidence write failed")
-                    && message.contains(&unique_source)
-            })
-            .collect();
-        assert_eq!(
-            matching.len(),
-            1,
-            "the halt evidence-write failure must be surfaced exactly once, not swallowed; got {matching:?}"
-        );
-        assert_eq!(
-            matching[0].0,
-            log::Level::Error,
-            "the halt evidence-write failure must be surfaced at error! severity, not warn!"
-        );
     }
 
     #[test]

@@ -28,8 +28,9 @@ use bolt_v2::{
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3LossGovernorHaltEvidence,
-        BoltV3OrderIntentEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
+        BoltV3PositionSizerRebuildAuditEvidence,
         BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     },
@@ -360,6 +361,14 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
         self.with_state(|state| {
             state.requote_throttle_count += 1;
         })?;
+        Ok(())
+    }
+
+    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
         Ok(())
     }
 }

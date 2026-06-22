@@ -309,6 +309,20 @@ impl TakerPricingState {
             .latest_realized_vol_snapshot_for_surface(surface_id)
     }
 
+    /// Classify the realized-vol staleness gate for a surface at `now_ms`, using the same
+    /// shared single-source classifier as the pricing gate (#885 RCA evidence).
+    pub(crate) fn classify_realized_vol_gate(
+        &self,
+        surface_id: &str,
+        now_ms: u64,
+    ) -> crate::bolt_v3_decision_evidence::BoltV3RvGateResult {
+        crate::bolt_v3_fair_value_pricing::classify_rv_gate(
+            self.fair_value
+                .latest_realized_vol_snapshot_for_surface(surface_id),
+            now_ms,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn clear_latest_realized_vol_snapshot(&mut self) {
         self.fair_value.clear_latest_realized_vol_snapshot();

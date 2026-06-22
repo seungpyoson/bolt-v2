@@ -162,6 +162,14 @@ pub struct BacktestRunGuardReport {
     pub admitted_order_count: u64,
     pub submit_reservation_count: u64,
     pub submit_fill_count: u64,
+    #[serde(default)]
+    pub entry_skip_count: u64,
+    #[serde(default)]
+    pub exit_decision_count: u64,
+    #[serde(default)]
+    pub loss_governor_halt_count: u64,
+    #[serde(default)]
+    pub requote_throttle_count: u64,
     pub signal_quote_received: bool,
     pub realized_volatility_ready: bool,
     pub price_to_beat_received: bool,

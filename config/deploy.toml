@@ -1,0 +1,22 @@
+# Deploy target binding for the ops-launch TargetVerify stage.
+#
+# Every field under [target] is OPTIONAL. The default state is an empty
+# [target] table with NO values, because no deploy instance has been
+# provisioned yet and the launch lane must work before one exists.
+#
+# Resolution and degrade rules (single source of truth: bolt_v3_deploy_target):
+#   - Absent deploy.toml, absent [target], or all of region /
+#     availability_zone / instance_id absent  =>  "no target configured".
+#     The TargetVerify stage degrades gracefully and launch proceeds without
+#     observing the host.
+#   - When region / availability_zone / instance_id are set, TargetVerify
+#     fetches the live host facts over IMDSv2 and FAILS CLOSED if any
+#     configured field does not match, or if the host facts cannot be read.
+#   - name_tag is INFORMATIONAL only (basic IMDSv2 metadata does not expose
+#     instance tags); it is never used to gate launch in this slice.
+#
+# This file is tracked config (NOT live.toml). Do not put real region /
+# availability_zone / instance_id values here until a deploy target exists;
+# real binding values belong with the provisioned instance, not in the repo.
+
+[target]

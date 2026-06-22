@@ -38,6 +38,10 @@ pub struct JsonlAppender {
     writer: Option<File>,
 }
 
+// The bolt-v3 legacy-default fence forbids a `Default` impl on the production
+// surface, so the no-argument `new` is sanctioned with an explicit allow rather
+// than satisfying `clippy::new_without_default` by adding a forbidden `Default`.
+#[allow(clippy::new_without_default)]
 impl JsonlAppender {
     pub fn new() -> Self {
         Self {
@@ -78,12 +82,6 @@ impl JsonlAppender {
         self.current_path = Some(path.to_path_buf());
         self.writer = Some(file);
         Ok(())
-    }
-}
-
-impl Default for JsonlAppender {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

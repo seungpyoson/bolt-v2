@@ -278,6 +278,10 @@ pub struct StrategyRegistry {
     registrations: BTreeMap<&'static str, StrategyRegistration>,
 }
 
+// The bolt-v3 legacy-default fence forbids a `Default` impl on the production
+// surface, so the no-argument `new` is sanctioned with an explicit allow rather
+// than satisfying `clippy::new_without_default` by adding a forbidden `Default`.
+#[allow(clippy::new_without_default)]
 impl StrategyRegistry {
     pub fn new() -> Self {
         Self {
@@ -347,12 +351,6 @@ impl StrategyRegistry {
 
     pub fn kinds(&self) -> Vec<&'static str> {
         self.registrations.keys().copied().collect()
-    }
-}
-
-impl Default for StrategyRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -431,6 +429,20 @@ mod tests {
             Ok(())
         }
 
+        fn record_entry_skip(
+            &self,
+            _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received entry-skip evidence")
+        }
+
+        fn record_exit_decision(
+            &self,
+            _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received exit-decision evidence")
+        }
+
         fn record_exit_evaluation(
             &self,
             _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
@@ -450,6 +462,13 @@ mod tests {
             _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
         ) -> Result<()> {
             Ok(())
+        }
+
+        fn record_requote_throttle(
+            &self,
+            _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received requote-throttle evidence")
         }
     }
 

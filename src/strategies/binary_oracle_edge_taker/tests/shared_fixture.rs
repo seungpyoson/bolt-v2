@@ -228,6 +228,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_entry_skip(
+        &self,
+        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn record_exit_evaluation(
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
@@ -245,6 +259,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     fn record_order_reject(
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
     ) -> Result<()> {
         Ok(())
     }
@@ -305,6 +326,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         anyhow::bail!("submit reservation fill write failed")
     }
 
+    fn record_entry_skip(
+        &self,
+        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("entry skip write failed")
+    }
+
+    fn record_exit_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("exit decision write failed")
+    }
+
     fn record_exit_evaluation(
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
@@ -324,6 +359,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
     ) -> Result<()> {
         anyhow::bail!("order reject write failed")
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> Result<()> {
+        anyhow::bail!("requote throttle write failed")
     }
 }
 
@@ -397,6 +439,20 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_entry_skip(
+        &self,
+        _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_decision(
+        &self,
+        _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn record_exit_evaluation(
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
@@ -421,6 +477,13 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
     ) -> Result<()> {
         Ok(())
     }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -428,7 +491,11 @@ pub(super) enum RecordedDecisionEvidenceEvent {
     StrategyInput(Box<crate::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot>),
     OrderIntent(Box<crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>),
     AdmissionDecision(crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence),
+    EntrySkip(crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence),
+    ExitDecision(crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence),
     ExitEvaluation(Box<crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence>),
+    LossGovernorHalt(crate::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence),
+    RequoteThrottle(crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence),
 }
 
 #[derive(Debug, Default)]
@@ -515,6 +582,30 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_entry_skip(
+        &self,
+        skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::EntrySkip(skip.clone()));
+        Ok(())
+    }
+
+    fn record_exit_decision(
+        &self,
+        decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::ExitDecision(
+                decision.clone(),
+            ));
+        Ok(())
+    }
+
     fn record_exit_evaluation(
         &self,
         evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
@@ -539,6 +630,19 @@ impl crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         &self,
         _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> Result<()> {
+        self.events
+            .lock()
+            .expect("recording evidence writer mutex poisoned")
+            .push(RecordedDecisionEvidenceEvent::RequoteThrottle(
+                throttle.clone(),
+            ));
         Ok(())
     }
 }
@@ -1537,10 +1641,25 @@ pub(super) fn oracle_venue(
 }
 
 pub(super) fn fast_spot(venue_name: &str, price: f64, observed_ts_ms: u64) -> FastSpotObservation {
+    fast_spot_received(venue_name, price, observed_ts_ms, None)
+}
+
+/// Like [`fast_spot`] but with an explicit `received_ts_ms`. Use this for
+/// expectations compared against observations produced by paths that record the
+/// receive time (signal quotes carry `ts_init`; reference-price quotes carry the
+/// upstream receive timestamp). The bare [`fast_spot`] defaults `received_ts_ms`
+/// to `None`, which matches lead-arbitration outputs and directly-seeded spots.
+pub(super) fn fast_spot_received(
+    venue_name: &str,
+    price: f64,
+    observed_ts_ms: u64,
+    received_ts_ms: Option<u64>,
+) -> FastSpotObservation {
     FastSpotObservation {
         venue: venue_name.to_string(),
         price,
         observed_ts_ms,
+        received_ts_ms,
     }
 }
 

@@ -694,14 +694,6 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
-kind = "number"
-literal = '''9'''
-context = '''const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;'''
-classification = "decision_evidence_legacy_schema_version"
-reason = "This is the previous decision-evidence JSONL envelope schema version used only to skip pre-position-sizer-recovery non-recovery lines while preserving fail-closed recovery-record parsing; it is a compatibility marker, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"strategy_input_snapshot"'''
 context = '''pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";'''
@@ -839,14 +831,6 @@ reason = "JSONL envelope discriminator for exit-evaluation records; part of the 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
-literal = '''"exit_evaluation"'''
-context = '''"exit_evaluation" => {'''
-classification = "decision_evidence_record_kind_match"
-reason = "recovery/chain reader match arm for the exit-evaluation JSONL discriminator; stable audit schema label, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "string"
 literal = '''"bolt_v3.exit_evaluation"'''
 context = '''pub const BOLT_V3_EXIT_EVALUATION_GATE_ID: &str = "bolt_v3.exit_evaluation";'''
 classification = "decision_evidence_gate_id"
@@ -863,14 +847,6 @@ reason = "JSONL envelope discriminator for loss-governor-halt records; part of t
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
-literal = '''"loss_governor_halt"'''
-context = '''"loss_governor_halt" => {'''
-classification = "decision_evidence_record_kind_match"
-reason = "recovery/chain reader match arm for the loss-governor-halt JSONL discriminator; stable audit schema label, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "string"
 literal = '''"bolt_v3.loss_governor_halt"'''
 context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";'''
 classification = "decision_evidence_gate_id"
@@ -883,14 +859,6 @@ literal = '''"order_reject"'''
 context = '''pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";'''
 classification = "decision_evidence_record_kind"
 reason = "JSONL envelope discriminator for order-reject records; part of the audit-record contract, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "string"
-literal = '''"order_reject"'''
-context = '''"order_reject" => {'''
-classification = "decision_evidence_record_kind_match"
-reason = "recovery/chain reader match arm for the order-reject JSONL discriminator; stable audit schema label, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -14900,8 +14868,8 @@ reason = "Runtime config schema key or enum label for reference_current_price pa
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''11'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;'''
+literal = '''13'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 13;'''
 classification = "decision_evidence_schema_contract"
 reason = "Decision-evidence JSONL schema/control literal; it defines audit-record compatibility, not operator runtime configuration."
 
@@ -18019,6 +17987,14 @@ reason = "Unix file mode for non-secret runtime files a service user must read (
 
 [[allowed]]
 path = "src/bolt_v3_atomic_io.rs"
+kind = "number"
+literal = '''0o640'''
+context = '''pub(crate) const GROUP_READABLE_ARTIFACT_FILE_MODE: u32 = 0o640;'''
+classification = "atomic_io_group_readable_artifact_file_mode"
+reason = "Unix file mode for non-secret artifacts carrying host-identifying metadata (launch-identity pid + region/AZ/instance-id): owner+group readable so ops status works, but not world-readable (sits between PRIVATE_ARTIFACT_FILE_MODE 0o600 and RUNTIME_CONFIG_FILE_MODE 0o644). It is a code constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
 kind = "string"
 literal = '''"{prefix}.{}.{timestamp_ns}.{counter}"'''
 context = '''"{prefix}.{}.{timestamp_ns}.{counter}",'''
@@ -18488,6 +18464,358 @@ literal = '''"order_template"'''
 context = '''"order_template",'''
 classification = '''kill_switch_flatten_order_template_diagnostic_field'''
 reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"deploy.toml"'''
+context = '''const DEPLOY_TARGET_FILE_NAME: &str = "deploy.toml";'''
+classification = '''deploy_target_config_file_name'''
+reason = '''Fixed name of the tracked deploy-target binding file loaded from the ops config root; a stable config-file name, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"launch-identity.json"'''
+context = '''const LAUNCH_IDENTITY_FILE_NAME: &str = "launch-identity.json";'''
+classification = '''launch_identity_artifact_file_name'''
+reason = '''Fixed name of the durable launch-identity artifact written at node start under the catalog directory and read by ops status; a stable artifact-file name, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''const LAUNCH_IDENTITY_MAX_BYTES: u64 = 64 * 1024;'''
+classification = '''launch_identity_artifact_byte_cap'''
+reason = '''Upper-bound byte cap (64 KiB) on the bounded read of the launch-identity artifact to guard against a corrupt or oversized file; a defensive read limit, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1024'''
+context = '''const LAUNCH_IDENTITY_MAX_BYTES: u64 = 64 * 1024;'''
+classification = '''launch_identity_artifact_byte_cap'''
+reason = '''KiB multiplier composing the 64 KiB byte cap on the bounded read of the launch-identity artifact; a defensive read limit, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''.unwrap_or(0);'''
+classification = '''launch_identity_epoch_seconds_fallback'''
+reason = '''Saturating fallback launch timestamp when the system clock is before the Unix epoch while recording the best-effort launch-identity artifact; a defensive clock fallback, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_identity"'''
+context = '''"ops_launch_identity": "written",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary status field emitted when the best-effort launch-identity artifact is written; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"written"'''
+context = '''"ops_launch_identity": "written",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Stable CLI JSON summary status value reported when the best-effort launch-identity artifact is written; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"path"'''
+context = '''"path": written.path.display().to_string(),'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary path field for the written launch-identity artifact; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"sha256"'''
+context = '''"sha256": written.sha256,'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary SHA-256 field for the written launch-identity artifact; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_identity"'''
+context = '''"ops_launch_identity": "write-failed",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary status field emitted to stderr when the best-effort launch-identity write fails; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/instance-id"'''
+context = '''const IMDS_INSTANCE_ID_PATH: &str = "/latest/meta-data/instance-id";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host instance-id; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/placement/availability-zone"'''
+context = '''const IMDS_AVAILABILITY_ZONE_PATH: &str = "/latest/meta-data/placement/availability-zone";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host availability zone; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/placement/region"'''
+context = '''const IMDS_REGION_PATH: &str = "/latest/meta-data/placement/region";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host region; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''number'''
+literal = '''2'''
+context = '''const IMDS_FETCH_TIMEOUT: Duration = Duration::from_secs(2);'''
+classification = '''imdsv2_fetch_safety_timeout'''
+reason = '''Deliberate fixed fail-fast preflight bound on the link-local IMDSv2 handshake (the service is reachable with no network hops), so TargetVerify fails closed quickly when host facts are unreachable. Not asserted to be operator-irrelevant; promoting it to a configured value is deferred to a follow-up if operations ever observe transient-slowness false-fails.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "no-target-configured",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"no-target-configured"'''
+context = '''"ops_launch_target_verify": "no-target-configured",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that no deploy target was configured and TargetVerify degraded; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "matched",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"matched"'''
+context = '''"ops_launch_target_verify": "matched",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that the configured deploy target matched the running host; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "mismatched",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"mismatched"'''
+context = '''"ops_launch_target_verify": "mismatched",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that a configured deploy-target field did not match the running host; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"field_mismatches"'''
+context = '''"field_mismatches": mismatches'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log array of per-field mismatches in a TargetVerify mismatch outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"field"'''
+context = '''"field": mismatch.field,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying a mismatched deploy-target field name; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"configured"'''
+context = '''"configured": mismatch.configured,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying the configured value of a mismatched deploy-target field; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"observed"'''
+context = '''"observed": mismatch.observed,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying the observed value of a mismatched deploy-target field; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"{}"'''
+context = '''println!("{}", serde_json::to_string(&log)?);'''
+classification = '''ops_launch_target_verify_log_format'''
+reason = '''Stdout format token printing the already-serialized TargetVerify outcome JSON line; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.entry_skip"'''
+context = '''pub const BOLT_V3_ENTRY_SKIP_GATE_ID: &str = "bolt_v3.entry_skip";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable entry-skip evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.exit_decision"'''
+context = '''pub const BOLT_V3_EXIT_DECISION_GATE_ID: &str = "bolt_v3.exit_decision";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable exit-decision evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.loss_governor_halt"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable loss-governor halt evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.requote_throttle"'''
+context = '''pub const BOLT_V3_REQUOTE_THROTTLE_GATE_ID: &str = "bolt_v3.requote_throttle";'''
+classification = '''decision_evidence_gate_id'''
+reason = '''Stable gate identifier stamped on durable maker requote-throttle evidence records; part of the JSONL audit schema, not operator runtime configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"entry_skip"'''
+context = '''pub const BOLT_V3_ENTRY_SKIP_RECORD_KIND: &str = "entry_skip";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for entry-skip evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"exit_decision"'''
+context = '''pub const BOLT_V3_EXIT_DECISION_RECORD_KIND: &str = "exit_decision";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for exit-decision evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"loss_governor_halt"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for loss-governor halt evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"requote_throttle"'''
+context = '''pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";'''
+classification = '''decision_evidence_record_kind'''
+reason = '''JSONL envelope discriminator for maker requote-throttle evidence records; it is a stable audit schema tag, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_decision_evidence.rs'''
+kind = '''string'''
+literal = '''"loss_governor"'''
+context = '''pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";'''
+classification = '''decision_evidence_subsystem_label'''
+reason = '''Stable subsystem label embedded in durable loss-governor halt evidence so operators can distinguish the firing subsystem; it is evidence schema text, not runtime configuration.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = '''string'''
+literal = '''"historical_entry_fee_unavailable"'''
+context = '''"historical_entry_fee_unavailable";'''
+classification = '''strategy_entry_block_reason_code'''
+reason = '''Stable entry-skip evidence reason code for missing historical fee evidence at the final pre-submit guard; it classifies a decision outcome and does not configure trading behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker/mod.rs'''
+kind = '''string'''
+literal = '''"one_position_invariant_violation"'''
+context = '''"one_position_invariant_violation";'''
+classification = '''strategy_entry_block_reason_code'''
+reason = '''Stable entry-skip evidence reason code for one-position invariant races at the final pre-submit guard; it classifies a decision outcome and does not configure trading behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''string'''
+literal = '''"yes"'''
+context = '''const REQUOTE_THROTTLE_LEG_YES: &str = "yes";'''
+classification = '''requote_throttle_evidence_leg_label'''
+reason = '''Canonical maker evidence label for the yes/up quote leg; it records which leg was throttled and does not configure quoting behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''string'''
+literal = '''"no"'''
+context = '''const REQUOTE_THROTTLE_LEG_NO: &str = "no";'''
+classification = '''requote_throttle_evidence_leg_label'''
+reason = '''Canonical maker evidence label for the no/down quote leg; it records which leg was throttled and does not configure quoting behavior.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const REQUOTE_THROTTLE_FRESH_SUBMIT_SUBMIT_COST: u64 = 1;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A fresh quote submit consumes exactly one submit-command token; this is a structural accounting unit mirrored from RequoteBudget semantics, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const REQUOTE_THROTTLE_FRESH_SUBMIT_REST_COST: u64 = 1;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A fresh quote submit consumes exactly one venue REST token; this is a structural accounting unit mirrored from RequoteBudget semantics, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const REQUOTE_THROTTLE_CANCEL_RESUBMIT_SUBMIT_COST: u64 = 1;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A cancel/resubmit requote includes one replacement submit command; this is protocol accounting structure, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''2'''
+context = '''const REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST: u64 = 2;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A cancel/resubmit requote includes one cancel REST call and one submit REST call; this is protocol accounting structure, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''const REQUOTE_THROTTLE_CANCEL_SUBMIT_COST: u64 = 0;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A standalone cancel consumes zero submit-command tokens because it does not submit a new order; this is structural accounting, not an operator-tunable value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_maker/mod.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const REQUOTE_THROTTLE_CANCEL_REST_COST: u64 = 1;'''
+classification = '''requote_throttle_structural_unit_cost'''
+reason = '''A standalone cancel consumes exactly one venue REST token; this is structural accounting, not an operator-tunable value.'''
 
 # --- #885 Slice 2: loss-governor stale-halt evidence (RCA #885) ---
 [[allowed]]

@@ -949,11 +949,13 @@ fn forced_flat_submit_cancels_resting_entry_and_recovers_if_entry_fill_races() {
             .expect("test cache should accept resting entry order");
 
         let exit_client_order_id = strategy
-            .try_submit_exit_order(
+            .try_submit_exit_order_for_trigger(
                 1_200,
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-                Some(1_200),
-                None,
+                ExitEvaluationTriggerContext::new(
+                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                    1_200,
+                    None,
+                ),
             )
             .expect("forced-flat exit submit should not fail")
             .expect("forced-flat exit should submit");
@@ -1349,11 +1351,13 @@ fn forced_flat_exit_in_shadow_mode_suppresses_resting_entry_cancel() {
             .expect("test cache should accept resting entry order");
 
         strategy
-            .try_submit_exit_order(
+            .try_submit_exit_order_for_trigger(
                 1_200,
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-                Some(1_200),
-                None,
+                ExitEvaluationTriggerContext::new(
+                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                    1_200,
+                    None,
+                ),
             )
             .expect("forced-flat exit must not error in shadow mode");
 
@@ -2338,7 +2342,11 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 2_000);
 
     let decision = strategy.exit_submission_decision_at(2_000);
-    let fields = strategy.exit_evaluation_log_fields_at(2_000, &decision);
+    let fields = strategy.exit_evaluation_log_fields_at(
+        2_000,
+        ExitEvaluationTriggerContext::unknown(2_000),
+        &decision,
+    );
 
     assert_eq!(fields.market_id.as_deref(), Some("MKT-1"));
     assert_eq!(fields.spot_price, None);

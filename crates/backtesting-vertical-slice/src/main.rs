@@ -411,13 +411,18 @@ fn print_run_guard_report(report: &BacktestRunGuardReport) {
     );
     println!(
         "run_guard_counts = snapshots={} order_intents={} admission_decisions={} \
-         admitted_orders={} submit_reservations={} submit_fills={}",
+         admitted_orders={} submit_reservations={} submit_fills={} entry_skips={} \
+         exit_decisions={} loss_governor_halts={} requote_throttles={}",
         report.strategy_input_snapshot_count,
         report.order_intent_count,
         report.admission_decision_count,
         report.admitted_order_count,
         report.submit_reservation_count,
-        report.submit_fill_count
+        report.submit_fill_count,
+        report.entry_skip_count,
+        report.exit_decision_count,
+        report.loss_governor_halt_count,
+        report.requote_throttle_count
     );
     if let Some(reason) = &report.did_not_arm_reason {
         println!("run_guard_did_not_arm_reason = {reason}");

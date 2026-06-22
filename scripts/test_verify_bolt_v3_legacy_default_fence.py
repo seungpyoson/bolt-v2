@@ -372,6 +372,27 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "let cursor = usize::default();",
                 "let value = maybe_value.unwrap_or_default();",
                 "entry.or_default();",
+                # A hand-written `impl Default` bypasses the derive/`::default(`
+                # patterns, so the fence matches the `impl Default for` form
+                # directly (the StrategyRegistry/Imdsv2HostFactsSource class).
+                "impl Default for RuntimeState {",
+                # A GENERIC `impl<T> Default for ...` interposes a `<T> ` between
+                # `impl` and `Default`, which the older `impl\s+Default` form
+                # could not span; the broadened pattern must still flag it.
+                "impl<T> Default for GenericProd<T> {",
+                # A FULLY-QUALIFIED `impl <path>::Default for ...` — the older
+                # `impl\s+Default` form anchored on the bare `Default` and missed
+                # the `std::default::` / `::core::default::` path prefixes.
+                "impl std::default::Default for QualifiedProd {",
+                "impl ::core::default::Default for LeadingPathProd {",
+                # A `const`-qualified impl interposes `const ` before `Default`.
+                "impl const Default for ConstProd {",
+                # SPACED `::` around the call — rustfmt does not normalize away
+                # operator spacing inside a path call, so the patterns must allow
+                # optional whitespace around `::` for both the `Default::default(`
+                # and the `Type::default(` forms.
+                "let raw = Default :: default();",
+                "let cfg = Foo :: default();",
             ]
         )
 
@@ -391,6 +412,13 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "production type default",
                 "production unwrap_or_default",
                 "production or_default",
+                "production impl Default",
+                "production impl Default",
+                "production impl Default",
+                "production impl Default",
+                "production impl Default",
+                "production Default::default",
+                "production type default",
             ],
         )
 
@@ -464,10 +492,22 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         self.assertIn("src/secrets.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn("src/venue_contract.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn("src/strategies/registry.rs", fence.RUNTIME_SOURCE_PATHS)
+        self.assertIn("src/raw_types.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn(
             STRATEGY_SOURCE_FILE,
             fence.RUNTIME_SOURCE_PATHS,
         )
+
+    def test_current_bolt_src_has_no_legacy_default_violations(self) -> None:
+        self.assertEqual(fence.collect_violations(), [])
+
+    def test_missing_runtime_source_fails_closed(self) -> None:
+        violations = fence.collect_violations(
+            paths=fence.RUNTIME_SOURCE_PATHS + ("src/__nonexistent_runtime_source__.rs",)
+        )
+        missing = [v for v in violations if v.label == "missing expected runtime source"]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0].path, "src/__nonexistent_runtime_source__.rs")
 
 
 def production_text_from_string(source: str) -> str:

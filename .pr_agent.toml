@@ -1,6 +1,6 @@
 [pr_reviewer]
 extra_instructions = """\
-Review against AGENTS.md as the repository governance source. The critical AGENTS.md review rules are inlined here so this reviewer has the required governance context.
+Review against AGENTS.md as the repository governance source. The critical AGENTS.md review rules are inlined here so this reviewer has the required governance context. This mirror is checked by scripts/verify_ai_review_governance.py; update this block when the mirrored AGENTS.md rules change.
 
 Focus on:
 - correctness regressions and edge cases

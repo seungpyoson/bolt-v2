@@ -14,6 +14,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 
 - Do not create new per-agent policy documents unless the target tool is verified to load them and the same policy cannot live in `AGENTS.md`.
 - For tools that do not automatically load `AGENTS.md`, explicitly provide `AGENTS.md` as read-only context when launching them. Include `.specify/memory/constitution.md` only when SpecKit gates or project principles are relevant.
+- `.pr_agent.toml` mirrors the critical AI-review subset for PR-Agent, which cannot load arbitrary repo files in GitHub Actions. Keep that mirror current with this file; `scripts/verify_ai_review_governance.py` checks the mirror in CI.
 - SpecKit and Superpowers are plugins. Their generated prompts may recommend strict TDD; in this repo, use the evidence-driven verification policy below unless the user, active spec, or risk analysis explicitly requires TDD.
 - Do not patch plugin caches as a durable repo fix. Prefer repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters.
 - Known generated-adapter drift: current SpecKit implement prompts may still say to follow TDD. Treat that as lower-priority generated guidance, not as repo policy.

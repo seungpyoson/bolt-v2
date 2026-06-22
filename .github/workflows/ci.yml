@@ -497,6 +497,15 @@ jobs:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
+      - name: Build nextest archive binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
+        env:
+          # Archived integration tests can embed CARGO_BIN_EXE_* paths; cache-hit
+          # runs still need those package binaries present at the managed target dir.
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         env:

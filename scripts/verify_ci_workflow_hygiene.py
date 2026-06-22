@@ -499,6 +499,10 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_SIDECAR_BUILD_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit == 'true'"
+TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
+    'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins'
+)
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
@@ -8507,6 +8511,11 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive cache must use archive path env")
         if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 2:
             errors.append("test-archive build must be skipped on archive cache hit")
+        if (
+            TEST_ARCHIVE_SIDECAR_BUILD_GUARD not in archive_text
+            or TEST_ARCHIVE_SIDECAR_BUILD_COMMAND not in archive_text
+        ):
+            errors.append("test-archive must build CARGO_BIN_EXE sidecars on archive cache hit")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:

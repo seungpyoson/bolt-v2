@@ -523,6 +523,12 @@ jobs:
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
+      - name: Build nextest archive binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         run: |
@@ -7098,6 +7104,20 @@ def main() -> int:
         ),
     )
     assert_error(
+        "test-archive must build CARGO_BIN_EXE sidecars on archive cache hit",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Build nextest archive binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+""",
+            "",
+        ),
+    )
+    assert_error(
         "test-archive must not upload nextest archive artifact",
         replace_once(
             BASE_WORKFLOW,
@@ -8154,26 +8174,19 @@ def main() -> int:
         "ci.yml test-archive install-action fallback must be none",
         replace_once(
             BASE_WORKFLOW,
-            '          fallback: none\n      - name: Build nextest archive',
-            '          fallback: cargo-install\n      - name: Build nextest archive',
+            '          fallback: none\n      - name: Build nextest archive binary sidecars',
+            '          fallback: cargo-install\n      - name: Build nextest archive binary sidecars',
         ),
     )
     assert_error(
         'ci.yml test-archive must install cargo-nextest before just test-archive "$NEXTEST_ARCHIVE_PATH"',
         replace_once(
             BASE_WORKFLOW,
-            """      - name: Install cargo-nextest
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
-        with:
-          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
-          fallback: none
-      - name: Build nextest archive""",
-            """      - name: Build nextest archive
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
-        with:
-          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
-          fallback: none""",
+            "      - name: Install cargo-nextest",
+            """      - name: Premature nextest archive build
+        run: |
+          just test-archive "$NEXTEST_ARCHIVE_PATH"
+      - name: Install cargo-nextest""",
         ),
     )
     assert_error(

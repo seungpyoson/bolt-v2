@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
+import time
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -57,6 +60,28 @@ ROOT_INPUT_SAFE_EXCLUDES = (
     "ci/rust-verification.toml",
     "scripts/rust_verification.py",
 )
+
+
+@contextlib.contextmanager
+def temporary_git_directory():
+    tmp = tempfile.mkdtemp()
+    try:
+        yield tmp
+    finally:
+        last_error: OSError | None = None
+        for attempt in range(5):
+            try:
+                shutil.rmtree(tmp)
+                return
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt == 4:
+                    break
+                time.sleep(0.1)
+        if last_error is not None:
+            raise last_error
 
 
 def run(
@@ -219,7 +244,7 @@ def run_fingerprint_expect_failure(repo: pathlib.Path) -> subprocess.CompletedPr
 
 
 def assert_fingerprint_outputs_have_provenance_shape() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
         key, outputs = fingerprint(repo)
         shape = r"^nextest-archive-v2-Linux-X64-test-profile-shards-4-[0-9a-f]{64}$"
@@ -243,7 +268,7 @@ def assert_fingerprint_outputs_have_provenance_shape() -> None:
 
 
 def assert_tree_digest_covers_runtime_inputs_and_mode_bits() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
         first, _ = fingerprint(repo)
 
@@ -267,7 +292,7 @@ def assert_tree_digest_covers_runtime_inputs_and_mode_bits() -> None:
 
 
 def assert_self_governance_changes_affect_digest() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
         first, _ = fingerprint(repo)
 
@@ -285,7 +310,7 @@ def assert_self_governance_changes_affect_digest() -> None:
 
 
 def assert_safe_list_excludes_only_exact_backtester_prefix() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
         first, _ = fingerprint(repo)
 
@@ -304,7 +329,7 @@ def assert_safe_list_excludes_only_exact_backtester_prefix() -> None:
 
 def assert_forbidden_safe_list_entries_fail_closed() -> None:
     for entry in FORBIDDEN_SAFE_EXCLUDES:
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_git_directory() as tmp:
             repo = init_repo(pathlib.Path(tmp))
             write(
                 repo / "ci" / "nextest-fingerprint.toml",
@@ -323,7 +348,7 @@ def assert_forbidden_safe_list_entries_fail_closed() -> None:
 
 def assert_root_inputs_cannot_be_safe_listed() -> None:
     for entry in ROOT_INPUT_SAFE_EXCLUDES:
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_git_directory() as tmp:
             repo = init_repo(pathlib.Path(tmp))
             write(
                 repo / "ci" / "nextest-fingerprint.toml",
@@ -346,7 +371,7 @@ def assert_safe_list_rejects_non_workspace_paths() -> None:
         "package without workspace": "crates/local-helper/",
     }
     for label, entry in cases.items():
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_git_directory() as tmp:
             repo = init_repo(pathlib.Path(tmp))
             if entry == "crates/local-helper/":
                 write(
@@ -375,7 +400,7 @@ edition = "2021"
 
 
 def assert_safe_list_rejects_root_workspace_membership() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_git_directory() as tmp:
         repo = init_repo(
             pathlib.Path(tmp),
             cargo_toml="""
@@ -391,7 +416,7 @@ members = ["crates/backtesting-vertical-slice"]
 
 
 def assert_safe_list_rejects_root_path_dependencies() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_git_directory() as tmp:
         repo = init_repo(
             pathlib.Path(tmp),
             cargo_toml="""
@@ -412,7 +437,7 @@ backtesting-vertical-slice = { path = "crates/backtesting-vertical-slice" }
 
 
 def assert_dirty_worktree_fails_closed() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
         write(repo / "Cargo.toml", (repo / "Cargo.toml").read_text(encoding="utf-8") + "\n# dirty\n")
         result = run_fingerprint_expect_failure(repo)
@@ -429,7 +454,7 @@ def assert_invalid_shards_fail_closed() -> None:
         "non-numeric": FINGERPRINT_CONFIG_TEXT.replace("shards = 4", 'shards = "4"'),
     }
     for label, text in cases.items():
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_git_directory() as tmp:
             repo = init_repo(pathlib.Path(tmp))
             write(repo / "ci" / "nextest-fingerprint.toml", text)
             commit_all(repo, f"invalid shards {label}")
@@ -453,7 +478,7 @@ def assert_missing_or_malformed_config_fails_closed() -> None:
         "malformed toml": ("[nextest_archive\n", "nextest fingerprint config invalid TOML"),
     }
     for label, (text, expected_error) in cases.items():
-        with tempfile.TemporaryDirectory() as tmp:
+        with temporary_git_directory() as tmp:
             repo = init_repo(pathlib.Path(tmp))
             write(repo / "ci" / "nextest-fingerprint.toml", text)
             commit_all(repo, label)
@@ -463,7 +488,7 @@ def assert_missing_or_malformed_config_fails_closed() -> None:
             if expected_error not in result.stderr:
                 raise AssertionError(result.stderr)
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
         write(repo / "ci" / "github-actions-runners.toml", "[meter]\n")
         commit_all(repo, "missing meter prefix")

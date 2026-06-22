@@ -497,6 +497,17 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             fence.RUNTIME_SOURCE_PATHS,
         )
 
+    def test_current_bolt_src_has_no_legacy_default_violations(self) -> None:
+        self.assertEqual(fence.collect_violations(), [])
+
+    def test_missing_runtime_source_fails_closed(self) -> None:
+        violations = fence.collect_violations(
+            paths=fence.RUNTIME_SOURCE_PATHS + ("src/__nonexistent_runtime_source__.rs",)
+        )
+        missing = [v for v in violations if v.label == "missing expected runtime source"]
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0].path, "src/__nonexistent_runtime_source__.rs")
+
 
 def production_text_from_string(source: str) -> str:
     handle = tempfile.NamedTemporaryFile(

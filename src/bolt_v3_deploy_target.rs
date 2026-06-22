@@ -538,6 +538,34 @@ mod tests {
     }
 
     #[test]
+    fn imdsv2_host_facts_source_observe_inside_active_tokio_runtime_returns_observe_error() {
+        // Mirrors secrets::SsmResolverSession's nested-runtime guard tests:
+        // observe() builds and block_on's a current-thread runtime, which Tokio
+        // panics on if called from inside another runtime. The guard converts
+        // that misuse into a structured DeployTargetError::Observe so a launch
+        // never aborts via a Tokio panic. Build the source before the outer
+        // runtime, mirroring the SSM ordering note.
+        let source = Imdsv2HostFactsSource::new();
+        let outer = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("outer current-thread runtime must build for this test");
+        let result = outer.block_on(async { source.observe() });
+        let err = result.expect_err(
+            "observe must return Err instead of panicking when called from \
+             inside an active Tokio runtime",
+        );
+        assert!(
+            matches!(err, DeployTargetError::Observe(_)),
+            "nested-runtime misuse must surface as DeployTargetError::Observe; got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("active Tokio runtime"),
+            "guard error must name the nested-runtime cause; got: {err}"
+        );
+    }
+
+    #[test]
     fn load_deploy_target_missing_file_degrades_to_none() {
         let temp = tempfile::tempdir().expect("tempdir should create");
 

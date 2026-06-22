@@ -63,10 +63,23 @@ DEFAULT_SERVICE = "bolt-v2"
 # overridable at runtime via ``--disk-path``. It is deliberately NOT wired to the
 # TOML config loader so the script stays self-contained and runnable anywhere.
 DISK_PATH_FALLBACK = "/srv/bolt-v2/var/bolt-v3-live/catalog"
-# Keyed deadline calls are production main-loop chokepoints. The registry is
-# mutated only by those caller threads; deadline worker threads never pass a
-# breaker_key, so no lock is required for the single-main-thread runtime path.
+# Keyed deadline calls are production main-loop chokepoints. Most keys
+# (sink:stdout/file/stderr, collector:*) are mutated only by the main caller
+# thread. "sink:file:cleanup" is the lone exception: it is touched only from the
+# sink:file worker (write_to_file's open guard + release_fd_best_effort), never
+# concurrently for the SAME key (the sink:file breaker admits one live worker at a
+# time), and distinct-key dict get/set/pop are atomic under the GIL, so no lock is
+# needed here.
 _DEADLINE_BREAKERS: dict[str, threading.Thread] = {}
+# Per-unit abandoned systemctl child processes (F4). A child wedged in
+# uninterruptible D-state survives SIGKILL until the kernel unblocks it, so
+# kill()+poll() may not reap it; without a gate each interval would spawn another
+# un-reaped child. We register the abandoned child here and the next interval
+# reaps-or-skips it, bounding child processes to <=1 per unit. Unlike
+# _DEADLINE_BREAKERS this is mutated from the collector WORKER thread
+# (collect_service runs inside run_with_deadline), so it needs a lock.
+_COLLECTOR_CHILDREN: dict[str, subprocess.Popen] = {}
+_COLLECTOR_CHILDREN_LOCK = threading.Lock()
 # Matches ``catalog_directory = "<value>"`` (single OR double quoted), tolerant of
 # surrounding whitespace. Anchored on ``catalog_directory`` as a whole word so the
 # neighbouring ``required_catalog_prefix`` key cannot match. Deliberately a
@@ -305,6 +318,18 @@ def collect_service(unit: str) -> CollectorResult:
     # the child WITHOUT a second blocking wait. On a one-shot run the process
     # exits and the OS reaps the orphan; the outer run_with_deadline backstop
     # bounds even the rare case where this call itself does not return promptly.
+    # F4: bound systemctl child PROCESSES under a persistent D-state stall. A child
+    # wedged in uninterruptible D-state survives SIGKILL until the kernel unblocks
+    # it, so the kill()+poll() below may not reap it. Reuse-or-reap: if a prior
+    # child for this unit is still un-reaped, refuse to spawn another (bounding
+    # children to <=1 per unit); a prior that has since been reaped is cleared and
+    # we proceed normally.
+    with _COLLECTOR_CHILDREN_LOCK:
+        prior = _COLLECTOR_CHILDREN.get(unit)
+        if prior is not None:
+            if prior.poll() is None:
+                return None, f"systemctl show skipped: prior child still wedged (pid {prior.pid})"
+            _COLLECTOR_CHILDREN.pop(unit, None)
     try:
         proc = subprocess.Popen(
             command,
@@ -313,6 +338,9 @@ def collect_service(unit: str) -> CollectorResult:
             text=True,
             encoding="utf-8",
             errors="replace",
+            # Own session/process group so a timeout can kill the whole group, not
+            # just the immediate child.
+            start_new_session=True,
         )
     except FileNotFoundError:
         return None, "systemctl unavailable"
@@ -322,20 +350,34 @@ def collect_service(unit: str) -> CollectorResult:
     try:
         stdout_text, stderr_text = proc.communicate(timeout=SYSTEMCTL_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        # Kill and abandon: no second blocking communicate()/wait() that could
-        # hang on a SIGKILL-immune D-state child. A single non-blocking poll()
-        # lets the OS reap it if it has already died, but never blocks.
+        # Kill the whole process GROUP and abandon: no second blocking
+        # communicate()/wait() that could hang on a SIGKILL-immune D-state child.
+        # killpg is best-effort (the group may be gone, or getpgid may fail) and
+        # NEVER raises (falling back to a plain kill); a single non-blocking poll()
+        # reaps it if it has already died. The child is then registered so the NEXT
+        # interval reaps-or-skips it rather than spawning yet another against the
+        # still-wedged host.
         try:
-            proc.kill()
-        except Exception:  # pragma: no cover - child may already be gone
-            pass
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:  # pragma: no cover - no group / child already gone
+            try:
+                proc.kill()
+            except Exception:  # pragma: no cover - child may already be gone
+                pass
         try:
             proc.poll()
         except Exception:  # pragma: no cover - poll is non-blocking, defensive
             pass
+        with _COLLECTOR_CHILDREN_LOCK:
+            _COLLECTOR_CHILDREN[unit] = proc
         return None, f"systemctl show timed out after {SYSTEMCTL_TIMEOUT_SECONDS}s"
     except Exception as exc:  # pragma: no cover - subprocess edge cases
         return None, f"systemctl show failed: {exc}"
+
+    # Successful communicate reaped the child; drop any stale registry entry so a
+    # recovered unit is not wrongly treated as still-wedged next interval.
+    with _COLLECTOR_CHILDREN_LOCK:
+        _COLLECTOR_CHILDREN.pop(unit, None)
 
     returncode = proc.returncode
     if returncode != 0:
@@ -744,6 +786,23 @@ def collect_process(unit: str, main_pid: int | None, exec_main_pid: int | None) 
     return process, "; ".join(errors) if errors else None
 
 
+def _breaker_outstanding(breaker_key: str) -> bool:
+    """True if a prior timed-out worker for ``breaker_key`` is still running.
+
+    Single source of truth for the deadline circuit-breaker's "is this key still
+    wedged?" check — shared by ``run_with_deadline``'s keyed fast-fail and the
+    file-sink open guard in ``write_to_file``. A worker that has FINISHED is popped
+    so the key auto-recovers once the wedged operation drains.
+    """
+    outstanding = _DEADLINE_BREAKERS.get(breaker_key)
+    if outstanding is None:
+        return False
+    if outstanding.is_alive():
+        return True
+    _DEADLINE_BREAKERS.pop(breaker_key, None)
+    return False
+
+
 def run_with_deadline(
     function: Callable[..., Any],
     timeout_seconds: float,
@@ -768,12 +827,11 @@ def run_with_deadline(
     normally. This bounds both per-call latency and abandoned worker count while
     still recovering automatically once the wedged operation drains.
     """
-    if breaker_key is not None:
-        outstanding = _DEADLINE_BREAKERS.get(breaker_key)
-        if outstanding is not None:
-            if outstanding.is_alive():
-                raise TimeoutError(f"timed out after {timeout_seconds}s")
-            _DEADLINE_BREAKERS.pop(breaker_key, None)
+    if breaker_key is not None and _breaker_outstanding(breaker_key):
+        raise TimeoutError(
+            f"breaker open for '{breaker_key}': prior worker still running, "
+            f"fast-failed without waiting (deadline {timeout_seconds}s)"
+        )
 
     box: dict[str, Any] = {}
 
@@ -952,7 +1010,12 @@ def release_fd_best_effort(fd: int) -> None:
                 pass
 
     try:
-        run_with_deadline(_release, CLEANUP_TIMEOUT_SECONDS)
+        # Keyed so a persistent close/unlock stall caps abandoned cleanup workers
+        # (and the fds they hold) at <=1 instead of leaking one per sample; the
+        # write_to_file open guard checks the same key to stop opening new fds while
+        # a prior cleanup is wedged. CLEANUP_TIMEOUT_SECONDS stays < the outer
+        # SINK_TIMEOUT_SECONDS so a committed write is never reclassified.
+        run_with_deadline(_release, CLEANUP_TIMEOUT_SECONDS, breaker_key="sink:file:cleanup")
     except Exception:  # noqa: BLE001 - a stalled/failed cleanup must not change the outcome
         # TimeoutError (stall -> worker abandoned, fd/flock leaked) or any other
         # error: the record is already committed, so cleanup never fails the write.
@@ -1083,6 +1146,18 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
     normal single-failure path the file is rolled back (``ftruncate``) to the last
     clean record boundary so no fragment is left behind.
     """
+    # F3: bound BOTH abandoned cleanup threads AND leaked fds under a persistent
+    # post-commit close/unlock stall. If a prior sample's cleanup close is still
+    # wedged (its worker registered under "sink:file:cleanup"), do NOT open a new
+    # fd — fail the file sink so write_jsonl_line routes this record to stdout. This
+    # caps outstanding file fds at <=1 (only the one the wedged close still holds)
+    # and resumes the file sink automatically once the stall drains (the breaker
+    # check pops the finished worker).
+    if _breaker_outstanding("sink:file:cleanup"):
+        raise OSError(
+            "file sink skipped: prior post-commit cleanup close still wedged; "
+            "routing to stdout until it drains"
+        )
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # O_NONBLOCK on the sink open: if ``out_path`` resolves to a FIFO with no

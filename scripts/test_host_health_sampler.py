@@ -2369,6 +2369,323 @@ class DeadlineBreakerTests(unittest.TestCase):
             release.set()
             self._wait_for_thread_delta_at_most(baseline, 0)
 
+    def test_differential_cleanup_stall_bounds_threads_fds_and_preserves_records(self) -> None:
+        sampler = self.sampler
+        saved_close = sampler.os.close
+        saved_open = sampler.os.open
+        saved_cleanup_timeout = sampler.CLEANUP_TIMEOUT_SECONDS
+        saved_stdout = sys.stdout
+        release = threading.Event()
+        blocked_close_fds: set[int] = set()
+        target_write_fds: set[int] = set()
+        real_close = os.close
+
+        with tempfile.TemporaryDirectory(prefix="host-health-cleanup-bound.") as temp:
+            target = Path(temp) / "out.jsonl"
+            out_buf = io.StringIO()
+
+            def tracking_open(path, flags, *args, **kwargs):
+                fd = saved_open(path, flags, *args, **kwargs)
+                if os.fspath(path) == str(target) and flags & os.O_WRONLY:
+                    target_write_fds.add(fd)
+                return fd
+
+            def stalling_close(fd):
+                if fd in target_write_fds:
+                    target_write_fds.discard(fd)
+                    blocked_close_fds.add(fd)
+                    release.wait()
+                    blocked_close_fds.discard(fd)
+                    return real_close(fd)
+                return saved_close(fd)
+
+            sampler.os.open = tracking_open
+            sampler.os.close = stalling_close
+            sampler.CLEANUP_TIMEOUT_SECONDS = 0.1
+            sys.stdout = out_buf
+            baseline = threading.active_count()
+            try:
+                warnings = []
+                for attempt in range(6):
+                    warnings.append(
+                        sampler.write_jsonl_line(
+                            {"probe": "cleanup-bound", "attempt": attempt},
+                            str(target),
+                            lock_timeout=0.2,
+                        )
+                    )
+
+                self.assertIsNone(warnings[0])
+                for warning in warnings[1:]:
+                    self.assertIsInstance(warning, str)
+                    self.assertIn("fell back to stdout", warning)
+                self.assertLessEqual(
+                    threading.active_count() - baseline,
+                    1,
+                    "persistent cleanup stalls must not abandon one thread per sample",
+                )
+                self.assertLessEqual(
+                    len(blocked_close_fds),
+                    1,
+                    "persistent cleanup stalls must not leak one file fd per sample",
+                )
+
+                file_records = [
+                    json.loads(line)
+                    for line in target.read_text(encoding="utf-8").splitlines()
+                    if line
+                ]
+                stdout_records = [
+                    json.loads(line) for line in out_buf.getvalue().splitlines() if line
+                ]
+                self.assertEqual(file_records, [{"probe": "cleanup-bound", "attempt": 0}])
+                self.assertEqual(
+                    stdout_records,
+                    [
+                        {"probe": "cleanup-bound", "attempt": attempt}
+                        for attempt in range(1, 6)
+                    ],
+                )
+            finally:
+                release.set()
+                self._wait_for_thread_delta_at_most(baseline, 0)
+                sampler.os.close = saved_close
+                sampler.os.open = saved_open
+                sampler.CLEANUP_TIMEOUT_SECONDS = saved_cleanup_timeout
+                sys.stdout = saved_stdout
+
+    def test_differential_cleanup_stall_recovers_file_sink_after_close_drains(self) -> None:
+        sampler = self.sampler
+        saved_close = sampler.os.close
+        saved_open = sampler.os.open
+        saved_cleanup_timeout = sampler.CLEANUP_TIMEOUT_SECONDS
+        saved_stdout = sys.stdout
+        release = threading.Event()
+        blocked_close_fds: set[int] = set()
+        target_write_fds: set[int] = set()
+        real_close = os.close
+
+        with tempfile.TemporaryDirectory(prefix="host-health-cleanup-recover.") as temp:
+            target = Path(temp) / "out.jsonl"
+            out_buf = io.StringIO()
+
+            def tracking_open(path, flags, *args, **kwargs):
+                fd = saved_open(path, flags, *args, **kwargs)
+                if os.fspath(path) == str(target) and flags & os.O_WRONLY:
+                    target_write_fds.add(fd)
+                return fd
+
+            def stalling_close(fd):
+                if fd in target_write_fds:
+                    target_write_fds.discard(fd)
+                    blocked_close_fds.add(fd)
+                    release.wait()
+                    blocked_close_fds.discard(fd)
+                    return real_close(fd)
+                return saved_close(fd)
+
+            sampler.os.open = tracking_open
+            sampler.os.close = stalling_close
+            sampler.CLEANUP_TIMEOUT_SECONDS = 0.1
+            sys.stdout = out_buf
+            baseline = threading.active_count()
+            try:
+                self.assertIsNone(
+                    sampler.write_jsonl_line(
+                        {"probe": "cleanup-recover", "attempt": 0},
+                        str(target),
+                        lock_timeout=0.2,
+                    )
+                )
+                warning = sampler.write_jsonl_line(
+                    {"probe": "cleanup-recover", "attempt": 1},
+                    str(target),
+                    lock_timeout=0.2,
+                )
+                self.assertIsInstance(warning, str)
+                self.assertIn("fell back to stdout", warning)
+
+                release.set()
+                deadline = time.monotonic() + 2.0
+                while blocked_close_fds and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertFalse(blocked_close_fds, "blocked close did not drain")
+
+                self.assertIsNone(
+                    sampler.write_jsonl_line(
+                        {"probe": "cleanup-recover", "attempt": 2},
+                        str(target),
+                        lock_timeout=0.2,
+                    )
+                )
+
+                file_records = [
+                    json.loads(line)
+                    for line in target.read_text(encoding="utf-8").splitlines()
+                    if line
+                ]
+                stdout_records = [
+                    json.loads(line) for line in out_buf.getvalue().splitlines() if line
+                ]
+                self.assertEqual(
+                    file_records,
+                    [
+                        {"probe": "cleanup-recover", "attempt": 0},
+                        {"probe": "cleanup-recover", "attempt": 2},
+                    ],
+                )
+                self.assertEqual(
+                    stdout_records,
+                    [{"probe": "cleanup-recover", "attempt": 1}],
+                )
+            finally:
+                release.set()
+                self._wait_for_thread_delta_at_most(baseline, 0)
+                sampler.os.close = saved_close
+                sampler.os.open = saved_open
+                sampler.CLEANUP_TIMEOUT_SECONDS = saved_cleanup_timeout
+                sys.stdout = saved_stdout
+
+    def test_differential_collect_service_timeout_bounds_wedged_children(self) -> None:
+        sampler = self.sampler
+        saved_popen = sampler.subprocess.Popen
+        saved_getpgid = sampler.os.getpgid
+        constructed = []
+
+        class FakeProc:
+            def __init__(self, *args, **kwargs) -> None:
+                self.pid = 12000 + len(constructed)
+                self.returncode = None
+                constructed.append(self)
+
+            def communicate(self, timeout=None):
+                raise sampler.subprocess.TimeoutExpired(cmd="systemctl", timeout=timeout)
+
+            def poll(self):
+                return None
+
+            def kill(self) -> None:
+                pass
+
+        sampler.subprocess.Popen = FakeProc
+
+        def missing_pgid(_pid):
+            raise ProcessLookupError()
+
+        sampler.os.getpgid = missing_pgid
+        try:
+            for _ in range(5):
+                value, error = sampler.run_collector(
+                    "service",
+                    sampler.collect_service,
+                    "bolt-v2.service",
+                )
+                self.assertIsNone(value)
+                self.assertIsInstance(error, str)
+            self.assertLessEqual(
+                len(constructed),
+                1,
+                "persistent systemctl D-state stalls must not spawn one child per sample",
+            )
+        finally:
+            sampler.subprocess.Popen = saved_popen
+            sampler.os.getpgid = saved_getpgid
+            if hasattr(sampler, "_COLLECTOR_CHILDREN"):
+                with sampler._COLLECTOR_CHILDREN_LOCK:
+                    sampler._COLLECTOR_CHILDREN.clear()
+
+    def test_differential_collect_service_recovers_after_wedged_child_reaps(self) -> None:
+        sampler = self.sampler
+        saved_popen = sampler.subprocess.Popen
+        saved_getpgid = sampler.os.getpgid
+        constructed = []
+        reaped = threading.Event()
+
+        class FakeProc:
+            def __init__(self, *args, **kwargs) -> None:
+                self.pid = 13000 + len(constructed)
+                self.returncode = None
+                constructed.append(self)
+
+            def communicate(self, timeout=None):
+                raise sampler.subprocess.TimeoutExpired(cmd="systemctl", timeout=timeout)
+
+            def poll(self):
+                if self is constructed[0] and reaped.is_set():
+                    self.returncode = 0
+                    return 0
+                return None
+
+            def kill(self) -> None:
+                pass
+
+        sampler.subprocess.Popen = FakeProc
+
+        def missing_pgid(_pid):
+            raise ProcessLookupError()
+
+        sampler.os.getpgid = missing_pgid
+        try:
+            for _ in range(2):
+                value, error = sampler.run_collector(
+                    "service",
+                    sampler.collect_service,
+                    "bolt-v2.service",
+                )
+                self.assertIsNone(value)
+                self.assertIsInstance(error, str)
+            self.assertEqual(
+                len(constructed),
+                1,
+                "second interval should reuse the still-wedged child registry entry",
+            )
+
+            reaped.set()
+            value, error = sampler.run_collector(
+                "service",
+                sampler.collect_service,
+                "bolt-v2.service",
+            )
+            self.assertIsNone(value)
+            self.assertIsInstance(error, str)
+            self.assertEqual(
+                len(constructed),
+                2,
+                "next interval should spawn again after the prior child is reaped",
+            )
+        finally:
+            sampler.subprocess.Popen = saved_popen
+            sampler.os.getpgid = saved_getpgid
+            if hasattr(sampler, "_COLLECTOR_CHILDREN"):
+                with sampler._COLLECTOR_CHILDREN_LOCK:
+                    sampler._COLLECTOR_CHILDREN.clear()
+
+    def test_differential_breaker_fast_fail_message_is_distinct(self) -> None:
+        sampler = self.sampler
+        release = threading.Event()
+        baseline = threading.active_count()
+        key = "test:breaker-message"
+
+        def slow_fn() -> None:
+            release.wait()
+
+        try:
+            with self.assertRaises(TimeoutError) as first_timeout:
+                sampler.run_with_deadline(slow_fn, 0.1, breaker_key=key)
+            real_timeout_message = str(first_timeout.exception)
+            self.assertEqual(real_timeout_message, "timed out after 0.1s")
+
+            with self.assertRaises(TimeoutError) as fast_fail:
+                sampler.run_with_deadline(lambda: None, 0.1, breaker_key=key)
+            fast_fail_message = str(fast_fail.exception)
+            self.assertIn("breaker open", fast_fail_message)
+            self.assertNotEqual(fast_fail_message, real_timeout_message)
+        finally:
+            release.set()
+            self._wait_for_thread_delta_at_most(baseline, 0)
+            if key in sampler._DEADLINE_BREAKERS:
+                sampler._DEADLINE_BREAKERS.pop(key, None)
+
 
 def load_sampler_from(path: Path):
     """Load a sampler module from an ARBITRARY path under a unique module name.

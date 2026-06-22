@@ -969,11 +969,17 @@ def production_text(text: str) -> str:
 
 def scan_root(root: Path) -> list[Finding]:
     findings: list[Finding] = []
+    # Many rules target the same file (1160 rules over ~144 distinct paths), so
+    # cache the production-text strip per path instead of re-stripping ~8x per
+    # file. Scan-local dict: bounded to this scan, naturally released after.
+    text_cache: dict[Path, str] = {}
     for rule in rules_for_root(root):
         path = root / rule.path
         if not path.exists():
             continue
-        text = production_text(path.read_text(encoding="utf-8"))
+        if path not in text_cache:
+            text_cache[path] = production_text(path.read_text(encoding="utf-8"))
+        text = text_cache[path]
         for match in rule.pattern.finditer(text):
             finding = Finding(
                 path=rule.path,

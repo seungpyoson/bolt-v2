@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import functools
 import json
 import pathlib
 import re
@@ -58,6 +59,10 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/rust-probe.yml": "rust_probe",
     "actionlint.yml": "actionlint",
     ".github/workflows/actionlint.yml": "actionlint",
+    "ai-review-glm-pr-agent.yml": "ai_review_glm_pr_agent",
+    ".github/workflows/ai-review-glm-pr-agent.yml": "ai_review_glm_pr_agent",
+    "ai-review-kimi-misospace.yml": "ai_review_kimi_misospace",
+    ".github/workflows/ai-review-kimi-misospace.yml": "ai_review_kimi_misospace",
     "require-reviewer-node.yml": "require_reviewer_node",
     ".github/workflows/require-reviewer-node.yml": "require_reviewer_node",
     "require-resolved-review-threads.yml": "require_resolved_review_threads",
@@ -560,6 +565,11 @@ CI_INSTALL_ACTION_COMMANDS = {
 CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "--quiet", "-q", "--verbose", "-v"}
 
 
+# verify_text re-parses the same shell strings tens of thousands of times across
+# a run (e.g. `fi`, `exit 1`); these helpers are pure functions of a single str,
+# so memoize. An unbounded cache is safe: the distinct-string set is bounded by
+# the workflow corpus and the process is a short-lived CLI/test invocation.
+@functools.cache
 def strip_comment(line: str) -> str:
     quote: str | None = None
     escaped = False
@@ -2194,13 +2204,21 @@ def strip_shell_redirections(tokens: list[str]) -> list[str]:
     return stripped
 
 
-def command_tokens(command: str) -> list[str]:
+# Pure shlex parse of a single command string; memoized because verify_text
+# re-tokenizes the same strings thousands of times. Cache an immutable tuple and
+# copy on return so callers that mutate the list cannot corrupt the cache.
+@functools.cache
+def _command_tokens_cached(command: str) -> tuple[str, ...]:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION_CHARS)
         lexer.whitespace_split = True
-        return split_shell_punctuation_tokens(list(lexer))
+        return tuple(split_shell_punctuation_tokens(list(lexer)))
     except ValueError:
-        return command.split()
+        return tuple(command.split())
+
+
+def command_tokens(command: str) -> list[str]:
+    return list(_command_tokens_cached(command))
 
 
 def command_tokens_with_line_boundaries(command: str) -> list[str]:

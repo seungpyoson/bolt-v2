@@ -1402,8 +1402,8 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
         .expect("a failing exit-evaluation sink must be swallowed, not propagated");
 
     // The trading-side result is structurally identical with and without the sink
-    // failure (the client order id itself is a fresh UUID per run, so compare the
-    // submit/no-submit shape, not the minted id).
+    // failure (the client order id itself is a fresh UUID per run, so compare
+    // whether a submit occurred (Some vs None), not the minted id).
     assert_eq!(control_result.is_some(), failing_result.is_some());
     // The swallow path was exercised: the sink was reached and did error.
     assert_eq!(

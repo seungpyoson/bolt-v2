@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import errno
+import ast
 import importlib.util
 import json
 import os
@@ -28,6 +29,15 @@ def _load(name: str):
 RV = _load("rust_verification")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = Path(__file__).resolve().parent
+
+_REPO_ORIGIN = "repo"
+_TEMP_ORIGIN = "temp"
+
+_REPO_ROOT_NAMES = frozenset({"REPO_ROOT", "SCRIPTS_DIR"})
+_MUTATING_PATH_METHODS = frozenset(
+    {"write_text", "write_bytes", "mkdir", "rmdir", "rmtree", "unlink", "touch"}
+)
+_OS_MUTATORS = frozenset({"makedirs", "remove", "rename", "rmdir"})
 
 
 def _valid_lane_policy() -> dict:
@@ -131,6 +141,310 @@ def test_unknown_lane_policy_keys_rejected() -> None:
 def test_repo_policy_file_declares_lane_policy() -> None:
     data = RV.load_policy(REPO_ROOT)
     assert "local_lane_policy" in data, "ci/rust-verification.toml must declare [local_lane_policy]"
+
+
+def _expr_label(node: ast.AST) -> str:
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return type(node).__name__
+
+
+class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.findings: list[str] = []
+        self.origins: dict[str, str] = {name: _REPO_ORIGIN for name in _REPO_ROOT_NAMES}
+        self.os_modules = {"os"}
+        self.shutil_modules = {"shutil"}
+        self.tempfile_modules = {"tempfile"}
+        self.tempdir_names = {"TemporaryDirectory"}
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            name = alias.asname or alias.name
+            if alias.name == "os":
+                self.os_modules.add(name)
+            elif alias.name == "shutil":
+                self.shutil_modules.add(name)
+            elif alias.name == "tempfile":
+                self.tempfile_modules.add(name)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module == "tempfile":
+            for alias in node.names:
+                if alias.name == "TemporaryDirectory":
+                    self.tempdir_names.add(alias.asname or alias.name)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_isolated_body(node.body)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_isolated_body(node.body)
+
+    def _visit_isolated_body(self, body: list[ast.stmt]) -> None:
+        original_origins = dict(self.origins)
+        try:
+            for statement in body:
+                self.visit(statement)
+        finally:
+            self.origins = original_origins
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        origin = self._origin(node.value)
+        for target in node.targets:
+            self._assign_origin(target, origin)
+        self.visit(node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        origin = self._origin(node.value) if node.value is not None else None
+        self._assign_origin(node.target, origin)
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_For(self, node: ast.For) -> None:
+        origin = self._origin(node.iter)
+        self._assign_origin(node.target, origin)
+        self.visit(node.iter)
+        for statement in node.body:
+            self.visit(statement)
+        for statement in node.orelse:
+            self.visit(statement)
+
+    def visit_With(self, node: ast.With) -> None:
+        original_origins = dict(self.origins)
+        try:
+            for item in node.items:
+                if self._is_temporary_directory_call(item.context_expr):
+                    temp_origin = self._temporary_directory_origin(item.context_expr)
+                    if item.optional_vars is not None:
+                        self._assign_origin(item.optional_vars, temp_origin)
+                    if temp_origin == _REPO_ORIGIN:
+                        self.findings.append(
+                            self._finding(
+                                item.context_expr,
+                                "tempfile.TemporaryDirectory",
+                                "dir=REPO_ROOT",
+                            )
+                        )
+                    continue
+                self.visit(item.context_expr)
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.origins = original_origins
+
+    def visit_Call(self, node: ast.Call) -> None:
+        for operation, target in self._mutating_targets(node):
+            if self._origin(target) == _REPO_ORIGIN:
+                self.findings.append(
+                    self._finding(node, operation, _expr_label(target))
+                )
+        self.generic_visit(node)
+
+    def _assign_origin(self, target: ast.AST, origin: str | None) -> None:
+        if isinstance(target, ast.Name):
+            if target.id in _REPO_ROOT_NAMES:
+                self.origins[target.id] = _REPO_ORIGIN
+            elif origin is None:
+                self.origins.pop(target.id, None)
+            else:
+                self.origins[target.id] = origin
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self._assign_origin(element, origin)
+
+    def _origin(self, node: ast.AST | None) -> str | None:
+        if node is None:
+            return None
+        if isinstance(node, ast.Name):
+            if node.id in _REPO_ROOT_NAMES:
+                return _REPO_ORIGIN
+            return self.origins.get(node.id)
+        if isinstance(node, ast.Attribute):
+            if node.attr in _REPO_ROOT_NAMES:
+                return _REPO_ORIGIN
+            return self._origin(node.value)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            return self._merge_origin(self._origin(node.left), self._origin(node.right))
+        if isinstance(node, ast.JoinedStr):
+            return self._merge_origin(*(self._origin(value) for value in node.values))
+        if isinstance(node, ast.Call):
+            return self._call_origin(node)
+        if isinstance(node, ast.Subscript):
+            return self._origin(node.value)
+        return None
+
+    def _call_origin(self, node: ast.Call) -> str | None:
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "Path" and node.args:
+            return self._origin(node.args[0])
+        if isinstance(func, ast.Attribute):
+            if func.attr in {
+                "absolute",
+                "expanduser",
+                "glob",
+                "iterdir",
+                "joinpath",
+                "relative_to",
+                "resolve",
+                "rglob",
+                "with_name",
+                "with_stem",
+                "with_suffix",
+            }:
+                return self._origin(func.value)
+        return None
+
+    def _merge_origin(self, *origins: str | None) -> str | None:
+        if _REPO_ORIGIN in origins:
+            return _REPO_ORIGIN
+        if _TEMP_ORIGIN in origins:
+            return _TEMP_ORIGIN
+        return None
+
+    def _is_module_call(self, node: ast.Call, modules: set[str]) -> str | None:
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id in modules
+        ):
+            return func.attr
+        return None
+
+    def _is_temporary_directory_call(self, node: ast.AST) -> bool:
+        return isinstance(node, ast.Call) and (
+            (isinstance(node.func, ast.Name) and node.func.id in self.tempdir_names)
+            or self._is_module_call(node, self.tempfile_modules) == "TemporaryDirectory"
+        )
+
+    def _temporary_directory_origin(self, node: ast.Call) -> str:
+        for keyword in node.keywords:
+            if keyword.arg == "dir" and self._origin(keyword.value) == _REPO_ORIGIN:
+                return _REPO_ORIGIN
+        return _TEMP_ORIGIN
+
+    def _mutating_targets(self, node: ast.Call) -> list[tuple[str, ast.AST]]:
+        targets: list[tuple[str, ast.AST]] = []
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            method = func.attr
+            if method in _MUTATING_PATH_METHODS:
+                targets.append((method, func.value))
+            elif method == "rename":
+                targets.append((method, func.value))
+                if node.args:
+                    targets.append((method, node.args[0]))
+            elif method == "open" and self._open_mode_writes(node, 0):
+                targets.append((method, func.value))
+
+            shutil_attr = self._is_module_call(node, self.shutil_modules)
+            if shutil_attr == "rmtree" and node.args:
+                targets.append((shutil_attr, node.args[0]))
+            elif shutil_attr == "move" and node.args:
+                for arg in node.args:
+                    targets.append((shutil_attr, arg))
+            elif (shutil_attr or "").startswith("copy") and len(node.args) >= 2:
+                targets.append((shutil_attr, node.args[1]))
+
+            os_attr = self._is_module_call(node, self.os_modules)
+            if os_attr in _OS_MUTATORS - {"rename"} and node.args:
+                targets.append((os_attr, node.args[0]))
+            elif os_attr == "rename" and node.args:
+                for arg in node.args[:2]:
+                    targets.append((os_attr, arg))
+
+        if isinstance(func, ast.Name) and func.id == "open" and node.args:
+            if self._open_mode_writes(node, 1):
+                targets.append(("open", node.args[0]))
+        return targets
+
+    def _open_mode_writes(self, node: ast.Call, positional_index: int) -> bool:
+        mode: ast.AST | None = None
+        if len(node.args) > positional_index:
+            mode = node.args[positional_index]
+        for keyword in node.keywords:
+            if keyword.arg == "mode":
+                mode = keyword.value
+        return (
+            isinstance(mode, ast.Constant)
+            and isinstance(mode.value, str)
+            and any(flag in mode.value for flag in ("w", "a", "x"))
+        )
+
+    def _finding(self, node: ast.AST, operation: str, target: str) -> str:
+        rel = self.path.relative_to(REPO_ROOT)
+        return f"{rel}:{node.lineno}: {operation} targets shared repo state: {target}"
+
+
+def _justfile_recipe_python_scripts(recipe_name: str) -> set[Path]:
+    scripts: set[Path] = set()
+    in_recipe = False
+    for raw_line in (REPO_ROOT / "justfile").read_text(encoding="utf-8").splitlines():
+        if not in_recipe:
+            in_recipe = raw_line.startswith(f"{recipe_name}:")
+            continue
+        if raw_line and not raw_line[0].isspace():
+            break
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) >= 2 and parts[0] == "python3" and parts[1].startswith("scripts/"):
+            script = REPO_ROOT / parts[1]
+            if script.suffix == ".py":
+                scripts.add(script)
+    return scripts
+
+
+def _cheap_lane_python_scripts() -> set[Path]:
+    policy = RV.load_policy(REPO_ROOT)["local_lane_policy"]
+    labels = policy.get("cheap_lane_labels", [])
+    missing = sorted(
+        label
+        for label in labels
+        if isinstance(label, str)
+        and label.endswith(".py")
+        and not (SCRIPTS_DIR / label).is_file()
+    )
+    assert not missing, f"cheap lane script labels must exist: {missing}"
+
+    scripts = {
+        SCRIPTS_DIR / label
+        for label in labels
+        if isinstance(label, str) and label.endswith(".py")
+    }
+    scripts.update(_justfile_recipe_python_scripts("source-fence-static-inner"))
+    return scripts
+
+
+def _repo_shared_state_write_findings(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    analyzer = _RepoSharedStateWriteAnalyzer(path)
+    analyzer.visit(tree)
+    return analyzer.findings
+
+
+def test_cheap_lanes_do_not_write_repo_root_shared_state() -> None:
+    scripts = _cheap_lane_python_scripts()
+    required = {
+        SCRIPTS_DIR / "test_verify_bolt_v3_runtime_literals.py",
+        SCRIPTS_DIR / "test_verify_bolt_v3_strategy_policy_fence.py",
+    }
+    missing_required = sorted(str(path.relative_to(REPO_ROOT)) for path in required - scripts)
+    assert not missing_required, f"guard did not scan required scripts: {missing_required}"
+
+    findings = [
+        finding
+        for script in sorted(scripts)
+        for finding in _repo_shared_state_write_findings(script)
+    ]
+    assert not findings, (
+        "cheap lane scripts must not write or delete REPO_ROOT-derived shared "
+        "state; use process-private tempfile.TemporaryDirectory() instead:\n  "
+        + "\n  ".join(findings)
+    )
 
 
 def test_subcrate_lane_policy_matches_repo_policy() -> None:
@@ -775,6 +1089,7 @@ def main() -> int:
         test_cheap_lane_max_concurrent_must_be_a_non_negative_integer,
         test_unknown_lane_policy_keys_rejected,
         test_repo_policy_file_declares_lane_policy,
+        test_cheap_lanes_do_not_write_repo_root_shared_state,
         test_subcrate_lane_policy_matches_repo_policy,
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,

@@ -29,48 +29,39 @@ REQUIRED_LAYOUT_KEYS = (
     "BOLT_GROUP",
 )
 _RESIDUAL_MARKER_RE = re.compile(r"@[A-Z_]+@")
-# A layout value is only safe if ``bash source`` and Python ``value.strip()``
-# interpret it identically. This charset covers every current value
-# (/srv/bolt-v2, /opt/bolt-v2, /etc/bolt-v2, bolt) and EXCLUDES every character
-# bash word-splitting/quoting/comment-handling treats specially: whitespace,
-# ``#``, quotes, ``$``, backtick, backslash, ``;``, ``&``, ``|``, ``<``, ``>``,
-# parens, braces, ``*``, ``?``, ``[``, ``]``, ``~``, ``!``. A value matching this
-# regex is the same string under both consumers; anything else fails closed.
-_BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:@%+,=-]+$")
+# A layout line is only safe if ``bash source`` and this parser interpret the
+# entire raw line identically. The raw line must be exactly ``KEY=VALUE`` under
+# ``fullmatch``: any whitespace anywhere (leading, key-side, value-side,
+# trailing, or ``\r`` from CRLF) and any shell metacharacter fails closed. The
+# value charset covers every current value (/srv/bolt-v2, /opt/bolt-v2,
+# /etc/bolt-v2, bolt) while excluding whitespace and shell syntax.
+_LAYOUT_LINE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@%+,=-]+)")
 
 
 def load_layout(path: Path = LAYOUT_PATH) -> dict[str, str]:
     """Parse the bash-sourceable KEY=value layout into a dict.
 
-    Blank lines and ``#`` comments are skipped. Values MUST be bare tokens (no
-    whitespace, quotes, ``#``, or shell metacharacters) so the two consumers of
-    this single source — ``deploy/install.sh`` (bash ``source``) and this parser
-    — cannot interpret a value differently. The value is matched RAW (the
-    partition value is NOT stripped before the fence): any whitespace anywhere
-    in it — leading, trailing, or internal — is rejected, because a space after
-    ``=`` (``BOLT_USER= bolt``) is a real bash-vs-Python divergence. A non-bare
-    value (e.g. one carrying an inline ``# comment``, quotes, or spaces) fails
-    closed with a ValueError naming the offending key.
+    Blank lines and ``#`` comments are skipped. Every other raw line MUST match
+    exactly ``KEY=VALUE`` with a shell-safe bare value, so the two consumers of
+    this single source - ``deploy/install.sh`` (bash ``source``) and this parser
+    - cannot interpret the line differently. Matching the unstripped raw line
+    rejects whitespace anywhere (leading, internal, trailing, or ``\r`` from
+    CRLF) plus shell metacharacters, and fails closed with a ValueError naming
+    the offending line.
     """
     layout: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+    for raw_line in path.read_text(encoding="utf-8", newline="").split("\n"):
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        key, sep, value = line.partition("=")
-        if not sep:
-            raise ValueError(f"{path}: malformed layout line (no '='): {raw_line!r}")
-        # Match the RAW value WITHOUT stripping: a space after `=` (e.g.
-        # `BOLT_USER= bolt`) is a real bash-vs-Python divergence — bash `source`
-        # sets an empty var and runs `bolt` as a command. `_BARE_VALUE_RE`
-        # excludes whitespace, so any leading/trailing/internal space is
-        # rejected; `line.strip()` above already handled line-level/`\r` space.
-        if not _BARE_VALUE_RE.match(value):
+        m = _LAYOUT_LINE_RE.fullmatch(raw_line)
+        if not m:
             raise ValueError(
-                f"{path}: value for {key.strip()!r} is not a bare token (bash "
-                f"`source` and this parser would diverge): {raw_line!r}"
+                f"{path}: malformed layout line (must be exactly KEY=VALUE with "
+                f"a bare value; bash `source` and this parser would diverge): "
+                f"{raw_line!r}"
             )
-        layout[key.strip()] = value
+        layout[m.group(1)] = m.group(2)
     missing = [key for key in REQUIRED_LAYOUT_KEYS if key not in layout]
     if missing:
         raise ValueError(f"{path}: missing required layout keys: {', '.join(missing)}")

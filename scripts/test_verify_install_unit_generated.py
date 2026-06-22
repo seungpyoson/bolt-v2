@@ -101,9 +101,9 @@ def test_bare_values_load_without_error() -> None:
         raise AssertionError(f"bare layout did not load verbatim: {layout!r}")
 
 
-def _assert_non_bare_value_rejected(mutated_line: str, key: str) -> None:
+def _assert_layout_line_rejected(mutated_line: str, key: str) -> None:
     # Write a COMPLETE valid layout (all 5 REQUIRED_LAYOUT_KEYS) with exactly one
-    # line replaced by a non-bare variant, and assert load_layout fails closed
+    # line replaced by an invalid variant, and assert load_layout fails closed
     # with the offending KEY named (so a wrong/generic message fails the test).
     import tempfile
 
@@ -123,28 +123,54 @@ def _assert_non_bare_value_rejected(mutated_line: str, key: str) -> None:
                 )
         else:
             raise AssertionError(
-                f"expected ValueError for non-bare value {mutated_line!r}"
+                f"expected ValueError for invalid layout line {mutated_line!r}"
             )
 
 
 def test_inline_comment_value_rejected() -> None:
     # The headline divergence: bash `source` would set BOLT_USER=bolt and treat
     # ` # service user` as a comment; this parser would keep the whole string.
-    _assert_non_bare_value_rejected("BOLT_USER=bolt # service user", "BOLT_USER")
+    _assert_layout_line_rejected("BOLT_USER=bolt # service user", "BOLT_USER")
 
 
 def test_quoted_value_rejected() -> None:
-    _assert_non_bare_value_rejected('BOLT_HOME="/srv/bolt-v2"', "BOLT_HOME")
+    _assert_layout_line_rejected('BOLT_HOME="/srv/bolt-v2"', "BOLT_HOME")
 
 
 def test_spaced_value_rejected() -> None:
-    _assert_non_bare_value_rejected("BOLT_GROUP=bolt staff", "BOLT_GROUP")
+    _assert_layout_line_rejected("BOLT_GROUP=bolt staff", "BOLT_GROUP")
 
 
 def test_space_after_equals_value_rejected() -> None:
     # bash `source` of `BOLT_USER= bolt` sets BOLT_USER='' and runs `bolt`;
     # a pre-strip parser would silently keep `bolt`. Must fail closed.
-    _assert_non_bare_value_rejected("BOLT_USER= bolt", "BOLT_USER")
+    _assert_layout_line_rejected("BOLT_USER= bolt", "BOLT_USER")
+
+
+def test_key_side_whitespace_rejected() -> None:
+    # bash `source` of `BOLT_USER =bolt` runs `BOLT_USER` as a command and leaves
+    # the variable unset; a key-strip parser silently accepts BOLT_USER='bolt'.
+    _assert_layout_line_rejected("BOLT_USER =bolt", "BOLT_USER")
+
+
+def test_crlf_line_rejected() -> None:
+    # `splitlines()` hides CRLF by stripping `\r`; bash keeps it in the value.
+    import tempfile
+
+    lines = _BARE_VALID_LAYOUT.rstrip("\n").split("\n")
+    contents = "\r\n".join(lines) + "\r\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        layout_path = Path(tmp) / "install-layout.env"
+        layout_path.write_text(contents, encoding="utf-8", newline="")
+        try:
+            RENDERER.load_layout(layout_path)
+        except ValueError as exc:
+            if "BOLT_HOME" not in str(exc):
+                raise AssertionError(
+                    f"fence message must name the offending CRLF line: {exc}"
+                )
+        else:
+            raise AssertionError("expected ValueError for CRLF layout lines")
 
 
 def test_unknown_marker_in_template_errors() -> None:
@@ -218,6 +244,8 @@ def main() -> int:
         test_quoted_value_rejected,
         test_spaced_value_rejected,
         test_space_after_equals_value_rejected,
+        test_key_side_whitespace_rejected,
+        test_crlf_line_rejected,
         test_unknown_marker_in_template_errors,
         test_verifier_passes_on_committed_tree,
         test_verifier_detects_tampered_unit,

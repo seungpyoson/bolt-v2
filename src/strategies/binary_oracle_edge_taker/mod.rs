@@ -7790,7 +7790,7 @@ fn entry_skip_reason_category_from_str(reason: &str) -> Option<BoltV3EntrySkipRe
 /// collapses to one record. `Ord` lets it key a `BTreeMap` without a new import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct ExitOutcomeKey {
-    exit_decision: BoltV3ExitDecisionEvidence,
+    exit_decision: BoltV3ExitDecisionOutcome,
     submission_blocked_reason: Option<&'static str>,
     rv_gate_result: BoltV3RvGateResult,
 }

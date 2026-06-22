@@ -663,7 +663,7 @@ pub struct BoltV3EntrySkipEvidence {
     pub fast_venue_incoherent: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3ExitDecisionOutcome {
     Exit,
@@ -1151,7 +1151,7 @@ pub struct BoltV3ExitEvaluationEvidence {
     pub rv_as_of_minus_now_ms: Option<i64>,
     pub hold_ev_bps: Option<String>,
     pub exit_ev_bps: Option<String>,
-    pub exit_decision: BoltV3ExitDecisionEvidence,
+    pub exit_decision: BoltV3ExitDecisionOutcome,
     pub forced_flat_reasons: Vec<String>,
     pub submission_order_side: Option<String>,
     pub submission_price: Option<String>,

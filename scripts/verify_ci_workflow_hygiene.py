@@ -155,7 +155,7 @@ CI_PROVENANCE_REQUIRED_JOBS = (
     "test-archive",
     "test",
 )
-CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "tag_reuse"}
+CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "noop", "tag_reuse"}
 CI_PROVENANCE_POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -163,6 +163,8 @@ CI_PROVENANCE_POLICY_ROWS = (
     "draft_pr_edited",
     "converted_to_draft",
     "ready_pr",
+    "ready_pr_edited_no_base",
+    "ready_pr_reopened",
     "ready_for_review",
     "workflow_dispatch",
     "main_push",
@@ -177,6 +179,8 @@ CI_PROVENANCE_POLICY_EXPECTED = {
     "draft_pr_edited": "defer",
     "converted_to_draft": "defer",
     "ready_pr": "full",
+    "ready_pr_edited_no_base": "noop",
+    "ready_pr_reopened": "noop",
     "ready_for_review": "full",
     "workflow_dispatch": "full",
     "main_push": "full",
@@ -195,6 +199,12 @@ TAG_SKIPPED_JOBS = (
     "test",
     "build",
     "ci-provenance-emit",
+)
+PR_BASE_CHANGED_EXPR = "github.event.changes.base.ref.from != ''"
+READY_PR_NOOP_EXPR = (
+    "github.event.pull_request.draft == false"
+    " && (github.event.action == 'reopened'"
+    " || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))"
 )
 TAG_SKIP_REQUIRED_JOBS = (
     "deny",
@@ -735,6 +745,9 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
     "&& format('pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
+    "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
+    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) "
+    "&& format('pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
     "&& format('pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
     "&& format('{0}-full-ci', github.ref_name) || github.event_name == 'merge_group' "
     "&& format('mq-{0}', github.ref) || format('{0}-{1}', github.ref_name, github.sha) }}",
@@ -753,6 +766,13 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
 # only form we can prove never cancels a merge_group run.
 SAFE_CANCEL_EVENT_RE = re.compile(
     r"github\.event_name\s*==\s*(['\"])(pull_request|workflow_dispatch)\1"
+)
+KNOWN_SAFE_CANCEL_FORMS = frozenset(
+    {
+        "${{ github.event_name == 'pull_request' && !(github.event.pull_request.draft == false "
+        "&& (github.event.action == 'reopened' || (github.event.action == 'edited' "
+        "&& !(github.event.changes.base.ref.from != '')))) || github.event_name == 'workflow_dispatch' }}"
+    }
 )
 
 
@@ -775,6 +795,8 @@ def cancel_in_progress_is_merge_group_safe(cancel_text: str) -> bool:
     call, literal true, or other event name leaves residue and fails closed."""
     value = _cancel_in_progress_value(cancel_text)
     if value == "false":
+        return True
+    if _normalize_concurrency_text(value) in KNOWN_SAFE_CANCEL_FORMS:
         return True
     match = re.fullmatch(r"\$\{\{(.*)\}\}", value, re.DOTALL)
     if not match:
@@ -944,8 +966,14 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         errors.append("concurrency group must branch on pull_request event")
     if "needs." in group_text or "needs." in cancel_text:
         errors.append("workflow-level concurrency must not reference job outputs")
+    normalized_group = _normalize_concurrency_text(group_text)
+    normalized_cancel = _normalize_concurrency_text(cancel_text)
     if "pr-{0}-deferred" not in group_text or "pr-{0}-full" not in group_text:
         errors.append("concurrency group must split deferred PR runs from full CI runs")
+    if "pr-{0}-noop" not in group_text:
+        errors.append("concurrency group must split noop PR runs from full CI runs")
+    if READY_PR_NOOP_EXPR not in normalized_group:
+        errors.append("concurrency group must use the canonical ready PR noop predicate")
     if "workflow_dispatch" not in group_text or "full" not in group_text:
         errors.append("workflow_dispatch full CI runs must use a full-CI concurrency group")
     if not PR_CONCURRENCY_NON_PR_FALLBACK_RE.search(group_text):
@@ -958,13 +986,10 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
         "github.event_name == 'workflow_dispatch'" in cancel_text
         or 'github.event_name == "workflow_dispatch"' in cancel_text
     )
-    cancel_is_draft_only = (
-        "github.event.pull_request.draft" in cancel_text
-        or "converted_to_draft" in cancel_text
-        or "contains(fromJSON" in cancel_text
-    )
-    if not cancel_has_pull_request or not cancel_has_dispatch or cancel_is_draft_only:
+    if not cancel_has_pull_request or not cancel_has_dispatch:
         errors.append(PR_CONCURRENCY_CANCEL_SCOPE_ERROR)
+    elif READY_PR_NOOP_EXPR not in normalized_cancel or "!(" not in normalized_cancel:
+        errors.append("cancel-in-progress must not cancel noop PR runs")
     if (
         "github.event_name == 'push'" in cancel_text
         or 'github.event_name == "push"' in cancel_text
@@ -983,6 +1008,7 @@ def evaluate_ci_policy(
     event_name: str,
     action: str,
     pull_request_draft: bool,
+    pull_request_base_changed: bool = False,
     ref: str,
 ) -> CiPolicyResult:
     override = policy.get("override")
@@ -1011,6 +1037,12 @@ def evaluate_ci_policy(
         elif action == "ready_for_review":
             path = str(policy["ready_for_review"])
             reason = "ready_for_review"
+        elif not pull_request_draft and action == "edited" and not pull_request_base_changed:
+            path = str(policy["ready_pr_edited_no_base"])
+            reason = "ready_pr_edited_no_base"
+        elif not pull_request_draft and action == "reopened":
+            path = str(policy["ready_pr_reopened"])
+            reason = "ready_pr_reopened"
         elif not pull_request_draft:
             path = str(policy["ready_pr"])
             reason = "ready_pr"
@@ -1128,6 +1160,8 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass github.event.action")
     if '--pull-request-draft "${{ github.event.pull_request.draft || false }}"' not in text:
         errors.append("ci-policy must pass pull_request draft state")
+    if f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"' not in text:
+        errors.append("ci-policy must pass pull_request base-change state")
     if '--ref "${{ github.ref }}"' not in text:
         errors.append("ci-policy must pass github.ref")
     return errors
@@ -7740,14 +7774,22 @@ def check_aarch64_standalone_guard_errors(job_lines: list[str]) -> list[str]:
 
 GATE_TAG_REUSE_CONDITION = '"$policy_path" == "tag_reuse"'
 GATE_FULL_CONDITION = '"$policy_path" == "full"'
+GATE_NOOP_CONDITION = '"$policy_path" == "noop"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
-GATE_DEFERRED_NAME_EXPRESSION = """name: >-
+GATE_NOOP_RUN_CONTEXT_ASSIGNMENT = """noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}\""""
+GATE_NOOP_CONTEXT_FAILURE_CONDITION = '"$noop_run_context" != "true"'
+GATE_NAME_EXPRESSION = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
+          || github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (github.event.action == 'reopened'
+              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+          && 'gate-noop'
           || 'gate' }}"""
 
 
@@ -7896,14 +7938,17 @@ def gate_checks_nextest_fingerprint_reuse(gate_text: str) -> list[str]:
 
 def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     errors: list[str] = []
-    if GATE_DEFERRED_NAME_EXPRESSION not in gate_text:
+    if GATE_NAME_EXPRESSION not in gate_text:
         errors.append("gate must publish gate-deferred for deferred draft PR runs")
+        errors.append("gate must publish gate-noop for ready PR no-code runs")
     if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
         errors.append("gate must read ci_policy_path")
     if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
         errors.append("gate must read full_ci_deferred")
     if GATE_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
         errors.append("gate must compute deferred draft PR run context")
+    if GATE_NOOP_RUN_CONTEXT_ASSIGNMENT not in gate_text:
+        errors.append("gate must compute ready PR noop run context")
     if 'ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"' not in gate_text:
         errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
     if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
@@ -7922,6 +7967,12 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         errors.append("gate must pass deferred full CI without failing stale draft checks")
     if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
         errors.append("gate must fail deferred policy outside deferred draft PR context")
+    noop_sections = top_level_if_body_and_remainder(gate_text, GATE_NOOP_CONDITION)
+    noop_body = noop_sections[0] if noop_sections is not None else None
+    if noop_body is None or not body_exits_zero(noop_body):
+        errors.append("gate must pass ready PR no-code runs under gate-noop")
+    if noop_body is None or not branch_exits_reachable(noop_body, "if", GATE_NOOP_CONTEXT_FAILURE_CONDITION):
+        errors.append("gate must fail noop policy outside ready PR no-code context")
     if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
         errors.append("gate must branch on ci_policy_path full")
     emit_failure_body = branch_body(
@@ -8401,6 +8452,15 @@ def verify_workflow(workflow_text: str) -> list[str]:
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):
             errors.append(f"{job_name} must run just {recipe}")
 
+    if "deny" in jobs:
+        deny_needs = extract_needs(jobs["deny"])
+        if "detector" not in deny_needs:
+            errors.append("deny needs detector")
+        if "ci-policy" not in deny_needs:
+            errors.append("deny needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["deny"]):
+            errors.append("deny must gate on full_ci_required")
+
     if "test-archive" in jobs:
         test_archive_needs = extract_needs(jobs["test-archive"])
         if "detector" not in test_archive_needs:
@@ -8414,6 +8474,13 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.append("test-shards job must not reintroduce nextest archive artifact fan-out")
 
     if "clippy" in jobs:
+        clippy_needs = extract_needs(jobs["clippy"])
+        if "detector" not in clippy_needs:
+            errors.append("clippy needs detector")
+        if "ci-policy" not in clippy_needs:
+            errors.append("clippy needs ci-policy")
+        if not job_gates_on_full_ci_required(jobs["clippy"]):
+            errors.append("clippy must gate on full_ci_required")
         clippy_text = uncommented_text(jobs["clippy"])
         if not job_runs_command(jobs["clippy"], "just fmt-check"):
             errors.append("clippy must run just fmt-check")
@@ -8971,18 +9038,25 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
 
 BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}"
 BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
+BACKTESTER_NOOP_CONDITION = '"$policy_path" == "noop"'
 BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)"""
 BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
+BACKTESTER_NOOP_RUN_CONTEXT_ASSIGNMENT = """noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}\""""
 BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
 BACKTESTER_REQUIRED_GATE_COMMENT = (
     "`backtester-gate` is required-capable; `backtester-gate-deferred` is draft-only feedback and\n"
     "# must not be marked required"
 )
-BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION = """    name: >-
+BACKTESTER_GATE_NAME_EXPRESSION = """    name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'backtester-gate-deferred'
+          || github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (github.event.action == 'reopened'
+              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+          && 'backtester-gate-noop'
           || 'backtester-gate' }}"""
 BACKTESTER_DEFER_ACTION_LIST_RE = re.compile(
     r"contains\(fromJSON\('(?P<actions>\[[^']+\])'\), github\.event\.action\)"
@@ -9049,6 +9123,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '--event-name "${{ github.event_name }}"',
             '--event-action "${{ github.event.action || \'\' }}"',
             '--pull-request-draft "${{ github.event.pull_request.draft || false }}"',
+            f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             '--ref "${{ github.ref }}"',
         ]:
             if required not in policy_text:
@@ -9069,8 +9144,9 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester draft deferral must define backtester-gate")
     else:
         gate_text = uncommented_text(gate)
-        if BACKTESTER_GATE_DEFERRED_NAME_EXPRESSION not in gate_text:
+        if BACKTESTER_GATE_NAME_EXPRESSION not in gate_text:
             errors.append("backtester draft deferral gate must publish backtester-gate-deferred for deferred draft PR runs")
+            errors.append("backtester draft deferral gate must publish backtester-gate-noop for ready PR no-code runs")
         if "ci-policy" not in extract_needs(gate):
             errors.append("backtester draft deferral gate must need ci-policy")
         if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
@@ -9081,6 +9157,14 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             errors.append("backtester draft deferral gate must check needs.ci-policy.result")
         if BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
             errors.append("backtester draft deferral gate must compute deferred draft PR context")
+        if BACKTESTER_NOOP_RUN_CONTEXT_ASSIGNMENT not in gate_text:
+            errors.append("backtester draft deferral gate must compute ready PR noop context")
+        noop_sections = top_level_if_body_and_remainder(gate_text, BACKTESTER_NOOP_CONDITION)
+        noop_body = noop_sections[0] if noop_sections is not None else None
+        if noop_body is None or not body_exits_zero(noop_body):
+            errors.append("backtester draft deferral gate must pass ready PR no-code runs under backtester-gate-noop")
+        if noop_body is None or not branch_exits_reachable(noop_body, "if", '"$noop_run_context" != "true"'):
+            errors.append("backtester draft deferral gate must fail noop policy outside ready PR no-code context")
         defer_sections = top_level_if_body_and_remainder(gate_text, BACKTESTER_DEFER_CONDITION)
         defer_body = defer_sections[0] if defer_sections is not None else None
         if defer_body is None or not body_exits_zero(defer_body):
@@ -9102,6 +9186,10 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
     group_text = backtester_concurrency_group_text(text)
     if "format('bvs-pr-{0}-deferred', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:
         errors.append("backtester draft deferral concurrency must split deferred PR runs from full proof runs")
+    if "format('bvs-pr-{0}-noop', github.event.number)" not in group_text:
+        errors.append("backtester draft deferral concurrency must split noop PR runs from full proof runs")
+    if READY_PR_NOOP_EXPR not in _normalize_concurrency_text(group_text):
+        errors.append("backtester draft deferral concurrency must use the canonical ready PR noop predicate")
     if BACKTESTER_DEFER_ACTION_FILTER not in group_text:
         errors.append("backtester draft deferral concurrency must use the deferred draft action filter")
     defer_action_lists = backtester_defer_action_lists(group_text)

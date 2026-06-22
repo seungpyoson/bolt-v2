@@ -3054,6 +3054,95 @@ def assert_strip_comment_handles_single_quoted_backslash() -> None:
         raise AssertionError(f"single-quoted backslash comment stripping failed: {actual!r}")
 
 
+def assert_command_parse_cache_is_transparent() -> None:
+    """Differential proof that the @functools.cache on strip_comment and
+    _command_tokens_cached is behavior-transparent. A memoization bug that
+    returned a stale or wrong value would make this verifier silently miss a
+    violation (fail open), so the equivalence is fenced by a test rather than
+    argued by inspection.
+
+    Three layers: (1) cached output is byte-identical to the un-memoized
+    function (__wrapped__) over an adversarial corpus; (2) the public wrapper
+    copies on return so a caller mutating the result cannot corrupt the cache;
+    (3) verify_text produces identical findings with the cache live vs bypassed.
+    """
+    verifier = load_verifier()
+
+    # functools.cache is exactly lru_cache(maxsize=None): unbounded, no eviction.
+    if verifier.strip_comment.cache_info().maxsize is not None:
+        raise AssertionError("strip_comment cache must be unbounded (maxsize=None)")
+    if verifier._command_tokens_cached.cache_info().maxsize is not None:
+        raise AssertionError("_command_tokens_cached cache must be unbounded (maxsize=None)")
+
+    # Quoting, escapes, embedded '#', shell punctuation, trailing comments, and
+    # the high-frequency repeats that motivate the cache. __wrapped__ is the
+    # undecorated, cache-free function.
+    samples = [
+        "",
+        "fi",
+        "exit 1",
+        "echo ok # trailing comment",
+        "URL=https://example.com/api#fragment ; cargo build --target-dir /tmp/raw",
+        r"pattern: 'path\' # trailing comment",
+        'echo "a # b" && cargo test',
+        "cargo build && cargo test || echo fail",
+        "a|b|c",
+        "(cd x && cargo build); echo done",
+    ]
+    # Each sample twice so cache hits actually occur, keeping the differential
+    # non-vacuous: a never-hit cache cannot diverge.
+    for sample in samples + samples:
+        if verifier.strip_comment(sample) != verifier.strip_comment.__wrapped__(sample):
+            raise AssertionError(
+                f"strip_comment cache diverged from the un-memoized result for {sample!r}"
+            )
+        if verifier.command_tokens(sample) != list(
+            verifier._command_tokens_cached.__wrapped__(sample)
+        ):
+            raise AssertionError(
+                f"command_tokens cache diverged from the un-memoized result for {sample!r}"
+            )
+    if verifier.strip_comment.cache_info().hits == 0:
+        raise AssertionError("strip_comment cache was never hit; differential is vacuous")
+    if verifier._command_tokens_cached.cache_info().hits == 0:
+        raise AssertionError("_command_tokens_cached cache was never hit; differential is vacuous")
+
+    # Copy-on-return: mutating a returned token list must not corrupt the cache.
+    repeated = "cargo build && cargo test"
+    first = verifier.command_tokens(repeated)
+    first.append("__POISON__")
+    if "__POISON__" in verifier.command_tokens(repeated):
+        raise AssertionError("command_tokens must copy on return; caller mutation corrupted the cache")
+
+    # Verifier-level: a command whose classification flows through the memoized
+    # tokenizer. Findings must be identical -- and non-empty, so the comparison
+    # is meaningful -- with the cache live vs bypassed via __wrapped__.
+    probe = replace_once(
+        BASE_WORKFLOW,
+        "      - run: just fmt-check",
+        "      - run: cargo build --target-dir /tmp/raw # inline comment\n      - run: just fmt-check",
+    )
+    cached_strip_fn = verifier.strip_comment
+    cached_token_fn = verifier._command_tokens_cached
+    findings_live = verifier.verify_text(probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    if not findings_live:
+        raise AssertionError("verifier-level differential probe must produce a finding to be meaningful")
+    hits_before = cached_strip_fn.cache_info().hits + cached_token_fn.cache_info().hits
+    verifier.strip_comment = cached_strip_fn.__wrapped__
+    verifier._command_tokens_cached = cached_token_fn.__wrapped__
+    findings_bypassed = verifier.verify_text(probe, BASE_ACTION, BASE_NEXTEST_CONFIG)
+    hits_after = cached_strip_fn.cache_info().hits + cached_token_fn.cache_info().hits
+    if findings_live != findings_bypassed:
+        raise AssertionError(
+            f"verify_text findings changed when the parse cache was bypassed: "
+            f"{findings_live!r} != {findings_bypassed!r}"
+        )
+    if hits_after != hits_before:
+        raise AssertionError(
+            "parse-cache bypass did not take effect; the verifier-level differential is vacuous"
+        )
+
+
 def assert_workflow_hygiene_reviewer_regressions() -> None:
     verifier = load_verifier()
 
@@ -6505,6 +6594,7 @@ def main() -> int:
     )
     assert_parse_jobs_strips_comments()
     assert_strip_comment_handles_single_quoted_backslash()
+    assert_command_parse_cache_is_transparent()
     assert_required_job_indentation_is_actionable()
     assert_body_exits_requires_top_level_exit()
     assert_nextest_live_node_group_required()

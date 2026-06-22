@@ -29,13 +29,25 @@ REQUIRED_LAYOUT_KEYS = (
     "BOLT_GROUP",
 )
 _RESIDUAL_MARKER_RE = re.compile(r"@[A-Z_]+@")
+# A layout value is only safe if ``bash source`` and Python ``value.strip()``
+# interpret it identically. This charset covers every current value
+# (/srv/bolt-v2, /opt/bolt-v2, /etc/bolt-v2, bolt) and EXCLUDES every character
+# bash word-splitting/quoting/comment-handling treats specially: whitespace,
+# ``#``, quotes, ``$``, backtick, backslash, ``;``, ``&``, ``|``, ``<``, ``>``,
+# parens, braces, ``*``, ``?``, ``[``, ``]``, ``~``, ``!``. A value matching this
+# regex is the same string under both consumers; anything else fails closed.
+_BARE_VALUE_RE = re.compile(r"^[A-Za-z0-9_./:@%+,=-]+$")
 
 
 def load_layout(path: Path = LAYOUT_PATH) -> dict[str, str]:
     """Parse the bash-sourceable KEY=value layout into a dict.
 
-    Blank lines and ``#`` comments are skipped; values are taken verbatim after
-    the first ``=`` (the layout intentionally carries no quotes or spaces).
+    Blank lines and ``#`` comments are skipped. Values MUST be bare tokens (no
+    whitespace, quotes, ``#``, or shell metacharacters) so the two consumers of
+    this single source — ``deploy/install.sh`` (bash ``source``) and this parser
+    — cannot interpret a value differently. A non-bare value (e.g. one carrying
+    an inline ``# comment``, quotes, or spaces) fails closed with a ValueError
+    naming the offending key.
     """
     layout: dict[str, str] = {}
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -45,7 +57,13 @@ def load_layout(path: Path = LAYOUT_PATH) -> dict[str, str]:
         key, sep, value = line.partition("=")
         if not sep:
             raise ValueError(f"{path}: malformed layout line (no '='): {raw_line!r}")
-        layout[key.strip()] = value.strip()
+        value = value.strip()
+        if not _BARE_VALUE_RE.match(value):
+            raise ValueError(
+                f"{path}: value for {key.strip()!r} is not a bare token (bash "
+                f"`source` and this parser would diverge): {raw_line!r}"
+            )
+        layout[key.strip()] = value
     missing = [key for key in REQUIRED_LAYOUT_KEYS if key not in layout]
     if missing:
         raise ValueError(f"{path}: missing required layout keys: {', '.join(missing)}")

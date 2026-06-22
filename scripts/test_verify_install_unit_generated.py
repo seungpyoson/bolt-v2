@@ -75,6 +75,72 @@ def test_missing_required_key_errors() -> None:
             raise AssertionError("expected ValueError for missing LIVE_ENV_DIR")
 
 
+_BARE_VALID_LAYOUT = (
+    "BOLT_HOME=/srv/bolt-v2\nBOLT_INSTALL_ROOT=/opt/bolt-v2\n"
+    "LIVE_ENV_DIR=/etc/bolt-v2\nBOLT_USER=bolt\nBOLT_GROUP=bolt\n"
+)
+
+
+def test_bare_values_load_without_error() -> None:
+    # Positive case: a fully-bare valid layout must load cleanly, proving the
+    # fence does not reject legitimate values (every current value is bare).
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        layout_path = Path(tmp) / "install-layout.env"
+        layout_path.write_text(_BARE_VALID_LAYOUT, encoding="utf-8")
+        layout = RENDERER.load_layout(layout_path)
+    expected = {
+        "BOLT_HOME": "/srv/bolt-v2",
+        "BOLT_INSTALL_ROOT": "/opt/bolt-v2",
+        "LIVE_ENV_DIR": "/etc/bolt-v2",
+        "BOLT_USER": "bolt",
+        "BOLT_GROUP": "bolt",
+    }
+    if layout != expected:
+        raise AssertionError(f"bare layout did not load verbatim: {layout!r}")
+
+
+def _assert_non_bare_value_rejected(mutated_line: str, key: str) -> None:
+    # Write a COMPLETE valid layout (all 5 REQUIRED_LAYOUT_KEYS) with exactly one
+    # line replaced by a non-bare variant, and assert load_layout fails closed
+    # with the offending KEY named (so a wrong/generic message fails the test).
+    import tempfile
+
+    lines = []
+    for line in _BARE_VALID_LAYOUT.splitlines():
+        lines.append(mutated_line if line.startswith(f"{key}=") else line)
+    contents = "\n".join(lines) + "\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        layout_path = Path(tmp) / "install-layout.env"
+        layout_path.write_text(contents, encoding="utf-8")
+        try:
+            RENDERER.load_layout(layout_path)
+        except ValueError as exc:
+            if key not in str(exc):
+                raise AssertionError(
+                    f"fence message must name the offending key {key!r}: {exc}"
+                )
+        else:
+            raise AssertionError(
+                f"expected ValueError for non-bare value {mutated_line!r}"
+            )
+
+
+def test_inline_comment_value_rejected() -> None:
+    # The headline divergence: bash `source` would set BOLT_USER=bolt and treat
+    # ` # service user` as a comment; this parser would keep the whole string.
+    _assert_non_bare_value_rejected("BOLT_USER=bolt # service user", "BOLT_USER")
+
+
+def test_quoted_value_rejected() -> None:
+    _assert_non_bare_value_rejected('BOLT_HOME="/srv/bolt-v2"', "BOLT_HOME")
+
+
+def test_spaced_value_rejected() -> None:
+    _assert_non_bare_value_rejected("BOLT_GROUP=bolt staff", "BOLT_GROUP")
+
+
 def test_unknown_marker_in_template_errors() -> None:
     import tempfile
 
@@ -141,6 +207,10 @@ def main() -> int:
         test_render_leaves_runtime_variable_untouched,
         test_render_derives_paths_from_layout,
         test_missing_required_key_errors,
+        test_bare_values_load_without_error,
+        test_inline_comment_value_rejected,
+        test_quoted_value_rejected,
+        test_spaced_value_rejected,
         test_unknown_marker_in_template_errors,
         test_verifier_passes_on_committed_tree,
         test_verifier_detects_tampered_unit,

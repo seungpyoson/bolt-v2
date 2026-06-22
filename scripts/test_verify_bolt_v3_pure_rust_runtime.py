@@ -90,6 +90,63 @@ def test_cargo_manifest_paths_scan_nested_manifests_and_skip_managed_dirs() -> N
         raise AssertionError(f"unexpected manifest paths: expected {sorted(expected)}, got {sorted(paths)}")
 
 
+def test_cargo_manifest_paths_matches_rglob_reference_with_pruned_subtrees() -> None:
+    original_root = VERIFIER.REPO_ROOT
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "Cargo.toml").write_text("[package]\nname = \"root\"\n", encoding="utf-8")
+        probe = root / "crates" / "probe"
+        probe.mkdir(parents=True)
+        (probe / "Cargo.toml").write_text("[package]\nname = \"probe\"\n", encoding="utf-8")
+        nested = root / "crates" / "probe" / "nested" / "real"
+        nested.mkdir(parents=True)
+        (nested / "Cargo.toml").write_text("[package]\nname = \"real\"\n", encoding="utf-8")
+
+        ignored_root_target = root / "target" / "probe"
+        ignored_root_target.mkdir(parents=True)
+        (ignored_root_target / "Cargo.toml").write_text(
+            "[package]\nname = \"ignored-root-target\"\n",
+            encoding="utf-8",
+        )
+        ignored_nested_target = root / "crates" / "probe" / "target"
+        ignored_nested_target.mkdir(parents=True)
+        (ignored_nested_target / "Cargo.toml").write_text(
+            "[package]\nname = \"ignored-nested-target\"\n",
+            encoding="utf-8",
+        )
+        ignored_git = root / ".git"
+        ignored_git.mkdir()
+        (ignored_git / "Cargo.toml").write_text("[package]\nname = \"ignored-git\"\n", encoding="utf-8")
+        ignored_worktree = root / ".worktrees" / "wt1"
+        ignored_worktree.mkdir(parents=True)
+        (ignored_worktree / "Cargo.toml").write_text(
+            "[package]\nname = \"ignored-worktree\"\n",
+            encoding="utf-8",
+        )
+        directory_named_manifest = root / "crates" / "weird" / "Cargo.toml"
+        directory_named_manifest.mkdir(parents=True)
+
+        reference = sorted(
+            p
+            for p in root.rglob("Cargo.toml")
+            if p.is_file() and not (set(p.relative_to(root).parts) & VERIFIER.IGNORED_MANIFEST_DIRS)
+        )
+
+        try:
+            VERIFIER.REPO_ROOT = root
+            paths = VERIFIER.cargo_manifest_paths()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+
+    if paths != reference:
+        raise AssertionError(
+            f"unexpected manifest paths: expected {[p.as_posix() for p in reference]}, "
+            f"got {[p.as_posix() for p in paths]}"
+        )
+    if directory_named_manifest in paths:
+        raise AssertionError(f"directory named Cargo.toml was returned: {directory_named_manifest}")
+
+
 def test_forbidden_rust_patterns_detect_python_bridge_shapes() -> None:
     source = """
     #[pyclass]
@@ -307,6 +364,7 @@ fn production_subprocess_after_cfg_string_brace() {
 def main() -> int:
     tests = [
         test_collect_dependency_names_covers_workspace_and_target_tables,
+        test_cargo_manifest_paths_matches_rglob_reference_with_pruned_subtrees,
         test_cargo_manifest_paths_scan_nested_manifests_and_skip_managed_dirs,
         test_forbidden_rust_patterns_detect_python_bridge_shapes,
         test_forbidden_rust_scan_ignores_comments_and_literals,

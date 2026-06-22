@@ -1,0 +1,55 @@
+name: AI Review - GLM PR-Agent
+
+on:
+  pull_request:
+    branches: [main]
+    types: [ready_for_review, labeled]
+
+concurrency:
+  group: ai-review-glm-pr-agent-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write # PR-Agent may publish top-level PR conversation comments via the Issues API.
+  pull-requests: write
+
+jobs:
+  glm-pr-agent-review:
+    name: GLM PR-Agent review
+    if: >-
+      ${{
+        github.event.pull_request.draft == false
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && (
+          github.event.action == 'ready_for_review'
+          || github.event.label.name == 'ai-review'
+          || github.event.label.name == 'ai-review-glm'
+        )
+      }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: 12
+    env:
+      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+
+    steps:
+      - name: Skip when Z.ai secret is not configured
+        if: env.GLM_API_KEY == ''
+        run: echo "GLM_API_KEY is not configured; skipping GLM PR-Agent review."
+
+      - name: Run PR-Agent review with GLM
+        if: env.GLM_API_KEY != ''
+        continue-on-error: true
+        uses: the-pr-agent/pr-agent@49cb2d8ce4a6f01c238229b3770e328fe11479df # v0.34.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI__API_BASE: https://api.z.ai/api/paas/v4
+          OPENAI__KEY: ${{ env.GLM_API_KEY }}
+          config.model: openai/glm-5.2
+          config.fallback_models: '["openai/glm-5.2"]'
+          config.custom_model_max_tokens: "128000"
+          config.large_patch_policy: clip
+          config.ai_timeout: "300"
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "false"
+          github_action_config.auto_improve: "false"

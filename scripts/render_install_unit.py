@@ -50,7 +50,9 @@ def load_layout(path: Path = LAYOUT_PATH) -> dict[str, str]:
     the offending line.
     """
     layout: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8", newline="").split("\n"):
+    with path.open(encoding="utf-8", newline="") as handle:
+        raw_text = handle.read()
+    for raw_line in raw_text.split("\n"):
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue

@@ -1,0 +1,229 @@
+name: AI Review Coding Plan Smoke
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  smoke:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'ai-review-smoke') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ai-review-smoke'))
+      )
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    # Job-level timeouts cannot read the TOML loaded later in this job; keep
+    # this in sync with ci/ai-review.toml [smoke.workflow].job_timeout_minutes.
+    timeout-minutes: 10
+    env:
+      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Checkout AI review smoke config
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .ai-review/smoke-base
+          sparse-checkout: ci/ai-review.toml
+          sparse-checkout-cone-mode: false
+
+      - name: Check trusted smoke config
+        id: trusted-config
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f .ai-review/smoke-base/ci/ai-review.toml ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          notice_file="${RUNNER_TEMP}/ai-review-smoke-notice.md"
+          cat > "$notice_file" <<EOF
+          ## AI review coding-plan smoke notice
+
+          Trusted base-branch \`ci/ai-review.toml\` is unavailable, so the coding-plan smoke test was skipped.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          This is expected only while bootstrapping the AI-review config onto \`main\`. Future smoke runs use the base-branch config before sending provider secrets to any endpoint or installing the Kimi CLI package.
+          EOF
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+
+      - name: Load AI review smoke config
+        id: runtime-config
+        if: steps.trusted-config.outputs.available == 'true'
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path(".ai-review/smoke-base/ci/ai-review.toml").read_text(encoding="utf-8"))
+          review = config["review"]
+          glm = config["glm"]
+          kimi = config["kimi"]
+          workflow = kimi["workflow"]
+          smoke = config["smoke"]
+          env_lines = []
+          output_lines = []
+
+          def emit(name, value):
+              if isinstance(value, bool):
+                  value = "true" if value else "false"
+              env_lines.append(f"{name}={value}")
+
+          def emit_output(name, value):
+              if isinstance(value, bool):
+                  value = "true" if value else "false"
+              output_lines.append(f"{name}={value}")
+
+          emit("AI_REVIEW_MAX_COMMENT_CHARS", review["max_comment_chars"])
+          emit("GLM_API_BASE", glm["api_base"])
+          emit("GLM_MODEL", glm["model"])
+          emit("KIMI_CLI_PACKAGE", kimi["cli_package"])
+          emit("KIMI_DISABLE_TELEMETRY", "1" if kimi["telemetry_disabled"] else "0")
+          emit("KIMI_MODEL_NAME", kimi["model"])
+          emit("KIMI_MODEL_BASE_URL", kimi["api_base"])
+          emit("KIMI_MODEL_PROVIDER_TYPE", kimi["provider_type"])
+          emit("KIMI_MODEL_MAX_CONTEXT_SIZE", kimi["model_max_context_size"])
+          emit("KIMI_MODEL_DEFAULT_THINKING", kimi["default_thinking"])
+          emit("KIMI_NODE_VERSION", workflow["node_version"])
+          emit("SMOKE_MAX_TOKENS", smoke["max_tokens"])
+          emit_output("kimi_node_version", workflow["node_version"])
+
+          Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8").write("\n".join(env_lines) + "\n")
+          Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8").write("\n".join(output_lines) + "\n")
+          PY
+
+      - name: Set up Node.js for Kimi CLI smoke
+        if: steps.trusted-config.outputs.available == 'true'
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: ${{ steps.runtime-config.outputs.kimi_node_version }}
+
+      - name: Run coding-plan endpoint smoke tests
+        if: steps.trusted-config.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +x
+          body_file="${RUNNER_TEMP}/ai-review-coding-plan-smoke.md"
+          {
+            echo "## AI review coding-plan smoke"
+            echo
+            echo "- PR: #${PR_NUMBER}"
+            echo "- Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+          } > "$body_file"
+
+          status=0
+
+          smoke_openai_chat() {
+            provider="$1"
+            endpoint="$2"
+            model="$3"
+            key="$4"
+            response_file="${RUNNER_TEMP}/${provider}-smoke-response.json"
+
+            if [ -z "$key" ]; then
+              echo "- ${provider}: skipped; secret is not configured." >> "$body_file"
+              return 1
+            fi
+
+            payload=$(jq -nc --arg model "$model" --argjson max_tokens "$SMOKE_MAX_TOKENS" '{
+              model: $model,
+              messages: [
+                {role: "system", content: "You are a smoke-test endpoint verifier. Reply with exactly OK."},
+                {role: "user", content: "Reply with exactly OK."}
+              ],
+              max_tokens: $max_tokens,
+              stream: false
+            }')
+
+            http_code=$(curl -sS -o "$response_file" -w "%{http_code}" \
+              -X POST "${endpoint%/}/chat/completions" \
+              -H "Authorization: Bearer ${key}" \
+              -H "Content-Type: application/json" \
+              -d "$payload") || http_code="curl_failed"
+
+            if [ "$http_code" = "200" ]; then
+              content=$(jq -r '.choices[0].message.content // ""' "$response_file" 2>/dev/null | tr '\n' ' ' | cut -c1-80)
+              {
+                echo "- ${provider}: passed against \`${endpoint}\` with model \`${model}\`."
+                echo "  - Response prefix: \`${content}\`"
+              } >> "$body_file"
+              return 0
+            fi
+
+            {
+              echo "- ${provider}: failed against \`${endpoint}\` with model \`${model}\`."
+              echo "  - HTTP status: \`${http_code}\`"
+              echo "  - Response body intentionally omitted from PR comments; check action logs if provider support needs the exact error."
+            } >> "$body_file"
+            error_detail=$(jq -c '.error // .' "$response_file" 2>/dev/null | cut -c1-600 || true)
+            echo "::notice title=${provider} smoke error::${error_detail}"
+            return 1
+          }
+
+          smoke_kimi_cli() {
+            if [ -z "$KIMI_API_KEY" ]; then
+              echo "- Kimi CLI: skipped; secret is not configured." >> "$body_file"
+              return 1
+            fi
+
+            npm install -g "$KIMI_CLI_PACKAGE" >/dev/null 2>&1
+            export KIMI_CODE_HOME="${RUNNER_TEMP}/kimi-code"
+            export KIMI_MODEL_API_KEY="$KIMI_API_KEY"
+            mkdir -p "$KIMI_CODE_HOME"
+            if [ "$KIMI_DISABLE_TELEMETRY" = "1" ]; then
+              echo 'telemetry = false' > "${KIMI_CODE_HOME}/config.toml"
+            else
+              echo 'telemetry = true' > "${KIMI_CODE_HOME}/config.toml"
+            fi
+
+            output_file="${RUNNER_TEMP}/kimi-cli-smoke.out"
+            error_file="${RUNNER_TEMP}/kimi-cli-smoke.err"
+            if kimi -p "Reply with exactly OK." >"$output_file" 2>"$error_file"; then
+              content=$(tr '\n' ' ' < "$output_file" | cut -c1-80)
+              {
+                echo "- Kimi CLI: passed using Kimi Code CLI with documented \`KIMI_MODEL_*\` auth override."
+                echo "  - Response prefix: \`${content}\`"
+              } >> "$body_file"
+              return 0
+            fi
+
+            error_prefix=$(tr '\n' ' ' < "$error_file" | cut -c1-600)
+            {
+              echo "- Kimi CLI: failed using Kimi Code CLI with documented \`KIMI_MODEL_*\` auth override."
+              echo "  - Error body intentionally omitted from PR comments; check action logs if provider support needs the exact error."
+            } >> "$body_file"
+            echo "::notice title=Kimi CLI smoke error::${error_prefix}"
+            return 1
+          }
+
+          smoke_openai_chat "GLM" "$GLM_API_BASE" "$GLM_MODEL" "$GLM_API_KEY" || status=1
+          smoke_openai_chat "Kimi direct OpenAI" "$KIMI_MODEL_BASE_URL" "$KIMI_MODEL_NAME" "$KIMI_API_KEY" || true
+          smoke_kimi_cli || status=1
+
+          {
+            echo
+            echo "This is a smoke test only. It verifies GLM coding-plan API auth and Kimi Code CLI auth. Generic Kimi HTTP is reported for diagnostics but is not the supported CI path."
+          } >> "$body_file"
+
+          cat "$body_file"
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
+          exit "$status"

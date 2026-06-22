@@ -1,0 +1,62 @@
+[github]
+api_url = "https://api.github.com"
+server_url = "https://github.com"
+expected_bot_login = "github-actions[bot]"
+
+[review]
+max_comment_chars = 60000
+response_chars_per_chunk = 8000
+
+[glm]
+api_base = "https://api.z.ai/api/coding/paas/v4"
+model = "glm-5.2"
+temperature = 0.2
+api_timeout_seconds = 180
+review_max_chunk_chars = 60000
+comment_marker = "<!-- ai-pr-reviewer-glm -->"
+deliverable_markers = [
+  "## PR Reviewer Guide",
+  "## Incremental PR Reviewer Guide",
+  "<!-- ai-pr-reviewer-glm -->",
+]
+
+[glm.pr_agent]
+model = "openai/glm-5.2"
+fallback_models = ["openai/glm-5.2"]
+custom_model_max_tokens = 128000
+large_patch_policy = "clip"
+timeout_seconds = 300
+auto_review = true
+auto_describe = false
+auto_improve = false
+
+[glm.workflow]
+job_timeout_minutes = 35
+primary_timeout_minutes = 8
+fallback_timeout_minutes = 20
+setup_overhead_timeout_minutes = 7
+
+[kimi]
+api_base = "https://api.kimi.com/coding/v1"
+model = "kimi-for-coding"
+provider_type = "kimi"
+model_max_context_size = 262144
+default_thinking = true
+telemetry_disabled = true
+cli_timeout_seconds = 180
+review_max_chunk_chars = 60000
+deliverable_marker = "<!-- ai-pr-reviewer-kimi -->"
+cli_package = "@moonshot-ai/kimi-code@0.19.0"
+
+[kimi.workflow]
+node_version = "24"
+job_timeout_minutes = 45
+primary_timeout_minutes = 20
+fallback_timeout_minutes = 20
+setup_overhead_timeout_minutes = 5
+
+[smoke]
+max_tokens = 16
+
+[smoke.workflow]
+job_timeout_minutes = 10

@@ -2618,6 +2618,8 @@ mod tests {
             profile: "example".to_string(),
             config_bundle_checksum: "checksum-abc".to_string(),
             launched_at_unix_secs: 1,
+            pid: 4242,
+            target_host_facts: None,
             matches_installed_binary,
             matches_requested_profile,
             matches_current_config: true,

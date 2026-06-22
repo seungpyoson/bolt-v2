@@ -56,13 +56,14 @@ fn install_script_repairs_binary_mode() {
         .split("for config_bundle_file in \"${config_bundle_files[@]}\"; do")
         .nth(1)
         .and_then(|section| {
-            section.split("install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d")
+            section
+                .split("install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d")
                 .next()
         })
         .expect("install.sh should have a repair section before systemd install");
     assert!(
         repair_section.contains("${BOLT_INSTALL_ROOT}/bolt-v2")
             && repair_section.contains("chmod 0755"),
-        "install.sh must chmod-repair ${BOLT_INSTALL_ROOT}/bolt-v2 to 0755 in the repair section"
+        "install.sh must chmod-repair the service binary to 0755 in the repair section"
     );
 }

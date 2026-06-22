@@ -133,16 +133,26 @@ jobs:
           base_sha="${{ github.event.pull_request.base.sha }}"
           echo "comparing ${base_sha}...HEAD"
           # Dependency surface: the backtester is a separate crate that compiles
-          # against the root bolt-v3 package, so a change to root src/**,
-          # Cargo.toml, or Cargo.lock can break its compile even when no
+          # against the root bolt-v3 package, so a change to ANY root compile
+          # input can break its compile even when no
           # crates/backtesting-vertical-slice file changed (this is exactly how
-          # #903 reached main — see #915). Do not drop these; removing them
-          # re-opens the gate to root-API drift.
+          # #903 reached main — see #915). The full surface is: root src/**,
+          # Cargo.toml, Cargo.lock, plus the root build script build.rs and the
+          # gated_source_roots.manifest it reads. build.rs is Cargo-auto-
+          # discovered (no `build =` key) and codegens GATED_SOURCE_ROOTS into
+          # OUT_DIR (included by src/source_canonicalization.rs), panicking on a
+          # malformed manifest — so a build.rs- or manifest-only edit can break
+          # the root crate (and thus the backtester) with NO src/** change. Do
+          # not drop any of these; removing them re-opens the gate to root-API
+          # drift. The drift-proof replacement (no hand-kept list) is tracked in
+          # #918.
           changed="$(git diff --name-only "${base_sha}...HEAD" -- \
             'crates/backtesting-vertical-slice/**' \
             'src/**' \
             Cargo.toml \
             Cargo.lock \
+            build.rs \
+            gated_source_roots.manifest \
             justfile \
             scripts/rust_verification.py \
             scripts/command_understanding.py \

@@ -3,18 +3,22 @@ name: AI Review Coding Plan Smoke
 on:
   pull_request:
     branches: [main]
-    types: [labeled]
+    types: [labeled, synchronize]
 
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 jobs:
   smoke:
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.label.name == 'ai-review-smoke'
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'ai-review-smoke') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ai-review-smoke'))
+      )
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     timeout-minutes: 10
     env:
@@ -92,5 +96,6 @@ jobs:
             echo "This is a smoke test only. It verifies authentication and one minimal OpenAI-compatible chat completion call on the coding-plan endpoints."
           } >> "$body_file"
 
+          cat "$body_file"
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
           exit "$status"

@@ -2932,6 +2932,11 @@ impl BoltV3LiveNodeRuntime {
         self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
     }
 
+    pub fn order_reject_observer_feed_configured(&self) -> bool {
+        self.order_reject_observer_feed.is_some()
+            && self.order_reject_observer_feed_subscription.is_some()
+    }
+
     pub fn nt_risk_trading_state(&self) -> TradingState {
         self.node.kernel().risk_engine().borrow().trading_state()
     }

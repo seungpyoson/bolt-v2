@@ -17987,6 +17987,14 @@ reason = "Unix file mode for non-secret runtime files a service user must read (
 
 [[allowed]]
 path = "src/bolt_v3_atomic_io.rs"
+kind = "number"
+literal = '''0o640'''
+context = '''pub(crate) const GROUP_READABLE_ARTIFACT_FILE_MODE: u32 = 0o640;'''
+classification = "atomic_io_group_readable_artifact_file_mode"
+reason = "Unix file mode for non-secret artifacts carrying host-identifying metadata (launch-identity pid + region/AZ/instance-id): owner+group readable so ops status works, but not world-readable (sits between PRIVATE_ARTIFACT_FILE_MODE 0o600 and RUNTIME_CONFIG_FILE_MODE 0o644). It is a code constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
 kind = "string"
 literal = '''"{prefix}.{}.{timestamp_ns}.{counter}"'''
 context = '''"{prefix}.{}.{timestamp_ns}.{counter}",'''
@@ -18456,6 +18464,206 @@ literal = '''"order_template"'''
 context = '''"order_template",'''
 classification = '''kill_switch_flatten_order_template_diagnostic_field'''
 reason = '''Field label passed to the shared NT order-template validator for TOML validation diagnostics; not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"deploy.toml"'''
+context = '''const DEPLOY_TARGET_FILE_NAME: &str = "deploy.toml";'''
+classification = '''deploy_target_config_file_name'''
+reason = '''Fixed name of the tracked deploy-target binding file loaded from the ops config root; a stable config-file name, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"launch-identity.json"'''
+context = '''const LAUNCH_IDENTITY_FILE_NAME: &str = "launch-identity.json";'''
+classification = '''launch_identity_artifact_file_name'''
+reason = '''Fixed name of the durable launch-identity artifact written at node start under the catalog directory and read by ops status; a stable artifact-file name, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''const LAUNCH_IDENTITY_MAX_BYTES: u64 = 64 * 1024;'''
+classification = '''launch_identity_artifact_byte_cap'''
+reason = '''Upper-bound byte cap (64 KiB) on the bounded read of the launch-identity artifact to guard against a corrupt or oversized file; a defensive read limit, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1024'''
+context = '''const LAUNCH_IDENTITY_MAX_BYTES: u64 = 64 * 1024;'''
+classification = '''launch_identity_artifact_byte_cap'''
+reason = '''KiB multiplier composing the 64 KiB byte cap on the bounded read of the launch-identity artifact; a defensive read limit, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''.unwrap_or(0);'''
+classification = '''launch_identity_epoch_seconds_fallback'''
+reason = '''Saturating fallback launch timestamp when the system clock is before the Unix epoch while recording the best-effort launch-identity artifact; a defensive clock fallback, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_identity"'''
+context = '''"ops_launch_identity": "written",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary status field emitted when the best-effort launch-identity artifact is written; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"written"'''
+context = '''"ops_launch_identity": "written",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Stable CLI JSON summary status value reported when the best-effort launch-identity artifact is written; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"path"'''
+context = '''"path": written.path.display().to_string(),'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary path field for the written launch-identity artifact; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"sha256"'''
+context = '''"sha256": written.sha256,'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary SHA-256 field for the written launch-identity artifact; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_identity"'''
+context = '''"ops_launch_identity": "write-failed",'''
+classification = '''launch_identity_cli_summary_field'''
+reason = '''Names the CLI JSON summary status field emitted to stderr when the best-effort launch-identity write fails; evidence output metadata, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/instance-id"'''
+context = '''const IMDS_INSTANCE_ID_PATH: &str = "/latest/meta-data/instance-id";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host instance-id; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/placement/availability-zone"'''
+context = '''const IMDS_AVAILABILITY_ZONE_PATH: &str = "/latest/meta-data/placement/availability-zone";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host availability zone; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''string'''
+literal = '''"/latest/meta-data/placement/region"'''
+context = '''const IMDS_REGION_PATH: &str = "/latest/meta-data/placement/region";'''
+classification = '''imdsv2_metadata_path'''
+reason = '''Fixed EC2 IMDSv2 metadata leaf path read to observe the host region; an AWS protocol constant, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_deploy_target.rs'''
+kind = '''number'''
+literal = '''2'''
+context = '''const IMDS_FETCH_TIMEOUT: Duration = Duration::from_secs(2);'''
+classification = '''imdsv2_fetch_safety_timeout'''
+reason = '''Deliberate fixed fail-fast preflight bound on the link-local IMDSv2 handshake (the service is reachable with no network hops), so TargetVerify fails closed quickly when host facts are unreachable. Not asserted to be operator-irrelevant; promoting it to a configured value is deferred to a follow-up if operations ever observe transient-slowness false-fails.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "no-target-configured",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"no-target-configured"'''
+context = '''"ops_launch_target_verify": "no-target-configured",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that no deploy target was configured and TargetVerify degraded; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "matched",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"matched"'''
+context = '''"ops_launch_target_verify": "matched",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that the configured deploy target matched the running host; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"ops_launch_target_verify"'''
+context = '''"ops_launch_target_verify": "mismatched",'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field reporting the TargetVerify stage outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"mismatched"'''
+context = '''"ops_launch_target_verify": "mismatched",'''
+classification = '''ops_launch_target_verify_log_outcome'''
+reason = '''Stable JSON log value reporting that a configured deploy-target field did not match the running host; a diagnostic log token, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"field_mismatches"'''
+context = '''"field_mismatches": mismatches'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log array of per-field mismatches in a TargetVerify mismatch outcome; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"field"'''
+context = '''"field": mismatch.field,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying a mismatched deploy-target field name; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"configured"'''
+context = '''"configured": mismatch.configured,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying the configured value of a mismatched deploy-target field; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"observed"'''
+context = '''"observed": mismatch.observed,'''
+classification = '''ops_launch_target_verify_log_field'''
+reason = '''Names the JSON log field carrying the observed value of a mismatched deploy-target field; a diagnostic log key, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"{}"'''
+context = '''println!("{}", serde_json::to_string(&log)?);'''
+classification = '''ops_launch_target_verify_log_format'''
+reason = '''Stdout format token printing the already-serialized TargetVerify outcome JSON line; not an operator runtime value.'''
 
 [[allowed]]
 path = '''src/bolt_v3_decision_evidence.rs'''

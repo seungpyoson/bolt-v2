@@ -95,25 +95,70 @@ fn systemd_unit_requires_srv_mountpoint() {
 }
 
 #[test]
+fn systemd_unit_template_single_sources_mountpoint_tool_path() {
+    let template_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service.in");
+    let template = fs::read_to_string(&template_path).expect("systemd unit template should exist");
+
+    assert!(
+        template.contains("ExecStartPre=@MOUNTPOINT_BIN@ -q @BOLT_HOME@"),
+        "systemd unit template must source the mountpoint tool path from install-layout.env"
+    );
+    assert!(
+        !template.contains("/usr/bin/mountpoint"),
+        "systemd unit template must not hardcode the mountpoint tool path"
+    );
+}
+
+#[test]
 fn install_script_provisions_runtime_catalog_on_srv_volume() {
     let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
     let install = fs::read_to_string(&install_path).expect("install script should exist");
 
+    // Install paths are single-sourced in deploy/install-layout.env; install.sh
+    // sources that file instead of hardcoding the roots, so they cannot drift from
+    // the systemd unit (which is generated from the same layout).
     assert!(
-        install.contains("BOLT_HOME=\"/srv/bolt-v2\""),
-        "install script must use the same data-volume root as systemd"
+        install.contains("source \"${SCRIPT_DIR}/install-layout.env\""),
+        "install script must source the single-source install layout"
     );
     assert!(
-        install.contains("BOLT_INSTALL_ROOT=\"/opt/bolt-v2\""),
-        "install script must use the same install root as systemd"
+        !install.contains("BOLT_HOME=\""),
+        "install script must not redefine BOLT_HOME; it comes from install-layout.env"
     );
     assert!(
-        !install.contains("BOLT_HOME=\"${BOLT_HOME:-"),
-        "install script must not let BOLT_HOME drift from systemd"
+        !install.contains("BOLT_INSTALL_ROOT=\""),
+        "install script must not redefine BOLT_INSTALL_ROOT; it comes from install-layout.env"
+    );
+    // Service identity is single-sourced too: install.sh must not carry the old
+    // BOLT_USER/BOLT_GROUP env-override lines, because the committed systemd unit
+    // bakes User=/Group= at generate-time and a deploy-time override could never
+    // reach it (it would split provisioning ownership from the running service).
+    assert!(
+        !install.contains("BOLT_USER=\""),
+        "install script must not redefine BOLT_USER; it comes from install-layout.env"
     );
     assert!(
-        !install.contains("BOLT_INSTALL_ROOT=\"${BOLT_INSTALL_ROOT:-"),
-        "install script must not let BOLT_INSTALL_ROOT drift from systemd"
+        !install.contains("BOLT_GROUP=\""),
+        "install script must not redefine BOLT_GROUP; it comes from install-layout.env"
+    );
+    let layout_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install-layout.env");
+    let layout = fs::read_to_string(&layout_path).expect("install layout should exist");
+    assert!(
+        layout.contains("BOLT_HOME=/srv/bolt-v2"),
+        "install layout must anchor the data-volume root at /srv/bolt-v2 (matches systemd)"
+    );
+    assert!(
+        layout.contains("BOLT_INSTALL_ROOT=/opt/bolt-v2"),
+        "install layout must anchor the install root at /opt/bolt-v2 (matches systemd)"
+    );
+    assert!(
+        layout.contains("BOLT_USER=bolt"),
+        "install layout must single-source the service user the systemd unit runs as"
+    );
+    assert!(
+        layout.contains("BOLT_GROUP=bolt"),
+        "install layout must single-source the service group that owns the config bundle"
     );
     assert!(
         install.contains("\"${BOLT_HOME}/var/bolt-v3-live/catalog\""),
@@ -122,6 +167,29 @@ fn install_script_provisions_runtime_catalog_on_srv_volume() {
     assert!(
         install.contains("\"${BOLT_HOME}/var/bolt-v3-live/reports\""),
         "install script must provision runtime reports under /srv/bolt-v2"
+    );
+}
+
+#[test]
+fn install_and_unit_share_the_same_config_subdir_component() {
+    // The unit's `--config-root` is rendered from render_install_unit.py's
+    // `@BOLT_CONFIG_DIR@` = `{install_root}/config`; install.sh provisions and
+    // repairs the same bundle under `${BOLT_INSTALL_ROOT}/config`. Pin the shared
+    // `config` component in both places so renaming the config subdir in one
+    // surface without the other fails CI instead of silently splitting the path.
+    let render_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/render_install_unit.py");
+    let render = fs::read_to_string(&render_path).expect("render script should exist");
+    assert!(
+        render.contains("\"@BOLT_CONFIG_DIR@\": f\"{install_root}/config\""),
+        "unit render must derive --config-root from the install root's `config` subdir"
+    );
+
+    let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
+    let install = fs::read_to_string(&install_path).expect("install script should exist");
+    assert!(
+        install.contains("\"${BOLT_INSTALL_ROOT}/config\""),
+        "install script must provision the same `config` subdir the unit's --config-root targets"
     );
 }
 
@@ -217,9 +285,17 @@ fn install_script_provisions_live_env_directory_without_profile_default() {
     let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
     let install = fs::read_to_string(&install_path).expect("install script should exist");
 
+    // LIVE_ENV_DIR is single-sourced in deploy/install-layout.env (matches the
+    // systemd unit's EnvironmentFile), not hardcoded in the installer.
     assert!(
-        install.contains("LIVE_ENV_DIR=\"/etc/bolt-v2\""),
-        "install script must provision the systemd environment directory for live profile selection"
+        !install.contains("LIVE_ENV_DIR=\""),
+        "install script must not redefine LIVE_ENV_DIR; it comes from install-layout.env"
+    );
+    let layout_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install-layout.env");
+    let layout = fs::read_to_string(&layout_path).expect("install layout should exist");
+    assert!(
+        layout.contains("LIVE_ENV_DIR=/etc/bolt-v2"),
+        "install layout must provision the systemd environment directory for live profile selection"
     );
     assert!(
         install.contains("install -d -o root -g \"${BOLT_GROUP}\" -m 0750 \"${LIVE_ENV_DIR}\""),

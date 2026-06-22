@@ -2,18 +2,20 @@
 set -euo pipefail
 shopt -s nullglob
 
-BOLT_USER="${BOLT_USER:-bolt}"
-BOLT_GROUP="${BOLT_GROUP:-$BOLT_USER}"
-BOLT_HOME="/srv/bolt-v2"
-BOLT_INSTALL_ROOT="/opt/bolt-v2"
 BOLT_DATA_DEVICE="${BOLT_DATA_DEVICE:?set BOLT_DATA_DEVICE=/dev/<data-volume-device>}"
 BOLT_DATA_FS_TYPE="${BOLT_DATA_FS_TYPE:-ext4}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=install-layout.env
+# BOLT_HOME, BOLT_INSTALL_ROOT, LIVE_ENV_DIR, BOLT_USER, BOLT_GROUP,
+# MOUNTPOINT_BIN (single source; see deploy/install-layout.env). Service identity
+# is sourced here, NOT a deploy-time env override, because the committed systemd
+# unit bakes User=/Group= at generate-time; an override could not reach the unit
+# and would silently split provisioning from the running service.
+source "${SCRIPT_DIR}/install-layout.env"
 SYSTEMD_SRC_DIR="${SCRIPT_DIR}/systemd"
 UNIT_DST="/etc/systemd/system/bolt-v2.service"
 JOURNALD_DST="/etc/systemd/journald.conf.d/journald-bolt-v2.conf"
-LIVE_ENV_DIR="/etc/bolt-v2"
 
 if [[ ${EUID} -ne 0 ]]; then
     echo "deploy/install.sh must run as root" >&2
@@ -51,7 +53,7 @@ else
     printf '%s\n' "${fstab_line}" >> /etc/fstab
 fi
 
-if ! mountpoint -q "${BOLT_HOME}"; then
+if ! "${MOUNTPOINT_BIN}" -q "${BOLT_HOME}"; then
     mount "${BOLT_HOME}"
 fi
 
@@ -126,9 +128,25 @@ if [[ -d "${BOLT_INSTALL_ROOT}/config/strategies" ]]; then
         config_bundle_files+=("${strategy_config}")
     done < <(find "${BOLT_INSTALL_ROOT}/config/strategies" -type f -name '*.toml' -print0)
 fi
+# deploy.toml is host-specific (the operator places it; install.sh does not
+# copy it), but when present the bolt service user must read it at
+# TargetVerify; a restrictive deploy-shell umask would otherwise lock it out
+# (same #768 lockout class as the rest of the bundle).
+if [[ -f "${BOLT_INSTALL_ROOT}/config/deploy.toml" ]]; then
+    config_bundle_files+=("${BOLT_INSTALL_ROOT}/config/deploy.toml")
+fi
 for config_bundle_file in "${config_bundle_files[@]}"; do
     repair_config_file "${config_bundle_file}" "config bundle file"
 done
+
+# The same #768 umask-lockout class applies to the executable: the bolt service
+# user needs execute access, not just read access to the config bundle.
+service_binary="${BOLT_INSTALL_ROOT}/bolt-v2"
+reject_symlinked_install_path "${service_binary}" "service binary"
+if [[ -f "${service_binary}" ]]; then
+    chown root:"${BOLT_GROUP}" "${service_binary}"
+    chmod 0755 "${service_binary}"
+fi
 
 install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${LIVE_ENV_DIR}"

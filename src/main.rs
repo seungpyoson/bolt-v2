@@ -16,13 +16,20 @@ use std::{
 use bolt_v2::{
     bolt_v3_atomic_io::{RUNTIME_CONFIG_FILE_MODE, write_atomic_file_with_mode},
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_deploy_target::{
+        DeployTargetError, HostFactsSource, Imdsv2HostFactsSource, ObservedHostFacts,
+        TargetVerifyOutcome, load_deploy_target, verify_deploy_target,
+    },
     bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_live_node::{
         BoltV3LiveNodeRuntime, build_bolt_v3_live_node_with_resolved,
         build_bolt_v3_strategy_free_data_client_probe_live_node, current_build_head_sha,
         run_bolt_v3_data_client_census, run_bolt_v3_data_client_probe, run_bolt_v3_live_node,
     },
-    bolt_v3_operator_artifacts::WrittenOperatorArtifact,
+    bolt_v3_operator_artifacts::{
+        LaunchIdentity, WrittenOperatorArtifact, is_lowercase_git_sha, read_launch_identity,
+        write_launch_identity,
+    },
     bolt_v3_prod_profile::{
         GENERATOR_FORMAT_VERSION, ProductionInvariants, generate_live_config, live_config_path,
         verify_live_config,
@@ -136,6 +143,14 @@ enum OpsCommand {
         profile: String,
         #[arg(long)]
         config_root: PathBuf,
+    },
+    Status {
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        config_root: PathBuf,
+        #[arg(long)]
+        intended_sha: Option<String>,
     },
     InitKillSwitchStore {
         #[arg(short, long)]
@@ -283,6 +298,11 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
             profile,
             config_root,
         } => run_verify_live_config(&config_root, &profile),
+        OpsCommand::Status {
+            profile,
+            config_root,
+            intended_sha,
+        } => run_ops_status(&config_root, &profile, intended_sha.as_deref()),
         OpsCommand::InitKillSwitchStore { config } => run_init_kill_switch_store(&config),
         OpsCommand::ReferenceLiveProbe { config } => run_reference_live_probe_command(&config),
         OpsCommand::ReferenceCurrentPriceHealth { config } => {
@@ -295,6 +315,7 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
 #[serde(rename_all = "kebab-case")]
 enum OpsLaunchStage {
     VerifyConfig,
+    TargetVerify,
     SecretsCheck,
     SecretsResolve,
     PrestartCheck,
@@ -304,8 +325,7 @@ enum OpsLaunchStage {
 
 const OPS_LAUNCH_STAGE_CHAIN: &[OpsLaunchStage] = &[
     OpsLaunchStage::VerifyConfig,
-    // Slice 1b target-verifier insertion point: run the target verifier here,
-    // after config identity is proven and before secrets or runtime side effects.
+    OpsLaunchStage::TargetVerify,
     OpsLaunchStage::SecretsCheck,
     OpsLaunchStage::SecretsResolve,
     OpsLaunchStage::PrestartCheck,
@@ -334,6 +354,11 @@ struct OpsLaunchContext {
     config_root: PathBuf,
     loaded: Option<LoadedBoltV3Config>,
     resolved_secrets: Option<ResolvedBoltV3Secrets>,
+    /// Host facts observed by the `TargetVerify` stage, threaded forward so the
+    /// `Start` stage can record them in the durable launch identity. `None`
+    /// until `TargetVerify` runs, and stays `None` when no deploy target is
+    /// configured (no host was observed).
+    observed_host_facts: Option<ObservedHostFacts>,
 }
 
 impl OpsLaunchContext {
@@ -343,6 +368,7 @@ impl OpsLaunchContext {
             config_root,
             loaded: None,
             resolved_secrets: None,
+            observed_host_facts: None,
         }
     }
 
@@ -425,6 +451,11 @@ fn run_ops_launch_stage(
             context.loaded = Some(verification.loaded);
             Ok(())
         }
+        OpsLaunchStage::TargetVerify => {
+            context.observed_host_facts =
+                run_loaded_target_verify(&context.config_root, &Imdsv2HostFactsSource::new())?;
+            Ok(())
+        }
         OpsLaunchStage::SecretsCheck => run_loaded_secrets_check(context.loaded()?).map(|_| ()),
         OpsLaunchStage::SecretsResolve => {
             context.resolved_secrets = Some(run_loaded_secrets_resolve(context.loaded()?)?);
@@ -446,8 +477,70 @@ fn run_ops_launch_stage(
                 .resolved_secrets
                 .take()
                 .ok_or("ops launch start stage requires resolved secrets from secrets-resolve")?;
+            record_launch_identity_best_effort(
+                &context.profile,
+                &loaded,
+                context.observed_host_facts.take(),
+            );
             start_loaded_node_with_resolved(loaded, &resolved)
         }
+    }
+}
+
+/// Build the durable launch identity from primitives. Pure: depends only on
+/// its arguments (and the build-time `current_build_head_sha`), so it is
+/// unit-testable without a `LoadedBoltV3Config` or any syscalls.
+fn build_launch_identity(
+    profile: &str,
+    config_bundle_checksum: &str,
+    pid: u32,
+    launched_at_unix_secs: u64,
+    target_host_facts: Option<ObservedHostFacts>,
+) -> LaunchIdentity {
+    LaunchIdentity {
+        build_head_sha: current_build_head_sha().map(str::to_owned),
+        profile: profile.to_owned(),
+        config_bundle_checksum: config_bundle_checksum.to_owned(),
+        launched_at_unix_secs,
+        pid,
+        target_host_facts,
+    }
+}
+
+fn record_launch_identity_best_effort(
+    profile: &str,
+    loaded: &LoadedBoltV3Config,
+    target_host_facts: Option<ObservedHostFacts>,
+) {
+    let pid = std::process::id();
+    let launched_at_unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0);
+    let identity = build_launch_identity(
+        profile,
+        &loaded.config_bundle_checksum,
+        pid,
+        launched_at_unix_secs,
+        target_host_facts,
+    );
+    let catalog_directory = Path::new(&loaded.root.persistence.catalog_directory);
+    match write_launch_identity(catalog_directory, &identity) {
+        Ok(written) => println!(
+            "{}",
+            serde_json::json!({
+                "ops_launch_identity": "written",
+                "path": written.path.display().to_string(),
+                "sha256": written.sha256,
+            })
+        ),
+        Err(error) => eprintln!(
+            "{}",
+            serde_json::json!({
+                "ops_launch_identity": "write-failed",
+                "error": error.to_string(),
+            })
+        ),
     }
 }
 
@@ -651,6 +744,334 @@ fn run_verify_live_config(
         matches_profile: verification.matches_profile,
         loads_against_binary: verification.loads_against_binary,
         invariants: verification.invariants,
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+// `ops status` is a read-only advisory: it inspects the deployed runtime config,
+// the durable launch-identity artifact, and the deploy-target binding, and prints
+// a JSON truth-table comparing them against the installed binary. It NEVER gates
+// (always exits 0) and is offline-safe (off-instance / IMDS-unreachable host facts
+// are reported as advisory text, never as an error). Like the other ops reports,
+// every output field is a serde-derived struct/enum key so no operator-runtime
+// string literals are introduced in this binary's output path.
+
+/// Advisory comparison of the operator-supplied `--intended-sha` against the SHA
+/// the installed binary was built from. Variant names are the kebab-case JSON
+/// values, so serde derives them and no literal classification is needed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum IntendedShaStatus {
+    NotSpecified,
+    Malformed,
+    Match,
+    Mismatch,
+    UnknownInstalled,
+}
+
+/// Operator-actionable recommendation derived from installed-vs-intended SHA and
+/// launch-identity liveness. Variant names are the kebab-case JSON values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum StateAdvisory {
+    /// Installed binary == intended, the recorded launch identity matches the
+    /// installed binary / requested profile / current config bundle, AND the
+    /// running host is the configured deploy target (or no target is
+    /// configured). Reflects the last recorded launch, not live process
+    /// liveness (that is systemd's concern).
+    NoOp,
+    /// Installed binary == intended but the recorded launch identity is absent or
+    /// diverges (binary, profile, or config bundle), so a relaunch is needed.
+    LaunchNeeded,
+    /// Installed binary != intended (a newer/different version must be deployed).
+    DeployNeeded,
+    /// Cannot recommend: the intended or installed SHA is unknown/malformed,
+    /// the deployed config could not be verified, or the running host could not
+    /// be confirmed as the configured deploy target (mismatched / unobservable).
+    Unknown,
+}
+
+/// Deployed-runtime-config row of the advisory.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+enum ConfigStatus {
+    Verified {
+        profile_bundle_sha256: String,
+        config_bundle_checksum: String,
+        matches_profile: bool,
+        loads_against_binary: bool,
+        deployed_config_path: String,
+    },
+    Error {
+        error: String,
+    },
+}
+
+/// Durable launch-identity-artifact row of the advisory.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+enum LaunchIdentityStatus {
+    Present {
+        build_head_sha: Option<String>,
+        profile: String,
+        config_bundle_checksum: String,
+        launched_at_unix_secs: u64,
+        pid: u32,
+        target_host_facts: Option<ObservedHostFacts>,
+        /// `None` when either the recorded or installed SHA is unknown.
+        matches_installed_binary: Option<bool>,
+        matches_requested_profile: bool,
+        matches_current_config: bool,
+    },
+    Absent,
+    Unreadable {
+        error: String,
+    },
+    SkippedConfigUnavailable,
+}
+
+/// One configured deploy-target field that did not match the observed host fact.
+#[derive(Debug, serde::Serialize)]
+struct DeployTargetFieldMismatch {
+    field: String,
+    configured: String,
+    observed: Option<String>,
+}
+
+/// Deploy-target binding row of the advisory.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+enum DeployTargetStatus {
+    NoTargetConfigured,
+    Matched,
+    Mismatched {
+        field_mismatches: Vec<DeployTargetFieldMismatch>,
+    },
+    /// Off-instance / IMDS unreachable: advisory only, never an error.
+    HostFactsUnavailable {
+        detail: String,
+    },
+    ConfigError {
+        error: String,
+    },
+    Error {
+        error: String,
+    },
+}
+
+#[derive(Debug, serde::Serialize)]
+struct OpsStatusBody {
+    profile: String,
+    installed_binary_sha: Option<String>,
+    intended_sha: Option<String>,
+    intended_sha_status: IntendedShaStatus,
+    state_advisory: StateAdvisory,
+    config: ConfigStatus,
+    launch_identity: LaunchIdentityStatus,
+    deploy_target: DeployTargetStatus,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct OpsStatusReport {
+    ops_status: OpsStatusBody,
+}
+
+/// Classify the operator-supplied intended SHA against the installed binary's
+/// build SHA. Pure: depends only on its two arguments so it is unit-testable.
+fn intended_sha_status(intended: Option<&str>, installed: Option<&str>) -> IntendedShaStatus {
+    let Some(intended) = intended else {
+        return IntendedShaStatus::NotSpecified;
+    };
+    if !is_lowercase_git_sha(intended) {
+        return IntendedShaStatus::Malformed;
+    }
+    match installed {
+        Some(installed) if installed == intended => IntendedShaStatus::Match,
+        Some(_) => IntendedShaStatus::Mismatch,
+        None => IntendedShaStatus::UnknownInstalled,
+    }
+}
+
+/// Derive the advisory. Pure: depends only on its arguments, so it is unit-testable.
+/// Classifies the installed-vs-intended SHA via `intended_sha_status` (the single
+/// owner of that truth-table), layers the launch-identity liveness check on top,
+/// and downgrades to `Unknown` whenever the deploy target cannot be confirmed
+/// (mismatched / unobservable host) or the config is unavailable — so `NoOp` is
+/// only ever reported when the running host is the configured (or unconfigured)
+/// target.
+fn derive_state_advisory(
+    intended: Option<&str>,
+    installed: Option<&str>,
+    launch_identity: &LaunchIdentityStatus,
+    deploy_target: &DeployTargetStatus,
+) -> StateAdvisory {
+    // Every actionable advisory (deploy here / launch here / nothing to do
+    // here) is host-specific: it implicitly asserts THIS host is the configured
+    // target and that we could assess the config. If the running host is not
+    // confirmed as the target, or config could not be assessed, we cannot
+    // recommend any action -> `Unknown`. Gating ABOVE the SHA check ensures a
+    // SHA mismatch on the wrong / unobservable host does not surface a
+    // misleading `deploy-needed` next to `deploy_target: mismatched`.
+    let host_confirmed = matches!(
+        deploy_target,
+        DeployTargetStatus::Matched | DeployTargetStatus::NoTargetConfigured
+    );
+    if !host_confirmed
+        || matches!(
+            launch_identity,
+            LaunchIdentityStatus::SkippedConfigUnavailable
+        )
+    {
+        return StateAdvisory::Unknown;
+    }
+    match intended_sha_status(intended, installed) {
+        IntendedShaStatus::NotSpecified
+        | IntendedShaStatus::Malformed
+        | IntendedShaStatus::UnknownInstalled => StateAdvisory::Unknown,
+        IntendedShaStatus::Mismatch => StateAdvisory::DeployNeeded,
+        IntendedShaStatus::Match => match launch_identity {
+            LaunchIdentityStatus::Present {
+                matches_installed_binary: Some(true),
+                matches_requested_profile: true,
+                matches_current_config: true,
+                ..
+            } => StateAdvisory::NoOp,
+            _ => StateAdvisory::LaunchNeeded,
+        },
+    }
+}
+
+/// Read the durable launch-identity artifact under `catalog_directory` and
+/// compare it against the installed binary, the requested profile, and the
+/// current config bundle. A missing artifact is `Absent`; an unreadable or
+/// malformed artifact is `Unreadable` with the error text (advisory, not a gate).
+fn launch_identity_status(
+    catalog_directory: &Path,
+    installed_sha: Option<&str>,
+    requested_profile: &str,
+    current_config_checksum: &str,
+) -> LaunchIdentityStatus {
+    match read_launch_identity(catalog_directory) {
+        Ok(Some(identity)) => {
+            let matches_installed_binary = match (identity.build_head_sha.as_deref(), installed_sha)
+            {
+                (Some(recorded), Some(installed)) => Some(recorded == installed),
+                _ => None,
+            };
+            LaunchIdentityStatus::Present {
+                matches_installed_binary,
+                matches_requested_profile: identity.profile == requested_profile,
+                matches_current_config: identity.config_bundle_checksum == current_config_checksum,
+                build_head_sha: identity.build_head_sha,
+                profile: identity.profile,
+                config_bundle_checksum: identity.config_bundle_checksum,
+                launched_at_unix_secs: identity.launched_at_unix_secs,
+                pid: identity.pid,
+                target_host_facts: identity.target_host_facts,
+            }
+        }
+        Ok(None) => LaunchIdentityStatus::Absent,
+        Err(error) => LaunchIdentityStatus::Unreadable {
+            error: error.to_string(),
+        },
+    }
+}
+
+/// Load and verify the deploy-target binding against the supplied host-facts
+/// source. Offline-safe: an unobservable host (`DeployTargetError::Observe`) is
+/// reported as `HostFactsUnavailable`, never an error. Generic over the source
+/// so tests can inject a fake with no network access.
+fn deploy_target_status<S: HostFactsSource>(config_root: &Path, source: &S) -> DeployTargetStatus {
+    let config = match load_deploy_target(config_root) {
+        Ok(config) => config,
+        Err(error) => {
+            return DeployTargetStatus::ConfigError {
+                error: error.to_string(),
+            };
+        }
+    };
+    match verify_deploy_target(&config, source).map(|verification| verification.outcome) {
+        Ok(TargetVerifyOutcome::NoTargetConfigured) => DeployTargetStatus::NoTargetConfigured,
+        Ok(TargetVerifyOutcome::Matched) => DeployTargetStatus::Matched,
+        Ok(TargetVerifyOutcome::Mismatched(mismatches)) => DeployTargetStatus::Mismatched {
+            field_mismatches: mismatches
+                .into_iter()
+                .map(|mismatch| DeployTargetFieldMismatch {
+                    field: mismatch.field.to_string(),
+                    configured: mismatch.configured,
+                    observed: mismatch.observed,
+                })
+                .collect(),
+        },
+        // Off-instance / IMDS unreachable: advisory, never an error (offline-safe).
+        Err(DeployTargetError::Observe(detail)) => {
+            DeployTargetStatus::HostFactsUnavailable { detail }
+        }
+        Err(error) => DeployTargetStatus::Error {
+            error: error.to_string(),
+        },
+    }
+}
+
+fn run_ops_status(
+    config_root: &Path,
+    profile: &str,
+    intended_sha: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let installed_sha = current_build_head_sha();
+
+    // The config row also supplies the catalog directory and current checksum the
+    // launch-identity row needs; when the config cannot be verified the identity
+    // row is skipped rather than reading an arbitrary location.
+    let (config, launch_identity) = match verify_live_config(config_root, profile) {
+        Ok(verification) => {
+            let catalog_directory =
+                Path::new(&verification.loaded.root.persistence.catalog_directory).to_path_buf();
+            let current_checksum = verification.loaded.config_bundle_checksum.clone();
+            let config = ConfigStatus::Verified {
+                deployed_config_path: verification.deployed_path.display().to_string(),
+                profile_bundle_sha256: verification.profile_bundle_sha256,
+                config_bundle_checksum: current_checksum.clone(),
+                matches_profile: verification.matches_profile,
+                loads_against_binary: verification.loads_against_binary,
+            };
+            let launch_identity = launch_identity_status(
+                &catalog_directory,
+                installed_sha,
+                profile,
+                &current_checksum,
+            );
+            (config, launch_identity)
+        }
+        Err(error) => (
+            ConfigStatus::Error {
+                error: error.to_string(),
+            },
+            LaunchIdentityStatus::SkippedConfigUnavailable,
+        ),
+    };
+
+    let deploy_target = deploy_target_status(config_root, &Imdsv2HostFactsSource::new());
+
+    let state_advisory = derive_state_advisory(
+        intended_sha,
+        installed_sha,
+        &launch_identity,
+        &deploy_target,
+    );
+
+    let report = OpsStatusReport {
+        ops_status: OpsStatusBody {
+            profile: profile.to_string(),
+            installed_binary_sha: installed_sha.map(str::to_string),
+            intended_sha: intended_sha.map(str::to_string),
+            intended_sha_status: intended_sha_status(intended_sha, installed_sha),
+            state_advisory,
+            config,
+            launch_identity,
+            deploy_target,
+        },
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -1117,6 +1538,50 @@ struct SecretCheckReport {
     secret_field_names: Vec<&'static str>,
 }
 
+/// Prove the running host matches the configured deploy target before
+/// secrets or runtime side effects. Reads `deploy.toml` from `config_root`
+/// (a separate load path from the live-config bundle), observes host facts
+/// over IMDSv2 only when a gating binding is configured, and fails closed on
+/// a mismatch or an unobservable host. An unconfigured target degrades to a
+/// successful no-op so the lane works before any instance is provisioned.
+fn run_loaded_target_verify<S: HostFactsSource>(
+    config_root: &Path,
+    source: &S,
+) -> Result<Option<ObservedHostFacts>, Box<dyn std::error::Error>> {
+    let config = load_deploy_target(config_root)?;
+    let verification = verify_deploy_target(&config, source)?;
+    let log = match &verification.outcome {
+        TargetVerifyOutcome::NoTargetConfigured => serde_json::json!({
+            "ops_launch_target_verify": "no-target-configured",
+        }),
+        TargetVerifyOutcome::Matched => serde_json::json!({
+            "ops_launch_target_verify": "matched",
+        }),
+        TargetVerifyOutcome::Mismatched(mismatches) => serde_json::json!({
+            "ops_launch_target_verify": "mismatched",
+            "field_mismatches": mismatches
+                .iter()
+                .map(|mismatch| serde_json::json!({
+                    "field": mismatch.field,
+                    "configured": mismatch.configured,
+                    "observed": mismatch.observed,
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    };
+    println!("{}", serde_json::to_string(&log)?);
+    match verification.outcome {
+        TargetVerifyOutcome::NoTargetConfigured | TargetVerifyOutcome::Matched => {
+            Ok(verification.observed_host_facts)
+        }
+        TargetVerifyOutcome::Mismatched(mismatches) => Err(format!(
+            "deploy target verification failed: {} configured field(s) do not match the running host",
+            mismatches.len()
+        )
+        .into()),
+    }
+}
+
 fn run_loaded_secrets_check(
     loaded: &LoadedBoltV3Config,
 ) -> Result<Vec<SecretCheckReport>, Box<dyn std::error::Error>> {
@@ -1219,6 +1684,7 @@ mod tests {
             observed,
             vec![
                 OpsLaunchStage::VerifyConfig,
+                OpsLaunchStage::TargetVerify,
                 OpsLaunchStage::SecretsCheck,
                 OpsLaunchStage::SecretsResolve,
                 OpsLaunchStage::PrestartCheck,
@@ -1246,9 +1712,30 @@ mod tests {
             observed,
             vec![
                 OpsLaunchStage::VerifyConfig,
+                OpsLaunchStage::TargetVerify,
                 OpsLaunchStage::SecretsCheck,
                 OpsLaunchStage::SecretsResolve,
             ]
+        );
+    }
+
+    #[test]
+    fn ops_launch_chain_stops_when_target_verify_fails_before_secrets_check() {
+        let mut observed = Vec::new();
+
+        let error = run_ops_launch_chain_with(|stage| {
+            observed.push(stage);
+            if stage == OpsLaunchStage::TargetVerify {
+                return Err("deploy target verification failed".into());
+            }
+            Ok(())
+        })
+        .expect_err("a failed target-verify stage must stop the chain before secrets");
+
+        assert_eq!(error.to_string(), "deploy target verification failed");
+        assert_eq!(
+            observed,
+            vec![OpsLaunchStage::VerifyConfig, OpsLaunchStage::TargetVerify]
         );
     }
 
@@ -1404,6 +1891,131 @@ mod tests {
              inverts these (check resolved={:?}, resolve resolved={:?})",
             check_context.resolved_secrets.is_some(),
             resolve_context.resolved_secrets.is_some(),
+        );
+    }
+
+    #[test]
+    fn ops_launch_target_verify_stage_degrades_when_no_deploy_toml() {
+        // Dispatch guard for the TargetVerify arm of `run_ops_launch_stage`:
+        // a `config_root` with no `deploy.toml` exercises the dispatch arm and
+        // the `NoTargetConfigured => Ok(())` degrade WITHOUT reaching the real
+        // IMDS endpoint (no gating binding means the host is never observed),
+        // so the test is hermetic — no 169.254.x network call.
+        // The `Mismatched => Err` and observe-error fail-closed exits of
+        // `run_loaded_target_verify` are pinned directly by
+        // `run_loaded_target_verify_errors_when_host_facts_mismatch_configured_target`
+        // and `run_loaded_target_verify_errors_when_host_unobservable_for_configured_target`.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut context =
+            OpsLaunchContext::new("fixture-profile".to_string(), temp.path().to_path_buf());
+
+        run_ops_launch_stage(OpsLaunchStage::TargetVerify, &mut context).expect(
+            "target-verify stage must degrade to Ok when no deploy.toml configures a target",
+        );
+        assert!(
+            context.observed_host_facts.is_none(),
+            "an unconfigured target must observe no host facts (no host was queried)"
+        );
+    }
+
+    #[test]
+    fn run_loaded_target_verify_returns_observed_facts_for_matching_binding() {
+        // A configured gating binding (deploy.toml) plus a source returning the
+        // matching facts must thread those facts back to the caller, so the
+        // launch identity can record where it launched. Injecting the fake source
+        // keeps the test hermetic — no IMDS network call.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        std::fs::write(
+            temp.path().join("deploy.toml"),
+            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
+        )
+        .expect("deploy.toml fixture should write");
+        let expected = ObservedHostFacts {
+            region: Some("region-x".to_string()),
+            availability_zone: Some("region-x-zone-a".to_string()),
+            instance_id: Some("instance-target".to_string()),
+        };
+        let source = FakeHostFactsSource::facts(expected.clone());
+
+        let observed = run_loaded_target_verify(temp.path(), &source)
+            .expect("matching facts must verify and thread the observed facts back");
+
+        assert_eq!(observed, Some(expected));
+    }
+
+    #[test]
+    fn run_loaded_target_verify_returns_none_when_no_deploy_toml() {
+        // No deploy.toml means no gating binding, so the host is never observed:
+        // the verifier degrades to `Ok(None)` without touching the fake source.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let source = FakeHostFactsSource::erroring();
+
+        let observed = run_loaded_target_verify(temp.path(), &source)
+            .expect("an unconfigured target must degrade to Ok(None), never error");
+
+        assert!(
+            observed.is_none(),
+            "an unconfigured target must observe no host facts"
+        );
+    }
+
+    #[test]
+    fn run_loaded_target_verify_errors_when_host_facts_mismatch_configured_target() {
+        // Fail-closed launch gate: a configured gating binding whose value
+        // differs from the observed host must abort the launch (Err), never
+        // silently proceed. Pins the `Mismatched => Err` arm of
+        // `run_loaded_target_verify`; flipping that arm to `Ok(None)` makes this
+        // test fail. The injected fake source keeps it hermetic (no IMDS call).
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        std::fs::write(
+            temp.path().join("deploy.toml"),
+            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
+        )
+        .expect("deploy.toml fixture should write");
+        let source = FakeHostFactsSource::facts(ObservedHostFacts {
+            region: Some("region-x".to_string()),
+            availability_zone: Some("region-x-zone-a".to_string()),
+            instance_id: Some("instance-other".to_string()),
+        });
+
+        let error = run_loaded_target_verify(temp.path(), &source)
+            .expect_err("a configured target that does not match the host must fail closed");
+
+        assert!(
+            error.to_string().contains("do not match the running host"),
+            "the abort message must name the host mismatch: {error}"
+        );
+    }
+
+    #[test]
+    fn run_loaded_target_verify_errors_when_host_unobservable_for_configured_target() {
+        // Fail-closed on an unobservable host: with a gating binding configured,
+        // an erroring host-facts source must abort the launch (Err propagated
+        // from `verify_deploy_target`), never degrade to `Ok(None)`. Without a
+        // gating binding the source is never consulted, so this fail-closed path
+        // is only reachable with a configured target.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        std::fs::write(
+            temp.path().join("deploy.toml"),
+            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
+        )
+        .expect("deploy.toml fixture should write");
+        let source = FakeHostFactsSource::erroring();
+
+        run_loaded_target_verify(temp.path(), &source)
+            .expect_err("an unobservable host with a configured target must fail closed");
+    }
+
+    #[test]
+    fn ops_launch_stage_target_verify_serializes_to_kebab_case() {
+        // Pin the kebab-case wire contract for the TargetVerify stage so a
+        // future serde-attr regression (e.g. dropping `rename_all`) is caught:
+        // the stage name is emitted in the ops-launch stage logs that operators
+        // and tooling parse.
+        assert_eq!(
+            serde_json::to_string(&OpsLaunchStage::TargetVerify)
+                .expect("OpsLaunchStage must serialize"),
+            "\"target-verify\"",
         );
     }
 
@@ -1781,5 +2393,619 @@ mod tests {
             _temp: temp,
             config_path,
         }
+    }
+
+    // --- `ops status` advisory truth-table ---------------------------------
+
+    // `DeployTargetError`, `HostFactsSource`, `ObservedHostFacts`, and
+    // `write_launch_identity` are already in scope via `use super::*`; only this
+    // one is not.
+    use bolt_v2::bolt_v3_operator_artifacts::launch_identity_path;
+
+    /// Fake host-facts source for the advisory tests: never touches the network.
+    /// Returns either canned facts or a fixed observe error.
+    struct FakeHostFactsSource {
+        result: Result<ObservedHostFacts, String>,
+    }
+
+    impl FakeHostFactsSource {
+        fn facts(facts: ObservedHostFacts) -> Self {
+            Self { result: Ok(facts) }
+        }
+
+        fn erroring() -> Self {
+            Self {
+                result: Err("fake host facts unavailable".to_string()),
+            }
+        }
+    }
+
+    impl HostFactsSource for FakeHostFactsSource {
+        fn observe(&self) -> Result<ObservedHostFacts, DeployTargetError> {
+            self.result.clone().map_err(DeployTargetError::Observe)
+        }
+    }
+
+    fn well_formed_git_sha(seed: char) -> String {
+        seed.to_string().repeat(40)
+    }
+
+    #[test]
+    fn ops_status_cli_parses_profile_config_root_and_optional_intended_sha() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "status",
+            "--profile",
+            "example",
+            "--config-root",
+            "/opt/bolt-v2/config",
+            "--intended-sha",
+            "0123456789abcdef0123456789abcdef01234567",
+        ])
+        .expect("ops status command should parse");
+
+        match cli.command {
+            Command::Ops {
+                command:
+                    OpsCommand::Status {
+                        profile,
+                        config_root,
+                        intended_sha,
+                    },
+            } => {
+                assert_eq!(profile, "example");
+                assert_eq!(config_root, PathBuf::from("/opt/bolt-v2/config"));
+                assert_eq!(
+                    intended_sha.as_deref(),
+                    Some("0123456789abcdef0123456789abcdef01234567")
+                );
+            }
+            _ => panic!("expected ops status command"),
+        }
+    }
+
+    #[test]
+    fn ops_status_cli_parses_without_intended_sha() {
+        let cli = Cli::try_parse_from([
+            "bolt-v2",
+            "ops",
+            "status",
+            "--profile",
+            "example",
+            "--config-root",
+            "/opt/bolt-v2/config",
+        ])
+        .expect("ops status command should parse without --intended-sha");
+
+        match cli.command {
+            Command::Ops {
+                command: OpsCommand::Status { intended_sha, .. },
+            } => assert!(intended_sha.is_none()),
+            _ => panic!("expected ops status command"),
+        }
+    }
+
+    #[test]
+    fn intended_sha_status_reports_not_specified_when_absent() {
+        assert_eq!(
+            intended_sha_status(None, Some(well_formed_git_sha('a').as_str())),
+            IntendedShaStatus::NotSpecified
+        );
+    }
+
+    #[test]
+    fn intended_sha_status_reports_malformed_for_non_git_sha() {
+        assert_eq!(
+            intended_sha_status(Some("not-a-sha"), Some(well_formed_git_sha('a').as_str())),
+            IntendedShaStatus::Malformed
+        );
+    }
+
+    #[test]
+    fn intended_sha_status_reports_match_when_equal() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            intended_sha_status(Some(sha.as_str()), Some(sha.as_str())),
+            IntendedShaStatus::Match
+        );
+    }
+
+    #[test]
+    fn intended_sha_status_reports_mismatch_when_different() {
+        assert_eq!(
+            intended_sha_status(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str())
+            ),
+            IntendedShaStatus::Mismatch
+        );
+    }
+
+    #[test]
+    fn intended_sha_status_reports_unknown_installed_when_binary_sha_absent() {
+        assert_eq!(
+            intended_sha_status(Some(well_formed_git_sha('a').as_str()), None),
+            IntendedShaStatus::UnknownInstalled
+        );
+    }
+
+    #[test]
+    fn launch_identity_status_reports_present_with_correct_match_flags() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let installed = well_formed_git_sha('a');
+        let identity = LaunchIdentity {
+            build_head_sha: Some(installed.clone()),
+            profile: "example".to_string(),
+            config_bundle_checksum: "checksum-abc".to_string(),
+            launched_at_unix_secs: 1,
+            pid: 4242,
+            target_host_facts: None,
+        };
+        write_launch_identity(temp.path(), &identity).expect("launch identity should write");
+
+        let status = launch_identity_status(
+            temp.path(),
+            Some(installed.as_str()),
+            "example",
+            "checksum-abc",
+        );
+
+        match status {
+            LaunchIdentityStatus::Present {
+                build_head_sha,
+                profile,
+                config_bundle_checksum,
+                launched_at_unix_secs,
+                pid,
+                target_host_facts,
+                matches_installed_binary,
+                matches_requested_profile,
+                matches_current_config,
+            } => {
+                assert_eq!(build_head_sha.as_deref(), Some(installed.as_str()));
+                assert_eq!(profile, "example");
+                assert_eq!(config_bundle_checksum, "checksum-abc");
+                assert_eq!(launched_at_unix_secs, 1);
+                assert_eq!(pid, 4242);
+                assert_eq!(target_host_facts, None);
+                assert_eq!(matches_installed_binary, Some(true));
+                assert!(matches_requested_profile);
+                assert!(matches_current_config);
+            }
+            other => panic!("expected present launch identity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn launch_identity_status_reports_divergence_against_other_profile_and_config() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let identity = LaunchIdentity {
+            build_head_sha: Some(well_formed_git_sha('a')),
+            profile: "recorded-profile".to_string(),
+            config_bundle_checksum: "recorded-checksum".to_string(),
+            launched_at_unix_secs: 7,
+            pid: 4242,
+            target_host_facts: None,
+        };
+        write_launch_identity(temp.path(), &identity).expect("launch identity should write");
+
+        let status = launch_identity_status(
+            temp.path(),
+            Some(well_formed_git_sha('b').as_str()),
+            "requested-profile",
+            "current-checksum",
+        );
+
+        match status {
+            LaunchIdentityStatus::Present {
+                matches_installed_binary,
+                matches_requested_profile,
+                matches_current_config,
+                ..
+            } => {
+                assert_eq!(matches_installed_binary, Some(false));
+                assert!(!matches_requested_profile);
+                assert!(!matches_current_config);
+            }
+            other => panic!("expected present launch identity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn launch_identity_status_reports_absent_when_artifact_missing() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+
+        let status = launch_identity_status(temp.path(), None, "example", "checksum-abc");
+
+        assert!(matches!(status, LaunchIdentityStatus::Absent));
+    }
+
+    #[test]
+    fn build_launch_identity_maps_every_field_from_inputs() {
+        // Synthetic host-fact tokens (not real venue/region values) keep this
+        // test clear of the runtime-literal fence while still exercising the
+        // `Some(facts)` path through the builder.
+        let facts = ObservedHostFacts {
+            region: Some("test-region".to_string()),
+            availability_zone: None,
+            instance_id: Some("test-instance".to_string()),
+        };
+
+        let identity = build_launch_identity(
+            "build-profile",
+            "build-checksum",
+            7,
+            1_700_000_000,
+            Some(facts.clone()),
+        );
+
+        assert_eq!(identity.profile, "build-profile");
+        assert_eq!(identity.config_bundle_checksum, "build-checksum");
+        assert_eq!(identity.pid, 7);
+        assert_eq!(identity.launched_at_unix_secs, 1_700_000_000);
+        assert_eq!(
+            identity.build_head_sha,
+            current_build_head_sha().map(str::to_owned)
+        );
+        assert_eq!(identity.target_host_facts, Some(facts));
+    }
+
+    #[test]
+    fn launch_identity_status_reports_unreadable_for_malformed_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        // An unknown-field document parses against `serde(deny_unknown_fields)`
+        // as an error, surfacing as the advisory `unreadable` state.
+        fs::write(
+            launch_identity_path(temp.path()),
+            "{ \"unexpected_field\": true }\n",
+        )
+        .expect("malformed launch identity should write");
+
+        let status = launch_identity_status(temp.path(), None, "example", "checksum-abc");
+
+        assert!(matches!(status, LaunchIdentityStatus::Unreadable { .. }));
+    }
+
+    fn write_deploy_target(config_root: &Path, region: &str, instance_id: &str) {
+        fs::write(
+            config_root.join("deploy.toml"),
+            format!("[target]\nregion = \"{region}\"\ninstance_id = \"{instance_id}\"\n"),
+        )
+        .expect("deploy.toml fixture should write");
+    }
+
+    #[test]
+    fn deploy_target_status_reports_no_target_configured_without_deploy_toml() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+
+        let status = deploy_target_status(temp.path(), &FakeHostFactsSource::erroring());
+
+        assert!(matches!(status, DeployTargetStatus::NoTargetConfigured));
+    }
+
+    #[test]
+    fn deploy_target_status_reports_matched_when_host_facts_agree() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        write_deploy_target(temp.path(), "region-x", "instance-target");
+        let source = FakeHostFactsSource::facts(ObservedHostFacts {
+            region: Some("region-x".to_string()),
+            availability_zone: None,
+            instance_id: Some("instance-target".to_string()),
+        });
+
+        let status = deploy_target_status(temp.path(), &source);
+
+        assert!(matches!(status, DeployTargetStatus::Matched));
+    }
+
+    #[test]
+    fn deploy_target_status_reports_mismatched_field_when_host_facts_differ() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        write_deploy_target(temp.path(), "region-x", "instance-target");
+        let source = FakeHostFactsSource::facts(ObservedHostFacts {
+            region: Some("region-x".to_string()),
+            availability_zone: None,
+            instance_id: Some("instance-other".to_string()),
+        });
+
+        let status = deploy_target_status(temp.path(), &source);
+
+        match status {
+            DeployTargetStatus::Mismatched { field_mismatches } => {
+                assert_eq!(field_mismatches.len(), 1);
+                let mismatch = &field_mismatches[0];
+                assert_eq!(mismatch.field, "instance_id");
+                assert_eq!(mismatch.configured, "instance-target");
+                assert_eq!(mismatch.observed.as_deref(), Some("instance-other"));
+            }
+            other => panic!("expected mismatched deploy target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deploy_target_status_reports_host_facts_unavailable_on_observe_error() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        write_deploy_target(temp.path(), "region-x", "instance-target");
+
+        let status = deploy_target_status(temp.path(), &FakeHostFactsSource::erroring());
+
+        assert!(matches!(
+            status,
+            DeployTargetStatus::HostFactsUnavailable { .. }
+        ));
+    }
+
+    /// Build a `Present` launch identity with every field explicit so the advisory
+    /// truth table exercises each match flag independently.
+    fn present_launch_identity(
+        matches_installed_binary: Option<bool>,
+        matches_requested_profile: bool,
+        matches_current_config: bool,
+    ) -> LaunchIdentityStatus {
+        LaunchIdentityStatus::Present {
+            build_head_sha: Some(well_formed_git_sha('a')),
+            profile: "example".to_string(),
+            config_bundle_checksum: "checksum-abc".to_string(),
+            launched_at_unix_secs: 1,
+            pid: 4242,
+            target_host_facts: None,
+            matches_installed_binary,
+            matches_requested_profile,
+            matches_current_config,
+        }
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_intended_absent() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                None,
+                Some(sha.as_str()),
+                &LaunchIdentityStatus::Absent,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_installed_absent() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                None,
+                &LaunchIdentityStatus::Absent,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_intended_malformed() {
+        assert_eq!(
+            derive_state_advisory(
+                Some("not-a-sha"),
+                Some(well_formed_git_sha('a').as_str()),
+                &LaunchIdentityStatus::Absent,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_deploy_needed_when_installed_differs() {
+        assert_eq!(
+            derive_state_advisory(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::DeployNeeded
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_no_op_when_installed_matches_and_identity_live() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::NoOp
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_launch_needed_when_installed_matches_but_identity_absent() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &LaunchIdentityStatus::Absent,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::LaunchNeeded
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_launch_needed_when_identity_diverges() {
+        let sha = well_formed_git_sha('a');
+        // Right binary installed, but the launch identity disagrees on the binary,
+        // the profile, or cannot prove the binary — each forces `launch-needed`.
+        for identity in [
+            present_launch_identity(Some(false), true, true),
+            present_launch_identity(Some(true), false, true),
+            present_launch_identity(None, true, true),
+        ] {
+            assert_eq!(
+                derive_state_advisory(
+                    Some(sha.as_str()),
+                    Some(sha.as_str()),
+                    &identity,
+                    &DeployTargetStatus::NoTargetConfigured,
+                ),
+                StateAdvisory::LaunchNeeded
+            );
+        }
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_launch_needed_when_config_diverges() {
+        // Same binary and profile, but the recorded launch ran against a
+        // different config bundle (matches_current_config: false). The advisory
+        // must NOT collapse to no-op — a new config bundle needs a relaunch — so
+        // the `IntendedShaStatus::Match` arm must inspect config drift, not
+        // swallow it under `..`.
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, false),
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::LaunchNeeded
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_no_op_when_host_matches_configured_target() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::Matched,
+            ),
+            StateAdvisory::NoOp
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_deploy_target_mismatched() {
+        // A live, matching launch identity must NOT collapse to no-op when the
+        // running host is not the configured target — otherwise `ops status`
+        // would advise "nothing to do" on the wrong host.
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::Mismatched {
+                    field_mismatches: Vec::new(),
+                },
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_host_facts_unavailable() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::HostFactsUnavailable {
+                    detail: "imds unreachable".to_string(),
+                },
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_config_unavailable() {
+        // Config could not be verified, so the launch identity was skipped; the
+        // advisory must say `unknown`, not `launch-needed` (a relaunch would
+        // fail at config verification anyway).
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &LaunchIdentityStatus::SkippedConfigUnavailable,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_sha_mismatch_on_mismatched_host() {
+        // SHA mismatch on the WRONG host must NOT advise `deploy-needed`.
+        assert_eq!(
+            derive_state_advisory(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::Mismatched {
+                    field_mismatches: Vec::new()
+                },
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_sha_mismatch_and_host_facts_unavailable() {
+        assert_eq!(
+            derive_state_advisory(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::HostFactsUnavailable {
+                    detail: "imds unreachable".to_string()
+                },
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_sha_mismatch_and_config_unavailable() {
+        assert_eq!(
+            derive_state_advisory(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str()),
+                &LaunchIdentityStatus::SkippedConfigUnavailable,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn state_advisory_serializes_to_kebab_case_variants() {
+        assert_eq!(
+            serde_json::to_string(&StateAdvisory::NoOp).expect("serialize no-op"),
+            "\"no-op\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StateAdvisory::LaunchNeeded).expect("serialize launch-needed"),
+            "\"launch-needed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StateAdvisory::DeployNeeded).expect("serialize deploy-needed"),
+            "\"deploy-needed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StateAdvisory::Unknown).expect("serialize unknown"),
+            "\"unknown\""
+        );
     }
 }

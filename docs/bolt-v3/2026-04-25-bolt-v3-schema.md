@@ -650,7 +650,7 @@ The `kind` field is `order_intent` for `intent` payloads, `admission_decision` f
 `admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id` and the `execution_client_id` whose submit-admission limits were evaluated.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 `position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.
-Schema 12 also records reference-current-price provenance fields in strategy-input snapshots and durable state-change rationale for entry skips, exit decisions, loss-governor halts, and maker requote throttles.
+Schema 11 added reference-current-price provenance fields in strategy-input snapshots; schema 13 adds durable state-change rationale for entry skips, exit decisions, loss-governor halts, and maker requote throttles.
 
 `order_intent.order_fields` fields:
 

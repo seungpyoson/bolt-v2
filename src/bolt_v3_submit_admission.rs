@@ -4121,7 +4121,7 @@ mod loss_governor_halt_evidence_tests {
             strategy_id,
             execution_client_id: "execution-client-loss-halt".to_string(),
             client_order_id,
-            instrument_id: "condition-loss-halt-yes.POLYMARKET".to_string(),
+            instrument_id: "instrument-loss-halt-yes".to_string(),
             notional: Decimal::ONE,
             order_side: OrderSide::Buy,
             order_quantity: Decimal::ONE,

@@ -416,10 +416,14 @@
       return state.records.length ? state.records[state.records.length - 1] : null;
     }
 
+    // The formatters are DISPLAY-ONLY and REQUIRE an already-validated finite
+    // number (the sole way to obtain one from a record is a field accessor). They
+    // never coerce: a non-number renders EMPTY. This is what lets the CI fence ban
+    // raw numeric coercion entirely -- raw record fields cannot reach a renderer.
     function formatBytes(value) {
-      if (value === null || value === undefined || !Number.isFinite(Number(value))) return EMPTY;
+      if (!isStrictFiniteNumber(value)) return EMPTY;
       const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-      let scaled = Number(value);
+      let scaled = value;
       let unitIndex = 0;
       while (Math.abs(scaled) >= 1024 && unitIndex < units.length - 1) {
         scaled /= 1024;
@@ -430,13 +434,13 @@
     }
 
     function formatNumber(value) {
-      if (value === null || value === undefined || !Number.isFinite(Number(value))) return EMPTY;
-      return Number(value).toLocaleString();
+      if (!isStrictFiniteNumber(value)) return EMPTY;
+      return value.toLocaleString();
     }
 
     function formatPct(value) {
-      if (value === null || value === undefined || !Number.isFinite(Number(value))) return EMPTY;
-      return `${Number(value).toFixed(1)}%`;
+      if (!isStrictFiniteNumber(value)) return EMPTY;
+      return `${value.toFixed(1)}%`;
     }
 
     function arrayExtent(values) {
@@ -627,6 +631,39 @@
       return isStrictFiniteNumber(value) && value >= 0 && value <= 100;
     }
 
+    // isObject + the field accessors below are the SINGLE place each numeric health
+    // field is extracted from its (object-guarded) parent AND strict-validated.
+    // Every consumer -- card, badge, banner, chart -- reads a field ONLY through
+    // its accessor, so extraction can never drift between surfaces: a falsy-numeric
+    // parent (disk:0 / process:0) or a coercible value can never reach a renderer as
+    // a clean number. Each returns a finite number or null.
+    function isObject(value) {
+      return value !== null && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function diskUsedPct(record) {
+      const disk = record && record.disk;
+      return isObject(disk) && isValidUsedPct(disk.used_pct) ? disk.used_pct : null;
+    }
+
+    function restartCount(record) {
+      const service = record && record.service;
+      const value = isObject(service) ? service.n_restarts : null;
+      return isValidCount(value) ? value : null;
+    }
+
+    function rssBytes(record) {
+      const process = record && record.process;
+      const value = isObject(process) ? process.rss_bytes : null;
+      return isValidCount(value) ? value : null;
+    }
+
+    function memAvailableBytes(record) {
+      const memory = record && record.memory;
+      const value = isObject(memory) ? memory.mem_available_bytes : null;
+      return isValidCount(value) ? value : null;
+    }
+
     function isValidCount(value) {
       // A present, valid non-negative counter (restarts, cgroup oom_kills). Shared
       // single source of truth so the badge, banner, cgroup count, and trend
@@ -809,8 +846,8 @@
       const parseErrorCount = state.parseErrors.length;
       elements.sampleTime.textContent = latest ? latest.sampled_at || EMPTY : EMPTY;
       elements.serviceState.innerHTML = latest ? serviceBadge(latest, parseErrorCount > 0) : EMPTY;
-      elements.rssValue.textContent = latest ? formatBytes(latest.process && latest.process.rss_bytes) : EMPTY;
-      elements.memValue.textContent = latest ? formatBytes(latest.memory && latest.memory.mem_available_bytes) : EMPTY;
+      elements.rssValue.textContent = formatBytes(rssBytes(latest));
+      elements.memValue.textContent = formatBytes(memAvailableBytes(latest));
 
       const freePct = latest ? diskFreePct(latest.disk) : null;
       // An unknown/degraded disk status is a visible signal: show a degraded
@@ -819,9 +856,7 @@
         ? `<span class="badge vio">${EMPTY}</span>`
         : `<span class="badge ${diskBadgeClass(freePct)}">${formatPct(freePct)}</span>`;
 
-      elements.restartValue.textContent = latest && latest.service
-        ? formatNumber(latest.service.n_restarts)
-        : EMPTY;
+      elements.restartValue.textContent = formatNumber(restartCount(latest));
       elements.hostValue.textContent = latest
         ? [latest.host, latest.platform].filter(Boolean).join(" / ") || EMPTY
         : EMPTY;
@@ -877,8 +912,8 @@
         unit: "bytes",
         formatter: formatBytes,
         series: [
-          { name: "RSS", color: "var(--blu)", value: record => record.process && record.process.rss_bytes },
-          { name: "MemAvailable", color: "var(--grn)", value: record => record.memory && record.memory.mem_available_bytes }
+          { name: "RSS", color: "var(--blu)", value: record => rssBytes(record) },
+          { name: "MemAvailable", color: "var(--grn)", value: record => memAvailableBytes(record) }
         ]
       });
 
@@ -889,7 +924,7 @@
         yMax: 100,
         formatter: formatPct,
         series: [
-          { name: "Disk used", color: "var(--amb)", value: record => record.disk && record.disk.used_pct, valid: isValidUsedPct }
+          { name: "Disk used", color: "var(--amb)", value: record => diskUsedPct(record) }
         ]
       });
     }

@@ -1033,6 +1033,84 @@ check("F7 restart trend does not fire on a malformed n_restarts the badge reject
   assertEqual(restartIncreased(realIncrease), true, "a real numeric increase still fires");
 });
 
+// Class-closure for the viewer (#886 coverage audit): every numeric health field
+// is read through ONE validated accessor (diskUsedPct / restartCount / rssBytes /
+// memAvailableBytes / cgroupOomCount), so the card, badge, banner, and chart can
+// never disagree; a CI fence bans raw coercion so a new consumer cannot re-introduce
+// the leak; and a field x hostile-type matrix asserts the invariant exhaustively.
+
+check("C2-G1 disk:0 corrupt scalar -> chart and card both reject (no contradiction)", () => {
+  const diskUsedPct = requireFn(ctx, "diskUsedPct");
+  const diskFreePct = requireFn(ctx, "diskFreePct");
+  const drawTimeSeries = requireFn(ctx, "drawTimeSeries");
+  const rec = { schema_version: 2, sampled_at: "t0", disk: 0, service: { active_state: "active", sub_state: "running", n_restarts: 0 } };
+  assertEqual(diskUsedPct(rec), null, "diskUsedPct must reject a falsy-numeric disk parent (disk:0)");
+  assertEqual(diskFreePct(rec.disk), null, "disk card already rejects disk:0");
+  const container = ctx.document.createElement("div");
+  drawTimeSeries(container, { records: [rec], unit: "percent", yMin: 0, yMax: 100, formatter: value => String(value), series: [{ name: "Disk used", value: record => diskUsedPct(record) }] });
+  assertTrue(container.children.some(child => child.className === "empty"), "disk chart must not plot a clean 0%-used point for disk:0");
+});
+
+check("C2-G2 coercible n_restarts -> restart card EMPTY (no contradiction with malformed badge)", () => {
+  const restartCount = requireFn(ctx, "restartCount");
+  const formatNumber = requireFn(ctx, "formatNumber");
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const rec = { schema_version: 2, sampled_at: "t0", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: "5" } };
+  assertEqual(restartCount(rec), null, "restartCount must reject a coercible string n_restarts");
+  assertEqual(formatNumber(restartCount(rec)), formatNumber(null), "restart card must be EMPTY for a malformed count, not a fabricated number");
+  assertTrue(/badge amb/.test(serviceBadge(rec)), "badge stays amber for malformed restart count");
+});
+
+check("FENCE: no raw Number()/parseInt/parseFloat coercion in the viewer", () => {
+  const html = readFileSync(htmlPath, "utf8");
+  const script = extractInlineScript(html)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  const banned = script.match(/\b(?:Number|parseInt|parseFloat)\s*\(/g) || [];
+  assertEqual(banned.length, 0, `numeric values must come from validated field accessors, not coercion; found: ${banned.join(", ")}`);
+});
+
+check("MATRIX: numeric health fields x hostile types -> accessor null, chart==accessor, no false-green, no crash", () => {
+  const diskUsedPct = requireFn(ctx, "diskUsedPct");
+  const restartCount = requireFn(ctx, "restartCount");
+  const rssBytes = requireFn(ctx, "rssBytes");
+  const memAvailableBytes = requireFn(ctx, "memAvailableBytes");
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const drawTimeSeries = requireFn(ctx, "drawTimeSeries");
+
+  const HOSTILE = ["0", "5", "", " ", "0x10", "1e3", "-1", [], [5], {}, true, false, -1, NaN, Infinity, -Infinity, null, undefined];
+
+  const chartPlots = (accessorFn, record) => {
+    const container = ctx.document.createElement("div");
+    drawTimeSeries(container, { records: [record], unit: "x", yMin: 0, yMax: 100, formatter: value => String(value), series: [{ name: "s", value: r => accessorFn(r) }] });
+    return !container.children.some(child => child.className === "empty");
+  };
+
+  for (const h of HOSTILE) {
+    for (const disk of [h, { used_pct: h }]) {
+      const rec = { schema_version: 2, sampled_at: "t", disk };
+      assertEqual(diskUsedPct(rec), null, `diskUsedPct must reject hostile disk=${JSON.stringify(disk)}`);
+      assertEqual(chartPlots(diskUsedPct, rec), false, `disk chart must not plot for hostile disk=${JSON.stringify(disk)}`);
+    }
+    assertEqual(restartCount({ service: { n_restarts: h } }), null, `restartCount hostile ${JSON.stringify(h)}`);
+    assertEqual(rssBytes({ process: { rss_bytes: h } }), null, `rssBytes hostile ${JSON.stringify(h)}`);
+    assertEqual(memAvailableBytes({ memory: { mem_available_bytes: h } }), null, `memAvailableBytes hostile ${JSON.stringify(h)}`);
+    if (h !== null && h !== undefined) {
+      const rec = { schema_version: 2, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: h } };
+      assertTrue(!/badge grn/.test(serviceBadge(rec)), `present malformed n_restarts must not be green: ${JSON.stringify(h)}`);
+    }
+    bannerReasons({ schema_version: 2, disk: h, service: { active_state: "active", sub_state: "running", n_restarts: h }, cgroup_oom_kills: h, oom_killed: h }, []);
+  }
+
+  // positive control: valid values ARE accepted, plotted, and green-eligible.
+  assertEqual(diskUsedPct({ disk: { used_pct: 42 } }), 42, "valid used_pct accepted");
+  assertEqual(chartPlots(diskUsedPct, { disk: { used_pct: 42 } }), true, "valid used_pct plots");
+  assertEqual(rssBytes({ process: { rss_bytes: 4096 } }), 4096, "valid rss accepted");
+  assertEqual(restartCount({ service: { n_restarts: 0 } }), 0, "valid restart 0 accepted");
+  assertTrue(/badge grn/.test(serviceBadge({ schema_version: 2, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } })), "clean record is green-eligible");
+});
+
 // --- report ------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {

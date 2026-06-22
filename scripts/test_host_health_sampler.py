@@ -2231,6 +2231,11 @@ class DeadlineBreakerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.sampler = load_sampler()
 
+    def tearDown(self) -> None:
+        if hasattr(self, "sampler") and hasattr(self.sampler, "_DEADLINE_BREAKERS"):
+            with self.sampler._DEADLINE_BREAKERS_LOCK:
+                self.sampler._DEADLINE_BREAKERS.clear()
+
     def _wait_for_thread_delta_at_most(
         self,
         baseline: int,
@@ -2244,6 +2249,31 @@ class DeadlineBreakerTests(unittest.TestCase):
                 return True
             time.sleep(0.01)
         return threading.active_count() - baseline <= limit
+
+    def test_differential_breaker_predicate_never_pops_concurrent_reservation(self) -> None:
+        sampler = self.sampler
+        key = "test:predicate-reservation-race"
+        finished = threading.Thread(target=lambda: None)
+        finished.start()
+        finished.join()
+        real_is_alive = finished.is_alive
+
+        def racing_is_alive() -> bool:
+            sampler._DEADLINE_BREAKERS[key] = sampler._BREAKER_RESERVED
+            return False
+
+        sampler._DEADLINE_BREAKERS[key] = finished
+        finished.is_alive = racing_is_alive
+        try:
+            self.assertFalse(sampler._breaker_outstanding(key))
+            self.assertIs(
+                sampler._DEADLINE_BREAKERS.get(key),
+                sampler._BREAKER_RESERVED,
+                "the pure predicate must not erase a concurrent breaker reservation",
+            )
+        finally:
+            finished.is_alive = real_is_alive
+            sampler._DEADLINE_BREAKERS.pop(key, None)
 
     def test_differential_wedged_stdout_sink_bounds_abandoned_threads(self) -> None:
         sampler = self.sampler

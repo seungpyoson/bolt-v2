@@ -1089,6 +1089,7 @@ check("FENCE2: raw numeric health-field property access only inside the fieldVie
   // exact "fixed validation but not extraction" leak that recurred across rounds.
   // Banner WORDING (`used_pct=`) and the string ARGUMENTS to fieldView ("used_pct")
   // are data, not property access, so they are deliberately not matched.
+  // Regex covers literal-key raw access; computed keys are governed by the fieldView chokepoint plus review.
   const FIELDS = ["used_pct", "n_restarts", "rss_bytes", "mem_available_bytes", "cgroup_oom_kills"];
   const offenders = [];
   for (const field of FIELDS) {
@@ -1174,6 +1175,69 @@ check("CONSENSUS: absent n_restarts -> badge green + card EMPTY + banner silent 
     assertEqual(formatNumber(restartCount(rec)), formatNumber(null), "restart card EMPTY for absent count");
     assertTrue(!bannerReasons(rec, [rec]).some(r => /restart count malformed|auto-restarted/.test(r)), "banner raises no restart reason for an absent count");
   }
+});
+
+check("CONSENSUS: top-level present-invalid cgroup count -> badge capped + banner malformed", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: "5", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const html = serviceBadge(rec);
+  const reasons = bannerReasons(rec, [rec]);
+  assertTrue(!/badge grn/.test(html), "present-invalid top-level cgroup count must cap a green badge");
+  assertTrue(
+    reasons.some(r => /cgroup oom_kill count malformed/.test(r) && /cgroup_oom_kills="5"/.test(r)),
+    "banner must flag the malformed top-level cgroup value",
+  );
+});
+
+check("CONSENSUS: nested present-invalid cgroup count -> badge capped + banner malformed", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: "5" } };
+  const html = serviceBadge(rec);
+  const reasons = bannerReasons(rec, [rec]);
+  assertTrue(!/badge grn/.test(html), "present-invalid nested cgroup count must cap a green badge");
+  assertTrue(
+    reasons.some(r => /cgroup oom_kill count malformed/.test(r) && /cgroup_oom_kills="5"/.test(r)),
+    "banner must flag the malformed nested cgroup value",
+  );
+});
+
+check("CONSENSUS: negative cgroup count -> badge capped + banner malformed", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: -1, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const html = serviceBadge(rec);
+  const reasons = bannerReasons(rec, [rec]);
+  assertTrue(!/badge grn/.test(html), "negative cgroup count must cap a green badge");
+  assertTrue(
+    reasons.some(r => /cgroup oom_kill count malformed/.test(r) && /cgroup_oom_kills=-1/.test(r)),
+    "banner must flag the negative cgroup value",
+  );
+});
+
+check("CONSENSUS: badge + banner flag the same hostile cgroup value", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const hostile = "0x10";
+  const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: hostile, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const reasons = bannerReasons(rec, [rec]);
+  assertTrue(!/badge grn/.test(serviceBadge(rec)), "badge must be capped for the same hostile cgroup value");
+  assertTrue(
+    reasons.some(r => /cgroup oom_kill count malformed/.test(r) && r.includes(`cgroup_oom_kills=${JSON.stringify(hostile)}`)),
+    "banner must name the same hostile cgroup value that capped the badge",
+  );
+});
+
+check("CONSENSUS: absent cgroup count stays green-eligible + banner silent", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  assertTrue(/badge grn/.test(serviceBadge(rec)), "truly absent cgroup count stays green-eligible");
+  assertTrue(
+    !bannerReasons(rec, [rec]).some(r => /cgroup oom_kill count malformed/.test(r)),
+    "banner raises no malformed cgroup reason for a truly absent count",
+  );
 });
 
 check("CONSENSUS: non-object disk block -> card violet + banner 'status unavailable' (card+banner agree)", () => {

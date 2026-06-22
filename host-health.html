@@ -592,8 +592,9 @@
       // service) so the strict isValidCount validation -- a malformed-but-coercible
       // value ("0", "0x10", "1e3", []) reads as UNAVAILABLE (NaN), never a
       // fabricated count corroborating an OOM -- lives in ONE place, not here.
-      const top = fieldView(record, null, "cgroup_oom_kills", isValidCount);
-      const nested = fieldView(record, "service", "cgroup_oom_kills", isValidCount);
+      const views = cgroupViews(record);
+      const top = views.top;
+      const nested = views.nested;
       if (top.valid && nested.valid) {
         return Math.max(top.value, nested.value);
       }
@@ -666,6 +667,23 @@
       return fieldView(record, "service", "n_restarts", isValidCount);
     }
 
+    function cgroupViews(record) {
+      return {
+        top: fieldView(record, null, "cgroup_oom_kills", isValidCount),
+        nested: fieldView(record, "service", "cgroup_oom_kills", isValidCount)
+      };
+    }
+
+    function cgroupMalformed(record) {
+      const views = cgroupViews(record);
+      return (views.top.present || views.nested.present) && !views.top.valid && !views.nested.valid;
+    }
+
+    function cgroupMalformedRaw(record) {
+      const views = cgroupViews(record);
+      return views.top.present ? views.top.raw : views.nested.raw;
+    }
+
     // Thin number|null accessors over the chokepoint, for the card and chart that
     // only need the validated value (absent and invalid both collapse to null).
     function diskUsedPct(record) {
@@ -716,6 +734,9 @@
       }
       if (isMalformedOomKilled(record.oom_killed)) {
         reasons.push(`oom_killed field malformed (expected boolean, got ${typeof record.oom_killed})`);
+      }
+      if (cgroupMalformed(record)) {
+        reasons.push(`cgroup oom_kill count malformed (cgroup_oom_kills=${JSON.stringify(cgroupMalformedRaw(record))})`);
       }
       // A PRESENT errors field of the wrong SHAPE is itself an integrity issue: a
       // non-array errors (string/object/number) means the sampler serialized a

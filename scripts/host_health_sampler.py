@@ -797,15 +797,17 @@ def _breaker_outstanding(breaker_key: str) -> bool:
 
     Single source of truth for the deadline circuit-breaker's "is this key still
     wedged?" check — shared by ``run_with_deadline``'s keyed fast-fail and the
-    file-sink open guard in ``write_to_file``. A worker that has FINISHED is popped
-    so the key auto-recovers once the wedged operation drains.
+    file-sink open guard in ``write_to_file``. A worker that has FINISHED is
+    reclaimed by ``run_with_deadline``'s locked reserve-overwrite when the key
+    auto-recovers once the wedged operation drains.
 
     A ``_BREAKER_RESERVED`` placeholder (a worker mid-spawn, before its thread
     object is registered) counts as outstanding so a racing caller fast-fails
-    instead of spawning a second worker. Lock-free by design: ``run_with_deadline``
-    calls this while holding ``_DEADLINE_BREAKERS_LOCK`` (so it must NOT re-acquire
-    it), and ``write_to_file``'s open guard calls it best-effort; the only mutation
-    here is an idempotent pop of an already-dead worker.
+    instead of spawning a second worker. Pure predicate by design: it never mutates
+    the registry, so it is safe both under ``_DEADLINE_BREAKERS_LOCK`` and from
+    ``write_to_file``'s best-effort open guard. Stale dead entries are reclaimed by
+    ``run_with_deadline``'s locked reserve-overwrite
+    (``_DEADLINE_BREAKERS[breaker_key] = _BREAKER_RESERVED``).
     """
     outstanding = _DEADLINE_BREAKERS.get(breaker_key)
     if outstanding is None:
@@ -814,7 +816,6 @@ def _breaker_outstanding(breaker_key: str) -> bool:
         return True
     if outstanding.is_alive():
         return True
-    _DEADLINE_BREAKERS.pop(breaker_key, None)
     return False
 
 

@@ -7817,11 +7817,11 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
 /// `submission_blocked_reason` field separately explains why.
 fn exit_decision_evidence_from_optional(
     decision: Option<ExitDecision>,
-) -> BoltV3ExitDecisionEvidence {
+) -> BoltV3ExitDecisionOutcome {
     match decision {
-        Some(ExitDecision::Hold) | None => BoltV3ExitDecisionEvidence::Hold,
-        Some(ExitDecision::Exit) => BoltV3ExitDecisionEvidence::Exit,
-        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionEvidence::ExitFailClosed,
+        Some(ExitDecision::Hold) | None => BoltV3ExitDecisionOutcome::Hold,
+        Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
+        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
     }
 }
 

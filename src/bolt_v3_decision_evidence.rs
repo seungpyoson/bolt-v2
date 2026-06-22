@@ -1090,17 +1090,6 @@ pub enum BoltV3RvGateResult {
     RejectedNotReady,
 }
 
-/// Closed exit decision as recorded in evidence. Mirrors the strategy's internal
-/// `ExitDecision` (Hold / Exit / ExitFailClosed) without importing it, keeping the
-/// evidence schema decoupled from strategy internals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BoltV3ExitDecisionEvidence {
-    Hold,
-    Exit,
-    ExitFailClosed,
-}
-
 /// Closed taxonomy of *why* a loss-governor snapshot was treated as stale. The
 /// production governor collapses all of these into one `StaleLossSnapshot` halt
 /// reason; this enum is the evidence-only decomposition (behaviour-neutral).
@@ -3603,7 +3592,7 @@ mod tests {
             rv_as_of_minus_now_ms: Some(-5_000),
             hold_ev_bps: Some("12.5".to_string()),
             exit_ev_bps: Some("-3.0".to_string()),
-            exit_decision: BoltV3ExitDecisionEvidence::ExitFailClosed,
+            exit_decision: BoltV3ExitDecisionOutcome::ExitFailClosed,
             forced_flat_reasons: vec!["rv_gate_rejected".to_string()],
             submission_order_side: Some("Sell".to_string()),
             submission_price: Some("0.49".to_string()),

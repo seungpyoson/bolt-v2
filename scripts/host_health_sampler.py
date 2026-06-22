@@ -796,6 +796,14 @@ def sample(service_unit: str = DEFAULT_SERVICE, disk_path: str = DEFAULT_DISK_PA
         "process": process,
         "memory": memory,
         "disk": disk,
+        # Top-level mirror of the cgroup oom_kill counter (also nested under
+        # service when the service block exists). Surfaced here because the
+        # counter is read from /sys independently of systemctl: when systemctl
+        # stalls and the service block is null, this is the ONLY place the count
+        # that drove oom_killed survives, so the viewer can show the real number
+        # instead of a misleading 0. Both fields come from the same local var, so
+        # they cannot diverge.
+        "cgroup_oom_kills": cgroup_oom_kills,
         "oom_killed": derive_oom_killed(service_result, service_oom_kills),
         "errors": errors,
     }

@@ -314,6 +314,23 @@ check("R2-7 authoritative oom-kill keeps authoritative wording", () => {
   const reasons = bannerReasons(latest, [latest]);
   assertTrue(reasons.some(r => /authoritative/.test(r)), "systemd oom-kill stays authoritative");
 });
+// Round-4 coherence: when systemctl stalled (service null) but a cgroup OOM
+// fired, the top-level count must surface in the banner instead of a
+// self-contradictory "oom_kill=0". Pre-fix the count was read only from the
+// (null) service block, so an OOM with a known count rendered as count 0.
+check("R4 OOM count surfaces from record top level when service is null", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { oom_killed: true, service: null, cgroup_oom_kills: 9 };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /oom_kill=9/.test(r)), "real top-level count surfaces");
+  assertTrue(!reasons.some(r => /oom_kill=0/.test(r)), "must not show a contradictory 0");
+});
+check("R4 OOM count back-compat: nested-only count still read", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { oom_killed: true, service: { active_state: "active", result: "signal", cgroup_oom_kills: 4 } };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /oom_kill=4/.test(r)), "nested count read when top-level field absent");
+});
 
 // === PR #886 review round 3 (fail-closed hardening E1/E2/E4/E3/F/G) ==========
 

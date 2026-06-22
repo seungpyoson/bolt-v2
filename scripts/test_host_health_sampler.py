@@ -71,6 +71,9 @@ EXPECTED_SCHEMA_KEYS = {
     "process",
     "memory",
     "disk",
+    # Additive (schema_version stays 2): top-level mirror of the cgroup oom_kill
+    # counter so the count survives when systemctl stalls and service is null.
+    "cgroup_oom_kills",
     "oom_killed",
     "errors",
 }
@@ -1741,6 +1744,11 @@ class ReviewRound4HardeningTests(unittest.TestCase):
         self.assertEqual(calls["cgroup"], 1)
         self.assertIs(record["oom_killed"], sampler.derive_oom_killed(None, 9))
         self.assertIn("service: timed out", record["errors"])
+        # The cgroup count that drove oom_killed survives at the record top level
+        # even though the service block is None (systemctl stalled). Without this
+        # the viewer would render a self-contradictory "OOM detected, count=0".
+        self.assertEqual(record["cgroup_oom_kills"], 9)
+        self.assertIsNone(record["service"])
 
     def test_collect_service_reports_malformed_nrestarts(self) -> None:
         sampler = self.sampler

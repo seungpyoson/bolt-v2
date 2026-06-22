@@ -559,6 +559,23 @@
       return counterIncreased(records, service => service.cgroup_oom_kills);
     }
 
+    function cgroupOomCount(record) {
+      // The cgroup oom_kill counter is at the record top level (always present),
+      // mirrored under service for back-compat. Prefer the top-level field so the
+      // count survives even when systemctl stalled and the service block is null
+      // (the state where it would otherwise read as a misleading 0); fall back to
+      // the nested value for older records that predate the top-level field.
+      // Returns a Number, or NaN when no count is available.
+      if (!record) return NaN;
+      const top = record.cgroup_oom_kills;
+      if (top !== null && top !== undefined) return Number(top);
+      const svc = record.service;
+      if (svc && svc.cgroup_oom_kills !== null && svc.cgroup_oom_kills !== undefined) {
+        return Number(svc.cgroup_oom_kills);
+      }
+      return NaN;
+    }
+
     // A systemd Result is degraded if it is present and anything OTHER than
     // "success". An allow-list of known-bad results (oom-kill/signal/...) is a
     // trap: any result not in the list (exit-code, timeout, resources, protocol,
@@ -596,7 +613,7 @@
       // authoritative systemd verdict.
       if (latest.oom_killed === true) {
         const result = service ? service.result : null;
-        const rawCgroup = service ? Number(service.cgroup_oom_kills) : NaN;
+        const rawCgroup = cgroupOomCount(latest);
         const cgroupCount = Number.isFinite(rawCgroup) ? rawCgroup : 0;
         if (result === "oom-kill") {
           reasons.push("systemd Result=oom-kill (authoritative)");
@@ -642,7 +659,7 @@
 
       // cgroup oom_kill: distinguish a fresh in-window kill from a stale latch
       // of the cumulative counter (D4).
-      const cgroupOomKills = service ? Number(service.cgroup_oom_kills) : NaN;
+      const cgroupOomKills = cgroupOomCount(latest);
       const cumulative = Number.isFinite(cgroupOomKills) ? cgroupOomKills : 0;
       if (oomIncreased(records)) {
         reasons.push(`cgroup oom_kill increased to ${cumulative} in this file`);

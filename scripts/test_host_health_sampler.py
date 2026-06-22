@@ -791,6 +791,12 @@ class ReviewRound2HardeningTests(unittest.TestCase):
         self.assertEqual(parsed["series"], [1.0, None, None, 3.0])
         self.assertIsNone(parsed["nested"]["deep"][0]["x"])
 
+    def test_write_jsonl_line_nonserializable_record_is_record_unemittable(self) -> None:
+        with self.assertRaises(self.sampler.RecordUnemittable) as ctx:
+            self.sampler.write_jsonl_line({"probe": object()}, None)
+
+        self.assertIn("record not serializable", str(ctx.exception))
+
     def test_sanitize_non_finite_is_recursive_and_pure(self) -> None:
         sanitize = self.sampler.sanitize_non_finite
         self.assertIsNone(sanitize(float("nan")))
@@ -846,6 +852,55 @@ class ReviewRound2HardeningTests(unittest.TestCase):
             self.sampler.log_stderr("anything")
         finally:
             sys.stderr = saved_err
+
+    def test_log_stderr_blocking_write_returns_within_sink_deadline(self) -> None:
+        sampler = self.sampler
+        saved_timeout = sampler.SINK_TIMEOUT_SECONDS
+        saved_stderr = sys.stderr
+
+        class BlockingStderr:
+            def __init__(self) -> None:
+                self.write_entered = threading.Event()
+                self.never_released = threading.Event()
+
+            def write(self, _data):
+                self.write_entered.set()
+                self.never_released.wait()
+
+            def flush(self):
+                return None
+
+        blocking_stderr = BlockingStderr()
+        box: dict[str, object] = {}
+
+        def call() -> None:
+            sys.stderr = blocking_stderr
+            try:
+                sampler.log_stderr("x")
+            except BaseException as exc:  # noqa: BLE001 - captured for assertion
+                box["raised"] = exc
+            finally:
+                sys.stderr = saved_stderr
+            box["done"] = True
+
+        sampler.SINK_TIMEOUT_SECONDS = 0.3
+        worker = threading.Thread(target=call, daemon=True)
+        try:
+            worker.start()
+            self.assertTrue(
+                blocking_stderr.write_entered.wait(timeout=1.0),
+                "stderr write did not start",
+            )
+            worker.join(timeout=2.0)
+            self.assertFalse(
+                worker.is_alive(),
+                "log_stderr hung on a blocking stderr write",
+            )
+            self.assertTrue(box.get("done"))
+            self.assertIsNone(box.get("raised"))
+        finally:
+            sampler.SINK_TIMEOUT_SECONDS = saved_timeout
+            sys.stderr = saved_stderr
 
     # ITEM 4 -------------------------------------------------------------
     def test_collector_result_alias_is_importable_runtime_value(self) -> None:
@@ -1671,6 +1726,90 @@ class ReviewRound4HardeningTests(unittest.TestCase):
         # The record still reached the file sink (shutdown bounding did not drop it).
         self.assertEqual(json.loads(content.splitlines()[-1])["schema_version"], 2)
 
+    def test_log_stderr_full_stderr_pipe_process_exits(self) -> None:
+        stderr_r = stderr_w = stdout_r = stdout_w = None
+        proc = None
+        drained_stdout: list[bytes] = []
+
+        def drain_stdout(fd: int) -> None:
+            while True:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                drained_stdout.append(chunk)
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="host-health-full-stderr.") as temp:
+                bad_parent = Path(temp) / "parent_is_a_file"
+                bad_parent.write_text("not a directory", encoding="utf-8")
+                bad_out = bad_parent / "health.jsonl"
+
+                stderr_r, stderr_w = os.pipe()
+                original_flags = fcntl.fcntl(stderr_w, fcntl.F_GETFL)
+                fcntl.fcntl(stderr_w, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+                try:
+                    while True:
+                        try:
+                            os.write(stderr_w, b"x" * 65536)
+                        except BlockingIOError:
+                            break
+                finally:
+                    fcntl.fcntl(stderr_w, fcntl.F_SETFL, original_flags)
+
+                stdout_r, stdout_w = os.pipe()
+                drain_thread = threading.Thread(
+                    target=drain_stdout,
+                    args=(stdout_r,),
+                    daemon=True,
+                )
+                drain_thread.start()
+
+                harness = (
+                    "import os, sys\n"
+                    f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+                    "import scripts.host_health_sampler as s\n"
+                    "s.SINK_TIMEOUT_SECONDS = 0.3\n"
+                    f"raise SystemExit(s.main(['--out', {str(bad_out)!r}]))\n"
+                )
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", harness],
+                    stdout=stdout_w,
+                    stderr=stderr_w,
+                )
+                os.close(stdout_w)
+                stdout_w = None
+                os.close(stderr_w)
+                stderr_w = None
+
+                deadline = time.monotonic() + 8.0
+                returncode = None
+                while time.monotonic() < deadline:
+                    returncode = proc.poll()
+                    if returncode is not None:
+                        break
+                    time.sleep(0.05)
+
+                if returncode is None:
+                    proc.kill()
+                    proc.wait(timeout=5.0)
+                    self.fail("sampler hung on full stderr at shutdown")
+
+                drain_thread.join(timeout=2.0)
+                self.assertIsNotNone(returncode)
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            for fd in (stderr_r, stderr_w, stdout_r, stdout_w):
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
     def test_disk_metrics_rejects_non_physical_bavail_and_preserves_normal_case(self) -> None:
         impossible = SimpleNamespace(
             f_blocks=100,
@@ -1709,6 +1848,31 @@ class ReviewRound4HardeningTests(unittest.TestCase):
 
         self.assertEqual(lines, ['{"partial":', '{"probe":"second"}'])
         self.assertEqual(json.loads(lines[-1])["probe"], "second")
+
+    def test_write_to_file_peek_failure_separates_preexisting_fragment(self) -> None:
+        sampler = self.sampler
+        saved_pread = sampler.os.pread
+
+        def pread_raises(_fd, _n, _offset):
+            raise OSError("simulated peek failure")
+
+        with tempfile.TemporaryDirectory(prefix="host-health-peek-failure.") as temp:
+            out_path = Path(temp) / "health.jsonl"
+            out_path.write_bytes(b'{"partial":')
+            sampler.os.pread = pread_raises
+            try:
+                sampler.write_to_file(
+                    '{"probe":"peek-failure"}\n',
+                    str(out_path),
+                    sampler.FLOCK_TIMEOUT_SECONDS,
+                )
+            finally:
+                sampler.os.pread = saved_pread
+
+            on_disk = out_path.read_bytes()
+
+        self.assertEqual(on_disk, b'{"partial":\n{"probe":"peek-failure"}\n')
+        self.assertEqual(json.loads(on_disk.splitlines()[-1])["probe"], "peek-failure")
 
     def test_sample_collects_cgroup_oom_when_service_collection_fails(self) -> None:
         sampler = self.sampler
@@ -1784,6 +1948,42 @@ class ReviewRound4HardeningTests(unittest.TestCase):
         # A malformed restart count must NOT also drop the later fields: the
         # remaining systemd properties are still parsed before the fail-loud
         # return (guards against regressing to an early return).
+        self.assertEqual(service["main_pid"], 123)
+        self.assertEqual(service["invocation_id"], "abc")
+        self.assertIsNotNone(error)
+        self.assertIn("NRestarts malformed", error)
+
+    def test_collect_service_negative_nrestarts_is_malformed(self) -> None:
+        sampler = self.sampler
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return (
+                    "LoadState=loaded\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "Result=success\n"
+                    "NRestarts=-3\n"
+                    "MainPID=123\n"
+                    "ExecMainPID=123\n"
+                    "ExecMainCode=0\n"
+                    "ExecMainStatus=0\n"
+                    "ExecMainStartTimestamp=Mon 2026-01-01 00:00:00 UTC\n"
+                    "InvocationID=abc\n",
+                    "",
+                )
+
+        saved_popen = sampler.subprocess.Popen
+        sampler.subprocess.Popen = lambda _command, **_kwargs: FakeProc()
+        try:
+            service, error = sampler.collect_service("bolt-v2")
+        finally:
+            sampler.subprocess.Popen = saved_popen
+
+        self.assertIsInstance(service, dict)
+        self.assertIsNone(service["n_restarts"])
         self.assertEqual(service["main_pid"], 123)
         self.assertEqual(service["invocation_id"], "abc")
         self.assertIsNotNone(error)

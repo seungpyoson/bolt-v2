@@ -320,12 +320,17 @@ def collect_service(unit: str) -> CollectorResult:
     service["sub_state"] = parsed.get("SubState") or None
     service["result"] = parsed.get("Result") or None
     raw_restarts = parsed.get("NRestarts")
-    service["n_restarts"] = parse_int(raw_restarts)
-    # A present-but-unparseable NRestarts is fail-loud (reported below) rather
-    # than silently treated as "absent" (which renders green). Detect it now but
-    # still populate the remaining fields first, so a corrupt restart counter
-    # never also drops MainPID/ExecMain* from the record.
-    nrestarts_malformed = raw_restarts not in (None, "") and service["n_restarts"] is None
+    parsed_restarts = parse_int(raw_restarts)
+    if parsed_restarts is not None and parsed_restarts < 0:
+        service["n_restarts"] = None
+        nrestarts_malformed = True
+    else:
+        service["n_restarts"] = parsed_restarts
+        nrestarts_malformed = raw_restarts not in (None, "") and parsed_restarts is None
+    # A present-but-unparseable or negative NRestarts is fail-loud (reported
+    # below) rather than silently treated as healthy. Detect it now but still
+    # populate the remaining fields first, so a corrupt restart counter never
+    # also drops MainPID/ExecMain* from the record.
     service["main_pid"] = parse_int(parsed.get("MainPID"), zero_is_null=True)
     service["exec_main_pid"] = parse_int(parsed.get("ExecMainPID"), zero_is_null=True)
     service["exec_main_code"] = parse_int(parsed.get("ExecMainCode"))
@@ -901,9 +906,12 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
                     last_byte = os.pread(peek_fd, 1, clean_boundary - 1)
                 finally:
                     os.close(peek_fd)
+                needs_separator = bool(last_byte) and last_byte != b"\n"
             except OSError:
-                last_byte = b"\n"
-            if last_byte and last_byte != b"\n":
+                # If we cannot inspect the terminator, assume the existing file
+                # may hold a torn fragment. A redundant blank line is parse-safe.
+                needs_separator = True
+            if needs_separator:
                 # Prior torn fragment: terminate it (O_APPEND => atomic append at
                 # EOF) so this record is NOT glued onto a non-JSON fragment. The
                 # fragment becomes its own line, which the viewer reports as a
@@ -991,7 +999,13 @@ def write_jsonl_line(
     # JSON: a stray non-finite float (NaN/Infinity) would otherwise serialise to
     # the bare tokens NaN/Infinity, which the viewer's JSON.parse rejects (we must
     # never emit non-JSON). Non-finite values become null.
-    line = json.dumps(sanitize_non_finite(record), separators=(",", ":"), allow_nan=False) + "\n"
+    try:
+        line = (
+            json.dumps(sanitize_non_finite(record), separators=(",", ":"), allow_nan=False)
+            + "\n"
+        )
+    except (TypeError, ValueError) as exc:
+        raise RecordUnemittable(f"record not serializable: {exc}") from exc
     if out_path is None:
         # PRIMARY streaming stdout. A BrokenPipeError here means a streaming
         # consumer (e.g. ``| head -1``) went away — a CLEAN stream termination —
@@ -1094,14 +1108,41 @@ def sleep_until_next_sample(seconds: float, stop_flag: StopFlag) -> None:
 
 
 def log_stderr(msg: str) -> None:
-    """Best-effort stderr write that NEVER raises.
+    """Best-effort stderr write that NEVER raises, blocks, or wedges shutdown.
 
-    A failing stderr (closed/full pipe) must never change the sampler's exit
-    code: if a record already reached a sink, a logging failure cannot demote
-    that success to a non-zero exit. Any exception here is swallowed.
+    A full/stalled stderr (e.g. a blocked journald pipe) must never change the
+    exit code OR hang the sampler. We write the line as a NON-BLOCKING raw
+    os.write to the stderr fd and DROP it on EAGAIN: a full pipe can never
+    block, and -- unlike a deadline-bounded BUFFERED write -- no abandoned worker
+    is left holding the stderr BufferedWriter lock, which would otherwise
+    re-block the interpreter's shutdown flush of sys.stderr on the full pipe.
+    O_NONBLOCK is set only for the write and restored. A stderr without a real
+    fd (a test double) falls back to a deadline-bounded buffered write. Every
+    failure mode is swallowed.
     """
     try:
-        print(msg, file=sys.stderr)
+        try:
+            fd = sys.stderr.fileno()
+        except (AttributeError, OSError, ValueError):
+            fd = None
+        if fd is None:
+            run_with_deadline(
+                lambda: (sys.stderr.write(msg + "\n"), sys.stderr.flush()),
+                SINK_TIMEOUT_SECONDS,
+            )
+            return
+        data = (msg + "\n").encode("utf-8", "replace")
+        original = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, original | os.O_NONBLOCK)
+        try:
+            os.write(fd, data)  # EAGAIN/broken pipe on a degraded stderr -> dropped
+        except OSError:
+            pass
+        finally:
+            try:
+                fcntl.fcntl(fd, fcntl.F_SETFL, original)
+            except OSError:
+                pass
     except Exception:  # noqa: BLE001 - logging must never affect exit status
         pass
 

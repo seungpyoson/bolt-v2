@@ -431,6 +431,20 @@ mod tests {
             Ok(())
         }
 
+        fn record_entry_skip(
+            &self,
+            _skip: &crate::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received entry-skip evidence")
+        }
+
+        fn record_exit_decision(
+            &self,
+            _decision: &crate::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received exit-decision evidence")
+        }
+
         fn record_exit_evaluation(
             &self,
             _evidence: &crate::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
@@ -450,6 +464,13 @@ mod tests {
             _evidence: &crate::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
         ) -> Result<()> {
             Ok(())
+        }
+
+        fn record_requote_throttle(
+            &self,
+            _throttle: &crate::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("registry noop writer received requote-throttle evidence")
         }
     }
 

@@ -359,6 +359,13 @@ impl MarketQuote {
         }
     }
 
+    pub fn leg_supports_modify(&self, leg: Leg) -> bool {
+        match leg {
+            Leg::Yes => self.yes.supports_modify,
+            Leg::No => self.no.supports_modify,
+        }
+    }
+
     /// The aggregate market quoting state.
     pub fn market_state(&self) -> MarketState {
         let states = [self.yes.state(), self.no.state()];

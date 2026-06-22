@@ -73,7 +73,12 @@ fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
     assert_eq!(strategy.pricing.last_reference_current_price(), Some(101.0));
     assert_eq!(
         strategy.pricing.selected_pricing_spot().cloned(),
-        Some(fast_spot("signal_data_client", 101.5, 1_200))
+        Some(fast_spot_received(
+            "signal_data_client",
+            101.5,
+            1_200,
+            Some(1_200),
+        ))
     );
     assert!(strategy.pricing.lead_quality_policy_applied);
 }
@@ -97,7 +102,12 @@ fn signal_quote_tick_does_not_warm_active_reference_state() {
     assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
     assert_eq!(
         strategy.pricing.selected_pricing_spot().cloned(),
-        Some(fast_spot("signal_data_client", 3_103.0, 1_200))
+        Some(fast_spot_received(
+            "signal_data_client",
+            3_103.0,
+            1_200,
+            Some(1_200),
+        ))
     );
 }
 

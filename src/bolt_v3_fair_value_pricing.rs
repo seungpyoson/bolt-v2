@@ -20,6 +20,7 @@ pub struct FastSpotObservation {
     pub venue: String,
     pub price: f64,
     pub observed_ts_ms: u64,
+    pub received_ts_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

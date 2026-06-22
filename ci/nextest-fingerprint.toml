@@ -1,0 +1,8 @@
+[nextest_archive]
+schema = 2
+profile = "test"
+shards = 4
+
+[[safe_excludes]]
+path = "crates/backtesting-vertical-slice/"
+justification = "Separate Cargo workspace; root package has no path dependency on it and root nextest does not run it."

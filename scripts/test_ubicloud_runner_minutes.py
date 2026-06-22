@@ -965,15 +965,15 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     }
     artifacts_by_run_id = {
         10: {"artifacts": []},
-        11: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-a")]},
-        12: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-a")]},
+        11: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-a")]},
+        12: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-a")]},
         13: {"artifacts": []},
         14: {"artifacts": []},
         15: {"artifacts": []},
         16: {
             "artifacts": [
-                artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-b"),
-                artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-c"),
+                artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-b"),
+                artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-c"),
             ]
         },
         17: {"artifacts": []},
@@ -1006,7 +1006,7 @@ def assert_build_report_classifies_runs_and_totals_minutes() -> None:
     assert "fingerprint-unknown" not in runs_by_id[16]["classifications"], runs_by_id[16]
     assert "draft-stage" in runs_by_id[17]["classifications"], runs_by_id[17]
     assert "cancelled-superseded" not in runs_by_id[17]["classifications"], runs_by_id[17]
-    assert runs_by_id[11]["fingerprint"] == "v1-Linux-X64-test-profile-shards-4-inputs-a", runs_by_id[11]
+    assert runs_by_id[11]["fingerprint"] == "v2-Linux-X64-test-profile-shards-4-inputs-a", runs_by_id[11]
     assert runs_by_id[13]["workflow_key"] == "ci_runner_debug", runs_by_id[13]
     assert runs_by_id[14]["workflow_key"] == "backtester_ci", runs_by_id[14]
 
@@ -1038,7 +1038,7 @@ def assert_fingerprint_identity_is_scoped_to_fingerprint_workflow() -> None:
         run_payload(73, created_at="2026-06-12T00:03:00Z"),
     ]
     artifacts = {
-        run["id"]: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v1-Linux-X64-test-profile-shards-4-inputs-z")]}
+        run["id"]: {"artifacts": [artifact_payload("nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-inputs-z")]}
         for run in runs
     }
     report = module.build_report(
@@ -1056,7 +1056,7 @@ def assert_fingerprint_identity_is_scoped_to_fingerprint_workflow() -> None:
     assert "fingerprint-identical" in runs_by_id[73]["classifications"], runs_by_id[73]
     assert runs_by_id[70]["fingerprint"] is None, runs_by_id[70]
     assert runs_by_id[71]["fingerprint"] is None, runs_by_id[71]
-    assert runs_by_id[72]["fingerprint"] == "v1-Linux-X64-test-profile-shards-4-inputs-z", runs_by_id[72]
+    assert runs_by_id[72]["fingerprint"] == "v2-Linux-X64-test-profile-shards-4-inputs-z", runs_by_id[72]
 
 
 def assert_unknown_labels_are_reported_without_crashing() -> None:

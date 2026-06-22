@@ -1481,11 +1481,25 @@ pub(super) fn oracle_venue(
 }
 
 pub(super) fn fast_spot(venue_name: &str, price: f64, observed_ts_ms: u64) -> FastSpotObservation {
+    fast_spot_received(venue_name, price, observed_ts_ms, None)
+}
+
+/// Like [`fast_spot`] but with an explicit `received_ts_ms`. Use this for
+/// expectations compared against observations produced by paths that record the
+/// receive time (signal quotes carry `ts_init`; reference-price quotes carry the
+/// upstream receive timestamp). The bare [`fast_spot`] defaults `received_ts_ms`
+/// to `None`, which matches lead-arbitration outputs and directly-seeded spots.
+pub(super) fn fast_spot_received(
+    venue_name: &str,
+    price: f64,
+    observed_ts_ms: u64,
+    received_ts_ms: Option<u64>,
+) -> FastSpotObservation {
     FastSpotObservation {
         venue: venue_name.to_string(),
         price,
         observed_ts_ms,
-        received_ts_ms: None,
+        received_ts_ms,
     }
 }
 

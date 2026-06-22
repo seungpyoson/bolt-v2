@@ -6927,7 +6927,17 @@ mod tests {
         logger.reset();
 
         let loaded = fixture_loaded_config();
-        let node = make_bolt_v3_live_node_builder(&loaded)
+        // This test installs a process-global capturing logger (above) to assert the
+        // evidence-write failure is surfaced at error!. Building the node with NT
+        // logging enabled would try to claim the global `log` slot and fail
+        // ("a non-Nautilus logger is already registered"), so bypass NT logging init
+        // for this node only. The production default (bypass_logging = false) is
+        // unchanged and still guarded by `make_live_node_config` tests; the
+        // evidence-write error is emitted via `log::error!`, so it still reaches the
+        // capturing logger with NT logging bypassed.
+        let mut cfg = make_live_node_config(&loaded);
+        cfg.logging.bypass_logging = true;
+        let node = make_bolt_v3_live_node_builder_from_config(cfg)
             .expect("test LiveNodeBuilder should construct")
             .build()
             .expect("test LiveNode should build");

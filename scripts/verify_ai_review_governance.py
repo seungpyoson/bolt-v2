@@ -326,8 +326,10 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("kimi.deliverable_marker", kimi.get("deliverable_marker"), "<!-- ai-pr-reviewer-kimi -->"),
         ("kimi.cli_package", kimi.get("cli_package"), "@moonshot-ai/kimi-code@0.19.0"),
         ("kimi.workflow.node_version", kimi_workflow.get("node_version"), "24"),
+        ("kimi.workflow.job_timeout_minutes", kimi_workflow.get("job_timeout_minutes"), 45),
         ("kimi.workflow.primary_timeout_minutes", kimi_workflow.get("primary_timeout_minutes"), 20),
         ("kimi.workflow.fallback_timeout_minutes", kimi_workflow.get("fallback_timeout_minutes"), 20),
+        ("kimi.workflow.setup_overhead_timeout_minutes", kimi_workflow.get("setup_overhead_timeout_minutes"), 5),
         ("smoke.max_tokens", smoke.get("max_tokens"), 16),
     )
     for name, actual, expected in expected_values:
@@ -343,6 +345,44 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         findings.append("ci/ai-review.toml glm.deliverable_markers must include PR-Agent and GLM fallback markers")
     if glm_pr_agent.get("fallback_models") != ["openai/glm-5.2"]:
         findings.append("ci/ai-review.toml glm.pr_agent.fallback_models must contain only openai/glm-5.2")
+
+    return findings
+
+
+def verify_kimi_job_timeout_budget(ai_review_toml: str, kimi_workflow: str) -> list[str]:
+    findings: list[str] = []
+    try:
+        parsed = tomllib.loads(ai_review_toml)
+    except tomllib.TOMLDecodeError:
+        return findings
+
+    kimi = parsed.get("kimi")
+    if not isinstance(kimi, dict):
+        return findings
+    workflow = kimi.get("workflow")
+    if not isinstance(workflow, dict):
+        return findings
+
+    job_timeout = workflow.get("job_timeout_minutes")
+    primary_timeout = workflow.get("primary_timeout_minutes")
+    fallback_timeout = workflow.get("fallback_timeout_minutes")
+    setup_overhead = workflow.get("setup_overhead_timeout_minutes")
+    if not all(isinstance(value, int) for value in (job_timeout, primary_timeout, fallback_timeout, setup_overhead)):
+        return findings
+
+    required_timeout = primary_timeout + fallback_timeout + setup_overhead
+    if job_timeout < required_timeout:
+        findings.append(
+            "ci/ai-review.toml kimi.workflow.job_timeout_minutes must cover "
+            "primary_timeout_minutes + fallback_timeout_minutes + setup_overhead_timeout_minutes"
+        )
+
+    expected_line = f"    timeout-minutes: {job_timeout}"
+    if expected_line not in kimi_workflow:
+        findings.append(
+            "Kimi workflow job timeout must match ci/ai-review.toml "
+            f"kimi.workflow.job_timeout_minutes ({job_timeout})"
+        )
 
     return findings
 
@@ -365,6 +405,7 @@ def verify_texts(
     findings.extend(missing_snippets("AGENTS.md", agents_md, AGENTS_BACKPOINTER_SNIPPETS))
     findings.extend(missing_snippets(".pr_agent.toml extra_instructions", extra, PR_AGENT_MIRROR_NOTE_SNIPPETS))
     findings.extend(verify_ai_review_config(ai_review_toml))
+    findings.extend(verify_kimi_job_timeout_budget(ai_review_toml, kimi_workflow))
 
     for rule in MIRRORED_RULES:
         for snippet in rule.agents_snippets:
@@ -451,6 +492,15 @@ def run_self_tests(repo_root: Path) -> None:
         kimi_workflow=kimi,
     )
     assert_finding("workflow runtime literal", workflow_runtime_literal, "must read AI review runtime value")
+
+    kimi_short_job_timeout = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi.replace("timeout-minutes: 45", "timeout-minutes: 35"),
+    )
+    assert_finding("Kimi short job timeout", kimi_short_job_timeout, "Kimi workflow job timeout must match")
 
     missing_mirror = verify_texts(
         agents_md=agents,

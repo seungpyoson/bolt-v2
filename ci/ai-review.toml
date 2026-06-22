@@ -48,8 +48,10 @@ cli_package = "@moonshot-ai/kimi-code@0.19.0"
 
 [kimi.workflow]
 node_version = "24"
+job_timeout_minutes = 45
 primary_timeout_minutes = 20
 fallback_timeout_minutes = 20
+setup_overhead_timeout_minutes = 5
 
 [smoke]
 max_tokens = 16

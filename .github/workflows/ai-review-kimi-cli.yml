@@ -28,7 +28,9 @@ jobs:
         )
       }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    timeout-minutes: 35
+    # Job-level timeouts cannot read the TOML loaded later in this job; keep
+    # this in sync with ci/ai-review.toml [kimi.workflow].job_timeout_minutes.
+    timeout-minutes: 45
     env:
       KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
       PR_NUMBER: ${{ github.event.pull_request.number }}

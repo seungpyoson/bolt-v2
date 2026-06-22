@@ -861,6 +861,114 @@ check("Fix 3 guard: a real finite cgroup count still renders the number", () => 
   assertTrue(!reasons.some(r => /cgroup oom_kill=\?/.test(r)), "a present count is not masked with ?");
 });
 
+// === CLASS fix: malformed health metrics never render false-green ============
+
+check("Fix CLASS shared validation predicates reject coercible malformed values", () => {
+  const isStrictFiniteNumber = requireFn(ctx, "isStrictFiniteNumber");
+  const isValidUsedPct = requireFn(ctx, "isValidUsedPct");
+  const isValidRestartCount = requireFn(ctx, "isValidRestartCount");
+  const isMalformedOomKilled = requireFn(ctx, "isMalformedOomKilled");
+  assertEqual(isStrictFiniteNumber(40), true, "JSON numbers are accepted");
+  assertEqual(isStrictFiniteNumber("40"), false, "coercible strings are rejected");
+  assertEqual(isValidUsedPct(40), true, "normal used_pct is valid");
+  assertEqual(isValidUsedPct(true), false, "boolean used_pct is malformed");
+  assertEqual(isValidUsedPct([80]), false, "array used_pct is malformed");
+  assertEqual(isValidRestartCount(null), true, "absent restart count is acceptable");
+  assertEqual(isValidRestartCount(0), true, "zero restarts is valid");
+  assertEqual(isValidRestartCount(-3), false, "negative restart count is malformed");
+  assertEqual(isValidRestartCount("garbage"), false, "non-number restart count is malformed");
+  assertEqual(isMalformedOomKilled(true), false, "boolean OOM flag is valid");
+  assertEqual(isMalformedOomKilled(null), false, "absent OOM flag is acceptable");
+  assertEqual(isMalformedOomKilled("true"), true, "string OOM flag is malformed");
+  assertEqual(isMalformedOomKilled({}), true, "object OOM flag is malformed");
+});
+
+check("Fix CLASS malformed oom_killed values are amber with a banner reason", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  for (const oom_killed of [1, "true", [true], {}]) {
+    const latest = {
+      schema_version: 2,
+      errors: [],
+      oom_killed,
+      disk: { used_pct: 20 },
+      service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 }
+    };
+    const html = serviceBadge(latest);
+    assertTrue(/badge amb/.test(html), `malformed oom_killed=${JSON.stringify(oom_killed)} must be amber`);
+    assertTrue(!/badge grn/.test(html), `malformed oom_killed=${JSON.stringify(oom_killed)} must NOT be green`);
+    assertTrue(
+      bannerReasons(latest, [latest]).some(r => /oom_killed field malformed/.test(r)),
+      `malformed oom_killed=${JSON.stringify(oom_killed)} must raise a banner reason`
+    );
+  }
+  const killed = {
+    schema_version: 2,
+    errors: [],
+    oom_killed: true,
+    disk: { used_pct: 20 },
+    service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 }
+  };
+  assertTrue(/badge red/.test(serviceBadge(killed)), "boolean true OOM remains red");
+});
+
+check("Fix CLASS malformed disk used_pct values are violet with a banner reason", () => {
+  const diskFreePct = requireFn(ctx, "diskFreePct");
+  const diskBadgeClass = requireFn(ctx, "diskBadgeClass");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  for (const used_pct of [true, false, [], [80], " "]) {
+    const freePct = diskFreePct({ used_pct });
+    const latest = {
+      schema_version: 2,
+      errors: [],
+      oom_killed: null,
+      disk: { used_pct },
+      service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 }
+    };
+    assertEqual(freePct, null, `malformed used_pct=${JSON.stringify(used_pct)} yields no free pct`);
+    assertEqual(diskBadgeClass(freePct), "vio", `malformed used_pct=${JSON.stringify(used_pct)} is violet`);
+    assertTrue(
+      bannerReasons(latest, [latest]).some(r => /disk metric malformed/.test(r)),
+      `malformed used_pct=${JSON.stringify(used_pct)} must raise a banner reason`
+    );
+  }
+  assertEqual(diskFreePct({ used_pct: 40 }), 60, "normal used_pct still maps to free pct");
+  assertEqual(diskBadgeClass(diskFreePct({ used_pct: 40 })), "grn", "normal used_pct stays green");
+  assertEqual(diskFreePct({ used_pct: null }), null, "null used_pct remains unavailable");
+});
+
+check("Fix CLASS malformed restart counts are amber with a banner reason", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const negative = {
+    schema_version: 2,
+    errors: [],
+    oom_killed: null,
+    disk: { used_pct: 20 },
+    service: { active_state: "active", sub_state: "running", result: "success", n_restarts: -3 }
+  };
+  const negativeHtml = serviceBadge(negative);
+  assertTrue(/badge amb/.test(negativeHtml), "negative restart count must be amber");
+  assertTrue(!/badge grn/.test(negativeHtml), "negative restart count must NOT be green");
+  assertTrue(
+    bannerReasons(negative, [negative]).some(r => /service restart count malformed/.test(r)),
+    "negative restart count must raise a malformed-restart banner reason"
+  );
+
+  const zero = { ...negative, service: { ...negative.service, n_restarts: 0 } };
+  assertTrue(/badge grn/.test(serviceBadge(zero)), "zero restart count remains green-eligible");
+
+  const positive = { ...negative, service: { ...negative.service, n_restarts: 2 } };
+  assertTrue(/badge amb/.test(serviceBadge(positive)), "positive restart count remains amber");
+  assertTrue(
+    bannerReasons(positive, [positive]).some(r => /auto-restarted 2/.test(r)),
+    "positive restart count keeps the existing auto-restart reason"
+  );
+
+  const nonNumeric = { ...negative, service: { ...negative.service, n_restarts: "garbage" } };
+  assertTrue(/badge amb/.test(serviceBadge(nonNumeric)), "non-numeric restart count remains amber");
+});
+
 // --- report ------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {

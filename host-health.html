@@ -456,17 +456,12 @@
 
     function diskFreePct(disk) {
       // Derive free% from the same df-convention used_pct the disk CHART plots,
-      // so card-free% + chart-used% == 100 (D3). A missing, non-finite, or
-      // out-of-range used_pct yields null, which the render path surfaces as a
-      // degraded (never green) badge. Guard the raw value first: Number(null) is
-      // 0, which would wrongly read as a finite "100% free".
-      if (!disk || disk.used_pct === null || disk.used_pct === undefined || disk.used_pct === "") {
-        return null;
-      }
-      const usedPct = Number(disk.used_pct);
-      if (!Number.isFinite(usedPct)) return null;
-      if (usedPct < 0 || usedPct > 100) return null;
-      return 100 - usedPct;
+      // so card-free% + chart-used% == 100 (D3). A missing, wrong-typed,
+      // non-finite, or out-of-range used_pct yields null, which the render path
+      // surfaces as a degraded (never green) badge. Do not coerce: hostile
+      // values like true, [], or " " must not become healthy free%.
+      if (!disk || !isValidUsedPct(disk.used_pct)) return null;
+      return 100 - disk.used_pct;
     }
 
     function diskBadgeClass(value) {
@@ -507,20 +502,20 @@
         // active right now but failed its last run, restarted, or whose main
         // process has exited is degraded. Downgrade so none of those render
         // healthy green.
-        const restarts = Number(service.n_restarts);
+        const restarts = service.n_restarts;
         if (isFailureResult(service.result)) {
           klass = "red";
         } else if (sub !== "running") {
           // active/exited, active/dead, etc.: systemd still calls the unit
           // active but its main process is not running. Not green (E1).
           klass = "amb";
-        } else if (service.n_restarts !== null && service.n_restarts !== undefined && !Number.isFinite(restarts)) {
-          // A PRESENT but non-finite/non-numeric n_restarts is suspect restart
-          // data: treat unknown restart state as degraded, never green (E4).
-          // A missing/null n_restarts (field absent) is acceptable and stays
-          // eligible for green below.
+        } else if (!isValidRestartCount(restarts)) {
+          // A PRESENT but invalid n_restarts (wrong type, non-finite, or
+          // negative) is suspect restart data: treat unknown/impossible restart
+          // state as degraded, never green. A missing/null n_restarts (field
+          // absent) is acceptable and stays eligible for green below.
           klass = "amb";
-        } else if (Number.isFinite(restarts) && restarts > 0) {
+        } else if (isStrictFiniteNumber(restarts) && restarts > 0) {
           klass = "amb";
         } else {
           klass = "grn";
@@ -613,6 +608,22 @@
       return !service || (!service.active_state && !service.sub_state);
     }
 
+    function isStrictFiniteNumber(value) {
+      return typeof value === "number" && Number.isFinite(value);
+    }
+
+    function isValidUsedPct(value) {
+      return isStrictFiniteNumber(value) && value >= 0 && value <= 100;
+    }
+
+    function isValidRestartCount(value) {
+      return value === null || value === undefined || (isStrictFiniteNumber(value) && value >= 0);
+    }
+
+    function isMalformedOomKilled(value) {
+      return value !== null && value !== undefined && typeof value !== "boolean";
+    }
+
     function recordIntegrityReasons(record) {
       // SINGLE SOURCE OF TRUTH for record-LEVEL integrity: returns the array of
       // human-readable reasons a record is unusable or the sampler itself
@@ -630,6 +641,9 @@
         reasons.push("schema_version missing (viewer expects 2)");
       } else if (record.schema_version !== 2) {
         reasons.push(`unexpected schema_version=${record.schema_version} (viewer expects 2)`);
+      }
+      if (isMalformedOomKilled(record.oom_killed)) {
+        reasons.push(`oom_killed field malformed (expected boolean, got ${typeof record.oom_killed})`);
       }
       // A PRESENT errors field of the wrong SHAPE is itself an integrity issue: a
       // non-array errors (string/object/number) means the sampler serialized a
@@ -708,6 +722,8 @@
         reasons.push("disk status unavailable");
       } else if (latest.disk.used_pct === null || latest.disk.used_pct === undefined) {
         reasons.push("disk metric unavailable");
+      } else if (!isValidUsedPct(latest.disk.used_pct)) {
+        reasons.push(`disk metric malformed (used_pct=${JSON.stringify(latest.disk.used_pct)})`);
       }
 
       // Standing degraded state from the latest sample (D2): flag it even when
@@ -720,8 +736,10 @@
         if (isFailureResult(service.result)) {
           reasons.push(`service result=${service.result}`);
         }
-        const restarts = Number(service.n_restarts);
-        if (Number.isFinite(restarts) && restarts > 0) {
+        const restarts = service.n_restarts;
+        if (!isValidRestartCount(restarts)) {
+          reasons.push(`service restart count malformed (n_restarts=${JSON.stringify(restarts)})`);
+        } else if (isStrictFiniteNumber(restarts) && restarts > 0) {
           reasons.push(`service auto-restarted ${restarts} time(s) this invocation`);
         }
       }

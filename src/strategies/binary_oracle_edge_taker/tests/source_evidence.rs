@@ -1243,9 +1243,16 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         BoltV3ExitRvGateResult::RejectedFutureDated
     );
     assert_eq!(decision.rv_future_dating_delta_ms, Some(future_delta_ms));
+    // Freeze phase forces the position flat, so the recorded exit is a
+    // forced-flat Exit: exit_evaluation_at short-circuits on
+    // forced_flat_reasons before the RV gate, so the future-dated RV is
+    // captured only as a diagnostic (rv_gate_result above), not as the exit
+    // cause. (The RV-driven ExitFailClosed path is covered by the pricing /
+    // exposure tests.)
+    assert_eq!(decision.exit_decision, BoltV3ExitDecisionOutcome::Exit);
     assert_eq!(
-        decision.exit_decision,
-        BoltV3ExitDecisionOutcome::ExitFailClosed
+        decision.forced_flat_reasons,
+        vec![BoltV3ForcedFlatReason::Freeze]
     );
     assert_eq!(decision.blocked_reason, None);
     assert_eq!(

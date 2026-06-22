@@ -53,6 +53,10 @@ jobs:
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Verify AI review governance mirrors
+        run: |
+          python3 scripts/verify_ai_review_governance.py --self-test
+          python3 scripts/verify_ai_review_governance.py
       - uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1.72.0
         with:
           # reporter=local keeps "actionlint" as the real merge gate without a

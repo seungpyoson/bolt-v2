@@ -61,6 +61,12 @@ probe-light = "managed_light"
 [workflows.actionlint]
 actionlint = "github_hosted"
 
+[workflows.ai_review_glm_pr_agent]
+glm-pr-agent-review = "github_hosted"
+
+[workflows.ai_review_kimi_misospace]
+kimi-misospace-review = "github_hosted"
+
 [workflows.require_reviewer_node]
 require-reviewer-node = "github_hosted"
 

@@ -30,7 +30,8 @@ name: Backtester CI
 # to main still runs full backtester proof. `bvs-fmt` remains cheap draft feedback and reports as
 # its own check; the deferred gate does not fold draft formatting failures into required proof.
 # Moving a ready PR back to draft does not rewrite a prior same-SHA `backtester-gate` result; the
-# GitHub draft state plus the non-required deferred context is the safety boundary.
+# GitHub draft state plus the non-required deferred context is the safety boundary. Ready no-code
+# edits and ready reopen events likewise report only `backtester-gate-noop`.
 
 on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
@@ -43,10 +44,9 @@ on:
     # reopened) does not fire on draft-to-ready transitions (ready_for_review)
     # or base-ref changes (edited). Both can leave this always-reported check
     # unmet for a PR that ends up targeting main.
-    # Note: GitHub's edited event fires on ANY PR edit (title, body, base ref),
-    # not only retargets, so this also re-runs the workflow on title/body edits.
-    # We accept that cost because there is no narrower event for base-ref
-    # changes.
+    # GitHub's edited event also fires on title/body edits. The policy resolver
+    # sends ready no-code edits to backtester-gate-noop while keeping base-ref
+    # edits on the full, cancelling proof path.
     # converted_to_draft is included so the gate records an explicit deferred
     # backtester verdict when a ready PR is moved back to draft.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
@@ -64,12 +64,20 @@ concurrency:
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('bvs-pr-{0}-deferred', github.event.number)
         || github.event_name == 'pull_request'
+        && github.event.pull_request.draft == false
+        && (github.event.action == 'reopened'
+            || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+        && format('bvs-pr-{0}-noop', github.event.number)
+        || github.event_name == 'pull_request'
         && format('bvs-pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
         && format('bvs-{0}-full-ci', github.ref_name)
         || format('bvs-{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(github.event.pull_request.draft == false
+             && (github.event.action == 'reopened'
+                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
         || github.event_name == 'workflow_dispatch' }}
 
 env:
@@ -105,6 +113,7 @@ jobs:
           --event-name "${{ github.event_name }}"
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
 
@@ -302,6 +311,11 @@ jobs:
           && github.event.pull_request.draft == true
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'backtester-gate-deferred'
+          || github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (github.event.action == 'reopened'
+              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+          && 'backtester-gate-noop'
           || 'backtester-gate' }}
     needs: [ci-policy, detect, fmt, clippy, test]
     if: ${{ always() }}
@@ -319,6 +333,15 @@ jobs:
           if [[ "${{ needs.detect.result }}" != "success" ]]; then
             echo "bvs-detect did not succeed (${{ needs.detect.result }})"
             exit 1
+          fi
+          noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}"
+          if [[ "$policy_path" == "noop" ]]; then
+            if [[ "$noop_run_context" != "true" ]]; then
+              echo "backtester noop CI policy outside ready PR no-code context"
+              exit 1
+            fi
+            echo "backtester no code-change CI event; preserving prior required same-SHA gate conclusion"
+            exit 0
           fi
           if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
             echo "no crate changes; gate is a no-op"

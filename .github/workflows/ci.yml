@@ -5,9 +5,9 @@ on:
     branches: [main]
     # edited catches base-ref changes (including retargets to main). Without it
     # a PR created against another branch and later retargeted to main would not
-    # trigger CI. Note: GitHub's edited event fires on ANY PR edit (title, body,
-    # base ref), not only retargets, so this also re-runs CI on title/body edits.
-    # We accept that cost because there is no narrower event for base-ref changes.
+    # trigger CI. GitHub's edited event also fires on title/body edits; the
+    # policy resolver sends ready no-code edits to gate-noop while keeping
+    # base-ref edits on the full, cancelling proof path.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
     # paths-ignore is intentionally narrow: only explicitly-listed root-level
     # agent docs and pure-config dirs whose contents are NOT consumed by any
@@ -65,6 +65,11 @@ concurrency:
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
         || github.event_name == 'pull_request'
+        && github.event.pull_request.draft == false
+        && (github.event.action == 'reopened'
+            || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+        && format('pr-{0}-noop', github.event.number)
+        || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
@@ -76,6 +81,9 @@ concurrency:
   # cancelled, so they fall through to the default (false), like push/tag.
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(github.event.pull_request.draft == false
+             && (github.event.action == 'reopened'
+                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
         || github.event_name == 'workflow_dispatch' }}
 
 env:
@@ -113,6 +121,7 @@ jobs:
           --event-name "${{ github.event_name }}"
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
 
@@ -209,8 +218,8 @@ jobs:
 
   deny:
     name: deny
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -241,8 +250,8 @@ jobs:
 
   clippy:
     name: clippy
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -692,6 +701,11 @@ jobs:
           && github.event.pull_request.draft == true
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
+          || github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (github.event.action == 'reopened'
+              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+          && 'gate-noop'
           || 'gate' }}
     needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
@@ -758,12 +772,21 @@ jobs:
             exit 1
           fi
           defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}"
+          noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}"
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
             if [[ "$defer_run_context" != "true" ]]; then
               echo "deferred CI policy outside deferred draft PR context"
               exit 1
             fi
             echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "noop" ]]; then
+            if [[ "$noop_run_context" != "true" ]]; then
+              echo "noop CI policy outside ready PR no-code context"
+              exit 1
+            fi
+            echo "no code-change CI event; preserving prior required same-SHA gate conclusion"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then

@@ -492,6 +492,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         self.assertIn("src/secrets.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn("src/venue_contract.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn("src/strategies/registry.rs", fence.RUNTIME_SOURCE_PATHS)
+        self.assertIn("src/raw_types.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn(
             STRATEGY_SOURCE_FILE,
             fence.RUNTIME_SOURCE_PATHS,

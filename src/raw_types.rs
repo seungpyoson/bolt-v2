@@ -38,6 +38,7 @@ pub struct JsonlAppender {
     writer: Option<File>,
 }
 
+#[allow(clippy::new_without_default)]
 impl JsonlAppender {
     pub fn new() -> Self {
         Self {
@@ -78,12 +79,6 @@ impl JsonlAppender {
         self.current_path = Some(path.to_path_buf());
         self.writer = Some(file);
         Ok(())
-    }
-}
-
-impl Default for JsonlAppender {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

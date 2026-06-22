@@ -19,6 +19,7 @@ def _runtime_source_paths() -> tuple[str, ...]:
         "src/main.rs",
         "src/lake_batch.rs",
         "src/log_sweep.rs",
+        "src/raw_types.rs",
         "src/secrets.rs",
         "src/venue_contract.rs",
         *(

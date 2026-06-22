@@ -542,21 +542,30 @@
     }
 
     function restartIncreased(records) {
-      // Single source of truth (G): delegate to counterIncreased so the
-      // Number.isFinite finite-guard applies identically. Without it a
-      // non-numeric n_restarts poisoned `previous`=NaN and silently disabled
-      // restart-increase detection for the rest of the scan.
-      return counterIncreased(records, record => record && record.service ? record.service.n_restarts : null);
+      // Single source of truth (G): delegate to counterIncreased, passing the SAME
+      // isValidCount predicate the restart badge uses so a malformed n_restarts
+      // (wrong type / negative / coercible string) the badge rejects can never
+      // drive a phantom "restarts increased" trend.
+      return counterIncreased(
+        records,
+        record => record && record.service ? record.service.n_restarts : null,
+        isValidCount
+      );
     }
 
-    function counterIncreased(records, pick) {
+    function counterIncreased(records, pick, valid) {
       // True if a monotonic per-record counter strictly increased across the
-      // loaded records (same shape used for restarts and cgroup oom_kills).
+      // loaded records (same shape used for restarts and cgroup oom_kills). The
+      // ``valid`` predicate decides which raw values count -- it defaults to
+      // isStrictFiniteNumber (a bare numeric counter) but callers pass the SAME
+      // predicate their badge uses (isValidCount for restarts), so the trend can
+      // never fire on a value the badge rejects as malformed (no Number() coercion).
+      const accept = valid || isStrictFiniteNumber;
       let previous = null;
       for (const record of records) {
         const raw = pick(record);
-        if (raw === null || raw === undefined || !Number.isFinite(Number(raw))) continue;
-        const current = Number(raw);
+        if (!accept(raw)) continue;
+        const current = raw;
         if (previous !== null && current > previous) return true;
         previous = current;
       }
@@ -576,17 +585,19 @@
       // Returns a Number, or NaN when no count is available.
       if (!record) return NaN;
       const top = record.cgroup_oom_kills;
-      const topPresent = top !== null && top !== undefined;
       const svc = record.service;
       const nested = svc ? svc.cgroup_oom_kills : undefined;
-      const nestedPresent = nested !== null && nested !== undefined;
-      const topCount = Number(top);
-      const nestedCount = Number(nested);
-      if (topPresent && nestedPresent && Number.isFinite(topCount) && Number.isFinite(nestedCount)) {
-        return Math.max(topCount, nestedCount);
+      // Strict-validate via the shared isValidCount instead of Number()-coercing:
+      // a malformed-but-coercible value ("0", "0x10", "1e3", []) must read as
+      // UNAVAILABLE (NaN) so the banner renders "?" -- never a fabricated count
+      // presented as authoritative corroboration of an OOM.
+      const topValid = isValidCount(top);
+      const nestedValid = isValidCount(nested);
+      if (topValid && nestedValid) {
+        return Math.max(top, nested);
       }
-      if (topPresent) return topCount;
-      if (nestedPresent) return nestedCount;
+      if (topValid) return top;
+      if (nestedValid) return nested;
       return NaN;
     }
 
@@ -616,8 +627,16 @@
       return isStrictFiniteNumber(value) && value >= 0 && value <= 100;
     }
 
+    function isValidCount(value) {
+      // A present, valid non-negative counter (restarts, cgroup oom_kills). Shared
+      // single source of truth so the badge, banner, cgroup count, and trend
+      // detector all agree on what a real count is -- a coercible string like "0"
+      // is NOT a count.
+      return isStrictFiniteNumber(value) && value >= 0;
+    }
+
     function isValidRestartCount(value) {
-      return value === null || value === undefined || (isStrictFiniteNumber(value) && value >= 0);
+      return value === null || value === undefined || isValidCount(value);
     }
 
     function isMalformedOomKilled(value) {
@@ -870,7 +889,7 @@
         yMax: 100,
         formatter: formatPct,
         series: [
-          { name: "Disk used", color: "var(--amb)", value: record => record.disk && record.disk.used_pct }
+          { name: "Disk used", color: "var(--amb)", value: record => record.disk && record.disk.used_pct, valid: isValidUsedPct }
         ]
       });
     }
@@ -900,10 +919,16 @@
       const plotHeight = height - pad.top - pad.bottom;
       const values = [];
       const pointsBySeries = config.series.map(series => {
+        // Validate each raw value with the SAME predicate the badge/banner use
+        // (per-series ``valid``, default isStrictFiniteNumber) instead of coercing
+        // via Number(raw): a malformed-but-coercible value (the string "0", [], a
+        // boolean) must yield NO plotted point, so the chart never shows a clean
+        // datapoint for a value the rest of the UI flags malformed.
+        const accept = series.valid || isStrictFiniteNumber;
         const points = config.records.map((record, index) => {
           const raw = series.value(record);
-          const value = raw === null || raw === undefined ? null : Number(raw);
-          if (value !== null && Number.isFinite(value)) values.push(value);
+          const value = accept(raw) ? raw : null;
+          if (value !== null) values.push(value);
           return { index, value };
         });
         return { ...series, points };

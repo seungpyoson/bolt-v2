@@ -969,6 +969,70 @@ check("Fix CLASS malformed restart counts are amber with a banner reason", () =>
   assertTrue(/badge amb/.test(serviceBadge(nonNumeric)), "non-numeric restart count remains amber");
 });
 
+// F5/F6/F7 (#886 relay round): the chart series, the cgroup count, and the
+// restart trend must route through the SAME shared strict predicates the
+// badge/banner use -- never bare Number() coercion -- so a malformed-but-coercible
+// value can never produce a clean or self-contradictory signal. Each assertion
+// goes RED against the pre-fix HEAD copy (run with the html path argument).
+
+check("F5 malformed disk used_pct is not plotted as a clean point", () => {
+  const drawTimeSeries = requireFn(ctx, "drawTimeSeries");
+  const diskBadgeClass = requireFn(ctx, "diskBadgeClass");
+  const diskFreePct = requireFn(ctx, "diskFreePct");
+  const records = [{ disk: { used_pct: "0" }, sampled_at: "t0" }];
+  const container = ctx.document.createElement("div");
+  drawTimeSeries(container, {
+    records,
+    unit: "percent",
+    yMin: 0,
+    yMax: 100,
+    formatter: value => String(value),
+    // No explicit `valid`: the DEFAULT must already reject a coercible string,
+    // proving the Number(raw) coercion is gone.
+    series: [{ name: "Disk used", value: record => record.disk && record.disk.used_pct }]
+  });
+  const renderedEmpty = container.children.some(child => child.className === "empty");
+  assertTrue(renderedEmpty, 'chart must render the empty placeholder for used_pct="0", not a finite point');
+  // ...and the badge agrees it is malformed (violet) -- chart and badge no longer contradict.
+  assertEqual(diskBadgeClass(diskFreePct({ used_pct: "0" })), "vio", 'badge must flag used_pct="0" malformed');
+});
+
+check("F6 malformed cgroup_oom_kills reads as unavailable, not a fabricated count", () => {
+  const cgroupOomCount = requireFn(ctx, "cgroupOomCount");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  assertTrue(Number.isNaN(cgroupOomCount({ cgroup_oom_kills: "0" })), '"0" string must be NaN (unavailable)');
+  assertTrue(Number.isNaN(cgroupOomCount({ cgroup_oom_kills: "0x10" })), '"0x10" must be NaN');
+  assertTrue(Number.isNaN(cgroupOomCount({ cgroup_oom_kills: "1e3" })), '"1e3" must be NaN');
+  assertEqual(cgroupOomCount({ cgroup_oom_kills: 3 }), 3, "a genuine integer count is preserved");
+  const record = {
+    schema_version: 2,
+    oom_killed: true,
+    cgroup_oom_kills: "0",
+    service: { active_state: "active", sub_state: "running", result: "signal", n_restarts: 0 }
+  };
+  const oomLine = bannerReasons(record, [record]).find(reason => reason.includes("OOM detected"));
+  assertTrue(
+    oomLine !== undefined && oomLine.includes("oom_kill=?"),
+    `malformed cgroup count must render as "?" in the banner, got: ${oomLine}`
+  );
+});
+
+check("F7 restart trend does not fire on a malformed n_restarts the badge rejects", () => {
+  const restartIncreased = requireFn(ctx, "restartIncreased");
+  const isValidRestartCount = requireFn(ctx, "isValidRestartCount");
+  assertEqual(isValidRestartCount("0"), false, 'badge predicate rejects the string "0"');
+  const malformedHistory = [
+    { service: { active_state: "active", sub_state: "running", result: "success", n_restarts: "0" } },
+    { service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 1 } }
+  ];
+  assertEqual(restartIncreased(malformedHistory), false, 'trend must not fire on a malformed historical "0"');
+  const realIncrease = [
+    { service: { n_restarts: 0 } },
+    { service: { n_restarts: 2 } }
+  ];
+  assertEqual(restartIncreased(realIncrease), true, "a real numeric increase still fires");
+});
+
 // --- report ------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {

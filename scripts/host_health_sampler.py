@@ -63,14 +63,20 @@ DEFAULT_SERVICE = "bolt-v2"
 # overridable at runtime via ``--disk-path``. It is deliberately NOT wired to the
 # TOML config loader so the script stays self-contained and runnable anywhere.
 DISK_PATH_FALLBACK = "/srv/bolt-v2/var/bolt-v3-live/catalog"
-# Keyed deadline calls are production main-loop chokepoints. Most keys
-# (sink:stdout/file/stderr, collector:*) are mutated only by the main caller
-# thread. "sink:file:cleanup" is the lone exception: it is touched only from the
-# sink:file worker (write_to_file's open guard + release_fd_best_effort), never
-# concurrently for the SAME key (the sink:file breaker admits one live worker at a
-# time), and distinct-key dict get/set/pop are atomic under the GIL, so no lock is
-# needed here.
-_DEADLINE_BREAKERS: dict[str, threading.Thread] = {}
+# Keyed deadline calls are a circuit-breaker that bounds abandoned (wedged) worker
+# threads to <=1 PER KEY. That bound is STRUCTURAL, not a convention: the
+# check-outstanding -> reserve-slot -> register-wedged-thread sequence in
+# run_with_deadline runs under _DEADLINE_BREAKERS_LOCK, so two concurrent OR
+# re-entrant callers with the same key can never both pass the gate and both
+# abandon a worker (the second sees the reservation and fast-fails). A bare
+# get/set/pop is individually atomic under the GIL, but the breaker decision spans
+# get -> is_alive() -> set across two functions, so the lock is required; relying
+# on today's single-threaded production call paths would make the advertised bound
+# fragile against any future second caller. _BREAKER_RESERVED marks a slot whose
+# worker is mid-spawn so a racing caller treats it as outstanding.
+_BREAKER_RESERVED = object()
+_DEADLINE_BREAKERS_LOCK = threading.Lock()
+_DEADLINE_BREAKERS: dict[str, object] = {}
 # Per-unit abandoned systemctl child processes (F4). A child wedged in
 # uninterruptible D-state survives SIGKILL until the kernel unblocks it, so
 # kill()+poll() may not reap it; without a gate each interval would spawn another
@@ -793,10 +799,19 @@ def _breaker_outstanding(breaker_key: str) -> bool:
     wedged?" check — shared by ``run_with_deadline``'s keyed fast-fail and the
     file-sink open guard in ``write_to_file``. A worker that has FINISHED is popped
     so the key auto-recovers once the wedged operation drains.
+
+    A ``_BREAKER_RESERVED`` placeholder (a worker mid-spawn, before its thread
+    object is registered) counts as outstanding so a racing caller fast-fails
+    instead of spawning a second worker. Lock-free by design: ``run_with_deadline``
+    calls this while holding ``_DEADLINE_BREAKERS_LOCK`` (so it must NOT re-acquire
+    it), and ``write_to_file``'s open guard calls it best-effort; the only mutation
+    here is an idempotent pop of an already-dead worker.
     """
     outstanding = _DEADLINE_BREAKERS.get(breaker_key)
     if outstanding is None:
         return False
+    if outstanding is _BREAKER_RESERVED:
+        return True
     if outstanding.is_alive():
         return True
     _DEADLINE_BREAKERS.pop(breaker_key, None)
@@ -827,11 +842,19 @@ def run_with_deadline(
     normally. This bounds both per-call latency and abandoned worker count while
     still recovering automatically once the wedged operation drains.
     """
-    if breaker_key is not None and _breaker_outstanding(breaker_key):
-        raise TimeoutError(
-            f"breaker open for '{breaker_key}': prior worker still running, "
-            f"fast-failed without waiting (deadline {timeout_seconds}s)"
-        )
+    if breaker_key is not None:
+        # Atomic check-and-reserve under the lock: a concurrent OR re-entrant
+        # same-key caller racing us must observe EITHER a live/wedged prior worker
+        # OR our reservation, and fast-fail — so at most one worker per key is ever
+        # abandoned. Without this the check-then-register window let two callers
+        # both pass and both leak a wedged daemon (only the last one tracked).
+        with _DEADLINE_BREAKERS_LOCK:
+            if _breaker_outstanding(breaker_key):
+                raise TimeoutError(
+                    f"breaker open for '{breaker_key}': prior worker still running, "
+                    f"fast-failed without waiting (deadline {timeout_seconds}s)"
+                )
+            _DEADLINE_BREAKERS[breaker_key] = _BREAKER_RESERVED
 
     box: dict[str, Any] = {}
 
@@ -842,14 +865,30 @@ def run_with_deadline(
             box["error"] = exc
 
     thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    thread.join(timeout_seconds)
+    try:
+        thread.start()
+        thread.join(timeout_seconds)
+    except BaseException:
+        # Spawn/join failed before we could classify the worker (e.g. the host is
+        # out of threads). Clear our own reservation so the key is not wedged-open
+        # forever, then re-raise — never leave a phantom breaker behind.
+        if breaker_key is not None:
+            with _DEADLINE_BREAKERS_LOCK:
+                if _DEADLINE_BREAKERS.get(breaker_key) is _BREAKER_RESERVED:
+                    _DEADLINE_BREAKERS.pop(breaker_key, None)
+        raise
     if thread.is_alive():
         if breaker_key is not None:
-            _DEADLINE_BREAKERS[breaker_key] = thread
+            # Replace the reservation with the real wedged thread so the key stays
+            # outstanding (auto-recovering via is_alive()) until the op drains.
+            with _DEADLINE_BREAKERS_LOCK:
+                _DEADLINE_BREAKERS[breaker_key] = thread
         raise TimeoutError(f"timed out after {timeout_seconds}s")
     if breaker_key is not None:
-        _DEADLINE_BREAKERS.pop(breaker_key, None)
+        # Worker finished in time: clear the reservation so the next keyed call
+        # proceeds normally.
+        with _DEADLINE_BREAKERS_LOCK:
+            _DEADLINE_BREAKERS.pop(breaker_key, None)
     if "error" in box:
         raise box["error"]
     return box.get("value")

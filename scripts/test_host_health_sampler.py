@@ -2686,6 +2686,153 @@ class DeadlineBreakerTests(unittest.TestCase):
             if key in sampler._DEADLINE_BREAKERS:
                 sampler._DEADLINE_BREAKERS.pop(key, None)
 
+    def test_differential_concurrent_same_key_callers_bound_workers_to_one(self) -> None:
+        """Two threads racing the SAME breaker_key spawn <=1 abandoned worker.
+
+        The keyed breaker advertises a HARD <=1-per-key bound on abandoned
+        workers. A check-then-act window between the outstanding-check and the
+        registry write lets two concurrent same-key callers BOTH pass the gate
+        and BOTH abandon a wedged worker (only the last one tracked) -- the bound
+        is then enforced by call-site serialization (convention), not structure.
+        Pre-fix this races to 2 started workers; the lock + reservation makes the
+        check-and-reserve atomic so the second caller fast-fails without spawning.
+        This is the boundary fix: the bound holds for ARBITRARY concurrent or
+        re-entrant callers, not merely today's single-threaded production paths.
+        """
+        sampler = self.sampler
+        key = "test:concurrent-same-key"
+        started: list[int] = []
+        started_lock = threading.Lock()
+        release = threading.Event()
+        barrier = threading.Barrier(2)
+        baseline = threading.active_count()
+
+        def blocked_worker() -> None:
+            with started_lock:
+                started.append(1)
+            release.wait(5)
+
+        def caller() -> None:
+            barrier.wait()  # maximise simultaneity of the check-then-act window
+            with contextlib.suppress(TimeoutError):
+                sampler.run_with_deadline(blocked_worker, 0.05, breaker_key=key)
+
+        t1 = threading.Thread(target=caller)
+        t2 = threading.Thread(target=caller)
+        try:
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+            # Let any second worker that slipped past the gate record its start.
+            time.sleep(0.1)
+            self.assertLessEqual(
+                len(started),
+                1,
+                "concurrent same-key callers must not both spawn a wedged worker",
+            )
+            self.assertLessEqual(
+                threading.active_count() - baseline,
+                1,
+                "at most one abandoned worker may exist per breaker key",
+            )
+        finally:
+            release.set()
+            self._wait_for_thread_delta_at_most(baseline, 0)
+            if key in sampler._DEADLINE_BREAKERS:
+                sampler._DEADLINE_BREAKERS.pop(key, None)
+
+    def test_differential_reentrant_same_key_does_not_leak_second_worker(self) -> None:
+        """A re-entrant keyed call for the SAME key fast-fails, never a 2nd worker.
+
+        Distinct from the concurrent case: here the second same-key call happens
+        from INSIDE a still-wedged worker (the relay's recursive scenario). The
+        reservation is held while the outer worker is mid-flight, so the inner call
+        sees it outstanding and fast-fails. Pre-fix the outer key was registered
+        only AFTER its join timed out, so an inner call during that window passed
+        the gate and spawned a second wedged worker. The lock here must NOT be
+        re-acquired by the worker (the outer caller releases it before joining), so
+        this also guards against a self-deadlock.
+        """
+        sampler = self.sampler
+        key = "test:reentrant-same-key"
+        release = threading.Event()
+        started: list[str] = []
+        started_lock = threading.Lock()
+        baseline = threading.active_count()
+
+        def inner() -> None:
+            with started_lock:
+                started.append("inner")
+            release.wait(5)
+
+        def outer() -> None:
+            with started_lock:
+                started.append("outer")
+            # Re-enter with the SAME key while we (the outer worker) are wedged.
+            with contextlib.suppress(TimeoutError):
+                sampler.run_with_deadline(inner, 0.05, breaker_key=key)
+            release.wait(5)
+
+        try:
+            with self.assertRaises(TimeoutError):
+                sampler.run_with_deadline(outer, 0.05, breaker_key=key)
+            time.sleep(0.1)
+            self.assertNotIn(
+                "inner",
+                started,
+                "re-entrant same-key call must fast-fail, never spawn a second worker",
+            )
+            self.assertLessEqual(
+                threading.active_count() - baseline,
+                1,
+                "at most one abandoned worker may exist per breaker key under re-entrancy",
+            )
+        finally:
+            release.set()
+            self._wait_for_thread_delta_at_most(baseline, 0)
+            if key in sampler._DEADLINE_BREAKERS:
+                sampler._DEADLINE_BREAKERS.pop(key, None)
+
+    def test_guard_spawn_failure_clears_breaker_reservation(self) -> None:
+        """A failed thread.start() clears the reservation; the key never wedges open.
+
+        The keyed path reserves the slot BEFORE spawning. If the spawn itself fails
+        (e.g. the host is out of threads), the reservation must be cleared so the
+        key is not permanently treated as outstanding (which would route the file
+        sink to stdout forever). Load-bearing for the spawn-failure cleanup branch:
+        removing it leaves _BREAKER_RESERVED stuck in the registry.
+        """
+        sampler = self.sampler
+        key = "test:spawn-failure"
+        real_thread_cls = sampler.threading.Thread
+
+        class ExplodingThread:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+            def start(self) -> None:
+                raise RuntimeError("can't start new thread")
+
+            def join(self, timeout: float | None = None) -> None:
+                pass
+
+            def is_alive(self) -> bool:
+                return False
+
+        sampler.threading.Thread = ExplodingThread
+        try:
+            with self.assertRaises(RuntimeError):
+                sampler.run_with_deadline(lambda: None, 0.1, breaker_key=key)
+            self.assertNotIn(
+                key,
+                sampler._DEADLINE_BREAKERS,
+                "a failed spawn must clear its breaker reservation",
+            )
+        finally:
+            sampler.threading.Thread = real_thread_cls
+            sampler._DEADLINE_BREAKERS.pop(key, None)
+
 
 def load_sampler_from(path: Path):
     """Load a sampler module from an ARBITRARY path under a unique module name.

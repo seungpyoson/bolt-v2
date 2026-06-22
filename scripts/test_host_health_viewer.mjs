@@ -152,11 +152,11 @@ check("D1 diskBadgeClass keeps numeric thresholds", () => {
 // D3: card free% is derived from df-convention used_pct (free + used == 100).
 check("D3 diskFreePct({used_pct:12.5}) -> 87.5", () => {
   const diskFreePct = requireFn(ctx, "diskFreePct");
-  assertEqual(diskFreePct({ used_pct: 12.5 }), 87.5);
+  assertEqual(diskFreePct({ disk: { used_pct: 12.5 } }), 87.5);
 });
 check("D3 diskFreePct({used_pct:null}) -> null", () => {
   const diskFreePct = requireFn(ctx, "diskFreePct");
-  assertEqual(diskFreePct({ used_pct: null }), null);
+  assertEqual(diskFreePct({ disk: { used_pct: null } }), null);
 });
 check("D3 diskFreePct(undefined disk) -> null", () => {
   const diskFreePct = requireFn(ctx, "diskFreePct");
@@ -537,10 +537,10 @@ check("G restartIncreased: flat sequence -> false", () => {
 check("Fix 4 diskFreePct rejects out-of-range used_pct", () => {
   const diskFreePct = requireFn(ctx, "diskFreePct");
   const diskBadgeClass = requireFn(ctx, "diskBadgeClass");
-  assertEqual(diskFreePct({ used_pct: -5 }), null, "negative used_pct is invalid");
-  assertEqual(diskBadgeClass(diskFreePct({ used_pct: -5 })), "vio", "invalid disk metric must be violet");
-  assertEqual(diskFreePct({ used_pct: 150 }), null, "over-100 used_pct is invalid");
-  assertEqual(diskFreePct({ used_pct: 40 }), 60, "normal used_pct still maps to free pct");
+  assertEqual(diskFreePct({ disk: { used_pct: -5 } }), null, "negative used_pct is invalid");
+  assertEqual(diskBadgeClass(diskFreePct({ disk: { used_pct: -5 } })), "vio", "invalid disk metric must be violet");
+  assertEqual(diskFreePct({ disk: { used_pct: 150 } }), null, "over-100 used_pct is invalid");
+  assertEqual(diskFreePct({ disk: { used_pct: 40 } }), 60, "normal used_pct still maps to free pct");
 });
 
 check("Fix 8 serviceBadge OOM wins over missing service data", () => {
@@ -866,17 +866,22 @@ check("Fix 3 guard: a real finite cgroup count still renders the number", () => 
 check("Fix CLASS shared validation predicates reject coercible malformed values", () => {
   const isStrictFiniteNumber = requireFn(ctx, "isStrictFiniteNumber");
   const isValidUsedPct = requireFn(ctx, "isValidUsedPct");
-  const isValidRestartCount = requireFn(ctx, "isValidRestartCount");
+  const restartView = requireFn(ctx, "restartView");
   const isMalformedOomKilled = requireFn(ctx, "isMalformedOomKilled");
   assertEqual(isStrictFiniteNumber(40), true, "JSON numbers are accepted");
   assertEqual(isStrictFiniteNumber("40"), false, "coercible strings are rejected");
   assertEqual(isValidUsedPct(40), true, "normal used_pct is valid");
   assertEqual(isValidUsedPct(true), false, "boolean used_pct is malformed");
   assertEqual(isValidUsedPct([80]), false, "array used_pct is malformed");
-  assertEqual(isValidRestartCount(null), true, "absent restart count is acceptable");
-  assertEqual(isValidRestartCount(0), true, "zero restarts is valid");
-  assertEqual(isValidRestartCount(-3), false, "negative restart count is malformed");
-  assertEqual(isValidRestartCount("garbage"), false, "non-number restart count is malformed");
+  // The absent/valid/present-invalid restart trichotomy now lives in the
+  // restartView chokepoint (isValidRestartCount was folded into it):
+  assertEqual(restartView({ service: { n_restarts: null } }).present, false, "absent restart count is acceptable (eligible for green)");
+  const zeroView = restartView({ service: { n_restarts: 0 } });
+  assertTrue(zeroView.valid && zeroView.value === 0, "zero restarts is valid");
+  const negView = restartView({ service: { n_restarts: -3 } });
+  assertTrue(negView.present && !negView.valid, "negative restart count is present-but-malformed");
+  const garbageView = restartView({ service: { n_restarts: "garbage" } });
+  assertTrue(garbageView.present && !garbageView.valid, "non-number restart count is present-but-malformed");
   assertEqual(isMalformedOomKilled(true), false, "boolean OOM flag is valid");
   assertEqual(isMalformedOomKilled(null), false, "absent OOM flag is acceptable");
   assertEqual(isMalformedOomKilled("true"), true, "string OOM flag is malformed");
@@ -917,7 +922,7 @@ check("Fix CLASS malformed disk used_pct values are violet with a banner reason"
   const diskBadgeClass = requireFn(ctx, "diskBadgeClass");
   const bannerReasons = requireFn(ctx, "bannerReasons");
   for (const used_pct of [true, false, [], [80], " "]) {
-    const freePct = diskFreePct({ used_pct });
+    const freePct = diskFreePct({ disk: { used_pct } });
     const latest = {
       schema_version: 2,
       errors: [],
@@ -932,9 +937,9 @@ check("Fix CLASS malformed disk used_pct values are violet with a banner reason"
       `malformed used_pct=${JSON.stringify(used_pct)} must raise a banner reason`
     );
   }
-  assertEqual(diskFreePct({ used_pct: 40 }), 60, "normal used_pct still maps to free pct");
-  assertEqual(diskBadgeClass(diskFreePct({ used_pct: 40 })), "grn", "normal used_pct stays green");
-  assertEqual(diskFreePct({ used_pct: null }), null, "null used_pct remains unavailable");
+  assertEqual(diskFreePct({ disk: { used_pct: 40 } }), 60, "normal used_pct still maps to free pct");
+  assertEqual(diskBadgeClass(diskFreePct({ disk: { used_pct: 40 } })), "grn", "normal used_pct stays green");
+  assertEqual(diskFreePct({ disk: { used_pct: null } }), null, "null used_pct remains unavailable");
 });
 
 check("Fix CLASS malformed restart counts are amber with a banner reason", () => {
@@ -994,7 +999,7 @@ check("F5 malformed disk used_pct is not plotted as a clean point", () => {
   const renderedEmpty = container.children.some(child => child.className === "empty");
   assertTrue(renderedEmpty, 'chart must render the empty placeholder for used_pct="0", not a finite point');
   // ...and the badge agrees it is malformed (violet) -- chart and badge no longer contradict.
-  assertEqual(diskBadgeClass(diskFreePct({ used_pct: "0" })), "vio", 'badge must flag used_pct="0" malformed');
+  assertEqual(diskBadgeClass(diskFreePct({ disk: { used_pct: "0" } })), "vio", 'badge must flag used_pct="0" malformed');
 });
 
 check("F6 malformed cgroup_oom_kills reads as unavailable, not a fabricated count", () => {
@@ -1019,8 +1024,9 @@ check("F6 malformed cgroup_oom_kills reads as unavailable, not a fabricated coun
 
 check("F7 restart trend does not fire on a malformed n_restarts the badge rejects", () => {
   const restartIncreased = requireFn(ctx, "restartIncreased");
-  const isValidRestartCount = requireFn(ctx, "isValidRestartCount");
-  assertEqual(isValidRestartCount("0"), false, 'badge predicate rejects the string "0"');
+  const restartView = requireFn(ctx, "restartView");
+  const coercibleZero = restartView({ service: { n_restarts: "0" } });
+  assertTrue(coercibleZero.present && !coercibleZero.valid, 'chokepoint rejects the coercible string "0" the badge rejects');
   const malformedHistory = [
     { service: { active_state: "active", sub_state: "running", result: "success", n_restarts: "0" } },
     { service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 1 } }
@@ -1045,7 +1051,7 @@ check("C2-G1 disk:0 corrupt scalar -> chart and card both reject (no contradicti
   const drawTimeSeries = requireFn(ctx, "drawTimeSeries");
   const rec = { schema_version: 2, sampled_at: "t0", disk: 0, service: { active_state: "active", sub_state: "running", n_restarts: 0 } };
   assertEqual(diskUsedPct(rec), null, "diskUsedPct must reject a falsy-numeric disk parent (disk:0)");
-  assertEqual(diskFreePct(rec.disk), null, "disk card already rejects disk:0");
+  assertEqual(diskFreePct(rec), null, "disk card already rejects disk:0");
   const container = ctx.document.createElement("div");
   drawTimeSeries(container, { records: [rec], unit: "percent", yMin: 0, yMax: 100, formatter: value => String(value), series: [{ name: "Disk used", value: record => diskUsedPct(record) }] });
   assertTrue(container.children.some(child => child.className === "empty"), "disk chart must not plot a clean 0%-used point for disk:0");
@@ -1068,6 +1074,31 @@ check("FENCE: no raw Number()/parseInt/parseFloat coercion in the viewer", () =>
     .replace(/\/\/[^\n]*/g, "");
   const banned = script.match(/\b(?:Number|parseInt|parseFloat)\s*\(/g) || [];
   assertEqual(banned.length, 0, `numeric values must come from validated field accessors, not coercion; found: ${banned.join(", ")}`);
+});
+
+check("FENCE2: raw numeric health-field property access only inside the fieldView chokepoint", () => {
+  const html = readFileSync(htmlPath, "utf8");
+  const script = extractInlineScript(html)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  // Each numeric health field is extracted in exactly ONE place: the fieldView
+  // chokepoint, which addresses the field through a VARIABLE key, so NO field
+  // literal property-access appears in source. A dot-access (`.used_pct`) or
+  // bracket-literal (`["used_pct"]`) anywhere means a consumer (card/badge/banner/
+  // trend) re-extracts the field itself and can drift from the accessor -- the
+  // exact "fixed validation but not extraction" leak that recurred across rounds.
+  // Banner WORDING (`used_pct=`) and the string ARGUMENTS to fieldView ("used_pct")
+  // are data, not property access, so they are deliberately not matched.
+  const FIELDS = ["used_pct", "n_restarts", "rss_bytes", "mem_available_bytes", "cgroup_oom_kills"];
+  const offenders = [];
+  for (const field of FIELDS) {
+    const dot = script.match(new RegExp("\\.\\s*" + field + "\\b", "g")) || [];
+    const bracket = script.match(new RegExp("\\[\\s*[\"']" + field + "[\"']\\s*\\]", "g")) || [];
+    if (dot.length + bracket.length > 0) {
+      offenders.push(`${field}: ${dot.length + bracket.length} raw access(es)`);
+    }
+  }
+  assertEqual(offenders.length, 0, `numeric health fields must be read ONLY through the fieldView chokepoint; raw property access found -> ${offenders.join("; ")}`);
 });
 
 check("MATRIX: numeric health fields x hostile types -> accessor null, chart==accessor, no false-green, no crash", () => {
@@ -1109,6 +1140,56 @@ check("MATRIX: numeric health fields x hostile types -> accessor null, chart==ac
   assertEqual(rssBytes({ process: { rss_bytes: 4096 } }), 4096, "valid rss accepted");
   assertEqual(restartCount({ service: { n_restarts: 0 } }), 0, "valid restart 0 accepted");
   assertTrue(/badge grn/.test(serviceBadge({ schema_version: 2, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } })), "clean record is green-eligible");
+});
+
+check("CONSENSUS: badge + banner agree on restart validity for every hostile present n_restarts", () => {
+  // The relay flagged badge/banner DISAGREEMENT on the same field. With both
+  // routed through restartView, a PRESENT-but-invalid count must drive BOTH the
+  // badge (never green) AND the banner ("malformed") -- they cannot split.
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const HOSTILE_PRESENT = ["0", "5", "", " ", "0x10", "1e3", "-1", [], [5], {}, true, false, -1, NaN, Infinity, -Infinity];
+  for (const h of HOSTILE_PRESENT) {
+    const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: h } };
+    assertTrue(!/badge grn/.test(serviceBadge(rec)), `badge must not be green for present-invalid n_restarts=${JSON.stringify(h)}`);
+    assertTrue(
+      bannerReasons(rec, [rec]).some(r => /restart count malformed/.test(r)),
+      `banner must flag malformed for present-invalid n_restarts=${JSON.stringify(h)}`,
+    );
+  }
+});
+
+check("CONSENSUS: absent n_restarts -> badge green + card EMPTY + banner silent (consistent absent pairing)", () => {
+  // The relay framed "card shows '—' while badge is green" as a contradiction.
+  // With one chokepoint it is the intended ABSENT pairing: no count to show,
+  // service otherwise healthy -- and the banner raises no restart reason.
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const restartCount = requireFn(ctx, "restartCount");
+  const formatNumber = requireFn(ctx, "formatNumber");
+  for (const absent of [null, undefined]) {
+    const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: absent } };
+    assertTrue(/badge grn/.test(serviceBadge(rec)), `absent n_restarts=${JSON.stringify(absent)} stays green-eligible`);
+    assertEqual(restartCount(rec), null, "absent count -> accessor null");
+    assertEqual(formatNumber(restartCount(rec)), formatNumber(null), "restart card EMPTY for absent count");
+    assertTrue(!bannerReasons(rec, [rec]).some(r => /restart count malformed|auto-restarted/.test(r)), "banner raises no restart reason for an absent count");
+  }
+});
+
+check("CONSENSUS: non-object disk block -> card violet + banner 'status unavailable' (card+banner agree)", () => {
+  // diskView.parent is the single decision: a non-object disk block is a STATUS
+  // problem (not a metric problem), and the card (diskFreePct null -> violet) and
+  // banner agree because both read diskView.
+  const diskFreePct = requireFn(ctx, "diskFreePct");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  for (const badDisk of [true, 5, "x", [], [1, 2]]) {
+    const rec = { schema_version: 2, sampled_at: "t", oom_killed: false, disk: badDisk, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+    assertEqual(diskFreePct(rec), null, `non-object disk=${JSON.stringify(badDisk)} -> card unavailable`);
+    assertTrue(
+      bannerReasons(rec, [rec]).some(r => /disk status unavailable/.test(r)),
+      `non-object disk=${JSON.stringify(badDisk)} -> banner status unavailable`,
+    );
+  }
 });
 
 // --- report ------------------------------------------------------------------

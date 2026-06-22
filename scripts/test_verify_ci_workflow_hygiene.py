@@ -43,6 +43,17 @@ GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_de
             exit 0
           fi
 """
+GATE_NOOP_CONTEXT_ASSIGNMENT = """noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}\""""
+GATE_NOOP_CONTEXT_GUARD = """            if [[ "$noop_run_context" != "true" ]]; then
+              echo "noop CI policy outside ready PR no-code context"
+              exit 1
+            fi
+"""
+GATE_NOOP_BLOCK = f"""          if [[ "$policy_path" == "noop" ]]; then
+{GATE_NOOP_CONTEXT_GUARD}            echo "no code-change CI event; preserving prior required same-SHA gate conclusion"
+            exit 0
+          fi
+"""
 DEPLOY_NEEDS = "needs: [gate, same-sha-main-evidence, build, detector, deny, clippy, check-aarch64, source-fence, test]"
 EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'.github/workflows/ci.yml'",
@@ -2765,6 +2776,54 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
     static_gate_errors = verifier.verify_repo_automation_texts({workflow_name: static_gate_name})
     if not any("backtester draft deferral gate must publish backtester-gate-deferred" in error for error in static_gate_errors):
         raise AssertionError(f"backtester-ci workflow must reject static deferred gate names, got: {static_gate_errors}")
+
+    missing_noop_context = replace_once(
+        workflow,
+        verifier.BACKTESTER_NOOP_RUN_CONTEXT_ASSIGNMENT,
+        'noop_run_context="false"',
+    )
+    missing_noop_context_errors = verifier.verify_repo_automation_texts({workflow_name: missing_noop_context})
+    if not any(
+        "backtester draft deferral gate must compute ready PR noop context" in error
+        for error in missing_noop_context_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci workflow must reject missing noop context computation, got: {missing_noop_context_errors}"
+        )
+
+    backtester_noop_context_guard = """            if [[ "$noop_run_context" != "true" ]]; then
+              echo "backtester noop CI policy outside ready PR no-code context"
+              exit 1
+            fi
+"""
+    backtester_noop_block = f"""          if [[ "$policy_path" == "noop" ]]; then
+{backtester_noop_context_guard}            echo "backtester no code-change CI event; preserving prior required same-SHA gate conclusion"
+            exit 0
+          fi
+"""
+    failing_noop_block = replace_once(
+        workflow,
+        backtester_noop_block,
+        backtester_noop_block.replace("            exit 0\n", "            exit 1\n"),
+    )
+    failing_noop_block_errors = verifier.verify_repo_automation_texts({workflow_name: failing_noop_block})
+    if not any(
+        "backtester draft deferral gate must pass ready PR no-code runs under backtester-gate-noop" in error
+        for error in failing_noop_block_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci workflow must reject failing noop gate branches, got: {failing_noop_block_errors}"
+        )
+
+    missing_noop_guard = replace_once(workflow, backtester_noop_context_guard, "")
+    missing_noop_guard_errors = verifier.verify_repo_automation_texts({workflow_name: missing_noop_guard})
+    if not any(
+        "backtester draft deferral gate must fail noop policy outside ready PR no-code context" in error
+        for error in missing_noop_guard_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci workflow must reject missing noop context guards, got: {missing_noop_guard_errors}"
+        )
 
     for job, display_name in (("fmt", "bvs-fmt"), ("clippy", "bvs-clippy"), ("test", "bvs-test")):
         result_check = (
@@ -6617,6 +6676,22 @@ def main() -> int:
     assert_error(
         "gate must publish gate-noop for ready PR no-code runs",
         replace_once(BASE_WORKFLOW, "          && 'gate-noop'\n", ""),
+    )
+    assert_error(
+        "gate must compute ready PR noop run context",
+        replace_once(BASE_WORKFLOW, GATE_NOOP_CONTEXT_ASSIGNMENT, 'noop_run_context="false"'),
+    )
+    assert_error(
+        "gate must pass ready PR no-code runs under gate-noop",
+        replace_once(
+            BASE_WORKFLOW,
+            GATE_NOOP_BLOCK,
+            GATE_NOOP_BLOCK.replace("            exit 0\n", "            exit 1\n"),
+        ),
+    )
+    assert_error(
+        "gate must fail noop policy outside ready PR no-code context",
+        replace_once(BASE_WORKFLOW, GATE_NOOP_CONTEXT_GUARD, ""),
     )
     assert_error(
         "concurrency group must split deferred PR runs from full CI runs",

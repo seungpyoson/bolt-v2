@@ -81,6 +81,29 @@ def file_payload(name: str, patch: str) -> dict[str, object]:
     }
 
 
+def fallback_config(module, **overrides):
+    values = {
+        "repo": "seungpyoson/bolt-v2",
+        "pr_number": 895,
+        "started_at": "2026-06-22T12:21:00Z",
+        "instructions": "review hard evidence only",
+        "max_chunk_chars": 260,
+        "max_comment_chars": 60000,
+        "response_chars_per_chunk": 8000,
+        "run_url": "https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        "provider": "GLM",
+        "deliverable_markers": (
+            "## PR Reviewer Guide",
+            "## Incremental PR Reviewer Guide",
+            "<!-- ai-pr-reviewer-glm -->",
+        ),
+        "expected_bot_login": "github-actions[bot]",
+        "comment_marker": "<!-- ai-pr-reviewer-glm -->",
+    }
+    values.update(overrides)
+    return module.FallbackConfig(**values)
+
+
 def test_packs_more_than_two_review_chunks_when_budget_requires_it() -> None:
     module = load_script()
     files = [
@@ -149,7 +172,7 @@ def test_skips_fallback_when_pr_agent_deliverable_exists_after_start() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=glm,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -181,7 +204,7 @@ def test_plain_pr_agent_phrase_does_not_suppress_fallback() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=glm,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -214,7 +237,7 @@ def test_human_pr_agent_marker_comment_does_not_suppress_fallback() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=glm,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -247,7 +270,7 @@ def test_human_kimi_marker_comment_does_not_suppress_fallback() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=kimi,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             provider="Kimi",
             deliverable_markers=("<!-- ai-pr-reviewer-kimi -->",),
             repo="seungpyoson/bolt-v2",
@@ -282,7 +305,7 @@ def test_unexpected_bot_marker_comment_does_not_suppress_fallback() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=glm,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -315,7 +338,7 @@ def test_incremental_pr_agent_deliverable_suppresses_fallback() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=glm,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -323,6 +346,32 @@ def test_incremental_pr_agent_deliverable_suppresses_fallback() -> None:
             max_chunk_chars=260,
             run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
         ),
+    )
+
+    assert result == "existing-review-deliverable"
+    assert glm.prompts == []
+    assert github.posted == []
+
+
+def test_prior_glm_fallback_marker_suppresses_later_fallback() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": "<!-- ai-pr-reviewer-glm -->\n\n## GLM PR Review\n\nexisting fallback result",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM()
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
     )
 
     assert result == "existing-review-deliverable"
@@ -339,7 +388,7 @@ def test_posts_failure_notice_when_glm_fallback_fails() -> None:
         module.run_fallback_review(
             github=github,
             reviewer=glm,
-            config=module.FallbackConfig(
+            config=fallback_config(module,
                 repo="seungpyoson/bolt-v2",
                 pr_number=895,
                 started_at="2026-06-22T12:21:00Z",
@@ -372,7 +421,7 @@ def test_sets_failure_notice_output_after_posting_failure_notice() -> None:
                 module.run_fallback_review(
                     github=github,
                     reviewer=glm,
-                    config=module.FallbackConfig(
+                    config=fallback_config(module,
                         repo="seungpyoson/bolt-v2",
                         pr_number=895,
                         started_at="2026-06-22T12:21:00Z",
@@ -406,7 +455,7 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=kimi,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             provider="Kimi",
             deliverable_markers=(marker,),
             comment_marker=marker,
@@ -436,7 +485,7 @@ def test_posts_fallback_review_across_multiple_comments_when_comment_budget_requ
     result = module.run_fallback_review(
         github=github,
         reviewer=glm,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -466,7 +515,7 @@ def test_large_model_response_is_split_without_truncating_content() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=glm,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -495,7 +544,7 @@ def test_split_model_response_keeps_markdown_fences_balanced() -> None:
     result = module.run_fallback_review(
         github=github,
         reviewer=glm,
-        config=module.FallbackConfig(
+        config=fallback_config(module,
             repo="seungpyoson/bolt-v2",
             pr_number=895,
             started_at="2026-06-22T12:21:00Z",
@@ -522,7 +571,7 @@ def test_posts_failure_notice_when_kimi_fallback_fails() -> None:
         module.run_fallback_review(
             github=github,
             reviewer=kimi,
-            config=module.FallbackConfig(
+            config=fallback_config(module,
                 provider="Kimi",
                 deliverable_markers=("<!-- ai-pr-reviewer-kimi -->",),
                 comment_marker="<!-- ai-pr-reviewer-kimi -->",
@@ -557,7 +606,7 @@ def test_redacts_kimi_api_key_from_failure_notice() -> None:
             module.run_fallback_review(
                 github=github,
                 reviewer=kimi,
-                config=module.FallbackConfig(
+                config=fallback_config(module,
                     provider="Kimi",
                     deliverable_markers=("<!-- ai-pr-reviewer-kimi -->",),
                     comment_marker="<!-- ai-pr-reviewer-kimi -->",
@@ -616,6 +665,10 @@ def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
                 api_base="https://api.kimi.com/coding/v1",
                 model="kimi-for-coding",
                 provider="Kimi",
+                provider_type="kimi",
+                model_max_context_size=262144,
+                default_thinking=True,
+                telemetry_disabled=True,
                 timeout_seconds=9,
             )
             response = client.review_chunk(system_prompt="system", user_prompt="user")
@@ -696,6 +749,7 @@ def main() -> int:
     test_human_kimi_marker_comment_does_not_suppress_fallback()
     test_unexpected_bot_marker_comment_does_not_suppress_fallback()
     test_incremental_pr_agent_deliverable_suppresses_fallback()
+    test_prior_glm_fallback_marker_suppresses_later_fallback()
     test_posts_failure_notice_when_glm_fallback_fails()
     test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()

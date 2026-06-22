@@ -20,18 +20,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_GITHUB_API = "https://api.github.com"
-DEFAULT_GLM_API_BASE = "https://api.z.ai/api/coding/paas/v4"
-DEFAULT_GLM_MODEL = "glm-5.2"
-DEFAULT_KIMI_API_BASE = "https://api.kimi.com/coding/v1"
-DEFAULT_KIMI_MODEL = "kimi-for-coding"
-DEFAULT_MAX_CHUNK_CHARS = 60000
-DEFAULT_MAX_COMMENT_CHARS = 60000
-DEFAULT_RESPONSE_CHARS_PER_CHUNK = 8000
-PR_AGENT_MARKERS = (
-    "## PR Reviewer Guide",
-    "## Incremental PR Reviewer Guide",
-)
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "ci" / "ai-review.toml"
 EXPLICIT_SECRET_ENV_NAMES = frozenset(("GLM_API_KEY", "KIMI_API_KEY", "GITHUB_TOKEN", "OPENAI__KEY", "OPENAI_KEY"))
 SECRET_ENV_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN")
 SECRET_ENV_PREFIXES = ("OPENAI__",)
@@ -49,11 +38,11 @@ class FallbackConfig:
     instructions: str
     max_chunk_chars: int
     run_url: str
-    max_comment_chars: int = DEFAULT_MAX_COMMENT_CHARS
-    response_chars_per_chunk: int = DEFAULT_RESPONSE_CHARS_PER_CHUNK
+    max_comment_chars: int
+    response_chars_per_chunk: int
     provider: str = "GLM"
-    deliverable_markers: tuple[str, ...] = PR_AGENT_MARKERS
-    expected_bot_login: str = "github-actions[bot]"
+    deliverable_markers: tuple[str, ...] = ()
+    expected_bot_login: str = ""
     comment_marker: str = ""
     review_intro: str = ""
 
@@ -92,7 +81,7 @@ class GitHubClient:
         repo: str,
         pr_number: int,
         token: str,
-        api_url: str = DEFAULT_GITHUB_API,
+        api_url: str,
     ) -> None:
         self.repo = repo
         self.pr_number = pr_number
@@ -173,18 +162,20 @@ class OpenAIChatClient:
         api_base: str,
         model: str,
         provider: str,
+        temperature: float,
         timeout_seconds: int = 180,
     ) -> None:
         self.api_key = api_key
         self.api_base = api_base.rstrip("/")
         self.model = model
         self.provider = provider
+        self.temperature = temperature
         self.timeout_seconds = timeout_seconds
 
     def review_chunk(self, *, system_prompt: str, user_prompt: str) -> str:
         payload = {
             "model": self.model,
-            "temperature": 0.2,
+            "temperature": self.temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -226,6 +217,10 @@ class KimiCliClient:
         api_base: str,
         model: str,
         provider: str,
+        provider_type: str,
+        model_max_context_size: int,
+        default_thinking: bool,
+        telemetry_disabled: bool,
         timeout_seconds: int = 180,
         binary: str = "kimi",
     ) -> None:
@@ -233,6 +228,10 @@ class KimiCliClient:
         self.api_base = api_base.rstrip("/")
         self.model = model
         self.provider = provider
+        self.provider_type = provider_type
+        self.model_max_context_size = model_max_context_size
+        self.default_thinking = default_thinking
+        self.telemetry_disabled = telemetry_disabled
         self.timeout_seconds = timeout_seconds
         self.binary = binary
         self.kimi_home = os.environ.get("KIMI_CODE_HOME") or tempfile.mkdtemp(prefix="kimi-code-")
@@ -242,19 +241,20 @@ class KimiCliClient:
         kimi_home.mkdir(parents=True, exist_ok=True)
         config_path = kimi_home / "config.toml"
         if not config_path.exists():
-            config_path.write_text("telemetry = false\n", encoding="utf-8")
+            telemetry_value = "false" if self.telemetry_disabled else "true"
+            config_path.write_text(f"telemetry = {telemetry_value}\n", encoding="utf-8")
 
         env = os.environ.copy()
         env.update(
             {
                 "KIMI_CODE_HOME": str(kimi_home),
-                "KIMI_DISABLE_TELEMETRY": "1",
+                "KIMI_DISABLE_TELEMETRY": "1" if self.telemetry_disabled else "0",
                 "KIMI_MODEL_NAME": self.model,
                 "KIMI_MODEL_API_KEY": self.api_key,
                 "KIMI_MODEL_BASE_URL": self.api_base,
-                "KIMI_MODEL_PROVIDER_TYPE": "kimi",
-                "KIMI_MODEL_MAX_CONTEXT_SIZE": "262144",
-                "KIMI_MODEL_DEFAULT_THINKING": "true",
+                "KIMI_MODEL_PROVIDER_TYPE": self.provider_type,
+                "KIMI_MODEL_MAX_CONTEXT_SIZE": str(self.model_max_context_size),
+                "KIMI_MODEL_DEFAULT_THINKING": "true" if self.default_thinking else "false",
             }
         )
         prompt = f"{system_prompt}\n\n{user_prompt}"
@@ -762,6 +762,71 @@ def pr_agent_instructions(path: Path) -> str:
     return instructions
 
 
+def config_path_from_args(args: argparse.Namespace) -> Path:
+    return Path(args.config_file or os.environ.get("AI_REVIEW_CONFIG", "") or DEFAULT_CONFIG_PATH)
+
+
+def load_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
+    path = config_path_from_args(args)
+    try:
+        parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"AI review config file is missing: {path}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"AI review config file did not parse as a TOML table: {path}")
+    return parsed
+
+
+def config_table(config: dict[str, Any], name: str) -> dict[str, Any]:
+    value = config.get(name)
+    if not isinstance(value, dict):
+        raise RuntimeError(f"AI review config missing [{name}]")
+    return value
+
+
+def nested_config_table(config: dict[str, Any], section: str, name: str) -> dict[str, Any]:
+    parent = config_table(config, section)
+    value = parent.get(name)
+    if not isinstance(value, dict):
+        raise RuntimeError(f"AI review config missing [{section}.{name}]")
+    return value
+
+
+def config_str(table: dict[str, Any], key: str) -> str:
+    value = table.get(key)
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"AI review config missing string key {key!r}")
+    return value
+
+
+def config_int(table: dict[str, Any], key: str) -> int:
+    value = table.get(key)
+    if not isinstance(value, int):
+        raise RuntimeError(f"AI review config missing integer key {key!r}")
+    return value
+
+
+def config_float(table: dict[str, Any], key: str) -> float:
+    value = table.get(key)
+    if not isinstance(value, (int, float)):
+        raise RuntimeError(f"AI review config missing numeric key {key!r}")
+    return float(value)
+
+
+def config_bool(table: dict[str, Any], key: str) -> bool:
+    value = table.get(key)
+    if not isinstance(value, bool):
+        raise RuntimeError(f"AI review config missing boolean key {key!r}")
+    return value
+
+
+def config_str_tuple(table: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = table.get(key)
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) and item for item in value):
+        raise RuntimeError(f"AI review config missing string array key {key!r}")
+    return tuple(value)
+
+
 def env_required(name: str) -> str:
     value = os.environ.get(name, "")
     if not value:
@@ -776,35 +841,46 @@ def int_env(name: str, default: int) -> int:
     return int(raw)
 
 
-def build_github_client(repo: str, pr_number: int) -> GitHubClient:
+def build_github_client(repo: str, pr_number: int, config: dict[str, Any]) -> GitHubClient:
+    github_config = config_table(config, "github")
     return GitHubClient(
         repo=repo,
         pr_number=pr_number,
         token=env_required("GITHUB_TOKEN"),
-        api_url=os.environ.get("GITHUB_API_URL", DEFAULT_GITHUB_API),
+        api_url=os.environ.get("GITHUB_API_URL", config_str(github_config, "api_url")),
     )
 
 
-def run_url_for(repo: str) -> str:
-    return os.environ.get("GITHUB_SERVER_URL", "https://github.com") + f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+def run_url_for(repo: str, config: dict[str, Any]) -> str:
+    github_config = config_table(config, "github")
+    server_url = os.environ.get("GITHUB_SERVER_URL", config_str(github_config, "server_url"))
+    return server_url + f"/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
 
 
 def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
     repo = env_required("GITHUB_REPOSITORY")
     pr_number = int(env_required("PR_NUMBER"))
-    github = build_github_client(repo, pr_number)
+    runtime_config = load_runtime_config(args)
+    review_config = config_table(runtime_config, "review")
+    github_config = config_table(runtime_config, "github")
+    glm_config = config_table(runtime_config, "glm")
+    github = build_github_client(repo, pr_number, runtime_config)
 
     api_key = os.environ.get("GLM_API_KEY", "")
+    comment_marker = config_str(glm_config, "comment_marker")
     config = FallbackConfig(
         repo=repo,
         pr_number=pr_number,
         started_at=args.started_at,
         instructions=pr_agent_instructions(Path(args.instructions_file)),
-        max_chunk_chars=int_env("GLM_REVIEW_MAX_CHUNK_CHARS", DEFAULT_MAX_CHUNK_CHARS),
-        max_comment_chars=int_env("AI_REVIEW_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS),
-        run_url=run_url_for(repo),
+        max_chunk_chars=int_env("GLM_REVIEW_MAX_CHUNK_CHARS", config_int(glm_config, "review_max_chunk_chars")),
+        max_comment_chars=int_env("AI_REVIEW_MAX_COMMENT_CHARS", config_int(review_config, "max_comment_chars")),
+        response_chars_per_chunk=config_int(review_config, "response_chars_per_chunk"),
+        run_url=run_url_for(repo, runtime_config),
         provider="GLM",
-        deliverable_markers=PR_AGENT_MARKERS,
+        deliverable_markers=config_str_tuple(glm_config, "deliverable_markers"),
+        expected_bot_login=config_str(github_config, "expected_bot_login"),
+        comment_marker=comment_marker,
     )
     if not api_key:
         github.post_issue_comment_for(
@@ -820,10 +896,11 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
 
     reviewer = OpenAIChatClient(
         api_key=api_key,
-        api_base=os.environ.get("GLM_API_BASE", DEFAULT_GLM_API_BASE),
-        model=os.environ.get("GLM_MODEL", DEFAULT_GLM_MODEL),
+        api_base=os.environ.get("GLM_API_BASE", config_str(glm_config, "api_base")),
+        model=os.environ.get("GLM_MODEL", config_str(glm_config, "model")),
         provider="GLM",
-        timeout_seconds=int_env("GLM_API_TIMEOUT_SECONDS", 180),
+        temperature=config_float(glm_config, "temperature"),
+        timeout_seconds=int_env("GLM_API_TIMEOUT_SECONDS", config_int(glm_config, "api_timeout_seconds")),
     )
     result = run_fallback_review(github=github, reviewer=reviewer, config=config)
     print(result)
@@ -831,29 +908,42 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
 
 
 def build_kimi_config_from_env(args: argparse.Namespace, *, repo: str, pr_number: int, review_intro: str = "") -> FallbackConfig:
-    marker = os.environ.get("KIMI_DELIVERABLE_MARKER", "<!-- ai-pr-reviewer-kimi -->")
+    runtime_config = load_runtime_config(args)
+    review_config = config_table(runtime_config, "review")
+    github_config = config_table(runtime_config, "github")
+    kimi_config = config_table(runtime_config, "kimi")
+    marker = os.environ.get("KIMI_DELIVERABLE_MARKER", config_str(kimi_config, "deliverable_marker"))
     return FallbackConfig(
         repo=repo,
         pr_number=pr_number,
         started_at=args.started_at,
         instructions=Path(args.instructions_file).read_text(encoding="utf-8"),
-        max_chunk_chars=int_env("KIMI_REVIEW_MAX_CHUNK_CHARS", DEFAULT_MAX_CHUNK_CHARS),
-        max_comment_chars=int_env("AI_REVIEW_MAX_COMMENT_CHARS", DEFAULT_MAX_COMMENT_CHARS),
-        run_url=run_url_for(repo),
+        max_chunk_chars=int_env("KIMI_REVIEW_MAX_CHUNK_CHARS", config_int(kimi_config, "review_max_chunk_chars")),
+        max_comment_chars=int_env("AI_REVIEW_MAX_COMMENT_CHARS", config_int(review_config, "max_comment_chars")),
+        response_chars_per_chunk=config_int(review_config, "response_chars_per_chunk"),
+        run_url=run_url_for(repo, runtime_config),
         provider="Kimi",
         deliverable_markers=(marker,),
+        expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=marker,
         review_intro=review_intro,
     )
 
 
-def build_kimi_reviewer_from_env(api_key: str) -> KimiCliClient:
+def build_kimi_reviewer_from_env(api_key: str, args: argparse.Namespace) -> KimiCliClient:
+    kimi_config = config_table(load_runtime_config(args), "kimi")
     return KimiCliClient(
         api_key=api_key,
-        api_base=os.environ.get("KIMI_MODEL_BASE_URL", DEFAULT_KIMI_API_BASE),
-        model=os.environ.get("KIMI_MODEL_NAME", DEFAULT_KIMI_MODEL),
+        api_base=os.environ.get("KIMI_MODEL_BASE_URL", config_str(kimi_config, "api_base")),
+        model=os.environ.get("KIMI_MODEL_NAME", config_str(kimi_config, "model")),
         provider="Kimi",
-        timeout_seconds=int_env("KIMI_CLI_TIMEOUT_SECONDS", 180),
+        provider_type=os.environ.get("KIMI_MODEL_PROVIDER_TYPE", config_str(kimi_config, "provider_type")),
+        model_max_context_size=int_env("KIMI_MODEL_MAX_CONTEXT_SIZE", config_int(kimi_config, "model_max_context_size")),
+        default_thinking=os.environ.get("KIMI_MODEL_DEFAULT_THINKING", str(config_bool(kimi_config, "default_thinking")).lower()).lower()
+        == "true",
+        telemetry_disabled=os.environ.get("KIMI_DISABLE_TELEMETRY", "1" if config_bool(kimi_config, "telemetry_disabled") else "0")
+        == "1",
+        timeout_seconds=int_env("KIMI_CLI_TIMEOUT_SECONDS", config_int(kimi_config, "cli_timeout_seconds")),
         binary=os.environ.get("KIMI_CLI_BIN", "kimi"),
     )
 
@@ -861,7 +951,8 @@ def build_kimi_reviewer_from_env(api_key: str) -> KimiCliClient:
 def run_kimi_review_from_env(args: argparse.Namespace) -> int:
     repo = env_required("GITHUB_REPOSITORY")
     pr_number = int(env_required("PR_NUMBER"))
-    github = build_github_client(repo, pr_number)
+    runtime_config = load_runtime_config(args)
+    github = build_github_client(repo, pr_number, runtime_config)
     api_key = env_required("KIMI_API_KEY")
     config = build_kimi_config_from_env(
         args,
@@ -870,7 +961,7 @@ def run_kimi_review_from_env(args: argparse.Namespace) -> int:
         review_intro="The Kimi CLI reviewer split the PR diff and reviewed each chunk with Kimi.",
     )
     try:
-        result = post_split_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key), config=config)
+        result = post_split_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key, args), config=config)
     except Exception as exc:
         print(f"Kimi primary review failed: {sanitize_detail(truncate_text(str(exc), 1200))}", file=sys.stderr)
         return 1
@@ -881,7 +972,8 @@ def run_kimi_review_from_env(args: argparse.Namespace) -> int:
 def run_kimi_fallback_from_env(args: argparse.Namespace) -> int:
     repo = env_required("GITHUB_REPOSITORY")
     pr_number = int(env_required("PR_NUMBER"))
-    github = build_github_client(repo, pr_number)
+    runtime_config = load_runtime_config(args)
+    github = build_github_client(repo, pr_number, runtime_config)
 
     api_key = os.environ.get("KIMI_API_KEY", "")
     config = build_kimi_config_from_env(args, repo=repo, pr_number=pr_number)
@@ -897,7 +989,7 @@ def run_kimi_fallback_from_env(args: argparse.Namespace) -> int:
         )
         return 0
 
-    result = run_fallback_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key), config=config)
+    result = run_fallback_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key, args), config=config)
     print(result)
     return 0
 
@@ -905,8 +997,9 @@ def run_kimi_fallback_from_env(args: argparse.Namespace) -> int:
 def post_notice_from_env(args: argparse.Namespace) -> int:
     repo = env_required("GITHUB_REPOSITORY")
     pr_number = int(env_required("PR_NUMBER"))
-    github = build_github_client(repo, pr_number)
-    run_url = run_url_for(repo)
+    runtime_config = load_runtime_config(args)
+    github = build_github_client(repo, pr_number, runtime_config)
+    run_url = run_url_for(repo, runtime_config)
     github.post_issue_comment_for(pr_number, render_notice(args.provider, pr_number, run_url, args.message))
     return 0
 
@@ -918,18 +1011,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     fallback = subparsers.add_parser("glm-fallback")
     fallback.add_argument("--started-at", required=True)
     fallback.add_argument("--instructions-file", required=True)
+    fallback.add_argument("--config-file", type=Path)
 
     kimi_fallback = subparsers.add_parser("kimi-fallback")
     kimi_fallback.add_argument("--started-at", required=True)
     kimi_fallback.add_argument("--instructions-file", required=True)
+    kimi_fallback.add_argument("--config-file", type=Path)
 
     kimi_review = subparsers.add_parser("kimi-review")
     kimi_review.add_argument("--started-at", required=True)
     kimi_review.add_argument("--instructions-file", required=True)
+    kimi_review.add_argument("--config-file", type=Path)
 
     notice = subparsers.add_parser("notice")
     notice.add_argument("--provider", required=True)
     notice.add_argument("--message", required=True)
+    notice.add_argument("--config-file", type=Path)
 
     return parser.parse_args(argv)
 

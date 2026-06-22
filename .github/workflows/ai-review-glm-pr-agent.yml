@@ -53,6 +53,7 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
 
       - name: Checkout base AI review helpers
+        id: base-checkout
         if: env.GLM_API_KEY != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -61,8 +62,50 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: |
             .pr_agent.toml
+            ci/ai-review.toml
             scripts/ai_review_deliverables.py
           sparse-checkout-cone-mode: false
+
+      - name: Load AI review runtime config
+        id: runtime-config
+        if: env.GLM_API_KEY != ''
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          github = config["github"]
+          review = config["review"]
+          glm = config["glm"]
+          pr_agent = glm["pr_agent"]
+          workflow = glm["workflow"]
+
+          def emit(name, value):
+              if isinstance(value, bool):
+                  value = "true" if value else "false"
+              elif isinstance(value, list):
+                  value = json.dumps(value, separators=(",", ":"))
+              print(f"{name}={value}")
+
+          emit("github_api_url", github["api_url"])
+          emit("ai_review_max_comment_chars", review["max_comment_chars"])
+          emit("glm_api_base", glm["api_base"])
+          emit("glm_model", glm["model"])
+          emit("glm_api_timeout_seconds", glm["api_timeout_seconds"])
+          emit("glm_review_max_chunk_chars", glm["review_max_chunk_chars"])
+          emit("glm_pr_agent_model", pr_agent["model"])
+          emit("glm_pr_agent_fallback_models", pr_agent["fallback_models"])
+          emit("glm_pr_agent_custom_model_max_tokens", pr_agent["custom_model_max_tokens"])
+          emit("glm_pr_agent_large_patch_policy", pr_agent["large_patch_policy"])
+          emit("glm_pr_agent_timeout_seconds", pr_agent["timeout_seconds"])
+          emit("glm_pr_agent_auto_review", pr_agent["auto_review"])
+          emit("glm_pr_agent_auto_describe", pr_agent["auto_describe"])
+          emit("glm_pr_agent_auto_improve", pr_agent["auto_improve"])
+          emit("glm_primary_timeout_minutes", workflow["primary_timeout_minutes"])
+          emit("glm_fallback_timeout_minutes", workflow["fallback_timeout_minutes"])
+          PY
 
       - name: Capture GLM review window
         id: review-window
@@ -73,43 +116,51 @@ jobs:
         id: pr-agent
         if: env.GLM_API_KEY != ''
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_primary_timeout_minutes) }}
         uses: the-pr-agent/pr-agent@49cb2d8ce4a6f01c238229b3770e328fe11479df # v0.34.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI__API_BASE: https://api.z.ai/api/coding/paas/v4
+          OPENAI__API_BASE: ${{ steps.runtime-config.outputs.glm_api_base }}
           OPENAI__KEY: ${{ env.GLM_API_KEY }}
           OPENAI_KEY: ${{ env.GLM_API_KEY }}
-          config.model: openai/glm-5.2
-          config.fallback_models: '["openai/glm-5.2"]'
-          config.custom_model_max_tokens: "128000"
-          config.large_patch_policy: clip
-          config.ai_timeout: "300"
-          github_action_config.auto_review: "true"
-          github_action_config.auto_describe: "false"
-          github_action_config.auto_improve: "false"
+          config.model: ${{ steps.runtime-config.outputs.glm_pr_agent_model }}
+          config.fallback_models: ${{ steps.runtime-config.outputs.glm_pr_agent_fallback_models }}
+          config.custom_model_max_tokens: ${{ steps.runtime-config.outputs.glm_pr_agent_custom_model_max_tokens }}
+          config.large_patch_policy: ${{ steps.runtime-config.outputs.glm_pr_agent_large_patch_policy }}
+          config.ai_timeout: ${{ steps.runtime-config.outputs.glm_pr_agent_timeout_seconds }}
+          github_action_config.auto_review: ${{ steps.runtime-config.outputs.glm_pr_agent_auto_review }}
+          github_action_config.auto_describe: ${{ steps.runtime-config.outputs.glm_pr_agent_auto_describe }}
+          github_action_config.auto_improve: ${{ steps.runtime-config.outputs.glm_pr_agent_auto_improve }}
 
       - name: Ensure GLM deliverable or post split fallback
         id: glm_fallback
         if: env.GLM_API_KEY != ''
-        timeout-minutes: 20
+        continue-on-error: true
+        timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_fallback_timeout_minutes) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GLM_API_BASE: https://api.z.ai/api/coding/paas/v4
-          GLM_MODEL: glm-5.2
-          GLM_REVIEW_MAX_CHUNK_CHARS: "60000"
-          AI_REVIEW_MAX_COMMENT_CHARS: "60000"
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          GLM_API_BASE: ${{ steps.runtime-config.outputs.glm_api_base }}
+          GLM_MODEL: ${{ steps.runtime-config.outputs.glm_model }}
+          GLM_API_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.glm_api_timeout_seconds }}
+          GLM_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.glm_review_max_chunk_chars }}
+          AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
         run: >-
           python3 scripts/ai_review_deliverables.py glm-fallback
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .pr_agent.toml
+          --config-file ci/ai-review.toml
 
       - name: Post GLM fallback infrastructure failure notice
         if: >-
           ${{
             env.GLM_API_KEY != ''
-            && failure()
-            && steps.glm_fallback.outcome == 'failure'
+            && always()
+            && (
+              steps.base-checkout.outcome == 'failure'
+              || steps.runtime-config.outcome == 'failure'
+              || steps.glm_fallback.outcome == 'failure'
+            )
             && steps.glm_fallback.outputs.failure_notice_posted != 'true'
           }}
         env:
@@ -119,7 +170,7 @@ jobs:
           cat > "$notice_file" <<EOF
           ## GLM review notice
 
-          The GLM fallback step failed or timed out before posting a usable failure notice. Check the action logs for this run.
+          The GLM review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
 
           - PR: #${PR_NUMBER}
           - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}

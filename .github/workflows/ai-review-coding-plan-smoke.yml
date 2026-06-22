@@ -27,10 +27,63 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      - name: Checkout AI review smoke config
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: ci/ai-review.toml
+          sparse-checkout-cone-mode: false
+
+      - name: Load AI review smoke config
+        id: runtime-config
+        run: |
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          review = config["review"]
+          glm = config["glm"]
+          kimi = config["kimi"]
+          workflow = kimi["workflow"]
+          smoke = config["smoke"]
+          env_lines = []
+          output_lines = []
+
+          def emit(name, value):
+              if isinstance(value, bool):
+                  value = "true" if value else "false"
+              env_lines.append(f"{name}={value}")
+
+          def emit_output(name, value):
+              if isinstance(value, bool):
+                  value = "true" if value else "false"
+              output_lines.append(f"{name}={value}")
+
+          emit("AI_REVIEW_MAX_COMMENT_CHARS", review["max_comment_chars"])
+          emit("GLM_API_BASE", glm["api_base"])
+          emit("GLM_MODEL", glm["model"])
+          emit("KIMI_CLI_PACKAGE", kimi["cli_package"])
+          emit("KIMI_DISABLE_TELEMETRY", "1" if kimi["telemetry_disabled"] else "0")
+          emit("KIMI_MODEL_NAME", kimi["model"])
+          emit("KIMI_MODEL_BASE_URL", kimi["api_base"])
+          emit("KIMI_MODEL_PROVIDER_TYPE", kimi["provider_type"])
+          emit("KIMI_MODEL_MAX_CONTEXT_SIZE", kimi["model_max_context_size"])
+          emit("KIMI_MODEL_DEFAULT_THINKING", kimi["default_thinking"])
+          emit("KIMI_NODE_VERSION", workflow["node_version"])
+          emit("SMOKE_MAX_TOKENS", smoke["max_tokens"])
+          emit_output("kimi_node_version", workflow["node_version"])
+
+          Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8").write("\n".join(env_lines) + "\n")
+          Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8").write("\n".join(output_lines) + "\n")
+          PY
+
       - name: Set up Node.js for Kimi CLI smoke
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: "24"
+          node-version: ${{ steps.runtime-config.outputs.kimi_node_version }}
 
       - name: Run coding-plan endpoint smoke tests
         env:
@@ -60,13 +113,13 @@ jobs:
               return 1
             fi
 
-            payload=$(jq -nc --arg model "$model" '{
+            payload=$(jq -nc --arg model "$model" --argjson max_tokens "$SMOKE_MAX_TOKENS" '{
               model: $model,
               messages: [
                 {role: "system", content: "You are a smoke-test endpoint verifier. Reply with exactly OK."},
                 {role: "user", content: "Reply with exactly OK."}
               ],
-              max_tokens: 16,
+              max_tokens: $max_tokens,
               stream: false
             }')
 
@@ -101,19 +154,15 @@ jobs:
               return 1
             fi
 
-            npm install -g @moonshot-ai/kimi-code@0.19.0 >/dev/null 2>&1
+            npm install -g "$KIMI_CLI_PACKAGE" >/dev/null 2>&1
             export KIMI_CODE_HOME="${RUNNER_TEMP}/kimi-code"
-            export KIMI_DISABLE_TELEMETRY=1
-            export KIMI_MODEL_NAME="kimi-for-coding"
             export KIMI_MODEL_API_KEY="$KIMI_API_KEY"
-            export KIMI_MODEL_BASE_URL="https://api.kimi.com/coding/v1"
-            export KIMI_MODEL_PROVIDER_TYPE="kimi"
-            export KIMI_MODEL_MAX_CONTEXT_SIZE="262144"
-            export KIMI_MODEL_DEFAULT_THINKING="true"
             mkdir -p "$KIMI_CODE_HOME"
-            {
-              echo 'telemetry = false'
-            } > "${KIMI_CODE_HOME}/config.toml"
+            if [ "$KIMI_DISABLE_TELEMETRY" = "1" ]; then
+              echo 'telemetry = false' > "${KIMI_CODE_HOME}/config.toml"
+            else
+              echo 'telemetry = true' > "${KIMI_CODE_HOME}/config.toml"
+            fi
 
             output_file="${RUNNER_TEMP}/kimi-cli-smoke.out"
             error_file="${RUNNER_TEMP}/kimi-cli-smoke.err"
@@ -135,8 +184,8 @@ jobs:
             return 1
           }
 
-          smoke_openai_chat "GLM" "https://api.z.ai/api/coding/paas/v4" "glm-5.2" "$GLM_API_KEY" || status=1
-          smoke_openai_chat "Kimi direct OpenAI" "https://api.kimi.com/coding/v1" "kimi-for-coding" "$KIMI_API_KEY" || true
+          smoke_openai_chat "GLM" "$GLM_API_BASE" "$GLM_MODEL" "$GLM_API_KEY" || status=1
+          smoke_openai_chat "Kimi direct OpenAI" "$KIMI_MODEL_BASE_URL" "$KIMI_MODEL_NAME" "$KIMI_API_KEY" || true
           smoke_kimi_cli || status=1
 
           {

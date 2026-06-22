@@ -53,14 +53,16 @@ jobs:
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
 
       - name: Checkout PR head
+        id: checkout-head
         if: env.KIMI_API_KEY != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Checkout base governance
+        id: checkout-base
         if: env.KIMI_API_KEY != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -70,10 +72,48 @@ jobs:
           path: .ai-review/base
           sparse-checkout: |
             AGENTS.md
+            ci/ai-review.toml
             scripts/ai_review_deliverables.py
           sparse-checkout-cone-mode: false
 
+      - name: Load AI review runtime config
+        id: runtime-config
+        if: env.KIMI_API_KEY != ''
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path(".ai-review/base/ci/ai-review.toml").read_text(encoding="utf-8"))
+          github = config["github"]
+          review = config["review"]
+          kimi = config["kimi"]
+          workflow = kimi["workflow"]
+
+          def emit(name, value):
+              if isinstance(value, bool):
+                  value = "true" if value else "false"
+              print(f"{name}={value}")
+
+          emit("github_api_url", github["api_url"])
+          emit("ai_review_max_comment_chars", review["max_comment_chars"])
+          emit("kimi_cli_package", kimi["cli_package"])
+          emit("kimi_disable_telemetry", "1" if kimi["telemetry_disabled"] else "0")
+          emit("kimi_model_name", kimi["model"])
+          emit("kimi_model_base_url", kimi["api_base"])
+          emit("kimi_model_provider_type", kimi["provider_type"])
+          emit("kimi_model_max_context_size", kimi["model_max_context_size"])
+          emit("kimi_model_default_thinking", kimi["default_thinking"])
+          emit("kimi_deliverable_marker", kimi["deliverable_marker"])
+          emit("kimi_review_max_chunk_chars", kimi["review_max_chunk_chars"])
+          emit("kimi_cli_timeout_seconds", kimi["cli_timeout_seconds"])
+          emit("kimi_node_version", workflow["node_version"])
+          emit("kimi_primary_timeout_minutes", workflow["primary_timeout_minutes"])
+          emit("kimi_fallback_timeout_minutes", workflow["fallback_timeout_minutes"])
+          PY
+
       - name: Prepare Kimi review standards
+        id: prepare-standards
         if: env.KIMI_API_KEY != ''
         run: |
           mkdir -p .ai-review/standards
@@ -104,66 +144,85 @@ jobs:
         run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js for Kimi CLI
+        id: setup-node
         if: env.KIMI_API_KEY != ''
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: "24"
+          node-version: ${{ steps.runtime-config.outputs.kimi_node_version }}
 
       - name: Install Kimi Code CLI
+        id: install-kimi
         if: env.KIMI_API_KEY != ''
-        run: npm install -g @moonshot-ai/kimi-code@0.19.0
+        env:
+          KIMI_CLI_PACKAGE: ${{ steps.runtime-config.outputs.kimi_cli_package }}
+        run: npm install -g "$KIMI_CLI_PACKAGE"
 
       - name: Run Kimi CLI review
         id: kimi-review
         if: env.KIMI_API_KEY != ''
         continue-on-error: true
-        timeout-minutes: 20
+        timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_primary_timeout_minutes) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
           KIMI_CODE_HOME: ${{ runner.temp }}/kimi-code
-          KIMI_DISABLE_TELEMETRY: "1"
-          KIMI_MODEL_NAME: kimi-for-coding
+          KIMI_DISABLE_TELEMETRY: ${{ steps.runtime-config.outputs.kimi_disable_telemetry }}
+          KIMI_MODEL_NAME: ${{ steps.runtime-config.outputs.kimi_model_name }}
           KIMI_MODEL_API_KEY: ${{ env.KIMI_API_KEY }}
-          KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
-          KIMI_MODEL_PROVIDER_TYPE: kimi
-          KIMI_MODEL_MAX_CONTEXT_SIZE: "262144"
-          KIMI_MODEL_DEFAULT_THINKING: "true"
-          KIMI_DELIVERABLE_MARKER: "<!-- ai-pr-reviewer-kimi -->"
-          KIMI_REVIEW_MAX_CHUNK_CHARS: "60000"
-          AI_REVIEW_MAX_COMMENT_CHARS: "60000"
+          KIMI_MODEL_BASE_URL: ${{ steps.runtime-config.outputs.kimi_model_base_url }}
+          KIMI_MODEL_PROVIDER_TYPE: ${{ steps.runtime-config.outputs.kimi_model_provider_type }}
+          KIMI_MODEL_MAX_CONTEXT_SIZE: ${{ steps.runtime-config.outputs.kimi_model_max_context_size }}
+          KIMI_MODEL_DEFAULT_THINKING: ${{ steps.runtime-config.outputs.kimi_model_default_thinking }}
+          KIMI_DELIVERABLE_MARKER: ${{ steps.runtime-config.outputs.kimi_deliverable_marker }}
+          KIMI_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.kimi_review_max_chunk_chars }}
+          KIMI_CLI_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.kimi_cli_timeout_seconds }}
+          AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
         run: >-
           python3 .ai-review/base/scripts/ai_review_deliverables.py kimi-review
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .ai-review/standards/kimi-review-standards.md
+          --config-file .ai-review/base/ci/ai-review.toml
 
       - name: Ensure Kimi deliverable or post split fallback
         id: kimi_fallback
         if: env.KIMI_API_KEY != ''
-        timeout-minutes: 20
+        continue-on-error: true
+        timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.kimi_fallback_timeout_minutes) }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
           KIMI_CODE_HOME: ${{ runner.temp }}/kimi-code
-          KIMI_DISABLE_TELEMETRY: "1"
-          KIMI_MODEL_NAME: kimi-for-coding
+          KIMI_DISABLE_TELEMETRY: ${{ steps.runtime-config.outputs.kimi_disable_telemetry }}
+          KIMI_MODEL_NAME: ${{ steps.runtime-config.outputs.kimi_model_name }}
           KIMI_MODEL_API_KEY: ${{ env.KIMI_API_KEY }}
-          KIMI_MODEL_BASE_URL: https://api.kimi.com/coding/v1
-          KIMI_MODEL_PROVIDER_TYPE: kimi
-          KIMI_MODEL_MAX_CONTEXT_SIZE: "262144"
-          KIMI_MODEL_DEFAULT_THINKING: "true"
-          KIMI_DELIVERABLE_MARKER: "<!-- ai-pr-reviewer-kimi -->"
-          KIMI_REVIEW_MAX_CHUNK_CHARS: "60000"
-          AI_REVIEW_MAX_COMMENT_CHARS: "60000"
+          KIMI_MODEL_BASE_URL: ${{ steps.runtime-config.outputs.kimi_model_base_url }}
+          KIMI_MODEL_PROVIDER_TYPE: ${{ steps.runtime-config.outputs.kimi_model_provider_type }}
+          KIMI_MODEL_MAX_CONTEXT_SIZE: ${{ steps.runtime-config.outputs.kimi_model_max_context_size }}
+          KIMI_MODEL_DEFAULT_THINKING: ${{ steps.runtime-config.outputs.kimi_model_default_thinking }}
+          KIMI_DELIVERABLE_MARKER: ${{ steps.runtime-config.outputs.kimi_deliverable_marker }}
+          KIMI_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.kimi_review_max_chunk_chars }}
+          KIMI_CLI_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.kimi_cli_timeout_seconds }}
+          AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
         run: >-
           python3 .ai-review/base/scripts/ai_review_deliverables.py kimi-fallback
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .ai-review/standards/kimi-review-standards.md
+          --config-file .ai-review/base/ci/ai-review.toml
 
       - name: Post Kimi fallback infrastructure failure notice
         if: >-
           ${{
             env.KIMI_API_KEY != ''
-            && failure()
-            && steps.kimi_fallback.outcome == 'failure'
+            && always()
+            && (
+              steps.checkout-head.outcome == 'failure'
+              || steps.checkout-base.outcome == 'failure'
+              || steps.runtime-config.outcome == 'failure'
+              || steps.prepare-standards.outcome == 'failure'
+              || steps.setup-node.outcome == 'failure'
+              || steps.install-kimi.outcome == 'failure'
+              || steps.kimi_fallback.outcome == 'failure'
+            )
             && steps.kimi_fallback.outputs.failure_notice_posted != 'true'
           }}
         env:
@@ -173,7 +232,7 @@ jobs:
           cat > "$notice_file" <<EOF
           ## Kimi review notice
 
-          The Kimi fallback step failed or timed out before posting a usable failure notice. Check the action logs for this run.
+          The Kimi review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
 
           - PR: #${PR_NUMBER}
           - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}

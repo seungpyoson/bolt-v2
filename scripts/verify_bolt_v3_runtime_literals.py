@@ -83,6 +83,16 @@ DIAGNOSTIC_MACRO_PATTERN = re.compile(
     r"\b(?:log|tracing)::(?:debug|error|info|trace|warn)!\s*(\(|\[|\{)"
 )
 
+# Precompiled once at module load. RAW_STRING_PREFIX_RE runs on the hot
+# per-character scan path (raw-string detection) and is called millions of times
+# on large files; IGNORED_*_RES run once per candidate literal. Compiling these
+# per call — and, for the raw-string probe, slicing text[start:] per call — was
+# the dominant runtime cost (see rust_raw_string_literal_end).
+RAW_STRING_PREFIX_RE = re.compile(r'br(#+)?"|r(#+)?"')
+IGNORED_CONTEXT_RES = [re.compile(pattern) for pattern in IGNORED_CONTEXT_PATTERNS]
+IGNORED_CALL_CONTEXT_RES = [re.compile(pattern) for pattern in IGNORED_CALL_CONTEXT_PATTERNS]
+
+
 @dataclass(frozen=True)
 class Literal:
     path: str
@@ -166,7 +176,11 @@ def rust_char_literal_end(text: str, start: int) -> int | None:
 def rust_raw_string_literal_end(text: str, start: int) -> int | None:
     """Return the end offset for a Rust raw string or byte string literal."""
 
-    raw_match = re.match(r'br(#+)?"|r(#+)?"', text[start:])
+    # Match anchored at `start` via the pos argument instead of slicing the
+    # entire remaining file (text[start:]) on every call. The slice copy was
+    # ~55x the cost and pure waste: the pattern is anchored, so only the first
+    # few characters at `start` are ever examined.
+    raw_match = RAW_STRING_PREFIX_RE.match(text, start)
     if not raw_match:
         return None
     hashes = raw_match.group(1) or raw_match.group(2) or ""
@@ -471,9 +485,9 @@ def is_unary_minus_context(text: str, start: int) -> bool:
 
 def is_ignored_by_rule(literal: Literal) -> bool:
     context = literal.context
-    if any(re.search(pattern, context) for pattern in IGNORED_CONTEXT_PATTERNS):
+    if any(pattern.search(context) for pattern in IGNORED_CONTEXT_RES):
         return True
-    if any(re.search(pattern, literal.call_context) for pattern in IGNORED_CALL_CONTEXT_PATTERNS):
+    if any(pattern.search(literal.call_context) for pattern in IGNORED_CALL_CONTEXT_RES):
         return True
     if literal.kind == "string":
         text = literal.literal.strip('"')

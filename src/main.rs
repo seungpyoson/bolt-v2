@@ -1868,7 +1868,7 @@ mod tests {
         // a `config_root` with no `deploy.toml` exercises the dispatch arm and
         // the `NoTargetConfigured => Ok(())` degrade WITHOUT reaching the real
         // IMDS endpoint (no gating binding means the host is never observed),
-        // so the test is hermetic — no 169.254.x network call. The
+        // so the test is hermetic — no 169.254.x network call.
         // The `Mismatched => Err` and observe-error fail-closed exits of
         // `run_loaded_target_verify` are pinned directly by
         // `run_loaded_target_verify_errors_when_host_facts_mismatch_configured_target`

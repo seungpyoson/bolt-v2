@@ -79,6 +79,88 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()>;
 }
 
+/// Risk direction of a runtime trading decision, used by [`commit_decision`]
+/// (and [`record_decision`]) to select the single repo-wide evidence-write
+/// failure rule.
+///
+/// The rule exists because two requirements are in tension and must never be
+/// resolved ad hoc at each call site (the historical source of inconsistent
+/// `?`-vs-swallow handling):
+///
+/// * A decision that ADDS or RE-ENABLES exposure must fail closed if its
+///   durable record cannot be written — we never take on new risk we could not
+///   later reconstruct from the evidence stream.
+/// * A decision that REDUCES or removes exposure (exit, cancel, flatten, halt)
+///   must NEVER be blocked by an evidence-write failure — risk reduction is
+///   more important than its own log line, so the failure is surfaced loudly
+///   and the act proceeds anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskDirection {
+    /// Opens or increases exposure, or re-enables trading. Fail closed.
+    NewRisk,
+    /// Reduces or removes exposure (exit / cancel / flatten / halt). Never
+    /// blocked by an evidence-write failure.
+    RiskReducing,
+    /// Pure observation or bookkeeping with no exposure change. Never blocked.
+    Neutral,
+}
+
+impl RiskDirection {
+    /// Whether an evidence-write failure must abort the guarded action before
+    /// it runs. Only risk-increasing decisions fail closed.
+    #[must_use]
+    pub const fn evidence_write_failure_blocks(self) -> bool {
+        matches!(self, Self::NewRisk)
+    }
+}
+
+/// The single chokepoint through which every irreversible trading action must
+/// pass. It emits the action's durable decision-evidence record FIRST, applies
+/// the one repo-wide write-failure rule keyed on [`RiskDirection`], then runs
+/// the action.
+///
+/// `emit` writes the durable record (typically one `record_*` call on a
+/// [`BoltV3DecisionEvidenceWriter`]). `act` performs the irreversible effect
+/// (venue submit / cancel, NT trading-state flip). For [`RiskDirection::NewRisk`]
+/// an `emit` failure aborts before `act` runs (record-before-act, fail closed).
+/// For [`RiskDirection::RiskReducing`] / [`RiskDirection::Neutral`] an `emit`
+/// failure is logged at `error` and `act` runs anyway, so a lost log can never
+/// strand a risk reduction.
+///
+/// The irreversible act primitives (`submit_order_via_nt`, `cancel_order_via_nt`,
+/// `cancel_all_orders_via_nt`, and the loss-governor / recovery
+/// `set_trading_state`) are intended to be reachable only from inside this
+/// chokepoint; a dedicated source fence fails the build on any other call site,
+/// so coverage is structural rather than remembered.
+pub fn commit_decision<T>(
+    risk: RiskDirection,
+    emit: impl FnOnce() -> Result<()>,
+    act: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if let Err(error) = emit() {
+        if risk.evidence_write_failure_blocks() {
+            return Err(error).context(
+                "bolt-v3 decision evidence write failed for a risk-increasing action; \
+                 aborting before the irreversible act (fail closed)",
+            );
+        }
+        log::error!(
+            "bolt-v3 decision evidence write failed for a risk-reducing/neutral action; \
+             surfacing at error and proceeding so risk reduction is never blocked: error={error:#}"
+        );
+    }
+    act()
+}
+
+/// Record-only variant of [`commit_decision`] for decisions whose "action" is
+/// inaction — an entry skip, a fair-value block, a feed-health gate. Applies the
+/// identical failure rule: a [`RiskDirection::NewRisk`] write failure propagates
+/// as `Err`; a [`RiskDirection::RiskReducing`] / [`RiskDirection::Neutral`]
+/// write failure is logged at `error` and swallowed so the caller proceeds.
+pub fn record_decision(risk: RiskDirection, emit: impl FnOnce() -> Result<()>) -> Result<()> {
+    commit_decision(risk, emit, || Ok(()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoltV3OrderIntentKind {
@@ -2501,6 +2583,115 @@ mod tests {
         orders::StopMarketOrder,
         types::{Price, Quantity},
     };
+
+    mod decision_commit_chokepoint {
+        use super::*;
+
+        #[test]
+        fn new_risk_aborts_act_when_evidence_write_fails() {
+            let acted = std::cell::Cell::new(false);
+            let result: anyhow::Result<i32> = commit_decision(
+                RiskDirection::NewRisk,
+                || Err(anyhow::anyhow!("evidence write boom")),
+                || {
+                    acted.set(true);
+                    Ok(7)
+                },
+            );
+            assert!(
+                result.is_err(),
+                "a risk-increasing evidence-write failure must fail closed"
+            );
+            assert!(
+                !acted.get(),
+                "the irreversible act must not run after a fail-closed abort"
+            );
+        }
+
+        #[test]
+        fn risk_reducing_runs_act_despite_evidence_write_failure() {
+            let acted = std::cell::Cell::new(false);
+            let result: anyhow::Result<i32> = commit_decision(
+                RiskDirection::RiskReducing,
+                || Err(anyhow::anyhow!("evidence write boom")),
+                || {
+                    acted.set(true);
+                    Ok(7)
+                },
+            );
+            assert_eq!(
+                result.expect("risk reduction must never be blocked by an evidence-write failure"),
+                7
+            );
+            assert!(
+                acted.get(),
+                "the risk-reducing act must run even when the evidence write fails"
+            );
+        }
+
+        #[test]
+        fn neutral_runs_act_despite_evidence_write_failure() {
+            let acted = std::cell::Cell::new(false);
+            let result: anyhow::Result<i32> = commit_decision(
+                RiskDirection::Neutral,
+                || Err(anyhow::anyhow!("evidence write boom")),
+                || {
+                    acted.set(true);
+                    Ok(1)
+                },
+            );
+            assert_eq!(result.expect("a neutral act must not be blocked"), 1);
+            assert!(acted.get());
+        }
+
+        #[test]
+        fn emit_runs_before_act_on_success() {
+            let trace = std::cell::Cell::new(String::new());
+            let result: anyhow::Result<&str> = commit_decision(
+                RiskDirection::NewRisk,
+                || {
+                    trace.set(format!("{}emit;", trace.take()));
+                    Ok(())
+                },
+                || {
+                    trace.set(format!("{}act;", trace.take()));
+                    Ok("done")
+                },
+            );
+            assert_eq!(result.expect("success path returns the act value"), "done");
+            assert_eq!(
+                trace.take(),
+                "emit;act;",
+                "the durable record must be emitted before the irreversible act runs"
+            );
+        }
+
+        #[test]
+        fn record_only_new_risk_propagates_write_failure() {
+            let result = record_decision(RiskDirection::NewRisk, || Err(anyhow::anyhow!("boom")));
+            assert!(
+                result.is_err(),
+                "a risk-increasing record-only decision must fail closed"
+            );
+        }
+
+        #[test]
+        fn record_only_risk_reducing_swallows_write_failure() {
+            let result =
+                record_decision(RiskDirection::RiskReducing, || Err(anyhow::anyhow!("boom")));
+            assert!(
+                result.is_ok(),
+                "a risk-reducing record-only decision must not surface the write error to the caller"
+            );
+        }
+
+        #[test]
+        fn evidence_write_failure_blocks_only_for_new_risk() {
+            assert!(RiskDirection::NewRisk.evidence_write_failure_blocks());
+            assert!(!RiskDirection::RiskReducing.evidence_write_failure_blocks());
+            assert!(!RiskDirection::Neutral.evidence_write_failure_blocks());
+        }
+    }
 
     fn parse_line(line: &[u8]) -> serde_json::Value {
         assert!(line.ends_with(b"\n"), "line must end with newline");

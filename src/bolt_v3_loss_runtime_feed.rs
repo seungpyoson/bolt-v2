@@ -18,7 +18,7 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::{
-    bolt_v3_loss_governor::LossSnapshot,
+    bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps},
     bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler,
     bolt_v3_submit_admission::{BoltV3LossFreshness, BoltV3SubmitAdmissionState},
     nt_runtime_capture::{
@@ -72,6 +72,7 @@ struct LossGovernorRuntimeFeedState {
     last_portfolio_snapshot_ts_ns: Option<u64>,
     last_position_event_ts_ns: Option<u64>,
     latest_snapshot: Option<LossSnapshot>,
+    source_observations: LossSourceObservationTimestamps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,7 +110,7 @@ pub fn subscribe_loss_governor_runtime_feed(
     let position_feed = Rc::clone(&feed);
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
         let now_ns = position_event_ts_init(event);
-        let (snapshot, handler, should_invoke) = {
+        let (snapshot, handler, source_observations, should_invoke) = {
             let mut feed = position_feed.borrow_mut();
             let should_invoke = position_event_can_carry_loss_fact(event)
                 && position_event_account_id(event) == feed.config.account_id;
@@ -118,11 +119,12 @@ pub fn subscribe_loss_governor_runtime_feed(
                     .then(|| feed.on_position_event_without_halt_action(event))
                     .flatten(),
                 feed.halt_action_handler.clone(),
+                feed.state.source_observations,
                 should_invoke,
             )
         };
         if should_invoke {
-            invoke_loss_halt_action(handler, snapshot.as_ref(), now_ns);
+            invoke_loss_halt_action(handler, snapshot.as_ref(), now_ns, source_observations);
         }
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
@@ -130,7 +132,7 @@ pub fn subscribe_loss_governor_runtime_feed(
     let account_feed = Rc::clone(&feed);
     let account_states = TypedHandler::from(move |state: &AccountState| {
         let now_ns = state.ts_init.as_u64();
-        let (loss_snapshot, handler, should_invoke) = {
+        let (loss_snapshot, handler, source_observations, should_invoke) = {
             let mut feed = account_feed.borrow_mut();
             let should_invoke = state.account_id == feed.config.account_id;
             (
@@ -138,11 +140,12 @@ pub fn subscribe_loss_governor_runtime_feed(
                     .then(|| feed.on_account_state_without_halt_action(state))
                     .flatten(),
                 feed.halt_action_handler.clone(),
+                feed.state.source_observations,
                 should_invoke,
             )
         };
         if should_invoke {
-            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns);
+            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns, source_observations);
         }
     });
     subscribe_account_state(account_states_pattern(), account_states.clone(), None);
@@ -150,7 +153,7 @@ pub fn subscribe_loss_governor_runtime_feed(
     let portfolio_feed = Rc::clone(&feed);
     let portfolio_snapshots = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
         let now_ns = snapshot.ts_init.as_u64();
-        let (loss_snapshot, handler, should_invoke) = {
+        let (loss_snapshot, handler, source_observations, should_invoke) = {
             let mut feed = portfolio_feed.borrow_mut();
             let should_invoke = snapshot.account_id == feed.config.account_id;
             (
@@ -158,11 +161,12 @@ pub fn subscribe_loss_governor_runtime_feed(
                     .then(|| feed.on_portfolio_snapshot_without_halt_action(snapshot))
                     .flatten(),
                 feed.halt_action_handler.clone(),
+                feed.state.source_observations,
                 should_invoke,
             )
         };
         if should_invoke {
-            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns);
+            invoke_loss_halt_action(handler, loss_snapshot.as_ref(), now_ns, source_observations);
         }
     });
     subscribe_portfolio_snapshot(
@@ -247,6 +251,10 @@ impl LossGovernorRuntimeFeed {
             return None;
         }
 
+        self.state
+            .record_portfolio_snapshot_observed_at_ns(observed_at_ns);
+        self.submit_admission
+            .update_loss_source_observations(self.state.source_observations);
         let daily_pnl = daily_pnl(snapshot, currency)?;
         let current_equity = total_equity(snapshot, currency)?;
         self.state.portfolio_pnl_observed = true;
@@ -293,6 +301,10 @@ impl LossGovernorRuntimeFeed {
             return None;
         }
 
+        self.state
+            .record_account_state_observed_at_ns(observed_at_ns);
+        self.submit_admission
+            .update_loss_source_observations(self.state.source_observations);
         let current_equity = account_total_equity(state, currency)?;
         if self.state.portfolio_pnl_observed {
             let daily_pnl = self
@@ -371,6 +383,11 @@ impl LossGovernorRuntimeFeed {
             return None;
         }
 
+        self.state
+            .record_position_event_observed_at_ns(position_event_ts_init(event));
+        self.submit_admission
+            .update_loss_source_observations(self.state.source_observations);
+
         if let Some(per_trade_pnl) = position_fact.per_trade_pnl {
             self.state.record_position_pnl(
                 position_fact.position_id,
@@ -409,6 +426,7 @@ impl LossGovernorRuntimeFeed {
             rolling_pnl: Some(rolling_pnl.value),
             current_equity: Some(current_equity.value),
             peak_equity: Some(peak_equity.value),
+            source_observations: self.state.source_observations,
         };
         self.submit_admission.update_loss_snapshot(snapshot.clone());
         self.state.latest_snapshot = Some(snapshot.clone());
@@ -417,7 +435,7 @@ impl LossGovernorRuntimeFeed {
 
     fn invoke_halt_action(&self, snapshot: Option<&LossSnapshot>, now_ns: u64) {
         if let Some(handler) = self.halt_action_handler.as_ref() {
-            handler(snapshot, now_ns);
+            handler(snapshot, now_ns, self.state.source_observations);
         }
     }
 }
@@ -426,9 +444,10 @@ fn invoke_loss_halt_action(
     handler: Option<LossGovernorHaltActionHandler>,
     snapshot: Option<&LossSnapshot>,
     now_ns: u64,
+    source_observations: LossSourceObservationTimestamps,
 ) {
     if let Some(handler) = handler {
-        handler(snapshot, now_ns);
+        handler(snapshot, now_ns, source_observations);
     }
 }
 
@@ -471,7 +490,21 @@ impl LossGovernorRuntimeFeedState {
             last_portfolio_snapshot_ts_ns: None,
             last_position_event_ts_ns: None,
             latest_snapshot: None,
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         }
+    }
+
+    fn record_account_state_observed_at_ns(&mut self, observed_at_ns: u64) {
+        self.source_observations.last_account_state_observed_at_ns = Some(observed_at_ns);
+    }
+
+    fn record_portfolio_snapshot_observed_at_ns(&mut self, observed_at_ns: u64) {
+        self.source_observations
+            .last_portfolio_snapshot_observed_at_ns = Some(observed_at_ns);
+    }
+
+    fn record_position_event_observed_at_ns(&mut self, observed_at_ns: u64) {
+        self.source_observations.last_position_event_observed_at_ns = Some(observed_at_ns);
     }
 
     fn freshness(&self) -> BoltV3LossFreshness {

@@ -2775,7 +2775,11 @@ fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
         .expect("entry fill should materialize position for log test");
 
     let decision = strategy.exit_submission_decision_at(1_200);
-    let fields = strategy.exit_evaluation_log_fields_at(1_200, &decision);
+    let fields = strategy.exit_evaluation_log_fields_at(
+        1_200,
+        ExitEvaluationTriggerContext::unknown(1_200),
+        &decision,
+    );
 
     assert!(fields.historical_entry_fee_rate_known);
     assert_eq!(
@@ -2821,7 +2825,11 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
     assert_eq!(decision.order_side, None);
     assert_eq!(decision.price, None);
     assert_eq!(decision.quantity, None);
-    assert_eq!(decision.blocked_reason, Some("exit_decision_unavailable"));
+    // A quarantined/unsupported position is not a managed open position, so the
+    // exit evaluation blocks with the precise NoOpenPosition reason. The decision
+    // trace surfaces that real reason rather than the generic ExitDecisionUnavailable
+    // (which previously masked it via an unconditional clobber).
+    assert_eq!(decision.blocked_reason, Some("no_open_position"));
 }
 
 #[test]

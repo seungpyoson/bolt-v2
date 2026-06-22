@@ -1341,6 +1341,7 @@ impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
 /// Records admission decisions but errors on `record_loss_governor_halt`, so a
 /// test can prove the trading-side admission outcome is unaffected when the
 /// loss-halt evidence sink fails.
+#[derive(Debug)]
 struct LossHaltFailingDecisionEvidenceWriter {
     admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
     loss_halt_attempts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,

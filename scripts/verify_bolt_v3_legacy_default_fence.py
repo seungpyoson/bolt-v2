@@ -19,6 +19,7 @@ def _runtime_source_paths() -> tuple[str, ...]:
         "src/main.rs",
         "src/lake_batch.rs",
         "src/log_sweep.rs",
+        "src/raw_types.rs",
         "src/secrets.rs",
         "src/venue_contract.rs",
         *(
@@ -83,10 +84,25 @@ FORBIDDEN_REFERENCES = (
     ),
 )
 
+# Scope of the Default fence: it catches every SINGLE-LINE hand-written Default
+# form — derive/serde/enum attributes, `impl [const] [path::]Default for`,
+# `Default::default(`, and `Type::default(` (including spaced `::` and a leading
+# `::` path). MULTILINE attribute/impl formatting is not matched line-by-line here,
+# but the mandatory `cargo fmt --check` CI gate normalizes such forms onto a single
+# line (where these patterns then trip), so a multiline bypass cannot survive a
+# formatted tree. MACRO-GENERATED `Default` impls are an inherent limitation of any
+# text fence and are out of scope.
 FORBIDDEN_DEFAULTS = (
     (
         re.compile(r"#\s*\[\s*derive\s*\([^\)]*\bDefault\b[^\)]*\)\s*\]"),
         "production derive Default",
+    ),
+    (
+        re.compile(
+            r"\bimpl\b(?:\s*<[^>]*>)?\s+(?:const\s+)?(?:::\s*)?"
+            r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*Default\s+for\b"
+        ),
+        "production impl Default",
     ),
     (
         re.compile(r"#\s*\[\s*default\s*\]"),
@@ -97,11 +113,14 @@ FORBIDDEN_DEFAULTS = (
         "production serde default",
     ),
     (
-        re.compile(r"\bDefault::default\s*\("),
+        re.compile(r"\bDefault\s*::\s*default\s*\("),
         "production Default::default",
     ),
     (
-        re.compile(r"\b(?!Default\b)[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*::default\s*\("),
+        re.compile(
+            r"\b(?!Default\b)[A-Za-z_][A-Za-z0-9_]*"
+            r"(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)*\s*::\s*default\s*\("
+        ),
         "production type default",
     ),
     (

@@ -28,6 +28,9 @@ def _load(name: str):
 
 GATE = _load("local_verification_gate")
 
+CHEAP_FRONT_DOOR_GATE = "source-fence-static"
+HEAVY_FRONT_DOOR_GATE = "unlisted-heavy-gate"
+
 
 HOLD_RUNNER = """
 import sys, time
@@ -62,7 +65,15 @@ def _wait_for(path: Path, timeout: float = 10.0) -> None:
     raise AssertionError(f"timed out waiting for {path}")
 
 
-def test_busy_gate_refuses_without_running_child() -> None:
+def _child_marker_command(child_marker: Path) -> list[str]:
+    code = (
+        "from pathlib import Path; import sys; "
+        "Path(sys.argv[1]).write_text('ran', encoding='utf-8')"
+    )
+    return [sys.executable, "-c", code, str(child_marker)]
+
+
+def test_busy_heavy_gate_refuses_without_running_child() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         sentinel = Path(tmp) / "held"
         child_marker = Path(tmp) / "child-ran"
@@ -70,13 +81,9 @@ def test_busy_gate_refuses_without_running_child() -> None:
         _wait_for(sentinel)
         start = time.monotonic()
         try:
-            code = (
-                "from pathlib import Path; import sys; "
-                "Path(sys.argv[1]).write_text('ran', encoding='utf-8')"
-            )
             rc = GATE.run_gate(
-                "source-fence-static",
-                [sys.executable, "-c", code, str(child_marker)],
+                HEAVY_FRONT_DOOR_GATE,
+                _child_marker_command(child_marker),
                 lock_dir=tmp,
                 honor_ci_env=False,
             )
@@ -87,6 +94,29 @@ def test_busy_gate_refuses_without_running_child() -> None:
         assert rc == 1
         assert elapsed < 2.0, f"busy gate must fail fast, took {elapsed:.2f}s"
         assert not child_marker.exists(), "competing gate must not launch child work"
+
+
+def test_busy_cheap_gate_runs_child_concurrently() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        child_marker = Path(tmp) / "child-ran"
+        holder = _spawn(HOLD_RUNNER, tmp, str(sentinel))
+        _wait_for(sentinel)
+        start = time.monotonic()
+        try:
+            rc = GATE.run_gate(
+                CHEAP_FRONT_DOOR_GATE,
+                _child_marker_command(child_marker),
+                lock_dir=tmp,
+                honor_ci_env=False,
+            )
+        finally:
+            holder.kill()
+            holder.communicate(timeout=10)
+        elapsed = time.monotonic() - start
+        assert rc == 0
+        assert elapsed < 2.0, f"cheap gate must not wait for the heavy lane: {elapsed:.2f}s"
+        assert child_marker.read_text(encoding="utf-8") == "ran"
 
 
 def test_child_verifier_reenters_under_parent_gate() -> None:
@@ -104,7 +134,7 @@ lane_governor.acquire(
 Path(sys.argv[3]).write_text("ok", encoding="utf-8")
 """
         rc = GATE.run_gate(
-            "source-fence-static",
+            HEAVY_FRONT_DOOR_GATE,
             [sys.executable, "-c", child_code, str(SCRIPTS_DIR), tmp, str(marker)],
             lock_dir=tmp,
             honor_ci_env=False,
@@ -129,7 +159,7 @@ lane_governor.acquire(
 Path(sys.argv[3]).write_text(str(time.monotonic() - t0), encoding="utf-8")
 """
         rc = GATE.run_gate(
-            "source-fence-static",
+            HEAVY_FRONT_DOOR_GATE,
             [sys.executable, "-c", child_code, str(SCRIPTS_DIR), tmp, str(marker)],
             lock_dir=tmp,
             honor_ci_env=False,
@@ -165,7 +195,7 @@ def test_gate_keeps_acquired_handle_alive_until_child_exits() -> None:
     try:
         GATE.lane_governor.acquire = fake_acquire
         GATE.subprocess.run = fake_run
-        rc = GATE.run_gate("source-fence-static", ["child"], honor_ci_env=False)
+        rc = GATE.run_gate(CHEAP_FRONT_DOOR_GATE, ["child"], honor_ci_env=False)
     finally:
         GATE.subprocess.run = original_run
         GATE.lane_governor.acquire = original_acquire
@@ -175,7 +205,8 @@ def test_gate_keeps_acquired_handle_alive_until_child_exits() -> None:
 
 def main() -> int:
     tests = [
-        test_busy_gate_refuses_without_running_child,
+        test_busy_heavy_gate_refuses_without_running_child,
+        test_busy_cheap_gate_runs_child_concurrently,
         test_child_verifier_reenters_under_parent_gate,
         test_child_verifier_reenters_parent_gate_without_extra_poll_sleep,
         test_gate_keeps_acquired_handle_alive_until_child_exits,

@@ -918,7 +918,10 @@ fn derive_state_advisory(
         DeployTargetStatus::Matched | DeployTargetStatus::NoTargetConfigured
     );
     if !host_confirmed
-        || matches!(launch_identity, LaunchIdentityStatus::SkippedConfigUnavailable)
+        || matches!(
+            launch_identity,
+            LaunchIdentityStatus::SkippedConfigUnavailable
+        )
     {
         return StateAdvisory::Unknown;
     }

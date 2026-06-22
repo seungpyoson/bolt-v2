@@ -40,9 +40,8 @@ fn install_script_repairs_deploy_toml_when_present() {
     let script = fs::read_to_string(&script_path).expect("install script should exist");
     assert!(
         script.contains("if [[ -f \"${BOLT_INSTALL_ROOT}/config/deploy.toml\" ]]; then")
-            && script.contains(
-                "config_bundle_files+=(\"${BOLT_INSTALL_ROOT}/config/deploy.toml\")"
-            ),
+            && script
+                .contains("config_bundle_files+=(\"${BOLT_INSTALL_ROOT}/config/deploy.toml\")"),
         "install.sh must conditionally repair config/deploy.toml when present (#768 lockout class)"
     );
 }

@@ -313,7 +313,7 @@ fn stale_snapshot_admission_records_real_source_observation_diagnostics() {
         writer.clone(),
         loss_policy(),
     ));
-    let account_id = AccountId::from(stringify!(SIM_LOSS_STALE_DIAGNOSTICS));
+    let account_id = AccountId::from("SIM-LOSS-STALE-DIAG");
     let mut feed = LossGovernorRuntimeFeed::new(
         LossGovernorRuntimeFeedConfig {
             account_id,

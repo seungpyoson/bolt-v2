@@ -48,7 +48,8 @@ use crate::{
         BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource, BoltV3ExposureOccupancy,
         BoltV3ForcedFlatReason, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
         BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
-        BoltV3StrategyInputEvidenceSnapshot, realized_volatility_aggregation_evidence_label,
+        BoltV3StrategyInputEvidenceSnapshot, realized_vol_blocker_to_exit_evidence,
+        realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
     },
@@ -4031,7 +4032,13 @@ impl BinaryOracleEdgeTaker {
         }
 
         let Some(exit_decision) = evaluation.exit_decision else {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE);
+            // No exit decision was produced: preserve the precise evaluation-level
+            // block reason (e.g. ExitAlreadyPending, NoOpenPosition) so the recorded
+            // decision trace names the real cause; only synthesize the generic
+            // ExitDecisionUnavailable when the evaluation supplied no reason at all.
+            decision.blocked_reason = evaluation
+                .blocked_reason
+                .or(Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE));
             return decision;
         };
         if exit_decision == ExitDecision::Hold {
@@ -6755,43 +6762,6 @@ const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_po
 
 fn evidence_number(value: f64) -> String {
     value.to_string()
-}
-
-fn realized_vol_blocker_to_exit_evidence(
-    reason: crate::bolt_v3_realized_volatility::RealizedVolBlockReason,
-) -> BoltV3ExitRvSnapshotBlocker {
-    match reason {
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::InvalidConfig => {
-            BoltV3ExitRvSnapshotBlocker::InvalidConfig
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::QuorumNotReady => {
-            BoltV3ExitRvSnapshotBlocker::QuorumNotReady
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceStale => {
-            BoltV3ExitRvSnapshotBlocker::SourceStale
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::CoverageBelowMinimum => {
-            BoltV3ExitRvSnapshotBlocker::CoverageBelowMinimum
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::InterSampleGapExceeded => {
-            BoltV3ExitRvSnapshotBlocker::InterSampleGapExceeded
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SourceClassMismatch => {
-            BoltV3ExitRvSnapshotBlocker::SourceClassMismatch
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::SampleKindMismatch => {
-            BoltV3ExitRvSnapshotBlocker::SampleKindMismatch
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::CrossSourceDispersion => {
-            BoltV3ExitRvSnapshotBlocker::CrossSourceDispersion
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::AnnualizationBasisInvalid => {
-            BoltV3ExitRvSnapshotBlocker::AnnualizationBasisInvalid
-        }
-        crate::bolt_v3_realized_volatility::RealizedVolBlockReason::NotWarm => {
-            BoltV3ExitRvSnapshotBlocker::NotWarm
-        }
-    }
 }
 
 #[cfg(test)]

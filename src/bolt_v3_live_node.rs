@@ -5816,7 +5816,34 @@ fn loss_governor_halt_action_handler_from_node(
     action_policy: LossGovernorHaltActionPolicy,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> LossGovernorHaltActionHandler {
-    let risk_engine = node.kernel().risk_engine().clone();
+    // The handler only needs to read and flip NT's `RiskEngine` trading state; the
+    // node is solely the source of that engine handle. Delegate to the node-free
+    // core via trading-state accessors so the halt behaviour (including the
+    // fail-loud evidence-write error path) can be exercised without building a
+    // `NautilusKernel`, whose logging init claims the process-global `log` slot and
+    // is mutually exclusive with a test's capturing logger.
+    let read_engine = node.kernel().risk_engine().clone();
+    let write_engine = read_engine.clone();
+    loss_governor_halt_action_handler(
+        Rc::new(move || read_engine.borrow().trading_state()),
+        Rc::new(move |state| write_engine.borrow_mut().set_trading_state(state)),
+        loss_policy,
+        action_policy,
+        decision_evidence,
+    )
+}
+
+/// Node-free core of the loss-governor halt action handler. Reads and flips the
+/// trading state via the supplied accessors rather than a `LiveNode`/`RiskEngine`
+/// handle, so the halt logic can be exercised against plain state cells without
+/// building a `NautilusKernel` (whose logging init owns the global `log` slot).
+fn loss_governor_halt_action_handler(
+    read_trading_state: Rc<dyn Fn() -> TradingState>,
+    set_trading_state: Rc<dyn Fn(TradingState)>,
+    loss_policy: LossGovernorPolicy,
+    action_policy: LossGovernorHaltActionPolicy,
+    decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+) -> LossGovernorHaltActionHandler {
     Rc::new(move |snapshot, now_ns, source_observations| {
         let decision = evaluate_loss_admission_with_observations(
             &loss_policy,
@@ -5824,7 +5851,7 @@ fn loss_governor_halt_action_handler_from_node(
             now_ns,
             source_observations,
         );
-        let current_state = risk_engine.borrow().trading_state();
+        let current_state = read_trading_state();
         if current_state == TradingState::Active && decision.accepted {
             return;
         }
@@ -5854,7 +5881,7 @@ fn loss_governor_halt_action_handler_from_node(
             }
             // A logging/evidence-write failure must NEVER skip a loss-governor halt:
             // apply the trading-state transition unconditionally.
-            risk_engine.borrow_mut().set_trading_state(target_state);
+            set_trading_state(target_state);
         }
     })
 }
@@ -6926,21 +6953,18 @@ mod tests {
             .expect("capturing logger observer mutex poisoned");
         logger.reset();
 
-        let loaded = fixture_loaded_config();
         // This test installs a process-global capturing logger (above) to assert the
-        // evidence-write failure is surfaced at error!. Building the node with NT
-        // logging enabled would try to claim the global `log` slot and fail
-        // ("a non-Nautilus logger is already registered"), so bypass NT logging init
-        // for this node only. The production default (bypass_logging = false) is
-        // unchanged and still guarded by `make_live_node_config` tests; the
-        // evidence-write error is emitted via `log::error!`, so it still reaches the
-        // capturing logger with NT logging bypassed.
-        let mut cfg = make_live_node_config(&loaded);
-        cfg.logging.bypass_logging = true;
-        let node = make_bolt_v3_live_node_builder_from_config(cfg)
-            .expect("test LiveNodeBuilder should construct")
-            .build()
-            .expect("test LiveNode should build");
+        // evidence-write failure is surfaced at error!. Building a LiveNode would
+        // initialize NT kernel logging via `log::set_boxed_logger`, which is mutually
+        // exclusive with the capturing logger and fails the build with "a non-Nautilus
+        // logger is already registered" (NT checks this before honoring
+        // bypass_logging). The halt handler only needs to read and flip the trading
+        // state, so exercise the node-free core (`loss_governor_halt_action_handler`)
+        // against a plain trading-state cell — no kernel, no NT logging init, no
+        // conflict. The evidence-write error is still emitted via `log::error!`, so it
+        // reaches the capturing logger. The from-node wrapper is a thin adapter over
+        // this core and stays covered by the kernel-built halt tests above.
+        let trading_state = Rc::new(RefCell::new(TradingState::Active));
         let policy = LossGovernorPolicy {
             max_snapshot_age_ns: 1_000,
             max_per_trade_loss: Some(Decimal::new(10, 0)),
@@ -6961,8 +6985,11 @@ mod tests {
             NEXT_TEST_CATALOG_ID.fetch_add(1, Ordering::SeqCst)
         );
         let writer = Arc::new(FailingLossGovernorDecisionEvidenceWriter::default());
-        let handler = loss_governor_halt_action_handler_from_node(
-            &node,
+        let read_state = trading_state.clone();
+        let write_state = trading_state.clone();
+        let handler = loss_governor_halt_action_handler(
+            Rc::new(move || *read_state.borrow()),
+            Rc::new(move |state| *write_state.borrow_mut() = state),
             policy,
             action_policy,
             writer.clone(),
@@ -6984,9 +7011,9 @@ mod tests {
         };
 
         assert_eq!(
-            node.kernel().risk_engine().borrow().trading_state(),
+            *trading_state.borrow(),
             TradingState::Active,
-            "node should start Active before the halt"
+            "trading state should start Active before the halt"
         );
 
         handler(Some(&snapshot), 2_100, source_observations);
@@ -6994,7 +7021,7 @@ mod tests {
         // (a) The halt fired despite the durable evidence write returning Err: a
         // logging/write failure must NEVER skip a loss-governor halt.
         assert_eq!(
-            node.kernel().risk_engine().borrow().trading_state(),
+            *trading_state.borrow(),
             TradingState::Reducing,
             "loss-governor halt must fire even when evidence write fails"
         );

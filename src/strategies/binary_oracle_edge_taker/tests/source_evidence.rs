@@ -1213,10 +1213,19 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         .active
         .price_to_beat
         .expect("ready-to-trade fixture should carry source-bound price_to_beat");
+    // The shared `ready_to_trade_strategy` fixture seeds the selected pricing
+    // spot but not a reference current price (the two are independent pricing
+    // inputs), so establish the reference observation this test depends on the
+    // same way the pricing tests do before reading it back.
+    strategy.pricing.observe_reference_current_price(&fast_spot(
+        "bybit",
+        3_100.5,
+        exit_eval_now_ms,
+    ));
     let signal_ask = strategy
         .pricing
         .last_reference_current_price()
-        .expect("ready-to-trade fixture should carry a reference current price");
+        .expect("reference observation seeded above should carry a reference current price");
     strategy
         .on_quote(&quote_tick(
             &signal_instrument_id,
@@ -1517,7 +1526,10 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
         vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
     );
     assert_eq!(skip.market_id, strategy.active.market_id);
-    assert_eq!(skip.realized_vol_source_ts_ms, Some(1_200));
+    // RV not ready: the readiness-gated source path yields no usable RV, so the
+    // entry-skip evidence carries no source ts. (The raw as_of_ms is still
+    // recorded on the StrategyInput evidence above via the audit path.)
+    assert_eq!(skip.realized_vol_source_ts_ms, None);
 }
 
 #[test]

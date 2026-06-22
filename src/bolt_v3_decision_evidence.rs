@@ -307,6 +307,40 @@ pub fn realized_volatility_block_reason_evidence_label(
     }
 }
 
+/// Projects an RV-engine [`RealizedVolBlockReason`] onto the exit-evidence
+/// [`BoltV3ExitRvSnapshotBlocker`]. Lives here, alongside its sibling
+/// [`realized_volatility_block_reason_evidence_label`], so strategy code consumes
+/// the projection without owning the realized-volatility block-reason taxonomy
+/// (enforced by the strategy source fence).
+pub fn realized_vol_blocker_to_exit_evidence(
+    reason: RealizedVolBlockReason,
+) -> BoltV3ExitRvSnapshotBlocker {
+    match reason {
+        RealizedVolBlockReason::InvalidConfig => BoltV3ExitRvSnapshotBlocker::InvalidConfig,
+        RealizedVolBlockReason::QuorumNotReady => BoltV3ExitRvSnapshotBlocker::QuorumNotReady,
+        RealizedVolBlockReason::SourceStale => BoltV3ExitRvSnapshotBlocker::SourceStale,
+        RealizedVolBlockReason::CoverageBelowMinimum => {
+            BoltV3ExitRvSnapshotBlocker::CoverageBelowMinimum
+        }
+        RealizedVolBlockReason::InterSampleGapExceeded => {
+            BoltV3ExitRvSnapshotBlocker::InterSampleGapExceeded
+        }
+        RealizedVolBlockReason::SourceClassMismatch => {
+            BoltV3ExitRvSnapshotBlocker::SourceClassMismatch
+        }
+        RealizedVolBlockReason::SampleKindMismatch => {
+            BoltV3ExitRvSnapshotBlocker::SampleKindMismatch
+        }
+        RealizedVolBlockReason::CrossSourceDispersion => {
+            BoltV3ExitRvSnapshotBlocker::CrossSourceDispersion
+        }
+        RealizedVolBlockReason::AnnualizationBasisInvalid => {
+            BoltV3ExitRvSnapshotBlocker::AnnualizationBasisInvalid
+        }
+        RealizedVolBlockReason::NotWarm => BoltV3ExitRvSnapshotBlocker::NotWarm,
+    }
+}
+
 pub fn realized_volatility_pricing_component_evidence_label(
     component: RealizedVolPricingComponent,
 ) -> &'static str {

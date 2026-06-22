@@ -29,31 +29,33 @@ REQUIRED_LAYOUT_KEYS = (
     "BOLT_GROUP",
 )
 _RESIDUAL_MARKER_RE = re.compile(r"@[A-Z_]+@")
-# A layout line is only safe if ``bash source`` and this parser interpret the
-# entire raw line identically. The raw line must be exactly ``KEY=VALUE`` under
-# ``fullmatch``: any whitespace anywhere (leading, key-side, value-side,
-# trailing, or ``\r`` from CRLF) and any shell metacharacter fails closed. The
-# value charset covers every current value (/srv/bolt-v2, /opt/bolt-v2,
-# /etc/bolt-v2, bolt) while excluding whitespace and shell syntax.
+# The skip-set is exactly bash's blank/comment no-op set: blank lines may
+# contain only space or tab, and comment lines may have optional space/tab
+# before ``#``. Every other raw line must pass the ``KEY=VALUE`` fullmatch
+# grammar. For accepted lines, bash ``source`` assigns the identical value; all
+# other forms fail closed on at least one consumer (parser ValueError or bash
+# error), so the two consumers never silently assign different values. The value
+# charset covers every current value (/srv/bolt-v2, /opt/bolt-v2, /etc/bolt-v2,
+# bolt) while excluding whitespace and shell syntax.
 _LAYOUT_LINE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z0-9_./:@%+,=-]+)")
 
 
 def load_layout(path: Path = LAYOUT_PATH) -> dict[str, str]:
     """Parse the bash-sourceable KEY=value layout into a dict.
 
-    Blank lines and ``#`` comments are skipped. Every other raw line MUST match
-    exactly ``KEY=VALUE`` with a shell-safe bare value, so the two consumers of
-    this single source - ``deploy/install.sh`` (bash ``source``) and this parser
-    - cannot interpret the line differently. Matching the unstripped raw line
-    rejects whitespace anywhere (leading, internal, trailing, or ``\r`` from
-    CRLF) plus shell metacharacters, and fails closed with a ValueError naming
-    the offending line.
+    Lines containing only bash blanks (space or tab) and ``#`` comments after
+    optional bash blanks are skipped, matching bash's blank/comment no-op set.
+    Every other raw line MUST match exactly ``KEY=VALUE`` with a shell-safe bare
+    value. Lines accepted by this parser are assigned identically by
+    ``deploy/install.sh`` (bash ``source``); every other form fails closed on at
+    least one consumer with either parser ValueError or bash error, so the two
+    consumers never silently assign different values.
     """
     layout: dict[str, str] = {}
     with path.open(encoding="utf-8", newline="") as handle:
         raw_text = handle.read()
     for raw_line in raw_text.split("\n"):
-        stripped = raw_line.strip()
+        stripped = raw_line.strip(" \t")
         if not stripped or stripped.startswith("#"):
             continue
         m = _LAYOUT_LINE_RE.fullmatch(raw_line)

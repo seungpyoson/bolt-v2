@@ -173,6 +173,40 @@ def test_crlf_line_rejected() -> None:
             raise AssertionError("expected ValueError for CRLF layout lines")
 
 
+def test_vertical_tab_comment_line_rejected() -> None:
+    import tempfile
+
+    contents = _BARE_VALID_LAYOUT.encode("utf-8") + b"\x0b#comment\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        layout_path = Path(tmp) / "install-layout.env"
+        layout_path.write_bytes(contents)
+        try:
+            RENDERER.load_layout(layout_path)
+        except ValueError as exc:
+            if "\\x0b#comment" not in str(exc):
+                raise AssertionError(
+                    f"fence message must name the vertical-tab comment line: {exc}"
+                )
+        else:
+            raise AssertionError("expected ValueError for vertical-tab comment line")
+
+
+def test_cr_only_blank_line_rejected() -> None:
+    import tempfile
+
+    contents = _BARE_VALID_LAYOUT.encode("utf-8") + b"\r\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        layout_path = Path(tmp) / "install-layout.env"
+        layout_path.write_bytes(contents)
+        try:
+            RENDERER.load_layout(layout_path)
+        except ValueError as exc:
+            if "\\r" not in str(exc):
+                raise AssertionError(f"fence message must name the CR-only line: {exc}")
+        else:
+            raise AssertionError("expected ValueError for CR-only blank line")
+
+
 def test_unknown_marker_in_template_errors() -> None:
     import tempfile
 
@@ -246,6 +280,8 @@ def main() -> int:
         test_space_after_equals_value_rejected,
         test_key_side_whitespace_rejected,
         test_crlf_line_rejected,
+        test_vertical_tab_comment_line_rejected,
+        test_cr_only_blank_line_rejected,
         test_unknown_marker_in_template_errors,
         test_verifier_passes_on_committed_tree,
         test_verifier_detects_tampered_unit,

@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""Self-tests for the GLM AI-review fallback."""
+
+from __future__ import annotations
+
+import importlib.util
+import pathlib
+import sys
+from dataclasses import dataclass
+
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SCRIPT_PATH = REPO_ROOT / "scripts" / "ai_review_deliverables.py"
+
+
+def load_script():
+    if not SCRIPT_PATH.exists():
+        raise AssertionError(f"missing script: {SCRIPT_PATH}")
+    spec = importlib.util.spec_from_file_location("ai_review_deliverables", SCRIPT_PATH)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load ai_review_deliverables.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@dataclass
+class FakeGitHub:
+    files: list[dict[str, object]]
+    issue_comments: list[dict[str, object]] | None = None
+    reviews: list[dict[str, object]] | None = None
+
+    def __post_init__(self) -> None:
+        self.issue_comments = list(self.issue_comments or [])
+        self.reviews = list(self.reviews or [])
+        self.posted: list[str] = []
+
+    def list_pr_files(self) -> list[dict[str, object]]:
+        return list(self.files)
+
+    def list_issue_comments(self) -> list[dict[str, object]]:
+        return list(self.issue_comments or [])
+
+    def list_reviews(self) -> list[dict[str, object]]:
+        return list(self.reviews or [])
+
+    def post_issue_comment(self, body: str) -> None:
+        self.posted.append(body)
+
+
+class FakeGLM:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.prompts: list[str] = []
+
+    def review_chunk(self, *, system_prompt: str, user_prompt: str) -> str:
+        del system_prompt
+        self.prompts.append(user_prompt)
+        if self.fail:
+            raise RuntimeError("provider rejected request")
+        return "Findings\n\nNo hard-evidence findings in this chunk."
+
+
+class FakeProvider(FakeGLM):
+    pass
+
+
+def file_payload(name: str, patch: str) -> dict[str, object]:
+    return {
+        "filename": name,
+        "status": "modified",
+        "additions": 1,
+        "deletions": 0,
+        "changes": 1,
+        "patch": patch,
+    }
+
+
+def test_packs_more_than_two_review_chunks_when_budget_requires_it() -> None:
+    module = load_script()
+    files = [
+        module.ReviewFile.from_api_payload(file_payload(f"src/file_{idx}.rs", "+" + ("x" * 80)))
+        for idx in range(7)
+    ]
+
+    chunks = module.pack_review_chunks(files, max_chars=260)
+
+    assert len(chunks) >= 4, [chunk.title for chunk in chunks]
+    assert all(len(chunk.body) <= 260 for chunk in chunks), [len(chunk.body) for chunk in chunks]
+    flattened = "\n".join(chunk.body for chunk in chunks)
+    for idx in range(7):
+        assert f"src/file_{idx}.rs" in flattened
+
+
+def test_splits_one_oversized_file_patch_into_multiple_review_chunks() -> None:
+    module = load_script()
+    patch = "\n".join(f"+line {idx} {'x' * 40}" for idx in range(12))
+    files = [module.ReviewFile.from_api_payload(file_payload("src/huge.rs", patch))]
+
+    chunks = module.pack_review_chunks(files, max_chars=260)
+
+    assert len(chunks) > 1, [chunk.title for chunk in chunks]
+    assert all("src/huge.rs" in chunk.body for chunk in chunks)
+    assert all(len(chunk.body) <= 260 for chunk in chunks), [len(chunk.body) for chunk in chunks]
+    assert any("part 2" in chunk.title for chunk in chunks), [chunk.title for chunk in chunks]
+    flattened = "\n".join(chunk.body for chunk in chunks)
+    assert "+line 0 " in flattened
+    assert "+line 11 " in flattened
+
+
+def test_truncated_file_fragment_keeps_markdown_fence_closed() -> None:
+    module = load_script()
+    review_file = module.ReviewFile.from_api_payload(
+        file_payload("src/huge.rs", "+" + ("x" * 200))
+    )
+
+    chunk = module.render_file_fragment(
+        review_file,
+        ["+" + ("x" * 200)],
+        title="src/huge.rs",
+        max_chars=120,
+    )
+
+    assert len(chunk.body) <= 120
+    assert "\n```\n\n[fragment truncated to fit review budget]\n" in chunk.body
+    assert chunk.body.count("```") % 2 == 0, chunk.body
+
+
+def test_skips_fallback_when_pr_agent_deliverable_exists_after_start() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": "## PR Reviewer Guide\n\nexisting PR-Agent result",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+            }
+        ],
+    )
+    glm = FakeGLM()
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=module.FallbackConfig(
+            repo="seungpyoson/bolt-v2",
+            pr_number=895,
+            started_at="2026-06-22T12:21:00Z",
+            instructions="review hard evidence only",
+            max_chunk_chars=260,
+            run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        ),
+    )
+
+    assert result == "existing-review-deliverable"
+    assert glm.prompts == []
+    assert github.posted == []
+
+
+def test_posts_failure_notice_when_glm_fallback_fails() -> None:
+    module = load_script()
+    github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
+    glm = FakeGLM(fail=True)
+
+    try:
+        module.run_fallback_review(
+            github=github,
+            reviewer=glm,
+            config=module.FallbackConfig(
+                repo="seungpyoson/bolt-v2",
+                pr_number=895,
+                started_at="2026-06-22T12:21:00Z",
+                instructions="review hard evidence only",
+                max_chunk_chars=260,
+                run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+            ),
+        )
+    except module.ReviewFailed:
+        pass
+    else:
+        raise AssertionError("expected ReviewFailed")
+
+    assert len(github.posted) == 1, github.posted
+    assert "GLM review did not produce a deliverable" in github.posted[0]
+    assert "provider rejected request" in github.posted[0]
+    assert "GLM_API_KEY" not in github.posted[0]
+
+
+def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
+    module = load_script()
+    files = [file_payload(f"src/kimi_{idx}.rs", "+" + ("k" * 80)) for idx in range(5)]
+    github = FakeGitHub(files=files)
+    kimi = FakeProvider()
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=kimi,
+        config=module.FallbackConfig(
+            provider="Kimi",
+            deliverable_markers=("## Kimi PR Review", "Kimi Misospace"),
+            repo="seungpyoson/bolt-v2",
+            pr_number=895,
+            started_at="2026-06-22T12:21:00Z",
+            instructions="review hard evidence only",
+            max_chunk_chars=260,
+            run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        ),
+    )
+
+    assert result == "fallback-posted"
+    assert len(kimi.prompts) >= 3, len(kimi.prompts)
+    assert len(github.posted) == 1, github.posted
+    assert "## Kimi PR Review" in github.posted[0]
+    assert "Review chunks:" in github.posted[0]
+
+
+def test_posts_failure_notice_when_kimi_fallback_fails() -> None:
+    module = load_script()
+    github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
+    kimi = FakeProvider(fail=True)
+
+    try:
+        module.run_fallback_review(
+            github=github,
+            reviewer=kimi,
+            config=module.FallbackConfig(
+                provider="Kimi",
+                deliverable_markers=("## Kimi PR Review", "Kimi Misospace"),
+                repo="seungpyoson/bolt-v2",
+                pr_number=895,
+                started_at="2026-06-22T12:21:00Z",
+                instructions="review hard evidence only",
+                max_chunk_chars=260,
+                run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+            ),
+        )
+    except module.ReviewFailed:
+        pass
+    else:
+        raise AssertionError("expected ReviewFailed")
+
+    assert len(github.posted) == 1, github.posted
+    assert "Kimi review did not produce a deliverable" in github.posted[0]
+    assert "provider rejected request" in github.posted[0]
+
+
+def main() -> int:
+    test_packs_more_than_two_review_chunks_when_budget_requires_it()
+    test_splits_one_oversized_file_patch_into_multiple_review_chunks()
+    test_truncated_file_fragment_keeps_markdown_fence_closed()
+    test_skips_fallback_when_pr_agent_deliverable_exists_after_start()
+    test_posts_failure_notice_when_glm_fallback_fails()
+    test_kimi_fallback_uses_same_chunked_deliverable_contract()
+    test_posts_failure_notice_when_kimi_fallback_fails()
+    print("GLM fallback self-tests OK")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -132,9 +132,34 @@ MIRRORED_RULES = (
 KIMI_BASE_GOVERNANCE_SNIPPETS = (
     "ref: ${{ github.event.pull_request.base.sha }}",
     "path: .ai-review/base",
-    "sparse-checkout: AGENTS.md",
+    "sparse-checkout: |",
+    "AGENTS.md",
     "cat .ai-review/base/AGENTS.md",
     "standards_file: .ai-review/standards/kimi-review-standards.md",
+)
+
+GLM_DELIVERABLE_SNIPPETS = (
+    "Capture GLM review window",
+    "id: pr-agent",
+    "timeout-minutes: 8",
+    "Ensure GLM deliverable or post split fallback",
+    "scripts/ai_review_deliverables.py glm-fallback",
+    "GLM_REVIEW_MAX_CHUNK_CHARS",
+    "AI_REVIEW_MAX_COMMENT_CHARS",
+    "--instructions-file .pr_agent.toml",
+)
+
+KIMI_DELIVERABLE_SNIPPETS = (
+    "id: kimi-review",
+    "timeout-minutes: 8",
+    "Capture Kimi review window",
+    "Ensure Kimi deliverable or post split fallback",
+    ".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback",
+    'comment_marker: "<!-- ai-pr-reviewer-kimi -->"',
+    'KIMI_DELIVERABLE_MARKER: "<!-- ai-pr-reviewer-kimi -->"',
+    "KIMI_REVIEW_MAX_CHUNK_CHARS",
+    "AI_REVIEW_MAX_COMMENT_CHARS",
+    "--instructions-file .ai-review/standards/kimi-review-standards.md",
 )
 
 KIMI_FORBIDDEN_INPUTS = (
@@ -203,7 +228,9 @@ def verify_texts(
             "GLM workflow must not define pr_reviewer.* overrides; keep reviewer behavior in .pr_agent.toml"
         )
 
+    findings.extend(missing_snippets("GLM workflow", glm_workflow, GLM_DELIVERABLE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_BASE_GOVERNANCE_SNIPPETS))
+    findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_DELIVERABLE_SNIPPETS))
     for snippet in KIMI_FORBIDDEN_INPUTS:
         if snippet in kimi_workflow:
             findings.append(f"Kimi workflow must not override the bundled prompt with {snippet!r}")
@@ -264,6 +291,14 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("GLM split config", glm_split_config, "must not define pr_reviewer.*")
 
+    glm_missing_fallback = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        glm_workflow=glm.replace("scripts/ai_review_deliverables.py glm-fallback", "echo missing"),
+        kimi_workflow=kimi,
+    )
+    assert_finding("GLM missing fallback", glm_missing_fallback, "GLM workflow missing expected snippet")
+
     kimi_head_governance = verify_texts(
         agents_md=agents,
         pr_agent_toml=pr_agent,
@@ -282,6 +317,14 @@ def run_self_tests(repo_root: Path) -> None:
         kimi_workflow=kimi + "\n          system_prompt_mode: append\n",
     )
     assert_finding("Kimi prompt override", kimi_prompt_override, "must not override the bundled prompt")
+
+    kimi_missing_fallback = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        glm_workflow=glm,
+        kimi_workflow=kimi.replace(".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback", "echo missing"),
+    )
+    assert_finding("Kimi missing fallback", kimi_missing_fallback, "Kimi workflow missing expected snippet")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

@@ -28,18 +28,42 @@ jobs:
         )
       }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    timeout-minutes: 12
+    timeout-minutes: 30
     env:
       GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
-      - name: Skip when Z.ai secret is not configured
+      - name: Checkout base AI review helpers
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: |
+            .pr_agent.toml
+            scripts/ai_review_deliverables.py
+          sparse-checkout-cone-mode: false
+
+      - name: Notice when Z.ai secret is not configured
         if: env.GLM_API_KEY == ''
-        run: echo "GLM_API_KEY is not configured; skipping GLM PR-Agent review."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python3 scripts/ai_review_deliverables.py notice
+          --provider GLM
+          --message "\`GLM_API_KEY\` is not configured, so the GLM review was skipped."
+
+      - name: Capture GLM review window
+        id: review-window
+        if: env.GLM_API_KEY != ''
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Run PR-Agent review with GLM
+        id: pr-agent
         if: env.GLM_API_KEY != ''
         continue-on-error: true
+        timeout-minutes: 8
         uses: the-pr-agent/pr-agent@49cb2d8ce4a6f01c238229b3770e328fe11479df # v0.34.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -53,3 +77,17 @@ jobs:
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "false"
           github_action_config.auto_improve: "false"
+
+      - name: Ensure GLM deliverable or post split fallback
+        if: env.GLM_API_KEY != ''
+        timeout-minutes: 20
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GLM_API_BASE: https://api.z.ai/api/paas/v4
+          GLM_MODEL: glm-5.2
+          GLM_REVIEW_MAX_CHUNK_CHARS: "60000"
+          AI_REVIEW_MAX_COMMENT_CHARS: "60000"
+        run: >-
+          python3 scripts/ai_review_deliverables.py glm-fallback
+          --started-at "${{ steps.review-window.outputs.started_at }}"
+          --instructions-file .pr_agent.toml

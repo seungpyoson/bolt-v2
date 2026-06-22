@@ -177,9 +177,16 @@ def _record_holder(handle, label: str) -> None:
 
 
 def _acquire_unbounded_cheap_lane(directory: Path, namespace: str, label: str):
+    # Unbounded cheap lanes take no flock and share one file per label, so many
+    # processes hold this handle at once. Holder metadata is ONLY ever read on the
+    # heavy path (ancestor re-entrancy / heartbeat); nothing reads a cheap lane's
+    # holder JSON. We therefore deliberately do NOT _record_holder here: concurrent
+    # seek()/truncate() on the shared, unsynchronized file would corrupt each other
+    # for zero benefit. Skipping the write removes the race AND keeps the lock-file
+    # count bounded (one reused file per label, vs. an unbounded per-PID pile-up).
     lock_path = directory / f"{namespace}.cheap.{_lock_safe_label(label)}.lock"
     handle = open(lock_path, "a+", encoding="utf-8")
-    _record_holder(handle, label)
+    _HELD_HANDLES.append(handle)
     return handle
 
 

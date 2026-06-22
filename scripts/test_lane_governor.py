@@ -471,6 +471,34 @@ def test_distinct_cheap_lanes_acquire_concurrently() -> None:
         assert elapsed < 2.0, f"cheap waiter should not queue behind another cheap lane: {elapsed:.2f}s"
 
 
+def test_same_label_unbounded_cheap_lanes_acquire_concurrently() -> None:
+    # Exact scenario raised in PR #900 review: two processes with the SAME cheap
+    # label share one lock file. They must run concurrently, and the shared file
+    # must carry NO racy holder metadata (unbounded cheap lanes do not
+    # _record_holder; concurrent seek/truncate would corrupt it for no reader).
+    with tempfile.TemporaryDirectory() as tmp:
+        sentinel = Path(tmp) / "held"
+        holder = _spawn(LABEL_HOLD_RUNNER, "local-gate:fmt-check", tmp, str(sentinel), "4")
+        _wait_for(sentinel)
+        start = time.monotonic()
+        waiter = _spawn(LABEL_ONCE_RUNNER, "local-gate:fmt-check", tmp, "1")
+        out, err = waiter.communicate(timeout=10)
+        elapsed = time.monotonic() - start
+        holder.kill()
+        holder.communicate(timeout=10)
+        assert waiter.returncode == 0, f"same-label cheap lanes must not contend: {out}\n{err}"
+        assert "acquired True" in out
+        assert elapsed < 2.0, f"same-label cheap waiter should not queue: {elapsed:.2f}s"
+        cheap_locks = list(Path(tmp).glob("*.cheap.*.lock"))
+        assert cheap_locks, "expected a shared cheap lock file to exist"
+        for lock_file in cheap_locks:
+            size = lock_file.stat().st_size
+            assert size == 0, (
+                f"unbounded cheap lock must carry no racy holder metadata: "
+                f"{lock_file.name} = {size} bytes"
+            )
+
+
 def test_front_door_cheap_gate_runs_while_cheap_lane_holds() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         sentinel = Path(tmp) / "held"
@@ -751,6 +779,7 @@ def main() -> int:
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,
         test_distinct_cheap_lanes_acquire_concurrently,
+        test_same_label_unbounded_cheap_lanes_acquire_concurrently,
         test_front_door_cheap_gate_runs_while_cheap_lane_holds,
         test_unlisted_label_uses_heavy_single_flight,
         test_bvs_namespace_lane_is_independent_of_bolt_v2_namespace,

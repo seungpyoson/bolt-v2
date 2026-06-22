@@ -20,20 +20,28 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 11;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 13;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
+pub const BOLT_V3_ENTRY_SKIP_GATE_ID: &str = "bolt_v3.entry_skip";
+pub const BOLT_V3_EXIT_DECISION_GATE_ID: &str = "bolt_v3.exit_decision";
+pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";
+pub const BOLT_V3_REQUOTE_THROTTLE_GATE_ID: &str = "bolt_v3.requote_throttle";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
 pub const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
 pub const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
+pub const BOLT_V3_ENTRY_SKIP_RECORD_KIND: &str = "entry_skip";
+pub const BOLT_V3_EXIT_DECISION_RECORD_KIND: &str = "exit_decision";
+pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
+pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";
+pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";
 const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_decision";
 const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
 const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
 const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
-const PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION: u32 = 9;
 const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";
 const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";
 const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";
@@ -41,8 +49,6 @@ pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "curre
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 pub const BOLT_V3_EXIT_EVALUATION_GATE_ID: &str = "bolt_v3.exit_evaluation";
 pub const BOLT_V3_EXIT_EVALUATION_RECORD_KIND: &str = "exit_evaluation";
-pub const BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID: &str = "bolt_v3.loss_governor_halt";
-pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
 pub const BOLT_V3_ORDER_REJECT_GATE_ID: &str = "bolt_v3.order_reject";
 pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";
 
@@ -109,9 +115,95 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         &self,
         fill: &BoltV3SubmitReservationFillEvidence,
     ) -> Result<()>;
+
+    fn record_entry_skip(&self, skip: &BoltV3EntrySkipEvidence) -> Result<()>;
+    fn record_exit_decision(&self, decision: &BoltV3ExitDecisionEvidence) -> Result<()>;
     fn record_exit_evaluation(&self, evidence: &BoltV3ExitEvaluationEvidence) -> Result<()>;
     fn record_loss_governor_halt(&self, evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()>;
     fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()>;
+    fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()>;
+}
+
+/// Risk direction of a runtime trading decision, used by [`commit_decision`]
+/// (and [`record_decision`]) to select the single repo-wide evidence-write
+/// failure rule.
+///
+/// The rule exists because two requirements are in tension and must never be
+/// resolved ad hoc at each call site (the historical source of inconsistent
+/// `?`-vs-swallow handling):
+///
+/// * A decision that ADDS or RE-ENABLES exposure must fail closed if its
+///   durable record cannot be written — we never take on new risk we could not
+///   later reconstruct from the evidence stream.
+/// * A decision that REDUCES or removes exposure (exit, cancel, flatten, halt)
+///   must NEVER be blocked by an evidence-write failure — risk reduction is
+///   more important than its own log line, so the failure is surfaced loudly
+///   and the act proceeds anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskDirection {
+    /// Opens or increases exposure, or re-enables trading. Fail closed.
+    NewRisk,
+    /// Reduces or removes exposure (exit / cancel / flatten / halt). Never
+    /// blocked by an evidence-write failure.
+    RiskReducing,
+    /// Pure observation or bookkeeping with no exposure change. Never blocked.
+    Neutral,
+}
+
+impl RiskDirection {
+    /// Whether an evidence-write failure must abort the guarded action before
+    /// it runs. Only risk-increasing decisions fail closed.
+    #[must_use]
+    pub const fn evidence_write_failure_blocks(self) -> bool {
+        matches!(self, Self::NewRisk)
+    }
+}
+
+/// The single chokepoint through which every irreversible trading action must
+/// pass. It emits the action's durable decision-evidence record FIRST, applies
+/// the one repo-wide write-failure rule keyed on [`RiskDirection`], then runs
+/// the action.
+///
+/// `emit` writes the durable record (typically one `record_*` call on a
+/// [`BoltV3DecisionEvidenceWriter`]). `act` performs the irreversible effect
+/// (venue submit / cancel, NT trading-state flip). For [`RiskDirection::NewRisk`]
+/// an `emit` failure aborts before `act` runs (record-before-act, fail closed).
+/// For [`RiskDirection::RiskReducing`] / [`RiskDirection::Neutral`] an `emit`
+/// failure is logged at `error` and `act` runs anyway, so a lost log can never
+/// strand a risk reduction.
+///
+/// The irreversible act primitives (`submit_order_via_nt`, `cancel_order_via_nt`,
+/// `cancel_all_orders_via_nt`, and the loss-governor / recovery
+/// `set_trading_state`) are being adopted into this chokepoint incrementally.
+/// This primitive owns the failure rule; later slices still need to route the
+/// production act paths through it and add source-fence enforcement.
+pub fn commit_decision<T>(
+    risk: RiskDirection,
+    emit: impl FnOnce() -> Result<()>,
+    act: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if let Err(error) = emit() {
+        if risk.evidence_write_failure_blocks() {
+            return Err(error).context(
+                "bolt-v3 decision evidence write failed for a risk-increasing action; \
+                 aborting before the irreversible act (fail closed)",
+            );
+        }
+        log::error!(
+            "bolt-v3 decision evidence write failed for a risk-reducing/neutral action; \
+             surfacing at error and proceeding so risk reduction is never blocked: error={error:#}"
+        );
+    }
+    act()
+}
+
+/// Record-only variant of [`commit_decision`] for decisions whose "action" is
+/// inaction — an entry skip, a fair-value block, a feed-health gate. Applies the
+/// identical failure rule: a [`RiskDirection::NewRisk`] write failure propagates
+/// as `Err`; a [`RiskDirection::RiskReducing`] / [`RiskDirection::Neutral`]
+/// write failure is logged at `error` and swallowed so the caller proceeds.
+pub fn record_decision(risk: RiskDirection, emit: impl FnOnce() -> Result<()>) -> Result<()> {
+    commit_decision(risk, emit, || Ok(()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,6 +342,8 @@ pub struct BoltV3RealizedVolatilitySourceDiagnosticEvidence {
     pub coverage_ratio: String,
     pub max_inter_sample_gap_ms: Option<u64>,
     pub last_rejected_reason: Option<String>,
+    pub last_rejected_event_ts_ms: Option<u64>,
+    pub last_rejected_recv_ts_ms: Option<u64>,
     pub rejection_counters: BTreeMap<String, u64>,
     pub block_reason: Option<String>,
 }
@@ -290,6 +384,8 @@ impl BoltV3RealizedVolatilitySourceDiagnosticEvidence {
                 .last_rejected_reason
                 .map(realized_volatility_reject_reason_evidence_label)
                 .map(str::to_string),
+            last_rejected_event_ts_ms: diagnostic.last_rejected_event_ts_ms,
+            last_rejected_recv_ts_ms: diagnostic.last_rejected_recv_ts_ms,
             rejection_counters: diagnostic
                 .rejection_counters
                 .iter()
@@ -335,6 +431,40 @@ pub fn realized_volatility_block_reason_evidence_label(
         RealizedVolBlockReason::CrossSourceDispersion => "cross_source_dispersion",
         RealizedVolBlockReason::AnnualizationBasisInvalid => "annualization_basis_invalid",
         RealizedVolBlockReason::NotWarm => "not_warm",
+    }
+}
+
+/// Projects an RV-engine [`RealizedVolBlockReason`] onto the exit-evidence
+/// [`BoltV3ExitRvSnapshotBlocker`]. Lives here, alongside its sibling
+/// [`realized_volatility_block_reason_evidence_label`], so strategy code consumes
+/// the projection without owning the realized-volatility block-reason taxonomy
+/// (enforced by the strategy source fence).
+pub fn realized_vol_blocker_to_exit_evidence(
+    reason: RealizedVolBlockReason,
+) -> BoltV3ExitRvSnapshotBlocker {
+    match reason {
+        RealizedVolBlockReason::InvalidConfig => BoltV3ExitRvSnapshotBlocker::InvalidConfig,
+        RealizedVolBlockReason::QuorumNotReady => BoltV3ExitRvSnapshotBlocker::QuorumNotReady,
+        RealizedVolBlockReason::SourceStale => BoltV3ExitRvSnapshotBlocker::SourceStale,
+        RealizedVolBlockReason::CoverageBelowMinimum => {
+            BoltV3ExitRvSnapshotBlocker::CoverageBelowMinimum
+        }
+        RealizedVolBlockReason::InterSampleGapExceeded => {
+            BoltV3ExitRvSnapshotBlocker::InterSampleGapExceeded
+        }
+        RealizedVolBlockReason::SourceClassMismatch => {
+            BoltV3ExitRvSnapshotBlocker::SourceClassMismatch
+        }
+        RealizedVolBlockReason::SampleKindMismatch => {
+            BoltV3ExitRvSnapshotBlocker::SampleKindMismatch
+        }
+        RealizedVolBlockReason::CrossSourceDispersion => {
+            BoltV3ExitRvSnapshotBlocker::CrossSourceDispersion
+        }
+        RealizedVolBlockReason::AnnualizationBasisInvalid => {
+            BoltV3ExitRvSnapshotBlocker::AnnualizationBasisInvalid
+        }
+        RealizedVolBlockReason::NotWarm => BoltV3ExitRvSnapshotBlocker::NotWarm,
     }
 }
 
@@ -402,6 +532,364 @@ fn number_evidence(value: f64) -> String {
     value.to_string()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3OutcomeSide {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ForcedFlatReason {
+    Freeze,
+    StaleReference,
+    ThinBook,
+    MetadataMismatch,
+    FastVenueIncoherent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExposureOccupancy {
+    PendingEntry,
+    EntryReconcilePending,
+    ManagedPosition,
+    ExitPending,
+    UnsupportedObserved,
+    BlindRecovery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3EntryBlockReason {
+    PhaseNotActive,
+    MetadataMismatch,
+    ActiveBookNotPriced,
+    BookCrossed,
+    IntervalOpenMissing,
+    WarmupIncomplete,
+    FeesNotReady,
+    RecoveryMode,
+    MarketCoolingDown,
+    SpotSpikeCooldown,
+    ForcedFlat(BoltV3ForcedFlatReason),
+    OnePositionInvariant(BoltV3ExposureOccupancy),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3BinaryOutcomeEdgeBlockReason {
+    MissingOrderBook,
+    InsufficientDepth,
+    InvalidProbability,
+    InvalidCost,
+    UnsupportedOrderShape,
+    EdgeBelowThreshold,
+    SpreadOrSlippageWipedEdge,
+    FeeUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3EntryPricingBlockReason {
+    SpotPriceMissing,
+    ReferenceCurrentPriceStale,
+    StrikePriceMissing,
+    SecondsToExpiryMissing,
+    RealizedVolNotReady,
+    ThetaScalerUnavailable,
+    UncertaintyBandUnavailable,
+    FairProbabilityUnavailable,
+    FeeUnavailable(BoltV3OutcomeSide),
+    ExecutableEntryCostUnavailable(BoltV3OutcomeSide),
+    ExecutableEdgeUnavailable(BoltV3OutcomeSide, BoltV3BinaryOutcomeEdgeBlockReason),
+    SizedNotionalUnsupported(BoltV3OutcomeSide),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3EntrySkipReasonCategory {
+    StrategyCoreNotRegistered,
+    EntryGateBlocked,
+    EntryPricingBlocked,
+    NoSideSelected,
+    SizedNotionalNotPositive,
+    InstrumentIdMissing,
+    InstrumentMissingFromCache,
+    EntryPriceMissing,
+    QuantityRoundingFailed,
+    LimitNotionalExceedsSizedNotional,
+    QuantityNotPositive,
+    PositionContractInvalid,
+    EntryPositionContractUnsupported,
+    HistoricalEntryFeeUnavailable,
+    OnePositionInvariantViolation,
+    Unclassified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3EntrySkipEvidence {
+    pub strategy_id: String,
+    pub now_ms: u64,
+    pub reason_category: BoltV3EntrySkipReasonCategory,
+    pub unclassified_context: Option<String>,
+    pub gate_blocked_by: Vec<BoltV3EntryBlockReason>,
+    pub pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
+    pub market_id: Option<String>,
+    pub phase: String,
+    pub seconds_to_market_end: Option<u64>,
+    pub spot_price: Option<String>,
+    pub reference_current_price: Option<String>,
+    pub realized_vol: Option<String>,
+    pub realized_vol_source_venue: Option<String>,
+    pub realized_vol_source_ts_ms: Option<u64>,
+    pub fair_probability_up: Option<String>,
+    pub fair_probability_down: Option<String>,
+    pub selected_side: Option<BoltV3OutcomeSide>,
+    pub sized_notional: Option<String>,
+    pub sized_worst_case_ev_bps: Option<String>,
+    pub sized_edge_cents_per_share: Option<String>,
+    pub theta_scaled_min_edge_bps: Option<String>,
+    pub up_fee_bps: Option<String>,
+    pub down_fee_bps: Option<String>,
+    pub submission_blocked_reason: Option<BoltV3EntrySkipReasonCategory>,
+    pub stale_reference_after_ms: Option<u64>,
+    pub last_reference_ts_ms: Option<u64>,
+    pub min_liquidity_required: Option<String>,
+    pub liquidity_available: Option<String>,
+    pub frozen: bool,
+    pub metadata_matches_selection: bool,
+    pub fast_venue_incoherent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitDecisionOutcome {
+    Exit,
+    ExitFailClosed,
+    Hold,
+    Blocked,
+}
+
+/// Closed taxonomy of the runtime path that triggered an exit evaluation. Used by
+/// `BoltV3ExitEvaluationEvidence` so the durable record explains *which clock base*
+/// produced `exit_eval_now_ms` (the 2026-06-20 incident root cause was a
+/// timestamp-base mismatch between the exit clock and the realized-vol snapshot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitTriggerSource {
+    SignalQuote,
+    ReferenceUpdate,
+    SelectionUpdate,
+    BookDelta,
+    Unknown,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitRvSnapshotBlocker {
+    InvalidConfig,
+    QuorumNotReady,
+    SourceStale,
+    CoverageBelowMinimum,
+    InterSampleGapExceeded,
+    SourceClassMismatch,
+    SampleKindMismatch,
+    CrossSourceDispersion,
+    AnnualizationBasisInvalid,
+    NotWarm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitRvGateResult {
+    Accepted,
+    RejectedFutureDated,
+    RejectedNotReady,
+    MissingSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3ExitBlockedReason {
+    NoOpenPosition,
+    ExitAlreadyPending,
+    EntryOrderStillWorking,
+    ExitDecisionUnavailable,
+    ExitHold,
+    OpenPositionMissing,
+    ExitOrderConfigInvalid,
+    ExitQuoteQuantityUnsupported,
+    ExitPriceMissing,
+    ExitQuantityNotPositive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3ExitDecisionEvidence {
+    pub strategy_id: String,
+    pub market_id: Option<String>,
+    pub position_id: Option<String>,
+    pub position_instrument_id: Option<String>,
+    pub position_outcome_side: Option<BoltV3OutcomeSide>,
+    pub forced_flat_reasons: Vec<BoltV3ForcedFlatReason>,
+    pub hold_ev_bps: Option<String>,
+    pub exit_ev_bps: Option<String>,
+    pub realized_vol: Option<String>,
+    pub realized_vol_source_venue: Option<String>,
+    pub realized_vol_source_ts_ms: Option<u64>,
+    pub exit_eval_now_ms: u64,
+    pub exit_trigger_source: BoltV3ExitTriggerSource,
+    pub trigger_ts_event_ms: u64,
+    pub trigger_ts_init_ms: Option<u64>,
+    pub rv_surface_id: String,
+    pub rv_snapshot_as_of_ms: Option<u64>,
+    pub rv_snapshot_ready: bool,
+    pub rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
+    pub rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    pub rv_gate_result: BoltV3ExitRvGateResult,
+    pub rv_future_dating_delta_ms: Option<u64>,
+    pub exit_hysteresis_bps: String,
+    pub exit_decision: BoltV3ExitDecisionOutcome,
+    pub blocked_reason: Option<BoltV3ExitBlockedReason>,
+    pub client_order_id: Option<String>,
+    pub seconds_to_market_end: Option<u64>,
+    pub ts_ms: u64,
+    pub stale_reference_after_ms: Option<u64>,
+    pub last_reference_ts_ms: Option<u64>,
+    pub min_liquidity_required: Option<String>,
+    pub liquidity_available: Option<String>,
+    pub frozen: bool,
+    pub metadata_matches_selection: bool,
+    pub fast_venue_incoherent: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3LossHaltReason {
+    PerTradeLossLimit,
+    DailyLossLimit,
+    RollingLossLimit,
+    MaxDrawdownLimit,
+    StaleLossSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3LossSnapshotSource {
+    NtLossRuntimeFeed,
+    NtPortfolioSnapshot,
+    NtAccountSnapshot,
+    NtAccountAndPositionSnapshot,
+    NtPositionEvent,
+    NtPositionChanged,
+    NtPositionClosed,
+    NtPositionAdjusted,
+    NtSizingState,
+    BoltLossSnapshot,
+    LossGovernor,
+    Unknown,
+    Other,
+}
+
+const LOSS_SNAPSHOT_SOURCE_NT_LOSS_RUNTIME_FEED: &str = stringify!(nt_loss_runtime_feed);
+const LOSS_SNAPSHOT_SOURCE_NT_PORTFOLIO_SNAPSHOT: &str = stringify!(nt_portfolio_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_SNAPSHOT: &str = stringify!(nt_account_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_AND_POSITION_SNAPSHOT: &str =
+    stringify!(nt_account_and_position_snapshot);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT: &str = stringify!(nt_position_event);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED: &str = stringify!(nt_position_changed);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED: &str = stringify!(nt_position_closed);
+const LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED: &str = stringify!(nt_position_adjusted);
+const LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE: &str = stringify!(nt_sizing_state);
+const LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT: &str = stringify!(bolt_loss_snapshot);
+const LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR: &str = stringify!(loss_governor);
+
+#[must_use]
+pub fn loss_snapshot_source_to_evidence(source: &str) -> BoltV3LossSnapshotSource {
+    match source {
+        LOSS_SNAPSHOT_SOURCE_NT_LOSS_RUNTIME_FEED => BoltV3LossSnapshotSource::NtLossRuntimeFeed,
+        LOSS_SNAPSHOT_SOURCE_NT_PORTFOLIO_SNAPSHOT => BoltV3LossSnapshotSource::NtPortfolioSnapshot,
+        LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_SNAPSHOT => BoltV3LossSnapshotSource::NtAccountSnapshot,
+        LOSS_SNAPSHOT_SOURCE_NT_ACCOUNT_AND_POSITION_SNAPSHOT => {
+            BoltV3LossSnapshotSource::NtAccountAndPositionSnapshot
+        }
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT => BoltV3LossSnapshotSource::NtPositionEvent,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED => BoltV3LossSnapshotSource::NtPositionChanged,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED => BoltV3LossSnapshotSource::NtPositionClosed,
+        LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED => BoltV3LossSnapshotSource::NtPositionAdjusted,
+        LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE => BoltV3LossSnapshotSource::NtSizingState,
+        LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT => BoltV3LossSnapshotSource::BoltLossSnapshot,
+        LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR => BoltV3LossSnapshotSource::LossGovernor,
+        _ if source.trim().is_empty() => BoltV3LossSnapshotSource::Unknown,
+        _ => BoltV3LossSnapshotSource::Other,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3LossSnapshotStaleReason {
+    MissingSnapshot,
+    SourceEmpty,
+    FutureDated,
+    AgeExceeded,
+    MissingRequiredField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3TradingState {
+    Active,
+    Halted,
+    Reducing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3RequoteActionCostClass {
+    FreshSubmit,
+    CancelResubmit,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3RequoteThrottleBlockReason {
+    RequoteBudgetExhausted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoltV3RequoteThrottleBound {
+    SubmitCommandWindow,
+    RestCallWindow,
+    MinInterval,
+    WindowCap,
+    OutOfOrderTs,
+    Overflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3RequoteThrottleEvidence {
+    pub strategy_id: String,
+    pub family_key: String,
+    pub market_id: Option<String>,
+    pub leg: String,
+    pub now_ms: u64,
+    pub observed_at_ns: u64,
+    pub action_cost_class: BoltV3RequoteActionCostClass,
+    pub block_reason: BoltV3RequoteThrottleBlockReason,
+    pub bound_by: BoltV3RequoteThrottleBound,
+    pub submit_commands_in_window: usize,
+    pub submit_command_cap: u64,
+    pub submit_window_ms: u64,
+    pub rest_cost_in_window: u64,
+    pub rest_cap_per_minute: u64,
+    pub rest_window_ms: u64,
+    pub min_interval_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub strategy_id: String,
@@ -451,6 +939,15 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
     pub uncertainty_band_probability: String,
     pub expected_edge_basis_points: String,
     pub worst_case_edge_basis_points: String,
+    pub up_worst_case_edge_basis_points: Option<String>,
+    pub down_worst_case_edge_basis_points: Option<String>,
+    pub gate_blocked_by: Vec<BoltV3EntryBlockReason>,
+    pub pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
+    pub fast_venue_name: Option<String>,
+    pub fast_venue_age_ms: Option<u64>,
+    pub fast_venue_jitter_ms: Option<u64>,
+    pub fast_venue_incoherent: bool,
+    pub lead_agreement_corr: Option<String>,
     pub fee_rate_basis_points: String,
     pub selected_side: Option<String>,
     pub submission_instrument_id: String,
@@ -485,7 +982,24 @@ pub struct BoltV3AdmissionDecisionEvidence {
     pub notional: String,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub outcome: BoltV3AdmissionOutcome,
-    pub loss_halt_reasons: Vec<String>,
+    pub loss_halt_reasons: Vec<BoltV3LossHaltReason>,
+    pub snapshot_present: bool,
+    pub snapshot_observed_at_ns: Option<u64>,
+    pub admission_now_ns: u64,
+    pub snapshot_age_ns: Option<u64>,
+    pub max_snapshot_age_ns: Option<u64>,
+    pub snapshot_source: Option<BoltV3LossSnapshotSource>,
+    pub per_trade_pnl_present: bool,
+    pub daily_pnl_present: bool,
+    pub rolling_pnl_present: bool,
+    pub current_equity_present: bool,
+    pub peak_equity_present: bool,
+    pub last_account_state_observed_at_ns: Option<u64>,
+    pub last_portfolio_snapshot_observed_at_ns: Option<u64>,
+    pub last_position_event_observed_at_ns: Option<u64>,
+    pub stale_reason: Option<BoltV3LossSnapshotStaleReason>,
+    pub loss_snapshot_observed_at_ns: Option<u64>,
+    pub loss_eval_now_ns: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -563,19 +1077,6 @@ pub struct BoltV3BasketAdmissionDecisionEvidence {
     pub outcome: BoltV3BasketAdmissionOutcome,
 }
 
-/// Closed taxonomy of the runtime path that triggered an exit evaluation. Used by
-/// `BoltV3ExitEvaluationEvidence` so the durable record explains *which clock base*
-/// produced `exit_eval_now_ms` (the 2026-06-20 incident root cause was a
-/// timestamp-base mismatch between the exit clock and the realized-vol snapshot).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BoltV3ExitTriggerSource {
-    SignalQuote,
-    BookDelta,
-    SelectionUpdate,
-    ReferenceUpdate,
-}
-
 /// Closed result of the realized-vol staleness gate as observed at exit-evaluation
 /// time. `RejectedFutureDated` and `RejectedNotReady` are split apart here even
 /// though the production gate collapses them into a single `None`, so evidence can
@@ -587,17 +1088,6 @@ pub enum BoltV3RvGateResult {
     MissingSnapshot,
     RejectedFutureDated,
     RejectedNotReady,
-}
-
-/// Closed exit decision as recorded in evidence. Mirrors the strategy's internal
-/// `ExitDecision` (Hold / Exit / ExitFailClosed) without importing it, keeping the
-/// evidence schema decoupled from strategy internals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BoltV3ExitDecisionEvidence {
-    Hold,
-    Exit,
-    ExitFailClosed,
 }
 
 /// Closed taxonomy of *why* a loss-governor snapshot was treated as stale. The
@@ -661,7 +1151,7 @@ pub struct BoltV3ExitEvaluationEvidence {
     pub rv_as_of_minus_now_ms: Option<i64>,
     pub hold_ev_bps: Option<String>,
     pub exit_ev_bps: Option<String>,
-    pub exit_decision: BoltV3ExitDecisionEvidence,
+    pub exit_decision: BoltV3ExitDecisionOutcome,
     pub forced_flat_reasons: Vec<String>,
     pub submission_order_side: Option<String>,
     pub submission_price: Option<String>,
@@ -818,6 +1308,16 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         self.append_line(&line)
     }
 
+    fn record_entry_skip(&self, skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+        let line = encode_entry_skip_line(skip)?;
+        self.append_line(&line)
+    }
+
+    fn record_exit_decision(&self, decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+        let line = encode_exit_decision_line(decision)?;
+        self.append_line(&line)
+    }
+
     fn record_exit_evaluation(&self, evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
         let line = encode_exit_evaluation_line(evidence)?;
         self.append_line(&line)
@@ -830,6 +1330,11 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
 
     fn record_order_reject(&self, evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
         let line = encode_order_reject_line(evidence)?;
+        self.append_line(&line)
+    }
+
+    fn record_requote_throttle(&self, throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+        let line = encode_requote_throttle_line(throttle)?;
         self.append_line(&line)
     }
 }
@@ -914,7 +1419,7 @@ pub fn read_latest_entry_decision_evidence_chain(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION {
+        if decision_evidence_header_is_below_current_schema(&header) {
             first_older_schema_index.get_or_insert(index);
             continue;
         }
@@ -1056,7 +1561,39 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            "exit_evaluation" => {
+            BOLT_V3_ENTRY_SKIP_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_ENTRY_SKIP_RECORD_KIND,
+                    BOLT_V3_ENTRY_SKIP_GATE_ID,
+                    index,
+                )?;
+                let decoded: EntrySkipLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 entry skip line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_ENTRY_SKIP_RECORD_KIND,
+                    BOLT_V3_ENTRY_SKIP_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_EXIT_DECISION_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_EXIT_DECISION_RECORD_KIND,
+                    BOLT_V3_EXIT_DECISION_GATE_ID,
+                    index,
+                )?;
+                let decoded: ExitDecisionLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 exit decision line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_EXIT_DECISION_RECORD_KIND,
+                    BOLT_V3_EXIT_DECISION_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_EXIT_EVALUATION_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
                     BOLT_V3_EXIT_EVALUATION_GATE_ID,
@@ -1072,7 +1609,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            "loss_governor_halt" => {
+            BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
                     BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
@@ -1088,7 +1625,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            "order_reject" => {
+            BOLT_V3_ORDER_REJECT_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
@@ -1101,6 +1638,22 @@ pub fn read_latest_entry_decision_evidence_chain(
                 decoded.validate_header(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
+                    BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
+                    index,
+                )?;
+                let decoded: RequoteThrottleLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 requote throttle line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
+                    BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
                     index,
                 )?;
             }
@@ -1156,7 +1709,7 @@ pub fn read_submit_reservation_recovery_evidence(
             serde_json::from_slice(line).with_context(|| {
                 format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
             })?;
-        if is_pre_position_sizer_recovery_non_recovery_record(&header) {
+        if decision_evidence_header_is_below_current_schema_non_recovery_record(&header) {
             continue;
         }
         match header.kind.as_str() {
@@ -1297,7 +1850,39 @@ pub fn read_submit_reservation_recovery_evidence(
                 })?;
                 fills.push(decoded.fill);
             }
-            "exit_evaluation" => {
+            BOLT_V3_ENTRY_SKIP_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_ENTRY_SKIP_RECORD_KIND,
+                    BOLT_V3_ENTRY_SKIP_GATE_ID,
+                    index,
+                )?;
+                let decoded: EntrySkipLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 entry skip line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_ENTRY_SKIP_RECORD_KIND,
+                    BOLT_V3_ENTRY_SKIP_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_EXIT_DECISION_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_EXIT_DECISION_RECORD_KIND,
+                    BOLT_V3_EXIT_DECISION_GATE_ID,
+                    index,
+                )?;
+                let decoded: ExitDecisionLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 exit decision line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_EXIT_DECISION_RECORD_KIND,
+                    BOLT_V3_EXIT_DECISION_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_EXIT_EVALUATION_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
                     BOLT_V3_EXIT_EVALUATION_GATE_ID,
@@ -1313,7 +1898,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            "loss_governor_halt" => {
+            BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
                     BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
@@ -1329,7 +1914,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            "order_reject" => {
+            BOLT_V3_ORDER_REJECT_RECORD_KIND => {
                 header.validate(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
@@ -1342,6 +1927,22 @@ pub fn read_submit_reservation_recovery_evidence(
                 decoded.validate_header(
                     BOLT_V3_ORDER_REJECT_RECORD_KIND,
                     BOLT_V3_ORDER_REJECT_GATE_ID,
+                    index,
+                )?;
+            }
+            BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND => {
+                header.validate(
+                    BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
+                    BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
+                    index,
+                )?;
+                let decoded: RequoteThrottleLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 requote throttle line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
+                    BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
                     index,
                 )?;
             }
@@ -1377,16 +1978,37 @@ pub fn read_submit_reservation_recovery_evidence(
     })
 }
 
-fn is_pre_position_sizer_recovery_non_recovery_record(
+fn decision_evidence_header_is_below_current_schema(
     header: &DecisionEvidenceEnvelopeHeader,
 ) -> bool {
-    header.schema_version == PRE_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
+    header.schema_version < BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+}
+
+/// Audit-only (non-recovery) record kinds carry no reservation state, so an
+/// older-schema instance is safe to skip rather than fail the entire recovery
+/// read (otherwise one stale audit line poisons recovery of every valid
+/// current-schema reservation after it). Reservation-bearing kinds
+/// (submit_reservation_metadata / submit_reservation_fill) are deliberately NOT
+/// skipped here: an unparseable legacy reservation record must still fail closed
+/// at `header.validate`, so startup degrades to the unreconciled gate instead of
+/// silently ignoring a possibly-open reservation.
+fn decision_evidence_header_is_below_current_schema_non_recovery_record(
+    header: &DecisionEvidenceEnvelopeHeader,
+) -> bool {
+    decision_evidence_header_is_below_current_schema(header)
         && matches!(
             header.kind.as_str(),
             BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND
                 | BOLT_V3_ORDER_INTENT_RECORD_KIND
                 | BOLT_V3_ADMISSION_DECISION_RECORD_KIND
+                | BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND
                 | BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND
+                | BOLT_V3_ENTRY_SKIP_RECORD_KIND
+                | BOLT_V3_EXIT_DECISION_RECORD_KIND
+                | BOLT_V3_EXIT_EVALUATION_RECORD_KIND
+                | BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND
+                | BOLT_V3_ORDER_REJECT_RECORD_KIND
+                | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
         )
 }
 
@@ -1759,6 +2381,27 @@ struct SubmitReservationFillLineOwned {
     fill: BoltV3SubmitReservationFillEvidence,
 }
 
+#[derive(Deserialize)]
+struct EntrySkipLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    entry_skip: BoltV3EntrySkipEvidence,
+}
+
+#[derive(Deserialize)]
+struct ExitDecisionLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    exit_decision: BoltV3ExitDecisionEvidence,
+}
+
+#[derive(Deserialize)]
+struct RequoteThrottleLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    requote_throttle: BoltV3RequoteThrottleEvidence,
+}
+
 impl AdmissionDecisionLineOwned {
     fn validate_header(
         &self,
@@ -1814,6 +2457,42 @@ impl SubmitReservationFillLineOwned {
         index: usize,
     ) -> Result<()> {
         let _ = &self.fill;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl EntrySkipLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.entry_skip;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl ExitDecisionLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.exit_decision;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl RequoteThrottleLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.requote_throttle;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }
@@ -1886,6 +2565,36 @@ struct SubmitReservationFillLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     fill: &'a BoltV3SubmitReservationFillEvidence,
+}
+
+#[derive(Serialize)]
+struct EntrySkipLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    entry_skip: &'a BoltV3EntrySkipEvidence,
+}
+
+#[derive(Serialize)]
+struct ExitDecisionLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    exit_decision: &'a BoltV3ExitDecisionEvidence,
+}
+
+#[derive(Serialize)]
+struct RequoteThrottleLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    requote_throttle: &'a BoltV3RequoteThrottleEvidence,
 }
 
 fn current_utc_ns() -> i64 {
@@ -2009,6 +2718,21 @@ fn encode_submit_reservation_fill_line(
     Ok(line)
 }
 
+fn encode_entry_skip_line(skip: &BoltV3EntrySkipEvidence) -> Result<Vec<u8>> {
+    let envelope = EntrySkipLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_ENTRY_SKIP_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_ENTRY_SKIP_RECORD_KIND,
+        entry_skip: skip,
+    };
+    let mut line =
+        serde_json::to_vec(&envelope).context("failed to serialize entry skip evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
 #[derive(Serialize)]
 struct ExitEvaluationLine<'a> {
     schema_version: u32,
@@ -2053,6 +2777,21 @@ fn encode_exit_evaluation_line(evidence: &BoltV3ExitEvaluationEvidence) -> Resul
     Ok(line)
 }
 
+fn encode_exit_decision_line(decision: &BoltV3ExitDecisionEvidence) -> Result<Vec<u8>> {
+    let envelope = ExitDecisionLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_EXIT_DECISION_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_EXIT_DECISION_RECORD_KIND,
+        exit_decision: decision,
+    };
+    let mut line =
+        serde_json::to_vec(&envelope).context("failed to serialize exit decision evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
 #[derive(Serialize)]
 struct LossGovernorHaltLine<'a> {
     schema_version: u32,
@@ -2093,6 +2832,21 @@ fn encode_loss_governor_halt_line(evidence: &BoltV3LossGovernorHaltEvidence) -> 
     };
     let mut line =
         serde_json::to_vec(&envelope).context("failed to serialize loss governor halt evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_requote_throttle_line(throttle: &BoltV3RequoteThrottleEvidence) -> Result<Vec<u8>> {
+    let envelope = RequoteThrottleLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND,
+        requote_throttle: throttle,
+    };
+    let mut line =
+        serde_json::to_vec(&envelope).context("failed to serialize requote throttle evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }
@@ -2276,6 +3030,115 @@ mod tests {
         orders::StopMarketOrder,
         types::{Price, Quantity},
     };
+
+    mod decision_commit_chokepoint {
+        use super::*;
+
+        #[test]
+        fn new_risk_aborts_act_when_evidence_write_fails() {
+            let acted = std::cell::Cell::new(false);
+            let result: anyhow::Result<i32> = commit_decision(
+                RiskDirection::NewRisk,
+                || Err(anyhow::anyhow!("evidence write boom")),
+                || {
+                    acted.set(true);
+                    Ok(7)
+                },
+            );
+            assert!(
+                result.is_err(),
+                "a risk-increasing evidence-write failure must fail closed"
+            );
+            assert!(
+                !acted.get(),
+                "the irreversible act must not run after a fail-closed abort"
+            );
+        }
+
+        #[test]
+        fn risk_reducing_runs_act_despite_evidence_write_failure() {
+            let acted = std::cell::Cell::new(false);
+            let result: anyhow::Result<i32> = commit_decision(
+                RiskDirection::RiskReducing,
+                || Err(anyhow::anyhow!("evidence write boom")),
+                || {
+                    acted.set(true);
+                    Ok(7)
+                },
+            );
+            assert_eq!(
+                result.expect("risk reduction must never be blocked by an evidence-write failure"),
+                7
+            );
+            assert!(
+                acted.get(),
+                "the risk-reducing act must run even when the evidence write fails"
+            );
+        }
+
+        #[test]
+        fn neutral_runs_act_despite_evidence_write_failure() {
+            let acted = std::cell::Cell::new(false);
+            let result: anyhow::Result<i32> = commit_decision(
+                RiskDirection::Neutral,
+                || Err(anyhow::anyhow!("evidence write boom")),
+                || {
+                    acted.set(true);
+                    Ok(1)
+                },
+            );
+            assert_eq!(result.expect("a neutral act must not be blocked"), 1);
+            assert!(acted.get());
+        }
+
+        #[test]
+        fn emit_runs_before_act_on_success() {
+            let trace = std::cell::Cell::new(String::new());
+            let result: anyhow::Result<&str> = commit_decision(
+                RiskDirection::NewRisk,
+                || {
+                    trace.set(format!("{}emit;", trace.take()));
+                    Ok(())
+                },
+                || {
+                    trace.set(format!("{}act;", trace.take()));
+                    Ok("done")
+                },
+            );
+            assert_eq!(result.expect("success path returns the act value"), "done");
+            assert_eq!(
+                trace.take(),
+                "emit;act;",
+                "the durable record must be emitted before the irreversible act runs"
+            );
+        }
+
+        #[test]
+        fn record_only_new_risk_propagates_write_failure() {
+            let result = record_decision(RiskDirection::NewRisk, || Err(anyhow::anyhow!("boom")));
+            assert!(
+                result.is_err(),
+                "a risk-increasing record-only decision must fail closed"
+            );
+        }
+
+        #[test]
+        fn record_only_risk_reducing_swallows_write_failure() {
+            let result =
+                record_decision(RiskDirection::RiskReducing, || Err(anyhow::anyhow!("boom")));
+            assert!(
+                result.is_ok(),
+                "a risk-reducing record-only decision must not surface the write error to the caller"
+            );
+        }
+
+        #[test]
+        fn evidence_write_failure_blocks_only_for_new_risk() {
+            assert!(RiskDirection::NewRisk.evidence_write_failure_blocks());
+            assert!(!RiskDirection::RiskReducing.evidence_write_failure_blocks());
+            assert!(!RiskDirection::Neutral.evidence_write_failure_blocks());
+        }
+    }
 
     fn parse_line(line: &[u8]) -> serde_json::Value {
         assert!(line.ends_with(b"\n"), "line must end with newline");
@@ -2519,6 +3382,15 @@ mod tests {
             uncertainty_band_probability: "0.01".to_string(),
             expected_edge_basis_points: "10".to_string(),
             worst_case_edge_basis_points: "10".to_string(),
+            up_worst_case_edge_basis_points: Some("11".to_string()),
+            down_worst_case_edge_basis_points: Some("9".to_string()),
+            gate_blocked_by: Vec::new(),
+            pricing_blocked_by: vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady],
+            fast_venue_name: Some("fast-source".to_string()),
+            fast_venue_age_ms: Some(20),
+            fast_venue_jitter_ms: Some(3),
+            fast_venue_incoherent: false,
+            lead_agreement_corr: Some("0.98".to_string()),
             fee_rate_basis_points: "0".to_string(),
             selected_side: Some("up".to_string()),
             submission_instrument_id: "instrument-up".to_string(),
@@ -2556,9 +3428,20 @@ mod tests {
                 .as_object()
                 .expect("snapshot should encode as an object")
                 .len(),
-            53
+            62
         );
         assert_eq!(snapshot_field["price_to_beat_source"], "source-one");
+        assert_eq!(snapshot_field["up_worst_case_edge_basis_points"], "11");
+        assert_eq!(snapshot_field["down_worst_case_edge_basis_points"], "9");
+        assert_eq!(
+            snapshot_field["pricing_blocked_by"],
+            serde_json::json!(["realized_vol_not_ready"])
+        );
+        assert_eq!(snapshot_field["fast_venue_name"], "fast-source");
+        assert_eq!(snapshot_field["fast_venue_age_ms"], 20);
+        assert_eq!(snapshot_field["fast_venue_jitter_ms"], 3);
+        assert_eq!(snapshot_field["fast_venue_incoherent"], false);
+        assert_eq!(snapshot_field["lead_agreement_corr"], "0.98");
         assert_eq!(
             snapshot_field["reference_current_price_source_id"],
             "chainlink_primary"
@@ -2593,10 +3476,27 @@ mod tests {
                 outcome: outcome.clone(),
                 loss_halt_reasons: match &outcome {
                     BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
-                        vec!["stale_loss_snapshot".to_string()]
+                        vec![BoltV3LossHaltReason::StaleLossSnapshot]
                     }
                     _ => Vec::new(),
                 },
+                snapshot_present: true,
+                snapshot_observed_at_ns: Some(1_000),
+                admission_now_ns: 1_200,
+                snapshot_age_ns: Some(200),
+                max_snapshot_age_ns: Some(1_000),
+                snapshot_source: Some(BoltV3LossSnapshotSource::NtPortfolioSnapshot),
+                per_trade_pnl_present: true,
+                daily_pnl_present: true,
+                rolling_pnl_present: true,
+                current_equity_present: true,
+                peak_equity_present: true,
+                last_account_state_observed_at_ns: None,
+                last_portfolio_snapshot_observed_at_ns: None,
+                last_position_event_observed_at_ns: None,
+                stale_reason: None,
+                loss_snapshot_observed_at_ns: Some(1_000),
+                loss_eval_now_ns: Some(1_200),
             };
 
             let line = encode_admission_decision_line(&decision).expect("decision should encode");
@@ -2692,7 +3592,7 @@ mod tests {
             rv_as_of_minus_now_ms: Some(-5_000),
             hold_ev_bps: Some("12.5".to_string()),
             exit_ev_bps: Some("-3.0".to_string()),
-            exit_decision: BoltV3ExitDecisionEvidence::ExitFailClosed,
+            exit_decision: BoltV3ExitDecisionOutcome::ExitFailClosed,
             forced_flat_reasons: vec!["rv_gate_rejected".to_string()],
             submission_order_side: Some("Sell".to_string()),
             submission_price: Some("0.49".to_string()),

@@ -54,9 +54,13 @@ pub struct RecordingDecisionEvidenceWriter {
     records: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>>,
     admission_decisions:
         Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence>>,
+    entry_skips: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence>>,
+    exit_decisions: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence>>,
     order_rejects: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence>>,
     loss_governor_halts:
         Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence>>,
+    requote_throttles:
+        Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence>>,
 }
 
 impl RecordingDecisionEvidenceWriter {
@@ -64,8 +68,11 @@ impl RecordingDecisionEvidenceWriter {
         Self {
             records: Mutex::new(Vec::new()),
             admission_decisions: Mutex::new(Vec::new()),
+            entry_skips: Mutex::new(Vec::new()),
+            exit_decisions: Mutex::new(Vec::new()),
             order_rejects: Mutex::new(Vec::new()),
             loss_governor_halts: Mutex::new(Vec::new()),
+            requote_throttles: Mutex::new(Vec::new()),
         }
     }
 
@@ -85,6 +92,22 @@ impl RecordingDecisionEvidenceWriter {
             .clone()
     }
 
+    pub fn entry_skips(&self) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence> {
+        self.entry_skips
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn exit_decisions(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence> {
+        self.exit_decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     pub fn order_rejects(
         &self,
     ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence> {
@@ -98,6 +121,15 @@ impl RecordingDecisionEvidenceWriter {
         &self,
     ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence> {
         self.loss_governor_halts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn requote_throttles(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence> {
+        self.requote_throttles
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -164,6 +196,28 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_entry_skip(
+        &self,
+        skip: &bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> anyhow::Result<()> {
+        self.entry_skips
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(skip.clone());
+        Ok(())
+    }
+
+    fn record_exit_decision(
+        &self,
+        decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        self.exit_decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(decision.clone());
+        Ok(())
+    }
+
     fn record_exit_evaluation(
         &self,
         _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
@@ -190,6 +244,17 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(evidence.clone());
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        throttle: &bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        self.requote_throttles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(throttle.clone());
         Ok(())
     }
 }
@@ -263,6 +328,20 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
+    fn record_entry_skip(
+        &self,
+        _skip: &bolt_v2::bolt_v3_decision_evidence::BoltV3EntrySkipEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_decision(
+        &self,
+        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn record_exit_evaluation(
         &self,
         _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
@@ -286,6 +365,13 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
         Err(anyhow::anyhow!("synthetic order-reject write failure"))
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &bolt_v2::bolt_v3_decision_evidence::BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 

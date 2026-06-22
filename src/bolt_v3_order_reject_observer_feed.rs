@@ -220,7 +220,7 @@ impl BoltV3OrderRejectObserverFeed {
             elapsed_ns,
         };
         if let Err(err) = self.decision_evidence.record_order_reject(&evidence) {
-            log::warn!(
+            log::error!(
                 "bolt-v3 order-reject evidence write failed: source={:?} reason={:?} instrument_id={} client_order_id={} raw_reason_text={:?} err={err}",
                 evidence.reject_source,
                 evidence.reject_reason,

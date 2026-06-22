@@ -42,10 +42,14 @@ use crate::{
     },
     bolt_v3_config::{ReferencePriceBlock, ReferencePriceDriftPolicy},
     bolt_v3_decision_evidence::{
-        BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence, BoltV3ExitTriggerSource,
-        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RvGateResult,
-        BoltV3StrategyInputEvidenceSnapshot, realized_volatility_aggregation_evidence_label,
+        BoltV3BinaryOutcomeEdgeBlockReason, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
+        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitBlockedReason,
+        BoltV3ExitDecisionEvidence, BoltV3ExitDecisionOutcome, BoltV3ExitEvaluationEvidence,
+        BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource,
+        BoltV3ExposureOccupancy, BoltV3ForcedFlatReason, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence,
+        BoltV3RvGateResult, BoltV3StrategyInputEvidenceSnapshot,
+        realized_vol_blocker_to_exit_evidence, realized_volatility_aggregation_evidence_label,
         realized_volatility_block_reason_evidence_label,
         realized_volatility_pricing_component_evidence_label,
     },
@@ -576,6 +580,7 @@ impl PricingState {
                 observed_ts_ms: candidate
                     .observed_ts_ms
                     .expect("selected lead venue should carry timestamp"),
+                received_ts_ms: None,
             };
             self.set_selected_pricing_spot(Some(fast_spot));
             self.last_lead_gap_probability = Some(candidate.lead_gap_probability);
@@ -990,6 +995,8 @@ pub struct BinaryOracleEdgeTaker {
     market_lifecycle: BTreeMap<String, MarketLifecycleLedger>,
     exposure: ExposureState,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
+    last_recorded_entry_skip: Option<EntrySkipDedupeKey>,
+    last_recorded_exit_decision: Option<ExitDecisionDedupeKey>,
     pricing: PricingState,
     reference_price_selector: Option<ReferencePriceSelector>,
     reference_price_quotes: BTreeMap<String, ReferenceQuote>,
@@ -1056,6 +1063,8 @@ impl BinaryOracleEdgeTaker {
             market_lifecycle: BTreeMap::new(),
             exposure: ExposureState::Flat,
             last_reported_exposure_occupancy: Cell::new(None),
+            last_recorded_entry_skip: None,
+            last_recorded_exit_decision: None,
             pricing,
             reference_price_selector,
             reference_price_quotes: BTreeMap::new(),
@@ -1136,11 +1145,13 @@ impl BinaryOracleEdgeTaker {
         self.prune_market_lifecycle(now_ms);
         self.refresh_book_subscriptions_for_current_state();
         if self.exposure.managed_position().is_some()
-            && let Err(error) = self.try_submit_exit_order(
+            && let Err(error) = self.try_submit_exit_order_for_trigger(
                 now_ms,
-                BoltV3ExitTriggerSource::SelectionUpdate,
-                Some(now_ms as i64),
-                None,
+                ExitEvaluationTriggerContext::new(
+                    BoltV3ExitTriggerSource::SelectionUpdate,
+                    now_ms,
+                    None,
+                ),
             )
         {
             log::error!(
@@ -1153,22 +1164,20 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn observe_signal_quote(
-        &mut self,
-        quote: &FastSpotObservation,
-        trigger_ts_init_ms: Option<i64>,
-    ) {
+    fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
         self.pricing
             .observe_signal_quote(quote, &taker_pricing_config(&self.config));
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
-            && let Err(error) = self.try_submit_exit_order(
+            && let Err(error) = self.try_submit_exit_order_for_trigger(
                 quote.observed_ts_ms,
-                BoltV3ExitTriggerSource::SignalQuote,
-                Some(quote.observed_ts_ms as i64),
-                trigger_ts_init_ms,
+                ExitEvaluationTriggerContext::new(
+                    BoltV3ExitTriggerSource::SignalQuote,
+                    quote.observed_ts_ms,
+                    quote.received_ts_ms,
+                ),
             )
         {
             log::error!(
@@ -1193,11 +1202,13 @@ impl BinaryOracleEdgeTaker {
         self.refresh_fee_readiness();
         self.sync_exposure_context_from_active();
         if self.exposure.managed_position().is_some()
-            && let Err(error) = self.try_submit_exit_order(
+            && let Err(error) = self.try_submit_exit_order_for_trigger(
                 snapshot.ts_ms,
-                BoltV3ExitTriggerSource::ReferenceUpdate,
-                Some(snapshot.ts_ms as i64),
-                None,
+                ExitEvaluationTriggerContext::new(
+                    BoltV3ExitTriggerSource::ReferenceUpdate,
+                    snapshot.ts_ms,
+                    None,
+                ),
             )
         {
             log::error!(
@@ -1226,6 +1237,7 @@ impl BinaryOracleEdgeTaker {
             venue: venue_name.clone(),
             price: midpoint,
             observed_ts_ms,
+            received_ts_ms: Some(quote.ts_init.as_u64() / NANOS_PER_MILLI_U64),
         })
     }
 
@@ -1736,6 +1748,7 @@ impl BinaryOracleEdgeTaker {
                     venue: selected_quote.source_id().to_string(),
                     price: selected_quote.price(),
                     observed_ts_ms: selected_quote.observed_ts_ms(),
+                    received_ts_ms: Some(selected_quote.received_ts_ms()),
                 });
             self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
             self.refresh_fee_readiness();
@@ -2969,6 +2982,171 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn entry_forced_flat_evidence_inputs(&self) -> ForcedFlatEvidenceInputs {
+        ForcedFlatEvidenceInputs {
+            stale_reference_after_ms: Some(self.effective_stale_reference_after_ms()),
+            last_reference_ts_ms: self.active.last_reference_ts_ms,
+            min_liquidity_required: option_evidence_number(Some(
+                self.config.forced_flat_thin_book_min_liquidity,
+            )),
+            liquidity_available: option_evidence_number(self.active.books.minimum_liquidity()),
+            frozen: self.active.phase == SelectionPhase::Freeze,
+            metadata_matches_selection: self.active.books.metadata_matches_selection(),
+            fast_venue_incoherent: self.active.fast_venue_incoherent,
+        }
+    }
+
+    fn exit_forced_flat_evidence_inputs(&self) -> ForcedFlatEvidenceInputs {
+        let open_position = self.managed_position().map(|managed| &managed.position);
+        ForcedFlatEvidenceInputs {
+            stale_reference_after_ms: Some(self.effective_stale_reference_after_ms()),
+            last_reference_ts_ms: self.active.last_reference_ts_ms,
+            min_liquidity_required: option_evidence_number(Some(
+                self.config.forced_flat_thin_book_min_liquidity,
+            )),
+            liquidity_available: option_evidence_number(
+                open_position
+                    .and_then(|position| position.book.liquidity_available)
+                    .or_else(|| self.active.books.minimum_liquidity()),
+            ),
+            frozen: self.active.phase == SelectionPhase::Freeze,
+            metadata_matches_selection: open_position
+                .map(|position| position.book.metadata_matches_selection())
+                .unwrap_or_else(|| self.active.books.metadata_matches_selection()),
+            fast_venue_incoherent: self.active.fast_venue_incoherent,
+        }
+    }
+
+    fn record_entry_skip_once(
+        &mut self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+        reason_category: BoltV3EntrySkipReasonCategory,
+        unclassified_context: Option<String>,
+    ) -> Result<()> {
+        let fields = self.entry_evaluation_log_fields_at(now_ms, decision);
+        let key = EntrySkipDedupeKey {
+            reason_category,
+            gate_blocked_by: fields
+                .gate_blocked_by
+                .iter()
+                .map(entry_block_reason_to_evidence)
+                .collect(),
+            pricing_blocked_by: fields
+                .pricing_blocked_by
+                .iter()
+                .map(entry_pricing_block_reason_to_evidence)
+                .collect(),
+            market_id: fields.market_id.clone(),
+            interval_open: option_evidence_number(fields.interval_open),
+        };
+        if self.last_recorded_entry_skip.as_ref() == Some(&key) {
+            return Ok(());
+        }
+        let evidence = BoltV3EntrySkipEvidence::from_entry_skip(
+            self.config.strategy_id.clone(),
+            now_ms,
+            reason_category,
+            unclassified_context,
+            &fields,
+            self.entry_forced_flat_evidence_inputs(),
+        );
+        if let Err(error) = self
+            .context
+            .decision_evidence()
+            .record_entry_skip(&evidence)
+        {
+            // An entry skip is declining new risk: a telemetry-write failure
+            // must never abort the strategy callback (which would skip
+            // downstream safety logic such as enforce_one_position_invariant).
+            // Surface the lost write at the highest non-panicking severity and
+            // let the skip path proceed.
+            log::error!(
+                "binary_oracle_edge_taker entry skip evidence write failed: strategy_id={} error={error:#}",
+                self.config.strategy_id
+            );
+        }
+        self.last_recorded_entry_skip = Some(key);
+        Ok(())
+    }
+
+    fn record_and_log_entry_skip(
+        &mut self,
+        now_ms: u64,
+        decision: &EntrySubmissionDecision,
+        reason: &'static str,
+    ) -> Result<()> {
+        let reason_category = entry_skip_reason_category_from_str(reason)
+            .unwrap_or(BoltV3EntrySkipReasonCategory::Unclassified);
+        let unclassified_context = (reason_category == BoltV3EntrySkipReasonCategory::Unclassified)
+            .then(|| reason.to_string());
+        self.record_entry_skip_once(now_ms, decision, reason_category, unclassified_context)?;
+        log::warn!(
+            "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
+            self.config.strategy_id,
+            reason
+        );
+        Ok(())
+    }
+
+    fn record_exit_decision_once(
+        &mut self,
+        now_ms: u64,
+        trigger_context: ExitEvaluationTriggerContext,
+        decision: &ExitSubmissionDecision,
+    ) -> Result<()> {
+        let action_chosen = decision.blocked_reason.is_none()
+            && decision.instrument_id.is_some()
+            && decision.order_side.is_some()
+            && decision.price.is_some()
+            && decision.quantity.is_some();
+        if !action_chosen
+            && decision.forced_flat_reasons.is_empty()
+            && decision.blocked_reason.is_none()
+        {
+            return Ok(());
+        }
+        if decision.blocked_reason == Some(EXIT_BLOCK_REASON_NO_OPEN_POSITION)
+            && decision.forced_flat_reasons.is_empty()
+        {
+            return Ok(());
+        }
+
+        let fields = self.exit_evaluation_log_fields_at(now_ms, trigger_context, decision);
+        let evidence = BoltV3ExitDecisionEvidence::from_exit_decision(
+            self.config.strategy_id.clone(),
+            now_ms,
+            &fields,
+            self.exit_forced_flat_evidence_inputs(),
+        );
+        let key = ExitDecisionDedupeKey {
+            market_id: evidence.market_id.clone(),
+            position_id: evidence.position_id.clone(),
+            forced_flat_reasons: evidence.forced_flat_reasons.clone(),
+            exit_decision: evidence.exit_decision,
+            blocked_reason: evidence.blocked_reason,
+        };
+        if self.last_recorded_exit_decision.as_ref() == Some(&key) {
+            return Ok(());
+        }
+        if let Err(error) = self
+            .context
+            .decision_evidence()
+            .record_exit_decision(&evidence)
+        {
+            // A telemetry-write failure must NEVER block a risk-reducing exit:
+            // record_exit_decision_once is called immediately before the exit
+            // order is built and submitted. Surface the lost write at the
+            // highest non-panicking severity and let the exit proceed.
+            log::error!(
+                "binary_oracle_edge_taker exit decision evidence write failed: strategy_id={} error={error:#}",
+                self.config.strategy_id
+            );
+        }
+        self.last_recorded_exit_decision = Some(key);
+        Ok(())
+    }
+
     fn entry_fee_bps_at_price(&self, side: OutcomeSide, entry_price: f64) -> Option<f64> {
         let instrument_id = self.instrument_id_for_side(side)?;
         let instrument = self.current_instrument(instrument_id)?;
@@ -3861,7 +4039,13 @@ impl BinaryOracleEdgeTaker {
         }
 
         let Some(exit_decision) = evaluation.exit_decision else {
-            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE);
+            // No exit decision was produced: preserve the precise evaluation-level
+            // block reason (e.g. ExitAlreadyPending, NoOpenPosition) so the recorded
+            // decision trace names the real cause; only synthesize the generic
+            // ExitDecisionUnavailable when the evaluation supplied no reason at all.
+            decision.blocked_reason = evaluation
+                .blocked_reason
+                .or(Some(EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE));
             return decision;
         };
         if exit_decision == ExitDecision::Hold {
@@ -3915,9 +4099,75 @@ impl BinaryOracleEdgeTaker {
         decision
     }
 
+    fn exit_realized_volatility_gate_fields_at(
+        &self,
+        now_ms: u64,
+    ) -> (
+        Option<u64>,
+        bool,
+        Vec<BoltV3ExitRvSnapshotBlocker>,
+        Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+        BoltV3ExitRvGateResult,
+        Option<u64>,
+    ) {
+        let Some(snapshot) = self
+            .pricing
+            .latest_realized_vol_snapshot_for_surface(&self.config.realized_volatility_surface_id)
+        else {
+            return (
+                None,
+                false,
+                Vec::new(),
+                Vec::new(),
+                BoltV3ExitRvGateResult::MissingSnapshot,
+                None,
+            );
+        };
+        let blockers = snapshot
+            .blocked_reasons
+            .iter()
+            .copied()
+            .map(realized_vol_blocker_to_exit_evidence)
+            .collect();
+        let diagnostics = snapshot
+            .source_diagnostics
+            .iter()
+            .map(BoltV3RealizedVolatilitySourceDiagnosticEvidence::from_realized_vol_diagnostic)
+            .collect();
+        if snapshot.as_of_ms > now_ms {
+            return (
+                Some(snapshot.as_of_ms),
+                snapshot.ready,
+                blockers,
+                diagnostics,
+                BoltV3ExitRvGateResult::RejectedFutureDated,
+                Some(snapshot.as_of_ms - now_ms),
+            );
+        }
+        if snapshot.ready_realized_vol().is_none() {
+            return (
+                Some(snapshot.as_of_ms),
+                snapshot.ready,
+                blockers,
+                diagnostics,
+                BoltV3ExitRvGateResult::RejectedNotReady,
+                None,
+            );
+        }
+        (
+            Some(snapshot.as_of_ms),
+            snapshot.ready,
+            blockers,
+            diagnostics,
+            BoltV3ExitRvGateResult::Accepted,
+            None,
+        )
+    }
+
     fn exit_evaluation_log_fields_at(
         &self,
         now_ms: u64,
+        trigger_context: ExitEvaluationTriggerContext,
         decision: &ExitSubmissionDecision,
     ) -> ExitEvaluationLogFields {
         let open_position = self.managed_position().map(|managed| &managed.position);
@@ -3925,6 +4175,14 @@ impl BinaryOracleEdgeTaker {
             self.historical_entry_fee_log_fields();
         let (realized_vol_source_venue, realized_vol_source_ts_ms) =
             self.pricing.current_realized_vol_source_at(now_ms);
+        let (
+            rv_snapshot_as_of_ms,
+            rv_snapshot_ready,
+            rv_snapshot_blockers,
+            rv_source_diagnostics,
+            rv_gate_result,
+            rv_future_dating_delta_ms,
+        ) = self.exit_realized_volatility_gate_fields_at(now_ms);
         ExitEvaluationLogFields {
             market_id: self.current_position_market_id(),
             phase: self.active.phase,
@@ -3944,6 +4202,17 @@ impl BinaryOracleEdgeTaker {
             realized_vol: self.current_realized_vol_at(now_ms),
             realized_vol_source_venue,
             realized_vol_source_ts_ms,
+            rv_surface_id: self.config.realized_volatility_surface_id.clone(),
+            rv_snapshot_as_of_ms,
+            rv_snapshot_ready,
+            rv_snapshot_blockers,
+            rv_source_diagnostics,
+            rv_gate_result,
+            rv_future_dating_delta_ms,
+            exit_eval_now_ms: now_ms,
+            exit_trigger_source: trigger_context.source,
+            trigger_ts_event_ms: trigger_context.ts_event_ms,
+            trigger_ts_init_ms: trigger_context.ts_init_ms,
             pricing_kurtosis: self.config.pricing_kurtosis,
             exit_hysteresis_bps: self.config.exit_hysteresis_bps,
             fair_probability_up: self.current_position_fair_probability_up_at(now_ms),
@@ -3972,7 +4241,11 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn log_exit_evaluation(&self, now_ms: u64, decision: &ExitSubmissionDecision) {
-        let fields = self.exit_evaluation_log_fields_at(now_ms, decision);
+        let fields = self.exit_evaluation_log_fields_at(
+            now_ms,
+            ExitEvaluationTriggerContext::unknown(now_ms),
+            decision,
+        );
         let blocked = fields.submission_blocked_reason.is_some();
         if blocked {
             if should_warn_on_exit_submission_block(fields.submission_blocked_reason) {
@@ -4480,6 +4753,33 @@ impl BinaryOracleEdgeTaker {
             worst_case_edge_basis_points: worst_case_edge_basis_points
                 .filter(|value| value.is_finite())
                 .map_or_else(String::new, evidence_number),
+            up_worst_case_edge_basis_points: option_evidence_number(
+                decision.evaluation.up_worst_case_ev_bps,
+            ),
+            down_worst_case_edge_basis_points: option_evidence_number(
+                decision.evaluation.down_worst_case_ev_bps,
+            ),
+            gate_blocked_by: decision
+                .evaluation
+                .gate
+                .blocked_by
+                .iter()
+                .map(entry_block_reason_to_evidence)
+                .collect(),
+            pricing_blocked_by: decision
+                .evaluation
+                .pricing_blocked_by
+                .iter()
+                .map(entry_pricing_block_reason_to_evidence)
+                .collect(),
+            fast_venue_name: self
+                .pricing
+                .selected_pricing_spot()
+                .map(|spot| spot.venue.clone()),
+            fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
+            fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
+            fast_venue_incoherent: self.pricing.fast_venue_incoherent,
+            lead_agreement_corr: option_evidence_number(self.pricing.last_lead_agreement_corr),
             fee_rate_basis_points: String::new(),
             selected_side: decision
                 .evaluation
@@ -4681,6 +4981,33 @@ impl BinaryOracleEdgeTaker {
             uncertainty_band_probability: evidence_number(uncertainty_band_probability),
             expected_edge_basis_points: evidence_number(expected_edge_basis_points),
             worst_case_edge_basis_points: evidence_number(worst_case_edge_basis_points),
+            up_worst_case_edge_basis_points: option_evidence_number(
+                decision.evaluation.up_worst_case_ev_bps,
+            ),
+            down_worst_case_edge_basis_points: option_evidence_number(
+                decision.evaluation.down_worst_case_ev_bps,
+            ),
+            gate_blocked_by: decision
+                .evaluation
+                .gate
+                .blocked_by
+                .iter()
+                .map(entry_block_reason_to_evidence)
+                .collect(),
+            pricing_blocked_by: decision
+                .evaluation
+                .pricing_blocked_by
+                .iter()
+                .map(entry_pricing_block_reason_to_evidence)
+                .collect(),
+            fast_venue_name: self
+                .pricing
+                .selected_pricing_spot()
+                .map(|spot| spot.venue.clone()),
+            fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
+            fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
+            fast_venue_incoherent: self.pricing.fast_venue_incoherent,
+            lead_agreement_corr: option_evidence_number(self.pricing.last_lead_agreement_corr),
             fee_rate_basis_points: evidence_number(fee_rate_basis_points),
             selected_side: Some(outcome_side_evidence_label(selected_side).to_string()),
             submission_instrument_id: instrument_id.to_string(),
@@ -4819,52 +5146,56 @@ impl BinaryOracleEdgeTaker {
         )
     }
 
+    #[cfg(test)]
+    fn try_submit_exit_order(&mut self, now_ms: u64) -> Result<Option<ClientOrderId>> {
+        self.try_submit_exit_order_for_trigger(
+            now_ms,
+            ExitEvaluationTriggerContext::unknown(now_ms),
+        )
+    }
+
     /// Evaluate and (if admitted) submit an exit order, then record durable #885
     /// exit-evaluation evidence flood-gated by [`ExitOutcomeKey`].
     ///
-    /// `trigger_source` / `trigger_ts_event_ms` / `trigger_ts_init_ms` are narrow,
-    /// caller-supplied evidence inputs only — they do not alter the trading decision,
-    /// which is computed entirely from `now_ms` inside [`Self::try_submit_exit_order_inner`].
-    fn try_submit_exit_order(
+    /// `trigger_context` is a narrow, caller-supplied evidence input only — it does
+    /// not alter the trading decision, which is computed entirely from `now_ms`
+    /// inside [`Self::try_submit_exit_order_inner`].
+    fn try_submit_exit_order_for_trigger(
         &mut self,
         now_ms: u64,
-        trigger_source: BoltV3ExitTriggerSource,
-        trigger_ts_event_ms: Option<i64>,
-        trigger_ts_init_ms: Option<i64>,
+        trigger_context: ExitEvaluationTriggerContext,
     ) -> Result<Option<ClientOrderId>> {
-        let (result, decision) = self.try_submit_exit_order_inner(now_ms)?;
-        self.record_exit_evaluation_evidence(
-            now_ms,
-            &decision,
-            trigger_source,
-            trigger_ts_event_ms,
-            trigger_ts_init_ms,
-            result.is_some(),
-        );
+        let (result, decision) = self.try_submit_exit_order_inner(now_ms, trigger_context)?;
+        self.record_exit_evaluation_evidence(now_ms, &decision, trigger_context, result.is_some());
         Ok(result)
     }
 
     fn try_submit_exit_order_inner(
         &mut self,
         now_ms: u64,
+        trigger_context: ExitEvaluationTriggerContext,
     ) -> Result<(Option<ClientOrderId>, ExitSubmissionDecision)> {
         self.refresh_realized_volatility_snapshot_at(now_ms);
         self.refresh_current_reference_price_selection_at(now_ms);
         let mut decision = self.exit_submission_decision_at(now_ms);
 
         let Some(instrument_id) = decision.instrument_id else {
+            self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
             self.log_exit_evaluation(now_ms, &decision);
             return Ok((None, decision));
         };
         let Some(order_side) = decision.order_side else {
+            self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
             self.log_exit_evaluation(now_ms, &decision);
             return Ok((None, decision));
         };
         let Some(raw_price) = decision.price else {
+            self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
             self.log_exit_evaluation(now_ms, &decision);
             return Ok((None, decision));
         };
         let Some(mut quantity) = decision.quantity else {
+            self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
             self.log_exit_evaluation(now_ms, &decision);
             return Ok((None, decision));
         };
@@ -4878,6 +5209,7 @@ impl BinaryOracleEdgeTaker {
             self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
         else {
             decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE);
+            self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
             self.log_exit_evaluation(now_ms, &decision);
             return Ok((None, decision));
         };
@@ -4886,6 +5218,7 @@ impl BinaryOracleEdgeTaker {
         let price = Price::new(raw_price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         decision.client_order_id = Some(client_order_id);
+        self.record_exit_decision_once(now_ms, trigger_context, &decision)?;
         self.log_exit_evaluation(now_ms, &decision);
         let order = self.build_exit_order_with_execution_config(
             order_config,
@@ -4969,12 +5302,13 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         now_ms: u64,
         decision: &ExitSubmissionDecision,
-        trigger_source: BoltV3ExitTriggerSource,
-        trigger_ts_event_ms: Option<i64>,
-        trigger_ts_init_ms: Option<i64>,
+        trigger_context: ExitEvaluationTriggerContext,
         submitted: bool,
     ) {
-        let log_fields = self.exit_evaluation_log_fields_at(now_ms, decision);
+        let trigger_source = trigger_context.source;
+        let trigger_ts_event_ms = Some(trigger_context.ts_event_ms as i64);
+        let trigger_ts_init_ms = trigger_context.ts_init_ms.map(|value| value as i64);
+        let log_fields = self.exit_evaluation_log_fields_at(now_ms, trigger_context, decision);
         let rv_fields = self.realized_volatility_evidence_fields();
         let rv_gate_result = self
             .pricing
@@ -5057,7 +5391,7 @@ impl BinaryOracleEdgeTaker {
             .decision_evidence()
             .record_exit_evaluation(&evidence)
         {
-            log::warn!(
+            log::error!(
                 "binary_oracle_edge_taker exit evidence write failed: strategy_id={} position_id={:?} error={:#}",
                 self.config.strategy_id,
                 evidence.position_id,
@@ -5189,44 +5523,20 @@ impl BinaryOracleEdgeTaker {
                 .record_strategy_input_snapshot(&strategy_input_snapshot)?;
         }
 
+        if let Some(reason) = decision.blocked_reason {
+            self.record_and_log_entry_skip(now_ms, &decision, reason)?;
+        }
+
         let Some(instrument_id) = decision.instrument_id else {
-            if let Some(reason) = decision.blocked_reason {
-                log::warn!(
-                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
-                    self.config.strategy_id,
-                    reason
-                );
-            }
             return Ok(None);
         };
         let Some(order_side) = decision.order_side else {
-            if let Some(reason) = decision.blocked_reason {
-                log::warn!(
-                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
-                    self.config.strategy_id,
-                    reason
-                );
-            }
             return Ok(None);
         };
         let Some(price) = decision.price else {
-            if let Some(reason) = decision.blocked_reason {
-                log::warn!(
-                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
-                    self.config.strategy_id,
-                    reason
-                );
-            }
             return Ok(None);
         };
         let Some(quantity_value) = decision.quantity_value else {
-            if let Some(reason) = decision.blocked_reason {
-                log::warn!(
-                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
-                    self.config.strategy_id,
-                    reason
-                );
-            }
             return Ok(None);
         };
         let Some(historical_entry_fee_bps) = decision
@@ -5234,10 +5544,11 @@ impl BinaryOracleEdgeTaker {
             .selected_side
             .and_then(|selected_side| self.entry_fee_bps_at_price(selected_side, price))
         else {
-            log::warn!(
-                "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason=historical_entry_fee_unavailable",
-                self.config.strategy_id
-            );
+            self.record_and_log_entry_skip(
+                now_ms,
+                &decision,
+                ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE,
+            )?;
             return Ok(None);
         };
         let instrument = self
@@ -5246,15 +5557,29 @@ impl BinaryOracleEdgeTaker {
         let quantity = instrument.try_make_qty(quantity_value, Some(true))?;
 
         if self.exposure_occupancy().is_some() {
+            self.record_entry_skip_once(
+                now_ms,
+                &decision,
+                BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation,
+                None,
+            )?;
             if let Err(error) = self.enforce_one_position_invariant() {
                 log::warn!(
-                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason=one_position_invariant_violation error={error:#}",
-                    self.config.strategy_id
+                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={} error={error:#}",
+                    self.config.strategy_id,
+                    ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
+                );
+            } else {
+                log::warn!(
+                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
+                    self.config.strategy_id,
+                    ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION
                 );
             }
             return Ok(None);
         }
 
+        self.last_recorded_entry_skip = None;
         let price = Price::new(price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         let order = self.build_configured_entry_order(
@@ -5759,8 +6084,7 @@ impl DataActor for BinaryOracleEdgeTaker {
             .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
             && let Some(signal_quote) = self.signal_quote_from_tick(quote)
         {
-            let trigger_ts_init_ms = (quote.ts_init.as_u64() / NANOS_PER_MILLI_U64) as i64;
-            self.observe_signal_quote(&signal_quote, Some(trigger_ts_init_ms));
+            self.observe_signal_quote(&signal_quote);
         }
         for snapshot in self.context.observe_realized_volatility_quote(quote) {
             self.pricing.observe_realized_vol_snapshot(snapshot);
@@ -5828,13 +6152,14 @@ impl DataActor for BinaryOracleEdgeTaker {
 
         self.refresh_fee_readiness();
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
-        let book_delta_ts_event_ms = (deltas.ts_event.as_u64() / NANOS_PER_MILLI_U64) as i64;
         if matches!(self.exposure, ExposureState::Managed(_))
-            && let Err(error) = self.try_submit_exit_order(
+            && let Err(error) = self.try_submit_exit_order_for_trigger(
                 now_ms,
-                BoltV3ExitTriggerSource::BookDelta,
-                Some(book_delta_ts_event_ms),
-                None,
+                ExitEvaluationTriggerContext::new(
+                    BoltV3ExitTriggerSource::BookDelta,
+                    deltas.ts_event.as_u64() / NANOS_PER_MILLI_U64,
+                    Some(deltas.ts_init.as_u64() / NANOS_PER_MILLI_U64),
+                ),
             )
         {
             log::error!(
@@ -6555,6 +6880,10 @@ const ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE: &str = "quantity_not_positive";
 const ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID: &str = "position_contract_invalid";
 const ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED: &str =
     "entry_position_contract_unsupported";
+const ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE: &str =
+    "historical_entry_fee_unavailable";
+const ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION: &str =
+    "one_position_invariant_violation";
 const EXIT_BLOCK_REASON_NO_OPEN_POSITION: &str = "no_open_position";
 const EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING: &str = "exit_already_pending";
 const EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING: &str = "entry_order_still_working";
@@ -6937,6 +7266,31 @@ struct ExitSubmissionDecision {
     forced_flat_reasons: Vec<ForcedFlatReason>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExitEvaluationTriggerContext {
+    source: BoltV3ExitTriggerSource,
+    ts_event_ms: u64,
+    ts_init_ms: Option<u64>,
+}
+
+impl ExitEvaluationTriggerContext {
+    const fn new(
+        source: BoltV3ExitTriggerSource,
+        ts_event_ms: u64,
+        ts_init_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            source,
+            ts_event_ms,
+            ts_init_ms,
+        }
+    }
+
+    const fn unknown(now_ms: u64) -> Self {
+        Self::new(BoltV3ExitTriggerSource::Unknown, now_ms, None)
+    }
+}
+
 impl ExitSubmissionDecision {
     fn execution_config(&self) -> Option<ExitOrderExecutionConfig> {
         Some(ExitOrderExecutionConfig {
@@ -6978,6 +7332,17 @@ struct ExitEvaluationLogFields {
     realized_vol: Option<f64>,
     realized_vol_source_venue: Option<String>,
     realized_vol_source_ts_ms: Option<u64>,
+    rv_surface_id: String,
+    rv_snapshot_as_of_ms: Option<u64>,
+    rv_snapshot_ready: bool,
+    rv_snapshot_blockers: Vec<BoltV3ExitRvSnapshotBlocker>,
+    rv_source_diagnostics: Vec<BoltV3RealizedVolatilitySourceDiagnosticEvidence>,
+    rv_gate_result: BoltV3ExitRvGateResult,
+    rv_future_dating_delta_ms: Option<u64>,
+    exit_eval_now_ms: u64,
+    exit_trigger_source: BoltV3ExitTriggerSource,
+    trigger_ts_event_ms: u64,
+    trigger_ts_init_ms: Option<u64>,
     pricing_kurtosis: f64,
     exit_hysteresis_bps: i64,
     fair_probability_up: Option<f64>,
@@ -7056,6 +7421,368 @@ enum ExitDecision {
     ExitFailClosed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EntrySkipDedupeKey {
+    reason_category: BoltV3EntrySkipReasonCategory,
+    gate_blocked_by: Vec<BoltV3EntryBlockReason>,
+    pricing_blocked_by: Vec<BoltV3EntryPricingBlockReason>,
+    market_id: Option<String>,
+    interval_open: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExitDecisionDedupeKey {
+    market_id: Option<String>,
+    position_id: Option<String>,
+    forced_flat_reasons: Vec<BoltV3ForcedFlatReason>,
+    exit_decision: BoltV3ExitDecisionOutcome,
+    blocked_reason: Option<BoltV3ExitBlockedReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForcedFlatEvidenceInputs {
+    stale_reference_after_ms: Option<u64>,
+    last_reference_ts_ms: Option<u64>,
+    min_liquidity_required: Option<String>,
+    liquidity_available: Option<String>,
+    frozen: bool,
+    metadata_matches_selection: bool,
+    fast_venue_incoherent: bool,
+}
+
+impl BoltV3EntrySkipEvidence {
+    fn from_entry_skip(
+        strategy_id: String,
+        now_ms: u64,
+        reason_category: BoltV3EntrySkipReasonCategory,
+        unclassified_context: Option<String>,
+        fields: &EntryEvaluationLogFields,
+        forced_flat_inputs: ForcedFlatEvidenceInputs,
+    ) -> Self {
+        Self {
+            strategy_id,
+            now_ms,
+            reason_category,
+            unclassified_context,
+            gate_blocked_by: fields
+                .gate_blocked_by
+                .iter()
+                .map(entry_block_reason_to_evidence)
+                .collect(),
+            pricing_blocked_by: fields
+                .pricing_blocked_by
+                .iter()
+                .map(entry_pricing_block_reason_to_evidence)
+                .collect(),
+            market_id: fields.market_id.clone(),
+            phase: format!("{:?}", fields.phase),
+            seconds_to_market_end: fields.seconds_to_expiry,
+            spot_price: option_evidence_number(fields.spot_price),
+            reference_current_price: option_evidence_number(fields.reference_current_price),
+            realized_vol: option_evidence_number(fields.realized_vol),
+            realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
+            realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
+            fair_probability_up: option_evidence_number(fields.fair_probability_up),
+            fair_probability_down: option_evidence_number(fields.fair_probability_down),
+            selected_side: fields.selected_side.map(outcome_side_to_evidence),
+            sized_notional: option_evidence_number(fields.sized_notional),
+            sized_worst_case_ev_bps: option_evidence_number(fields.sized_worst_case_ev_bps),
+            sized_edge_cents_per_share: option_evidence_number(fields.sized_edge_cents_per_share),
+            theta_scaled_min_edge_bps: option_evidence_number(fields.theta_scaled_min_edge_bps),
+            up_fee_bps: option_evidence_number(fields.up_fee_bps),
+            down_fee_bps: option_evidence_number(fields.down_fee_bps),
+            submission_blocked_reason: fields
+                .submission_blocked_reason
+                .and_then(entry_skip_reason_category_from_str)
+                .or(Some(reason_category)),
+            stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
+            last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
+            min_liquidity_required: forced_flat_inputs.min_liquidity_required,
+            liquidity_available: forced_flat_inputs.liquidity_available,
+            frozen: forced_flat_inputs.frozen,
+            metadata_matches_selection: forced_flat_inputs.metadata_matches_selection,
+            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
+        }
+    }
+}
+
+impl BoltV3ExitDecisionEvidence {
+    fn from_exit_decision(
+        strategy_id: String,
+        ts_ms: u64,
+        fields: &ExitEvaluationLogFields,
+        forced_flat_inputs: ForcedFlatEvidenceInputs,
+    ) -> Self {
+        let blocked_reason = fields
+            .submission_blocked_reason
+            .map(exit_block_reason_to_evidence);
+        let exit_decision = if blocked_reason.is_some() {
+            BoltV3ExitDecisionOutcome::Blocked
+        } else {
+            match fields.exit_decision {
+                Some(ExitDecision::Hold) => BoltV3ExitDecisionOutcome::Hold,
+                Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
+                Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
+                None => BoltV3ExitDecisionOutcome::Blocked,
+            }
+        };
+        Self {
+            strategy_id,
+            market_id: fields.market_id.clone(),
+            position_id: fields
+                .position_id
+                .map(|position_id| position_id.to_string()),
+            position_instrument_id: fields
+                .position_instrument_id
+                .map(|instrument_id| instrument_id.to_string()),
+            position_outcome_side: fields.position_outcome_side.map(outcome_side_to_evidence),
+            forced_flat_reasons: fields
+                .forced_flat_reasons
+                .iter()
+                .map(forced_flat_reason_to_evidence)
+                .collect(),
+            hold_ev_bps: option_evidence_number(fields.hold_ev_bps),
+            exit_ev_bps: option_evidence_number(fields.exit_ev_bps),
+            realized_vol: option_evidence_number(fields.realized_vol),
+            realized_vol_source_venue: fields.realized_vol_source_venue.clone(),
+            realized_vol_source_ts_ms: fields.realized_vol_source_ts_ms,
+            exit_eval_now_ms: fields.exit_eval_now_ms,
+            exit_trigger_source: fields.exit_trigger_source,
+            trigger_ts_event_ms: fields.trigger_ts_event_ms,
+            trigger_ts_init_ms: fields.trigger_ts_init_ms,
+            rv_surface_id: fields.rv_surface_id.clone(),
+            rv_snapshot_as_of_ms: fields.rv_snapshot_as_of_ms,
+            rv_snapshot_ready: fields.rv_snapshot_ready,
+            rv_snapshot_blockers: fields.rv_snapshot_blockers.clone(),
+            rv_source_diagnostics: fields.rv_source_diagnostics.clone(),
+            rv_gate_result: fields.rv_gate_result,
+            rv_future_dating_delta_ms: fields.rv_future_dating_delta_ms,
+            exit_hysteresis_bps: fields.exit_hysteresis_bps.to_string(),
+            exit_decision,
+            blocked_reason,
+            client_order_id: fields
+                .submission_client_order_id
+                .map(|client_order_id| client_order_id.to_string()),
+            seconds_to_market_end: fields.seconds_to_expiry,
+            ts_ms,
+            stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
+            last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
+            min_liquidity_required: forced_flat_inputs.min_liquidity_required,
+            liquidity_available: forced_flat_inputs.liquidity_available,
+            frozen: forced_flat_inputs.frozen,
+            metadata_matches_selection: forced_flat_inputs.metadata_matches_selection,
+            fast_venue_incoherent: forced_flat_inputs.fast_venue_incoherent,
+        }
+    }
+}
+
+fn option_evidence_number(value: Option<f64>) -> Option<String> {
+    value.filter(|value| value.is_finite()).map(evidence_number)
+}
+
+fn outcome_side_to_evidence(side: OutcomeSide) -> BoltV3OutcomeSide {
+    match side {
+        OutcomeSide::Up => BoltV3OutcomeSide::Up,
+        OutcomeSide::Down => BoltV3OutcomeSide::Down,
+    }
+}
+
+fn forced_flat_reason_to_evidence(reason: &ForcedFlatReason) -> BoltV3ForcedFlatReason {
+    match reason {
+        ForcedFlatReason::Freeze => BoltV3ForcedFlatReason::Freeze,
+        ForcedFlatReason::StaleReference => BoltV3ForcedFlatReason::StaleReference,
+        ForcedFlatReason::ThinBook => BoltV3ForcedFlatReason::ThinBook,
+        ForcedFlatReason::MetadataMismatch => BoltV3ForcedFlatReason::MetadataMismatch,
+        ForcedFlatReason::FastVenueIncoherent => BoltV3ForcedFlatReason::FastVenueIncoherent,
+    }
+}
+
+fn exit_block_reason_to_evidence(reason: &str) -> BoltV3ExitBlockedReason {
+    match reason {
+        EXIT_BLOCK_REASON_NO_OPEN_POSITION => BoltV3ExitBlockedReason::NoOpenPosition,
+        EXIT_BLOCK_REASON_EXIT_ALREADY_PENDING => BoltV3ExitBlockedReason::ExitAlreadyPending,
+        EXIT_BLOCK_REASON_ENTRY_ORDER_STILL_WORKING => {
+            BoltV3ExitBlockedReason::EntryOrderStillWorking
+        }
+        EXIT_BLOCK_REASON_EXIT_DECISION_UNAVAILABLE => {
+            BoltV3ExitBlockedReason::ExitDecisionUnavailable
+        }
+        EXIT_BLOCK_REASON_EXIT_HOLD => BoltV3ExitBlockedReason::ExitHold,
+        EXIT_BLOCK_REASON_OPEN_POSITION_MISSING => BoltV3ExitBlockedReason::OpenPositionMissing,
+        EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID => {
+            BoltV3ExitBlockedReason::ExitOrderConfigInvalid
+        }
+        EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED => {
+            BoltV3ExitBlockedReason::ExitQuoteQuantityUnsupported
+        }
+        EXIT_BLOCK_REASON_EXIT_PRICE_MISSING => BoltV3ExitBlockedReason::ExitPriceMissing,
+        EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE => {
+            BoltV3ExitBlockedReason::ExitQuantityNotPositive
+        }
+        _ => unreachable!("unknown exit blocked reason `{reason}`"),
+    }
+}
+
+fn exposure_occupancy_to_evidence(occupancy: ExposureOccupancy) -> BoltV3ExposureOccupancy {
+    match occupancy {
+        ExposureOccupancy::PendingEntry => BoltV3ExposureOccupancy::PendingEntry,
+        ExposureOccupancy::EntryReconcilePending => BoltV3ExposureOccupancy::EntryReconcilePending,
+        ExposureOccupancy::ManagedPosition => BoltV3ExposureOccupancy::ManagedPosition,
+        ExposureOccupancy::ExitPending => BoltV3ExposureOccupancy::ExitPending,
+        ExposureOccupancy::UnsupportedObserved => BoltV3ExposureOccupancy::UnsupportedObserved,
+        ExposureOccupancy::BlindRecovery => BoltV3ExposureOccupancy::BlindRecovery,
+    }
+}
+
+fn entry_block_reason_to_evidence(reason: &EntryBlockReason) -> BoltV3EntryBlockReason {
+    match reason {
+        EntryBlockReason::PhaseNotActive => BoltV3EntryBlockReason::PhaseNotActive,
+        EntryBlockReason::MetadataMismatch => BoltV3EntryBlockReason::MetadataMismatch,
+        EntryBlockReason::ActiveBookNotPriced => BoltV3EntryBlockReason::ActiveBookNotPriced,
+        EntryBlockReason::BookCrossed => BoltV3EntryBlockReason::BookCrossed,
+        EntryBlockReason::IntervalOpenMissing => BoltV3EntryBlockReason::IntervalOpenMissing,
+        EntryBlockReason::WarmupIncomplete => BoltV3EntryBlockReason::WarmupIncomplete,
+        EntryBlockReason::FeesNotReady => BoltV3EntryBlockReason::FeesNotReady,
+        EntryBlockReason::RecoveryMode => BoltV3EntryBlockReason::RecoveryMode,
+        EntryBlockReason::MarketCoolingDown => BoltV3EntryBlockReason::MarketCoolingDown,
+        EntryBlockReason::SpotSpikeCooldown => BoltV3EntryBlockReason::SpotSpikeCooldown,
+        EntryBlockReason::ForcedFlat(reason) => {
+            BoltV3EntryBlockReason::ForcedFlat(forced_flat_reason_to_evidence(reason))
+        }
+        EntryBlockReason::OnePositionInvariant(occupancy) => {
+            BoltV3EntryBlockReason::OnePositionInvariant(exposure_occupancy_to_evidence(*occupancy))
+        }
+    }
+}
+
+fn binary_edge_block_reason_to_evidence(
+    reason: BinaryOutcomeEdgeBlockReason,
+) -> BoltV3BinaryOutcomeEdgeBlockReason {
+    match reason {
+        BinaryOutcomeEdgeBlockReason::MissingOrderBook => {
+            BoltV3BinaryOutcomeEdgeBlockReason::MissingOrderBook
+        }
+        BinaryOutcomeEdgeBlockReason::InsufficientDepth => {
+            BoltV3BinaryOutcomeEdgeBlockReason::InsufficientDepth
+        }
+        BinaryOutcomeEdgeBlockReason::InvalidProbability => {
+            BoltV3BinaryOutcomeEdgeBlockReason::InvalidProbability
+        }
+        BinaryOutcomeEdgeBlockReason::InvalidCost => {
+            BoltV3BinaryOutcomeEdgeBlockReason::InvalidCost
+        }
+        BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape => {
+            BoltV3BinaryOutcomeEdgeBlockReason::UnsupportedOrderShape
+        }
+        BinaryOutcomeEdgeBlockReason::EdgeBelowThreshold => {
+            BoltV3BinaryOutcomeEdgeBlockReason::EdgeBelowThreshold
+        }
+        BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge => {
+            BoltV3BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
+        }
+        BinaryOutcomeEdgeBlockReason::FeeUnavailable => {
+            BoltV3BinaryOutcomeEdgeBlockReason::FeeUnavailable
+        }
+    }
+}
+
+fn entry_pricing_block_reason_to_evidence(
+    reason: &EntryPricingBlockReason,
+) -> BoltV3EntryPricingBlockReason {
+    match reason {
+        EntryPricingBlockReason::SpotPriceMissing => {
+            BoltV3EntryPricingBlockReason::SpotPriceMissing
+        }
+        EntryPricingBlockReason::ReferenceCurrentPriceStale => {
+            BoltV3EntryPricingBlockReason::ReferenceCurrentPriceStale
+        }
+        EntryPricingBlockReason::StrikePriceMissing => {
+            BoltV3EntryPricingBlockReason::StrikePriceMissing
+        }
+        EntryPricingBlockReason::SecondsToExpiryMissing => {
+            BoltV3EntryPricingBlockReason::SecondsToExpiryMissing
+        }
+        EntryPricingBlockReason::RealizedVolNotReady => {
+            BoltV3EntryPricingBlockReason::RealizedVolNotReady
+        }
+        EntryPricingBlockReason::ThetaScalerUnavailable => {
+            BoltV3EntryPricingBlockReason::ThetaScalerUnavailable
+        }
+        EntryPricingBlockReason::UncertaintyBandUnavailable => {
+            BoltV3EntryPricingBlockReason::UncertaintyBandUnavailable
+        }
+        EntryPricingBlockReason::FairProbabilityUnavailable => {
+            BoltV3EntryPricingBlockReason::FairProbabilityUnavailable
+        }
+        EntryPricingBlockReason::FeeUnavailable(side) => {
+            BoltV3EntryPricingBlockReason::FeeUnavailable(outcome_side_to_evidence(*side))
+        }
+        EntryPricingBlockReason::ExecutableEntryCostUnavailable(side) => {
+            BoltV3EntryPricingBlockReason::ExecutableEntryCostUnavailable(outcome_side_to_evidence(
+                *side,
+            ))
+        }
+        EntryPricingBlockReason::ExecutableEdgeUnavailable(side, reason) => {
+            BoltV3EntryPricingBlockReason::ExecutableEdgeUnavailable(
+                outcome_side_to_evidence(*side),
+                binary_edge_block_reason_to_evidence(*reason),
+            )
+        }
+        EntryPricingBlockReason::SizedNotionalUnsupported(side) => {
+            BoltV3EntryPricingBlockReason::SizedNotionalUnsupported(outcome_side_to_evidence(*side))
+        }
+    }
+}
+
+fn entry_skip_reason_category_from_str(reason: &str) -> Option<BoltV3EntrySkipReasonCategory> {
+    match reason {
+        ENTRY_BLOCK_REASON_STRATEGY_CORE_NOT_REGISTERED => {
+            Some(BoltV3EntrySkipReasonCategory::StrategyCoreNotRegistered)
+        }
+        ENTRY_BLOCK_REASON_ENTRY_GATE_BLOCKED => {
+            Some(BoltV3EntrySkipReasonCategory::EntryGateBlocked)
+        }
+        ENTRY_BLOCK_REASON_ENTRY_PRICING_BLOCKED => {
+            Some(BoltV3EntrySkipReasonCategory::EntryPricingBlocked)
+        }
+        ENTRY_BLOCK_REASON_NO_SIDE_SELECTED => Some(BoltV3EntrySkipReasonCategory::NoSideSelected),
+        ENTRY_BLOCK_REASON_SIZED_NOTIONAL_NOT_POSITIVE => {
+            Some(BoltV3EntrySkipReasonCategory::SizedNotionalNotPositive)
+        }
+        ENTRY_BLOCK_REASON_INSTRUMENT_ID_MISSING => {
+            Some(BoltV3EntrySkipReasonCategory::InstrumentIdMissing)
+        }
+        ENTRY_BLOCK_REASON_INSTRUMENT_MISSING_FROM_CACHE => {
+            Some(BoltV3EntrySkipReasonCategory::InstrumentMissingFromCache)
+        }
+        ENTRY_BLOCK_REASON_ENTRY_PRICE_MISSING => {
+            Some(BoltV3EntrySkipReasonCategory::EntryPriceMissing)
+        }
+        ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED => {
+            Some(BoltV3EntrySkipReasonCategory::QuantityRoundingFailed)
+        }
+        ENTRY_BLOCK_REASON_LIMIT_NOTIONAL_EXCEEDS_SIZED_NOTIONAL => {
+            Some(BoltV3EntrySkipReasonCategory::LimitNotionalExceedsSizedNotional)
+        }
+        ENTRY_BLOCK_REASON_QUANTITY_NOT_POSITIVE => {
+            Some(BoltV3EntrySkipReasonCategory::QuantityNotPositive)
+        }
+        ENTRY_BLOCK_REASON_POSITION_CONTRACT_INVALID => {
+            Some(BoltV3EntrySkipReasonCategory::PositionContractInvalid)
+        }
+        ENTRY_BLOCK_REASON_ENTRY_POSITION_CONTRACT_UNSUPPORTED => {
+            Some(BoltV3EntrySkipReasonCategory::EntryPositionContractUnsupported)
+        }
+        ENTRY_BLOCK_REASON_HISTORICAL_ENTRY_FEE_UNAVAILABLE => {
+            Some(BoltV3EntrySkipReasonCategory::HistoricalEntryFeeUnavailable)
+        }
+        ENTRY_BLOCK_REASON_ONE_POSITION_INVARIANT_VIOLATION => {
+            Some(BoltV3EntrySkipReasonCategory::OnePositionInvariantViolation)
+        }
+        _ => None,
+    }
+}
+
 /// Stable key for #885 exit-evaluation evidence flood-gating. Two exit evaluations
 /// with the same key produce the same RCA story, so only the first is recorded
 /// durably (subsequent identical ticks are suppressed). Deliberately excludes the
@@ -7063,7 +7790,7 @@ enum ExitDecision {
 /// collapses to one record. `Ord` lets it key a `BTreeMap` without a new import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct ExitOutcomeKey {
-    exit_decision: BoltV3ExitDecisionEvidence,
+    exit_decision: BoltV3ExitDecisionOutcome,
     submission_blocked_reason: Option<&'static str>,
     rv_gate_result: BoltV3RvGateResult,
 }
@@ -7090,11 +7817,11 @@ fn should_warn_on_exit_submission_block(reason: Option<&str>) -> bool {
 /// `submission_blocked_reason` field separately explains why.
 fn exit_decision_evidence_from_optional(
     decision: Option<ExitDecision>,
-) -> BoltV3ExitDecisionEvidence {
+) -> BoltV3ExitDecisionOutcome {
     match decision {
-        Some(ExitDecision::Hold) | None => BoltV3ExitDecisionEvidence::Hold,
-        Some(ExitDecision::Exit) => BoltV3ExitDecisionEvidence::Exit,
-        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionEvidence::ExitFailClosed,
+        Some(ExitDecision::Hold) | None => BoltV3ExitDecisionOutcome::Hold,
+        Some(ExitDecision::Exit) => BoltV3ExitDecisionOutcome::Exit,
+        Some(ExitDecision::ExitFailClosed) => BoltV3ExitDecisionOutcome::ExitFailClosed,
     }
 }
 

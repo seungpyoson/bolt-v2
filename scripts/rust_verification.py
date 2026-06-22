@@ -50,6 +50,7 @@ POLICY_RELATIVE_PATH = pathlib.Path("ci/rust-verification.toml")
 CI_RUNNERS_RELATIVE_PATH = pathlib.Path("ci/github-actions-runners.toml")
 MAX_POLICY_BYTES = 1024 * 1024
 SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+LANE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 RUST_PROBE_MODES = (
     "check-lib",
@@ -307,6 +308,19 @@ def validate_local_lane_policy(data: dict[str, Any]) -> None:
     policy = data.get("local_lane_policy")
     if not isinstance(policy, dict):
         raise PolicyError("local_lane_policy table is required")
+    allowed_keys = {
+        "enabled",
+        "allowed_ci_env",
+        "lock_dir",
+        "acquire_timeout_seconds",
+        "heartbeat_seconds",
+        "poll_interval_seconds",
+        "cheap_lane_labels",
+        "cheap_lane_max_concurrent",
+    }
+    for key in policy:
+        if key not in allowed_keys:
+            raise PolicyError(f"local_lane_policy.{key} is not supported")
     if policy.get("enabled") is not True:
         raise PolicyError("local_lane_policy.enabled must be true")
     if policy.get("allowed_ci_env") != "GITHUB_ACTIONS":
@@ -333,6 +347,24 @@ def validate_local_lane_policy(data: dict[str, Any]) -> None:
         )
     if values["heartbeat_seconds"] >= values["acquire_timeout_seconds"]:
         raise PolicyError("local_lane_policy.heartbeat_seconds must be less than acquire_timeout_seconds")
+    cheap_lane_labels = policy.get("cheap_lane_labels")
+    if cheap_lane_labels is not None:
+        if not isinstance(cheap_lane_labels, list):
+            raise PolicyError("local_lane_policy.cheap_lane_labels must be a list of lane labels")
+        seen_labels: set[str] = set()
+        for label in cheap_lane_labels:
+            if not isinstance(label, str) or not LANE_LABEL_RE.match(label):
+                raise PolicyError("local_lane_policy.cheap_lane_labels entries must be safe lane labels")
+            if label in seen_labels:
+                raise PolicyError("local_lane_policy.cheap_lane_labels entries must be unique")
+            seen_labels.add(label)
+    cheap_lane_max_concurrent = policy.get("cheap_lane_max_concurrent", 0)
+    if (
+        not isinstance(cheap_lane_max_concurrent, int)
+        or isinstance(cheap_lane_max_concurrent, bool)
+        or cheap_lane_max_concurrent < 0
+    ):
+        raise PolicyError("local_lane_policy.cheap_lane_max_concurrent must be a non-negative integer")
 
 
 def validate_remote_verification_policy(data: dict[str, Any]) -> None:

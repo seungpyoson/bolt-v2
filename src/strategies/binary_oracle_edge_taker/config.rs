@@ -288,6 +288,10 @@ impl BinaryOracleEdgeTakerBuilder {
             is_non_negative_finite(config.risk_lambda),
             "risk_lambda must be finite and >= 0"
         );
+        anyhow::ensure!(
+            is_non_negative_finite(config.forced_flat_thin_book_min_liquidity),
+            "forced_flat_thin_book_min_liquidity must be finite and >= 0"
+        );
         // Fail loud at load for positive-required integer knobs. A zero
         // trade-flow sample cap makes the count-cap evict every observation,
         // permanently emptying the buffer and starving the W3 read seam.
@@ -493,6 +497,12 @@ impl BinaryOracleEdgeTakerBuilder {
             table,
             field_prefix,
             stringify!(risk_lambda),
+            errors,
+        );
+        Self::validate_non_negative_finite_float_field(
+            table,
+            field_prefix,
+            stringify!(forced_flat_thin_book_min_liquidity),
             errors,
         );
         Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);

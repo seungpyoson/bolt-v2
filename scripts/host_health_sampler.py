@@ -40,6 +40,13 @@ from typing import Any, Callable, Optional, Tuple
 
 
 SCHEMA_VERSION = 2
+# INTENTIONAL standalone-fallback constant (AGENTS.md line 37 NO HARDCODES vs
+# line 87 intentional-hardcoded-constant convention). This is a self-contained
+# stdlib-only diagnostic script that must run on a bare host WITHOUT the repo or
+# its TOML config (e.g. a stripped EC2 box that has only the binary). The default
+# systemd unit name is therefore an intentional last-resort literal, not a config
+# drift: it is overridable at runtime via ``--service``. Coupling this standalone
+# script to the bot's TOML loader would defeat its run-anywhere purpose.
 DEFAULT_SERVICE = "bolt-v2"
 # Single source of truth for the bot's catalog/data dir is
 # ``config/root.toml`` key ``catalog_directory`` (under ``[persistence]``).
@@ -48,6 +55,13 @@ DEFAULT_SERVICE = "bolt-v2"
 # standalone-box fallback used ONLY when that file cannot be found/parsed (e.g. a
 # bare EC2 host that has the binary but not the repo checkout). The literal here
 # must mirror config/root.toml:catalog_directory.
+#
+# INTENTIONAL standalone-fallback constant (AGENTS.md line 37 NO HARDCODES vs
+# line 87 intentional-hardcoded-constant convention). The disk path is config-
+# DERIVED via discover_catalog_directory() whenever the repo is present; this
+# literal is only the last-resort value for a bare host without the repo, and is
+# overridable at runtime via ``--disk-path``. It is deliberately NOT wired to the
+# TOML config loader so the script stays self-contained and runnable anywhere.
 DISK_PATH_FALLBACK = "/srv/bolt-v2/var/bolt-v3-live/catalog"
 # Matches ``catalog_directory = "<value>"`` (single OR double quoted), tolerant of
 # surrounding whitespace. Anchored on ``catalog_directory`` as a whole word so the
@@ -107,9 +121,13 @@ def discover_catalog_directory(start: Path | None = None) -> str:
     return DISK_PATH_FALLBACK
 
 
-# Discovered once at import: the live value when the repo is present, else the
-# standalone fallback. Overridable per-run via ``--disk-path``.
-DEFAULT_DISK_PATH = discover_catalog_directory()
+# NOTE: catalog-dir discovery is INTENTIONALLY NOT run at import time. It does
+# filesystem I/O (Path.resolve, a parents walk, file reads) which a stalled cwd
+# or hung filesystem can wedge — and that would hang the sampler *during import*,
+# before main() installs signal handlers or any deadline exists. Discovery is
+# therefore resolved lazily inside main(), AFTER signal handlers, wrapped in
+# run_with_deadline so even a stalled FS is bounded. Importing this module does
+# ZERO filesystem syscalls. ``--disk-path`` overrides discovery entirely.
 SYSTEMCTL_TIMEOUT_SECONDS = 5
 # Outer per-collector wall-clock backstop. Every collector runs through
 # ``run_collector`` -> ``run_with_deadline`` in a daemon thread; if it does not
@@ -135,6 +153,15 @@ FLOCK_RETRY_SECONDS = 0.05
 # acquire fires first with its clean TimeoutError; this is the last-resort guard
 # for a stall in the syscalls the flock loop does not cover.
 SINK_TIMEOUT_SECONDS = 8.0
+# Deadline for write_to_file's POST-COMMIT cleanup (flock-unlock + os.close). The
+# record's bytes are already committed once the write-all loop completes; a stall
+# in unlock/close (e.g. an NFS close hang) must NOT be reclassified as a write
+# failure that re-routes a committed record to stdout (a duplicate) or to a false
+# RecordUnemittable. The cleanup runs under THIS bounded deadline so a stall is
+# abandoned (an fd/flock leak — the already-documented stall tradeoff) while
+# write_to_file still returns success. Kept small relative to SINK_TIMEOUT_SECONDS
+# so the cleanup deadline fires well inside the outer file-sink deadline.
+CLEANUP_TIMEOUT_SECONDS = 2.0
 # Cap on the trailing-fragment inspection in write_to_file: we scan backward from
 # EOF for the last newline in bounded chunks, reading at most this many bytes. A
 # host-health record is well under this, so a legitimate complete-but-unterminated
@@ -769,7 +796,11 @@ def append_error(errors: list[str], error: str | None) -> None:
         errors.append(error)
 
 
-def sample(service_unit: str = DEFAULT_SERVICE, disk_path: str = DEFAULT_DISK_PATH) -> dict[str, Any]:
+def sample(service_unit: str = DEFAULT_SERVICE, disk_path: str = DISK_PATH_FALLBACK) -> dict[str, Any]:
+    # ``disk_path`` defaults to the pure literal DISK_PATH_FALLBACK (NO filesystem
+    # I/O) so importing/calling sample() never triggers discovery. main() always
+    # passes the once-resolved, deadline-bounded discovered path; only direct test
+    # callers fall back to the literal.
     errors: list[str] = []
 
     host, error = run_collector("host", collect_host)
@@ -865,6 +896,41 @@ def acquire_flock_bounded(fd: int, timeout: float, retry: float) -> bool:
             time.sleep(retry)
 
 
+def release_fd_best_effort(fd: int) -> None:
+    """Unlock + close ``fd``, abandoning the cleanup if it STALLS.
+
+    This is ``write_to_file``'s POST-COMMIT cleanup. By the time it runs the
+    record's bytes are already committed to the file, so a stall in
+    ``flock(LOCK_UN)`` or ``os.close`` (e.g. an NFS close hang) must NOT propagate
+    as an exception — that would let the outer file-sink deadline reclassify a
+    COMMITTED write as a failure and either duplicate the record to stdout or
+    raise a false ``RecordUnemittable``.
+
+    The unlock+close therefore run inside their own bounded ``run_with_deadline``;
+    on timeout the wedged worker is abandoned (the accepted fd/flock leak — the
+    same stall tradeoff already documented for the write path) and this function
+    returns normally. Any non-timeout error is swallowed too: cleanup must never
+    change the committed/success outcome.
+    """
+    def _release() -> None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    try:
+        run_with_deadline(_release, CLEANUP_TIMEOUT_SECONDS)
+    except Exception:  # noqa: BLE001 - a stalled/failed cleanup must not change the outcome
+        # TimeoutError (stall -> worker abandoned, fd/flock leaked) or any other
+        # error: the record is already committed, so cleanup never fails the write.
+        pass
+
+
 def classify_trailing_fragment(path: Path, file_size: int) -> tuple[str, int]:
     """Classify the bytes after the last newline in ``path`` (held under flock).
 
@@ -882,9 +948,12 @@ def classify_trailing_fragment(path: Path, file_size: int) -> tuple[str, int]:
       with no separator. ``last_newline_offset`` is the offset just AFTER the
       last ``\\n`` (i.e. where the fragment begins), or 0 if none was found.
     - ``"undeterminable"``: the terminator could not be inspected (read error) or
-      no newline was found within ``FRAGMENT_SCAN_CAP_BYTES``. Caller keeps the
-      conservative current behaviour: write a separator, never truncate. A
-      redundant blank line is parse-safe; truncating on a guess could lose data.
+      no newline was found within ``FRAGMENT_SCAN_CAP_BYTES`` (an oversized
+      no-newline tail). The caller (``write_to_file``) treats this fail-CLOSED: it
+      does NOT append behind the unproven tail — it FAILS the file sink (raises)
+      and leaves the file UNCHANGED, so the record routes to stdout instead of
+      committing a separator behind a possibly-multi-MiB non-JSON tail. The tail
+      self-heals on a later run once it becomes provable.
 
     All reads are bounded (``FRAGMENT_SCAN_CAP_BYTES``) and use a fresh O_RDONLY |
     O_NONBLOCK fd, so this never blocks. ``file_size`` is the caller's
@@ -969,12 +1038,22 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
     complete-but-unterminated VALID record is preserved (separator appended, never
     destroyed), whereas a genuine torn/garbage fragment is ``ftruncate``d away so
     it cannot become a non-JSON line. When the fragment is undeterminable (read
-    error or no newline within the scan cap) the conservative separator is written
-    and nothing is truncated. After this write the file is therefore 100% valid
-    JSONL with no good record lost. After a partial write, the file is rolled back
-    (``ftruncate``) to the last clean record boundary so a fragment is normally
-    not left behind. If the rollback itself fails, the fragment may survive on
-    disk; the viewer tolerates a corrupt trailing line.
+    error or no newline within the scan cap, i.e. an oversized no-newline tail)
+    this method FAILS the file sink (raises ``OSError``) WITHOUT mutating the file:
+    appending a separator behind an unproven tail could commit a multi-MiB non-JSON
+    line, so instead the caller falls back to stdout and the file is left exactly
+    as found for a later run to self-heal. After a successful write the file is
+    therefore 100% valid JSONL with no good record lost.
+
+    Note: a double FS failure (a partial ``os.write`` PREFIX lands AND the
+    ``ftruncate`` rollback below ALSO fails) can leave a torn PREFIX on disk.
+    Removing bytes the OS refuses to truncate is physically impossible, so the
+    achievable guarantee is (i) the record is never lost — the original ``OSError``
+    propagates and the caller writes it to stdout — and (ii) that torn prefix
+    SELF-HEALS on the next successful write, where ``classify_trailing_fragment``
+    classifies it ``"torn"`` and ``ftruncate``s it away before appending. On the
+    normal single-failure path the file is rolled back (``ftruncate``) to the last
+    clean record boundary so no fragment is left behind.
     """
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1010,20 +1089,31 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
             #  - "torn": genuine garbage bytes -> ftruncate them away (down to the
             #    last clean record boundary) so this record is not glued onto a
             #    non-JSON fragment AND no non-JSON line is left in the file.
-            #  - "undeterminable": read error / no newline within the cap ->
-            #    conservative separator, never truncate.
+            #  - "undeterminable": read error OR a tail larger than the scan cap
+            #    with no newline -> FAIL the file sink (raise) WITHOUT mutating the
+            #    file, so write_jsonl_line falls back to stdout. We must not commit
+            #    a separator+append behind an UNPROVEN tail: an oversized no-newline
+            #    garbage tail would otherwise be terminated into a committed
+            #    multi-MiB non-JSON line, violating the never-emit-a-non-JSON-line
+            #    directive. The record still reaches a sink (stdout) and the file is
+            #    left exactly as found for a later run to self-heal.
             decision, fragment_start = classify_trailing_fragment(path, clean_boundary)
+            if decision == "undeterminable":
+                raise OSError(
+                    f"trailing fragment in {out_path!r} is undeterminable "
+                    "(unreadable or no newline within scan cap); refusing to commit "
+                    "behind an unproven tail -- failing file sink to fall back to stdout"
+                )
             if decision == "torn":
                 # Drop ONLY the garbage fragment. O_APPEND ignores the file offset,
                 # so a plain ftruncate at the boundary is sufficient; the write-all
                 # loop below then appends at the new EOF with NO separator.
                 os.ftruncate(fd, fragment_start)
                 clean_boundary = os.fstat(fd).st_size
-            elif decision in ("valid", "undeterminable"):
+            elif decision == "valid":
                 # Terminate the prior line (O_APPEND => atomic append at EOF) so
-                # this record is not glued onto it. A "valid" record is preserved
-                # as its own line; an "undeterminable" tail gets a parse-safe blank
-                # separator rather than a destructive guess.
+                # this record is not glued onto it. A "valid" complete-but-
+                # unterminated record is preserved as its own line.
                 os.write(fd, b"\n")
                 clean_boundary = os.fstat(fd).st_size
         offset = 0
@@ -1037,22 +1127,32 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
                     )
                 offset += written
         except BaseException:
-            try:
-                os.ftruncate(fd, clean_boundary)
-            except OSError:
-                pass
+            # Roll the file back to the last clean record boundary so a partial
+            # PREFIX is not left behind for the next O_APPEND to glue onto. One
+            # cheap retry: a transient ftruncate failure (e.g. brief I/O hiccup)
+            # may clear on a second attempt, shrinking the window in which a torn
+            # prefix survives. A DOUBLE failure (partial write AND both ftruncate
+            # attempts fail) is physically unavoidable — removing bytes the OS
+            # refuses to truncate is impossible — so the record is still preserved
+            # on stdout (the original error propagates) and the torn prefix
+            # self-heals on the next successful write (classify -> "torn" ->
+            # ftruncate). See this function's docstring.
+            for _ in range(2):
+                try:
+                    os.ftruncate(fd, clean_boundary)
+                    break
+                except OSError:
+                    continue
             raise
     finally:
-        try:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-        finally:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        # COMMIT/CLEANUP separation: once the write-all loop above completes the
+        # record is committed. The unlock+close cleanup runs best-effort under its
+        # own short deadline (release_fd_best_effort) so a stall here (e.g. an NFS
+        # close hang) is ABANDONED rather than reclassifying a committed record as
+        # a file-sink failure. On the success path this lets write_to_file return
+        # success despite a cleanup stall; on the failure path the original write
+        # exception still propagates unchanged (this cleanup never raises).
+        release_fd_best_effort(fd)
 
 
 def sanitize_non_finite(obj: Any) -> Any:
@@ -1192,7 +1292,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--service", default=DEFAULT_SERVICE, help="systemd unit to sample")
     parser.add_argument(
         "--disk-path",
-        default=DEFAULT_DISK_PATH,
+        # Sentinel default: None means "not supplied". Discovery (which does FS
+        # I/O) must NOT run at import/argparse time, so the real path is resolved
+        # lazily in main() ONLY when this stays None. An explicit --disk-path
+        # bypasses discovery entirely.
+        default=None,
         help="catalog/data filesystem path to measure",
     )
     parser.add_argument("--out", help="append JSONL output to this path")
@@ -1227,13 +1331,22 @@ def log_stderr(msg: str) -> None:
 
     A full/stalled stderr (e.g. a blocked journald pipe) must never change the
     exit code OR hang the sampler. We write the line as a NON-BLOCKING raw
-    os.write to the stderr fd and DROP it on EAGAIN: a full pipe can never
+    os.write to the stderr fd and DROP it on EAGAIN: a full PIPE can never
     block, and -- unlike a deadline-bounded BUFFERED write -- no abandoned worker
     is left holding the stderr BufferedWriter lock, which would otherwise
     re-block the interpreter's shutdown flush of sys.stderr on the full pipe.
-    O_NONBLOCK is set only for the write and restored. A stderr without a real
-    fd (a test double) falls back to a deadline-bounded buffered write. Every
-    failure mode is swallowed.
+    O_NONBLOCK is set only for the write and restored.
+
+    The raw-fd write itself is ALSO deadline-bounded by run_with_deadline: for a
+    REGULAR FILE (e.g. ``2>>/mnt/hung-nfs/log``) O_NONBLOCK is IGNORED by the
+    kernel, so a stalled-filesystem write would otherwise block the main thread
+    forever despite the flag. The deadline abandons that wedged raw-fd writer in a
+    daemon thread; abandoning is safe here because — unlike the buffered path — a
+    raw os.write holds NO Python-level lock, so a left-behind writer cannot
+    re-block the interpreter's shutdown flush. A stderr without a real fd (a test
+    double) falls back to a deadline-bounded buffered write. Every failure mode is
+    swallowed; this never affects exit status and never blocks longer than the
+    deadline.
     """
     try:
         try:
@@ -1250,9 +1363,15 @@ def log_stderr(msg: str) -> None:
         original = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, original | os.O_NONBLOCK)
         try:
-            os.write(fd, data)  # EAGAIN/broken pipe on a degraded stderr -> dropped
-        except OSError:
-            pass
+            # Deadline-bound the raw write: O_NONBLOCK is a no-op on a REGULAR-FILE
+            # stderr, so a hung-FS write would block forever without this. The
+            # abandoned writer holds no lock (raw fd), so abandoning is safe.
+            try:
+                run_with_deadline(os.write, SINK_TIMEOUT_SECONDS, fd, data)
+            except OSError:
+                # EAGAIN/broken pipe (pipe) OR TimeoutError (regular-file stall):
+                # both are OSError subclasses -> drop the line, never block/raise.
+                pass
         finally:
             try:
                 fcntl.fcntl(fd, fcntl.F_SETFL, original)
@@ -1268,6 +1387,21 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGINT, stop_flag.request_stop)
     signal.signal(signal.SIGTERM, stop_flag.request_stop)
     one_shot = args.interval <= 0
+
+    # Resolve the disk path LAZILY here — AFTER the signal handlers above — and
+    # bound it with run_with_deadline so even a stalled cwd/hung filesystem during
+    # discovery (Path.resolve, the parents walk, file reads) can never wedge the
+    # sampler. A timeout or ANY error degrades to the pure-literal fallback. An
+    # explicit --disk-path (not None) bypasses discovery entirely. This is the only
+    # place discovery runs; import does zero filesystem I/O (see the module-level
+    # note where DEFAULT_DISK_PATH used to be).
+    if args.disk_path is None:
+        try:
+            args.disk_path = run_with_deadline(
+                discover_catalog_directory, COLLECTOR_TIMEOUT_SECONDS
+            )
+        except Exception:  # noqa: BLE001 - discovery must never break startup
+            args.disk_path = DISK_PATH_FALLBACK
 
     try:
         while not stop_flag.stop:

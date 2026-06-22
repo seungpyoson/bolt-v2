@@ -1864,7 +1864,13 @@ class ReviewRound4HardeningTests(unittest.TestCase):
             json.loads(raw)
         self.assertEqual(json.loads(lines[-1])["probe"], "second")
 
-    def test_write_to_file_peek_failure_separates_preexisting_fragment(self) -> None:
+    def test_write_to_file_peek_failure_fails_file_sink_leaves_file_unchanged(self) -> None:
+        # FIX 3: an UNDETERMINABLE trailing fragment (here forced via a peek that
+        # raises, so classify_trailing_fragment returns "undeterminable") must
+        # FAIL the file sink WITHOUT mutating the file, so write_jsonl_line falls
+        # back to stdout. Pre-fix write_to_file wrote a separator and appended the
+        # record BEHIND the unproven tail (committing it). Post-fix: it raises and
+        # leaves the file byte-for-byte unchanged.
         sampler = self.sampler
         saved_pread = sampler.os.pread
 
@@ -1874,20 +1880,24 @@ class ReviewRound4HardeningTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="host-health-peek-failure.") as temp:
             out_path = Path(temp) / "health.jsonl"
             out_path.write_bytes(b'{"partial":')
+            before = out_path.read_bytes()
             sampler.os.pread = pread_raises
             try:
-                sampler.write_to_file(
-                    '{"probe":"peek-failure"}\n',
-                    str(out_path),
-                    sampler.FLOCK_TIMEOUT_SECONDS,
-                )
+                with self.assertRaises(OSError):
+                    sampler.write_to_file(
+                        '{"probe":"peek-failure"}\n',
+                        str(out_path),
+                        sampler.FLOCK_TIMEOUT_SECONDS,
+                    )
             finally:
                 sampler.os.pread = saved_pread
 
             on_disk = out_path.read_bytes()
 
-        self.assertEqual(on_disk, b'{"partial":\n{"probe":"peek-failure"}\n')
-        self.assertEqual(json.loads(on_disk.splitlines()[-1])["probe"], "peek-failure")
+        # The file is UNCHANGED: no separator, no record committed behind the
+        # unproven tail.
+        self.assertEqual(on_disk, before)
+        self.assertEqual(on_disk, b'{"partial":')
 
     def test_sample_collects_cgroup_oom_when_service_collection_fails(self) -> None:
         sampler = self.sampler
@@ -2213,6 +2223,563 @@ class ReviewRound4HardeningTests(unittest.TestCase):
             self.sampler.extract_catalog_directory('catalog_directory = "/srv/foo" # data dir'),
             "/srv/foo",
         )
+
+
+def load_sampler_from(path: Path):
+    """Load a sampler module from an ARBITRARY path under a unique module name.
+
+    Used by the differential tests that import the PRE-FIX source from
+    /tmp/prefix6.py to prove a new test goes red against it and green against the
+    current source. A unique module name avoids clobbering the cached
+    ``host_health_sampler`` entry that ``load_sampler`` registers.
+    """
+    import importlib.util
+
+    name = f"host_health_sampler_variant_{abs(hash(str(path)))}"
+    spec = importlib.util.spec_from_file_location(name, str(path))
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load sampler from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+PREFIX_SOURCE = Path("/tmp/prefix6.py")
+
+
+class Round6DegradedStateFixTests(unittest.TestCase):
+    """PR #886 round 6 (#886 host-health review): six verified degraded-state
+    fixes — import-time discovery hang, regular-file stderr stall, oversized
+    undeterminable tail commit, post-commit cleanup-stall misclassification,
+    double-FS-failure data preservation + self-heal, and hardcode justification.
+    """
+
+    def setUp(self) -> None:
+        self.sampler = load_sampler()
+
+    # FIX 1 (import-time discovery hang) --------------------------------------
+    def test_import_does_no_filesystem_io_even_with_stalled_resolve(self) -> None:
+        # DIFFERENTIAL. Patch pathlib.Path.resolve to SLEEP, then import the
+        # module fresh. Pre-fix the module-level
+        # ``DEFAULT_DISK_PATH = discover_catalog_directory()`` runs at import and
+        # calls Path(...).resolve(), so a stalled resolve blocks the import for the
+        # full sleep. Post-fix discovery is lazy (in main()) so import returns
+        # immediately regardless of a stalled FS.
+        import importlib.util
+        import pathlib
+
+        def run_import(source_path: Path) -> float:
+            real_resolve = pathlib.Path.resolve
+            sleep_seconds = 3.0
+
+            def slow_resolve(self_path, *args, **kwargs):
+                time.sleep(sleep_seconds)
+                return real_resolve(self_path, *args, **kwargs)
+
+            name = f"hh_import_probe_{abs(hash(str(source_path)))}_{time.monotonic_ns()}"
+            spec = importlib.util.spec_from_file_location(name, str(source_path))
+            module = importlib.util.module_from_spec(spec)
+            pathlib.Path.resolve = slow_resolve
+            try:
+                started = time.monotonic()
+                spec.loader.exec_module(module)
+                return time.monotonic() - started
+            finally:
+                pathlib.Path.resolve = real_resolve
+                sys.modules.pop(name, None)
+
+        # Current source: import must be effectively instant (no FS at import).
+        elapsed_fixed = run_import(SCRIPT_PATH)
+        self.assertLess(
+            elapsed_fixed,
+            1.0,
+            "import did filesystem I/O (a stalled Path.resolve blocked it)",
+        )
+
+        # Differential proof against the pre-fix source: it imports SLOWLY because
+        # discovery runs at import and hits the stalled resolve.
+        if PREFIX_SOURCE.exists():
+            elapsed_prefix = run_import(PREFIX_SOURCE)
+            self.assertGreater(
+                elapsed_prefix,
+                2.0,
+                "pre-fix source unexpectedly did not block at import "
+                "(differential guard ineffective)",
+            )
+
+    def test_module_has_no_import_time_default_disk_path(self) -> None:
+        # The import-time-discovered constant is GONE: no DEFAULT_DISK_PATH at
+        # module scope (its presence is what forced discovery at import). Pre-fix
+        # the module had this attribute.
+        self.assertFalse(hasattr(self.sampler, "DEFAULT_DISK_PATH"))
+
+    def test_main_resolves_discovered_disk_path_when_not_supplied(self) -> None:
+        # When --disk-path is not supplied, main() resolves it via discovery. We
+        # stub discover_catalog_directory and capture what sample() receives.
+        sampler = self.sampler
+        captured: dict[str, object] = {}
+        saved_discover = sampler.discover_catalog_directory
+        saved_sample = sampler.sample
+        saved_write = sampler.write_jsonl_line
+
+        def fake_sample(service_unit, disk_path):
+            captured["disk_path"] = disk_path
+            return {"schema_version": 2}
+
+        sampler.discover_catalog_directory = lambda *a, **k: "/discovered/by/main"
+        sampler.sample = fake_sample
+        sampler.write_jsonl_line = lambda record, out_path: None
+        try:
+            with capture_main(sampler, []) as result:
+                pass
+        finally:
+            sampler.discover_catalog_directory = saved_discover
+            sampler.sample = saved_sample
+            sampler.write_jsonl_line = saved_write
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(captured["disk_path"], "/discovered/by/main")
+
+    def test_main_falls_back_to_literal_when_discovery_times_out(self) -> None:
+        # If discovery STALLS, main()'s run_with_deadline wrap abandons it and the
+        # disk path degrades to the pure-literal DISK_PATH_FALLBACK rather than
+        # hanging. We shrink COLLECTOR_TIMEOUT_SECONDS and make discovery sleep.
+        sampler = self.sampler
+        captured: dict[str, object] = {}
+        saved_discover = sampler.discover_catalog_directory
+        saved_sample = sampler.sample
+        saved_write = sampler.write_jsonl_line
+        saved_timeout = sampler.COLLECTOR_TIMEOUT_SECONDS
+
+        def stalling_discover(*a, **k):
+            time.sleep(30)
+            return "/never/returned"
+
+        def fake_sample(service_unit, disk_path):
+            captured["disk_path"] = disk_path
+            return {"schema_version": 2}
+
+        sampler.discover_catalog_directory = stalling_discover
+        sampler.sample = fake_sample
+        sampler.write_jsonl_line = lambda record, out_path: None
+        sampler.COLLECTOR_TIMEOUT_SECONDS = 0.2
+        try:
+            started = time.monotonic()
+            with capture_main(sampler, []) as result:
+                pass
+            elapsed = time.monotonic() - started
+        finally:
+            sampler.discover_catalog_directory = saved_discover
+            sampler.sample = saved_sample
+            sampler.write_jsonl_line = saved_write
+            sampler.COLLECTOR_TIMEOUT_SECONDS = saved_timeout
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(captured["disk_path"], sampler.DISK_PATH_FALLBACK)
+        self.assertLess(elapsed, 5.0, "main did not bound a stalled discovery")
+
+    # FIX 2 (regular-file stderr stall) ---------------------------------------
+    def test_log_stderr_returns_within_deadline_on_regular_file_stall(self) -> None:
+        # DIFFERENTIAL. For a REGULAR-FILE stderr O_NONBLOCK is ignored by the
+        # kernel, so a stalled os.write blocks the main thread. Patch os.write to
+        # sleep > SINK_TIMEOUT_SECONDS for the stderr fd; log_stderr must RETURN
+        # within roughly the (shrunk) deadline, not the full sleep. Pre-fix the
+        # raw os.write was not deadline-bounded and blocked for the full sleep.
+        sampler = self.sampler
+        saved_timeout = sampler.SINK_TIMEOUT_SECONDS
+        saved_write = sampler.os.write
+        sampler.SINK_TIMEOUT_SECONDS = 0.3
+        sleep_seconds = 30.0
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix2.") as temp:
+            stderr_path = Path(temp) / "stderr.log"
+            real_write = os.write
+
+            def stalling_write(fd, data):
+                # Only stall writes to the regular-file stderr fd; leave any other
+                # fd (none expected here) to the real syscall.
+                if fd == target_fd:
+                    time.sleep(sleep_seconds)
+                    return len(data)
+                return real_write(fd, data)
+
+            saved_stderr = sys.stderr
+            with open(stderr_path, "w", encoding="utf-8") as stderr_stream:
+                target_fd = stderr_stream.fileno()
+                sys.stderr = stderr_stream
+                sampler.os.write = stalling_write
+                box: dict[str, object] = {}
+
+                def call() -> None:
+                    try:
+                        started = time.monotonic()
+                        sampler.log_stderr("regular-file-stall")
+                        box["elapsed"] = time.monotonic() - started
+                    except BaseException as exc:  # noqa: BLE001 - captured
+                        box["raised"] = exc
+                    box["done"] = True
+
+                worker = threading.Thread(target=call, daemon=True)
+                try:
+                    worker.start()
+                    worker.join(timeout=5.0)
+                finally:
+                    sampler.os.write = saved_write
+                    sys.stderr = saved_stderr
+                    sampler.SINK_TIMEOUT_SECONDS = saved_timeout
+
+        self.assertTrue(box.get("done"), "log_stderr hung on a regular-file stderr stall")
+        self.assertIsNone(box.get("raised"), f"log_stderr raised: {box.get('raised')!r}")
+        self.assertLess(
+            box["elapsed"],
+            2.0,
+            "log_stderr did not honour the deadline on a regular-file stall",
+        )
+
+    # FIX 3 (oversized undeterminable tail must not be committed) --------------
+    def test_oversized_no_newline_tail_fails_file_sink_unchanged(self) -> None:
+        # DIFFERENTIAL. A pre-existing tail LARGER than FRAGMENT_SCAN_CAP_BYTES with
+        # NO newline classifies as "undeterminable". write_to_file must FAIL the
+        # file sink (raise) and leave the file UNCHANGED. Pre-fix it wrote a
+        # separator and appended the record, committing a >1 MiB non-JSON line.
+        sampler = self.sampler
+        cap = sampler.FRAGMENT_SCAN_CAP_BYTES
+        oversized = b"x" * (cap + 1)  # no newline anywhere within the cap
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix3-oversize.") as temp:
+            out_path = Path(temp) / "health.jsonl"
+            out_path.write_bytes(oversized)
+            before = out_path.read_bytes()
+
+            with self.assertRaises(OSError):
+                sampler.write_to_file(
+                    '{"probe":"oversize"}\n',
+                    str(out_path),
+                    sampler.FLOCK_TIMEOUT_SECONDS,
+                )
+
+            after = out_path.read_bytes()
+
+        # File byte-for-byte unchanged: no separator, no committed record behind
+        # the unproven tail.
+        self.assertEqual(after, before)
+        self.assertEqual(len(after), cap + 1)
+
+    def test_oversized_undeterminable_tail_routes_record_to_stdout(self) -> None:
+        # End-to-end: write_jsonl_line on an oversized undeterminable tail must
+        # route the record to STDOUT (file sink failed) and return the fallback
+        # warning, while leaving the file unchanged. Pre-fix the record was
+        # committed to the file as a separator+append behind the garbage tail.
+        sampler = self.sampler
+        cap = sampler.FRAGMENT_SCAN_CAP_BYTES
+        oversized = b"x" * (cap + 1)
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix3-stdout.") as temp:
+            out_path = Path(temp) / "health.jsonl"
+            out_path.write_bytes(oversized)
+            before_len = out_path.stat().st_size
+
+            out_buf = io.StringIO()
+            saved_stdout = sys.stdout
+            sys.stdout = out_buf
+            try:
+                warning = sampler.write_jsonl_line(
+                    {"probe": "oversize-e2e"}, str(out_path), lock_timeout=0.2
+                )
+            finally:
+                sys.stdout = saved_stdout
+
+            after_len = out_path.stat().st_size
+
+        self.assertIsInstance(warning, str)
+        self.assertIn("fell back to stdout", warning)
+        record = json.loads(out_buf.getvalue().strip())
+        self.assertEqual(record["probe"], "oversize-e2e")
+        # The file was not appended to (only the original oversized tail remains).
+        self.assertEqual(after_len, before_len)
+
+    def test_torn_and_valid_fragment_paths_unchanged_after_fix3(self) -> None:
+        # GUARD: "torn", "valid", and "none" handling is UNCHANGED by FIX 3. A torn
+        # tail is ftruncated away; a valid unterminated record is preserved with a
+        # separator; a newline-terminated file appends directly.
+        sampler = self.sampler
+        with tempfile.TemporaryDirectory(prefix="host-health-fix3-guard.") as temp:
+            # torn
+            torn_path = Path(temp) / "torn.jsonl"
+            torn_path.write_bytes(b'{"partial":')
+            sampler.write_to_file(
+                '{"probe":"after-torn"}\n', str(torn_path), sampler.FLOCK_TIMEOUT_SECONDS
+            )
+            torn_lines = [l for l in torn_path.read_text(encoding="utf-8").splitlines() if l]
+            self.assertEqual([json.loads(l) for l in torn_lines], [{"probe": "after-torn"}])
+
+            # valid (complete-but-unterminated)
+            valid_path = Path(temp) / "valid.jsonl"
+            valid_path.write_bytes(b'{"complete":1}')
+            sampler.write_to_file(
+                '{"probe":"after-valid"}\n', str(valid_path), sampler.FLOCK_TIMEOUT_SECONDS
+            )
+            valid_lines = [l for l in valid_path.read_text(encoding="utf-8").splitlines() if l]
+            self.assertEqual(
+                [json.loads(l) for l in valid_lines],
+                [{"complete": 1}, {"probe": "after-valid"}],
+            )
+
+            # none (already newline-terminated)
+            none_path = Path(temp) / "none.jsonl"
+            none_path.write_bytes(b'{"first":1}\n')
+            sampler.write_to_file(
+                '{"probe":"after-none"}\n', str(none_path), sampler.FLOCK_TIMEOUT_SECONDS
+            )
+            none_lines = [l for l in none_path.read_text(encoding="utf-8").splitlines() if l]
+            self.assertEqual(
+                [json.loads(l) for l in none_lines],
+                [{"first": 1}, {"probe": "after-none"}],
+            )
+
+    # FIX 4 (post-commit cleanup stall must not misclassify a committed record) -
+    def test_close_stall_keeps_committed_record_no_stdout_dup(self) -> None:
+        # DIFFERENTIAL. os.close STALLS (sleeps) after the payload is fully written.
+        # The record is already committed, so write_jsonl_line must return None
+        # (success, no stdout fallback, no duplicate) within roughly the cleanup
+        # deadline. Pre-fix the close stall ran INSIDE SINK_TIMEOUT_SECONDS, the
+        # deadline fired, and write_jsonl_line treated the committed write as a
+        # file-sink failure -> stdout-fallback warning (a duplicate).
+        sampler = self.sampler
+        saved_close = sampler.os.close
+        saved_open = sampler.os.open
+        # CLEANUP_TIMEOUT_SECONDS exists only post-fix; guard so this test reaches
+        # the behavioural assertions (and goes RED) against the pre-fix source
+        # rather than erroring out on setup. Pre-fix the cleanup stall runs inside
+        # the OUTER SINK_TIMEOUT_SECONDS deadline, so we shrink that (it exists in
+        # both versions): pre-fix the outer deadline then fires and reclassifies the
+        # COMMITTED write as a failure -> stdout duplicate (the bug under test).
+        had_cleanup_timeout = hasattr(sampler, "CLEANUP_TIMEOUT_SECONDS")
+        saved_cleanup_timeout = getattr(sampler, "CLEANUP_TIMEOUT_SECONDS", None)
+        saved_sink_timeout = sampler.SINK_TIMEOUT_SECONDS
+        if had_cleanup_timeout:
+            sampler.CLEANUP_TIMEOUT_SECONDS = 0.3
+        sampler.SINK_TIMEOUT_SECONDS = 0.5
+        real_close = os.close
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix4.") as temp:
+            target = Path(temp) / "out.jsonl"
+            target_fds: set[int] = set()
+
+            def tracking_open(path, *args, **kwargs):
+                fd = saved_open(path, *args, **kwargs)
+                if os.fspath(path) == str(target):
+                    target_fds.add(fd)
+                return fd
+
+            def stalling_close(fd):
+                if fd in target_fds:
+                    target_fds.discard(fd)
+                    time.sleep(30)  # stall the post-commit close
+                    return real_close(fd)  # never reached in test time
+                return saved_close(fd)
+
+            out_buf = io.StringIO()
+            saved_stdout = sys.stdout
+            box: dict[str, object] = {}
+
+            def call() -> None:
+                sampler.os.open = tracking_open
+                sampler.os.close = stalling_close
+                sys.stdout = out_buf
+                try:
+                    started = time.monotonic()
+                    box["result"] = sampler.write_jsonl_line(
+                        {"probe": "fix4"}, str(target), lock_timeout=0.2
+                    )
+                    box["elapsed"] = time.monotonic() - started
+                except BaseException as exc:  # noqa: BLE001 - captured
+                    box["raised"] = exc
+                finally:
+                    sampler.os.open = saved_open
+                    sampler.os.close = saved_close
+                    sys.stdout = saved_stdout
+                box["done"] = True
+
+            worker = threading.Thread(target=call, daemon=True)
+            try:
+                worker.start()
+                worker.join(timeout=5.0)
+                on_disk = target.read_bytes()
+            finally:
+                sampler.os.open = saved_open
+                sampler.os.close = saved_close
+                if had_cleanup_timeout:
+                    sampler.CLEANUP_TIMEOUT_SECONDS = saved_cleanup_timeout
+                sampler.SINK_TIMEOUT_SECONDS = saved_sink_timeout
+                sys.stdout = saved_stdout
+
+            stdout_dump = out_buf.getvalue()
+
+        self.assertTrue(box.get("done"), "writer hung on a stalled post-commit close")
+        self.assertIsNone(box.get("raised"), f"writer raised: {box.get('raised')!r}")
+        self.assertLess(box["elapsed"], 3.0, "cleanup stall was not bounded")
+        # SUCCESS: no fallback warning returned (the record was committed).
+        self.assertIsNone(box.get("result"))
+        # The record is in the FILE, intact.
+        self.assertEqual(
+            [json.loads(r) for r in on_disk.decode("utf-8").splitlines()],
+            [{"probe": "fix4"}],
+        )
+        # It was NOT duplicated to stdout.
+        self.assertEqual(stdout_dump, "")
+
+    def test_fix4_failure_path_rollback_still_fires(self) -> None:
+        # GUARD: the COMMIT/CLEANUP split must not weaken the FAILURE-path rollback.
+        # A genuine partial write (prefix lands, then no progress) must still raise
+        # AND roll the file back to the clean boundary (no fragment left behind).
+        sampler = self.sampler
+        captured: dict[str, object] = {}
+        real_write = os.write
+
+        def short_write(fd, data):
+            if not captured.get("first_done"):
+                captured["first_done"] = True
+                real_write(fd, data[:1])
+                return 1
+            return 0  # no progress -> writer must raise
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix4-fail.") as temp:
+            target = Path(temp) / "out.jsonl"
+            sampler.write_to_file('{"probe":"first"}\n', str(target), lock_timeout=0.2)
+            boundary_bytes = target.read_bytes()
+
+            saved_write = sampler.os.write
+            sampler.os.write = short_write
+            try:
+                with self.assertRaises(OSError):
+                    sampler.write_to_file(
+                        '{"probe":"partial"}\n', str(target), lock_timeout=0.2
+                    )
+            finally:
+                sampler.os.write = saved_write
+
+            on_disk = target.read_bytes()
+
+        # Rolled back to the clean boundary: only the first complete record.
+        self.assertEqual(on_disk, boundary_bytes)
+        self.assertEqual(
+            [json.loads(r) for r in on_disk.decode("utf-8").splitlines()],
+            [{"probe": "first"}],
+        )
+
+    # FIX 5 (double-FS-failure: data preserved + self-heal) -------------------
+    def test_double_fs_failure_preserves_record_on_stdout(self) -> None:
+        # LOAD-BEARING. A partial os.write (prefix lands) followed by a failed
+        # second write AND a failing ftruncate rollback must still surface the
+        # OSError so write_jsonl_line falls back to stdout with the FULL record
+        # (data never lost), even though a torn prefix is physically left on disk.
+        sampler = self.sampler
+        state = {"writes": 0}
+        real_write = os.write
+
+        def partial_then_fail(fd, data):
+            state["writes"] += 1
+            if state["writes"] == 1:
+                real_write(fd, data[:1])  # land a genuine prefix
+                return 1
+            raise OSError("simulated second-write failure")
+
+        def ftruncate_always_fails(_fd, _size):
+            raise OSError("simulated ftruncate rollback failure")
+
+        with tempfile.TemporaryDirectory(prefix="host-health-fix5.") as temp:
+            target = Path(temp) / "out.jsonl"
+            out_buf = io.StringIO()
+            saved_write = sampler.os.write
+            saved_ftruncate = sampler.os.ftruncate
+            saved_stdout = sys.stdout
+            sampler.os.write = partial_then_fail
+            sampler.os.ftruncate = ftruncate_always_fails
+            sys.stdout = out_buf
+            try:
+                warning = sampler.write_jsonl_line(
+                    {"probe": "fix5-preserve"}, str(target), lock_timeout=0.2
+                )
+            finally:
+                sampler.os.write = saved_write
+                sampler.os.ftruncate = saved_ftruncate
+                sys.stdout = saved_stdout
+
+            on_disk = target.read_bytes()
+
+        # Data preserved: the FULL record reached stdout (not lost), with the
+        # fallback warning returned so exit stays 0.
+        self.assertIsInstance(warning, str)
+        self.assertIn("fell back to stdout", warning)
+        record = json.loads(out_buf.getvalue().strip())
+        self.assertEqual(record["probe"], "fix5-preserve")
+        # A torn prefix physically remains (the OS refused to truncate it) -- this
+        # is the unavoidable double-failure residue that self-heals next write.
+        self.assertTrue(on_disk, "expected a torn prefix to remain on disk")
+
+    def test_torn_prefix_self_heals_on_next_successful_write(self) -> None:
+        # GUARD (self-heal): a file holding ONLY a torn prefix (no newline, invalid
+        # JSON) -- the double-FS-failure residue -- must be cleaned up by the next
+        # normal write: classify_trailing_fragment -> "torn" -> ftruncate, then the
+        # new record appends. The resulting file is 100% valid JSONL.
+        sampler = self.sampler
+        with tempfile.TemporaryDirectory(prefix="host-health-fix5-heal.") as temp:
+            target = Path(temp) / "out.jsonl"
+            target.write_bytes(b'{"schema_v')  # torn prefix, no newline, invalid JSON
+
+            sampler.write_to_file(
+                '{"probe":"healed"}\n', str(target), sampler.FLOCK_TIMEOUT_SECONDS
+            )
+
+            on_disk = target.read_text(encoding="utf-8")
+        lines = [l for l in on_disk.splitlines() if l]
+        # Every line parses (the torn prefix was truncated away) and the new record
+        # is present.
+        parsed = [json.loads(l) for l in lines]
+        self.assertEqual(parsed, [{"probe": "healed"}])
+
+    # FIX 6 (hardcode justification comments) ---------------------------------
+    def test_hardcoded_runtime_constants_carry_intentional_justification(self) -> None:
+        # The two runtime-value string literals (DEFAULT_SERVICE, DISK_PATH_FALLBACK)
+        # must each carry an explicit AGENTS.md-style INTENTIONAL-constant
+        # justification comment (line 37 NO HARDCODES vs line 87 intentional-
+        # constant convention). Pre-fix DEFAULT_SERVICE had no justification.
+        import ast
+        import re as _re
+
+        source = SCRIPT_PATH.read_text(encoding="utf-8")
+        lines = source.splitlines()
+        tree = ast.parse(source)
+
+        def assignment_lineno(name: str) -> int:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Assign):
+                    targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+                    if name in targets:
+                        return node.lineno
+            raise AssertionError(f"{name} assignment not found")
+
+        def preceding_comment_block(lineno: int) -> str:
+            # Collect the contiguous run of comment lines immediately above the
+            # assignment (1-based lineno -> 0-based index lineno-1).
+            idx = lineno - 2
+            collected = []
+            while idx >= 0 and lines[idx].lstrip().startswith("#"):
+                collected.append(lines[idx])
+                idx -= 1
+            return "\n".join(reversed(collected))
+
+        for name in ("DEFAULT_SERVICE", "DISK_PATH_FALLBACK"):
+            block = preceding_comment_block(assignment_lineno(name))
+            self.assertTrue(
+                _re.search(r"INTENTIONAL", block),
+                f"{name} lacks an INTENTIONAL-constant justification comment",
+            )
+            self.assertIn(
+                "overridable",
+                block.lower(),
+                f"{name} justification must note it is runtime-overridable",
+            )
 
 
 if __name__ == "__main__":

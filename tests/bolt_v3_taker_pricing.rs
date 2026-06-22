@@ -39,12 +39,14 @@ fn observe_pair(
         venue: "reference".to_string(),
         price,
         observed_ts_ms: ts_ms,
+        received_ts_ms: None,
     });
     pricing.observe_signal_quote(
         &FastSpotObservation {
             venue: "bybit".to_string(),
             price,
             observed_ts_ms: ts_ms,
+            received_ts_ms: None,
         },
         config,
     );
@@ -96,12 +98,14 @@ fn taker_pricing_consumes_realized_vol_snapshot_without_internal_estimator_warmu
         venue: "<REFERENCE_SOURCE_ID>".to_string(),
         price: 3_100.0,
         observed_ts_ms: 1_000,
+        received_ts_ms: None,
     });
     pricing.observe_signal_quote(
         &FastSpotObservation {
             venue: "<SIGNAL_SOURCE_ID>".to_string(),
             price: 3_100.0,
             observed_ts_ms: 1_000,
+            received_ts_ms: None,
         },
         &config,
     );
@@ -157,12 +161,14 @@ fn taker_pricing_accepts_ready_surfaced_zero_realized_volatility_snapshot() {
         venue: "<REFERENCE_SOURCE_ID>".to_string(),
         price: 3_101.0,
         observed_ts_ms: 1_000,
+        received_ts_ms: None,
     });
     pricing.observe_signal_quote(
         &FastSpotObservation {
             venue: "<SIGNAL_SOURCE_ID>".to_string(),
             price: 3_101.0,
             observed_ts_ms: 1_000,
+            received_ts_ms: None,
         },
         &config,
     );
@@ -323,6 +329,7 @@ fn taker_pricing_reports_stale_signal_spot_with_other_fair_value_blockers() {
         venue: "reference".to_string(),
         price: 3_101.0,
         observed_ts_ms: 3_000,
+        received_ts_ms: None,
     });
 
     let blocked = pricing

@@ -28,8 +28,9 @@ use bolt_v2::{
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
-        BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-        BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
         BoltV3SubmitReservationMetadataEvidence,
     },
@@ -107,6 +108,10 @@ struct BacktestDecisionEvidenceState {
     admitted_order_count: u64,
     submit_reservation_count: u64,
     submit_fill_count: u64,
+    entry_skip_count: u64,
+    exit_decision_count: u64,
+    loss_governor_halt_count: u64,
+    requote_throttle_count: u64,
     latest_strategy_input_snapshot: Option<BoltV3StrategyInputEvidenceSnapshot>,
 }
 
@@ -161,6 +166,10 @@ impl BacktestDecisionEvidenceWriter {
             admitted_order_count: state.admitted_order_count,
             submit_reservation_count: state.submit_reservation_count,
             submit_fill_count: state.submit_fill_count,
+            entry_skip_count: state.entry_skip_count,
+            exit_decision_count: state.exit_decision_count,
+            loss_governor_halt_count: state.loss_governor_halt_count,
+            requote_throttle_count: state.requote_throttle_count,
             signal_quote_received,
             realized_volatility_ready,
             price_to_beat_received,
@@ -327,11 +336,35 @@ impl BoltV3DecisionEvidenceWriter for BacktestDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+        self.with_state(|state| {
+            state.entry_skip_count += 1;
+        })?;
         Ok(())
     }
 
-    fn record_loss_governor_halt(&self, _evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+        self.with_state(|state| {
+            state.exit_decision_count += 1;
+        })?;
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(&self, _halt: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+        self.with_state(|state| {
+            state.loss_governor_halt_count += 1;
+        })?;
+        Ok(())
+    }
+
+    fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+        self.with_state(|state| {
+            state.requote_throttle_count += 1;
+        })?;
+        Ok(())
+    }
+
+    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
         Ok(())
     }
 
@@ -2732,6 +2765,10 @@ mod tests {
                 "admitted_order_count": guard.admitted_order_count,
                 "submit_reservation_count": guard.submit_reservation_count,
                 "submit_fill_count": guard.submit_fill_count,
+                "entry_skip_count": guard.entry_skip_count,
+                "exit_decision_count": guard.exit_decision_count,
+                "loss_governor_halt_count": guard.loss_governor_halt_count,
+                "requote_throttle_count": guard.requote_throttle_count,
                 "signal_quote_received": guard.signal_quote_received,
                 "realized_volatility_ready": guard.realized_volatility_ready,
                 "price_to_beat_received": guard.price_to_beat_received,

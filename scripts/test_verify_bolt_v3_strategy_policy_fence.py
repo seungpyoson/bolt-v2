@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -44,6 +45,41 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             for violation in self.violations_for(source, path=path)
             if violation.label == "direct kill-switch action bypass"
         ]
+
+    def write_source(self, root: Path, relative_path: str, source: str) -> None:
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+    def populate_strategy_policy_fixture(self, root: Path) -> None:
+        for relative_root in VERIFIER.STRATEGY_SOURCE_ROOTS:
+            root_path = Path(relative_root)
+            if root_path.suffix == ".rs":
+                relative_path = relative_root
+            else:
+                relative_path = f"{relative_root}/mod.rs"
+            self.write_source(root, relative_path, "pub struct PolicyFenceFixture;\n")
+
+    def collect_violations_for_temp_sources(
+        self, sources: dict[str, str]
+    ) -> list[object]:
+        original_root = VERIFIER.REPO_ROOT
+        original_source_set_files = VERIFIER.source_set_files
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            self.populate_strategy_policy_fixture(temp_root)
+            for relative_path, source in sources.items():
+                self.write_source(temp_root, relative_path, source)
+
+            VERIFIER.REPO_ROOT = temp_root
+            VERIFIER.source_set_files = lambda roots: original_source_set_files(
+                roots, repo_root=temp_root
+            )
+            try:
+                return VERIFIER.collect_violations()
+            finally:
+                VERIFIER.source_set_files = original_source_set_files
+                VERIFIER.REPO_ROOT = original_root
 
     def test_detects_removed_policy_hardcodes(self) -> None:
         labels = self.labels_for(
@@ -274,21 +310,19 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         self.assertIn("strategy-local execution policy type reference", labels)
 
     def test_policy_reference_is_repo_wide_not_strategy_path_scoped(self) -> None:
-        probe = VERIFIER.REPO_ROOT / "src/rogue_registered_strategy.rs"
-        probe.write_text(
-            "fn bypass(mode: BoltV3OrderExecutionMode) {\n"
-            "    let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);\n"
-            "}\n",
-            encoding="utf-8",
-        )
-        try:
-            labels = {
-                violation.label
-                for violation in VERIFIER.collect_violations()
-                if violation.path == "src/rogue_registered_strategy.rs"
-            }
-        finally:
-            probe.unlink(missing_ok=True)
+        labels = {
+            violation.label
+            for violation in self.collect_violations_for_temp_sources(
+                {
+                    "src/rogue_registered_strategy.rs": (
+                        "fn bypass(mode: BoltV3OrderExecutionMode) {\n"
+                        "    let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);\n"
+                        "}\n"
+                    )
+                }
+            )
+            if violation.path == "src/rogue_registered_strategy.rs"
+        }
 
         self.assertIn("strategy-local execution policy construction", labels)
         self.assertIn("strategy-local execution policy type reference", labels)
@@ -400,21 +434,19 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
 
     def test_strategy_policy_fence_scans_future_strategy_modules(self) -> None:
-        probe = VERIFIER.REPO_ROOT / "src/strategies/__policy_fence_probe.rs"
-        probe.write_text(
-            "fn bypass(mode: BoltV3OrderExecutionMode) {\n"
-            "    let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);\n"
-            "}\n",
-            encoding="utf-8",
-        )
-        try:
-            violations = [
-                violation
-                for violation in VERIFIER.collect_violations()
-                if violation.path == "src/strategies/__policy_fence_probe.rs"
-            ]
-        finally:
-            probe.unlink(missing_ok=True)
+        violations = [
+            violation
+            for violation in self.collect_violations_for_temp_sources(
+                {
+                    "src/strategies/__policy_fence_probe.rs": (
+                        "fn bypass(mode: BoltV3OrderExecutionMode) {\n"
+                        "    let _policy = BoltV3OrderExecutionPolicy::from_mode(mode);\n"
+                        "}\n"
+                    )
+                }
+            )
+            if violation.path == "src/strategies/__policy_fence_probe.rs"
+        ]
 
         self.assertIn(
             "strategy-local execution policy construction",
@@ -423,19 +455,13 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
 
     def test_strategy_source_roots_must_be_digest_gated(self) -> None:
-        probe_dir = VERIFIER.REPO_ROOT / "src/strategies/__digest_probe"
-        probe = probe_dir / "mod.rs"
-        probe_dir.mkdir()
-        probe.write_text("pub struct ProbeStrategy;\n", encoding="utf-8")
-        try:
-            violations = [
-                violation
-                for violation in VERIFIER.collect_violations()
-                if violation.path == "src/strategies/__digest_probe"
-            ]
-        finally:
-            probe.unlink(missing_ok=True)
-            probe_dir.rmdir()
+        violations = [
+            violation
+            for violation in self.collect_violations_for_temp_sources(
+                {"src/strategies/__digest_probe/mod.rs": "pub struct ProbeStrategy;\n"}
+            )
+            if violation.path == "src/strategies/__digest_probe"
+        ]
 
         self.assertEqual(
             [violation.label for violation in violations],

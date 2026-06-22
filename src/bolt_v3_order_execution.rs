@@ -739,9 +739,10 @@ mod tests {
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
             BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
-            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
-            BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+            BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+            BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
@@ -1048,6 +1049,14 @@ mod tests {
             Ok(())
         }
 
+        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+            anyhow::bail!("recording order-execution writer received entry-skip evidence")
+        }
+
+        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+            anyhow::bail!("recording order-execution writer received exit-decision evidence")
+        }
+
         fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
             Ok(())
         }
@@ -1061,6 +1070,10 @@ mod tests {
 
         fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
             Ok(())
+        }
+
+        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+            anyhow::bail!("recording order-execution writer received requote-throttle evidence")
         }
     }
 

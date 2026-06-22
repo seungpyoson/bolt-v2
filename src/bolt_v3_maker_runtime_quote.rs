@@ -145,6 +145,7 @@ pub fn maker_reference_current_price_fair_value_decision(
         venue: source_id.clone(),
         price: selection.price(),
         observed_ts_ms: selected_quote.observed_ts_ms(),
+        received_ts_ms: Some(selected_quote.received_ts_ms()),
     };
     let mut pricing = FairValuePricingState::from_realized_volatility_surface_id(
         input.realized_volatility_snapshot.surface_id.clone(),

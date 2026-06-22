@@ -142,10 +142,11 @@ fn selected_reference_current_price_feeds_entry_pricing_spot() {
     assert_eq!(inputs.spot_price, TEST_REFERENCE_CURRENT_PRICE);
     assert_eq!(
         strategy.pricing.selected_pricing_spot().cloned(),
-        Some(fast_spot(
+        Some(fast_spot_received(
             CHAINLINK_PRIMARY_SOURCE_ID,
             TEST_REFERENCE_CURRENT_PRICE,
-            TEST_REFERENCE_OBSERVED_TS_MS
+            TEST_REFERENCE_OBSERVED_TS_MS,
+            Some(TEST_REFERENCE_RECEIVED_TS_MS),
         ))
     );
 }
@@ -174,10 +175,11 @@ fn active_interval_rollover_clears_reference_current_price_pricing_state() {
     );
     assert_eq!(
         strategy.pricing.selected_pricing_spot().cloned(),
-        Some(fast_spot(
+        Some(fast_spot_received(
             CHAINLINK_PRIMARY_SOURCE_ID,
             TEST_REFERENCE_CURRENT_PRICE,
-            TEST_REFERENCE_OBSERVED_TS_MS
+            TEST_REFERENCE_OBSERVED_TS_MS,
+            Some(TEST_REFERENCE_RECEIVED_TS_MS),
         ))
     );
 
@@ -616,11 +618,13 @@ fn exit_submit_refreshes_reference_failover_before_forced_flat_check() {
     );
 
     strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_220,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-            Some(1_220),
-            None,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                1_220,
+                None,
+            ),
         )
         .expect("exit submit evaluation should not fail");
 

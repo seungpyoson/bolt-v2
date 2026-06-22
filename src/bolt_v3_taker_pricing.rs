@@ -645,6 +645,7 @@ mod tests {
             venue: venue.to_string(),
             price,
             observed_ts_ms,
+            received_ts_ms: None,
         }
     }
 

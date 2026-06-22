@@ -1,0 +1,1205 @@
+<!-- Reads JSONL from scripts/host_health_sampler.py; read-only / visibility-only. -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Host Health</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --ink: #152029;
+      --grn: #16834a;
+      --red: #c83232;
+      --amb: #b36b00;
+      --blu: #2468d8;
+      --vio: #6d55c7;
+      --line: #d7dde4;
+      --muted: #637181;
+      --surface: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 76px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 22px;
+      line-height: 1.15;
+    }
+
+    h2 {
+      font-size: 15px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .top-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .filepick {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 0 14px;
+      border: 1px solid var(--blu);
+      border-radius: 6px;
+      color: var(--blu);
+      background: #f8fbff;
+      cursor: pointer;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .filepick input {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 18px auto 32px;
+    }
+
+    .section {
+      margin-top: 14px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      min-width: 0;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      overflow-wrap: anywhere;
+    }
+
+    .metric-value {
+      margin-top: 6px;
+      font-size: 18px;
+      font-weight: 720;
+      overflow-wrap: anywhere;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 0 9px;
+      border-radius: 999px;
+      color: #ffffff;
+      font-weight: 720;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .badge.grn {
+      background: var(--grn);
+    }
+
+    .badge.red {
+      background: var(--red);
+    }
+
+    .badge.amb {
+      background: var(--amb);
+    }
+
+    .badge.blu {
+      background: var(--blu);
+    }
+
+    .badge.vio {
+      background: var(--vio);
+    }
+
+    .banner {
+      border-color: rgba(200, 50, 50, 0.45);
+      background: #fff7f6;
+      color: #7b1d1d;
+      font-weight: 720;
+    }
+
+    .banner[hidden] {
+      display: none;
+    }
+
+    .chart-wrap {
+      min-height: 300px;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      min-height: 280px;
+    }
+
+    .axis {
+      stroke: #91a0af;
+      stroke-width: 1;
+    }
+
+    .grid {
+      stroke: #e8edf2;
+      stroke-width: 1;
+    }
+
+    .series-line {
+      fill: none;
+      stroke-width: 2.5;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-swatch {
+      width: 18px;
+      height: 3px;
+      border-radius: 999px;
+    }
+
+    .errors {
+      margin: 0;
+      padding-left: 18px;
+      color: #6d3a00;
+    }
+
+    .empty {
+      display: flex;
+      align-items: center;
+      min-height: 240px;
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 6px;
+      padding: 16px;
+    }
+
+    @media (max-width: 880px) {
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      main {
+        width: min(100vw - 20px, 1180px);
+      }
+
+      .summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 520px) {
+      .summary {
+        grid-template-columns: 1fr;
+      }
+
+      .section {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Host Health</h1>
+      <div class="top-meta" id="fileMeta">&mdash;</div>
+    </div>
+    <label class="filepick">
+      Load JSONL
+      <input id="fileInput" type="file" accept=".jsonl,.ndjson,.txt,application/json">
+    </label>
+  </header>
+
+  <main>
+    <section class="section banner" id="eventBanner" hidden></section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Latest Sample</h2>
+        <div class="subtle" id="sampleTime">&mdash;</div>
+      </div>
+      <div class="summary">
+        <div class="metric">
+          <div class="metric-label">service</div>
+          <div class="metric-value" id="serviceState">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">RSS</div>
+          <div class="metric-value" id="rssValue">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">MemAvailable</div>
+          <div class="metric-value" id="memValue">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">disk free</div>
+          <div class="metric-value" id="diskValue">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">auto-restarts (this invocation)</div>
+          <div class="metric-value" id="restartValue">&mdash;</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">host</div>
+          <div class="metric-value" id="hostValue">&mdash;</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Memory / Process</h2>
+        <div class="subtle" id="memoryRange">&mdash;</div>
+      </div>
+      <div class="chart-wrap" id="memoryChart"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Disk</h2>
+        <div class="subtle" id="diskPath">&mdash;</div>
+      </div>
+      <div class="chart-wrap" id="diskChart"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>Errors</h2>
+        <div class="subtle" id="errorCount">&mdash;</div>
+      </div>
+      <ul class="errors" id="errorsList"></ul>
+    </section>
+  </main>
+
+  <script>
+    const EMPTY = "\u2014";
+    const state = { records: [], parseErrors: [], fileName: "" };
+
+    const elements = {
+      fileInput: document.getElementById("fileInput"),
+      fileMeta: document.getElementById("fileMeta"),
+      sampleTime: document.getElementById("sampleTime"),
+      serviceState: document.getElementById("serviceState"),
+      rssValue: document.getElementById("rssValue"),
+      memValue: document.getElementById("memValue"),
+      diskValue: document.getElementById("diskValue"),
+      restartValue: document.getElementById("restartValue"),
+      hostValue: document.getElementById("hostValue"),
+      eventBanner: document.getElementById("eventBanner"),
+      memoryChart: document.getElementById("memoryChart"),
+      diskChart: document.getElementById("diskChart"),
+      memoryRange: document.getElementById("memoryRange"),
+      diskPath: document.getElementById("diskPath"),
+      errorCount: document.getElementById("errorCount"),
+      errorsList: document.getElementById("errorsList")
+    };
+
+    elements.fileInput.addEventListener("change", event => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const parsed = parseJsonl(String(reader.result || ""));
+        state.records = parsed.records;
+        state.parseErrors = parsed.errors;
+        state.fileName = file.name;
+        render();
+      };
+      reader.readAsText(file);
+    });
+
+    function parseJsonl(text) {
+      const records = [];
+      const errors = [];
+      // Strip a leading UTF-8 BOM (U+FEFF) so the first record is not dropped
+      // (D5). Match it via the \uFEFF escape, never a literal invisible BOM
+      // glyph in source — byte-identical match, but reviewable and copy-safe.
+      text = text.replace(/^\uFEFF/, "");
+      text.split(/\r?\n/).forEach((line, index) => {
+        if (!line.trim()) return;
+        let parsed;
+        try {
+          parsed = JSON.parse(line);
+        } catch (error) {
+          errors.push(`line ${index + 1}: ${error.message}`);
+          return;
+        }
+        // A record must be a plain JSON object. A bare number/string/array/null
+        // is valid JSON but not a sample row; accepting it would manufacture a
+        // fake record that later crashes latest.service access (D6).
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          records.push(parsed);
+        } else {
+          errors.push(`line ${index + 1}: not a JSON object`);
+        }
+      });
+      return { records, errors };
+    }
+
+    function latestRecord() {
+      return state.records.length ? state.records[state.records.length - 1] : null;
+    }
+
+    // The formatters are DISPLAY-ONLY and REQUIRE an already-validated finite
+    // number (the sole way to obtain one from a record is a field accessor). They
+    // never coerce: a non-number renders EMPTY. This is what lets the CI fence ban
+    // raw numeric coercion entirely -- raw record fields cannot reach a renderer.
+    function formatBytes(value) {
+      if (!isStrictFiniteNumber(value)) return EMPTY;
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let scaled = value;
+      let unitIndex = 0;
+      while (Math.abs(scaled) >= 1024 && unitIndex < units.length - 1) {
+        scaled /= 1024;
+        unitIndex += 1;
+      }
+      const digits = scaled >= 100 || unitIndex === 0 ? 0 : 1;
+      return `${scaled.toFixed(digits)} ${units[unitIndex]}`;
+    }
+
+    function formatNumber(value) {
+      if (!isStrictFiniteNumber(value)) return EMPTY;
+      return value.toLocaleString();
+    }
+
+    function formatPct(value) {
+      if (!isStrictFiniteNumber(value)) return EMPTY;
+      return `${value.toFixed(1)}%`;
+    }
+
+    function arrayExtent(values) {
+      // Min/max via a single accumulator pass — NOT Math.min(...values) /
+      // Math.max(...values) (F). A long-running JSONL file makes `values` huge
+      // (110K+ samples); spreading it as call arguments overflows V8's argument
+      // limit and throws RangeError: Maximum call stack size exceeded, which
+      // aborts render() mid-run and blanks the UI. A loop has no such ceiling.
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const value of values) {
+        if (value < lo) lo = value;
+        if (value > hi) hi = value;
+      }
+      return { lo, hi };
+    }
+
+    function diskFreePct(record) {
+      // Derive free% from the SAME used_pct the disk CHART plots, read via diskView
+      // (the shared chokepoint), so card-free% + chart-used% == 100 (D3) and the
+      // card can never drift from the chart. A missing, wrong-typed, non-finite, or
+      // out-of-range used_pct yields null, which the render path surfaces as a
+      // degraded (never green) badge. No coercion: true, [], or " " stay null.
+      const view = diskView(record);
+      return view.valid ? 100 - view.value : null;
+    }
+
+    function diskBadgeClass(value) {
+      // Any non-finite input (null/undefined/NaN) is an unknown/degraded disk
+      // status, never green: a NaN previously slipped past `< 10`/`< 20` and
+      // rendered GREEN (D1). Treat it as degraded BEFORE the numeric thresholds.
+      if (!Number.isFinite(value)) return "vio";
+      if (value < 10) return "red";
+      if (value < 20) return "amb";
+      return "grn";
+    }
+
+    function serviceBadge(record, dashboardDegraded = false) {
+      const service = record && record.service ? record.service : null;
+      const active = service ? service.active_state : null;
+      const sub = service ? service.sub_state : null;
+      const text = [active, sub].filter(Boolean).join(" / ");
+
+      // An OOM kill forces RED for ANY active_state (E2): a service that was
+      // OOM-killed is degraded whether systemd now reports it inactive,
+      // activating, active, or supplies no usable service state. Hoisting this
+      // above the missing-data branch keeps the kill as the most important
+      // signal.
+      if (record && record.oom_killed === true) {
+        return `<span class="badge red">${escapeHtml(text)}</span>`;
+      }
+
+      // No usable service data is a degraded/unknown state, never a blank dash
+      // (item 5): a blank badge reads as "fine" at a glance. Show an explicit
+      // degraded badge instead.
+      if (serviceDataMissing(service)) {
+        return `<span class="badge vio">service unknown</span>`;
+      }
+
+      let klass = "vio";
+      if (active === "active") {
+        // "active" is NOT unconditionally green (item 5): a service that is
+        // active right now but failed its last run, restarted, or whose main
+        // process has exited is degraded. Downgrade so none of those render
+        // healthy green.
+        const restarts = restartView(record);
+        if (isFailureResult(service.result)) {
+          klass = "red";
+        } else if (sub !== "running") {
+          // active/exited, active/dead, etc.: systemd still calls the unit
+          // active but its main process is not running. Not green (E1).
+          klass = "amb";
+        } else if (restarts.present && !restarts.valid) {
+          // A PRESENT but invalid n_restarts (wrong type, non-finite, or
+          // negative) is suspect restart data: treat unknown/impossible restart
+          // state as degraded, never green. A missing/null n_restarts (field
+          // absent) is acceptable and stays eligible for green below.
+          klass = "amb";
+        } else if (restarts.valid && restarts.value > 0) {
+          klass = "amb";
+        } else {
+          klass = "grn";
+        }
+      } else if (active === "failed") {
+        klass = "red";
+      } else if (active === "activating" || active === "deactivating") {
+        klass = "amb";
+      }
+      // Record-level integrity caps green: a record the banner flags at the
+      // record level (missing/unexpected schema_version, malformed/non-empty
+      // errors) must never render a healthy-green service badge, even when the
+      // service block itself looks clean. A file-level degraded signal
+      // (dashboardDegraded — e.g. JSONL lines that failed to parse) caps green
+      // too: a clean latest record cannot vouch for a partly-corrupt file.
+      // Downgrade green to amber without weakening the OOM-red, service-unknown,
+      // or failed/restart downgrades above. The text is unchanged; only the class
+      // changes. Mirrors bannerReasons via the shared recordIntegrityReasons
+      // source plus the file-level parse-error signal.
+      if (klass === "grn" && (recordHasIntegrityIssue(record) || dashboardDegraded)) {
+        klass = "amb";
+      }
+      return `<span class="badge ${klass}">${escapeHtml(text)}</span>`;
+    }
+
+    function restartIncreased(records) {
+      // Single source of truth (G): the per-record count comes from restartView
+      // (the shared chokepoint, same as the badge), already validated to a finite
+      // number or null. isStrictFiniteNumber then skips absent/invalid entries, so
+      // a malformed n_restarts the badge rejects can never drive a phantom
+      // "restarts increased" trend.
+      return counterIncreased(
+        records,
+        record => restartView(record).value,
+        isStrictFiniteNumber
+      );
+    }
+
+    function counterIncreased(records, pick, valid) {
+      // True if a monotonic per-record counter strictly increased across the
+      // loaded records (same shape used for restarts and cgroup oom_kills). The
+      // ``valid`` predicate decides which raw values count -- it defaults to
+      // isStrictFiniteNumber (a bare numeric counter) but callers pass the SAME
+      // predicate their badge uses (isValidCount for restarts), so the trend can
+      // never fire on a value the badge rejects as malformed (no Number() coercion).
+      const accept = valid || isStrictFiniteNumber;
+      let previous = null;
+      for (const record of records) {
+        const raw = pick(record);
+        if (!accept(raw)) continue;
+        const current = raw;
+        if (previous !== null && current > previous) return true;
+        previous = current;
+      }
+      return false;
+    }
+
+    function oomIncreased(records) {
+      // The increase trend MUST be computed only from records whose cgroup data
+      // is trustworthy. A record with one garbage mirror is integrity-capped
+      // (cgroupMalformed) -- letting its count contribute to the trend would
+      // contradict that cap and let a malformed sample DRIVE a "real earlier
+      // increase" (e.g. the only 0->5 step coming from a record whose top mirror
+      // is garbage). cgroupOomCountTrusted returns NaN for such records, so
+      // counterIncreased (which rejects non-finite values) skips them.
+      return counterIncreased(records, record => cgroupOomCountTrusted(record));
+    }
+
+    function cgroupOomCount(record) {
+      // The cgroup oom_kill counter is at the record top level (always present),
+      // mirrored under service for back-compat. Prefer the top-level field so the
+      // count survives even when systemctl stalled and the service block is null
+      // (the state where it would otherwise read as a misleading 0); fall back to
+      // the nested value for older records that predate the top-level field.
+      // Returns a Number, or NaN when no count is available. Read through the
+      // shared fieldView chokepoint (top-level via parentKey=null, nested under
+      // service) so the strict isValidCount validation -- a malformed-but-coercible
+      // value ("0", "0x10", "1e3", []) reads as UNAVAILABLE (NaN), never a
+      // fabricated count corroborating an OOM -- lives in ONE place, not here.
+      const views = cgroupViews(record);
+      const top = views.top;
+      const nested = views.nested;
+      if (top.valid && nested.valid) {
+        return Math.max(top.value, nested.value);
+      }
+      if (top.valid) return top.value;
+      if (nested.valid) return nested.value;
+      return NaN;
+    }
+
+    function cgroupOomCountTrusted(record) {
+      // The cgroup count usable for the increase TREND: the record's count, but
+      // ONLY when its mirrors are not malformed. A cgroupMalformed record (one
+      // garbage mirror) is integrity-capped and must not contribute to a
+      // "trustworthy earlier increase", so it reads as UNAVAILABLE (NaN) here --
+      // consistent with the same predicate that caps the green badge. The
+      // concrete-count render sites keep using cgroupOomCount directly (they are
+      // independently gated on !cgroupMalformed(latest)); only the trend detector
+      // needs this stricter, malformed-excluding view.
+      return cgroupMalformed(record) ? NaN : cgroupOomCount(record);
+    }
+
+    // A systemd Result is degraded if it is present and anything OTHER than
+    // "success". An allow-list of known-bad results (oom-kill/signal/...) is a
+    // trap: any result not in the list (exit-code, timeout, resources, protocol,
+    // assert, watchdog, future systemd values) would read as healthy. Treating
+    // "anything that isn't success" as degraded is the safe default — a stale
+    // failure latch in the LATEST sample is degraded regardless of in-file
+    // change.
+    function isFailureResult(result) {
+      return Boolean(result) && result !== "success";
+    }
+
+    function serviceDataMissing(service) {
+      // The service collector produced nothing usable: null block, or a block
+      // with neither an active_state nor a sub_state (the two fields that make a
+      // record interpretable). A no-service sample must NOT read as healthy.
+      return !service || (!service.active_state && !service.sub_state);
+    }
+
+    function isStrictFiniteNumber(value) {
+      return typeof value === "number" && Number.isFinite(value);
+    }
+
+    function isValidUsedPct(value) {
+      return isStrictFiniteNumber(value) && value >= 0 && value <= 100;
+    }
+
+    // fieldView is the SINGLE chokepoint where every numeric health field is
+    // extracted from its (object-guarded) parent AND classified. It addresses the
+    // field through a VARIABLE key, so NO field-name literal property-access exists
+    // anywhere else in the viewer (enforced by the FENCE2 test). Every consumer --
+    // card, badge, banner, trend, chart -- reads a field ONLY through fieldView
+    // (directly or via the thin wrappers below), so extraction can never drift
+    // between surfaces, and the absent/invalid/valid distinction the badge and
+    // banner need is computed in ONE place rather than re-derived per consumer
+    // (the "fixed validation but not extraction" leak that recurred across rounds).
+    // Returns {parent, present, raw, valid, value}:
+    //   parent  - the parent block is an object (parentKey===null => the record)
+    //   present - the field is present (not null/undefined) on that object parent
+    //   raw     - the raw field value as sampled (for malformed-value wording)
+    //   valid   - present AND passes isValid (e.g. a finite non-negative count)
+    //   value   - the validated number, or null
+    function isObject(value) {
+      return value !== null && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function fieldView(record, parentKey, fieldKey, isValid) {
+      const parent = parentKey === null ? record : (record ? record[parentKey] : undefined);
+      if (!isObject(parent)) {
+        return { parent: false, present: false, raw: undefined, valid: false, value: null };
+      }
+      const raw = parent[fieldKey];
+      const present = raw !== null && raw !== undefined;
+      const valid = present && isValid(raw);
+      return { parent: true, present, raw, valid, value: valid ? raw : null };
+    }
+
+    function diskView(record) {
+      return fieldView(record, "disk", "used_pct", isValidUsedPct);
+    }
+
+    function restartView(record) {
+      return fieldView(record, "service", "n_restarts", isValidCount);
+    }
+
+    function cgroupViews(record) {
+      return {
+        top: fieldView(record, null, "cgroup_oom_kills", isValidCount),
+        nested: fieldView(record, "service", "cgroup_oom_kills", isValidCount)
+      };
+    }
+
+    function cgroupMalformedRaws(record) {
+      // Every present-but-invalid cgroup mirror's raw value, for banner wording.
+      // cgroup_oom_kills is dual-location (top-level canonical + nested
+      // back-compat) and BOTH mirrors can be garbage with DIFFERENT values under
+      // hostile JSONL (e.g. top="abc", nested="xyz"); collect each so a second
+      // corrupt mirror is never hidden behind the first. Order: top-level first,
+      // then nested. Empty == no present mirror failed validation.
+      const views = cgroupViews(record);
+      const raws = [];
+      if (views.top.present && !views.top.valid) raws.push(views.top.raw);
+      if (views.nested.present && !views.nested.valid) raws.push(views.nested.raw);
+      return raws;
+    }
+
+    function cgroupMalformed(record) {
+      // A present-but-invalid value at EITHER mirror is malformed -- a VALID
+      // mirror must NOT mask a garbage one. Requiring BOTH invalid let hostile
+      // JSONL with one corrupt mirror render green + banner-silent (e.g.
+      // top="abc", nested=0). Derived from cgroupMalformedRaws so the predicate
+      // and the banner wording share ONE source: malformed iff at least one
+      // mirror raw is present-invalid, so a single garbage mirror is surfaced.
+      return cgroupMalformedRaws(record).length > 0;
+    }
+
+    // Single registry of single-location numeric health fields whose present-but-
+    // INVALID value is a record-level integrity issue: surfaced through the
+    // recordIntegrityReasons SSOT so a malformed value caps the green badge AND
+    // raises a banner reason (never silently collapses to a blank card -- the
+    // operator must distinguish "sampler could not read it" from "sampler emitted
+    // garbage"). disk and restarts are deliberately NOT here: they have dedicated
+    // surfacing (disk card colour + absent/malformed banner distinctions; restart
+    // green-cap + count signal). cgroup_oom_kills is dual-location, handled by
+    // cgroupMalformed above. Adding a numeric health field here is all it takes to
+    // give it malformed-surfacing; the enumeration viewer test asserts that EVERY
+    // numeric health field surfaces a malformed value, so the class cannot regrow.
+    const INTEGRITY_NUMERIC_FIELDS = [
+      { parentKey: "process", fieldKey: "rss_bytes", label: "process rss_bytes" },
+      { parentKey: "memory", fieldKey: "mem_available_bytes", label: "memory mem_available_bytes" }
+    ];
+
+    // Thin number|null accessors over the chokepoint, for the card and chart that
+    // only need the validated value (absent and invalid both collapse to null).
+    function diskUsedPct(record) {
+      return diskView(record).value;
+    }
+
+    function restartCount(record) {
+      return restartView(record).value;
+    }
+
+    function rssBytes(record) {
+      return fieldView(record, "process", "rss_bytes", isValidCount).value;
+    }
+
+    function memAvailableBytes(record) {
+      return fieldView(record, "memory", "mem_available_bytes", isValidCount).value;
+    }
+
+    function isValidCount(value) {
+      // A present, valid non-negative counter (restarts, cgroup oom_kills). Shared
+      // single source of truth so the badge, banner, cgroup count, and trend
+      // detector all agree on what a real count is -- a coercible string like "0"
+      // is NOT a count.
+      return isStrictFiniteNumber(value) && value >= 0;
+    }
+
+    function isMalformedOomKilled(value) {
+      return value !== null && value !== undefined && typeof value !== "boolean";
+    }
+
+    function recordIntegrityReasons(record) {
+      // SINGLE SOURCE OF TRUTH for record-LEVEL integrity: returns the array of
+      // human-readable reasons a record is unusable or the sampler itself
+      // reported trouble, independent of the service block. Both the boolean gate
+      // (recordHasIntegrityIssue, used by serviceBadge to cap green) AND the
+      // banner wording (bannerReasons spreads this) derive from this ONE function
+      // — no duplicated conditions, so the badge and banner can never drift.
+      // Empty array == record is clean at the record level.
+      const reasons = [];
+      if (!record) {
+        reasons.push("record missing");
+        return reasons;
+      }
+      if (record.schema_version === undefined || record.schema_version === null) {
+        reasons.push("schema_version missing (viewer expects 2)");
+      } else if (record.schema_version !== 2) {
+        reasons.push(`unexpected schema_version=${record.schema_version} (viewer expects 2)`);
+      }
+      if (isMalformedOomKilled(record.oom_killed)) {
+        reasons.push(`oom_killed field malformed (expected boolean, got ${typeof record.oom_killed})`);
+      }
+      const cgroupRaws = cgroupMalformedRaws(record);
+      if (cgroupRaws.length > 0) {
+        const named = cgroupRaws.map(raw => JSON.stringify(raw)).join(", ");
+        reasons.push(`cgroup oom_kill count malformed (cgroup_oom_kills=${named})`);
+      }
+      // Class closure: every single-location numeric health field (process rss,
+      // memory available) surfaces a malformed value through this same SSOT, so a
+      // present-but-garbage metric caps green + banners instead of vanishing.
+      // Reads ONLY through the fieldView chokepoint (no raw field property access),
+      // so FENCE2 stays satisfied. An absent field (or non-object parent) yields
+      // nothing.
+      for (const f of INTEGRITY_NUMERIC_FIELDS) {
+        const view = fieldView(record, f.parentKey, f.fieldKey, isValidCount);
+        if (view.present && !view.valid) {
+          reasons.push(`${f.label} malformed (${f.fieldKey}=${JSON.stringify(view.raw)})`);
+        }
+      }
+      // A PRESENT errors field of the wrong SHAPE is itself an integrity issue: a
+      // non-array errors (string/object/number) means the sampler serialized a
+      // malformed payload. Surfacing it (instead of silently ignoring a non-array)
+      // keeps a malformed-shape record from reading healthy-green.
+      if (record.errors !== undefined && record.errors !== null) {
+        if (!Array.isArray(record.errors)) {
+          reasons.push(`sampler errors field malformed (expected array, got ${typeof record.errors})`);
+        } else if (record.errors.length > 0) {
+          reasons.push(`sampler reported ${record.errors.length} collector error(s)`);
+        }
+      }
+      return reasons;
+    }
+
+    function recordHasIntegrityIssue(record) {
+      // Mechanical SSOT: a record has a record-level integrity issue iff
+      // recordIntegrityReasons produced at least one reason. No duplicated
+      // schema/errors conditions live here. serviceBadge consumes this to cap a
+      // green badge: a record the banner flags at the record level must never
+      // read as healthy green (item: false-green while degraded).
+      return recordIntegrityReasons(record).length > 0;
+    }
+
+    function bannerReasons(latest, records, parseErrorCount = 0) {
+      // Pure: returns the list of human-readable banner reasons for a record set.
+      // Kept testable so the false-green / standing-state cases are verifiable.
+      // parseErrorCount carries the file-level JSONL parse failures (malformed
+      // lines) so file-integrity is surfaced in the banner, not just a quiet
+      // errors-list chip. Defaults to 0 so existing callers/tests are unaffected.
+      const reasons = [];
+      if (!latest) return reasons;
+      // SINGLE SOURCE OF TRUTH: spread the record-level integrity reasons from
+      // recordIntegrityReasons — the SAME function whose .length>0 powers the
+      // recordHasIntegrityIssue gate serviceBadge uses to cap a green badge. The
+      // badge and banner therefore cannot drift: a missing/unexpected schema, a
+      // non-empty errors array, AND a malformed (non-array) errors shape all
+      // surface here automatically.
+      reasons.push(...recordIntegrityReasons(latest));
+      const service = latest.service || null;
+
+      // OOM banner wording must name its EVIDENCE source (item 7): only a
+      // systemd Result=oom-kill is authoritative; otherwise the sampler derived
+      // OOM from an ambiguous result (signal/core-dump) corroborated by the
+      // cgroup oom_kill counter, so say so rather than mislabel it as the
+      // authoritative systemd verdict.
+      if (latest.oom_killed === true) {
+        const result = service ? service.result : null;
+        const rawCgroup = cgroupOomCount(latest);
+        // An UNAVAILABLE cgroup count is not zero: coercing a missing count to 0
+        // would misrepresent absent corroborating evidence as a real zero kill
+        // count. Render "?" so the reader distinguishes "no count available" from
+        // "the count is zero". A malformed mirror set (cgroupMalformed) makes the
+        // count untrustworthy too -- render "?" rather than a concrete number that
+        // would contradict the "cgroup oom_kill count malformed" integrity reason
+        // raised at the record level (self-contradictory signal, viewer contract).
+        const cgroupDisplay =
+          !cgroupMalformed(latest) && Number.isFinite(rawCgroup) ? rawCgroup : "?";
+        if (result === "oom-kill") {
+          reasons.push("systemd Result=oom-kill (authoritative)");
+        } else {
+          reasons.push(
+            `OOM detected (result=${result || "?"}, cgroup oom_kill=${cgroupDisplay})`
+          );
+        }
+      }
+
+      // A missing/unavailable service collector is itself a degraded signal
+      // (item 5): surface it so a no-service sample still raises the banner.
+      if (serviceDataMissing(service)) {
+        reasons.push("service status unavailable");
+      }
+
+      // A null/absent disk block means the sampler could not stat the requested
+      // catalog path (a vanished path is a serious degraded signal). render()
+      // already shows a violet disk chip, but a quiet chip is easy to miss;
+      // raise it in the banner too (E3), parallel to "service status
+      // unavailable".
+      const diskMetric = diskView(latest);
+      if (!diskMetric.parent) {
+        reasons.push("disk status unavailable");
+      } else if (!diskMetric.present) {
+        reasons.push("disk metric unavailable");
+      } else if (!diskMetric.valid) {
+        reasons.push(`disk metric malformed (used_pct=${JSON.stringify(diskMetric.raw)})`);
+      }
+
+      // Standing degraded state from the latest sample (D2): flag it even when
+      // nothing changed within the loaded file.
+      if (service) {
+        if (service.active_state === "failed") {
+          reasons.push("service active_state=failed");
+        }
+        // Any non-success Result is degraded (item 6), not just an allow-list.
+        if (isFailureResult(service.result)) {
+          reasons.push(`service result=${service.result}`);
+        }
+        const restarts = restartView(latest);
+        if (restarts.present && !restarts.valid) {
+          reasons.push(`service restart count malformed (n_restarts=${JSON.stringify(restarts.raw)})`);
+        } else if (restarts.valid && restarts.value > 0) {
+          reasons.push(`service auto-restarted ${restarts.value} time(s) this invocation`);
+        }
+      }
+
+      // cgroup oom_kill: distinguish a fresh in-window kill from a stale latch
+      // of the cumulative counter (D4). A malformed LATEST sample makes the
+      // CONCRETE count untrustworthy, so the cumulative line and any "to N"
+      // endpoint are dropped (a concrete number would contradict the "cgroup
+      // oom_kill count malformed" integrity reason -- self-contradictory signal,
+      // viewer contract). BUT a real increase is detected by oomIncreased over
+      // cgroupOomCountTrusted, which counts ONLY records that are not themselves
+      // cgroupMalformed (malformed records read as NaN and are skipped) -- so a
+      // surviving trend is always between TRUSTWORTHY samples and must NOT be
+      // erased merely because the LATEST sample is corrupt: surface the trend
+      // without the untrustworthy count rather than going silent on a genuine
+      // earlier OOM.
+      const latestCgroupMalformed = cgroupMalformed(latest);
+      const cgroupOomKills = cgroupOomCount(latest);
+      const cumulative = Number.isFinite(cgroupOomKills) ? cgroupOomKills : 0;
+      if (oomIncreased(records)) {
+        reasons.push(
+          latestCgroupMalformed
+            ? "cgroup oom_kill increased earlier in this file (latest count malformed)"
+            : `cgroup oom_kill increased to ${cumulative} in this file`,
+        );
+      } else if (!latestCgroupMalformed && cumulative > 0) {
+        reasons.push(`cgroup oom_kill=${cumulative} (cumulative)`);
+      }
+
+      if (restartIncreased(records)) reasons.push("auto-restarts increased in this file");
+
+      // File-level integrity: malformed JSONL lines that failed to parse are a
+      // degraded signal for the WHOLE file, independent of the latest record.
+      // Surface the count in the banner so a partly-corrupt file does not read
+      // healthy on the strength of a clean latest record.
+      if (parseErrorCount > 0) {
+        reasons.push(`${parseErrorCount} line(s) failed to parse (file integrity)`);
+      }
+
+      return reasons;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, character => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;"
+      })[character]);
+    }
+
+    function render() {
+      const latest = latestRecord();
+      elements.fileMeta.textContent = state.fileName
+        ? `${state.fileName} · ${state.records.length} samples`
+        : EMPTY;
+
+      // File-level JSONL parse failures are a dashboard-wide degraded signal: a
+      // clean latest record cannot vouch for a file that contains malformed
+      // lines. Pass the count through to both the badge (caps green) and the
+      // banner (surfaces the reason).
+      const parseErrorCount = state.parseErrors.length;
+      elements.sampleTime.textContent = latest ? latest.sampled_at || EMPTY : EMPTY;
+      elements.serviceState.innerHTML = latest ? serviceBadge(latest, parseErrorCount > 0) : EMPTY;
+      elements.rssValue.textContent = formatBytes(rssBytes(latest));
+      elements.memValue.textContent = formatBytes(memAvailableBytes(latest));
+
+      const freePct = latest ? diskFreePct(latest) : null;
+      // An unknown/degraded disk status is a visible signal: show a degraded
+      // (never green, never blank) badge rather than a silent dash (D1+D3).
+      elements.diskValue.innerHTML = freePct === null
+        ? `<span class="badge vio">${EMPTY}</span>`
+        : `<span class="badge ${diskBadgeClass(freePct)}">${formatPct(freePct)}</span>`;
+
+      elements.restartValue.textContent = formatNumber(restartCount(latest));
+      elements.hostValue.textContent = latest
+        ? [latest.host, latest.platform].filter(Boolean).join(" / ") || EMPTY
+        : EMPTY;
+
+      renderBanner(latest, parseErrorCount);
+      renderErrors(latest);
+      renderCharts();
+    }
+
+    function renderBanner(latest, parseErrorCount = 0) {
+      if (!latest) {
+        elements.eventBanner.hidden = true;
+        elements.eventBanner.textContent = "";
+        return;
+      }
+      const reasons = bannerReasons(latest, state.records, parseErrorCount);
+      elements.eventBanner.hidden = reasons.length === 0;
+      elements.eventBanner.textContent = reasons.length
+        ? `Host health event visible: ${reasons.join(" · ")}`
+        : "";
+    }
+
+    function renderErrors(latest) {
+      // concat / per-element push, never push(...arr) or [...arr] (F): a large
+      // parseErrors or latest.errors array spread as call arguments overflows
+      // V8's argument limit and throws, blanking the errors section. concat and
+      // a plain loop have no such ceiling.
+      const allErrors = state.parseErrors.concat(
+        latest && Array.isArray(latest.errors) ? latest.errors : []
+      );
+      elements.errorCount.textContent = allErrors.length ? `${allErrors.length} shown` : EMPTY;
+      elements.errorsList.textContent = "";
+      if (!allErrors.length) {
+        const item = document.createElement("li");
+        item.textContent = EMPTY;
+        elements.errorsList.appendChild(item);
+        return;
+      }
+      allErrors.forEach(error => {
+        const item = document.createElement("li");
+        item.textContent = error;
+        elements.errorsList.appendChild(item);
+      });
+    }
+
+    function renderCharts() {
+      const latest = latestRecord();
+      elements.memoryRange.textContent = state.records.length ? timeRangeText(state.records) : EMPTY;
+      elements.diskPath.textContent = latest && latest.disk ? latest.disk.path || EMPTY : EMPTY;
+
+      drawTimeSeries(elements.memoryChart, {
+        records: state.records,
+        unit: "bytes",
+        formatter: formatBytes,
+        series: [
+          { name: "RSS", color: "var(--blu)", value: record => rssBytes(record) },
+          { name: "MemAvailable", color: "var(--grn)", value: record => memAvailableBytes(record) }
+        ]
+      });
+
+      drawTimeSeries(elements.diskChart, {
+        records: state.records,
+        unit: "percent",
+        yMin: 0,
+        yMax: 100,
+        formatter: formatPct,
+        series: [
+          { name: "Disk used", color: "var(--amb)", value: record => diskUsedPct(record) }
+        ]
+      });
+    }
+
+    function timeRangeText(records) {
+      const first = records[0] && records[0].sampled_at;
+      const last = records[records.length - 1] && records[records.length - 1].sampled_at;
+      if (!first && !last) return EMPTY;
+      if (first === last) return first || EMPTY;
+      return `${first || EMPTY} to ${last || EMPTY}`;
+    }
+
+    function drawTimeSeries(container, config) {
+      container.textContent = "";
+      if (!config.records.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No samples loaded";
+        container.appendChild(empty);
+        return;
+      }
+
+      const width = 900;
+      const height = 280;
+      const pad = { left: 64, right: 24, top: 22, bottom: 44 };
+      const plotWidth = width - pad.left - pad.right;
+      const plotHeight = height - pad.top - pad.bottom;
+      const values = [];
+      const pointsBySeries = config.series.map(series => {
+        // Validate each raw value with the SAME predicate the badge/banner use
+        // (per-series ``valid``, default isStrictFiniteNumber) instead of coercing
+        // via Number(raw): a malformed-but-coercible value (the string "0", [], a
+        // boolean) must yield NO plotted point, so the chart never shows a clean
+        // datapoint for a value the rest of the UI flags malformed.
+        const accept = series.valid || isStrictFiniteNumber;
+        const points = config.records.map((record, index) => {
+          const raw = series.value(record);
+          const value = accept(raw) ? raw : null;
+          if (value !== null) values.push(value);
+          return { index, value };
+        });
+        return { ...series, points };
+      });
+
+      if (!values.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = EMPTY;
+        container.appendChild(empty);
+        return;
+      }
+
+      // arrayExtent replaces Math.min(...values)/Math.max(...values): the
+      // spreads overflow the call-argument limit on a long file (F). The memory
+      // chart still floors yMin at 0 (Math.min(0, lo)); an explicit config
+      // yMin/yMax still wins.
+      const extent = arrayExtent(values);
+      let yMin = config.yMin !== undefined ? config.yMin : Math.min(0, extent.lo);
+      let yMax = config.yMax !== undefined ? config.yMax : extent.hi;
+      if (yMax === yMin) {
+        yMax += 1;
+        yMin = Math.max(0, yMin - 1);
+      }
+
+      const xFor = index => {
+        if (config.records.length === 1) return pad.left + plotWidth / 2;
+        return pad.left + index / (config.records.length - 1) * plotWidth;
+      };
+      const yFor = value => pad.top + (1 - (value - yMin) / (yMax - yMin)) * plotHeight;
+
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("role", "img");
+
+      for (let tick = 0; tick <= 4; tick += 1) {
+        const y = pad.top + tick / 4 * plotHeight;
+        const grid = svgLine(pad.left, y, width - pad.right, y, "grid");
+        svg.appendChild(grid);
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        const value = yMax - tick / 4 * (yMax - yMin);
+        label.setAttribute("x", "8");
+        label.setAttribute("y", String(y + 4));
+        label.setAttribute("fill", "var(--muted)");
+        label.setAttribute("font-size", "12");
+        label.textContent = config.formatter(value);
+        svg.appendChild(label);
+      }
+
+      svg.appendChild(svgLine(pad.left, pad.top, pad.left, height - pad.bottom, "axis"));
+      svg.appendChild(svgLine(pad.left, height - pad.bottom, width - pad.right, height - pad.bottom, "axis"));
+
+      pointsBySeries.forEach(series => {
+        const pointText = series.points
+          .filter(point => point.value !== null && Number.isFinite(point.value))
+          .map(point => `${xFor(point.index).toFixed(2)},${yFor(point.value).toFixed(2)}`)
+          .join(" ");
+        if (!pointText) return;
+        const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+        polyline.setAttribute("class", "series-line");
+        polyline.setAttribute("stroke", series.color);
+        polyline.setAttribute("points", pointText);
+        svg.appendChild(polyline);
+      });
+
+      const firstLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      firstLabel.setAttribute("x", String(pad.left));
+      firstLabel.setAttribute("y", String(height - 16));
+      firstLabel.setAttribute("fill", "var(--muted)");
+      firstLabel.setAttribute("font-size", "12");
+      firstLabel.textContent = shortTime(config.records[0].sampled_at);
+      svg.appendChild(firstLabel);
+
+      const lastLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      lastLabel.setAttribute("x", String(width - pad.right));
+      lastLabel.setAttribute("y", String(height - 16));
+      lastLabel.setAttribute("text-anchor", "end");
+      lastLabel.setAttribute("fill", "var(--muted)");
+      lastLabel.setAttribute("font-size", "12");
+      lastLabel.textContent = shortTime(config.records[config.records.length - 1].sampled_at);
+      svg.appendChild(lastLabel);
+
+      container.appendChild(svg);
+      const legend = document.createElement("div");
+      legend.className = "legend";
+      config.series.forEach(series => {
+        const item = document.createElement("span");
+        item.className = "legend-item";
+        const swatch = document.createElement("span");
+        swatch.className = "legend-swatch";
+        swatch.style.background = series.color;
+        item.appendChild(swatch);
+        item.appendChild(document.createTextNode(series.name));
+        legend.appendChild(item);
+      });
+      container.appendChild(legend);
+    }
+
+    function svgLine(x1, y1, x2, y2, className) {
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", String(x1));
+      line.setAttribute("y1", String(y1));
+      line.setAttribute("x2", String(x2));
+      line.setAttribute("y2", String(y2));
+      line.setAttribute("class", className);
+      return line;
+    }
+
+    function shortTime(value) {
+      if (!value) return EMPTY;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toISOString().slice(11, 19);
+    }
+
+    render();
+  </script>
+</body>
+</html>

@@ -351,6 +351,8 @@ pub struct RealizedVolSourceDiagnostic {
     pub coverage_ratio: f64,
     pub max_inter_sample_gap_ms: Option<u64>,
     pub last_rejected_reason: Option<RealizedVolSourceRejectReason>,
+    pub last_rejected_event_ts_ms: Option<u64>,
+    pub last_rejected_recv_ts_ms: Option<u64>,
     pub rejection_counters: BTreeMap<RealizedVolSourceRejectReason, u64>,
     pub block_reason: Option<RealizedVolBlockReason>,
 }
@@ -417,6 +419,8 @@ struct SourceState {
     config: RealizedVolSourceConfig,
     samples: VecDeque<RealizedVolObservation>,
     last_rejected_reason: Option<RealizedVolSourceRejectReason>,
+    last_rejected_event_ts_ms: Option<u64>,
+    last_rejected_recv_ts_ms: Option<u64>,
     rejection_counters: BTreeMap<RealizedVolSourceRejectReason, u64>,
 }
 
@@ -434,6 +438,8 @@ impl RealizedVolEngine {
                         config: source,
                         samples: VecDeque::new(),
                         last_rejected_reason: None,
+                        last_rejected_event_ts_ms: None,
+                        last_rejected_recv_ts_ms: None,
                         rejection_counters: BTreeMap::new(),
                     },
                 )
@@ -463,6 +469,8 @@ impl RealizedVolEngine {
         );
         if let Some(reason) = rejected {
             source.last_rejected_reason = Some(reason);
+            source.last_rejected_event_ts_ms = Some(observation.event_ts_ms);
+            source.last_rejected_recv_ts_ms = Some(observation.recv_ts_ms);
             increment_counter(&mut source.rejection_counters, reason);
             return false;
         }
@@ -866,6 +874,8 @@ fn source_diagnostic(
         coverage_ratio,
         max_inter_sample_gap_ms: max_gap,
         last_rejected_reason: state.last_rejected_reason,
+        last_rejected_event_ts_ms: state.last_rejected_event_ts_ms,
+        last_rejected_recv_ts_ms: state.last_rejected_recv_ts_ms,
         rejection_counters: state.rejection_counters.clone(),
         block_reason,
     }

@@ -118,9 +118,10 @@ use crate::{
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-        BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
-        BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
+        BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
+        BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
         read_submit_reservation_recovery_evidence,
@@ -144,7 +145,9 @@ use crate::{
     bolt_v3_kill_switch_store::{
         KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
     },
-    bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
+    bolt_v3_loss_governor::{
+        LossGovernorPolicy, evaluate_loss_admission, evaluate_loss_admission_with_observations,
+    },
     bolt_v3_loss_halt_actions::{
         LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy,
         LossGovernorManualRecoveryEvidence, LossGovernorManualRecoveryRequest,
@@ -2408,6 +2411,14 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
         Ok(())
     }
 
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+
     fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
         Ok(())
     }
@@ -2417,6 +2428,10 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     }
 
     fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
         Ok(())
     }
 }
@@ -5839,10 +5854,40 @@ fn loss_governor_halt_action_handler_from_node(
     loss_policy: LossGovernorPolicy,
     action_policy: LossGovernorHaltActionPolicy,
 ) -> LossGovernorHaltActionHandler {
-    let risk_engine = node.kernel().risk_engine().clone();
-    Rc::new(move |snapshot, now_ns| {
-        let decision = evaluate_loss_admission(&loss_policy, snapshot, now_ns);
-        let current_state = risk_engine.borrow().trading_state();
+    // The handler only needs to read and flip NT's `RiskEngine` trading state; the
+    // node is solely the source of that engine handle. Delegate to the node-free
+    // core via trading-state accessors so the halt behaviour can be exercised
+    // without building a `NautilusKernel`, whose logging init claims the
+    // process-global `log` slot and is mutually exclusive with a test's
+    // capturing logger.
+    let read_engine = node.kernel().risk_engine().clone();
+    let write_engine = read_engine.clone();
+    loss_governor_halt_action_handler(
+        Rc::new(move || read_engine.borrow().trading_state()),
+        Rc::new(move |state| write_engine.borrow_mut().set_trading_state(state)),
+        loss_policy,
+        action_policy,
+    )
+}
+
+/// Node-free core of the loss-governor halt action handler. Reads and flips the
+/// trading state via the supplied accessors rather than a `LiveNode`/`RiskEngine`
+/// handle, so the halt logic can be exercised against plain state cells without
+/// building a `NautilusKernel` (whose logging init owns the global `log` slot).
+fn loss_governor_halt_action_handler(
+    read_trading_state: Rc<dyn Fn() -> TradingState>,
+    set_trading_state: Rc<dyn Fn(TradingState)>,
+    loss_policy: LossGovernorPolicy,
+    action_policy: LossGovernorHaltActionPolicy,
+) -> LossGovernorHaltActionHandler {
+    Rc::new(move |snapshot, now_ns, source_observations| {
+        let decision = evaluate_loss_admission_with_observations(
+            &loss_policy,
+            snapshot,
+            now_ns,
+            source_observations,
+        );
+        let current_state = read_trading_state();
         if current_state == TradingState::Active && decision.accepted {
             return;
         }
@@ -5850,7 +5895,9 @@ fn loss_governor_halt_action_handler_from_node(
         if let Some(target_state) =
             next_loss_governor_trading_state(&action_policy, current_state, &decision)
         {
-            risk_engine.borrow_mut().set_trading_state(target_state);
+            // Apply the trading-state transition unconditionally — the
+            // loss-governor halt itself MUST always fire.
+            set_trading_state(target_state);
         }
     })
 }
@@ -6222,7 +6269,7 @@ mod tests {
     };
     use crate::bolt_v3_iv::config::IvRootConfig;
     use crate::bolt_v3_iv::error::IvRejectReason;
-    use crate::bolt_v3_loss_governor::LossSnapshot;
+    use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
     use crate::bolt_v3_providers::hyperliquid::{
         ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
     };
@@ -6508,6 +6555,7 @@ mod tests {
             rolling_pnl: Some(Decimal::ZERO),
             current_equity: Some(Decimal::new(100, 0)),
             peak_equity: Some(Decimal::new(100, 0)),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         });
         let evidence = LossGovernorManualRecoveryEvidence::new(
             "operator-primary",

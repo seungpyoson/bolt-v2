@@ -20,6 +20,8 @@ jobs:
         (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ai-review-smoke'))
       )
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    # Job-level timeouts cannot read the TOML loaded later in this job; keep
+    # this in sync with ci/ai-review.toml [smoke.workflow].job_timeout_minutes.
     timeout-minutes: 10
     env:
       GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
@@ -32,18 +34,45 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .ai-review/smoke-base
           sparse-checkout: ci/ai-review.toml
           sparse-checkout-cone-mode: false
 
+      - name: Check trusted smoke config
+        id: trusted-config
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f .ai-review/smoke-base/ci/ai-review.toml ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          notice_file="${RUNNER_TEMP}/ai-review-smoke-notice.md"
+          cat > "$notice_file" <<EOF
+          ## AI review coding-plan smoke notice
+
+          Trusted base-branch \`ci/ai-review.toml\` is unavailable, so the coding-plan smoke test was skipped.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          This is expected only while bootstrapping the AI-review config onto \`main\`. Future smoke runs use the base-branch config before sending provider secrets to any endpoint or installing the Kimi CLI package.
+          EOF
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+
       - name: Load AI review smoke config
         id: runtime-config
+        if: steps.trusted-config.outputs.available == 'true'
         run: |
           python3 - <<'PY'
           import os
           import tomllib
           from pathlib import Path
 
-          config = tomllib.loads(Path("ci/ai-review.toml").read_text(encoding="utf-8"))
+          config = tomllib.loads(Path(".ai-review/smoke-base/ci/ai-review.toml").read_text(encoding="utf-8"))
           review = config["review"]
           glm = config["glm"]
           kimi = config["kimi"]
@@ -81,11 +110,13 @@ jobs:
           PY
 
       - name: Set up Node.js for Kimi CLI smoke
+        if: steps.trusted-config.outputs.available == 'true'
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: ${{ steps.runtime-config.outputs.kimi_node_version }}
 
       - name: Run coding-plan endpoint smoke tests
+        if: steps.trusted-config.outputs.available == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

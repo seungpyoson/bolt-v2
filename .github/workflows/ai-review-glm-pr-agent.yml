@@ -28,6 +28,8 @@ jobs:
         )
       }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    # Job-level timeouts cannot read the TOML loaded later in this job; keep
+    # this in sync with ci/ai-review.toml [glm.workflow].job_timeout_minutes.
     timeout-minutes: 35
     env:
       GLM_API_KEY: ${{ secrets.GLM_API_KEY }}

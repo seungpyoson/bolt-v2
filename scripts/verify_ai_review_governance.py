@@ -209,6 +209,16 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
 )
 
+SMOKE_TRUSTED_CONFIG_SNIPPETS = (
+    "ref: ${{ github.event.pull_request.base.sha }}",
+    "path: .ai-review/smoke-base",
+    "sparse-checkout: ci/ai-review.toml",
+    "id: trusted-config",
+    "Path(\".ai-review/smoke-base/ci/ai-review.toml\")",
+    "steps.trusted-config.outputs.available == 'true'",
+    "Future smoke runs use the base-branch config before sending provider secrets",
+)
+
 KIMI_FORBIDDEN_INPUTS = (
     "misospace/pr-reviewer-action",
     "Kimi Misospace",
@@ -314,8 +324,10 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("glm.pr_agent.auto_review", glm_pr_agent.get("auto_review"), True),
         ("glm.pr_agent.auto_describe", glm_pr_agent.get("auto_describe"), False),
         ("glm.pr_agent.auto_improve", glm_pr_agent.get("auto_improve"), False),
+        ("glm.workflow.job_timeout_minutes", glm_workflow.get("job_timeout_minutes"), 35),
         ("glm.workflow.primary_timeout_minutes", glm_workflow.get("primary_timeout_minutes"), 8),
         ("glm.workflow.fallback_timeout_minutes", glm_workflow.get("fallback_timeout_minutes"), 20),
+        ("glm.workflow.setup_overhead_timeout_minutes", glm_workflow.get("setup_overhead_timeout_minutes"), 7),
         ("kimi.api_base", kimi.get("api_base"), "https://api.kimi.com/coding/v1"),
         ("kimi.model", kimi.get("model"), "kimi-for-coding"),
         ("kimi.provider_type", kimi.get("provider_type"), "kimi"),
@@ -331,6 +343,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("kimi.workflow.fallback_timeout_minutes", kimi_workflow.get("fallback_timeout_minutes"), 20),
         ("kimi.workflow.setup_overhead_timeout_minutes", kimi_workflow.get("setup_overhead_timeout_minutes"), 5),
         ("smoke.max_tokens", smoke.get("max_tokens"), 16),
+        ("smoke.workflow.job_timeout_minutes", (smoke.get("workflow") if isinstance(smoke.get("workflow"), dict) else {}).get("job_timeout_minutes"), 10),
     )
     for name, actual, expected in expected_values:
         if actual != expected:
@@ -349,17 +362,22 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     return findings
 
 
-def verify_kimi_job_timeout_budget(ai_review_toml: str, kimi_workflow: str) -> list[str]:
+def verify_review_job_timeout_budget(
+    ai_review_toml: str,
+    workflow_text: str,
+    provider: str,
+    setup_required: bool,
+) -> list[str]:
     findings: list[str] = []
     try:
         parsed = tomllib.loads(ai_review_toml)
     except tomllib.TOMLDecodeError:
         return findings
 
-    kimi = parsed.get("kimi")
-    if not isinstance(kimi, dict):
+    provider_config = parsed.get(provider)
+    if not isinstance(provider_config, dict):
         return findings
-    workflow = kimi.get("workflow")
+    workflow = provider_config.get("workflow")
     if not isinstance(workflow, dict):
         return findings
 
@@ -367,21 +385,25 @@ def verify_kimi_job_timeout_budget(ai_review_toml: str, kimi_workflow: str) -> l
     primary_timeout = workflow.get("primary_timeout_minutes")
     fallback_timeout = workflow.get("fallback_timeout_minutes")
     setup_overhead = workflow.get("setup_overhead_timeout_minutes")
+    provider_name = {"glm": "GLM", "kimi": "Kimi", "smoke": "Smoke"}.get(provider, provider)
+    expected_line = f"    timeout-minutes: {job_timeout}"
+    if isinstance(job_timeout, int) and expected_line not in workflow_text:
+        findings.append(
+            f"{provider_name} workflow job timeout must match ci/ai-review.toml "
+            f"{provider}.workflow.job_timeout_minutes ({job_timeout})"
+        )
+
+    if not setup_required:
+        return findings
+
     if not all(isinstance(value, int) for value in (job_timeout, primary_timeout, fallback_timeout, setup_overhead)):
         return findings
 
     required_timeout = primary_timeout + fallback_timeout + setup_overhead
     if job_timeout < required_timeout:
         findings.append(
-            "ci/ai-review.toml kimi.workflow.job_timeout_minutes must cover "
+            f"ci/ai-review.toml {provider}.workflow.job_timeout_minutes must cover "
             "primary_timeout_minutes + fallback_timeout_minutes + setup_overhead_timeout_minutes"
-        )
-
-    expected_line = f"    timeout-minutes: {job_timeout}"
-    if expected_line not in kimi_workflow:
-        findings.append(
-            "Kimi workflow job timeout must match ci/ai-review.toml "
-            f"kimi.workflow.job_timeout_minutes ({job_timeout})"
         )
 
     return findings
@@ -394,6 +416,7 @@ def verify_texts(
     ai_review_toml: str,
     glm_workflow: str,
     kimi_workflow: str,
+    smoke_workflow: str,
 ) -> list[str]:
     findings: list[str] = []
 
@@ -405,7 +428,9 @@ def verify_texts(
     findings.extend(missing_snippets("AGENTS.md", agents_md, AGENTS_BACKPOINTER_SNIPPETS))
     findings.extend(missing_snippets(".pr_agent.toml extra_instructions", extra, PR_AGENT_MIRROR_NOTE_SNIPPETS))
     findings.extend(verify_ai_review_config(ai_review_toml))
-    findings.extend(verify_kimi_job_timeout_budget(ai_review_toml, kimi_workflow))
+    findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
+    findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
+    findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
 
     for rule in MIRRORED_RULES:
         for snippet in rule.agents_snippets:
@@ -423,7 +448,11 @@ def verify_texts(
         findings.append(
             "GLM workflow must not define pr_reviewer.* overrides; keep reviewer behavior in .pr_agent.toml"
         )
-    for workflow_name, workflow in (("GLM workflow", glm_workflow), ("Kimi workflow", kimi_workflow)):
+    for workflow_name, workflow in (
+        ("GLM workflow", glm_workflow),
+        ("Kimi workflow", kimi_workflow),
+        ("Smoke workflow", smoke_workflow),
+    ):
         if "ai_review_deliverables.py notice" in workflow:
             findings.append(f"{workflow_name} backup/skip notices must not depend on ai_review_deliverables.py")
         for endpoint in FORBIDDEN_API_ENDPOINTS:
@@ -436,6 +465,7 @@ def verify_texts(
     findings.extend(missing_snippets("GLM workflow", glm_workflow, GLM_DELIVERABLE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_BASE_GOVERNANCE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_DELIVERABLE_SNIPPETS))
+    findings.extend(missing_snippets("Smoke workflow", smoke_workflow, SMOKE_TRUSTED_CONFIG_SNIPPETS))
     for snippet in KIMI_FORBIDDEN_INPUTS:
         if snippet in kimi_workflow:
             findings.append(f"Kimi workflow must use the official Kimi CLI path, not {snippet!r}")
@@ -450,6 +480,7 @@ def verify_repo(repo_root: Path) -> list[str]:
         ai_review_toml=read_text(repo_root / "ci/ai-review.toml"),
         glm_workflow=read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml"),
         kimi_workflow=read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml"),
+        smoke_workflow=read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml"),
     )
 
 
@@ -464,6 +495,7 @@ def run_self_tests(repo_root: Path) -> None:
     ai_review = read_text(repo_root / "ci/ai-review.toml")
     glm = read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml")
     kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml")
+    smoke = read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml")
 
     baseline = verify_texts(
         agents_md=agents,
@@ -471,6 +503,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi,
+        smoke_workflow=smoke,
     )
     if baseline:
         raise AssertionError(f"real repository must satisfy AI review governance check, got {baseline!r}")
@@ -481,6 +514,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review.replace("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/paas/v4"),
         glm_workflow=glm,
         kimi_workflow=kimi,
+        smoke_workflow=smoke,
     )
     assert_finding("wrong AI review config endpoint", wrong_ai_review_config, "ci/ai-review.toml glm.api_base")
 
@@ -490,8 +524,29 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm + "\n          GLM_MODEL: glm-5.2\n",
         kimi_workflow=kimi,
+        smoke_workflow=smoke,
     )
     assert_finding("workflow runtime literal", workflow_runtime_literal, "must read AI review runtime value")
+
+    smoke_runtime_literal = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke + "\n          GLM_API_BASE: https://api.z.ai/api/coding/paas/v4\n",
+    )
+    assert_finding("smoke workflow runtime literal", smoke_runtime_literal, "must read AI review runtime value")
+
+    glm_short_job_timeout = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm.replace("timeout-minutes: 35", "timeout-minutes: 20"),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("GLM short job timeout", glm_short_job_timeout, "GLM workflow job timeout must match")
 
     kimi_short_job_timeout = verify_texts(
         agents_md=agents,
@@ -499,8 +554,32 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi.replace("timeout-minutes: 45", "timeout-minutes: 35"),
+        smoke_workflow=smoke,
     )
     assert_finding("Kimi short job timeout", kimi_short_job_timeout, "Kimi workflow job timeout must match")
+
+    smoke_job_timeout_drift = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke.replace("timeout-minutes: 10", "timeout-minutes: 8"),
+    )
+    assert_finding("Smoke job timeout drift", smoke_job_timeout_drift, "Smoke workflow job timeout must match")
+
+    smoke_head_config = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke.replace(
+            "ref: ${{ github.event.pull_request.base.sha }}",
+            "ref: ${{ github.event.pull_request.head.sha }}",
+        ),
+    )
+    assert_finding("Smoke head config", smoke_head_config, "Smoke workflow missing expected snippet")
 
     missing_mirror = verify_texts(
         agents_md=agents,
@@ -508,6 +587,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi,
+        smoke_workflow=smoke,
     )
     assert_finding("missing PR-Agent mirror", missing_mirror, ".pr_agent.toml missing mirrored")
 
@@ -517,6 +597,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi,
+        smoke_workflow=smoke,
     )
     assert_finding("changed AGENTS source", changed_source, "AGENTS.md source for mirrored rule 'no dual paths'")
 
@@ -526,6 +607,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm + "\n          pr_reviewer.num_max_findings: \"6\"\n",
         kimi_workflow=kimi,
+        smoke_workflow=smoke,
     )
     assert_finding("GLM split config", glm_split_config, "must not define pr_reviewer.*")
 
@@ -535,6 +617,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm.replace("scripts/ai_review_deliverables.py glm-fallback", "echo missing"),
         kimi_workflow=kimi,
+        smoke_workflow=smoke,
     )
     assert_finding("GLM missing fallback", glm_missing_fallback, "GLM workflow missing expected snippet")
 
@@ -544,6 +627,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 scripts/ai_review_deliverables.py notice"),
         kimi_workflow=kimi,
+        smoke_workflow=smoke,
     )
     assert_finding(
         "GLM helper-based fallback infrastructure notice",
@@ -560,6 +644,7 @@ def run_self_tests(repo_root: Path) -> None:
             "ref: ${{ github.event.pull_request.base.sha }}",
             "ref: ${{ github.event.pull_request.head.sha }}",
         ),
+        smoke_workflow=smoke,
     )
     assert_finding("Kimi head governance", kimi_head_governance, "Kimi workflow missing expected snippet")
 
@@ -569,6 +654,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi + "\n      - uses: misospace/pr-reviewer-action@deadbeef\n",
+        smoke_workflow=smoke,
     )
     assert_finding("Kimi Misospace action", kimi_misospace_action, "must use the official Kimi CLI path")
 
@@ -578,6 +664,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi + "\n          system_prompt_mode: append\n",
+        smoke_workflow=smoke,
     )
     assert_finding("Kimi prompt override", kimi_prompt_override, "must use the official Kimi CLI path")
 
@@ -587,6 +674,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi.replace(".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback", "echo missing"),
+        smoke_workflow=smoke,
     )
     assert_finding("Kimi missing fallback", kimi_missing_fallback, "Kimi workflow missing expected snippet")
 
@@ -596,6 +684,7 @@ def run_self_tests(repo_root: Path) -> None:
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 .ai-review/base/scripts/ai_review_deliverables.py notice"),
+        smoke_workflow=smoke,
     )
     assert_finding(
         "Kimi helper-based fallback infrastructure notice",

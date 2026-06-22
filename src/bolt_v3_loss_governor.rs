@@ -1,3 +1,5 @@
+use crate::bolt_v3_decision_evidence::BoltV3StaleLossReason;
+
 use rust_decimal::Decimal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,21 +108,38 @@ fn rejected(reason: LossHaltReason) -> LossAdmissionDecision {
     }
 }
 
-fn snapshot_is_stale(policy: &LossGovernorPolicy, snapshot: &LossSnapshot, now_ns: u64) -> bool {
-    if snapshot.source.trim().is_empty() || snapshot.observed_at_ns > now_ns {
-        return true;
+#[must_use]
+pub fn loss_snapshot_stale_reason(
+    policy: &LossGovernorPolicy,
+    snapshot: &LossSnapshot,
+    now_ns: u64,
+) -> Option<BoltV3StaleLossReason> {
+    if snapshot.source.trim().is_empty() {
+        return Some(BoltV3StaleLossReason::SourceEmpty);
+    }
+    if snapshot.observed_at_ns > now_ns {
+        return Some(BoltV3StaleLossReason::FutureDated);
     }
 
     let age = now_ns - snapshot.observed_at_ns;
     if age > policy.max_snapshot_age_ns {
-        return true;
+        return Some(BoltV3StaleLossReason::AgeExceeded);
     }
 
-    (policy.max_per_trade_loss.is_some() && snapshot.per_trade_pnl.is_none())
+    if (policy.max_per_trade_loss.is_some() && snapshot.per_trade_pnl.is_none())
         || (policy.max_daily_loss.is_some() && snapshot.daily_pnl.is_none())
         || (policy.max_rolling_loss.is_some() && snapshot.rolling_pnl.is_none())
         || (policy.max_drawdown.is_some()
             && (snapshot.current_equity.is_none() || snapshot.peak_equity.is_none()))
+    {
+        return Some(BoltV3StaleLossReason::MissingRequiredField);
+    }
+
+    None
+}
+
+fn snapshot_is_stale(policy: &LossGovernorPolicy, snapshot: &LossSnapshot, now_ns: u64) -> bool {
+    loss_snapshot_stale_reason(policy, snapshot, now_ns).is_some()
 }
 
 fn loss_breaches(pnl: Decimal, limit: Decimal) -> bool {
@@ -135,7 +154,12 @@ fn drawdown_breaches(current_equity: Decimal, peak_equity: Decimal, limit: Decim
 mod tests {
     use rust_decimal::Decimal;
 
-    use super::{LossGovernorPolicy, LossHaltReason, LossSnapshot, evaluate_loss_admission};
+    use crate::bolt_v3_decision_evidence::BoltV3StaleLossReason;
+
+    use super::{
+        LossGovernorPolicy, LossHaltReason, LossSnapshot, evaluate_loss_admission,
+        loss_snapshot_stale_reason, snapshot_is_stale,
+    };
 
     fn policy() -> LossGovernorPolicy {
         LossGovernorPolicy {
@@ -156,6 +180,129 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
+        }
+    }
+
+    fn legacy_snapshot_is_stale(
+        policy: &LossGovernorPolicy,
+        snapshot: &LossSnapshot,
+        now_ns: u64,
+    ) -> bool {
+        if snapshot.source.trim().is_empty() || snapshot.observed_at_ns > now_ns {
+            return true;
+        }
+
+        let age = now_ns - snapshot.observed_at_ns;
+        if age > policy.max_snapshot_age_ns {
+            return true;
+        }
+
+        (policy.max_per_trade_loss.is_some() && snapshot.per_trade_pnl.is_none())
+            || (policy.max_daily_loss.is_some() && snapshot.daily_pnl.is_none())
+            || (policy.max_rolling_loss.is_some() && snapshot.rolling_pnl.is_none())
+            || (policy.max_drawdown.is_some()
+                && (snapshot.current_equity.is_none() || snapshot.peak_equity.is_none()))
+    }
+
+    #[test]
+    fn stale_reason_refactor_matches_legacy_staleness_logic() {
+        let policy = LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(20, 0)),
+            max_rolling_loss: Some(Decimal::new(30, 0)),
+            max_drawdown: Some(Decimal::new(40, 0)),
+        };
+        let now_ns = 10_500;
+        let fresh = LossSnapshot {
+            source: "test-loss-feed".to_string(),
+            observed_at_ns: 10_000,
+            per_trade_pnl: Some(Decimal::ZERO),
+            daily_pnl: Some(Decimal::ZERO),
+            rolling_pnl: Some(Decimal::ZERO),
+            current_equity: Some(Decimal::new(1_000, 0)),
+            peak_equity: Some(Decimal::new(1_000, 0)),
+        };
+        let mut source_empty = fresh.clone();
+        source_empty.source = " ".to_string();
+        source_empty.observed_at_ns = now_ns + 1;
+        let mut future_dated = fresh.clone();
+        future_dated.observed_at_ns = now_ns + 1;
+        let mut age_exceeded = fresh.clone();
+        age_exceeded.observed_at_ns = now_ns - policy.max_snapshot_age_ns - 1;
+        let mut missing_per_trade = fresh.clone();
+        missing_per_trade.per_trade_pnl = None;
+        let mut missing_daily = fresh.clone();
+        missing_daily.daily_pnl = None;
+        let mut missing_rolling = fresh.clone();
+        missing_rolling.rolling_pnl = None;
+        let mut missing_current_equity = fresh.clone();
+        missing_current_equity.current_equity = None;
+        let mut missing_peak_equity = fresh.clone();
+        missing_peak_equity.peak_equity = None;
+
+        let cases = [
+            (
+                "source empty",
+                source_empty,
+                Some(BoltV3StaleLossReason::SourceEmpty),
+            ),
+            (
+                "future dated",
+                future_dated,
+                Some(BoltV3StaleLossReason::FutureDated),
+            ),
+            (
+                "age exceeded",
+                age_exceeded,
+                Some(BoltV3StaleLossReason::AgeExceeded),
+            ),
+            (
+                "missing per trade pnl",
+                missing_per_trade,
+                Some(BoltV3StaleLossReason::MissingRequiredField),
+            ),
+            (
+                "missing daily pnl",
+                missing_daily,
+                Some(BoltV3StaleLossReason::MissingRequiredField),
+            ),
+            (
+                "missing rolling pnl",
+                missing_rolling,
+                Some(BoltV3StaleLossReason::MissingRequiredField),
+            ),
+            (
+                "missing current equity",
+                missing_current_equity,
+                Some(BoltV3StaleLossReason::MissingRequiredField),
+            ),
+            (
+                "missing peak equity",
+                missing_peak_equity,
+                Some(BoltV3StaleLossReason::MissingRequiredField),
+            ),
+            ("fresh", fresh, None),
+        ];
+
+        for (label, snapshot, expected_reason) in cases {
+            let legacy_stale = legacy_snapshot_is_stale(&policy, &snapshot, now_ns);
+            let reason = loss_snapshot_stale_reason(&policy, &snapshot, now_ns);
+
+            assert_eq!(
+                reason.is_some(),
+                legacy_stale,
+                "{label} reason presence must match legacy bool"
+            );
+            assert_eq!(
+                snapshot_is_stale(&policy, &snapshot, now_ns),
+                legacy_stale,
+                "{label} bool wrapper must match legacy bool"
+            );
+            assert_eq!(
+                reason, expected_reason,
+                "{label} should classify the requested stale reason"
+            );
         }
     }
 

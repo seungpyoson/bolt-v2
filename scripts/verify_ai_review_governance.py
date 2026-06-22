@@ -142,6 +142,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Capture GLM review window",
     "id: pr-agent",
     "timeout-minutes: 8",
+    "https://api.z.ai/api/coding/paas/v4",
     "OPENAI_KEY: ${{ env.GLM_API_KEY }}",
     "Ensure GLM deliverable or post split fallback",
     "id: glm_fallback",
@@ -159,6 +160,8 @@ GLM_DELIVERABLE_SNIPPETS = (
 KIMI_DELIVERABLE_SNIPPETS = (
     "id: kimi-review",
     "timeout-minutes: 8",
+    "https://api.kimi.com/coding/v1",
+    "kimi-for-coding",
     "Capture Kimi review window",
     "Ensure Kimi deliverable or post split fallback",
     "id: kimi_fallback",
@@ -179,6 +182,12 @@ KIMI_FORBIDDEN_INPUTS = (
     "system_prompt:",
     "system_prompt_file:",
     "system_prompt_mode:",
+)
+
+FORBIDDEN_API_ENDPOINTS = (
+    "https://api.z.ai/api/paas/v4",
+    "https://api.moonshot.ai/v1",
+    "kimi-k2.7-code",
 )
 
 
@@ -243,6 +252,9 @@ def verify_texts(
     for workflow_name, workflow in (("GLM workflow", glm_workflow), ("Kimi workflow", kimi_workflow)):
         if "ai_review_deliverables.py notice" in workflow:
             findings.append(f"{workflow_name} backup/skip notices must not depend on ai_review_deliverables.py")
+        for endpoint in FORBIDDEN_API_ENDPOINTS:
+            if endpoint in workflow:
+                findings.append(f"{workflow_name} must use coding-plan endpoint/model, not {endpoint!r}")
 
     findings.extend(missing_snippets("GLM workflow", glm_workflow, GLM_DELIVERABLE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_BASE_GOVERNANCE_SNIPPETS))

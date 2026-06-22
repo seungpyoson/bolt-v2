@@ -111,9 +111,9 @@ jobs:
         uses: misospace/pr-reviewer-action@7189223d79151d0508bdb1c60b6e60097e998ce5 # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          ai_base_url: https://api.moonshot.ai/v1
+          ai_base_url: https://api.kimi.com/coding/v1
           ai_api_format: openai
-          ai_model: kimi-k2.7-code
+          ai_model: kimi-for-coding
           ai_api_key: ${{ env.KIMI_API_KEY }}
           ai_max_tokens: "16000"
           ai_temperature: ""
@@ -136,8 +136,8 @@ jobs:
         timeout-minutes: 20
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KIMI_API_BASE: https://api.moonshot.ai/v1
-          KIMI_MODEL: kimi-k2.7-code
+          KIMI_API_BASE: https://api.kimi.com/coding/v1
+          KIMI_MODEL: kimi-for-coding
           KIMI_DELIVERABLE_MARKER: "<!-- ai-pr-reviewer-kimi -->"
           KIMI_REVIEW_MAX_CHUNK_CHARS: "60000"
           AI_REVIEW_MAX_COMMENT_CHARS: "60000"

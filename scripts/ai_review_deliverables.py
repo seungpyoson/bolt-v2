@@ -19,10 +19,10 @@ from typing import Any
 
 
 DEFAULT_GITHUB_API = "https://api.github.com"
-DEFAULT_GLM_API_BASE = "https://api.z.ai/api/paas/v4"
+DEFAULT_GLM_API_BASE = "https://api.z.ai/api/coding/paas/v4"
 DEFAULT_GLM_MODEL = "glm-5.2"
-DEFAULT_KIMI_API_BASE = "https://api.moonshot.ai/v1"
-DEFAULT_KIMI_MODEL = "kimi-k2.7-code"
+DEFAULT_KIMI_API_BASE = "https://api.kimi.com/coding/v1"
+DEFAULT_KIMI_MODEL = "kimi-for-coding"
 DEFAULT_MAX_CHUNK_CHARS = 60000
 DEFAULT_MAX_COMMENT_CHARS = 60000
 DEFAULT_RESPONSE_CHARS_PER_CHUNK = 8000

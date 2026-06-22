@@ -1,0 +1,96 @@
+name: AI Review Coding Plan Smoke
+
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  smoke:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.label.name == 'ai-review-smoke'
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: 10
+    env:
+      GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+
+    steps:
+      - name: Run coding-plan endpoint smoke tests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +x
+          body_file="${RUNNER_TEMP}/ai-review-coding-plan-smoke.md"
+          {
+            echo "## AI review coding-plan smoke"
+            echo
+            echo "- PR: #${PR_NUMBER}"
+            echo "- Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+          } > "$body_file"
+
+          status=0
+
+          smoke_openai_chat() {
+            provider="$1"
+            endpoint="$2"
+            model="$3"
+            key="$4"
+            response_file="${RUNNER_TEMP}/${provider}-smoke-response.json"
+
+            if [ -z "$key" ]; then
+              echo "- ${provider}: skipped; secret is not configured." >> "$body_file"
+              return 1
+            fi
+
+            payload=$(jq -nc --arg model "$model" '{
+              model: $model,
+              messages: [
+                {role: "system", content: "You are a smoke-test endpoint verifier. Reply with exactly OK."},
+                {role: "user", content: "Reply with exactly OK."}
+              ],
+              max_tokens: 16,
+              stream: false
+            }')
+
+            http_code=$(curl -sS -o "$response_file" -w "%{http_code}" \
+              -X POST "${endpoint%/}/chat/completions" \
+              -H "Authorization: Bearer ${key}" \
+              -H "Content-Type: application/json" \
+              -d "$payload") || http_code="curl_failed"
+
+            if [ "$http_code" = "200" ]; then
+              content=$(jq -r '.choices[0].message.content // ""' "$response_file" 2>/dev/null | tr '\n' ' ' | cut -c1-80)
+              {
+                echo "- ${provider}: passed against \`${endpoint}\` with model \`${model}\`."
+                echo "  - Response prefix: \`${content}\`"
+              } >> "$body_file"
+              return 0
+            fi
+
+            {
+              echo "- ${provider}: failed against \`${endpoint}\` with model \`${model}\`."
+              echo "  - HTTP status: \`${http_code}\`"
+              echo "  - Response body intentionally omitted from PR comments; check action logs if provider support needs the exact error."
+            } >> "$body_file"
+            return 1
+          }
+
+          smoke_openai_chat "GLM" "https://api.z.ai/api/coding/paas/v4" "glm-5.2" "$GLM_API_KEY" || status=1
+          smoke_openai_chat "Kimi" "https://api.kimi.com/coding/v1" "kimi-for-coding" "$KIMI_API_KEY" || status=1
+
+          {
+            echo
+            echo "This is a smoke test only. It verifies authentication and one minimal OpenAI-compatible chat completion call on the coding-plan endpoints."
+          } >> "$body_file"
+
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body_file"
+          exit "$status"

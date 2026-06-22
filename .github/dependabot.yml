@@ -30,7 +30,10 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      # Dependabot has no native "biweekly" interval; this checks action pins
+      # twice monthly, which keeps drift close to a two-week cadence.
+      interval: "cron"
+      cronjob: "0 8 1,15 * *"
     open-pull-requests-limit: 10
     groups:
       action-dependencies:

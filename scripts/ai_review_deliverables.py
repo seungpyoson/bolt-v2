@@ -28,6 +28,7 @@ DEFAULT_MAX_COMMENT_CHARS = 60000
 DEFAULT_RESPONSE_CHARS_PER_CHUNK = 8000
 PR_AGENT_MARKERS = (
     "## PR Reviewer Guide",
+    "## Incremental PR Reviewer Guide",
 )
 
 
@@ -224,7 +225,12 @@ def text_time_is_after_or_equal(value: object, threshold: datetime) -> bool:
 
 
 def body_has_deliverable_marker(body: object, markers: tuple[str, ...]) -> bool:
-    return isinstance(body, str) and any(marker in body for marker in markers)
+    return isinstance(body, str) and any(body.lstrip().startswith(marker) for marker in markers)
+
+
+def actor_is_bot(payload: dict[str, object]) -> bool:
+    user = payload.get("user")
+    return isinstance(user, dict) and str(user.get("type", "")).lower() == "bot"
 
 
 def has_review_deliverable(
@@ -236,6 +242,8 @@ def has_review_deliverable(
 ) -> bool:
     threshold = parse_iso_timestamp(started_at)
     for comment in comments:
+        if not actor_is_bot(comment):
+            continue
         if not body_has_deliverable_marker(comment.get("body"), markers):
             continue
         if text_time_is_after_or_equal(comment.get("updated_at"), threshold) or text_time_is_after_or_equal(
@@ -243,6 +251,8 @@ def has_review_deliverable(
         ):
             return True
     for review in reviews:
+        if not actor_is_bot(review):
+            continue
         if not body_has_deliverable_marker(review.get("body"), markers):
             continue
         if text_time_is_after_or_equal(review.get("submitted_at"), threshold):
@@ -386,7 +396,63 @@ def truncate_text(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     suffix = "\n\n[truncated to fit GitHub comment limit]"
-    return value[: max(0, limit - len(suffix))] + suffix
+    allowed = max(0, limit - len(suffix))
+    truncated = value[:allowed]
+    if truncated.count("```") % 2 == 1:
+        closer = "\n```"
+        allowed = max(0, limit - len(suffix) - len(closer))
+        truncated = value[:allowed].rstrip()
+        if truncated.count("```") % 2 == 1:
+            truncated += closer
+    return truncated + suffix
+
+
+def split_text_for_comment_sections(value: str, limit: int) -> list[str]:
+    if limit <= 0 or len(value) <= limit:
+        return [value]
+
+    parts: list[str] = []
+    current = ""
+    for line in value.splitlines(keepends=True):
+        if len(current) + len(line) <= limit:
+            current += line
+            continue
+
+        if current:
+            remaining = max(0, limit - len(current))
+            if remaining:
+                current += line[:remaining]
+                line = line[remaining:]
+            parts.append(current.rstrip("\n"))
+            current = ""
+
+        while len(line) > limit:
+            parts.append(line[:limit])
+            line = line[limit:]
+        current = line
+
+    if current or not parts:
+        parts.append(current.rstrip("\n"))
+    return parts
+
+
+def balance_markdown_fence_parts(parts: list[str]) -> list[str]:
+    balanced: list[str] = []
+    inside_fence = False
+    for part in parts:
+        rendered = part
+        if inside_fence:
+            rendered = "```\n" + rendered
+        if part.count("```") % 2 == 1:
+            inside_fence = not inside_fence
+        if inside_fence:
+            rendered = rendered.rstrip() + "\n```"
+        balanced.append(rendered)
+    return balanced
+
+
+def split_response_for_sections(response: str, limit: int) -> list[str]:
+    return balance_markdown_fence_parts(split_text_for_comment_sections(response, limit))
 
 
 def write_github_output(name: str, value: str) -> None:
@@ -403,13 +469,17 @@ def render_chunk_response_section(
     response: str,
     index: int,
     total: int,
-    response_chars_per_chunk: int,
+    response_part_index: int = 1,
+    response_part_total: int = 1,
 ) -> str:
+    title = f"### Chunk {index}/{total}: {chunk.title}"
+    if response_part_total > 1:
+        title += f" (response part {response_part_index}/{response_part_total})"
     return "\n".join(
         [
-            f"### Chunk {index}/{total}: {chunk.title}",
+            title,
             "",
-            truncate_text(response.strip(), response_chars_per_chunk),
+            response.strip(),
             "",
         ]
     )
@@ -449,16 +519,20 @@ def render_review_comments(
     chunks: list[ReviewChunk],
     responses: list[str],
 ) -> list[str]:
-    sections = [
-        render_chunk_response_section(
-            chunk=chunk,
-            response=response,
-            index=idx,
-            total=len(chunks),
-            response_chars_per_chunk=config.response_chars_per_chunk,
+    sections: list[str] = []
+    for idx, (chunk, response) in enumerate(zip(chunks, responses, strict=True), start=1):
+        response_parts = split_response_for_sections(response.strip(), config.response_chars_per_chunk)
+        sections.extend(
+            render_chunk_response_section(
+                chunk=chunk,
+                response=response_part,
+                index=idx,
+                total=len(chunks),
+                response_part_index=response_part_idx,
+                response_part_total=len(response_parts),
+            )
+            for response_part_idx, response_part in enumerate(response_parts, start=1)
         )
-        for idx, (chunk, response) in enumerate(zip(chunks, responses, strict=True), start=1)
-    ]
     single_comment = render_review_comment_body(config=config, total_chunks=len(chunks), sections=sections)
     if len(single_comment) <= config.max_comment_chars:
         return [single_comment]
@@ -526,11 +600,12 @@ def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseE
 
 
 def render_notice(provider: str, pr_number: int, run_url: str, message: str) -> str:
+    sanitized_message = sanitize_detail(message.strip())
     return textwrap.dedent(
         f"""\
         ## {provider} review notice
 
-        {message.strip()}
+        {sanitized_message}
 
         - PR: #{pr_number}
         - Action run: {run_url}

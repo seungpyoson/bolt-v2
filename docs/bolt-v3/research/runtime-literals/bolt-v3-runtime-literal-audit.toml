@@ -18785,3 +18785,179 @@ literal = "0"
 context = '''count: 0,'''
 classification = "submit_admission_order_reject_episode_counter_identity"
 reason = "A new submit-admission order-reject episode starts at count zero before the first observed rejection increments it to one; this is observability state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"submit_admission"'''
+context = '''const REJECT_SOURCE_SUBMIT_ADMISSION_KEY: &str = "submit_admission";'''
+classification = "order_reject_observer_source_key"
+reason = "Stable reject-source key for durable RCA #885 episode grouping; it labels evidence records and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"venue"'''
+context = '''const REJECT_SOURCE_VENUE_KEY: &str = "venue";'''
+classification = "order_reject_observer_source_key"
+reason = "Stable venue reject-source key for durable RCA #885 episode grouping; it labels evidence records and does not configure venue behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"nt_execution"'''
+context = '''const REJECT_SOURCE_NT_EXECUTION_KEY: &str = "nt_execution";'''
+classification = "order_reject_observer_source_key"
+reason = "Stable NT-execution reject-source key for durable RCA #885 episode grouping; it labels evidence records and does not configure NT behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"internal"'''
+context = '''const REJECT_SOURCE_INTERNAL_KEY: &str = "internal";'''
+classification = "order_reject_observer_source_key"
+reason = "Stable internal reject-source key for durable RCA #885 episode grouping; it labels evidence records and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"admission_rejected"'''
+context = '''const REJECT_REASON_ADMISSION_REJECTED_KEY: &str = "admission_rejected";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable reject-reason key mirroring the evidence enum for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"precision_rejected"'''
+context = '''const REJECT_REASON_PRECISION_REJECTED_KEY: &str = "precision_rejected";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable precision reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"min_size_rejected"'''
+context = '''const REJECT_REASON_MIN_SIZE_REJECTED_KEY: &str = "min_size_rejected";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable minimum-size reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"min_notional_rejected"'''
+context = '''const REJECT_REASON_MIN_NOTIONAL_REJECTED_KEY: &str = "min_notional_rejected";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable minimum-notional reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"insufficient_balance"'''
+context = '''const REJECT_REASON_INSUFFICIENT_BALANCE_KEY: &str = "insufficient_balance";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable insufficient-balance reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"duplicate_client_order_id"'''
+context = '''const REJECT_REASON_DUPLICATE_CLIENT_ORDER_ID_KEY: &str = "duplicate_client_order_id";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable duplicate-client-order-id reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"other"'''
+context = '''const REJECT_REASON_OTHER_KEY: &str = "other";'''
+classification = "order_reject_observer_reason_key"
+reason = "Stable fallback reject-reason key for durable RCA #885 episode grouping; it is a label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"precision"'''
+context = '''const REJECT_REASON_PRECISION_NEEDLE: &str = "precision";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"min"'''
+context = '''const REJECT_REASON_MIN_NEEDLE: &str = "min";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"notional"'''
+context = '''const REJECT_REASON_NOTIONAL_NEEDLE: &str = "notional";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"size"'''
+context = '''const REJECT_REASON_SIZE_NEEDLE: &str = "size";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"too small"'''
+context = '''const REJECT_REASON_TOO_SMALL_NEEDLE: &str = "too small";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"insufficient"'''
+context = '''const REJECT_REASON_INSUFFICIENT_NEEDLE: &str = "insufficient";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"balance"'''
+context = '''const REJECT_REASON_BALANCE_NEEDLE: &str = "balance";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"duplicate"'''
+context = '''const REJECT_REASON_DUPLICATE_NEEDLE: &str = "duplicate";'''
+classification = "order_reject_observer_reason_classifier_needle"
+reason = "Best-effort substring used only to classify raw venue/NT reject text into durable RCA #885 evidence buckets; it does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "0"
+context = '''const REJECT_OBSERVER_INITIAL_EPISODE_COUNT: u32 = 0;'''
+classification = "order_reject_observer_episode_counter_identity"
+reason = "A new venue/NT order-reject observer episode starts at count zero before the first observed rejection increments it to one; this is observability state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "1"
+context = '''const REJECT_OBSERVER_EPISODE_INCREMENT: u32 = 1;'''
+classification = "order_reject_observer_episode_counter_increment"
+reason = "Each observed venue/NT order rejection increments the durable RCA #885 episode counter by one; this is sampling state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"{}/{}/{}"'''
+context = '''"{}/{}/{}",'''
+classification = "order_reject_observer_episode_key_template"
+reason = "Stable episode-key template joining instrument, reject source, and reject reason while intentionally excluding client_order_id so RCA #885 client-order-id churn remains correlated."

@@ -84,7 +84,7 @@ use nautilus_model::{
         TradeTick, option_chain::StrikeRange,
     },
     enums::{BarIntervalType, BookType},
-    identifiers::{ClientId, InstrumentId, OptionSeriesId, StrategyId, Venue},
+    identifiers::{AccountId, ClientId, InstrumentId, OptionSeriesId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
     types::Price,
 };
@@ -159,6 +159,10 @@ use crate::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
+    bolt_v3_order_reject_observer_feed::{
+        BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
+        subscribe_order_reject_observer_feed,
+    },
     bolt_v3_position_sizer::{
         FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
         SizingPolicy,
@@ -211,6 +215,8 @@ pub struct BoltV3LiveNodeRuntime {
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
+    order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     position_sizer_venue_spendability_source:
@@ -2420,6 +2426,8 @@ struct BoltV3LiveNodeRuntimeFeeds {
     loss_halt_action_policy: Option<LossGovernorHaltActionPolicy>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
+    order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     position_sizer_venue_spendability_source:
@@ -2445,6 +2453,8 @@ impl BoltV3LiveNodeRuntime {
             loss_halt_action_policy: feeds.loss_halt_action_policy,
             loss_runtime_feed: feeds.loss_runtime_feed,
             loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
+            order_reject_observer_feed: feeds.order_reject_observer_feed,
+            order_reject_observer_feed_subscription: feeds.order_reject_observer_feed_subscription,
             position_sizer_runtime_feed: feeds.position_sizer_runtime_feed,
             position_sizer_runtime_feed_subscription: feeds
                 .position_sizer_runtime_feed_subscription,
@@ -5041,6 +5051,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let position_sizer_runtime_feed_config =
         position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
+    let order_reject_observer_account_id = order_reject_observer_account_id_from_loaded(loaded);
     let position_sizer_venue_spendability_source =
         position_sizer_venue_spendability_source_config_from_loaded(loaded)?;
     let submit_reservation_recovery = if position_sizer_runtime_feed_config.is_some() {
@@ -5070,6 +5081,18 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                     submit_admission.clone(),
                 )));
                 let subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
+    let (order_reject_observer_feed, order_reject_observer_feed_subscription) =
+        match order_reject_observer_account_id {
+            Some(account_id) => {
+                let feed = Arc::new(Mutex::new(BoltV3OrderRejectObserverFeed::new(
+                    decision_evidence.clone(),
+                    account_id,
+                )));
+                let subscription = subscribe_order_reject_observer_feed(feed.clone());
                 (Some(feed), Some(subscription))
             }
             None => (None, None),
@@ -5211,6 +5234,8 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             loss_halt_action_policy,
             loss_runtime_feed,
             loss_runtime_feed_subscription,
+            order_reject_observer_feed,
+            order_reject_observer_feed_subscription,
             position_sizer_runtime_feed,
             position_sizer_runtime_feed_subscription,
             position_sizer_venue_spendability_source,
@@ -5270,6 +5295,12 @@ fn position_sizer_runtime_feed_config_from_loaded(
         startup_observed_at_ns,
         dedupe_retention_ns: pool.dedupe_retention_ns,
     })
+}
+
+fn order_reject_observer_account_id_from_loaded(loaded: &LoadedBoltV3Config) -> Option<AccountId> {
+    let pools = loaded.root.risk.capital_pools.as_ref()?;
+    let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
+    Some(pool.account_id)
 }
 
 fn position_sizer_venue_spendability_source_config_from_loaded(

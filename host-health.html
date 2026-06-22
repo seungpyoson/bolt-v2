@@ -479,7 +479,7 @@
       return "grn";
     }
 
-    function serviceBadge(record) {
+    function serviceBadge(record, dashboardDegraded = false) {
       const service = record && record.service ? record.service : null;
       const active = service ? service.active_state : null;
       const sub = service ? service.sub_state : null;
@@ -531,14 +531,16 @@
         klass = "amb";
       }
       // Record-level integrity caps green: a record the banner flags at the
-      // record level (missing/unexpected schema_version, or sampler-reported
-      // collector errors) must never render a healthy-green service badge, even
-      // when the service block itself looks clean. Downgrade green to amber
-      // (degraded) without weakening the OOM-red, service-unknown, or
-      // failed/restart downgrades above. The text is unchanged; only the class
-      // changes. Mirrors bannerReasons' schema/errors conditions via the shared
-      // recordHasIntegrityIssue predicate.
-      if (klass === "grn" && recordHasIntegrityIssue(record)) {
+      // record level (missing/unexpected schema_version, malformed/non-empty
+      // errors) must never render a healthy-green service badge, even when the
+      // service block itself looks clean. A file-level degraded signal
+      // (dashboardDegraded — e.g. JSONL lines that failed to parse) caps green
+      // too: a clean latest record cannot vouch for a partly-corrupt file.
+      // Downgrade green to amber without weakening the OOM-red, service-unknown,
+      // or failed/restart downgrades above. The text is unchanged; only the class
+      // changes. Mirrors bannerReasons via the shared recordIntegrityReasons
+      // source plus the file-level parse-error signal.
+      if (klass === "grn" && (recordHasIntegrityIssue(record) || dashboardDegraded)) {
         klass = "amb";
       }
       return `<span class="badge ${klass}">${escapeHtml(text)}</span>`;
@@ -611,43 +613,62 @@
       return !service || (!service.active_state && !service.sub_state);
     }
 
-    function recordHasIntegrityIssue(record) {
-      // Record-LEVEL integrity gate: true when the record is unusable or the
-      // sampler itself reported trouble, independent of the service block. This
-      // is the SINGLE SOURCE OF TRUTH for the schema_version + errors[]
-      // conditions; bannerReasons derives its (richer-worded) schema/errors
-      // pushes from the SAME conditions below so the badge and the banner can
-      // never disagree. serviceBadge consumes this to cap a green badge: a
-      // record the banner flags at the record level must never read as healthy
-      // green (item: false-green while degraded).
-      if (!record) return true;
-      if (record.schema_version === undefined || record.schema_version === null) return true;
-      if (record.schema_version !== 2) return true;
-      if (Array.isArray(record.errors) && record.errors.length > 0) return true;
-      return false;
+    function recordIntegrityReasons(record) {
+      // SINGLE SOURCE OF TRUTH for record-LEVEL integrity: returns the array of
+      // human-readable reasons a record is unusable or the sampler itself
+      // reported trouble, independent of the service block. Both the boolean gate
+      // (recordHasIntegrityIssue, used by serviceBadge to cap green) AND the
+      // banner wording (bannerReasons spreads this) derive from this ONE function
+      // — no duplicated conditions, so the badge and banner can never drift.
+      // Empty array == record is clean at the record level.
+      const reasons = [];
+      if (!record) {
+        reasons.push("record missing");
+        return reasons;
+      }
+      if (record.schema_version === undefined || record.schema_version === null) {
+        reasons.push("schema_version missing (viewer expects 2)");
+      } else if (record.schema_version !== 2) {
+        reasons.push(`unexpected schema_version=${record.schema_version} (viewer expects 2)`);
+      }
+      // A PRESENT errors field of the wrong SHAPE is itself an integrity issue: a
+      // non-array errors (string/object/number) means the sampler serialized a
+      // malformed payload. Surfacing it (instead of silently ignoring a non-array)
+      // keeps a malformed-shape record from reading healthy-green.
+      if (record.errors !== undefined && record.errors !== null) {
+        if (!Array.isArray(record.errors)) {
+          reasons.push(`sampler errors field malformed (expected array, got ${typeof record.errors})`);
+        } else if (record.errors.length > 0) {
+          reasons.push(`sampler reported ${record.errors.length} collector error(s)`);
+        }
+      }
+      return reasons;
     }
 
-    function bannerReasons(latest, records) {
+    function recordHasIntegrityIssue(record) {
+      // Mechanical SSOT: a record has a record-level integrity issue iff
+      // recordIntegrityReasons produced at least one reason. No duplicated
+      // schema/errors conditions live here. serviceBadge consumes this to cap a
+      // green badge: a record the banner flags at the record level must never
+      // read as healthy green (item: false-green while degraded).
+      return recordIntegrityReasons(record).length > 0;
+    }
+
+    function bannerReasons(latest, records, parseErrorCount = 0) {
       // Pure: returns the list of human-readable banner reasons for a record set.
       // Kept testable so the false-green / standing-state cases are verifiable.
+      // parseErrorCount carries the file-level JSONL parse failures (malformed
+      // lines) so file-integrity is surfaced in the banner, not just a quiet
+      // errors-list chip. Defaults to 0 so existing callers/tests are unaffected.
       const reasons = [];
       if (!latest) return reasons;
-      // SINGLE SOURCE OF TRUTH: these schema_version + errors[] conditions are
-      // exactly the record-level conditions in recordHasIntegrityIssue, which
-      // serviceBadge uses to cap a green badge. The boolean gate lives there;
-      // here we emit the richer human wording (missing vs unexpected schema,
-      // error count). Keep the two in lockstep — any condition added here must
-      // also flip recordHasIntegrityIssue, or the badge and banner will drift.
-      // Preserve visibility for additive/future records, but fail loud when the
-      // sample schema is not the schema-2 shape this viewer expects.
-      if (latest.schema_version === undefined || latest.schema_version === null) {
-        reasons.push("schema_version missing (viewer expects 2)");
-      } else if (latest.schema_version !== 2) {
-        reasons.push(`unexpected schema_version=${latest.schema_version} (viewer expects 2)`);
-      }
-      if (Array.isArray(latest.errors) && latest.errors.length) {
-        reasons.push(`sampler reported ${latest.errors.length} collector error(s)`);
-      }
+      // SINGLE SOURCE OF TRUTH: spread the record-level integrity reasons from
+      // recordIntegrityReasons — the SAME function whose .length>0 powers the
+      // recordHasIntegrityIssue gate serviceBadge uses to cap a green badge. The
+      // badge and banner therefore cannot drift: a missing/unexpected schema, a
+      // non-empty errors array, AND a malformed (non-array) errors shape all
+      // surface here automatically.
+      reasons.push(...recordIntegrityReasons(latest));
       const service = latest.service || null;
 
       // OOM banner wording must name its EVIDENCE source (item 7): only a
@@ -658,12 +679,16 @@
       if (latest.oom_killed === true) {
         const result = service ? service.result : null;
         const rawCgroup = cgroupOomCount(latest);
-        const cgroupCount = Number.isFinite(rawCgroup) ? rawCgroup : 0;
+        // An UNAVAILABLE cgroup count is not zero: coercing a missing count to 0
+        // would misrepresent absent corroborating evidence as a real zero kill
+        // count. Render "?" so the reader distinguishes "no count available" from
+        // "the count is zero".
+        const cgroupDisplay = Number.isFinite(rawCgroup) ? rawCgroup : "?";
         if (result === "oom-kill") {
           reasons.push("systemd Result=oom-kill (authoritative)");
         } else {
           reasons.push(
-            `OOM detected (result=${result || "?"}, cgroup oom_kill=${cgroupCount})`
+            `OOM detected (result=${result || "?"}, cgroup oom_kill=${cgroupDisplay})`
           );
         }
       }
@@ -713,6 +738,14 @@
 
       if (restartIncreased(records)) reasons.push("auto-restarts increased in this file");
 
+      // File-level integrity: malformed JSONL lines that failed to parse are a
+      // degraded signal for the WHOLE file, independent of the latest record.
+      // Surface the count in the banner so a partly-corrupt file does not read
+      // healthy on the strength of a clean latest record.
+      if (parseErrorCount > 0) {
+        reasons.push(`${parseErrorCount} line(s) failed to parse (file integrity)`);
+      }
+
       return reasons;
     }
 
@@ -732,8 +765,13 @@
         ? `${state.fileName} · ${state.records.length} samples`
         : EMPTY;
 
+      // File-level JSONL parse failures are a dashboard-wide degraded signal: a
+      // clean latest record cannot vouch for a file that contains malformed
+      // lines. Pass the count through to both the badge (caps green) and the
+      // banner (surfaces the reason).
+      const parseErrorCount = state.parseErrors.length;
       elements.sampleTime.textContent = latest ? latest.sampled_at || EMPTY : EMPTY;
-      elements.serviceState.innerHTML = latest ? serviceBadge(latest) : EMPTY;
+      elements.serviceState.innerHTML = latest ? serviceBadge(latest, parseErrorCount > 0) : EMPTY;
       elements.rssValue.textContent = latest ? formatBytes(latest.process && latest.process.rss_bytes) : EMPTY;
       elements.memValue.textContent = latest ? formatBytes(latest.memory && latest.memory.mem_available_bytes) : EMPTY;
 
@@ -751,18 +789,18 @@
         ? [latest.host, latest.platform].filter(Boolean).join(" / ") || EMPTY
         : EMPTY;
 
-      renderBanner(latest);
+      renderBanner(latest, parseErrorCount);
       renderErrors(latest);
       renderCharts();
     }
 
-    function renderBanner(latest) {
+    function renderBanner(latest, parseErrorCount = 0) {
       if (!latest) {
         elements.eventBanner.hidden = true;
         elements.eventBanner.textContent = "";
         return;
       }
-      const reasons = bannerReasons(latest, state.records);
+      const reasons = bannerReasons(latest, state.records, parseErrorCount);
       elements.eventBanner.hidden = reasons.length === 0;
       elements.eventBanner.textContent = reasons.length
         ? `Host health event visible: ${reasons.join(" · ")}`

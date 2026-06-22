@@ -728,6 +728,139 @@ check("Fix B render-level: errors[]-non-empty healthy-service row is NOT green",
   );
 });
 
+// === PR #886 review round (Fix 1: malformed errors shape + mechanical SSOT) ===
+//
+// A schema-2 record whose `errors` field is PRESENT but NOT an array (e.g. a
+// string the sampler serialized by mistake) is a malformed-shape record. Pre-fix
+// recordHasIntegrityIssue only checked Array.isArray(errors) && length>0, so a
+// non-array errors read as clean: false integrity, GREEN badge, no banner. These
+// tests are DIFFERENTIAL: RED against the pre-fix html, GREEN against the fix.
+// They also lock the new recordIntegrityReasons SSOT that unifies the badge gate
+// and the banner wording.
+
+check("Fix 1 recordIntegrityReasons SSOT: reasons array", () => {
+  const recordIntegrityReasons = requireFn(ctx, "recordIntegrityReasons");
+  assertTrue(recordIntegrityReasons(null).some(r => /record missing/.test(r)), "falsy record names a reason");
+  assertTrue(recordIntegrityReasons({}).some(r => /schema_version missing/.test(r)), "missing schema reason");
+  assertTrue(recordIntegrityReasons({ schema_version: 99 }).some(r => /unexpected schema_version=99/.test(r)), "unexpected schema reason");
+  assertTrue(recordIntegrityReasons({ schema_version: 2, errors: ["boom"] }).some(r => /reported 1 collector error/.test(r)), "non-empty errors reason");
+  // THE Fix 1 case: a non-array errors field.
+  assertTrue(recordIntegrityReasons({ schema_version: 2, errors: "boom" }).some(r => /errors field malformed \(expected array, got string\)/.test(r)), "malformed-shape errors reason");
+  assertEqual(recordIntegrityReasons({ schema_version: 2, errors: [] }).length, 0, "empty errors array is clean");
+  assertEqual(recordIntegrityReasons({ schema_version: 2 }).length, 0, "absent errors is clean");
+});
+
+check("Fix 1 recordHasIntegrityIssue flags malformed (non-array) errors", () => {
+  const recordHasIntegrityIssue = requireFn(ctx, "recordHasIntegrityIssue");
+  // Pre-fix: false (only Array.isArray && length>0 was checked). Post-fix: true.
+  assertEqual(
+    recordHasIntegrityIssue({ schema_version: 2, errors: "collector boom", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } }),
+    true,
+    "a present non-array errors field is an integrity issue"
+  );
+});
+
+check("Fix 1 serviceBadge malformed-errors healthy-service row is NOT green", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  // schema-2, healthy-looking service, but errors is a string, not an array.
+  // Pre-fix renders GREEN (integrity not detected); post-fix caps to amber.
+  const latest = { schema_version: 2, errors: "collector boom", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const html = serviceBadge(latest);
+  assertTrue(!/badge grn/.test(html), "malformed-errors row must NOT render green");
+  assertTrue(/badge amb/.test(html), "degraded record renders amber");
+});
+
+check("Fix 1 bannerReasons surfaces the malformed errors shape", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  // Pre-fix the inline `Array.isArray(latest.errors) && length` push skipped a
+  // non-array, so the banner stayed silent. Post-fix the SSOT spread surfaces it.
+  const latest = { schema_version: 2, errors: "collector boom", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /errors field malformed/.test(r)), "banner surfaces the malformed-errors shape");
+});
+
+check("Fix 1 guard: empty / absent / non-empty errors behave as before", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const recordHasIntegrityIssue = requireFn(ctx, "recordHasIntegrityIssue");
+  const cleanService = { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 };
+  // empty array -> clean/green
+  assertEqual(recordHasIntegrityIssue({ schema_version: 2, errors: [], service: cleanService }), false, "empty errors stays clean");
+  assertTrue(/badge grn/.test(serviceBadge({ schema_version: 2, errors: [], service: cleanService })), "empty errors stays green");
+  // absent errors -> clean/green
+  assertTrue(/badge grn/.test(serviceBadge({ schema_version: 2, service: cleanService })), "absent errors stays green");
+  // non-empty array -> still flagged (unchanged)
+  assertEqual(recordHasIntegrityIssue({ schema_version: 2, errors: ["x"], service: cleanService }), true, "non-empty errors still flagged");
+  assertTrue(!/badge grn/.test(serviceBadge({ schema_version: 2, errors: ["x"], service: cleanService })), "non-empty errors still capped");
+});
+
+// === PR #886 review round (Fix 2: file-level parse errors fail closed) ========
+//
+// A JSONL file with a malformed line PLUS a valid healthy latest record gives
+// parseErrors=1 but, pre-fix, a GREEN badge and a HIDDEN banner — file-level
+// parse errors were not part of the dashboard integrity state. Fix 2 threads the
+// parse-error count through serviceBadge (caps green) and bannerReasons
+// (surfaces the reason). DIFFERENTIAL against the pre-fix html.
+
+check("Fix 2 bannerReasons surfaces file-level parse errors", () => {
+  const parseJsonl = requireFn(ctx, "parseJsonl");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  // One malformed line + one valid healthy schema-2 record.
+  const result = parseJsonl("{bad json}\n{\"schema_version\":2,\"disk\":{\"used_pct\":20},\"service\":{\"active_state\":\"active\",\"sub_state\":\"running\",\"result\":\"success\",\"n_restarts\":0}}");
+  assertEqual(result.records.length, 1, "the valid record parses");
+  assertEqual(result.errors.length, 1, "the malformed line is a parse error");
+  const latest = result.records[result.records.length - 1];
+  // Pre-fix: bannerReasons has no parseErrorCount param so this reason is absent.
+  const reasons = bannerReasons(latest, result.records, result.errors.length);
+  assertTrue(reasons.some(r => /1 line\(s\) failed to parse \(file integrity\)/.test(r)), "parse error surfaces in the banner");
+});
+
+check("Fix 2 serviceBadge with parse errors does NOT render green", () => {
+  const parseJsonl = requireFn(ctx, "parseJsonl");
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const result = parseJsonl("{bad json}\n{\"schema_version\":2,\"disk\":{\"used_pct\":20},\"service\":{\"active_state\":\"active\",\"sub_state\":\"running\",\"result\":\"success\",\"n_restarts\":0}}");
+  const latest = result.records[result.records.length - 1];
+  // Pre-fix: serviceBadge takes one arg, ignores the file-level signal -> green.
+  const html = serviceBadge(latest, result.errors.length > 0);
+  assertTrue(!/badge grn/.test(html), "a parse-error file must not render the latest record green");
+  assertTrue(/badge amb/.test(html), "file-level integrity caps to amber");
+});
+
+check("Fix 2 guard: zero parse errors on a clean record still renders green", () => {
+  const parseJsonl = requireFn(ctx, "parseJsonl");
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const result = parseJsonl("{\"schema_version\":2,\"disk\":{\"used_pct\":20},\"service\":{\"active_state\":\"active\",\"sub_state\":\"running\",\"result\":\"success\",\"n_restarts\":0}}");
+  assertEqual(result.errors.length, 0, "no parse errors on a clean file");
+  const latest = result.records[result.records.length - 1];
+  assertTrue(/badge grn/.test(serviceBadge(latest, result.errors.length > 0)), "clean file + clean record stays green");
+  assertEqual(bannerReasons(latest, result.records, result.errors.length).length, 0, "no banner reason on a clean file");
+});
+
+// === PR #886 review round (Fix 3: unavailable cgroup count is not 0) ==========
+//
+// An OOM-detected record whose cgroup_oom_kills is unavailable (null/absent and
+// no usable count) was rendered as `cgroup oom_kill=0`, misrepresenting MISSING
+// corroborating evidence as a real zero. Fix 3 renders `?` for an unavailable
+// count in the OOM-detected wording. DIFFERENTIAL against the pre-fix html.
+
+check("Fix 3 OOM-detected wording renders '?' for an unavailable cgroup count", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  // oom_killed + result=signal, but no usable cgroup count (null top-level, no
+  // nested count). Pre-fix: "cgroup oom_kill=0". Post-fix: "cgroup oom_kill=?".
+  const latest = { oom_killed: true, service: { result: "signal" }, cgroup_oom_kills: null };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /cgroup oom_kill=\?/.test(r)), "unavailable count renders as ?");
+  assertTrue(!reasons.some(r => /cgroup oom_kill=0\b/.test(r)), "must NOT misreport an unavailable count as 0");
+});
+
+check("Fix 3 guard: a real finite cgroup count still renders the number", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const latest = { oom_killed: true, service: { result: "signal", cgroup_oom_kills: 3 } };
+  const reasons = bannerReasons(latest, [latest]);
+  assertTrue(reasons.some(r => /cgroup oom_kill=3/.test(r)), "a real count still renders numerically");
+  assertTrue(!reasons.some(r => /cgroup oom_kill=\?/.test(r)), "a present count is not masked with ?");
+});
+
 // --- report ------------------------------------------------------------------
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {

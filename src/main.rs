@@ -17,8 +17,8 @@ use bolt_v2::{
     bolt_v3_atomic_io::{RUNTIME_CONFIG_FILE_MODE, write_atomic_file_with_mode},
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_deploy_target::{
-        DeployTargetError, HostFactsSource, Imdsv2HostFactsSource, TargetVerifyOutcome,
-        load_deploy_target, verify_deploy_target,
+        DeployTargetError, HostFactsSource, Imdsv2HostFactsSource, ObservedHostFacts,
+        TargetVerifyOutcome, load_deploy_target, verify_deploy_target,
     },
     bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_live_node::{
@@ -354,6 +354,11 @@ struct OpsLaunchContext {
     config_root: PathBuf,
     loaded: Option<LoadedBoltV3Config>,
     resolved_secrets: Option<ResolvedBoltV3Secrets>,
+    /// Host facts observed by the `TargetVerify` stage, threaded forward so the
+    /// `Start` stage can record them in the durable launch identity. `None`
+    /// until `TargetVerify` runs, and stays `None` when no deploy target is
+    /// configured (no host was observed).
+    observed_host_facts: Option<ObservedHostFacts>,
 }
 
 impl OpsLaunchContext {
@@ -363,6 +368,7 @@ impl OpsLaunchContext {
             config_root,
             loaded: None,
             resolved_secrets: None,
+            observed_host_facts: None,
         }
     }
 
@@ -445,7 +451,10 @@ fn run_ops_launch_stage(
             context.loaded = Some(verification.loaded);
             Ok(())
         }
-        OpsLaunchStage::TargetVerify => run_loaded_target_verify(&context.config_root),
+        OpsLaunchStage::TargetVerify => {
+            context.observed_host_facts = run_loaded_target_verify(&context.config_root)?;
+            Ok(())
+        }
         OpsLaunchStage::SecretsCheck => run_loaded_secrets_check(context.loaded()?).map(|_| ()),
         OpsLaunchStage::SecretsResolve => {
             context.resolved_secrets = Some(run_loaded_secrets_resolve(context.loaded()?)?);
@@ -467,23 +476,53 @@ fn run_ops_launch_stage(
                 .resolved_secrets
                 .take()
                 .ok_or("ops launch start stage requires resolved secrets from secrets-resolve")?;
-            record_launch_identity_best_effort(&context.profile, &loaded);
+            record_launch_identity_best_effort(
+                &context.profile,
+                &loaded,
+                context.observed_host_facts.take(),
+            );
             start_loaded_node_with_resolved(loaded, &resolved)
         }
     }
 }
 
-fn record_launch_identity_best_effort(profile: &str, loaded: &LoadedBoltV3Config) {
+/// Build the durable launch identity from primitives. Pure: depends only on
+/// its arguments (and the build-time `current_build_head_sha`), so it is
+/// unit-testable without a `LoadedBoltV3Config` or any syscalls.
+fn build_launch_identity(
+    profile: &str,
+    config_bundle_checksum: &str,
+    pid: u32,
+    launched_at_unix_secs: u64,
+    target_host_facts: Option<ObservedHostFacts>,
+) -> LaunchIdentity {
+    LaunchIdentity {
+        build_head_sha: current_build_head_sha().map(str::to_owned),
+        profile: profile.to_owned(),
+        config_bundle_checksum: config_bundle_checksum.to_owned(),
+        launched_at_unix_secs,
+        pid,
+        target_host_facts,
+    }
+}
+
+fn record_launch_identity_best_effort(
+    profile: &str,
+    loaded: &LoadedBoltV3Config,
+    target_host_facts: Option<ObservedHostFacts>,
+) {
+    let pid = std::process::id();
     let launched_at_unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let identity = LaunchIdentity {
-        build_head_sha: current_build_head_sha().map(str::to_owned),
-        profile: profile.to_owned(),
-        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+    let identity = build_launch_identity(
+        profile,
+        &loaded.config_bundle_checksum,
+        pid,
         launched_at_unix_secs,
-    };
+        target_host_facts,
+    );
     let catalog_directory = Path::new(&loaded.root.persistence.catalog_directory);
     match write_launch_identity(catalog_directory, &identity) {
         Ok(written) => println!(
@@ -772,6 +811,8 @@ enum LaunchIdentityStatus {
         profile: String,
         config_bundle_checksum: String,
         launched_at_unix_secs: u64,
+        pid: u32,
+        target_host_facts: Option<ObservedHostFacts>,
         /// `None` when either the recorded or installed SHA is unknown.
         matches_installed_binary: Option<bool>,
         matches_requested_profile: bool,
@@ -896,6 +937,8 @@ fn launch_identity_status(
                 profile: identity.profile,
                 config_bundle_checksum: identity.config_bundle_checksum,
                 launched_at_unix_secs: identity.launched_at_unix_secs,
+                pid: identity.pid,
+                target_host_facts: identity.target_host_facts,
             }
         }
         Ok(None) => LaunchIdentityStatus::Absent,
@@ -918,7 +961,7 @@ fn deploy_target_status<S: HostFactsSource>(config_root: &Path, source: &S) -> D
             };
         }
     };
-    match verify_deploy_target(&config, source) {
+    match verify_deploy_target(&config, source).map(|verification| verification.outcome) {
         Ok(TargetVerifyOutcome::NoTargetConfigured) => DeployTargetStatus::NoTargetConfigured,
         Ok(TargetVerifyOutcome::Matched) => DeployTargetStatus::Matched,
         Ok(TargetVerifyOutcome::Mismatched(mismatches)) => DeployTargetStatus::Mismatched {
@@ -1466,11 +1509,13 @@ struct SecretCheckReport {
 /// over IMDSv2 only when a gating binding is configured, and fails closed on
 /// a mismatch or an unobservable host. An unconfigured target degrades to a
 /// successful no-op so the lane works before any instance is provisioned.
-fn run_loaded_target_verify(config_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn run_loaded_target_verify(
+    config_root: &Path,
+) -> Result<Option<ObservedHostFacts>, Box<dyn std::error::Error>> {
     let config = load_deploy_target(config_root)?;
     let source = Imdsv2HostFactsSource::new();
-    let outcome = verify_deploy_target(&config, &source)?;
-    let log = match &outcome {
+    let verification = verify_deploy_target(&config, &source)?;
+    let log = match &verification.outcome {
         TargetVerifyOutcome::NoTargetConfigured => serde_json::json!({
             "ops_launch_target_verify": "no-target-configured",
         }),
@@ -1490,8 +1535,10 @@ fn run_loaded_target_verify(config_root: &Path) -> Result<(), Box<dyn std::error
         }),
     };
     println!("{}", serde_json::to_string(&log)?);
-    match outcome {
-        TargetVerifyOutcome::NoTargetConfigured | TargetVerifyOutcome::Matched => Ok(()),
+    match verification.outcome {
+        TargetVerifyOutcome::NoTargetConfigured | TargetVerifyOutcome::Matched => {
+            Ok(verification.observed_host_facts)
+        }
         TargetVerifyOutcome::Mismatched(mismatches) => Err(format!(
             "deploy target verification failed: {} configured field(s) do not match the running host",
             mismatches.len()
@@ -2221,9 +2268,9 @@ mod tests {
 
     // --- `ops status` advisory truth-table ---------------------------------
 
-    // `DeployTargetError`, `HostFactsSource`, and `write_launch_identity` are
-    // already in scope via `use super::*`; only these two are not.
-    use bolt_v2::bolt_v3_deploy_target::ObservedHostFacts;
+    // `DeployTargetError`, `HostFactsSource`, `ObservedHostFacts`, and
+    // `write_launch_identity` are already in scope via `use super::*`; only this
+    // one is not.
     use bolt_v2::bolt_v3_operator_artifacts::launch_identity_path;
 
     /// Fake host-facts source for the advisory tests: never touches the network.
@@ -2363,6 +2410,8 @@ mod tests {
             profile: "example".to_string(),
             config_bundle_checksum: "checksum-abc".to_string(),
             launched_at_unix_secs: 1,
+            pid: 4242,
+            target_host_facts: None,
         };
         write_launch_identity(temp.path(), &identity).expect("launch identity should write");
 
@@ -2379,6 +2428,8 @@ mod tests {
                 profile,
                 config_bundle_checksum,
                 launched_at_unix_secs,
+                pid,
+                target_host_facts,
                 matches_installed_binary,
                 matches_requested_profile,
                 matches_current_config,
@@ -2387,6 +2438,8 @@ mod tests {
                 assert_eq!(profile, "example");
                 assert_eq!(config_bundle_checksum, "checksum-abc");
                 assert_eq!(launched_at_unix_secs, 1);
+                assert_eq!(pid, 4242);
+                assert_eq!(target_host_facts, None);
                 assert_eq!(matches_installed_binary, Some(true));
                 assert!(matches_requested_profile);
                 assert!(matches_current_config);
@@ -2403,6 +2456,8 @@ mod tests {
             profile: "recorded-profile".to_string(),
             config_bundle_checksum: "recorded-checksum".to_string(),
             launched_at_unix_secs: 7,
+            pid: 4242,
+            target_host_facts: None,
         };
         write_launch_identity(temp.path(), &identity).expect("launch identity should write");
 
@@ -2435,6 +2490,36 @@ mod tests {
         let status = launch_identity_status(temp.path(), None, "example", "checksum-abc");
 
         assert!(matches!(status, LaunchIdentityStatus::Absent));
+    }
+
+    #[test]
+    fn build_launch_identity_maps_every_field_from_inputs() {
+        // Synthetic host-fact tokens (not real venue/region values) keep this
+        // test clear of the runtime-literal fence while still exercising the
+        // `Some(facts)` path through the builder.
+        let facts = ObservedHostFacts {
+            region: Some("test-region".to_string()),
+            availability_zone: None,
+            instance_id: Some("test-instance".to_string()),
+        };
+
+        let identity = build_launch_identity(
+            "build-profile",
+            "build-checksum",
+            7,
+            1_700_000_000,
+            Some(facts.clone()),
+        );
+
+        assert_eq!(identity.profile, "build-profile");
+        assert_eq!(identity.config_bundle_checksum, "build-checksum");
+        assert_eq!(identity.pid, 7);
+        assert_eq!(identity.launched_at_unix_secs, 1_700_000_000);
+        assert_eq!(
+            identity.build_head_sha,
+            current_build_head_sha().map(str::to_owned)
+        );
+        assert_eq!(identity.target_host_facts, Some(facts));
     }
 
     #[test]

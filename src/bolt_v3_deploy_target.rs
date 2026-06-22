@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::bounded_config_read::{self, ConfigFileReadError};
 
@@ -80,7 +80,8 @@ impl TargetBinding {
 /// because a given metadata path may be unavailable on some hosts; an absent
 /// observed value for a configured field is treated as a mismatch (fail
 /// closed) rather than a silent pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ObservedHostFacts {
     pub region: Option<String>,
     pub availability_zone: Option<String>,
@@ -104,6 +105,17 @@ pub enum TargetVerifyOutcome {
     Matched,
     /// At least one configured field did not match.
     Mismatched(Vec<FieldMismatch>),
+}
+
+/// Result of [`verify_deploy_target`]: the verification outcome plus the host
+/// facts that were observed to reach it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployTargetVerification {
+    pub outcome: TargetVerifyOutcome,
+    /// The host facts observed during verification. `Some` only when a gating
+    /// binding was present (and therefore the host was observed); `None` for
+    /// `NoTargetConfigured` (no IMDS call — keeps the verifier offline-safe).
+    pub observed_host_facts: Option<ObservedHostFacts>,
 }
 
 /// Errors raised while loading or verifying the deploy target.
@@ -196,13 +208,16 @@ pub fn load_deploy_target(config_root: &Path) -> Result<DeployTargetConfig, Depl
 pub fn verify_deploy_target(
     config: &DeployTargetConfig,
     source: &dyn HostFactsSource,
-) -> Result<TargetVerifyOutcome, DeployTargetError> {
+) -> Result<DeployTargetVerification, DeployTargetError> {
     let Some(binding) = config
         .target
         .as_ref()
         .filter(|binding| binding.has_gating_field())
     else {
-        return Ok(TargetVerifyOutcome::NoTargetConfigured);
+        return Ok(DeployTargetVerification {
+            outcome: TargetVerifyOutcome::NoTargetConfigured,
+            observed_host_facts: None,
+        });
     };
 
     let observed = source.observe()?;
@@ -227,11 +242,15 @@ pub fn verify_deploy_target(
         &mut mismatches,
     );
 
-    if mismatches.is_empty() {
-        Ok(TargetVerifyOutcome::Matched)
+    let outcome = if mismatches.is_empty() {
+        TargetVerifyOutcome::Matched
     } else {
-        Ok(TargetVerifyOutcome::Mismatched(mismatches))
-    }
+        TargetVerifyOutcome::Mismatched(mismatches)
+    };
+    Ok(DeployTargetVerification {
+        outcome,
+        observed_host_facts: Some(observed),
+    })
 }
 
 /// Record a mismatch when a configured field differs from (or is missing in)
@@ -393,10 +412,14 @@ mod tests {
         let config = DeployTargetConfig { target: None };
         let source = FakeHostFactsSource::erroring();
 
-        let outcome = verify_deploy_target(&config, &source)
+        let verification = verify_deploy_target(&config, &source)
             .expect("absent target must short-circuit before observing");
 
-        assert_eq!(outcome, TargetVerifyOutcome::NoTargetConfigured);
+        assert_eq!(
+            verification.outcome,
+            TargetVerifyOutcome::NoTargetConfigured
+        );
+        assert_eq!(verification.observed_host_facts, None);
     }
 
     #[test]
@@ -411,10 +434,14 @@ mod tests {
         };
         let source = FakeHostFactsSource::erroring();
 
-        let outcome = verify_deploy_target(&config, &source)
+        let verification = verify_deploy_target(&config, &source)
             .expect("a name_tag-only binding must not arm verification");
 
-        assert_eq!(outcome, TargetVerifyOutcome::NoTargetConfigured);
+        assert_eq!(
+            verification.outcome,
+            TargetVerifyOutcome::NoTargetConfigured
+        );
+        assert_eq!(verification.observed_host_facts, None);
     }
 
     #[test]
@@ -425,9 +452,14 @@ mod tests {
         let source =
             FakeHostFactsSource::facts(facts("region-x", "region-x-zone-a", "instance-target"));
 
-        let outcome = verify_deploy_target(&config, &source).expect("matching facts must verify");
+        let verification =
+            verify_deploy_target(&config, &source).expect("matching facts must verify");
 
-        assert_eq!(outcome, TargetVerifyOutcome::Matched);
+        assert_eq!(verification.outcome, TargetVerifyOutcome::Matched);
+        assert_eq!(
+            verification.observed_host_facts,
+            Some(facts("region-x", "region-x-zone-a", "instance-target"))
+        );
     }
 
     #[test]
@@ -438,16 +470,20 @@ mod tests {
         let source =
             FakeHostFactsSource::facts(facts("region-x", "region-x-zone-a", "instance-other"));
 
-        let outcome = verify_deploy_target(&config, &source)
+        let verification = verify_deploy_target(&config, &source)
             .expect("a differing instance id must be a clean Mismatched, not an error");
 
         assert_eq!(
-            outcome,
+            verification.outcome,
             TargetVerifyOutcome::Mismatched(vec![FieldMismatch {
                 field: "instance_id",
                 configured: "instance-target".to_string(),
                 observed: Some("instance-other".to_string()),
             }])
+        );
+        assert_eq!(
+            verification.observed_host_facts,
+            Some(facts("region-x", "region-x-zone-a", "instance-other"))
         );
     }
 
@@ -467,16 +503,24 @@ mod tests {
             instance_id: None,
         });
 
-        let outcome = verify_deploy_target(&config, &source)
+        let verification = verify_deploy_target(&config, &source)
             .expect("a missing observed value is a mismatch, not an error");
 
         assert_eq!(
-            outcome,
+            verification.outcome,
             TargetVerifyOutcome::Mismatched(vec![FieldMismatch {
                 field: "instance_id",
                 configured: "instance-target".to_string(),
                 observed: None,
             }])
+        );
+        assert_eq!(
+            verification.observed_host_facts,
+            Some(ObservedHostFacts {
+                region: None,
+                availability_zone: None,
+                instance_id: None,
+            })
         );
     }
 
@@ -530,9 +574,13 @@ mod tests {
         let config = load_deploy_target(temp.path())
             .expect("an empty [target] table must parse to a non-gating binding");
 
-        let outcome = verify_deploy_target(&config, &FakeHostFactsSource::erroring())
+        let verification = verify_deploy_target(&config, &FakeHostFactsSource::erroring())
             .expect("an empty [target] table must degrade to no target configured");
-        assert_eq!(outcome, TargetVerifyOutcome::NoTargetConfigured);
+        assert_eq!(
+            verification.outcome,
+            TargetVerifyOutcome::NoTargetConfigured
+        );
+        assert_eq!(verification.observed_host_facts, None);
     }
 
     #[test]

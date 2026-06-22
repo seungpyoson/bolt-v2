@@ -8,6 +8,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::bolt_v3_deploy_target::ObservedHostFacts;
+
 pub(crate) const PRIVATE_ARTIFACT_FILE_MODE: u32 = 0o600;
 pub const ENTRY_DECISION_ZERO_TIMESTAMP_MS: u64 = 0;
 const LAUNCH_IDENTITY_FILE_NAME: &str = "launch-identity.json";
@@ -114,6 +116,11 @@ pub struct LaunchIdentity {
     pub config_bundle_checksum: String,
     /// Wall-clock launch time, seconds since the Unix epoch.
     pub launched_at_unix_secs: u64,
+    /// OS process id of the launching process.
+    pub pid: u32,
+    /// Host facts observed at launch, `None` when no deploy target was
+    /// configured (no host was observed).
+    pub target_host_facts: Option<ObservedHostFacts>,
 }
 
 pub fn launch_identity_path(catalog_directory: &Path) -> PathBuf {
@@ -223,6 +230,8 @@ mod tests {
             config_bundle_checksum:
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
             launched_at_unix_secs: 1_700_000_000,
+            pid: 4242,
+            target_host_facts: None,
         };
         write_launch_identity(temp.path(), &identity).expect("write should succeed");
         let read_back = read_launch_identity(temp.path()).expect("read should succeed");
@@ -237,6 +246,22 @@ mod tests {
     }
 
     #[test]
+    fn read_launch_identity_rejects_oversize_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        // One byte past the bounded reader's ceiling. The size check precedes
+        // parsing, so the payload does not need to be valid JSON: an oversize
+        // artifact must surface as a loud `Read` error, never `Ok(None)` (which
+        // would mask the artifact) nor `Ok(Some)` (which would trust it).
+        let oversize = vec![b'x'; LAUNCH_IDENTITY_MAX_BYTES as usize + 1];
+        std::fs::write(launch_identity_path(temp.path()), &oversize)
+            .expect("oversize fixture should write");
+        match read_launch_identity(temp.path()) {
+            Err(BoltV3OperatorArtifactError::Read { .. }) => {}
+            other => panic!("expected Read error for oversize artifact, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn write_launch_identity_overwrites_previous() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let first = LaunchIdentity {
@@ -244,12 +269,16 @@ mod tests {
             profile: "first-profile".to_string(),
             config_bundle_checksum: "aaaa".to_string(),
             launched_at_unix_secs: 1,
+            pid: 4242,
+            target_host_facts: None,
         };
         let second = LaunchIdentity {
             build_head_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             profile: "second-profile".to_string(),
             config_bundle_checksum: "bbbb".to_string(),
             launched_at_unix_secs: 2,
+            pid: 4242,
+            target_host_facts: None,
         };
         write_launch_identity(temp.path(), &first).expect("first write should succeed");
         write_launch_identity(temp.path(), &second).expect("second write should succeed");
@@ -263,7 +292,7 @@ mod tests {
         let path = launch_identity_path(temp.path());
         std::fs::write(
             &path,
-            br#"{"build_head_sha":null,"profile":"p","config_bundle_checksum":"c","launched_at_unix_secs":1,"unexpected":true}"#,
+            br#"{"build_head_sha":null,"profile":"p","config_bundle_checksum":"c","launched_at_unix_secs":1,"pid":1,"target_host_facts":null,"unexpected":true}"#,
         )
         .expect("write fixture should succeed");
         match read_launch_identity(temp.path()) {

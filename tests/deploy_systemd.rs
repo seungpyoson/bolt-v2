@@ -95,6 +95,22 @@ fn systemd_unit_requires_srv_mountpoint() {
 }
 
 #[test]
+fn systemd_unit_template_single_sources_mountpoint_tool_path() {
+    let template_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/systemd/bolt-v2.service.in");
+    let template = fs::read_to_string(&template_path).expect("systemd unit template should exist");
+
+    assert!(
+        template.contains("ExecStartPre=@MOUNTPOINT_BIN@ -q @BOLT_HOME@"),
+        "systemd unit template must source the mountpoint tool path from install-layout.env"
+    );
+    assert!(
+        !template.contains("/usr/bin/mountpoint"),
+        "systemd unit template must not hardcode the mountpoint tool path"
+    );
+}
+
+#[test]
 fn install_script_provisions_runtime_catalog_on_srv_volume() {
     let install_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
     let install = fs::read_to_string(&install_path).expect("install script should exist");

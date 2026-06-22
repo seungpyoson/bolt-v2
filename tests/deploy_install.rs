@@ -67,3 +67,18 @@ fn install_script_repairs_binary_mode() {
         "install.sh must chmod-repair the service binary to 0755 in the repair section"
     );
 }
+
+#[test]
+fn install_script_uses_single_sourced_mountpoint_tool_path() {
+    let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
+    let script = fs::read_to_string(&script_path).expect("install script should exist");
+
+    assert!(
+        script.contains("if ! \"${MOUNTPOINT_BIN}\" -q \"${BOLT_HOME}\"; then"),
+        "install.sh must use MOUNTPOINT_BIN from install-layout.env for the mount check"
+    );
+    assert!(
+        !script.contains("! mountpoint -q"),
+        "install.sh must not call a bare mountpoint -q in the mount check"
+    );
+}

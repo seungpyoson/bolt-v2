@@ -27,6 +27,7 @@ REQUIRED_LAYOUT_KEYS = (
     "LIVE_ENV_DIR",
     "BOLT_USER",
     "BOLT_GROUP",
+    "MOUNTPOINT_BIN",
 )
 _RESIDUAL_MARKER_RE = re.compile(r"@[A-Z_]+@")
 # The skip-set is exactly bash's blank/comment no-op set: blank lines may
@@ -85,6 +86,7 @@ def render(layout_path: Path = LAYOUT_PATH, template_path: Path = TEMPLATE_PATH)
         "@BOLT_HOME@": bolt_home,
         "@BOLT_USER@": layout["BOLT_USER"],
         "@BOLT_GROUP@": layout["BOLT_GROUP"],
+        "@MOUNTPOINT_BIN@": layout["MOUNTPOINT_BIN"],
     }
     text = template_path.read_text(encoding="utf-8")
     for marker, value in substitutions.items():

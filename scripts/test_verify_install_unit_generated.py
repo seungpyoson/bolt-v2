@@ -78,6 +78,7 @@ def test_missing_required_key_errors() -> None:
 _BARE_VALID_LAYOUT = (
     "BOLT_HOME=/srv/bolt-v2\nBOLT_INSTALL_ROOT=/opt/bolt-v2\n"
     "LIVE_ENV_DIR=/etc/bolt-v2\nBOLT_USER=bolt\nBOLT_GROUP=bolt\n"
+    "MOUNTPOINT_BIN=/usr/bin/mountpoint\n"
 )
 
 
@@ -96,13 +97,14 @@ def test_bare_values_load_without_error() -> None:
         "LIVE_ENV_DIR": "/etc/bolt-v2",
         "BOLT_USER": "bolt",
         "BOLT_GROUP": "bolt",
+        "MOUNTPOINT_BIN": "/usr/bin/mountpoint",
     }
     if layout != expected:
         raise AssertionError(f"bare layout did not load verbatim: {layout!r}")
 
 
 def _assert_layout_line_rejected(mutated_line: str, key: str) -> None:
-    # Write a COMPLETE valid layout (all 5 REQUIRED_LAYOUT_KEYS) with exactly one
+    # Write a COMPLETE valid layout (all REQUIRED_LAYOUT_KEYS) with exactly one
     # line replaced by an invalid variant, and assert load_layout fails closed
     # with the offending KEY named (so a wrong/generic message fails the test).
     import tempfile
@@ -213,12 +215,13 @@ def test_unknown_marker_in_template_errors() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         layout_path = Path(tmp) / "install-layout.env"
         # A COMPLETE, valid layout so the renderer reaches the unknown-marker
-        # check; it must carry every REQUIRED_LAYOUT_KEY (incl. BOLT_USER/
-        # BOLT_GROUP) or load_layout fails first and this test stops isolating
+        # check; it must carry every REQUIRED_LAYOUT_KEY or load_layout fails
+        # first and this test stops isolating
         # the marker behavior it is meant to exercise.
         layout_path.write_text(
             "BOLT_HOME=/srv/bolt-v2\nBOLT_INSTALL_ROOT=/opt/bolt-v2\n"
-            "LIVE_ENV_DIR=/etc/bolt-v2\nBOLT_USER=bolt\nBOLT_GROUP=bolt\n",
+            "LIVE_ENV_DIR=/etc/bolt-v2\nBOLT_USER=bolt\nBOLT_GROUP=bolt\n"
+            "MOUNTPOINT_BIN=/usr/bin/mountpoint\n",
             encoding="utf-8",
         )
         template_path = Path(tmp) / "unit.in"

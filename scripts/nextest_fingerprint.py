@@ -61,7 +61,7 @@ def run_git(
 
 
 def normalize_repo_path(raw: str, *, label: str) -> str:
-    if not isinstance(raw, str) or not raw.strip():
+    if not raw.strip():
         raise FingerprintError(f"{label} must be a non-empty repo-relative path")
     path = raw.strip().replace("\\", "/")
     while path.startswith("./"):

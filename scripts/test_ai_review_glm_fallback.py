@@ -50,8 +50,9 @@ class FakeGitHub:
 
 
 class FakeGLM:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, response: str | None = None) -> None:
         self.fail = fail
+        self.response = response or "Findings\n\nNo hard-evidence findings in this chunk."
         self.prompts: list[str] = []
 
     def review_chunk(self, *, system_prompt: str, user_prompt: str) -> str:
@@ -59,7 +60,7 @@ class FakeGLM:
         self.prompts.append(user_prompt)
         if self.fail:
             raise RuntimeError("provider rejected request")
-        return "Findings\n\nNo hard-evidence findings in this chunk."
+        return self.response
 
 
 class FakeProvider(FakeGLM):
@@ -216,6 +217,36 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     assert "Review chunks:" in github.posted[0]
 
 
+def test_posts_fallback_review_across_multiple_comments_when_comment_budget_requires_it() -> None:
+    module = load_script()
+    files = [file_payload(f"src/file_{idx}.rs", "+" + ("x" * 80)) for idx in range(7)]
+    github = FakeGitHub(files=files)
+    glm = FakeGLM(response="Findings\n\n" + ("hard evidence finding. " * 12))
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=module.FallbackConfig(
+            repo="seungpyoson/bolt-v2",
+            pr_number=895,
+            started_at="2026-06-22T12:21:00Z",
+            instructions="review hard evidence only",
+            max_chunk_chars=260,
+            max_comment_chars=520,
+            response_chars_per_chunk=220,
+            run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        ),
+    )
+
+    assert result == "fallback-posted"
+    assert len(github.posted) > 1, github.posted
+    assert all(len(body) <= 520 for body in github.posted), [len(body) for body in github.posted]
+    assert all("## GLM PR Review (part " in body for body in github.posted), github.posted
+    joined = "\n".join(github.posted)
+    assert "Chunk 1/" in joined
+    assert f"Chunk {len(glm.prompts)}/" in joined
+
+
 def test_posts_failure_notice_when_kimi_fallback_fails() -> None:
     module = load_script()
     github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
@@ -253,6 +284,7 @@ def main() -> int:
     test_skips_fallback_when_pr_agent_deliverable_exists_after_start()
     test_posts_failure_notice_when_glm_fallback_fails()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
+    test_posts_fallback_review_across_multiple_comments_when_comment_budget_requires_it()
     test_posts_failure_notice_when_kimi_fallback_fails()
     print("GLM fallback self-tests OK")
     return 0

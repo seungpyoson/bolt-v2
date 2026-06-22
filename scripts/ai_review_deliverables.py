@@ -390,33 +390,106 @@ def truncate_text(value: str, limit: int) -> str:
     return value[: max(0, limit - len(suffix))] + suffix
 
 
-def render_review_comment(
+def render_chunk_response_section(
+    *,
+    chunk: ReviewChunk,
+    response: str,
+    index: int,
+    total: int,
+    response_chars_per_chunk: int,
+) -> str:
+    return "\n".join(
+        [
+            f"### Chunk {index}/{total}: {chunk.title}",
+            "",
+            truncate_text(response.strip(), response_chars_per_chunk),
+            "",
+        ]
+    )
+
+
+def render_review_comment_body(
     *,
     config: FallbackConfig,
-    chunks: list[ReviewChunk],
-    responses: list[str],
+    total_chunks: int,
+    sections: list[str],
+    part_index: int | None = None,
+    part_total: int | None = None,
 ) -> str:
+    title = f"## {config.provider} PR Review"
+    if part_index is not None and part_total is not None:
+        title += f" (part {part_index}/{part_total})"
     parts = [
-        f"## {config.provider} PR Review",
+        title,
         "",
         f"The primary {config.provider} review action completed without a visible deliverable after this run started, "
         f"so the fallback reviewer split the PR diff and reviewed each chunk with {config.provider}.",
         "",
-        f"- Review chunks: {len(chunks)}",
+        f"- Review chunks: {total_chunks}",
         f"- Per-chunk character budget: {config.max_chunk_chars}",
         f"- Action run: {config.run_url}",
         "",
     ]
-    for idx, (chunk, response) in enumerate(zip(chunks, responses, strict=True), start=1):
-        parts.extend(
-            [
-                f"### Chunk {idx}/{len(chunks)}: {chunk.title}",
-                "",
-                truncate_text(response.strip(), config.response_chars_per_chunk),
-                "",
-            ]
+    if part_index is not None and part_total is not None:
+        parts.insert(6, f"- Comment part: {part_index}/{part_total}")
+    parts.extend(sections)
+    return "\n".join(parts).strip() + "\n"
+
+
+def render_review_comments(
+    *,
+    config: FallbackConfig,
+    chunks: list[ReviewChunk],
+    responses: list[str],
+) -> list[str]:
+    sections = [
+        render_chunk_response_section(
+            chunk=chunk,
+            response=response,
+            index=idx,
+            total=len(chunks),
+            response_chars_per_chunk=config.response_chars_per_chunk,
         )
-    return truncate_text("\n".join(parts).strip() + "\n", config.max_comment_chars)
+        for idx, (chunk, response) in enumerate(zip(chunks, responses, strict=True), start=1)
+    ]
+    single_comment = render_review_comment_body(config=config, total_chunks=len(chunks), sections=sections)
+    if len(single_comment) <= config.max_comment_chars:
+        return [single_comment]
+
+    packed_sections: list[list[str]] = []
+    current_sections: list[str] = []
+    max_possible_parts = max(1, len(sections))
+    for section in sections:
+        candidate_sections = [*current_sections, section]
+        candidate = render_review_comment_body(
+            config=config,
+            total_chunks=len(chunks),
+            sections=candidate_sections,
+            part_index=len(packed_sections) + 1,
+            part_total=max_possible_parts,
+        )
+        if current_sections and len(candidate) > config.max_comment_chars:
+            packed_sections.append(current_sections)
+            current_sections = [section]
+            continue
+        current_sections = candidate_sections
+
+    if current_sections:
+        packed_sections.append(current_sections)
+
+    return [
+        truncate_text(
+            render_review_comment_body(
+                config=config,
+                total_chunks=len(chunks),
+                sections=page_sections,
+                part_index=idx,
+                part_total=len(packed_sections),
+            ),
+            config.max_comment_chars,
+        )
+        for idx, page_sections in enumerate(packed_sections, start=1)
+    ]
 
 
 def sanitize_detail(value: str) -> str:
@@ -474,7 +547,7 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
         chunks = pack_review_chunks(review_files, max_chars=config.max_chunk_chars)
         if not chunks:
             github.post_issue_comment(
-                "## GLM PR Review\n\nNo reviewable file diff was available from the GitHub API.\n"
+                f"## {config.provider} PR Review\n\nNo reviewable file diff was available from the GitHub API.\n"
             )
             return "no-reviewable-diff"
 
@@ -486,7 +559,8 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
             )
             for index, chunk in enumerate(chunks, start=1)
         ]
-        github.post_issue_comment(render_review_comment(config=config, chunks=chunks, responses=responses))
+        for comment in render_review_comments(config=config, chunks=chunks, responses=responses):
+            github.post_issue_comment(comment)
         return "fallback-posted"
     except Exception as exc:
         try:

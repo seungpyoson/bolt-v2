@@ -887,19 +887,26 @@
       }
 
       // cgroup oom_kill: distinguish a fresh in-window kill from a stale latch
-      // of the cumulative counter (D4). Suppressed entirely when the latest
-      // record's cgroup mirrors are malformed: the count is untrustworthy and a
-      // concrete number here would contradict the "cgroup oom_kill count
-      // malformed" integrity reason already raised above (self-contradictory
-      // signal, viewer contract). The malformed reason alone carries the signal.
-      if (!cgroupMalformed(latest)) {
-        const cgroupOomKills = cgroupOomCount(latest);
-        const cumulative = Number.isFinite(cgroupOomKills) ? cgroupOomKills : 0;
-        if (oomIncreased(records)) {
-          reasons.push(`cgroup oom_kill increased to ${cumulative} in this file`);
-        } else if (cumulative > 0) {
-          reasons.push(`cgroup oom_kill=${cumulative} (cumulative)`);
-        }
+      // of the cumulative counter (D4). A malformed LATEST sample makes the
+      // CONCRETE count untrustworthy, so the cumulative line and any "to N"
+      // endpoint are dropped (a concrete number would contradict the "cgroup
+      // oom_kill count malformed" integrity reason -- self-contradictory signal,
+      // viewer contract). BUT a real increase is detected by counterIncreased
+      // from earlier VALID records (it skips invalid samples), so it is a
+      // TRUSTWORTHY historical signal that must NOT be erased merely because the
+      // latest sample is corrupt: surface the trend without the untrustworthy
+      // count rather than going silent on a genuine earlier OOM.
+      const latestCgroupMalformed = cgroupMalformed(latest);
+      const cgroupOomKills = cgroupOomCount(latest);
+      const cumulative = Number.isFinite(cgroupOomKills) ? cgroupOomKills : 0;
+      if (oomIncreased(records)) {
+        reasons.push(
+          latestCgroupMalformed
+            ? "cgroup oom_kill increased earlier in this file (latest count malformed)"
+            : `cgroup oom_kill increased to ${cumulative} in this file`,
+        );
+      } else if (!latestCgroupMalformed && cumulative > 0) {
+        reasons.push(`cgroup oom_kill=${cumulative} (cumulative)`);
       }
 
       if (restartIncreased(records)) reasons.push("auto-restarts increased in this file");

@@ -37,36 +37,52 @@ function stripComments(scriptText) {
 // ban) and the anti-regrowth structural check (malformed-surfacing) so the two
 // guards cannot drift -- adding a field via fieldView forces BOTH.
 //
-// Robust to receiver name (`record`/`r`/...) and quote style ("k"/'k'), closing
-// the round-6 GLM "different receiver / single-quoted key slips the scan" hole.
+// Mechanism: split the first three arguments of every direct fieldView(...) call
+// (receiver, parent, key -- none of which contain a comma or paren in this
+// codebase) and classify the KEY argument:
+//   * a STRING LITERAL  -> collected, regardless of the PARENT's form. This is
+//     what closes the round-6 (variable KEY on a literal parent) AND the round-7
+//     (literal KEY on a variable PARENT, e.g. fieldView(record, parentVar, "x"))
+//     bypasses, and is robust to receiver name (record/r/...) and quote style.
+//   * the registry loop's `f.fieldKey` member access -> the ONE sanctioned
+//     dynamic call (INTEGRITY_NUMERIC_FIELDS), whose keys are enumerated
+//     separately from the registry array, so it needs no literal.
+//   * anything else (a bare variable / computed key) -> REJECTED: it hides the
+//     field from this scan and would leave it silently unsurfaced.
 //
-// It also REJECTS a fieldView call that hides its field behind a NON-literal key
-// on a literal parent (`fieldView(record, "process", varKey, ...)`): that form
-// is invisible to any name-based source scan and would leave a field silently
-// unsurfaced (round-6 GPT variable-key bypass). The ONLY sanctioned non-literal
-// call is the INTEGRITY_NUMERIC_FIELDS registry loop, whose PARENT is a member
-// access (`f.parentKey`), not a literal -- so it is not matched and needs no
-// exemption. A future field must therefore be read with a literal key (caught by
-// this scan + FENCE2) or registered in INTEGRITY_NUMERIC_FIELDS; a variable-key
-// literal-parent read fails CI here rather than slipping through.
+// RESIDUAL (NOT closed -- accepted, undecidable without a JS parser): a field
+// read by DELIBERATELY evading the textual `fieldView(` anchor -- indirect
+// invocation (`const fv = fieldView; fv(...)`, `.call`/`.apply`/`Reflect.apply`),
+// a computed property name, or raw property access with a brand-new field name
+// that never appears in any fieldView call. These are deliberate textual evasion
+// of the chokepoint, not a careless-author regression path, and are an
+// architectural-review item rather than a mechanical guarantee.
 function fieldViewKeys(html) {
-  const script = stripComments(extractInlineScript(html));
-  // Reject literal-parent calls whose field key is not a string literal.
-  const litParentRe = /fieldView\s*\(\s*\w+\s*,\s*(?:null|["'][^"']*["'])\s*,\s*([^,)]+)/g;
+  // Drop the `function fieldView(record, parentKey, fieldKey, isValid)`
+  // DECLARATION before scanning -- its formal parameters are not a call site and
+  // would otherwise read as a variable-key call.
+  const script = stripComments(extractInlineScript(html)).replace(
+    /function\s+fieldView\s*\([^)]*\)/g,
+    "",
+  );
+  const keys = new Set();
+  // receiver, parent (null / "literal" / f.parentKey), key -- first three args.
+  const callRe = /fieldView\s*\(\s*([^,()]+),\s*([^,()]+),\s*([^,)]+)/g;
   let m;
-  while ((m = litParentRe.exec(script)) !== null) {
-    const keyArg = m[1].trim();
-    if (!/^["']/.test(keyArg)) {
+  while ((m = callRe.exec(script)) !== null) {
+    const keyArg = m[3].trim();
+    if (/^["'].*["']$/.test(keyArg)) {
+      keys.add(keyArg.slice(1, -1));
+    } else if (/^\w+\.fieldKey$/.test(keyArg)) {
+      continue; // sanctioned INTEGRITY_NUMERIC_FIELDS registry loop
+    } else {
       throw new Error(
-        `fieldView call with a literal parent must use a STRING-LITERAL field key ` +
-          `(a variable key slips the anti-regrowth source scan and can stay unsurfaced); found key arg: ${keyArg}`,
+        `fieldView field key must be a STRING LITERAL or the registry loop's ` +
+          `f.fieldKey (a variable/computed key slips the anti-regrowth source ` +
+          `scan and can stay unsurfaced); found key arg: ${keyArg}`,
       );
     }
   }
-  // Collect literal field keys (any receiver identifier, single or double quotes).
-  const keys = new Set();
-  const litKeyRe = /fieldView\s*\(\s*\w+\s*,\s*(?:null|["'][^"']*["'])\s*,\s*["']([^"']+)["']/g;
-  while ((m = litKeyRe.exec(script)) !== null) keys.add(m[1]);
   return keys;
 }
 
@@ -1379,6 +1395,50 @@ check("CLASS: BOTH garbage cgroup mirrors are each named (no second corrupt mirr
   assertTrue(
     malformed.includes('"abc"') && malformed.includes('"xyz"'),
     `both garbage mirrors must be named; got ${JSON.stringify(malformed)}`,
+  );
+});
+
+check("CLASS: a malformed LATEST sample must NOT erase a real earlier OOM-kill increase", () => {
+  // Round-7 (GPT/GLM): counterIncreased detects an increase from earlier VALID
+  // records (it skips invalid samples), so a 0 -> 5 increase in clean earlier
+  // records is a TRUSTWORTHY historical signal even when the latest sample's
+  // cgroup mirrors are corrupt. Round-6 gated the WHOLE cgroup block on
+  // !cgroupMalformed(latest), which erased that real signal. The trend must
+  // survive -- WITHOUT the untrustworthy concrete latest count.
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const clean = (sampled_at, cgroup) => ({ schema_version: 2, sampled_at, oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: cgroup, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } });
+  // latest: both mirrors garbage -> cgroupMalformed(latest) true, count untrustworthy
+  const latest = { schema_version: 2, sampled_at: "t2", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: "abc", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: "xyz" } };
+  const recs = [clean("t0", 0), clean("t1", 5), latest];
+  const reasons = bannerReasons(latest, recs);
+  assertTrue(!/badge grn/.test(serviceBadge(latest)), `malformed latest must cap green; got ${serviceBadge(latest)}`);
+  assertTrue(
+    reasons.some(r => /cgroup oom_kill count malformed/.test(r)),
+    `expected the malformed reason; got ${JSON.stringify(reasons)}`,
+  );
+  assertTrue(
+    reasons.some(r => /increased earlier in this file/.test(r)),
+    `a real earlier OOM-kill increase must survive a malformed latest sample; got ${JSON.stringify(reasons)}`,
+  );
+  assertTrue(
+    !reasons.some(r => /increased to \d/.test(r) || /\(cumulative\)/.test(r)),
+    `must not render a concrete (untrustworthy) count for a malformed latest; got ${JSON.stringify(reasons)}`,
+  );
+});
+
+check("CLASS guard: a malformed latest with NO earlier increase stays count-silent (no phantom trend)", () => {
+  // The trend-survival path must not over-fire: a malformed latest with a flat
+  // earlier counter (no real increase) must surface ONLY the malformed reason --
+  // no "increased earlier", no concrete count.
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const clean = (sampled_at, cgroup) => ({ schema_version: 2, sampled_at, oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: cgroup, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } });
+  const latest = { schema_version: 2, sampled_at: "t2", oom_killed: false, disk: { used_pct: 50 }, cgroup_oom_kills: "abc", service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0, cgroup_oom_kills: "xyz" } };
+  const recs = [clean("t0", 0), clean("t1", 0), latest];
+  const reasons = bannerReasons(latest, recs);
+  assertTrue(
+    !reasons.some(r => /increased earlier in this file/.test(r) || /increased to \d/.test(r) || /\(cumulative\)/.test(r)),
+    `a malformed latest with no real increase must stay count-silent; got ${JSON.stringify(reasons)}`,
   );
 });
 

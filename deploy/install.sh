@@ -128,6 +128,13 @@ if [[ -d "${BOLT_INSTALL_ROOT}/config/strategies" ]]; then
         config_bundle_files+=("${strategy_config}")
     done < <(find "${BOLT_INSTALL_ROOT}/config/strategies" -type f -name '*.toml' -print0)
 fi
+# deploy.toml is host-specific (the operator places it; install.sh does not
+# copy it), but when present the bolt service user must read it at
+# TargetVerify; a restrictive deploy-shell umask would otherwise lock it out
+# (same #768 lockout class as the rest of the bundle).
+if [[ -f "${BOLT_INSTALL_ROOT}/config/deploy.toml" ]]; then
+    config_bundle_files+=("${BOLT_INSTALL_ROOT}/config/deploy.toml")
+fi
 for config_bundle_file in "${config_bundle_files[@]}"; do
     repair_config_file "${config_bundle_file}" "config bundle file"
 done

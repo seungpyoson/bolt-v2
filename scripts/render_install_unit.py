@@ -45,9 +45,12 @@ def load_layout(path: Path = LAYOUT_PATH) -> dict[str, str]:
     Blank lines and ``#`` comments are skipped. Values MUST be bare tokens (no
     whitespace, quotes, ``#``, or shell metacharacters) so the two consumers of
     this single source — ``deploy/install.sh`` (bash ``source``) and this parser
-    — cannot interpret a value differently. A non-bare value (e.g. one carrying
-    an inline ``# comment``, quotes, or spaces) fails closed with a ValueError
-    naming the offending key.
+    — cannot interpret a value differently. The value is matched RAW (the
+    partition value is NOT stripped before the fence): any whitespace anywhere
+    in it — leading, trailing, or internal — is rejected, because a space after
+    ``=`` (``BOLT_USER= bolt``) is a real bash-vs-Python divergence. A non-bare
+    value (e.g. one carrying an inline ``# comment``, quotes, or spaces) fails
+    closed with a ValueError naming the offending key.
     """
     layout: dict[str, str] = {}
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -57,7 +60,11 @@ def load_layout(path: Path = LAYOUT_PATH) -> dict[str, str]:
         key, sep, value = line.partition("=")
         if not sep:
             raise ValueError(f"{path}: malformed layout line (no '='): {raw_line!r}")
-        value = value.strip()
+        # Match the RAW value WITHOUT stripping: a space after `=` (e.g.
+        # `BOLT_USER= bolt`) is a real bash-vs-Python divergence — bash `source`
+        # sets an empty var and runs `bolt` as a command. `_BARE_VALUE_RE`
+        # excludes whitespace, so any leading/trailing/internal space is
+        # rejected; `line.strip()` above already handled line-level/`\r` space.
         if not _BARE_VALUE_RE.match(value):
             raise ValueError(
                 f"{path}: value for {key.strip()!r} is not a bare token (bash "

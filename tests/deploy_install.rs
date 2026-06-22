@@ -28,3 +28,21 @@ fn install_script_has_failclosed_prologue() {
         "install.sh must guard BOLT_DATA_DEVICE as a required input (`:?`) before any mutation"
     );
 }
+
+#[test]
+fn install_script_repairs_deploy_toml_when_present() {
+    // deploy.toml is host-specific (the operator places it; install.sh does not
+    // copy it), but the bolt service user reads it at TargetVerify. A restrictive
+    // deploy-shell umask would otherwise lock it out (same #768 lockout class as
+    // the rest of the config bundle). install.sh must conditionally append it to
+    // `config_bundle_files` so the repair loop fixes its perms when present.
+    let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
+    let script = fs::read_to_string(&script_path).expect("install script should exist");
+    assert!(
+        script.contains("if [[ -f \"${BOLT_INSTALL_ROOT}/config/deploy.toml\" ]]; then")
+            && script.contains(
+                "config_bundle_files+=(\"${BOLT_INSTALL_ROOT}/config/deploy.toml\")"
+            ),
+        "install.sh must conditionally repair config/deploy.toml when present (#768 lockout class)"
+    );
+}

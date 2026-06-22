@@ -906,39 +906,36 @@ fn derive_state_advisory(
     launch_identity: &LaunchIdentityStatus,
     deploy_target: &DeployTargetStatus,
 ) -> StateAdvisory {
+    // Every actionable advisory (deploy here / launch here / nothing to do
+    // here) is host-specific: it implicitly asserts THIS host is the configured
+    // target and that we could assess the config. If the running host is not
+    // confirmed as the target, or config could not be assessed, we cannot
+    // recommend any action -> `Unknown`. Gating ABOVE the SHA check ensures a
+    // SHA mismatch on the wrong / unobservable host does not surface a
+    // misleading `deploy-needed` next to `deploy_target: mismatched`.
+    let host_confirmed = matches!(
+        deploy_target,
+        DeployTargetStatus::Matched | DeployTargetStatus::NoTargetConfigured
+    );
+    if !host_confirmed
+        || matches!(launch_identity, LaunchIdentityStatus::SkippedConfigUnavailable)
+    {
+        return StateAdvisory::Unknown;
+    }
     match intended_sha_status(intended, installed) {
         IntendedShaStatus::NotSpecified
         | IntendedShaStatus::Malformed
         | IntendedShaStatus::UnknownInstalled => StateAdvisory::Unknown,
         IntendedShaStatus::Mismatch => StateAdvisory::DeployNeeded,
-        IntendedShaStatus::Match => {
-            // Config could not be assessed at all → cannot recommend.
-            if matches!(
-                launch_identity,
-                LaunchIdentityStatus::SkippedConfigUnavailable
-            ) {
-                return StateAdvisory::Unknown;
-            }
-            // `NoOp` requires the running host to BE the configured target (or no
-            // target to be configured). A mismatched / unobservable / errored
-            // deploy target means we cannot assert "nothing to do".
-            let host_confirmed = matches!(
-                deploy_target,
-                DeployTargetStatus::Matched | DeployTargetStatus::NoTargetConfigured
-            );
-            if !host_confirmed {
-                return StateAdvisory::Unknown;
-            }
-            match launch_identity {
-                LaunchIdentityStatus::Present {
-                    matches_installed_binary: Some(true),
-                    matches_requested_profile: true,
-                    matches_current_config: true,
-                    ..
-                } => StateAdvisory::NoOp,
-                _ => StateAdvisory::LaunchNeeded,
-            }
-        }
+        IntendedShaStatus::Match => match launch_identity {
+            LaunchIdentityStatus::Present {
+                matches_installed_binary: Some(true),
+                matches_requested_profile: true,
+                matches_current_config: true,
+                ..
+            } => StateAdvisory::NoOp,
+            _ => StateAdvisory::LaunchNeeded,
+        },
     }
 }
 
@@ -2938,6 +2935,50 @@ mod tests {
             derive_state_advisory(
                 Some(sha.as_str()),
                 Some(sha.as_str()),
+                &LaunchIdentityStatus::SkippedConfigUnavailable,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_sha_mismatch_on_mismatched_host() {
+        // SHA mismatch on the WRONG host must NOT advise `deploy-needed`.
+        assert_eq!(
+            derive_state_advisory(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::Mismatched {
+                    field_mismatches: Vec::new()
+                },
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_sha_mismatch_and_host_facts_unavailable() {
+        assert_eq!(
+            derive_state_advisory(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::HostFactsUnavailable {
+                    detail: "imds unreachable".to_string()
+                },
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_sha_mismatch_and_config_unavailable() {
+        assert_eq!(
+            derive_state_advisory(
+                Some(well_formed_git_sha('a').as_str()),
+                Some(well_formed_git_sha('b').as_str()),
                 &LaunchIdentityStatus::SkippedConfigUnavailable,
                 &DeployTargetStatus::NoTargetConfigured,
             ),

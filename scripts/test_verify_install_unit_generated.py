@@ -141,6 +141,12 @@ def test_spaced_value_rejected() -> None:
     _assert_non_bare_value_rejected("BOLT_GROUP=bolt staff", "BOLT_GROUP")
 
 
+def test_space_after_equals_value_rejected() -> None:
+    # bash `source` of `BOLT_USER= bolt` sets BOLT_USER='' and runs `bolt`;
+    # a pre-strip parser would silently keep `bolt`. Must fail closed.
+    _assert_non_bare_value_rejected("BOLT_USER= bolt", "BOLT_USER")
+
+
 def test_unknown_marker_in_template_errors() -> None:
     import tempfile
 
@@ -211,6 +217,7 @@ def main() -> int:
         test_inline_comment_value_rejected,
         test_quoted_value_rejected,
         test_spaced_value_rejected,
+        test_space_after_equals_value_rejected,
         test_unknown_marker_in_template_errors,
         test_verifier_passes_on_committed_tree,
         test_verifier_detects_tampered_unit,

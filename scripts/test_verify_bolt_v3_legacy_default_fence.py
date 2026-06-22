@@ -376,6 +376,10 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 # patterns, so the fence matches the `impl Default for` form
                 # directly (the StrategyRegistry/Imdsv2HostFactsSource class).
                 "impl Default for RuntimeState {",
+                # A GENERIC `impl<T> Default for ...` interposes a `<T> ` between
+                # `impl` and `Default`, which the older `impl\s+Default` form
+                # could not span; the broadened pattern must still flag it.
+                "impl<T> Default for GenericProd<T> {",
             ]
         )
 
@@ -395,6 +399,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "production type default",
                 "production unwrap_or_default",
                 "production or_default",
+                "production impl Default",
                 "production impl Default",
             ],
         )

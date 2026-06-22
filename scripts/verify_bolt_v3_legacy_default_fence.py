@@ -90,7 +90,7 @@ FORBIDDEN_DEFAULTS = (
         "production derive Default",
     ),
     (
-        re.compile(r"\bimpl\s+Default\s+for\b"),
+        re.compile(r"\bimpl\b(?:\s*<[^>]*>)?\s+Default\s+for\b"),
         "production impl Default",
     ),
     (

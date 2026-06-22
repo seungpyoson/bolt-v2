@@ -239,6 +239,30 @@ mod tests {
     }
 
     #[test]
+    fn launch_identity_round_trips_with_observed_host_facts() {
+        // Every other round-trip uses `target_host_facts: None`; this exercises
+        // the `Some(ObservedHostFacts { .. })` serde path of the durable artifact,
+        // including a `None` nested field, so the nested option round-trips too.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let identity = LaunchIdentity {
+            build_head_sha: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            profile: "facts-round-trip-profile".to_string(),
+            config_bundle_checksum:
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            launched_at_unix_secs: 1_700_000_001,
+            pid: 4243,
+            target_host_facts: Some(ObservedHostFacts {
+                region: Some("test-region".to_string()),
+                availability_zone: None,
+                instance_id: Some("test-instance".to_string()),
+            }),
+        };
+        write_launch_identity(temp.path(), &identity).expect("write should succeed");
+        let read_back = read_launch_identity(temp.path()).expect("read should succeed");
+        assert_eq!(read_back, Some(identity));
+    }
+
+    #[test]
     fn read_launch_identity_is_none_when_file_absent() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let read_back = read_launch_identity(temp.path()).expect("read should succeed");

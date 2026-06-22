@@ -888,27 +888,26 @@ fn intended_sha_status(intended: Option<&str>, installed: Option<&str>) -> Inten
 }
 
 /// Derive the advisory. Pure: depends only on its arguments, so it is unit-testable.
+/// Classifies the installed-vs-intended SHA via `intended_sha_status` (the single
+/// owner of that truth-table) and layers the launch-identity liveness check on top.
 fn derive_state_advisory(
     intended: Option<&str>,
     installed: Option<&str>,
     launch_identity: &LaunchIdentityStatus,
 ) -> StateAdvisory {
-    let (Some(intended), Some(installed)) = (intended, installed) else {
-        return StateAdvisory::Unknown;
-    };
-    if !is_lowercase_git_sha(intended) {
-        return StateAdvisory::Unknown;
-    }
-    if installed != intended {
-        return StateAdvisory::DeployNeeded;
-    }
-    match launch_identity {
-        LaunchIdentityStatus::Present {
-            matches_installed_binary: Some(true),
-            matches_requested_profile: true,
-            ..
-        } => StateAdvisory::NoOp,
-        _ => StateAdvisory::LaunchNeeded,
+    match intended_sha_status(intended, installed) {
+        IntendedShaStatus::NotSpecified
+        | IntendedShaStatus::Malformed
+        | IntendedShaStatus::UnknownInstalled => StateAdvisory::Unknown,
+        IntendedShaStatus::Mismatch => StateAdvisory::DeployNeeded,
+        IntendedShaStatus::Match => match launch_identity {
+            LaunchIdentityStatus::Present {
+                matches_installed_binary: Some(true),
+                matches_requested_profile: true,
+                ..
+            } => StateAdvisory::NoOp,
+            _ => StateAdvisory::LaunchNeeded,
+        },
     }
 }
 

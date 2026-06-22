@@ -775,17 +775,20 @@ enum IntendedShaStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum StateAdvisory {
-    /// Installed binary == intended AND the recorded launch identity matches the
-    /// installed binary, the requested profile, and the current config bundle.
-    /// Reflects the last recorded launch, not live process liveness (that is
-    /// systemd's concern).
+    /// Installed binary == intended, the recorded launch identity matches the
+    /// installed binary / requested profile / current config bundle, AND the
+    /// running host is the configured deploy target (or no target is
+    /// configured). Reflects the last recorded launch, not live process
+    /// liveness (that is systemd's concern).
     NoOp,
     /// Installed binary == intended but the recorded launch identity is absent or
     /// diverges (binary, profile, or config bundle), so a relaunch is needed.
     LaunchNeeded,
     /// Installed binary != intended (a newer/different version must be deployed).
     DeployNeeded,
-    /// Intended or installed SHA unknown/malformed — cannot recommend.
+    /// Cannot recommend: the intended or installed SHA is unknown/malformed,
+    /// the deployed config could not be verified, or the running host could not
+    /// be confirmed as the configured deploy target (mismatched / unobservable).
     Unknown,
 }
 
@@ -892,26 +895,50 @@ fn intended_sha_status(intended: Option<&str>, installed: Option<&str>) -> Inten
 
 /// Derive the advisory. Pure: depends only on its arguments, so it is unit-testable.
 /// Classifies the installed-vs-intended SHA via `intended_sha_status` (the single
-/// owner of that truth-table) and layers the launch-identity liveness check on top.
+/// owner of that truth-table), layers the launch-identity liveness check on top,
+/// and downgrades to `Unknown` whenever the deploy target cannot be confirmed
+/// (mismatched / unobservable host) or the config is unavailable — so `NoOp` is
+/// only ever reported when the running host is the configured (or unconfigured)
+/// target.
 fn derive_state_advisory(
     intended: Option<&str>,
     installed: Option<&str>,
     launch_identity: &LaunchIdentityStatus,
+    deploy_target: &DeployTargetStatus,
 ) -> StateAdvisory {
     match intended_sha_status(intended, installed) {
         IntendedShaStatus::NotSpecified
         | IntendedShaStatus::Malformed
         | IntendedShaStatus::UnknownInstalled => StateAdvisory::Unknown,
         IntendedShaStatus::Mismatch => StateAdvisory::DeployNeeded,
-        IntendedShaStatus::Match => match launch_identity {
-            LaunchIdentityStatus::Present {
-                matches_installed_binary: Some(true),
-                matches_requested_profile: true,
-                matches_current_config: true,
-                ..
-            } => StateAdvisory::NoOp,
-            _ => StateAdvisory::LaunchNeeded,
-        },
+        IntendedShaStatus::Match => {
+            // Config could not be assessed at all → cannot recommend.
+            if matches!(
+                launch_identity,
+                LaunchIdentityStatus::SkippedConfigUnavailable
+            ) {
+                return StateAdvisory::Unknown;
+            }
+            // `NoOp` requires the running host to BE the configured target (or no
+            // target to be configured). A mismatched / unobservable / errored
+            // deploy target means we cannot assert "nothing to do".
+            let host_confirmed = matches!(
+                deploy_target,
+                DeployTargetStatus::Matched | DeployTargetStatus::NoTargetConfigured
+            );
+            if !host_confirmed {
+                return StateAdvisory::Unknown;
+            }
+            match launch_identity {
+                LaunchIdentityStatus::Present {
+                    matches_installed_binary: Some(true),
+                    matches_requested_profile: true,
+                    matches_current_config: true,
+                    ..
+                } => StateAdvisory::NoOp,
+                _ => StateAdvisory::LaunchNeeded,
+            }
+        }
     }
 }
 
@@ -1025,9 +1052,14 @@ fn run_ops_status(
         ),
     };
 
-    let state_advisory = derive_state_advisory(intended_sha, installed_sha, &launch_identity);
-
     let deploy_target = deploy_target_status(config_root, &Imdsv2HostFactsSource::new());
+
+    let state_advisory = derive_state_advisory(
+        intended_sha,
+        installed_sha,
+        &launch_identity,
+        &deploy_target,
+    );
 
     let report = OpsStatusReport {
         ops_status: OpsStatusBody {
@@ -2728,7 +2760,12 @@ mod tests {
     fn derive_state_advisory_reports_unknown_when_intended_absent() {
         let sha = well_formed_git_sha('a');
         assert_eq!(
-            derive_state_advisory(None, Some(sha.as_str()), &LaunchIdentityStatus::Absent),
+            derive_state_advisory(
+                None,
+                Some(sha.as_str()),
+                &LaunchIdentityStatus::Absent,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
             StateAdvisory::Unknown
         );
     }
@@ -2737,7 +2774,12 @@ mod tests {
     fn derive_state_advisory_reports_unknown_when_installed_absent() {
         let sha = well_formed_git_sha('a');
         assert_eq!(
-            derive_state_advisory(Some(sha.as_str()), None, &LaunchIdentityStatus::Absent),
+            derive_state_advisory(
+                Some(sha.as_str()),
+                None,
+                &LaunchIdentityStatus::Absent,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
             StateAdvisory::Unknown
         );
     }
@@ -2748,7 +2790,8 @@ mod tests {
             derive_state_advisory(
                 Some("not-a-sha"),
                 Some(well_formed_git_sha('a').as_str()),
-                &LaunchIdentityStatus::Absent
+                &LaunchIdentityStatus::Absent,
+                &DeployTargetStatus::NoTargetConfigured,
             ),
             StateAdvisory::Unknown
         );
@@ -2760,7 +2803,8 @@ mod tests {
             derive_state_advisory(
                 Some(well_formed_git_sha('a').as_str()),
                 Some(well_formed_git_sha('b').as_str()),
-                &present_launch_identity(Some(true), true, true)
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::NoTargetConfigured,
             ),
             StateAdvisory::DeployNeeded
         );
@@ -2773,7 +2817,8 @@ mod tests {
             derive_state_advisory(
                 Some(sha.as_str()),
                 Some(sha.as_str()),
-                &present_launch_identity(Some(true), true, true)
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::NoTargetConfigured,
             ),
             StateAdvisory::NoOp
         );
@@ -2786,7 +2831,8 @@ mod tests {
             derive_state_advisory(
                 Some(sha.as_str()),
                 Some(sha.as_str()),
-                &LaunchIdentityStatus::Absent
+                &LaunchIdentityStatus::Absent,
+                &DeployTargetStatus::NoTargetConfigured,
             ),
             StateAdvisory::LaunchNeeded
         );
@@ -2803,7 +2849,12 @@ mod tests {
             present_launch_identity(None, true, true),
         ] {
             assert_eq!(
-                derive_state_advisory(Some(sha.as_str()), Some(sha.as_str()), &identity),
+                derive_state_advisory(
+                    Some(sha.as_str()),
+                    Some(sha.as_str()),
+                    &identity,
+                    &DeployTargetStatus::NoTargetConfigured,
+                ),
                 StateAdvisory::LaunchNeeded
             );
         }
@@ -2821,9 +2872,76 @@ mod tests {
             derive_state_advisory(
                 Some(sha.as_str()),
                 Some(sha.as_str()),
-                &present_launch_identity(Some(true), true, false)
+                &present_launch_identity(Some(true), true, false),
+                &DeployTargetStatus::NoTargetConfigured,
             ),
             StateAdvisory::LaunchNeeded
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_no_op_when_host_matches_configured_target() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::Matched,
+            ),
+            StateAdvisory::NoOp
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_deploy_target_mismatched() {
+        // A live, matching launch identity must NOT collapse to no-op when the
+        // running host is not the configured target — otherwise `ops status`
+        // would advise "nothing to do" on the wrong host.
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::Mismatched {
+                    field_mismatches: Vec::new(),
+                },
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_host_facts_unavailable() {
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, true),
+                &DeployTargetStatus::HostFactsUnavailable {
+                    detail: "imds unreachable".to_string(),
+                },
+            ),
+            StateAdvisory::Unknown
+        );
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_unknown_when_config_unavailable() {
+        // Config could not be verified, so the launch identity was skipped; the
+        // advisory must say `unknown`, not `launch-needed` (a relaunch would
+        // fail at config verification anyway).
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &LaunchIdentityStatus::SkippedConfigUnavailable,
+                &DeployTargetStatus::NoTargetConfigured,
+            ),
+            StateAdvisory::Unknown
         );
     }
 

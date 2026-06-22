@@ -7,15 +7,22 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+        BOLT_V3_EXIT_EVALUATION_GATE_ID, BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+        BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID, BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+        BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_ORDER_REJECT_GATE_ID,
+        BOLT_V3_ORDER_REJECT_RECORD_KIND, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3PositionSizerRebuildAuditEvidence,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitIntentKind, BoltV3SubmitReservationFillEvidence,
-        BoltV3SubmitReservationMetadataEvidence, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain, read_submit_reservation_recovery_evidence,
+        BoltV3DecisionEvidenceWriter, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+        BoltV3ExitTriggerSource, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3OrderRejectEvidence,
+        BoltV3OrderRejectReason, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource, BoltV3RvGateResult,
+        BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+        decision_evidence_path, read_exit_evaluation_evidence,
+        read_latest_entry_decision_evidence_chain, read_loss_governor_halt_evidence,
+        read_order_reject_evidence, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_realized_volatility::{
         RealizedVolBlockReason, RealizedVolSampleKind, RealizedVolSourceClass,
@@ -661,6 +668,318 @@ fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Va
     std::fs::write(path, body).expect("decision evidence should write");
 }
 
+fn sample_exit_evaluation_evidence(populated: bool) -> BoltV3ExitEvaluationEvidence {
+    if populated {
+        BoltV3ExitEvaluationEvidence {
+            position_id: Some("position-one".to_string()),
+            market_id: Some("market-one".to_string()),
+            instrument_id: Some("instrument-up".to_string()),
+            client_order_id: Some("client-order-one".to_string()),
+            exit_eval_now_ms: 1_700_000_000_000,
+            exit_trigger_source: BoltV3ExitTriggerSource::ReferenceUpdate,
+            trigger_ts_event_ms: Some(1_699_999_999_500),
+            trigger_ts_init_ms: Some(1_699_999_999_800),
+            rv_surface_id: "surface-one".to_string(),
+            rv_as_of_ms: Some(1_699_999_995_000),
+            rv_ready: true,
+            rv_blockers: vec!["source_stale".to_string()],
+            rv_source_diagnostics: vec!["source-a:ready".to_string()],
+            rv_gate_result: BoltV3RvGateResult::RejectedFutureDated,
+            rv_as_of_minus_now_ms: Some(-5_000),
+            hold_ev_bps: Some("12.5".to_string()),
+            exit_ev_bps: Some("-3.0".to_string()),
+            exit_decision: BoltV3ExitDecisionEvidence::ExitFailClosed,
+            forced_flat_reasons: vec!["rv_gate_rejected".to_string()],
+            submission_order_side: Some("Sell".to_string()),
+            submission_price: Some("0.49".to_string()),
+            submission_quantity: Some("1".to_string()),
+            submission_blocked_reason: Some("rv_gate_rejected".to_string()),
+        }
+    } else {
+        BoltV3ExitEvaluationEvidence {
+            position_id: None,
+            market_id: None,
+            instrument_id: None,
+            client_order_id: None,
+            exit_eval_now_ms: 1_700_000_100_000,
+            exit_trigger_source: BoltV3ExitTriggerSource::SignalQuote,
+            trigger_ts_event_ms: None,
+            trigger_ts_init_ms: None,
+            rv_surface_id: "surface-two".to_string(),
+            rv_as_of_ms: None,
+            rv_ready: false,
+            rv_blockers: Vec::new(),
+            rv_source_diagnostics: Vec::new(),
+            rv_gate_result: BoltV3RvGateResult::MissingSnapshot,
+            rv_as_of_minus_now_ms: None,
+            hold_ev_bps: None,
+            exit_ev_bps: None,
+            exit_decision: BoltV3ExitDecisionEvidence::Hold,
+            forced_flat_reasons: Vec::new(),
+            submission_order_side: None,
+            submission_price: None,
+            submission_quantity: None,
+            submission_blocked_reason: None,
+        }
+    }
+}
+
+fn sample_loss_governor_halt_evidence(populated: bool) -> BoltV3LossGovernorHaltEvidence {
+    if populated {
+        BoltV3LossGovernorHaltEvidence {
+            snapshot_present: true,
+            snapshot_observed_at_ns: Some(1_700_000_000_000_000_000),
+            admission_now_ns: 1_700_000_005_000_000_000,
+            snapshot_age_ns: Some(5_000_000_000),
+            max_snapshot_age_ns: 5_000_000_000,
+            snapshot_source: Some("portfolio_snapshot".to_string()),
+            has_per_trade_pnl: true,
+            has_daily_pnl: true,
+            has_rolling_pnl: false,
+            has_current_equity: true,
+            has_peak_equity: false,
+            last_account_state_ts_ns: Some(1_699_999_999_000_000_000),
+            last_portfolio_snapshot_ts_ns: Some(1_700_000_000_000_000_000),
+            last_position_event_ts_ns: Some(1_699_999_998_000_000_000),
+            account_state_count: 3,
+            portfolio_snapshot_count: 1,
+            position_event_count: 7,
+            stale_reason: BoltV3StaleLossReason::AgeExceeded,
+            stable_halt_key: "halt-key-one".to_string(),
+            retry_count: 2,
+            elapsed_since_first_halt_ns: 10_000_000_000,
+        }
+    } else {
+        BoltV3LossGovernorHaltEvidence {
+            snapshot_present: false,
+            snapshot_observed_at_ns: None,
+            admission_now_ns: 1_700_000_010_000_000_000,
+            snapshot_age_ns: None,
+            max_snapshot_age_ns: 5_000_000_000,
+            snapshot_source: None,
+            has_per_trade_pnl: false,
+            has_daily_pnl: false,
+            has_rolling_pnl: false,
+            has_current_equity: false,
+            has_peak_equity: false,
+            last_account_state_ts_ns: None,
+            last_portfolio_snapshot_ts_ns: None,
+            last_position_event_ts_ns: None,
+            account_state_count: 0,
+            portfolio_snapshot_count: 0,
+            position_event_count: 0,
+            stale_reason: BoltV3StaleLossReason::MissingSnapshot,
+            stable_halt_key: "halt-key-two".to_string(),
+            retry_count: 0,
+            elapsed_since_first_halt_ns: 0,
+        }
+    }
+}
+
+fn sample_order_reject_evidence(populated: bool) -> BoltV3OrderRejectEvidence {
+    if populated {
+        BoltV3OrderRejectEvidence {
+            reject_source: BoltV3RejectSource::Venue,
+            reject_reason: BoltV3OrderRejectReason::MinNotionalRejected,
+            admission_outcome: Some(BoltV3AdmissionOutcome::Admitted),
+            raw_reason_text: Some("min notional not met".to_string()),
+            instrument_id: "instrument-up".to_string(),
+            order_side: Some("Buy".to_string()),
+            raw_price: Some("0.50".to_string()),
+            raw_quantity: Some("1".to_string()),
+            raw_maker_amount: Some("0.50".to_string()),
+            raw_taker_amount: Some("0.50".to_string()),
+            normalized_price: Some("0.50".to_string()),
+            normalized_quantity: Some("1".to_string()),
+            normalized_maker_amount: Some("0.50".to_string()),
+            normalized_taker_amount: Some("0.50".to_string()),
+            venue_price_precision: Some(2),
+            venue_size_precision: Some(0),
+            venue_min_notional: Some("1.0".to_string()),
+            prior_client_order_id: Some("client-order-zero".to_string()),
+            client_order_id: "client-order-one".to_string(),
+            retry_count: 1,
+            backoff_cooldown_state: Some("cooling".to_string()),
+            stable_episode_key: "episode-key-one".to_string(),
+            elapsed_ns: 2_000_000_000,
+        }
+    } else {
+        BoltV3OrderRejectEvidence {
+            reject_source: BoltV3RejectSource::SubmitAdmission,
+            reject_reason: BoltV3OrderRejectReason::AdmissionRejected,
+            admission_outcome: None,
+            raw_reason_text: None,
+            instrument_id: "instrument-down".to_string(),
+            order_side: None,
+            raw_price: None,
+            raw_quantity: None,
+            raw_maker_amount: None,
+            raw_taker_amount: None,
+            normalized_price: None,
+            normalized_quantity: None,
+            normalized_maker_amount: None,
+            normalized_taker_amount: None,
+            venue_price_precision: None,
+            venue_size_precision: None,
+            venue_min_notional: None,
+            prior_client_order_id: None,
+            client_order_id: "client-order-two".to_string(),
+            retry_count: 0,
+            backoff_cooldown_state: None,
+            stable_episode_key: "episode-key-two".to_string(),
+            elapsed_ns: 0,
+        }
+    }
+}
+
+fn exit_evaluation_evidence_line(evidence: &BoltV3ExitEvaluationEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 10_i64,
+        "gate_id": BOLT_V3_EXIT_EVALUATION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": BOLT_V3_EXIT_EVALUATION_RECORD_KIND,
+        "evidence": evidence,
+    })
+}
+
+fn loss_governor_halt_evidence_line(
+    evidence: &BoltV3LossGovernorHaltEvidence,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 11_i64,
+        "gate_id": BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND,
+        "evidence": evidence,
+    })
+}
+
+fn order_reject_evidence_line(evidence: &BoltV3OrderRejectEvidence) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 12_i64,
+        "gate_id": BOLT_V3_ORDER_REJECT_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": BOLT_V3_ORDER_REJECT_RECORD_KIND,
+        "evidence": evidence,
+    })
+}
+
+#[test]
+fn exit_evaluation_evidence_round_trips_populated_and_sparse_records() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let records = vec![
+        sample_exit_evaluation_evidence(true),
+        sample_exit_evaluation_evidence(false),
+    ];
+    let lines: Vec<serde_json::Value> = records.iter().map(exit_evaluation_evidence_line).collect();
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let read_back = read_exit_evaluation_evidence(&evidence_path, 100_000)
+        .expect("exit-evaluation evidence should read back");
+
+    assert_eq!(read_back, records);
+}
+
+#[test]
+fn loss_governor_halt_evidence_round_trips_populated_and_sparse_records() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let records = vec![
+        sample_loss_governor_halt_evidence(true),
+        sample_loss_governor_halt_evidence(false),
+    ];
+    let lines: Vec<serde_json::Value> = records
+        .iter()
+        .map(loss_governor_halt_evidence_line)
+        .collect();
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let read_back = read_loss_governor_halt_evidence(&evidence_path, 100_000)
+        .expect("loss-governor-halt evidence should read back");
+
+    assert_eq!(read_back, records);
+}
+
+#[test]
+fn order_reject_evidence_round_trips_populated_and_sparse_records() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let records = vec![
+        sample_order_reject_evidence(true),
+        sample_order_reject_evidence(false),
+    ];
+    let lines: Vec<serde_json::Value> = records.iter().map(order_reject_evidence_line).collect();
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let read_back = read_order_reject_evidence(&evidence_path, 100_000)
+        .expect("order-reject evidence should read back");
+
+    assert_eq!(read_back, records);
+}
+
+#[test]
+fn entry_chain_and_recovery_readers_skip_new_rca_evidence_kinds() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = sample_entry_decision_evidence_lines().to_vec();
+    lines.push(serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 4_i64,
+        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "submit_reservation_metadata",
+        "metadata": sample_submit_reservation_metadata(),
+    }));
+    lines.push(exit_evaluation_evidence_line(
+        &sample_exit_evaluation_evidence(true),
+    ));
+    lines.push(loss_governor_halt_evidence_line(
+        &sample_loss_governor_halt_evidence(true),
+    ));
+    lines.push(order_reject_evidence_line(&sample_order_reject_evidence(
+        true,
+    )));
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let chain = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
+        .expect("new RCA evidence kinds must not block entry-chain recovery");
+    assert_eq!(chain.snapshot.client_order_id, "client-order-one");
+
+    let recovery = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect("new RCA evidence kinds must not block submit-reservation recovery");
+    assert!(
+        recovery
+            .metadata_by_client_order_id
+            .contains_key("client-order-one"),
+        "reservation metadata should recover alongside new RCA evidence kinds"
+    );
+}
+
+#[test]
+fn exit_evaluation_reader_returns_only_exit_evaluation_records() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let target = sample_exit_evaluation_evidence(true);
+    let mut lines = sample_entry_decision_evidence_lines().to_vec();
+    lines.push(loss_governor_halt_evidence_line(
+        &sample_loss_governor_halt_evidence(true),
+    ));
+    lines.push(exit_evaluation_evidence_line(&target));
+    lines.push(order_reject_evidence_line(&sample_order_reject_evidence(
+        true,
+    )));
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let read_back = read_exit_evaluation_evidence(&evidence_path, 100_000)
+        .expect("exit-evaluation reader should skip non-matching kinds");
+
+    assert_eq!(read_back, vec![target]);
+}
+
 #[derive(Debug)]
 struct NoopDecisionEvidenceWriter;
 
@@ -705,6 +1024,18 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         &self,
         _fill: &BoltV3SubmitReservationFillEvidence,
     ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(&self, _evidence: &BoltV3LossGovernorHaltEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {
         Ok(())
     }
 }

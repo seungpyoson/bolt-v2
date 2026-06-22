@@ -452,7 +452,8 @@ fn run_ops_launch_stage(
             Ok(())
         }
         OpsLaunchStage::TargetVerify => {
-            context.observed_host_facts = run_loaded_target_verify(&context.config_root)?;
+            context.observed_host_facts =
+                run_loaded_target_verify(&context.config_root, &Imdsv2HostFactsSource::new())?;
             Ok(())
         }
         OpsLaunchStage::SecretsCheck => run_loaded_secrets_check(context.loaded()?).map(|_| ()),
@@ -774,11 +775,13 @@ enum IntendedShaStatus {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum StateAdvisory {
-    /// Installed binary == intended AND a launch identity shows it is running with
-    /// the requested profile.
+    /// Installed binary == intended AND the recorded launch identity matches the
+    /// installed binary, the requested profile, and the current config bundle.
+    /// Reflects the last recorded launch, not live process liveness (that is
+    /// systemd's concern).
     NoOp,
-    /// Installed binary == intended but no/divergent launch identity (right binary
-    /// installed, not currently launched on it with the requested profile).
+    /// Installed binary == intended but the recorded launch identity is absent or
+    /// diverges (binary, profile, or config bundle), so a relaunch is needed.
     LaunchNeeded,
     /// Installed binary != intended (a newer/different version must be deployed).
     DeployNeeded,
@@ -904,6 +907,7 @@ fn derive_state_advisory(
             LaunchIdentityStatus::Present {
                 matches_installed_binary: Some(true),
                 matches_requested_profile: true,
+                matches_current_config: true,
                 ..
             } => StateAdvisory::NoOp,
             _ => StateAdvisory::LaunchNeeded,
@@ -1508,12 +1512,12 @@ struct SecretCheckReport {
 /// over IMDSv2 only when a gating binding is configured, and fails closed on
 /// a mismatch or an unobservable host. An unconfigured target degrades to a
 /// successful no-op so the lane works before any instance is provisioned.
-fn run_loaded_target_verify(
+fn run_loaded_target_verify<S: HostFactsSource>(
     config_root: &Path,
+    source: &S,
 ) -> Result<Option<ObservedHostFacts>, Box<dyn std::error::Error>> {
     let config = load_deploy_target(config_root)?;
-    let source = Imdsv2HostFactsSource::new();
-    let verification = verify_deploy_target(&config, &source)?;
+    let verification = verify_deploy_target(&config, source)?;
     let log = match &verification.outcome {
         TargetVerifyOutcome::NoTargetConfigured => serde_json::json!({
             "ops_launch_target_verify": "no-target-configured",
@@ -1873,6 +1877,51 @@ mod tests {
 
         run_ops_launch_stage(OpsLaunchStage::TargetVerify, &mut context).expect(
             "target-verify stage must degrade to Ok when no deploy.toml configures a target",
+        );
+        assert!(
+            context.observed_host_facts.is_none(),
+            "an unconfigured target must observe no host facts (no host was queried)"
+        );
+    }
+
+    #[test]
+    fn run_loaded_target_verify_returns_observed_facts_for_matching_binding() {
+        // A configured gating binding (deploy.toml) plus a source returning the
+        // matching facts must thread those facts back to the caller, so the
+        // launch identity can record where it launched. Injecting the fake source
+        // keeps the test hermetic — no IMDS network call.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        std::fs::write(
+            temp.path().join("deploy.toml"),
+            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
+        )
+        .expect("deploy.toml fixture should write");
+        let expected = ObservedHostFacts {
+            region: Some("region-x".to_string()),
+            availability_zone: Some("region-x-zone-a".to_string()),
+            instance_id: Some("instance-target".to_string()),
+        };
+        let source = FakeHostFactsSource::facts(expected.clone());
+
+        let observed = run_loaded_target_verify(temp.path(), &source)
+            .expect("matching facts must verify and thread the observed facts back");
+
+        assert_eq!(observed, Some(expected));
+    }
+
+    #[test]
+    fn run_loaded_target_verify_returns_none_when_no_deploy_toml() {
+        // No deploy.toml means no gating binding, so the host is never observed:
+        // the verifier degrades to `Ok(None)` without touching the fake source.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let source = FakeHostFactsSource::erroring();
+
+        let observed = run_loaded_target_verify(temp.path(), &source)
+            .expect("an unconfigured target must degrade to Ok(None), never error");
+
+        assert!(
+            observed.is_none(),
+            "an unconfigured target must observe no host facts"
         );
     }
 
@@ -2611,6 +2660,7 @@ mod tests {
     fn present_launch_identity(
         matches_installed_binary: Option<bool>,
         matches_requested_profile: bool,
+        matches_current_config: bool,
     ) -> LaunchIdentityStatus {
         LaunchIdentityStatus::Present {
             build_head_sha: Some(well_formed_git_sha('a')),
@@ -2621,7 +2671,7 @@ mod tests {
             target_host_facts: None,
             matches_installed_binary,
             matches_requested_profile,
-            matches_current_config: true,
+            matches_current_config,
         }
     }
 
@@ -2661,7 +2711,7 @@ mod tests {
             derive_state_advisory(
                 Some(well_formed_git_sha('a').as_str()),
                 Some(well_formed_git_sha('b').as_str()),
-                &present_launch_identity(Some(true), true)
+                &present_launch_identity(Some(true), true, true)
             ),
             StateAdvisory::DeployNeeded
         );
@@ -2674,7 +2724,7 @@ mod tests {
             derive_state_advisory(
                 Some(sha.as_str()),
                 Some(sha.as_str()),
-                &present_launch_identity(Some(true), true)
+                &present_launch_identity(Some(true), true, true)
             ),
             StateAdvisory::NoOp
         );
@@ -2699,15 +2749,33 @@ mod tests {
         // Right binary installed, but the launch identity disagrees on the binary,
         // the profile, or cannot prove the binary — each forces `launch-needed`.
         for identity in [
-            present_launch_identity(Some(false), true),
-            present_launch_identity(Some(true), false),
-            present_launch_identity(None, true),
+            present_launch_identity(Some(false), true, true),
+            present_launch_identity(Some(true), false, true),
+            present_launch_identity(None, true, true),
         ] {
             assert_eq!(
                 derive_state_advisory(Some(sha.as_str()), Some(sha.as_str()), &identity),
                 StateAdvisory::LaunchNeeded
             );
         }
+    }
+
+    #[test]
+    fn derive_state_advisory_reports_launch_needed_when_config_diverges() {
+        // Same binary and profile, but the recorded launch ran against a
+        // different config bundle (matches_current_config: false). The advisory
+        // must NOT collapse to no-op — a new config bundle needs a relaunch — so
+        // the `IntendedShaStatus::Match` arm must inspect config drift, not
+        // swallow it under `..`.
+        let sha = well_formed_git_sha('a');
+        assert_eq!(
+            derive_state_advisory(
+                Some(sha.as_str()),
+                Some(sha.as_str()),
+                &present_launch_identity(Some(true), true, false)
+            ),
+            StateAdvisory::LaunchNeeded
+        );
     }
 
     #[test]

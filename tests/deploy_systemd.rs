@@ -114,6 +114,18 @@ fn install_script_provisions_runtime_catalog_on_srv_volume() {
         !install.contains("BOLT_INSTALL_ROOT=\""),
         "install script must not redefine BOLT_INSTALL_ROOT; it comes from install-layout.env"
     );
+    // Service identity is single-sourced too: install.sh must not carry the old
+    // BOLT_USER/BOLT_GROUP env-override lines, because the committed systemd unit
+    // bakes User=/Group= at generate-time and a deploy-time override could never
+    // reach it (it would split provisioning ownership from the running service).
+    assert!(
+        !install.contains("BOLT_USER=\""),
+        "install script must not redefine BOLT_USER; it comes from install-layout.env"
+    );
+    assert!(
+        !install.contains("BOLT_GROUP=\""),
+        "install script must not redefine BOLT_GROUP; it comes from install-layout.env"
+    );
     let layout_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install-layout.env");
     let layout = fs::read_to_string(&layout_path).expect("install layout should exist");
     assert!(
@@ -123,6 +135,14 @@ fn install_script_provisions_runtime_catalog_on_srv_volume() {
     assert!(
         layout.contains("BOLT_INSTALL_ROOT=/opt/bolt-v2"),
         "install layout must anchor the install root at /opt/bolt-v2 (matches systemd)"
+    );
+    assert!(
+        layout.contains("BOLT_USER=bolt"),
+        "install layout must single-source the service user the systemd unit runs as"
+    );
+    assert!(
+        layout.contains("BOLT_GROUP=bolt"),
+        "install layout must single-source the service group that owns the config bundle"
     );
     assert!(
         install.contains("\"${BOLT_HOME}/var/bolt-v3-live/catalog\""),

@@ -17947,6 +17947,14 @@ reason = "Unix file mode for non-secret runtime files a service user must read (
 
 [[allowed]]
 path = "src/bolt_v3_atomic_io.rs"
+kind = "number"
+literal = '''0o640'''
+context = '''pub(crate) const GROUP_READABLE_ARTIFACT_FILE_MODE: u32 = 0o640;'''
+classification = "atomic_io_group_readable_artifact_file_mode"
+reason = "Unix file mode for non-secret artifacts carrying host-identifying metadata (launch-identity pid + region/AZ/instance-id): owner+group readable so ops status works, but not world-readable (sits between PRIVATE_ARTIFACT_FILE_MODE 0o600 and RUNTIME_CONFIG_FILE_MODE 0o644). It is a code constant, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_atomic_io.rs"
 kind = "string"
 literal = '''"{prefix}.{}.{timestamp_ns}.{counter}"'''
 context = '''"{prefix}.{}.{timestamp_ns}.{counter}",'''

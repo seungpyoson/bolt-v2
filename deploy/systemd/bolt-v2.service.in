@@ -5,8 +5,8 @@ After=network-online.target
 
 [Service]
 Type=simple
-User=bolt
-Group=bolt
+User=@BOLT_USER@
+Group=@BOLT_GROUP@
 WorkingDirectory=@BOLT_HOME@
 TimeoutStartSec=180
 EnvironmentFile=@LIVE_ENV_FILE@

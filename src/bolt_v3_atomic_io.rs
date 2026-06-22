@@ -16,6 +16,14 @@ pub const PRIVATE_ATOMIC_FILE_MODE: u32 = PRIVATE_ARTIFACT_FILE_MODE;
 /// the deploy may further tighten ownership/mode to root:bolt 0640.
 pub const RUNTIME_CONFIG_FILE_MODE: u32 = 0o644;
 
+/// Mode for non-secret artifacts that carry host-identifying metadata (e.g. the
+/// launch-identity artifact: pid + region/AZ/instance-id). Owner- and group-readable
+/// so `ops status` works for the service group, but NOT world-readable. The data is
+/// already locally observable via IMDS / `ps`, so this is metadata hygiene, not a
+/// secret boundary. Kept beside the other mode constants so file modes stay
+/// single-sourced.
+pub(crate) const GROUP_READABLE_ARTIFACT_FILE_MODE: u32 = 0o640;
+
 #[derive(Debug)]
 pub struct AtomicIoError {
     pub path: PathBuf,

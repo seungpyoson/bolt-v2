@@ -138,7 +138,7 @@ pub fn write_launch_identity(
     crate::bolt_v3_atomic_io::write_atomic_file_with_mode(
         &path,
         &bytes,
-        crate::bolt_v3_atomic_io::RUNTIME_CONFIG_FILE_MODE,
+        crate::bolt_v3_atomic_io::GROUP_READABLE_ARTIFACT_FILE_MODE,
     )
     .map_err(|error| BoltV3OperatorArtifactError::Write {
         path: error.path,
@@ -308,6 +308,34 @@ mod tests {
         write_launch_identity(temp.path(), &second).expect("second write should succeed");
         let read_back = read_launch_identity(temp.path()).expect("read should succeed");
         assert_eq!(read_back, Some(second));
+    }
+
+    #[test]
+    fn write_launch_identity_uses_group_readable_not_world_readable_mode() {
+        // The artifact carries host-identifying metadata (pid + region/AZ/
+        // instance-id), so it must be owner+group readable for `ops status` but
+        // NOT world-readable. Pin the on-disk mode to 0640 so a regression back to
+        // the world-readable runtime-config mode (0644) fails loudly.
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let identity = LaunchIdentity {
+            build_head_sha: None,
+            profile: "mode-profile".to_string(),
+            config_bundle_checksum: "cccc".to_string(),
+            launched_at_unix_secs: 1,
+            pid: 4242,
+            target_host_facts: None,
+        };
+        write_launch_identity(temp.path(), &identity).expect("write should succeed");
+        let mode = std::fs::metadata(launch_identity_path(temp.path()))
+            .expect("artifact metadata should read")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o640,
+            "launch-identity artifact must be group-readable but not world-readable"
+        );
     }
 
     #[test]

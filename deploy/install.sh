@@ -2,14 +2,17 @@
 set -euo pipefail
 shopt -s nullglob
 
-BOLT_USER="${BOLT_USER:-bolt}"
-BOLT_GROUP="${BOLT_GROUP:-$BOLT_USER}"
 BOLT_DATA_DEVICE="${BOLT_DATA_DEVICE:?set BOLT_DATA_DEVICE=/dev/<data-volume-device>}"
 BOLT_DATA_FS_TYPE="${BOLT_DATA_FS_TYPE:-ext4}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=install-layout.env
-source "${SCRIPT_DIR}/install-layout.env"   # BOLT_HOME, BOLT_INSTALL_ROOT, LIVE_ENV_DIR (single source; see deploy/install-layout.env)
+# BOLT_HOME, BOLT_INSTALL_ROOT, LIVE_ENV_DIR, BOLT_USER, BOLT_GROUP (single source;
+# see deploy/install-layout.env). Service identity is sourced here, NOT a deploy-time
+# env override, because the committed systemd unit bakes User=/Group= at generate-time;
+# an override could not reach the unit and would silently split provisioning from the
+# running service.
+source "${SCRIPT_DIR}/install-layout.env"
 SYSTEMD_SRC_DIR="${SCRIPT_DIR}/systemd"
 UNIT_DST="/etc/systemd/system/bolt-v2.service"
 JOURNALD_DST="/etc/systemd/journald.conf.d/journald-bolt-v2.conf"

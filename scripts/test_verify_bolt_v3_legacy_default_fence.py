@@ -380,6 +380,19 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 # `impl` and `Default`, which the older `impl\s+Default` form
                 # could not span; the broadened pattern must still flag it.
                 "impl<T> Default for GenericProd<T> {",
+                # A FULLY-QUALIFIED `impl <path>::Default for ...` — the older
+                # `impl\s+Default` form anchored on the bare `Default` and missed
+                # the `std::default::` / `::core::default::` path prefixes.
+                "impl std::default::Default for QualifiedProd {",
+                "impl ::core::default::Default for LeadingPathProd {",
+                # A `const`-qualified impl interposes `const ` before `Default`.
+                "impl const Default for ConstProd {",
+                # SPACED `::` around the call — rustfmt does not normalize away
+                # operator spacing inside a path call, so the patterns must allow
+                # optional whitespace around `::` for both the `Default::default(`
+                # and the `Type::default(` forms.
+                "let raw = Default :: default();",
+                "let cfg = Foo :: default();",
             ]
         )
 
@@ -401,6 +414,11 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "production or_default",
                 "production impl Default",
                 "production impl Default",
+                "production impl Default",
+                "production impl Default",
+                "production impl Default",
+                "production Default::default",
+                "production type default",
             ],
         )
 

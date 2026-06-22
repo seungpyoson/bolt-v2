@@ -21,7 +21,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LAYOUT_PATH = REPO_ROOT / "deploy/install-layout.env"
 TEMPLATE_PATH = REPO_ROOT / "deploy/systemd/bolt-v2.service.in"
 
-REQUIRED_LAYOUT_KEYS = ("BOLT_HOME", "BOLT_INSTALL_ROOT", "LIVE_ENV_DIR")
+REQUIRED_LAYOUT_KEYS = (
+    "BOLT_HOME",
+    "BOLT_INSTALL_ROOT",
+    "LIVE_ENV_DIR",
+    "BOLT_USER",
+    "BOLT_GROUP",
+)
 _RESIDUAL_MARKER_RE = re.compile(r"@[A-Z_]+@")
 
 
@@ -57,6 +63,8 @@ def render(layout_path: Path = LAYOUT_PATH, template_path: Path = TEMPLATE_PATH)
         "@BOLT_CONFIG_DIR@": f"{install_root}/config",
         "@LIVE_ENV_FILE@": f"{live_env_dir}/live.env",
         "@BOLT_HOME@": bolt_home,
+        "@BOLT_USER@": layout["BOLT_USER"],
+        "@BOLT_GROUP@": layout["BOLT_GROUP"],
     }
     text = template_path.read_text(encoding="utf-8")
     for marker, value in substitutions.items():

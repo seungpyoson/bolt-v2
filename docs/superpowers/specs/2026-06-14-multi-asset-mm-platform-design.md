@@ -325,7 +325,7 @@ today; perp/options accounting deferred per §11).
   `StrategyBuilder` + register fn in `src/strategies/binary_oracle_maker/` (not
   scanned), and make the binding slice **injectable** — hoist its construction
   out of `bolt_v3_archetypes/mod.rs` into a non-scanned caller
-  (`main.rs`/`build_bolt_v3_live_node`) and pass it to
+  (`main.rs`/`build_bolt_v3_live_node_with_resolved`) and pass it to
   `register_bolt_v3_strategies_on_node_with_bindings`, which already accepts
   `bindings: &[StrategyRuntimeBinding]` (`bolt_v3_strategy_registration.rs:108-112`).
   `production_strategy_registry()` (single taker today, `src/strategies/mod.rs:8-12`)
@@ -706,7 +706,7 @@ These tasks are promoted to tracked GitHub issues at spec+plan time.
 ## 16. Must Resolve Before Implementation (decided now — no research mid-build)
 
 1. **Live-registration shape:** make the `StrategyRuntimeBinding` slice
-   injectable from a non-scanned caller (`main.rs` / `build_bolt_v3_live_node`);
+   injectable from a non-scanned caller (`main.rs` / `build_bolt_v3_live_node_with_resolved`);
    keep the maker `StrategyBuilder` + register fn under
    `src/strategies/binary_oracle_maker/`. Do NOT mirror the taker archetype.
 2. **GOLDEN-digest gating:** add a **new `MAKER_KEY` `GatedSourceRoot`** (separate

@@ -431,16 +431,7 @@ live-verify: check-workspace require-live-profile require-rust-verification-owne
 
 # Canonical repo-local operator lane for bolt-v2 from this checkout.
 live: live-generate
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- run --config {{live_runtime}}
-
-# Optional diagnostics for the live operator config (run against the generated runtime config).
-live-check: live-generate
-    # Validate secret-config completeness only; do not resolve secrets.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets check --config {{live_runtime}}
-
-live-resolve: live-generate
-    # Perform actual secret resolution against the generated runtime config.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- secrets resolve --config {{live_runtime}}
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- run --release --bin bolt-v2 -- ops launch --profile "{{live_profile}}" --config-root config
 
 ci-lint-workflow: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner

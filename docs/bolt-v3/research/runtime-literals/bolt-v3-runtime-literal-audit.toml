@@ -17387,27 +17387,11 @@ reason = "Temporary prestart write-probe filename prefix under the TOML-owned ca
 [[allowed]]
 path = "src/main.rs"
 kind = "string"
-literal = '''"live.local.toml"'''
-context = '''const LIVE_LOCAL_CONFIG_FILE_NAME: &str = "live.local.toml";'''
-classification = "live_runtime_legacy_config_filename_guard"
-reason = "Legacy ignored runtime-config filename rejected on the direct run path so it cannot re-enter as a live source of truth."
-
-[[allowed]]
-path = "src/main.rs"
-kind = "string"
-literal = '''"BOLT_LIVE_PROFILE"'''
-context = '''const BOLT_LIVE_PROFILE_ENV: &str = "BOLT_LIVE_PROFILE";'''
-classification = "live_runtime_profile_env_name"
-reason = "Stable environment variable name used by systemd and direct run verification to select the reviewed profile ID; the value remains operator-supplied, not hardcoded."
-
-[[allowed]]
-path = "src/main.rs"
-kind = "string"
-literal = '''"runtime config `{}` is the legacy live.local.toml path; run \
-             `bolt-v2 ops generate-live-config` from a reviewed profile ID instead"'''
-context = '''"runtime config `{}` is the legacy live.local.toml path; run \'''
-classification = "live_runtime_legacy_config_diagnostic"
-reason = "Fail-closed direct-run diagnostic explaining that legacy live.local.toml is not an accepted runtime config source."
+literal = '''"plain `bolt-v2 run --config {}` is disabled for live arming; use \
+         `bolt-v2 ops launch --profile <profile-id> --config-root <config-root>`"'''
+context = '''"plain `bolt-v2 run --config {}` is disabled for live arming; use \'''
+classification = "ops_launch_run_disabled_diagnostic"
+reason = "Fail-closed direct-run diagnostic redirecting operators from the disabled plain run path to the `ops launch` prearm chain; agnostic operator guidance, not a runtime configuration value."
 
 [[allowed]]
 path = "src/bolt_v3_outcome_group_sources.rs"

@@ -28,7 +28,7 @@ jobs:
         )
       }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -79,6 +79,7 @@ jobs:
           github_action_config.auto_improve: "false"
 
       - name: Ensure GLM deliverable or post split fallback
+        id: glm_fallback
         if: env.GLM_API_KEY != ''
         timeout-minutes: 20
         env:
@@ -91,3 +92,18 @@ jobs:
           python3 scripts/ai_review_deliverables.py glm-fallback
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .pr_agent.toml
+
+      - name: Post GLM fallback infrastructure failure notice
+        if: >-
+          ${{
+            env.GLM_API_KEY != ''
+            && failure()
+            && steps.glm_fallback.outcome == 'failure'
+            && steps.glm_fallback.outputs.failure_notice_posted != 'true'
+          }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python3 scripts/ai_review_deliverables.py notice
+          --provider GLM
+          --message "The GLM fallback step failed or timed out before posting a usable failure notice. Check the action logs for this run."

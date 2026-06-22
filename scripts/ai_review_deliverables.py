@@ -28,7 +28,6 @@ DEFAULT_MAX_COMMENT_CHARS = 60000
 DEFAULT_RESPONSE_CHARS_PER_CHUNK = 8000
 PR_AGENT_MARKERS = (
     "## PR Reviewer Guide",
-    "PR Reviewer Guide",
 )
 
 
@@ -390,6 +389,14 @@ def truncate_text(value: str, limit: int) -> str:
     return value[: max(0, limit - len(suffix))] + suffix
 
 
+def write_github_output(name: str, value: str) -> None:
+    output_path = os.environ.get("GITHUB_OUTPUT", "")
+    if not output_path:
+        return
+    with Path(output_path).open("a", encoding="utf-8") as output:
+        output.write(f"{name}={value}\n")
+
+
 def render_chunk_response_section(
     *,
     chunk: ReviewChunk,
@@ -494,7 +501,7 @@ def render_review_comments(
 
 def sanitize_detail(value: str) -> str:
     sanitized = value
-    for name in ("GLM_API_KEY", "GITHUB_TOKEN"):
+    for name in ("GLM_API_KEY", "KIMI_API_KEY", "GITHUB_TOKEN", "OPENAI__KEY"):
         secret = os.environ.get(name, "")
         if secret:
             sanitized = sanitized.replace(secret, "***")
@@ -565,8 +572,9 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
     except Exception as exc:
         try:
             github.post_issue_comment(render_failure_notice(provider=config.provider, config=config, error=exc))
+            write_github_output("failure_notice_posted", "true")
         finally:
-            raise ReviewFailed(str(exc)) from exc
+            raise ReviewFailed(sanitize_detail(str(exc))) from None
 
 
 def pr_agent_instructions(path: Path) -> str:

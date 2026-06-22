@@ -143,10 +143,14 @@ GLM_DELIVERABLE_SNIPPETS = (
     "id: pr-agent",
     "timeout-minutes: 8",
     "Ensure GLM deliverable or post split fallback",
+    "id: glm_fallback",
     "scripts/ai_review_deliverables.py glm-fallback",
     "GLM_REVIEW_MAX_CHUNK_CHARS",
     "AI_REVIEW_MAX_COMMENT_CHARS",
     "--instructions-file .pr_agent.toml",
+    "Post GLM fallback infrastructure failure notice",
+    "steps.glm_fallback.outputs.failure_notice_posted != 'true'",
+    "fallback step failed or timed out before posting a usable failure notice",
 )
 
 KIMI_DELIVERABLE_SNIPPETS = (
@@ -154,12 +158,16 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "timeout-minutes: 8",
     "Capture Kimi review window",
     "Ensure Kimi deliverable or post split fallback",
+    "id: kimi_fallback",
     ".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback",
     'comment_marker: "<!-- ai-pr-reviewer-kimi -->"',
     'KIMI_DELIVERABLE_MARKER: "<!-- ai-pr-reviewer-kimi -->"',
     "KIMI_REVIEW_MAX_CHUNK_CHARS",
     "AI_REVIEW_MAX_COMMENT_CHARS",
     "--instructions-file .ai-review/standards/kimi-review-standards.md",
+    "Post Kimi fallback infrastructure failure notice",
+    "steps.kimi_fallback.outputs.failure_notice_posted != 'true'",
+    "fallback step failed or timed out before posting a usable failure notice",
 )
 
 KIMI_FORBIDDEN_INPUTS = (
@@ -299,6 +307,18 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("GLM missing fallback", glm_missing_fallback, "GLM workflow missing expected snippet")
 
+    glm_missing_infrastructure_notice = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        glm_workflow=glm.replace("Post GLM fallback infrastructure failure notice", "Post GLM fallback no-op"),
+        kimi_workflow=kimi,
+    )
+    assert_finding(
+        "GLM missing fallback infrastructure notice",
+        glm_missing_infrastructure_notice,
+        "GLM workflow missing expected snippet",
+    )
+
     kimi_head_governance = verify_texts(
         agents_md=agents,
         pr_agent_toml=pr_agent,
@@ -325,6 +345,18 @@ def run_self_tests(repo_root: Path) -> None:
         kimi_workflow=kimi.replace(".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback", "echo missing"),
     )
     assert_finding("Kimi missing fallback", kimi_missing_fallback, "Kimi workflow missing expected snippet")
+
+    kimi_missing_infrastructure_notice = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        glm_workflow=glm,
+        kimi_workflow=kimi.replace("Post Kimi fallback infrastructure failure notice", "Post Kimi fallback no-op"),
+    )
+    assert_finding(
+        "Kimi missing fallback infrastructure notice",
+        kimi_missing_infrastructure_notice,
+        "Kimi workflow missing expected snippet",
+    )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

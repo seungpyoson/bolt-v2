@@ -28,7 +28,7 @@ jobs:
         )
       }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     env:
       KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
       PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -121,6 +121,7 @@ jobs:
           tool_mode: "off"
 
       - name: Ensure Kimi deliverable or post split fallback
+        id: kimi_fallback
         if: env.KIMI_API_KEY != ''
         timeout-minutes: 20
         env:
@@ -134,3 +135,18 @@ jobs:
           python3 .ai-review/base/scripts/ai_review_deliverables.py kimi-fallback
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .ai-review/standards/kimi-review-standards.md
+
+      - name: Post Kimi fallback infrastructure failure notice
+        if: >-
+          ${{
+            env.KIMI_API_KEY != ''
+            && failure()
+            && steps.kimi_fallback.outcome == 'failure'
+            && steps.kimi_fallback.outputs.failure_notice_posted != 'true'
+          }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python3 .ai-review/base/scripts/ai_review_deliverables.py notice
+          --provider Kimi
+          --message "The Kimi fallback step failed or timed out before posting a usable failure notice. Check the action logs for this run."

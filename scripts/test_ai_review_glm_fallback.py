@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
 import sys
+import tempfile
 from dataclasses import dataclass
 
 
@@ -50,8 +52,9 @@ class FakeGitHub:
 
 
 class FakeGLM:
-    def __init__(self, *, fail: bool = False, response: str | None = None) -> None:
+    def __init__(self, *, fail: bool = False, response: str | None = None, failure_message: str | None = None) -> None:
         self.fail = fail
+        self.failure_message = failure_message or "provider rejected request"
         self.response = response or "Findings\n\nNo hard-evidence findings in this chunk."
         self.prompts: list[str] = []
 
@@ -59,7 +62,7 @@ class FakeGLM:
         del system_prompt
         self.prompts.append(user_prompt)
         if self.fail:
-            raise RuntimeError("provider rejected request")
+            raise RuntimeError(self.failure_message)
         return self.response
 
 
@@ -160,6 +163,38 @@ def test_skips_fallback_when_pr_agent_deliverable_exists_after_start() -> None:
     assert github.posted == []
 
 
+def test_plain_pr_agent_phrase_does_not_suppress_fallback() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": "Someone mentioned PR Reviewer Guide in conversation.",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+            }
+        ],
+    )
+    glm = FakeGLM()
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=module.FallbackConfig(
+            repo="seungpyoson/bolt-v2",
+            pr_number=895,
+            started_at="2026-06-22T12:21:00Z",
+            instructions="review hard evidence only",
+            max_chunk_chars=260,
+            run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        ),
+    )
+
+    assert result == "fallback-posted"
+    assert glm.prompts
+    assert len(github.posted) == 1, github.posted
+
+
 def test_posts_failure_notice_when_glm_fallback_fails() -> None:
     module = load_script()
     github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
@@ -187,6 +222,43 @@ def test_posts_failure_notice_when_glm_fallback_fails() -> None:
     assert "GLM review did not produce a deliverable" in github.posted[0]
     assert "provider rejected request" in github.posted[0]
     assert "GLM_API_KEY" not in github.posted[0]
+
+
+def test_sets_failure_notice_output_after_posting_failure_notice() -> None:
+    module = load_script()
+    github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
+    glm = FakeGLM(fail=True)
+
+    with tempfile.NamedTemporaryFile() as output_file:
+        previous_output = os.environ.get("GITHUB_OUTPUT")
+        os.environ["GITHUB_OUTPUT"] = output_file.name
+        try:
+            try:
+                module.run_fallback_review(
+                    github=github,
+                    reviewer=glm,
+                    config=module.FallbackConfig(
+                        repo="seungpyoson/bolt-v2",
+                        pr_number=895,
+                        started_at="2026-06-22T12:21:00Z",
+                        instructions="review hard evidence only",
+                        max_chunk_chars=260,
+                        run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+                    ),
+                )
+            except module.ReviewFailed:
+                pass
+            else:
+                raise AssertionError("expected ReviewFailed")
+        finally:
+            if previous_output is None:
+                os.environ.pop("GITHUB_OUTPUT", None)
+            else:
+                os.environ["GITHUB_OUTPUT"] = previous_output
+        output_file.seek(0)
+        output = output_file.read().decode("utf-8")
+
+    assert "failure_notice_posted=true" in output
 
 
 def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
@@ -277,15 +349,57 @@ def test_posts_failure_notice_when_kimi_fallback_fails() -> None:
     assert "provider rejected request" in github.posted[0]
 
 
+def test_redacts_kimi_api_key_from_failure_notice() -> None:
+    module = load_script()
+    secret = "fake-kimi-secret-for-redaction"
+    github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
+    kimi = FakeProvider(fail=True, failure_message=f"provider echoed {secret}")
+    previous_secret = os.environ.get("KIMI_API_KEY")
+    os.environ["KIMI_API_KEY"] = secret
+
+    try:
+        try:
+            module.run_fallback_review(
+                github=github,
+                reviewer=kimi,
+                config=module.FallbackConfig(
+                    provider="Kimi",
+                    deliverable_markers=("## Kimi PR Review", "Kimi Misospace"),
+                    repo="seungpyoson/bolt-v2",
+                    pr_number=895,
+                    started_at="2026-06-22T12:21:00Z",
+                    instructions="review hard evidence only",
+                    max_chunk_chars=260,
+                    run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+                ),
+            )
+        except module.ReviewFailed:
+            pass
+        else:
+            raise AssertionError("expected ReviewFailed")
+    finally:
+        if previous_secret is None:
+            os.environ.pop("KIMI_API_KEY", None)
+        else:
+            os.environ["KIMI_API_KEY"] = previous_secret
+
+    assert len(github.posted) == 1, github.posted
+    assert secret not in github.posted[0]
+    assert "provider echoed ***" in github.posted[0]
+
+
 def main() -> int:
     test_packs_more_than_two_review_chunks_when_budget_requires_it()
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
     test_truncated_file_fragment_keeps_markdown_fence_closed()
     test_skips_fallback_when_pr_agent_deliverable_exists_after_start()
+    test_plain_pr_agent_phrase_does_not_suppress_fallback()
     test_posts_failure_notice_when_glm_fallback_fails()
+    test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
     test_posts_fallback_review_across_multiple_comments_when_comment_budget_requires_it()
     test_posts_failure_notice_when_kimi_fallback_fails()
+    test_redacts_kimi_api_key_from_failure_notice()
     print("GLM fallback self-tests OK")
     return 0
 

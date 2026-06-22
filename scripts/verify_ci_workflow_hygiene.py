@@ -567,9 +567,9 @@ CARGO_GLOBAL_OPTIONS_WITHOUT_ARGUMENT = {"--frozen", "--locked", "--offline", "-
 
 # verify_text re-parses the same shell strings tens of thousands of times across
 # a run (e.g. `fi`, `exit 1`); these helpers are pure functions of a single str,
-# so memoize. maxsize=None is safe: the distinct-string set is bounded by the
-# workflow corpus and the process is a short-lived CLI/test invocation.
-@functools.lru_cache(maxsize=None)
+# so memoize. An unbounded cache is safe: the distinct-string set is bounded by
+# the workflow corpus and the process is a short-lived CLI/test invocation.
+@functools.cache
 def strip_comment(line: str) -> str:
     quote: str | None = None
     escaped = False
@@ -2207,7 +2207,7 @@ def strip_shell_redirections(tokens: list[str]) -> list[str]:
 # Pure shlex parse of a single command string; memoized because verify_text
 # re-tokenizes the same strings thousands of times. Cache an immutable tuple and
 # copy on return so callers that mutate the list cannot corrupt the cache.
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _command_tokens_cached(command: str) -> tuple[str, ...]:
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION_CHARS)

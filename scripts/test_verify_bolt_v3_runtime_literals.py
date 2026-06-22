@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
-import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -19,20 +19,20 @@ SPEC.loader.exec_module(VERIFIER)
 
 
 def scan_source(source: str) -> list[object]:
-    scratch = VERIFIER.REPO_ROOT / ".tmp_verify_bolt_v3_runtime_literals"
-    if scratch.exists():
-        shutil.rmtree(scratch)
-    scratch.mkdir()
-    path = scratch / "probe.rs"
-    try:
+    original_root = VERIFIER.REPO_ROOT
+    with tempfile.TemporaryDirectory() as scratch:
+        temp_root = Path(scratch)
+        path = temp_root / "probe.rs"
         path.write_text(source, encoding="utf-8")
-        return [
-            literal
-            for literal in VERIFIER.scan_file(path)
-            if not VERIFIER.is_ignored_by_rule(literal)
-        ]
-    finally:
-        shutil.rmtree(scratch)
+        VERIFIER.REPO_ROOT = temp_root
+        try:
+            return [
+                literal
+                for literal in VERIFIER.scan_file(path)
+                if not VERIFIER.is_ignored_by_rule(literal)
+            ]
+        finally:
+            VERIFIER.REPO_ROOT = original_root
 
 
 def assert_emits(source: str, *expected: str) -> None:
@@ -392,16 +392,17 @@ def test_allowlist_exactness() -> None:
 
 
 def test_provider_credential_log_modules_are_provider_scoped() -> None:
-    scratch = VERIFIER.REPO_ROOT / ".tmp_verify_bolt_v3_runtime_literals_audit.toml"
     original_audit_path = VERIFIER.AUDIT_PATH
     invalid_paths = [
         "src/bolt_v3_live_node.rs",
         "src/bolt_v3_providers/mod.rs",
     ]
     try:
-        for invalid_path in invalid_paths:
-            scratch.write_text(
-                f"""
+        with tempfile.TemporaryDirectory() as scratch_dir:
+            scratch = Path(scratch_dir) / "audit.toml"
+            for invalid_path in invalid_paths:
+                scratch.write_text(
+                    f"""
 [[allowed]]
 path = "{invalid_path}"
 kind = "string"
@@ -410,21 +411,20 @@ context = "const MODULE: &str = \\"nautilus_polymarket::common::credential\\";"
 classification = "provider_credential_log_module"
 reason = "invalid probe"
 """.lstrip(),
-                encoding="utf-8",
-            )
-            VERIFIER.AUDIT_PATH = scratch
-            try:
-                VERIFIER.load_allowed()
-            except ValueError as error:
-                if "provider_credential_log_module must be owned" not in str(error):
-                    raise AssertionError(f"unexpected error: {error}") from error
-            else:
-                raise AssertionError(
-                    f"expected provider_credential_log_module scope failure for {invalid_path}"
+                    encoding="utf-8",
                 )
+                VERIFIER.AUDIT_PATH = scratch
+                try:
+                    VERIFIER.load_allowed()
+                except ValueError as error:
+                    if "provider_credential_log_module must be owned" not in str(error):
+                        raise AssertionError(f"unexpected error: {error}") from error
+                else:
+                    raise AssertionError(
+                        f"expected provider_credential_log_module scope failure for {invalid_path}"
+                    )
     finally:
         VERIFIER.AUDIT_PATH = original_audit_path
-        scratch.unlink(missing_ok=True)
 
 
 def main() -> int:

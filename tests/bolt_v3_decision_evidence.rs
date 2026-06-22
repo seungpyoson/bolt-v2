@@ -7,7 +7,9 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+        BOLT_V3_ENTRY_SKIP_GATE_ID, BOLT_V3_EXIT_DECISION_GATE_ID,
+        BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID, BOLT_V3_ORDER_INTENT_GATE_ID,
+        BOLT_V3_REQUOTE_THROTTLE_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
@@ -548,6 +550,82 @@ fn submit_reservation_recovery_skips_basket_admission_records() {
             .metadata_by_client_order_id
             .contains_key("client-order-one")
     );
+}
+
+#[test]
+fn submit_reservation_recovery_skips_below_current_schema_audit_only_records() {
+    for mut legacy_audit_line in [
+        sample_basket_admission_decision_line(),
+        serde_json::json!({
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": BOLT_V3_ENTRY_SKIP_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "entry_skip",
+            "entry_skip": sample_entry_skip_evidence(),
+        }),
+        serde_json::json!({
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": BOLT_V3_EXIT_DECISION_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "exit_decision",
+            "exit_decision": sample_exit_decision_evidence(),
+        }),
+        serde_json::json!({
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": BOLT_V3_LOSS_GOVERNOR_HALT_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "loss_governor_halt",
+            "loss_governor_halt": sample_loss_governor_halt_evidence(),
+        }),
+        serde_json::json!({
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": BOLT_V3_REQUOTE_THROTTLE_GATE_ID,
+            "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+            "kind": "requote_throttle",
+            "requote_throttle": sample_requote_throttle_evidence(),
+        }),
+    ] {
+        let kind = legacy_audit_line["kind"]
+            .as_str()
+            .expect("audit line should carry a kind")
+            .to_string();
+        legacy_audit_line["schema_version"] =
+            serde_json::json!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION - 1);
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let evidence_path = temp.path().join("decision-evidence.jsonl");
+        let metadata = sample_submit_reservation_metadata();
+        let client_order_id = metadata.client_order_id.clone();
+        write_decision_evidence_lines(
+            &evidence_path,
+            &[
+                legacy_audit_line,
+                serde_json::json!({
+                    "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                    "recorded_at_utc_ns": 2_i64,
+                    "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                    "kind": "submit_reservation_metadata",
+                    "metadata": metadata,
+                }),
+            ],
+        );
+
+        let recovery = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+            .unwrap_or_else(|error| {
+                panic!("{kind} below-current audit line must not block recovery: {error:#}")
+            });
+
+        assert!(
+            recovery
+                .metadata_by_client_order_id
+                .contains_key(&client_order_id),
+            "{kind} below-current audit line should allow current reservation metadata recovery"
+        );
+    }
 }
 
 #[test]

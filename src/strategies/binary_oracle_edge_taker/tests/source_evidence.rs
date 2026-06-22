@@ -1244,6 +1244,11 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     );
     assert_eq!(decision.rv_future_dating_delta_ms, Some(future_delta_ms));
     assert_eq!(
+        decision.exit_decision,
+        BoltV3ExitDecisionOutcome::ExitFailClosed
+    );
+    assert_eq!(decision.blocked_reason, None);
+    assert_eq!(
         decision.exit_trigger_source,
         BoltV3ExitTriggerSource::SignalQuote
     );

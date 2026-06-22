@@ -1652,7 +1652,12 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
             BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND
                 | BOLT_V3_ORDER_INTENT_RECORD_KIND
                 | BOLT_V3_ADMISSION_DECISION_RECORD_KIND
+                | BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND
                 | BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND
+                | BOLT_V3_ENTRY_SKIP_RECORD_KIND
+                | BOLT_V3_EXIT_DECISION_RECORD_KIND
+                | BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND
+                | BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND
         )
 }
 

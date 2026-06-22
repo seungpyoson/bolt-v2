@@ -625,15 +625,18 @@ class ReviewRound2HardeningTests(unittest.TestCase):
             self.assertEqual([json.loads(raw) for raw in lines], [{"probe": "first"}])
 
     # F7 -----------------------------------------------------------------
-    def test_redirect_stdout_to_devnull_never_raises_on_open_failure(self) -> None:
-        # redirect_stdout_to_devnull runs as fail-safe cleanup after a BrokenPipe
-        # (record already in the file sink). If os.open(/dev/null) fails (fd
-        # exhaustion / no /dev/null) it MUST swallow the OSError -- an escaping
+    def test_neutralize_stdout_for_shutdown_never_raises_on_open_failure(self) -> None:
+        # neutralize_stdout_for_shutdown runs as fail-safe cleanup after a
+        # BrokenPipe (record already in the file sink). If os.open(/dev/null) fails
+        # (fd exhaustion / no /dev/null) it MUST swallow the OSError -- an escaping
         # error would flip a clean exit to non-zero. Pre-fix: the os.open call was
         # unguarded and the OSError propagated.
         #
-        # sys.stdout must expose a real fileno() so we get past the early return
-        # into the guarded os.open; a temp file's stream provides one.
+        # sys.stdout must expose a real fileno() so we get past the dup2 branch
+        # into the guarded os.open; a temp file's stream provides one. The helper
+        # still replaces sys.stdout with a _NullStream even when the dup2 path
+        # cannot open /dev/null (that fd-less replacement is what survives fd
+        # exhaustion), so we restore sys.stdout in a finally below.
         saved_open = self.sampler.os.open
 
         def boom_on_devnull(path, *args, **kwargs):
@@ -649,7 +652,10 @@ class ReviewRound2HardeningTests(unittest.TestCase):
                 self.sampler.os.open = boom_on_devnull
                 try:
                     # Must return normally, NOT raise.
-                    self.assertIsNone(self.sampler.redirect_stdout_to_devnull())
+                    self.assertIsNone(self.sampler.neutralize_stdout_for_shutdown())
+                    # Even with /dev/null unopenable, sys.stdout was replaced by a
+                    # fd-less _NullStream (the fd-exhaustion-survivable path).
+                    self.assertIsInstance(sys.stdout, self.sampler._NullStream)
                 finally:
                     self.sampler.os.open = saved_open
                     sys.stdout = saved_stdout
@@ -1833,7 +1839,13 @@ class ReviewRound4HardeningTests(unittest.TestCase):
         half_full_metrics = self.sampler.disk_metrics_from_statvfs("/data", half_full, 7)
         self.assertEqual(half_full_metrics["used_pct"], 50.0)
 
-    def test_write_to_file_quarantines_preexisting_trailing_fragment(self) -> None:
+    def test_write_to_file_truncates_preexisting_torn_fragment(self) -> None:
+        # A pre-existing trailing fragment that is NOT valid JSON ('{"partial":')
+        # is genuine torn garbage. The corrected parse-then-decide behaviour drops
+        # ONLY that garbage (ftruncate to the last clean boundary -- here 0) and
+        # then appends the new record, so the file is 100% valid JSONL with no
+        # non-JSON line. (The earlier design left the fragment as its own line,
+        # which violated the never-emit-a-non-JSON-line prime directive.)
         with tempfile.TemporaryDirectory(prefix="host-health-fragment.") as temp:
             out_path = Path(temp) / "health.jsonl"
             out_path.write_text('{"partial":', encoding="utf-8")
@@ -1846,7 +1858,10 @@ class ReviewRound4HardeningTests(unittest.TestCase):
 
             lines = [line for line in out_path.read_text(encoding="utf-8").splitlines() if line]
 
-        self.assertEqual(lines, ['{"partial":', '{"probe":"second"}'])
+        self.assertEqual(lines, ['{"probe":"second"}'])
+        # Every line parses: no non-JSON line survived.
+        for raw in lines:
+            json.loads(raw)
         self.assertEqual(json.loads(lines[-1])["probe"], "second")
 
     def test_write_to_file_peek_failure_separates_preexisting_fragment(self) -> None:
@@ -1988,6 +2003,210 @@ class ReviewRound4HardeningTests(unittest.TestCase):
         self.assertEqual(service["invocation_id"], "abc")
         self.assertIsNotNone(error)
         self.assertIn("NRestarts malformed", error)
+
+    # PR #886 round 5 (#884): shutdown-abort fail-safe, serialization
+    # classification, parse-then-decide torn-fragment handling. ---------------
+
+    # FIX 1 (shutdown abort) ---------------------------------------------------
+    def test_neutralize_stdout_for_shutdown_replaces_sys_stdout_object(self) -> None:
+        # Differential on ANY platform. The pre-fix helper only dup2'd fd 1 and
+        # left the sys.stdout PYTHON object unchanged. That object, if it is an
+        # abandoned-writer's still-locked BufferedWriter, makes CPython's shutdown
+        # flush abort with SIGABRT (-6). The fix REPLACES sys.stdout with a fd-less
+        # _NullStream so the shutdown flush targets a fresh unlocked object.
+        sampler = self.sampler
+
+        class SentinelStdout:
+            # Exposes a real fileno so the dup2 branch runs (and is harmless: we
+            # point a temp-file fd at /dev/null), isolating the object-replacement
+            # assertion. flush() would raise if ever called, proving it is NOT the
+            # object the shutdown flush ends up touching.
+            def __init__(self, fd):
+                self._fd = fd
+
+            def write(self, data):
+                return len(data)
+
+            def flush(self):
+                raise AssertionError("sentinel stdout flush must not be invoked")
+
+            def fileno(self):
+                return self._fd
+
+        saved_stdout = sys.stdout
+        with tempfile.TemporaryDirectory(prefix="host-health-fix1-unit.") as temp:
+            scratch = Path(temp) / "scratch.txt"
+            with open(scratch, "w", encoding="utf-8") as stream:
+                sys.stdout = SentinelStdout(stream.fileno())
+                try:
+                    sampler.neutralize_stdout_for_shutdown()
+                    replaced = sys.stdout
+                finally:
+                    sys.stdout = saved_stdout
+        # The helper replaced the Python object with a fd-less null stream.
+        self.assertIsInstance(replaced, sampler._NullStream)
+        # That replacement is a true no-op sink that owns no descriptor: its
+        # flush() must not raise and fileno() must report it owns none.
+        self.assertIsNone(replaced.flush())
+        self.assertEqual(replaced.write("abc"), 3)
+        with self.assertRaises(OSError):
+            replaced.fileno()
+
+    def test_full_blocking_stdout_pipe_does_not_abort_at_shutdown(self) -> None:
+        # SUBPROCESS INVARIANT. Spawn the sampler one-shot with stdout = a
+        # pre-filled FULL BLOCKING pipe whose reader stays OPEN and is never
+        # drained. The primary stdout emit wedges on the full pipe; the worker is
+        # abandoned holding the BufferedWriter lock. Pre-fix, CPython's shutdown
+        # flush of that same locked object aborts with SIGABRT (-6) and prints
+        # "_enter_buffered_busy" / "Fatal Python error" on Linux. Post-fix the
+        # object is replaced and shutdown is clean.
+        #
+        # NOTE: on macOS the pre-fix may PASS this because dup2/close happens to
+        # unblock the abandoned writer there -- a known platform artifact. The
+        # cross-platform red proof lives in the unit test above; this test's red
+        # proof is on Linux CI. Either way, post-fix it must be green everywhere.
+        read_fd, write_fd = os.pipe()
+        stderr_r = -1
+        stderr_w = -1
+        proc = None
+        stderr_chunks: list[bytes] = []
+
+        def drain_stderr(fd: int) -> None:
+            while True:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                stderr_chunks.append(chunk)
+
+        try:
+            # Fill the pipe to capacity. Set O_NONBLOCK on the WRITE fd ITSELF
+            # (not a dup -- a dup shares the open-file description and would leak
+            # the nonblock flag to the inherited child), write until EAGAIN, then
+            # CLEAR O_NONBLOCK so the child inherits a blocking-but-full pipe.
+            original_flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+            fcntl.fcntl(write_fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+            try:
+                while True:
+                    try:
+                        os.write(write_fd, b"x" * 65536)
+                    except BlockingIOError:
+                        break
+            finally:
+                fcntl.fcntl(write_fd, fcntl.F_SETFL, original_flags)
+
+            stderr_r, stderr_w = os.pipe()
+            drain_thread = threading.Thread(target=drain_stderr, args=(stderr_r,), daemon=True)
+            drain_thread.start()
+
+            # Shrink SINK_TIMEOUT so the wedged emit times out quickly; reader
+            # (read_fd) is held open in THIS process and never drained.
+            harness = (
+                "import sys\n"
+                f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+                "import scripts.host_health_sampler as s\n"
+                "s.SINK_TIMEOUT_SECONDS = 0.3\n"
+                "raise SystemExit(s.main(['--interval', '0', '--service', 'nonexistent.service']))\n"
+            )
+            proc = subprocess.Popen(
+                [sys.executable, "-c", harness],
+                stdout=write_fd,
+                stderr=stderr_w,
+            )
+            os.close(write_fd)
+            write_fd = -1
+            os.close(stderr_w)
+            stderr_w = -1
+
+            # Bounded wait: a couple of SINK deadlines plus generous slack.
+            deadline = time.monotonic() + 12.0
+            returncode = None
+            while time.monotonic() < deadline:
+                returncode = proc.poll()
+                if returncode is not None:
+                    break
+                time.sleep(0.05)
+            if returncode is None:
+                proc.kill()
+                proc.wait(timeout=5.0)
+                self.fail("sampler hung at shutdown on a full blocking stdout pipe")
+
+            drain_thread.join(timeout=2.0)
+            stderr_text = b"".join(stderr_chunks).decode("utf-8", "replace")
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5.0)
+            for fd in (read_fd, write_fd, stderr_r, stderr_w):
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+        # Must NOT be the SIGABRT-from-held-buffer-lock exit, and must not have
+        # printed the CPython fatal-flush diagnostics.
+        self.assertNotEqual(returncode, -6, f"sampler aborted (-6); stderr:\n{stderr_text}")
+        self.assertNotIn("_enter_buffered_busy", stderr_text)
+        self.assertNotIn("Fatal Python error", stderr_text)
+
+    # FIX 2 (serialization classification) ------------------------------------
+    def test_recursion_error_during_serialization_is_record_unemittable(self) -> None:
+        # A deeply-nested record makes sanitize_non_finite / json.dumps raise
+        # RecursionError, which is NOT a (TypeError, ValueError) subclass. Pre-fix
+        # the narrow guard let it escape to main()'s generic handler instead of the
+        # designed RecordUnemittable. The fix broadens the guard to Exception.
+        record: dict[str, object] = {"leaf": 1}
+        for _ in range(20000):
+            record = {"nested": record}
+        with self.assertRaises(self.sampler.RecordUnemittable):
+            self.sampler.write_jsonl_line(record, None)
+
+    # FIX 3 (parse-then-decide torn fragment) ---------------------------------
+    def test_torn_fragment_truncated_no_non_json_line_remains(self) -> None:
+        # A pre-existing trailing fragment that is NOT valid JSON is genuine torn
+        # garbage. After writing a new record EVERY line must parse (no non-JSON
+        # line survives) and the new record must be present. Pre-fix the fragment
+        # was kept as its own standalone line -> a non-JSON line in the output.
+        with tempfile.TemporaryDirectory(prefix="host-health-fix3-torn.") as temp:
+            out_path = Path(temp) / "health.jsonl"
+            out_path.write_bytes(b'{"partial":')  # torn, no newline, invalid JSON
+
+            self.sampler.write_to_file(
+                '{"probe":"recovered"}\n',
+                str(out_path),
+                self.sampler.FLOCK_TIMEOUT_SECONDS,
+            )
+
+            on_disk = out_path.read_text(encoding="utf-8")
+        lines = [line for line in on_disk.splitlines() if line]
+        # No non-JSON line: every line parses.
+        parsed = [json.loads(raw) for raw in lines]
+        self.assertIn({"probe": "recovered"}, parsed)
+        self.assertNotIn('{"partial":', lines)
+
+    def test_complete_unterminated_record_is_preserved_not_truncated(self) -> None:
+        # GUARD AGAINST OVER-TRUNCATION. A trailing fragment that IS valid JSON is
+        # a complete-but-unterminated record (e.g. the process died right after
+        # writing it, before the newline). It must be PRESERVED -- a separator is
+        # written and BOTH records remain. An implementation that blindly truncates
+        # any unterminated tail would destroy this good record and fail here.
+        with tempfile.TemporaryDirectory(prefix="host-health-fix3-valid.") as temp:
+            out_path = Path(temp) / "health.jsonl"
+            out_path.write_bytes(b'{"complete":1}')  # valid JSON, no trailing newline
+
+            self.sampler.write_to_file(
+                '{"probe":"appended"}\n',
+                str(out_path),
+                self.sampler.FLOCK_TIMEOUT_SECONDS,
+            )
+
+            on_disk = out_path.read_text(encoding="utf-8")
+        lines = [line for line in on_disk.splitlines() if line]
+        parsed = [json.loads(raw) for raw in lines]  # raises on any corruption
+        self.assertEqual(parsed, [{"complete": 1}, {"probe": "appended"}])
 
     def test_extract_catalog_directory_allows_trailing_comment(self) -> None:
         self.assertEqual(

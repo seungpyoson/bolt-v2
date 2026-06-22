@@ -135,6 +135,14 @@ FLOCK_RETRY_SECONDS = 0.05
 # acquire fires first with its clean TimeoutError; this is the last-resort guard
 # for a stall in the syscalls the flock loop does not cover.
 SINK_TIMEOUT_SECONDS = 8.0
+# Cap on the trailing-fragment inspection in write_to_file: we scan backward from
+# EOF for the last newline in bounded chunks, reading at most this many bytes. A
+# host-health record is well under this, so a legitimate complete-but-unterminated
+# record is always fully recoverable; a fragment longer than the cap with no
+# newline is treated as undeterminable (separator written, never truncated) so a
+# pathological file can never make the scan unbounded.
+FRAGMENT_SCAN_CAP_BYTES = 1024 * 1024
+FRAGMENT_SCAN_CHUNK_BYTES = 65536
 KNOWN_NON_OOM_RESULTS = {
     "success",
     "exit-code",
@@ -857,6 +865,96 @@ def acquire_flock_bounded(fd: int, timeout: float, retry: float) -> bool:
             time.sleep(retry)
 
 
+def classify_trailing_fragment(path: Path, file_size: int) -> tuple[str, int]:
+    """Classify the bytes after the last newline in ``path`` (held under flock).
+
+    Returns ``(decision, last_newline_offset)`` where ``decision`` is one of:
+
+    - ``"none"``: the file already ends in a newline (last byte is ``\\n``), so
+      there is no trailing fragment. Caller appends directly.
+    - ``"valid"``: a trailing fragment exists and parses as JSON — a
+      complete-but-UNTERMINATED record. Caller writes a separator ``\\n`` to
+      preserve it, then appends (current behaviour). Destroying it would lose a
+      good record.
+    - ``"torn"``: a trailing fragment exists and does NOT parse as JSON — genuine
+      torn/garbage bytes. Caller ``ftruncate``s to ``last_newline_offset`` (or 0
+      when there is no earlier newline) to drop ONLY the garbage, then appends
+      with no separator. ``last_newline_offset`` is the offset just AFTER the
+      last ``\\n`` (i.e. where the fragment begins), or 0 if none was found.
+    - ``"undeterminable"``: the terminator could not be inspected (read error) or
+      no newline was found within ``FRAGMENT_SCAN_CAP_BYTES``. Caller keeps the
+      conservative current behaviour: write a separator, never truncate. A
+      redundant blank line is parse-safe; truncating on a guess could lose data.
+
+    All reads are bounded (``FRAGMENT_SCAN_CAP_BYTES``) and use a fresh O_RDONLY |
+    O_NONBLOCK fd, so this never blocks. ``file_size`` is the caller's
+    flock-protected size snapshot; no other writer can append concurrently.
+    """
+    if file_size <= 0:
+        return "none", 0
+    try:
+        peek_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return "undeterminable", 0
+    try:
+        try:
+            last_byte = os.pread(peek_fd, 1, file_size - 1)
+        except OSError:
+            return "undeterminable", 0
+        if last_byte == b"\n":
+            return "none", file_size
+        # Scan backward from EOF in bounded chunks for the last newline, capped so
+        # a pathological newline-free file can never make this read the whole disk.
+        scan_limit = min(file_size, FRAGMENT_SCAN_CAP_BYTES)
+        newline_offset: int | None = None
+        scanned = 0
+        while scanned < scan_limit:
+            chunk_size = min(FRAGMENT_SCAN_CHUNK_BYTES, scan_limit - scanned)
+            read_at = file_size - scanned - chunk_size
+            try:
+                chunk = os.pread(peek_fd, chunk_size, read_at)
+            except OSError:
+                return "undeterminable", 0
+            if not chunk:
+                break
+            idx = chunk.rfind(b"\n")
+            if idx != -1:
+                # Offset just AFTER the newline = where the trailing fragment starts.
+                newline_offset = read_at + idx + 1
+                break
+            scanned += len(chunk)
+        if newline_offset is None:
+            if scan_limit < file_size:
+                # A newline may exist before the cap; we cannot prove the fragment
+                # is torn, so stay conservative.
+                return "undeterminable", 0
+            # Whole file scanned, no newline at all: the entire file is the
+            # fragment. Its start offset is 0.
+            fragment_start = 0
+        else:
+            fragment_start = newline_offset
+        fragment_len = file_size - fragment_start
+        try:
+            fragment = os.pread(peek_fd, fragment_len, fragment_start)
+        except OSError:
+            return "undeterminable", 0
+        try:
+            json.loads(fragment.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            # Genuine torn fragment (malformed JSON, non-UTF-8 bytes, or a
+            # pathologically nested tail json.loads cannot accept): safe to drop
+            # just these bytes. A RecursionError here means the fragment is not a
+            # record we could ever have written, so it is torn by definition.
+            return "torn", fragment_start
+        # Parses as JSON: a complete-but-unterminated record. Preserve it.
+        return "valid", fragment_start
+    finally:
+        try:
+            os.close(peek_fd)
+        except OSError:
+            pass
+
+
 def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
     """Append one record line to ``out_path`` under a bounded exclusive lock.
 
@@ -866,9 +964,14 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
     Process guarantee: on any write failure the original ``OSError`` propagates
     so the caller falls back to stdout and the record reaches a sink.
 
-    Data guarantee: a pre-existing trailing fragment is quarantined by appending
-    a newline before this record, so the new JSON line is not glued to old
-    non-JSON bytes. After a partial write, the file is rolled back
+    Data guarantee: a pre-existing trailing fragment is parsed first
+    (``classify_trailing_fragment``) and handled by what it actually is — a
+    complete-but-unterminated VALID record is preserved (separator appended, never
+    destroyed), whereas a genuine torn/garbage fragment is ``ftruncate``d away so
+    it cannot become a non-JSON line. When the fragment is undeterminable (read
+    error or no newline within the scan cap) the conservative separator is written
+    and nothing is truncated. After this write the file is therefore 100% valid
+    JSONL with no good record lost. After a partial write, the file is rolled back
     (``ftruncate``) to the last clean record boundary so a fragment is normally
     not left behind. If the rollback itself fails, the fragment may survive on
     disk; the viewer tolerates a corrupt trailing line.
@@ -900,22 +1003,27 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
         payload = record_line.encode("utf-8")
         clean_boundary = os.fstat(fd).st_size
         if clean_boundary > 0:
-            try:
-                peek_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-                try:
-                    last_byte = os.pread(peek_fd, 1, clean_boundary - 1)
-                finally:
-                    os.close(peek_fd)
-                needs_separator = bool(last_byte) and last_byte != b"\n"
-            except OSError:
-                # If we cannot inspect the terminator, assume the existing file
-                # may hold a torn fragment. A redundant blank line is parse-safe.
-                needs_separator = True
-            if needs_separator:
-                # Prior torn fragment: terminate it (O_APPEND => atomic append at
-                # EOF) so this record is NOT glued onto a non-JSON fragment. The
-                # fragment becomes its own line, which the viewer reports as a
-                # parse error.
+            # Parse-then-decide on the trailing fragment (under the held flock):
+            #  - "none": file ends in \n, append directly.
+            #  - "valid": complete-but-unterminated record -> write a separator to
+            #    preserve it (blindly truncating would DESTROY a good record).
+            #  - "torn": genuine garbage bytes -> ftruncate them away (down to the
+            #    last clean record boundary) so this record is not glued onto a
+            #    non-JSON fragment AND no non-JSON line is left in the file.
+            #  - "undeterminable": read error / no newline within the cap ->
+            #    conservative separator, never truncate.
+            decision, fragment_start = classify_trailing_fragment(path, clean_boundary)
+            if decision == "torn":
+                # Drop ONLY the garbage fragment. O_APPEND ignores the file offset,
+                # so a plain ftruncate at the boundary is sufficient; the write-all
+                # loop below then appends at the new EOF with NO separator.
+                os.ftruncate(fd, fragment_start)
+                clean_boundary = os.fstat(fd).st_size
+            elif decision in ("valid", "undeterminable"):
+                # Terminate the prior line (O_APPEND => atomic append at EOF) so
+                # this record is not glued onto it. A "valid" record is preserved
+                # as its own line; an "undeterminable" tail gets a parse-safe blank
+                # separator rather than a destructive guess.
                 os.write(fd, b"\n")
                 clean_boundary = os.fstat(fd).st_size
         offset = 0
@@ -1004,7 +1112,14 @@ def write_jsonl_line(
             json.dumps(sanitize_non_finite(record), separators=(",", ":"), allow_nan=False)
             + "\n"
         )
-    except (TypeError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 - any serialisation failure is unemittable
+        # Catch Exception, not just (TypeError, ValueError): a deeply-nested record
+        # raises RecursionError and an OOM host raises MemoryError during
+        # sanitize_non_finite / json.dumps, and NEITHER is a TypeError/ValueError
+        # subclass. Letting them escape would route a serialisation failure to
+        # main()'s generic handler instead of the designed RecordUnemittable path.
+        # BaseException (KeyboardInterrupt/SystemExit/GeneratorExit) still
+        # propagates so a signal during serialisation is not swallowed.
         raise RecordUnemittable(f"record not serializable: {exc}") from exc
     if out_path is None:
         # PRIMARY streaming stdout. A BrokenPipeError here means a streaming
@@ -1188,46 +1303,106 @@ def main(argv: list[str]) -> int:
         # Suppress interpreter-shutdown flush noise without changing the outcome:
         # any flush failure mode (gone pipe, EIO, a test double) must not escape
         # because a record may already have reached the --out sink. An exception
-        # here would wrongly demote a clean exit to non-zero. Best-effort redirect
-        # fd 1 to /dev/null so the interpreter's final flush cannot re-raise.
+        # here would wrongly demote a clean exit to non-zero. Best-effort
+        # neutralize stdout so the interpreter's final flush cannot re-raise.
         #
         # The flush is deadline-bounded for the same reason the emit sink is: an
         # abandoned stdout writer (one that timed out on a full pipe) may still
         # hold the BufferedWriter lock, so an unbounded flush here could wedge
         # shutdown. run_with_deadline abandons a blocked flush and we fall through
-        # to the fd-level /dev/null redirect, which never blocks. (never-hang.)
+        # to neutralize_stdout_for_shutdown, which both redirects fd 1 to
+        # /dev/null AND replaces the still-locked sys.stdout object with a fd-less
+        # null stream so CPython's shutdown flush targets a fresh unlocked object
+        # instead of aborting with SIGABRT (-6). Never blocks. (never-hang.)
         try:
             run_with_deadline(sys.stdout.flush, SINK_TIMEOUT_SECONDS)
         except Exception:
-            redirect_stdout_to_devnull()
+            neutralize_stdout_for_shutdown()
     return 0
 
 
-def redirect_stdout_to_devnull() -> None:
-    """Point fd 1 at /dev/null so the interpreter's final flush cannot error.
+class _NullStream:
+    """A file-like sink that owns NO OS file descriptor and never blocks.
 
-    Best-effort and total: every OS call is guarded so this fail-safe cleanup can
-    never itself raise (it runs after a BrokenPipe when the record already
-    reached the file sink — an escaping OSError would flip a clean exit to
-    non-zero). A stdout that exposes no real OS file descriptor is left as-is.
+    The interpreter's shutdown ``flush_std_files()`` flushes whatever object
+    ``sys.stdout`` currently points at. If that object is a ``BufferedWriter``
+    whose lock is still held by an abandoned writer thread (one that timed out
+    blocked on a full stdout pipe), CPython's ``_enter_buffered_busy`` relaxes
+    for ~1s and then raises ``Fatal Python error: ... could not acquire lock`` →
+    SIGABRT (exit -6). Replacing ``sys.stdout`` with an instance of this class
+    points that final flush at a fresh, unlocked, fd-less object, so it is a
+    no-op and shutdown completes cleanly. Owning no descriptor is what lets this
+    survive even fd exhaustion (when ``os.open(os.devnull)`` itself fails).
+    """
+
+    closed = False
+
+    def write(self, data: Any) -> int:
+        try:
+            return len(data)
+        except TypeError:
+            return 0
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def fileno(self) -> int:
+        # Own no descriptor: callers probing for one must learn there is none
+        # rather than receive a stale/foreign fd.
+        raise OSError("_NullStream owns no file descriptor")
+
+
+def neutralize_stdout_for_shutdown() -> None:
+    """Make the interpreter's final stdout flush a guaranteed no-op.
+
+    Two belt-and-suspenders steps, in order:
+
+    1. ``os.dup2(devnull, fd)`` redirects fd 1 to /dev/null at the OS level (uses
+       the ORIGINAL ``sys.stdout.fileno()``, so it must run first).
+    2. Replace the ``sys.stdout`` Python object with a fd-less ``_NullStream``.
+       Step 1 alone is not enough: at interpreter shutdown CPython flushes the
+       SAME ``sys.stdout`` BufferedWriter object, and if an abandoned writer
+       thread still holds that buffer's lock (the full-pipe wedge), the flush
+       raises ``Fatal Python error: ... could not acquire lock`` → SIGABRT
+       (-6) regardless of where fd 1 now points. Pointing ``sys.stdout`` at a
+       fresh unlocked object removes the lock entirely.
+
+    Best-effort and total: every OS call AND the reassignment are guarded so
+    this fail-safe cleanup can never itself raise (it runs on the clean-exit
+    path after the record already reached the file sink — an escaping error
+    would flip a clean exit to non-zero). A stdout that exposes no real OS file
+    descriptor skips the dup2 but is STILL replaced, because the shutdown-flush
+    hazard is about the Python object, not the fd.
     """
     try:
         stdout_fd = sys.stdout.fileno()
     except (AttributeError, OSError, ValueError):
-        return
-    try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-    except OSError:
-        return
-    try:
-        os.dup2(devnull, stdout_fd)
-    except OSError:
-        pass
-    finally:
+        stdout_fd = None
+    if stdout_fd is not None:
         try:
-            os.close(devnull)
+            devnull = os.open(os.devnull, os.O_WRONLY)
         except OSError:
-            pass
+            devnull = None
+        if devnull is not None:
+            try:
+                os.dup2(devnull, stdout_fd)
+            except OSError:
+                pass
+            finally:
+                try:
+                    os.close(devnull)
+                except OSError:
+                    pass
+    # Replace the Python object regardless of whether dup2 ran or even succeeded:
+    # this is the step that defuses the held-lock shutdown abort and the fd-less
+    # variant survives fd exhaustion. Guarded so it can never itself raise.
+    try:
+        sys.stdout = _NullStream()
+    except Exception:  # noqa: BLE001 - clean-exit fail-safe must never raise
+        pass
 
 
 if __name__ == "__main__":

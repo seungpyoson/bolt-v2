@@ -112,6 +112,8 @@ draft_pr_reopened = "defer"
 draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
+ready_pr_edited_no_base = "noop"
+ready_pr_reopened = "noop"
 ready_for_review = "full"
 workflow_dispatch = "full"
 main_push = "full"
@@ -141,6 +143,8 @@ merge_group = "full"
 main_push = "full"
 workflow_dispatch = "full"
 ready_for_review = "full"
+ready_pr_reopened = "noop"
+ready_pr_edited_no_base = "noop"
 ready_pr = "full"
 converted_to_draft = "defer"
 draft_pr_edited = "defer"
@@ -928,20 +932,23 @@ def assert_ci_policy_outputs_matrix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
         cases = [
-            ("push", "", "false", "refs/heads/main", "full"),
-            ("push", "", "false", "refs/tags/v1.2.3", "tag_reuse"),
-            ("pull_request", "opened", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "synchronize", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "reopened", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "edited", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "converted_to_draft", "true", "refs/pull/1/merge", "defer"),
-            ("pull_request", "opened", "false", "refs/pull/1/merge", "full"),
-            ("pull_request", "ready_for_review", "true", "refs/pull/1/merge", "full"),
-            ("workflow_dispatch", "", "true", "refs/heads/codex/branch", "full"),
-            ("merge_group", "checks_requested", "false", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
-            ("unknown_event", "", "true", "refs/heads/codex/branch", "full"),
+            ("push", "", "false", "false", "refs/heads/main", "full", "main_push"),
+            ("push", "", "false", "false", "refs/tags/v1.2.3", "tag_reuse", "tag"),
+            ("pull_request", "opened", "true", "false", "refs/pull/1/merge", "defer", "draft_pr_opened"),
+            ("pull_request", "synchronize", "true", "false", "refs/pull/1/merge", "defer", "draft_pr_synchronize"),
+            ("pull_request", "reopened", "true", "false", "refs/pull/1/merge", "defer", "draft_pr_reopened"),
+            ("pull_request", "edited", "true", "false", "refs/pull/1/merge", "defer", "draft_pr_edited"),
+            ("pull_request", "converted_to_draft", "true", "false", "refs/pull/1/merge", "defer", "converted_to_draft"),
+            ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "full", "ready_pr"),
+            ("pull_request", "edited", "false", "false", "refs/pull/1/merge", "noop", "ready_pr_edited_no_base"),
+            ("pull_request", "edited", "false", "true", "refs/pull/1/merge", "full", "ready_pr"),
+            ("pull_request", "reopened", "false", "false", "refs/pull/1/merge", "noop", "ready_pr_reopened"),
+            ("pull_request", "ready_for_review", "true", "false", "refs/pull/1/merge", "full", "ready_for_review"),
+            ("workflow_dispatch", "", "true", "false", "refs/heads/codex/branch", "full", "workflow_dispatch"),
+            ("merge_group", "checks_requested", "false", "false", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full", "merge_group"),
+            ("unknown_event", "", "true", "false", "refs/heads/codex/branch", "full", "unknown_event"),
         ]
-        for event_name, action, draft, ref, expected in cases:
+        for event_name, action, draft, base_changed, ref, expected, reason in cases:
             code, stdout, stderr = run_cli(
                 [
                     "ci-policy",
@@ -953,6 +960,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                     action,
                     "--pull-request-draft",
                     draft,
+                    "--pull-request-base-changed",
+                    base_changed,
                     "--ref",
                     ref,
                 ]
@@ -966,8 +975,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(f"full_ci_required must derive from {expected}: {output}")
             if output.get("full_ci_deferred") != str(expected == "defer").lower():
                 raise AssertionError(f"full_ci_deferred must derive from {expected}: {output}")
-            if not output.get("reason"):
-                raise AssertionError(f"ci-policy must include reason: {output}")
+            if output.get("reason") != reason:
+                raise AssertionError(f"ci-policy must expose reason {reason}: {output}")
             if output.get("ignore_emit_failure") != "false":
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
 
@@ -987,6 +996,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "synchronize",
                 "--pull-request-draft",
                 "true",
+                "--pull-request-base-changed",
+                "false",
                 "--ref",
                 "refs/pull/1/merge",
             ]

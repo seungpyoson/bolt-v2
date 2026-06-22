@@ -178,6 +178,27 @@ def collect_path_dependencies(value: object) -> Iterable[str]:
             yield from collect_path_dependencies(nested)
 
 
+def require_separate_workspace(repo_root: pathlib.Path, safe_exclude: SafeExclude) -> None:
+    workspace_root = repo_root / safe_exclude.path
+    workspace_toml = workspace_root / "Cargo.toml"
+    if not workspace_root.is_dir() or not workspace_toml.is_file():
+        raise FingerprintError(
+            "safe-listed path must be a separate Cargo workspace: "
+            f"{safe_exclude.path}"
+        )
+    try:
+        cargo = tomllib.loads(workspace_toml.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise FingerprintError(
+            f"safe-listed workspace Cargo.toml invalid TOML: {safe_exclude.path}"
+        ) from exc
+    if not isinstance(cargo.get("workspace"), dict):
+        raise FingerprintError(
+            "safe-listed path must be a separate Cargo workspace: "
+            f"{safe_exclude.path}"
+        )
+
+
 def validate_safe_excludes(repo_root: pathlib.Path, config: FingerprintConfig) -> None:
     cargo_toml = repo_root / "Cargo.toml"
     if not cargo_toml.exists():
@@ -202,6 +223,7 @@ def validate_safe_excludes(repo_root: pathlib.Path, config: FingerprintConfig) -
     }
 
     for safe_exclude in config.safe_excludes:
+        require_separate_workspace(repo_root, safe_exclude)
         if any(paths_overlap(safe_exclude.path, member) for member in normalized_members):
             raise FingerprintError(
                 f"safe-listed path is a root workspace member: {safe_exclude.path}"

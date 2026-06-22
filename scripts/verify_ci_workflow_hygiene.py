@@ -455,32 +455,6 @@ TEST_ARCHIVE_PARTITION_FAILURE_WRAPPER = (
     "              status=1\n"
     "            fi"
 )
-TEST_ARCHIVE_KEY_INPUTS = (
-    "'Cargo.lock'",
-    "'Cargo.toml'",
-    "'rust-toolchain.toml'",
-    "'.cargo/config.toml'",
-    "'.config/nextest.toml'",
-    "'.config/**'",
-    "'ci/rust-verification.toml'",
-    "'scripts/rust_verification.py'",
-    "'scripts/command_understanding.py'",
-    "'justfile'",
-    "'build.rs'",
-    "'src/**'",
-    "'tests/**'",
-    "'benches/**'",
-    "'examples/**'",
-    "'crates/**'",
-    "'.github/**'",
-    "'scripts/**'",
-    "'specs/**/*.md'",
-    "'specs/023-nt-order-intent-layer/**'",
-    "'specs/023-nt-research-analytics-platform/reference/**'",
-    "'config/**'",
-    "'contracts/**'",
-    "'docs/bolt-v3/**'",
-)
 TEST_ARCHIVE_CACHE_KEY = (
     "${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}"
     "v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
@@ -1670,45 +1644,6 @@ def block_key_value_has_prefix(block: list[str], prefix: str) -> bool:
         if name == "key" and prefix in value:
             return True
     return False
-
-
-def block_key_value_contains_all(block: list[str], fragments: tuple[str, ...]) -> bool:
-    value = block_input_value(block, "key")
-    if value is None:
-        return False
-    return all(fragment in value for fragment in fragments)
-
-
-def normalized_hash_files_args(text: str) -> str | None:
-    marker = "hashFiles("
-    start = text.find(marker)
-    if start == -1:
-        return None
-    args_start = start + len(marker)
-    args_end = text.find(")", args_start)
-    if args_end == -1:
-        return None
-    args = text[args_start:args_end]
-    return ",".join(part.strip() for part in args.split(",") if part.strip())
-
-
-def nextest_archive_key_identity(text: str) -> str | None:
-    key_start = text.find("nextest-archive-v")
-    if key_start == -1:
-        key_start = text.find("nextest-archive-fingerprint-v")
-    if key_start == -1:
-        return None
-    marker = "hashFiles("
-    hash_start = text.find(marker, key_start)
-    if hash_start == -1:
-        return None
-    prefix = text[key_start:hash_start]
-    if prefix.startswith("nextest-archive-fingerprint-"):
-        prefix = "nextest-archive-" + prefix[len("nextest-archive-fingerprint-") :]
-    args = normalized_hash_files_args(text[hash_start:])
-    if args is None:
-        return None
-    return f"{prefix}{marker}{args})"
 
 
 def nextest_fingerprint_errors(fingerprint_lines: list[str], archive_lines: list[str]) -> list[str]:

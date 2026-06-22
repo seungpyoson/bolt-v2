@@ -41,6 +41,23 @@ FORBIDDEN_SAFE_EXCLUDES = (
     "scripts/nextest_fingerprint.py",
 )
 
+ROOT_INPUT_SAFE_EXCLUDES = (
+    "src/",
+    "tests/",
+    "benches/",
+    "examples/",
+    "build.rs",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    ".cargo/",
+    ".config/",
+    ".github/",
+    "justfile",
+    "ci/rust-verification.toml",
+    "scripts/rust_verification.py",
+)
+
 
 def run(
     args: list[str],
@@ -100,13 +117,24 @@ edition = "2021"
 """,
     )
     write(repo / "Cargo.lock", "# lock\n")
+    write(repo / "rust-toolchain.toml", "[toolchain]\nchannel = \"stable\"\n")
+    write(repo / ".cargo" / "config.toml", "[build]\n")
+    write(repo / ".config" / "nextest.toml", "[profile.default]\n")
+    write(repo / ".github" / "workflows" / "ci.yml", "name: ci\n")
+    write(repo / "justfile", "default:\n    @true\n")
     write(repo / "gated_source_roots.manifest", "src\n")
     write(repo / "deploy" / "install.sh", "#!/usr/bin/env bash\necho install\n")
+    write(repo / "build.rs", "fn main() {}\n")
     write(repo / "src" / "lib.rs", "pub fn root() {}\n")
+    write(repo / "tests" / "root.rs", "#[test]\nfn root_test() {}\n")
+    write(repo / "benches" / "root.rs", "fn main() {}\n")
+    write(repo / "examples" / "root.rs", "fn main() {}\n")
     write(repo / "scripts" / "nextest_fingerprint.py", "# tracked producer placeholder\n")
+    write(repo / "scripts" / "rust_verification.py", "# tracked verifier placeholder\n")
     write(repo / "config" / "root.toml", "[root]\n")
     write(repo / "contracts" / "root.md", "# contract\n")
     write(repo / "docs" / "bolt-v3" / "index.md", "# bolt-v3\n")
+    write(repo / "docs" / "extra" / "index.md", "# extra docs\n")
     write(repo / "specs" / "root.md", "# spec\n")
     write(repo / "crates" / "backtesting-vertical-slice" / "src" / "lib.rs", "pub fn bvs() {}\n")
     write(
@@ -165,6 +193,8 @@ def parse_github_outputs(text: str) -> dict[str, str]:
 
 
 def run_fingerprint_expect_failure(repo: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["GITHUB_OUTPUT"] = str(repo.parent / "github-output.txt")
     return run(
         [
             "python3",
@@ -183,6 +213,7 @@ def run_fingerprint_expect_failure(repo: pathlib.Path) -> subprocess.CompletedPr
             str(repo.parent / "cache-key.txt"),
         ],
         cwd=repo,
+        env=env,
         check=False,
     )
 
@@ -290,6 +321,59 @@ def assert_forbidden_safe_list_entries_fail_closed() -> None:
                 raise AssertionError(result.stderr)
 
 
+def assert_root_inputs_cannot_be_safe_listed() -> None:
+    for entry in ROOT_INPUT_SAFE_EXCLUDES:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = init_repo(pathlib.Path(tmp))
+            write(
+                repo / "ci" / "nextest-fingerprint.toml",
+                FINGERPRINT_CONFIG_TEXT.replace(
+                    'path = "crates/backtesting-vertical-slice/"',
+                    f'path = "{entry}"',
+                ),
+            )
+            commit_all(repo, f"reject root input {entry}")
+            result = run_fingerprint_expect_failure(repo)
+            if result.returncode == 0:
+                raise AssertionError(f"safe-listing root input {entry} must fail closed")
+            if "safe-listed path must be a separate Cargo workspace" not in result.stderr:
+                raise AssertionError(result.stderr)
+
+
+def assert_safe_list_rejects_non_workspace_paths() -> None:
+    cases = {
+        "non-workspace directory": "docs/extra/",
+        "package without workspace": "crates/local-helper/",
+    }
+    for label, entry in cases.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = init_repo(pathlib.Path(tmp))
+            if entry == "crates/local-helper/":
+                write(
+                    repo / "crates" / "local-helper" / "Cargo.toml",
+                    """
+[package]
+name = "local-helper"
+version = "0.1.0"
+edition = "2021"
+""",
+                )
+                write(repo / "crates" / "local-helper" / "src" / "lib.rs", "pub fn helper() {}\n")
+            write(
+                repo / "ci" / "nextest-fingerprint.toml",
+                FINGERPRINT_CONFIG_TEXT.replace(
+                    'path = "crates/backtesting-vertical-slice/"',
+                    f'path = "{entry}"',
+                ),
+            )
+            commit_all(repo, f"reject {label}")
+            result = run_fingerprint_expect_failure(repo)
+            if result.returncode == 0:
+                raise AssertionError(f"safe-listing {label} must fail closed")
+            if "safe-listed path must be a separate Cargo workspace" not in result.stderr:
+                raise AssertionError(result.stderr)
+
+
 def assert_safe_list_rejects_root_workspace_membership() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         repo = init_repo(
@@ -358,11 +442,17 @@ def assert_invalid_shards_fail_closed() -> None:
 
 def assert_missing_or_malformed_config_fails_closed() -> None:
     cases = {
-        "missing schema": FINGERPRINT_CONFIG_TEXT.replace("schema = 2\n", ""),
-        "missing profile": FINGERPRINT_CONFIG_TEXT.replace('profile = "test"\n', ""),
-        "malformed toml": "[nextest_archive\n",
+        "missing schema": (
+            FINGERPRINT_CONFIG_TEXT.replace("schema = 2\n", ""),
+            "nextest_archive.schema must be a positive integer",
+        ),
+        "missing profile": (
+            FINGERPRINT_CONFIG_TEXT.replace('profile = "test"\n', ""),
+            "nextest_archive.profile must be a non-empty string",
+        ),
+        "malformed toml": ("[nextest_archive\n", "nextest fingerprint config invalid TOML"),
     }
-    for label, text in cases.items():
+    for label, (text, expected_error) in cases.items():
         with tempfile.TemporaryDirectory() as tmp:
             repo = init_repo(pathlib.Path(tmp))
             write(repo / "ci" / "nextest-fingerprint.toml", text)
@@ -370,6 +460,8 @@ def assert_missing_or_malformed_config_fails_closed() -> None:
             result = run_fingerprint_expect_failure(repo)
             if result.returncode == 0:
                 raise AssertionError(f"{label} must fail closed")
+            if expected_error not in result.stderr:
+                raise AssertionError(result.stderr)
 
     with tempfile.TemporaryDirectory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
@@ -388,6 +480,8 @@ def main() -> int:
     assert_self_governance_changes_affect_digest()
     assert_safe_list_excludes_only_exact_backtester_prefix()
     assert_forbidden_safe_list_entries_fail_closed()
+    assert_root_inputs_cannot_be_safe_listed()
+    assert_safe_list_rejects_non_workspace_paths()
     assert_safe_list_rejects_root_workspace_membership()
     assert_safe_list_rejects_root_path_dependencies()
     assert_dirty_worktree_fails_closed()

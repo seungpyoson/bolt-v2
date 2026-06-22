@@ -6,10 +6,13 @@ use std::{
 use nautilus_model::enums::TradingState;
 use serde::Deserialize;
 
-use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
+use crate::bolt_v3_loss_governor::{
+    LossAdmissionDecision, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
+};
 use crate::bolt_v3_numeric::is_sha256_hex_digest;
 
-pub type LossGovernorHaltActionHandler = Rc<dyn Fn(Option<&LossSnapshot>, u64)>;
+pub type LossGovernorHaltActionHandler =
+    Rc<dyn Fn(Option<&LossSnapshot>, u64, LossSourceObservationTimestamps)>;
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -295,7 +298,10 @@ mod tests {
         LossGovernorRecoveryMode, LossGovernorTradingStateAction,
         next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
     };
-    use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
+    use crate::bolt_v3_loss_governor::{
+        LossAdmissionDecision, LossHaltReason, LossSnapshot, LossSnapshotDiagnostics,
+        LossSourceObservationTimestamps,
+    };
     use nautilus_model::enums::TradingState;
     use rust_decimal::Decimal;
 
@@ -315,6 +321,7 @@ mod tests {
         LossAdmissionDecision {
             accepted: false,
             halt_reasons,
+            diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
         }
     }
 
@@ -322,6 +329,7 @@ mod tests {
         LossAdmissionDecision {
             accepted: true,
             halt_reasons: Vec::new(),
+            diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
         }
     }
 
@@ -334,6 +342,7 @@ mod tests {
             rolling_pnl: Some(Decimal::ZERO),
             current_equity: Some(Decimal::new(100, 0)),
             peak_equity: Some(Decimal::new(100, 0)),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         }
     }
 

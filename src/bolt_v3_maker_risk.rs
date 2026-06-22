@@ -111,6 +111,7 @@ fn decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_loss_governor::LossSnapshotDiagnostics;
     use crate::bolt_v3_quote_lifecycle::{LegEvent, LegState, MarketState};
 
     fn resting_market() -> MarketQuote {
@@ -137,6 +138,7 @@ mod tests {
         LossAdmissionDecision {
             accepted: true,
             halt_reasons: Vec::new(),
+            diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
         }
     }
 
@@ -144,6 +146,7 @@ mod tests {
         LossAdmissionDecision {
             accepted: false,
             halt_reasons: vec![reason],
+            diagnostics: LossSnapshotDiagnostics::not_evaluated(1),
         }
     }
 

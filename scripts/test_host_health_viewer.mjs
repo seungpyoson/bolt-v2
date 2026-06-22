@@ -1240,6 +1240,99 @@ check("CONSENSUS: absent cgroup count stays green-eligible + banner silent", () 
   );
 });
 
+check("CONSENSUS: every present-invalid numeric health field is surfaced in the banner", () => {
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+
+  const cleanRecord = () => ({
+    schema_version: 2,
+    sampled_at: "t",
+    oom_killed: false,
+    disk: { used_pct: 50 },
+    process: { rss_bytes: 4096 },
+    memory: { mem_available_bytes: 8192 },
+    service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 }
+  });
+
+  const cases = [
+    { field: "used_pct", mutate: rec => { rec.disk.used_pct = "abc"; } },
+    { field: "n_restarts", mutate: rec => { rec.service.n_restarts = "abc"; } },
+    { field: "cgroup_oom_kills", mutate: rec => { rec.cgroup_oom_kills = "abc"; } },
+    { field: "rss_bytes", mutate: rec => { rec.process.rss_bytes = "abc"; } },
+    { field: "mem_available_bytes", mutate: rec => { rec.memory.mem_available_bytes = "abc"; } }
+  ];
+
+  for (const c of cases) {
+    const rec = cleanRecord();
+    c.mutate(rec);
+    const reasons = bannerReasons(rec, [rec]);
+    assertTrue(
+      reasons.some(reason => reason.includes(c.field) && /malformed|unavailable|degraded/.test(reason)),
+      `present-invalid ${c.field} must surface in banner reasons; got ${JSON.stringify(reasons)}`,
+    );
+  }
+});
+
+check("CONSENSUS: malformed rss_bytes caps badge green and names the malformed field", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+
+  for (const rss_bytes of ["abc", -1, []]) {
+    const rec = {
+      schema_version: 2,
+      sampled_at: "t",
+      oom_killed: false,
+      disk: { used_pct: 50 },
+      process: { rss_bytes },
+      service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 }
+    };
+    const reasons = bannerReasons(rec, [rec]);
+    assertTrue(!/badge grn/.test(serviceBadge(rec)), `present-invalid rss_bytes=${JSON.stringify(rss_bytes)} must cap a green badge`);
+    assertTrue(
+      reasons.some(reason => reason.includes(`process rss_bytes malformed (rss_bytes=${JSON.stringify(rss_bytes)})`)),
+      `banner must name malformed rss_bytes=${JSON.stringify(rss_bytes)}; got ${JSON.stringify(reasons)}`,
+    );
+  }
+});
+
+check("CONSENSUS: malformed mem_available_bytes caps badge green and names the malformed field", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+
+  for (const mem_available_bytes of ["abc", -1, []]) {
+    const rec = {
+      schema_version: 2,
+      sampled_at: "t",
+      oom_killed: false,
+      disk: { used_pct: 50 },
+      memory: { mem_available_bytes },
+      service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 }
+    };
+    const reasons = bannerReasons(rec, [rec]);
+    assertTrue(!/badge grn/.test(serviceBadge(rec)), `present-invalid mem_available_bytes=${JSON.stringify(mem_available_bytes)} must cap a green badge`);
+    assertTrue(
+      reasons.some(reason => reason.includes(`memory mem_available_bytes malformed (mem_available_bytes=${JSON.stringify(mem_available_bytes)})`)),
+      `banner must name malformed mem_available_bytes=${JSON.stringify(mem_available_bytes)}; got ${JSON.stringify(reasons)}`,
+    );
+  }
+});
+
+check("CONSENSUS: absent rss/mem fields stay green-eligible and banner-silent", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+
+  for (const rec of [
+    { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } },
+    { schema_version: 2, sampled_at: "t", oom_killed: false, disk: { used_pct: 50 }, process: {}, memory: {}, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } }
+  ]) {
+    const reasons = bannerReasons(rec, [rec]);
+    assertTrue(/badge grn/.test(serviceBadge(rec)), `absent rss/mem fields stay green-eligible; got ${serviceBadge(rec)}`);
+    assertTrue(
+      !reasons.some(reason => /rss_bytes|mem_available_bytes/.test(reason)),
+      `absent rss/mem fields must not raise rss/mem banner reasons; got ${JSON.stringify(reasons)}`,
+    );
+  }
+});
+
 check("CONSENSUS: non-object disk block -> card violet + banner 'status unavailable' (card+banner agree)", () => {
   // diskView.parent is the single decision: a non-object disk block is a STATUS
   // problem (not a metric problem), and the card (diskFreePct null -> violet) and

@@ -684,6 +684,22 @@
       return views.top.present ? views.top.raw : views.nested.raw;
     }
 
+    // Single registry of single-location numeric health fields whose present-but-
+    // INVALID value is a record-level integrity issue: surfaced through the
+    // recordIntegrityReasons SSOT so a malformed value caps the green badge AND
+    // raises a banner reason (never silently collapses to a blank card -- the
+    // operator must distinguish "sampler could not read it" from "sampler emitted
+    // garbage"). disk and restarts are deliberately NOT here: they have dedicated
+    // surfacing (disk card colour + absent/malformed banner distinctions; restart
+    // green-cap + count signal). cgroup_oom_kills is dual-location, handled by
+    // cgroupMalformed above. Adding a numeric health field here is all it takes to
+    // give it malformed-surfacing; the enumeration viewer test asserts that EVERY
+    // numeric health field surfaces a malformed value, so the class cannot regrow.
+    const INTEGRITY_NUMERIC_FIELDS = [
+      { parentKey: "process", fieldKey: "rss_bytes", label: "process rss_bytes" },
+      { parentKey: "memory", fieldKey: "mem_available_bytes", label: "memory mem_available_bytes" }
+    ];
+
     // Thin number|null accessors over the chokepoint, for the card and chart that
     // only need the validated value (absent and invalid both collapse to null).
     function diskUsedPct(record) {
@@ -737,6 +753,18 @@
       }
       if (cgroupMalformed(record)) {
         reasons.push(`cgroup oom_kill count malformed (cgroup_oom_kills=${JSON.stringify(cgroupMalformedRaw(record))})`);
+      }
+      // Class closure: every single-location numeric health field (process rss,
+      // memory available) surfaces a malformed value through this same SSOT, so a
+      // present-but-garbage metric caps green + banners instead of vanishing.
+      // Reads ONLY through the fieldView chokepoint (no raw field property access),
+      // so FENCE2 stays satisfied. An absent field (or non-object parent) yields
+      // nothing.
+      for (const f of INTEGRITY_NUMERIC_FIELDS) {
+        const view = fieldView(record, f.parentKey, f.fieldKey, isValidCount);
+        if (view.present && !view.valid) {
+          reasons.push(`${f.label} malformed (${f.fieldKey}=${JSON.stringify(view.raw)})`);
+        }
       }
       // A PRESENT errors field of the wrong SHAPE is itself an integrity issue: a
       // non-array errors (string/object/number) means the sampler serialized a

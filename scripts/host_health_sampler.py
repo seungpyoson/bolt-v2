@@ -1191,8 +1191,9 @@ def write_to_file(record_line: str, out_path: str, lock_timeout: float) -> None:
     # wedged (its worker registered under "sink:file:cleanup"), do NOT open a new
     # fd — fail the file sink so write_jsonl_line routes this record to stdout. This
     # caps outstanding file fds at <=1 (only the one the wedged close still holds)
-    # and resumes the file sink automatically once the stall drains (the breaker
-    # check pops the finished worker).
+    # and resumes the file sink automatically once the stall drains: the next
+    # keyed release_fd_best_effort -> run_with_deadline call reclaims the drained
+    # key via its locked reserve-overwrite. The predicate never mutates.
     if _breaker_outstanding("sink:file:cleanup"):
         raise OSError(
             "file sink skipped: prior post-commit cleanup close still wedged; "

@@ -174,9 +174,9 @@ impl RiskDirection {
 ///
 /// The irreversible act primitives (`submit_order_via_nt`, `cancel_order_via_nt`,
 /// `cancel_all_orders_via_nt`, and the loss-governor / recovery
-/// `set_trading_state`) are intended to be reachable only from inside this
-/// chokepoint; a dedicated source fence fails the build on any other call site,
-/// so coverage is structural rather than remembered.
+/// `set_trading_state`) are being adopted into this chokepoint incrementally.
+/// This primitive owns the failure rule; later slices still need to route the
+/// production act paths through it and add source-fence enforcement.
 pub fn commit_decision<T>(
     risk: RiskDirection,
     emit: impl FnOnce() -> Result<()>,

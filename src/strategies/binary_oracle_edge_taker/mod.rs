@@ -5391,7 +5391,7 @@ impl BinaryOracleEdgeTaker {
             .decision_evidence()
             .record_exit_evaluation(&evidence)
         {
-            log::warn!(
+            log::error!(
                 "binary_oracle_edge_taker exit evidence write failed: strategy_id={} position_id={:?} error={:#}",
                 self.config.strategy_id,
                 evidence.position_id,

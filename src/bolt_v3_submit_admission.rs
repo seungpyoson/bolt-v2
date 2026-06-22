@@ -1753,7 +1753,7 @@ impl BoltV3SubmitAdmissionState {
             elapsed_ns,
         };
         if let Err(err) = self.decision_evidence.record_order_reject(&evidence) {
-            log::warn!(
+            log::error!(
                 "bolt-v3 order reject evidence write failed: stable_episode_key={} admission_outcome={:?} prior_client_order_id={:?}: {err:#}",
                 evidence.stable_episode_key,
                 evidence.admission_outcome,
@@ -1830,7 +1830,7 @@ impl BoltV3SubmitAdmissionState {
         };
 
         if let Err(err) = self.decision_evidence.record_loss_governor_halt(&evidence) {
-            log::warn!(
+            log::error!(
                 "bolt-v3 loss governor halt evidence write failed: stable_halt_key={} stale_reason={:?}: {err:#}",
                 evidence.stable_halt_key,
                 evidence.stale_reason
@@ -3932,5 +3932,275 @@ mod notional_guard_tests {
             BPS_DENOMINATOR,
             f64::INFINITY
         ));
+    }
+}
+
+#[cfg(test)]
+mod loss_governor_halt_evidence_tests {
+    use super::*;
+    use crate::bolt_v3_decision_evidence::{
+        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+        BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+    };
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[derive(Debug, Default)]
+    struct FailingLossGovernorHaltEvidenceWriter {
+        halts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
+    }
+
+    impl FailingLossGovernorHaltEvidenceWriter {
+        fn halts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
+            self.halts
+                .lock()
+                .expect("loss-governor halt writer mutex poisoned")
+                .clone()
+        }
+    }
+
+    impl BoltV3DecisionEvidenceWriter for FailingLossGovernorHaltEvidenceWriter {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_basket_admission_decision(
+            &self,
+            _decision: &BoltV3BasketAdmissionDecisionEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_exit_decision(
+            &self,
+            _decision: &BoltV3ExitDecisionEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_exit_evaluation(
+            &self,
+            _evidence: &BoltV3ExitEvaluationEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_loss_governor_halt(
+            &self,
+            evidence: &BoltV3LossGovernorHaltEvidence,
+        ) -> anyhow::Result<()> {
+            self.halts
+                .lock()
+                .expect("loss-governor halt writer mutex poisoned")
+                .push(evidence.clone());
+            anyhow::bail!(
+                "injected loss-governor halt evidence write failure for {}",
+                evidence.stable_halt_key
+            )
+        }
+
+        fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_requote_throttle(
+            &self,
+            _throttle: &BoltV3RequoteThrottleEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CapturingLogger {
+        records: Mutex<Vec<(log::Level, String)>>,
+    }
+
+    impl log::Log for CapturingLogger {
+        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            self.records
+                .lock()
+                .expect("capturing logger mutex poisoned")
+                .push((record.level(), record.args().to_string()));
+        }
+
+        fn flush(&self) {}
+    }
+
+    impl CapturingLogger {
+        fn reset(&self) {
+            self.records
+                .lock()
+                .expect("capturing logger mutex poisoned")
+                .clear();
+        }
+
+        fn records(&self) -> Vec<(log::Level, String)> {
+            self.records
+                .lock()
+                .expect("capturing logger mutex poisoned")
+                .clone()
+        }
+    }
+
+    static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> =
+        std::sync::OnceLock::new();
+    static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
+    static NEXT_LOSS_HALT_SOURCE_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn install_capturing_logger() -> &'static CapturingLogger {
+        static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let logger =
+            CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
+        let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
+        assert!(
+            installed,
+            "capturing logger could not claim the global log slot; another logger is installed"
+        );
+        log::set_max_level(log::LevelFilter::Trace);
+        *logger
+    }
+
+    fn stale_loss_snapshot(source: String) -> LossSnapshot {
+        LossSnapshot {
+            source,
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::ZERO),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+            source_observations: LossSourceObservationTimestamps::unobserved(),
+        }
+    }
+
+    fn entry_request(strategy_id: String, client_order_id: String) -> BoltV3SubmitAdmissionRequest {
+        BoltV3SubmitAdmissionRequest {
+            strategy_id,
+            execution_client_id: "execution-client-loss-halt".to_string(),
+            client_order_id,
+            instrument_id: "condition-loss-halt-yes.POLYMARKET".to_string(),
+            notional: Decimal::ONE,
+            order_side: OrderSide::Buy,
+            order_quantity: Decimal::ONE,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
+            risk_reducing_exit_proof: None,
+            kill_switch_forced_reduction: None,
+            position_sizing: None,
+        }
+    }
+
+    #[test]
+    fn loss_governor_halt_evidence_write_failure_logs_error_and_rejects() {
+        let logger = install_capturing_logger();
+        let _observer_guard = CAPTURING_LOGGER_OBSERVERS
+            .lock()
+            .expect("capturing logger observer mutex poisoned");
+        logger.reset();
+
+        let source = format!(
+            "loss_halt_admission_write_failure_source_{}",
+            NEXT_LOSS_HALT_SOURCE_ID.fetch_add(1, Ordering::SeqCst)
+        );
+        let writer = Arc::new(FailingLossGovernorHaltEvidenceWriter::default());
+        let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
+            writer.clone(),
+            LossGovernorPolicy {
+                max_snapshot_age_ns: 100,
+                max_per_trade_loss: Some(Decimal::ONE),
+                max_daily_loss: None,
+                max_rolling_loss: None,
+                max_drawdown: None,
+            },
+        );
+        admission.update_loss_snapshot(stale_loss_snapshot(source.clone()));
+        let request = entry_request(
+            "strategy-loss-halt-log-guard".to_string(),
+            "client-order-loss-halt-log-guard".to_string(),
+        );
+
+        let result = admission.admit_at(&request, 1_200);
+
+        match result {
+            Err(BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }) => assert_eq!(
+                reasons,
+                vec![LossHaltReason::StaleLossSnapshot],
+                "stale loss snapshot must still reject the submit request"
+            ),
+            Err(error) => panic!("expected loss-governor halt rejection, got {error:?}"),
+            Ok(_) => panic!("expected loss-governor halt rejection, got permit"),
+        }
+
+        let halts = writer.halts();
+        assert_eq!(
+            halts.len(),
+            1,
+            "the failing writer must still receive the halt evidence"
+        );
+        assert_eq!(halts[0].snapshot_source.as_deref(), Some(source.as_str()));
+        assert_eq!(halts[0].retry_count, 1);
+
+        let stable_halt_key = halts[0].stable_halt_key.clone();
+        let matching = logger
+            .records()
+            .into_iter()
+            .filter(|(_, message)| {
+                message.contains("loss governor halt evidence write failed")
+                    && message.contains(&stable_halt_key)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matching.len(),
+            1,
+            "the halt evidence-write failure must be surfaced exactly once; got {matching:?}"
+        );
+        assert_eq!(
+            matching[0].0,
+            log::Level::Error,
+            "the halt evidence-write failure must be surfaced at error! severity"
+        );
     }
 }

@@ -88,7 +88,7 @@ DIAGNOSTIC_MACRO_PATTERN = re.compile(
 # on large files; IGNORED_*_RES run once per candidate literal. Compiling these
 # per call — and, for the raw-string probe, slicing text[start:] per call — was
 # the dominant runtime cost (see rust_raw_string_literal_end).
-RAW_STRING_PREFIX_RE = re.compile(r'br(#+)?"|r(#+)?"')
+RAW_STRING_PREFIX_RE = re.compile(r'b?r(#+)?"')
 IGNORED_CONTEXT_RES = [re.compile(pattern) for pattern in IGNORED_CONTEXT_PATTERNS]
 IGNORED_CALL_CONTEXT_RES = [re.compile(pattern) for pattern in IGNORED_CALL_CONTEXT_PATTERNS]
 
@@ -183,7 +183,7 @@ def rust_raw_string_literal_end(text: str, start: int) -> int | None:
     raw_match = RAW_STRING_PREFIX_RE.match(text, start)
     if not raw_match:
         return None
-    hashes = raw_match.group(1) or raw_match.group(2) or ""
+    hashes = raw_match.group(1) or ""
     terminator = '"' + hashes
     index = start + len(raw_match.group(0))
     end = text.find(terminator, index)

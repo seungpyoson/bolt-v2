@@ -42,12 +42,81 @@ pub struct LossSnapshot {
     pub rolling_pnl: Option<Decimal>,
     pub current_equity: Option<Decimal>,
     pub peak_equity: Option<Decimal>,
+    pub source_observations: LossSourceObservationTimestamps,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LossSourceObservationTimestamps {
+    pub last_account_state_observed_at_ns: Option<u64>,
+    pub last_portfolio_snapshot_observed_at_ns: Option<u64>,
+    pub last_position_event_observed_at_ns: Option<u64>,
+}
+
+impl LossSourceObservationTimestamps {
+    pub const fn unobserved() -> Self {
+        Self {
+            last_account_state_observed_at_ns: None,
+            last_portfolio_snapshot_observed_at_ns: None,
+            last_position_event_observed_at_ns: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LossSnapshotStaleReason {
+    MissingSnapshot,
+    SourceEmpty,
+    FutureDated,
+    AgeExceeded,
+    MissingRequiredField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LossSnapshotDiagnostics {
+    pub snapshot_present: bool,
+    pub snapshot_observed_at_ns: Option<u64>,
+    pub admission_now_ns: u64,
+    pub snapshot_age_ns: Option<u64>,
+    pub max_snapshot_age_ns: Option<u64>,
+    pub snapshot_source: Option<String>,
+    pub per_trade_pnl_present: bool,
+    pub daily_pnl_present: bool,
+    pub rolling_pnl_present: bool,
+    pub current_equity_present: bool,
+    pub peak_equity_present: bool,
+    pub last_account_state_observed_at_ns: Option<u64>,
+    pub last_portfolio_snapshot_observed_at_ns: Option<u64>,
+    pub last_position_event_observed_at_ns: Option<u64>,
+    pub stale_reason: Option<LossSnapshotStaleReason>,
+}
+
+impl LossSnapshotDiagnostics {
+    pub fn not_evaluated(admission_now_ns: u64) -> Self {
+        Self {
+            snapshot_present: false,
+            snapshot_observed_at_ns: None,
+            admission_now_ns,
+            snapshot_age_ns: None,
+            max_snapshot_age_ns: None,
+            snapshot_source: None,
+            per_trade_pnl_present: false,
+            daily_pnl_present: false,
+            rolling_pnl_present: false,
+            current_equity_present: false,
+            peak_equity_present: false,
+            last_account_state_observed_at_ns: None,
+            last_portfolio_snapshot_observed_at_ns: None,
+            last_position_event_observed_at_ns: None,
+            stale_reason: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LossAdmissionDecision {
     pub accepted: bool,
     pub halt_reasons: Vec<LossHaltReason>,
+    pub diagnostics: LossSnapshotDiagnostics,
 }
 
 #[must_use]
@@ -56,14 +125,32 @@ pub fn evaluate_loss_admission(
     snapshot: Option<&LossSnapshot>,
     now_ns: u64,
 ) -> LossAdmissionDecision {
+    evaluate_loss_admission_with_observations(
+        policy,
+        snapshot,
+        now_ns,
+        snapshot.map_or_else(LossSourceObservationTimestamps::unobserved, |snapshot| {
+            snapshot.source_observations
+        }),
+    )
+}
+
+#[must_use]
+pub fn evaluate_loss_admission_with_observations(
+    policy: &LossGovernorPolicy,
+    snapshot: Option<&LossSnapshot>,
+    now_ns: u64,
+    source_observations: LossSourceObservationTimestamps,
+) -> LossAdmissionDecision {
     let mut halt_reasons = Vec::new();
+    let diagnostics = loss_snapshot_diagnostics(policy, snapshot, now_ns, source_observations);
 
     let Some(snapshot) = snapshot else {
-        return rejected(LossHaltReason::StaleLossSnapshot);
+        return rejected(LossHaltReason::StaleLossSnapshot, diagnostics);
     };
 
-    if snapshot_is_stale(policy, snapshot, now_ns) {
-        return rejected(LossHaltReason::StaleLossSnapshot);
+    if diagnostics.stale_reason.is_some() {
+        return rejected(LossHaltReason::StaleLossSnapshot, diagnostics);
     }
 
     match (policy.max_per_trade_loss, snapshot.per_trade_pnl) {
@@ -98,13 +185,84 @@ pub fn evaluate_loss_admission(
     LossAdmissionDecision {
         accepted: halt_reasons.is_empty(),
         halt_reasons,
+        diagnostics,
     }
 }
 
-fn rejected(reason: LossHaltReason) -> LossAdmissionDecision {
+fn rejected(reason: LossHaltReason, diagnostics: LossSnapshotDiagnostics) -> LossAdmissionDecision {
     LossAdmissionDecision {
         accepted: false,
         halt_reasons: vec![reason],
+        diagnostics,
+    }
+}
+
+fn loss_snapshot_diagnostics(
+    policy: &LossGovernorPolicy,
+    snapshot: Option<&LossSnapshot>,
+    now_ns: u64,
+    source_observations: LossSourceObservationTimestamps,
+) -> LossSnapshotDiagnostics {
+    let Some(snapshot) = snapshot else {
+        return LossSnapshotDiagnostics {
+            snapshot_present: false,
+            snapshot_observed_at_ns: None,
+            admission_now_ns: now_ns,
+            snapshot_age_ns: None,
+            max_snapshot_age_ns: Some(policy.max_snapshot_age_ns),
+            snapshot_source: None,
+            per_trade_pnl_present: false,
+            daily_pnl_present: false,
+            rolling_pnl_present: false,
+            current_equity_present: false,
+            peak_equity_present: false,
+            last_account_state_observed_at_ns: source_observations
+                .last_account_state_observed_at_ns,
+            last_portfolio_snapshot_observed_at_ns: source_observations
+                .last_portfolio_snapshot_observed_at_ns,
+            last_position_event_observed_at_ns: source_observations
+                .last_position_event_observed_at_ns,
+            stale_reason: Some(LossSnapshotStaleReason::MissingSnapshot),
+        };
+    };
+    let source_empty = snapshot.source.trim().is_empty();
+    let future_dated = snapshot.observed_at_ns > now_ns;
+    let snapshot_age_ns = (!future_dated).then(|| now_ns - snapshot.observed_at_ns);
+    let age_exceeded = snapshot_age_ns.is_some_and(|age| age > policy.max_snapshot_age_ns);
+    let missing_required_field = (policy.max_per_trade_loss.is_some()
+        && snapshot.per_trade_pnl.is_none())
+        || (policy.max_daily_loss.is_some() && snapshot.daily_pnl.is_none())
+        || (policy.max_rolling_loss.is_some() && snapshot.rolling_pnl.is_none())
+        || (policy.max_drawdown.is_some()
+            && (snapshot.current_equity.is_none() || snapshot.peak_equity.is_none()));
+    let stale_reason = if source_empty {
+        Some(LossSnapshotStaleReason::SourceEmpty)
+    } else if future_dated {
+        Some(LossSnapshotStaleReason::FutureDated)
+    } else if age_exceeded {
+        Some(LossSnapshotStaleReason::AgeExceeded)
+    } else if missing_required_field {
+        Some(LossSnapshotStaleReason::MissingRequiredField)
+    } else {
+        None
+    };
+    LossSnapshotDiagnostics {
+        snapshot_present: true,
+        snapshot_observed_at_ns: Some(snapshot.observed_at_ns),
+        admission_now_ns: now_ns,
+        snapshot_age_ns,
+        max_snapshot_age_ns: Some(policy.max_snapshot_age_ns),
+        snapshot_source: Some(snapshot.source.clone()),
+        per_trade_pnl_present: snapshot.per_trade_pnl.is_some(),
+        daily_pnl_present: snapshot.daily_pnl.is_some(),
+        rolling_pnl_present: snapshot.rolling_pnl.is_some(),
+        current_equity_present: snapshot.current_equity.is_some(),
+        peak_equity_present: snapshot.peak_equity.is_some(),
+        last_account_state_observed_at_ns: source_observations.last_account_state_observed_at_ns,
+        last_portfolio_snapshot_observed_at_ns: source_observations
+            .last_portfolio_snapshot_observed_at_ns,
+        last_position_event_observed_at_ns: source_observations.last_position_event_observed_at_ns,
+        stale_reason,
     }
 }
 
@@ -138,6 +296,7 @@ pub fn loss_snapshot_stale_reason(
     None
 }
 
+#[cfg(test)]
 fn snapshot_is_stale(policy: &LossGovernorPolicy, snapshot: &LossSnapshot, now_ns: u64) -> bool {
     loss_snapshot_stale_reason(policy, snapshot, now_ns).is_some()
 }
@@ -157,7 +316,8 @@ mod tests {
     use crate::bolt_v3_decision_evidence::BoltV3StaleLossReason;
 
     use super::{
-        LossGovernorPolicy, LossHaltReason, LossSnapshot, evaluate_loss_admission,
+        LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotStaleReason,
+        LossSourceObservationTimestamps, evaluate_loss_admission, loss_snapshot_diagnostics,
         loss_snapshot_stale_reason, snapshot_is_stale,
     };
 
@@ -180,6 +340,7 @@ mod tests {
             rolling_pnl: None,
             current_equity: None,
             peak_equity: None,
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         }
     }
 
@@ -222,6 +383,7 @@ mod tests {
             rolling_pnl: Some(Decimal::ZERO),
             current_equity: Some(Decimal::new(1_000, 0)),
             peak_equity: Some(Decimal::new(1_000, 0)),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
         let mut source_empty = fresh.clone();
         source_empty.source = " ".to_string();
@@ -316,6 +478,40 @@ mod tests {
             vec![LossHaltReason::PerTradeLossLimit]
         );
         assert_eq!(decision.halt_reasons[0].as_str(), "per_trade_loss_limit");
+    }
+
+    #[test]
+    fn future_dated_snapshot_diagnostics_are_future_dated_without_underflow() {
+        // A snapshot observed AHEAD of admission `now_ns` (clock skew / replay) is the
+        // exact future-dated path #881 targets. `snapshot_age_ns` must be None (no age
+        // is meaningful for a future timestamp) and the stale reason must be
+        // FutureDated. The pre-fix `then_some(now_ns - observed_at_ns)` evaluated its
+        // argument EAGERLY, so `now_ns - observed_at_ns` underflowed (PANIC in debug /
+        // wrap in release) before `then_some` could discard it — this test panics on
+        // that buggy variant. The lazy `then(|| ...)` only subtracts when the snapshot
+        // is NOT future-dated.
+        let mut snapshot = snapshot();
+        snapshot.observed_at_ns = 10_000;
+        let now_ns = 9_000; // strictly before observed_at_ns -> future-dated
+
+        let diagnostics = loss_snapshot_diagnostics(
+            &policy(),
+            Some(&snapshot),
+            now_ns,
+            LossSourceObservationTimestamps::unobserved(),
+        );
+
+        assert_eq!(
+            diagnostics.stale_reason,
+            Some(LossSnapshotStaleReason::FutureDated)
+        );
+        assert_eq!(
+            diagnostics.snapshot_age_ns, None,
+            "no age is computed for a future-dated snapshot"
+        );
+        assert!(diagnostics.snapshot_present);
+        assert_eq!(diagnostics.snapshot_observed_at_ns, Some(10_000));
+        assert_eq!(diagnostics.admission_now_ns, now_ns);
     }
 
     #[test]
@@ -463,6 +659,7 @@ mod tests {
             rolling_pnl: Some(Decimal::new(-31, 0)),
             current_equity: Some(Decimal::new(959, 0)),
             peak_equity: Some(Decimal::new(1000, 0)),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
 
         let decision = evaluate_loss_admission(&policy, Some(&snapshot), 10_100);
@@ -509,6 +706,7 @@ mod tests {
             rolling_pnl: Some(Decimal::new(-30, 0)),
             current_equity: Some(Decimal::new(960, 0)),
             peak_equity: Some(Decimal::new(1000, 0)),
+            source_observations: LossSourceObservationTimestamps::unobserved(),
         };
 
         let decision = evaluate_loss_admission(&policy, Some(&snapshot), 10_100);

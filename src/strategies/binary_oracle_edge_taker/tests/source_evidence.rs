@@ -8,6 +8,121 @@ const TEST_SOURCE_ID_B: &str = "<SOURCE_ID_B>";
 const TEST_TRADE_SOURCE_ID: &str = "<SOURCE_ID_TRADE>";
 const TEST_RV_INSTRUMENT_ID: &str = "<INSTRUMENT_ID_A>.<DATA_CLIENT_ID>";
 
+#[derive(Default)]
+struct CapturingLogger {
+    records: std::sync::Mutex<Vec<(log::Level, String)>>,
+}
+
+impl log::Log for CapturingLogger {
+    fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .push((record.level(), record.args().to_string()));
+    }
+
+    fn flush(&self) {}
+}
+
+impl CapturingLogger {
+    fn reset(&self) {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clear();
+    }
+
+    fn records(&self) -> Vec<(log::Level, String)> {
+        self.records
+            .lock()
+            .expect("capturing logger mutex poisoned")
+            .clone()
+    }
+}
+
+static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> = std::sync::OnceLock::new();
+static CAPTURING_LOGGER_OBSERVERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static NEXT_LOG_CAPTURE_STRATEGY_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+const LOG_CAPTURE_CHILD_ENV: &str = "BOLT_TAKER_SOURCE_EVIDENCE_LOG_CAPTURE";
+
+fn unique_log_capture_strategy_id(prefix: &str) -> String {
+    let id = NEXT_LOG_CAPTURE_STRATEGY_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("BINARYORACLEEDGETAKER-{prefix}-{id}")
+}
+
+fn install_capturing_logger() -> &'static CapturingLogger {
+    static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let logger = CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
+    let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
+    assert!(
+        installed,
+        "capturing logger could not claim the global log slot; another logger is installed"
+    );
+    log::set_max_level(log::LevelFilter::Trace);
+    *logger
+}
+
+fn run_log_capture_test_in_subprocess(test_filter: &str, mode: &str) {
+    let output = std::process::Command::new(
+        std::env::current_exe().expect("current test binary should be available"),
+    )
+    .arg(test_filter)
+    .arg("--nocapture")
+    .arg("--test-threads=1")
+    .env(LOG_CAPTURE_CHILD_ENV, mode)
+    .output()
+    .expect("log-capture child test should launch");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "log-capture child test failed with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.contains("running 1 test"),
+        "log-capture child filter `{test_filter}` must run exactly one test\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+fn with_captured_error_log<R>(
+    failure_message: &str,
+    strategy_id: &str,
+    action: impl FnOnce() -> R,
+) -> R {
+    let logger = install_capturing_logger();
+    let _observer_guard = CAPTURING_LOGGER_OBSERVERS
+        .lock()
+        .expect("capturing logger observer mutex poisoned");
+    logger.reset();
+
+    let result = action();
+
+    let matching = logger
+        .records()
+        .into_iter()
+        .filter(|(_, message)| message.contains(failure_message) && message.contains(strategy_id))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matching.len(),
+        1,
+        "{failure_message} must be surfaced exactly once for {strategy_id}; got {matching:?}"
+    );
+    assert_eq!(
+        matching[0].0,
+        log::Level::Error,
+        "{failure_message} must be surfaced at error! severity, not warn!"
+    );
+    result
+}
+
 fn test_realized_volatility_engine_config()
 -> crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
     crate::bolt_v3_realized_volatility::RealizedVolEngineConfig {
@@ -713,6 +828,9 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         evidence.clone(),
         submit_admission,
     );
+    strategy.pricing.last_fast_venue_age_ms = Some(17);
+    strategy.pricing.last_fast_venue_jitter_ms = Some(3);
+    strategy.pricing.last_lead_agreement_corr = Some(0.99);
     register_test_strategy_with_active_instruments(&mut strategy);
 
     let error = strategy
@@ -761,6 +879,35 @@ fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_inte
         Some("condition-MKT-1-MKT-1-DOWN.POLYMARKET")
     );
     assert_eq!(snapshot.selected_side.as_deref(), Some("up"));
+    assert!(
+        snapshot
+            .up_worst_case_edge_basis_points
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok())
+            .is_some(),
+        "admitted entry snapshot must preserve the up-side thin margin"
+    );
+    assert!(
+        snapshot
+            .down_worst_case_edge_basis_points
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok())
+            .is_some(),
+        "admitted entry snapshot must preserve the down-side thin margin"
+    );
+    assert!(snapshot.gate_blocked_by.is_empty());
+    assert!(snapshot.pricing_blocked_by.is_empty());
+    assert_eq!(snapshot.fast_venue_name.as_deref(), Some("bybit"));
+    assert_eq!(snapshot.fast_venue_age_ms, Some(17));
+    assert_eq!(snapshot.fast_venue_jitter_ms, Some(3));
+    assert!(!snapshot.fast_venue_incoherent);
+    assert_eq!(
+        snapshot
+            .lead_agreement_corr
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok()),
+        Some(0.99)
+    );
     assert_eq!(snapshot.submission_instrument_id, intent.instrument_id);
     assert_eq!(snapshot.submission_order_side, intent.order_side);
     assert_eq!(snapshot.submission_price, intent.price);
@@ -894,11 +1041,13 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     );
 
     let first_client_order_id = strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-            Some(1_200),
-            None,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                1_200,
+                None,
+            ),
         )
         .expect("first shadow exit should pass evidence and admission")
         .expect("first shadow exit should produce a would-be client order id");
@@ -914,15 +1063,24 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
 
     assert_eq!(
         strategy
-            .try_submit_exit_order(
+            .try_submit_exit_order_for_trigger(
                 1_201,
-                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
-                Some(1_201),
-                None,
+                ExitEvaluationTriggerContext::new(
+                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SelectionUpdate,
+                    1_201,
+                    None,
+                ),
             )
             .expect("latched shadow exit should not fail"),
         None,
         "latched shadow exit should block repeated would-be exits"
+    );
+    assert_eq!(
+        strategy
+            .try_submit_exit_order(1_202)
+            .expect("same latched shadow exit should remain deduped"),
+        None,
+        "same latched shadow exit state should not flood decision evidence"
     );
     assert_eq!(
         submit_admission.admitted_order_count(),
@@ -938,6 +1096,196 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
         1,
         "latched shadow exit should record one order-intent"
     );
+    let exit_decisions = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::ExitDecision(decision) => Some(decision),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        exit_decisions.len(),
+        2,
+        "exit action plus one pending-exit block should be recorded once each"
+    );
+    assert_eq!(
+        exit_decisions[0].exit_decision,
+        BoltV3ExitDecisionOutcome::Exit
+    );
+    assert_eq!(
+        exit_decisions[0].forced_flat_reasons,
+        vec![BoltV3ForcedFlatReason::Freeze]
+    );
+    assert_eq!(exit_decisions[0].exit_eval_now_ms, 1_200);
+    assert_eq!(
+        exit_decisions[0].exit_trigger_source,
+        BoltV3ExitTriggerSource::SelectionUpdate
+    );
+    assert_eq!(exit_decisions[0].trigger_ts_event_ms, 1_200);
+    assert_eq!(exit_decisions[0].trigger_ts_init_ms, None);
+    assert_eq!(exit_decisions[0].rv_surface_id, TEST_SURFACE_ID);
+    assert_eq!(exit_decisions[0].rv_snapshot_as_of_ms, Some(1_200));
+    assert!(exit_decisions[0].rv_snapshot_ready);
+    assert_eq!(exit_decisions[0].rv_snapshot_blockers, Vec::new());
+    assert_eq!(
+        exit_decisions[0].rv_gate_result,
+        BoltV3ExitRvGateResult::Accepted
+    );
+    assert_eq!(exit_decisions[0].rv_future_dating_delta_ms, None);
+    assert_eq!(
+        exit_decisions[1].exit_decision,
+        BoltV3ExitDecisionOutcome::Blocked
+    );
+    assert_eq!(
+        exit_decisions[1].blocked_reason,
+        Some(BoltV3ExitBlockedReason::ExitAlreadyPending)
+    );
+}
+
+#[test]
+fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    set_shadow_order_execution_policy(&mut strategy);
+    strategy.active.phase = SelectionPhase::Freeze;
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let instrument_id = configured_outcome_instruments(&strategy)
+        .into_iter()
+        .next()
+        .expect("ready-to-trade fixture should expose an outcome instrument");
+    let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+    let up_best_ask = strategy
+        .active
+        .books
+        .up
+        .best_ask
+        .expect("ready-to-trade fixture should expose an up ask");
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from(stringify!(P_SHADOW_EXIT_FUTURE_RV)),
+        position_quantity,
+        up_best_ask,
+    );
+    set_managed_position(
+        &mut strategy,
+        position,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+
+    let exit_eval_now_ms = strategy
+        .active
+        .last_reference_ts_ms
+        .expect("ready-to-trade fixture should carry a reference timestamp");
+    let future_delta_ms = strategy.config.market_exit_interval_ms;
+    let future_as_of_ms = exit_eval_now_ms + future_delta_ms;
+    let realized_vol = strategy
+        .current_realized_vol_at(exit_eval_now_ms)
+        .expect("fixture should start with accepted realized volatility");
+    strategy.pricing.observe_realized_vol_snapshot(
+        crate::bolt_v3_realized_volatility::RealizedVolSnapshot {
+            surface_id: strategy.config.realized_volatility_surface_id.clone(),
+            as_of_ms: future_as_of_ms,
+            annualized_realized_vol_decimal: Some(realized_vol),
+            measured_annualized_realized_vol_decimal: Some(realized_vol),
+            noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
+            continuous_annualized_realized_vol_decimal: Some(realized_vol),
+            jump_annualized_realized_vol_decimal: Some(0.0),
+            forecast_annualized_realized_vol_decimal: None,
+            pricing_component:
+                crate::bolt_v3_realized_volatility::RealizedVolPricingComponent::Measured,
+            ready: true,
+            sources_used: vec![TEST_SOURCE_ID.to_string()],
+            source_diagnostics: Vec::new(),
+            horizon_estimates: Vec::new(),
+            unknown_source_rejections: std::collections::BTreeMap::new(),
+            blocked_reasons: Vec::new(),
+            aggregate_method:
+                crate::bolt_v3_realized_volatility::RealizedVolAggregation::UpperQuantile {
+                    quantile: 1.0,
+                },
+            seconds_per_annum: test_realized_volatility_engine_config().seconds_per_annum,
+            config_fingerprint: String::new(),
+        },
+    );
+    assert_eq!(strategy.current_realized_vol_at(exit_eval_now_ms), None);
+
+    let signal_instrument_id = strategy
+        .config
+        .signal_instrument_id
+        .as_deref()
+        .expect("ready-to-trade fixture should configure a signal instrument")
+        .to_string();
+    let signal_bid = strategy
+        .active
+        .price_to_beat
+        .expect("ready-to-trade fixture should carry source-bound price_to_beat");
+    // The shared `ready_to_trade_strategy` fixture seeds the selected pricing
+    // spot but not a reference current price (the two are independent pricing
+    // inputs), so establish the reference observation this test depends on the
+    // same way the pricing tests do before reading it back.
+    strategy.pricing.observe_reference_current_price(&fast_spot(
+        "bybit",
+        3_100.5,
+        exit_eval_now_ms,
+    ));
+    let signal_ask = strategy
+        .pricing
+        .last_reference_current_price()
+        .expect("reference observation seeded above should carry a reference current price");
+    strategy
+        .on_quote(&quote_tick(
+            &signal_instrument_id,
+            signal_bid,
+            signal_ask,
+            exit_eval_now_ms,
+        ))
+        .expect("signal quote trigger should process");
+
+    let exit_decisions = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::ExitDecision(decision) => Some(decision),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(exit_decisions.len(), 1);
+    let decision = &exit_decisions[0];
+    assert_eq!(decision.realized_vol, None);
+    assert_eq!(decision.rv_snapshot_as_of_ms, Some(future_as_of_ms));
+    assert!(decision.rv_snapshot_ready);
+    assert_eq!(
+        decision.rv_gate_result,
+        BoltV3ExitRvGateResult::RejectedFutureDated
+    );
+    assert_eq!(decision.rv_future_dating_delta_ms, Some(future_delta_ms));
+    // Freeze phase forces the position flat, so the recorded exit is a
+    // forced-flat Exit: exit_evaluation_at short-circuits on
+    // forced_flat_reasons before the RV gate, so the future-dated RV is
+    // captured only as a diagnostic (rv_gate_result above), not as the exit
+    // cause. (The RV-driven ExitFailClosed path is covered by the pricing /
+    // exposure tests.)
+    assert_eq!(decision.exit_decision, BoltV3ExitDecisionOutcome::Exit);
+    assert_eq!(
+        decision.forced_flat_reasons,
+        vec![BoltV3ForcedFlatReason::Freeze]
+    );
+    assert_eq!(decision.blocked_reason, None);
+    assert_eq!(
+        decision.exit_trigger_source,
+        BoltV3ExitTriggerSource::SignalQuote
+    );
+    assert_eq!(decision.trigger_ts_event_ms, exit_eval_now_ms);
+    assert_eq!(decision.trigger_ts_init_ms, Some(exit_eval_now_ms));
+    assert_eq!(decision.exit_eval_now_ms, exit_eval_now_ms);
 }
 
 #[test]
@@ -1145,10 +1493,16 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
             .expect("RV-not-ready pricing block should not attempt submit"),
         None
     );
+    assert_eq!(
+        strategy
+            .try_submit_entry_order(1_201)
+            .expect("same RV-not-ready pricing block should not attempt submit"),
+        None
+    );
 
     let events = evidence.events();
-    let [RecordedDecisionEvidenceEvent::StrategyInput(snapshot)] = events.as_slice() else {
-        panic!("expected only blocked strategy input evidence; got {events:#?}");
+    let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
+        panic!("expected blocked strategy input evidence first; got {events:#?}");
     };
     assert_eq!(snapshot.realized_volatility_surface_id, TEST_SURFACE_ID);
     assert_eq!(snapshot.realized_volatility_as_of_ms, Some(1_200));
@@ -1160,6 +1514,98 @@ fn strategy_input_evidence_records_realized_volatility_not_ready_pricing_block()
     );
     assert_eq!(snapshot.submission_instrument_id, "");
     assert_eq!(snapshot.client_order_id, "");
+    assert_eq!(
+        snapshot.pricing_blocked_by,
+        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+    );
+    let entry_skips = events
+        .iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_skips.len(),
+        1,
+        "same blocked interval/reason must emit one entry skip record"
+    );
+    let skip = entry_skips[0];
+    assert_eq!(
+        skip.reason_category,
+        BoltV3EntrySkipReasonCategory::EntryPricingBlocked
+    );
+    assert_eq!(
+        skip.pricing_blocked_by,
+        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+    );
+    assert_eq!(skip.market_id, strategy.active.market_id);
+    // RV not ready: the readiness-gated source path yields no usable RV, so the
+    // entry-skip evidence carries no source ts. (The raw as_of_ms is still
+    // recorded on the StrategyInput evidence above via the audit path.)
+    assert_eq!(skip.realized_vol_source_ts_ms, None);
+}
+
+#[test]
+fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
+    let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission,
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+
+    let mut realized_vol_not_ready = minimal_entry_submission_decision();
+    realized_vol_not_ready.evaluation.pricing_blocked_by =
+        vec![EntryPricingBlockReason::RealizedVolNotReady];
+    let mut fee_unavailable = minimal_entry_submission_decision();
+    fee_unavailable.evaluation.pricing_blocked_by =
+        vec![EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up)];
+
+    strategy
+        .record_entry_skip_once(
+            1_200,
+            &realized_vol_not_ready,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+            None,
+        )
+        .expect("first pricing-blocked skip should record");
+    strategy
+        .record_entry_skip_once(
+            1_201,
+            &fee_unavailable,
+            BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+            None,
+        )
+        .expect("distinct pricing blocker in same interval should record");
+
+    let entry_skips = evidence
+        .events()
+        .into_iter()
+        .filter_map(|event| match event {
+            RecordedDecisionEvidenceEvent::EntrySkip(skip) => Some(skip),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entry_skips.len(),
+        2,
+        "same interval/category but different pricing blockers must not dedupe"
+    );
+    assert_eq!(entry_skips[0].market_id, strategy.active.market_id);
+    assert_eq!(entry_skips[1].market_id, strategy.active.market_id);
+    assert_eq!(entry_skips[0].market_id, entry_skips[1].market_id);
+    assert_eq!(
+        entry_skips[0].pricing_blocked_by,
+        vec![BoltV3EntryPricingBlockReason::RealizedVolNotReady]
+    );
+    assert_eq!(
+        entry_skips[1].pricing_blocked_by,
+        vec![BoltV3EntryPricingBlockReason::FeeUnavailable(
+            BoltV3OutcomeSide::Up
+        )]
+    );
 }
 
 #[test]
@@ -1304,6 +1750,177 @@ fn observe_resolution_strike_window_mismatch_is_observable_and_distinct_from_idl
     );
 }
 
+#[test]
+fn parse_config_rejects_non_finite_forced_flat_thin_book_min_liquidity() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert(
+                stringify!(forced_flat_thin_book_min_liquidity).to_string(),
+                toml::Value::Float(bad),
+            );
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("non-finite forced-flat liquidity minimum must be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("forced_flat_thin_book_min_liquidity must be finite and >= 0"),
+            "expected forced-flat liquidity finite rejection for {bad}, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn forced_flat_evidence_filters_non_finite_liquidity_values() {
+    let mut strategy = ready_to_trade_strategy();
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.forced_flat_thin_book_min_liquidity = f64::NAN;
+    strategy.active.books.up.liquidity_available = Some(f64::INFINITY);
+    strategy.active.books.down.liquidity_available = Some(f64::INFINITY);
+
+    let entry_inputs = strategy.entry_forced_flat_evidence_inputs();
+    assert_eq!(
+        entry_inputs.min_liquidity_required, None,
+        "non-finite configured minimum must not serialize into forced-flat entry evidence"
+    );
+    assert_eq!(
+        entry_inputs.liquidity_available, None,
+        "non-finite active liquidity must not serialize into forced-flat entry evidence"
+    );
+
+    let exit_inputs = strategy.exit_forced_flat_evidence_inputs();
+    assert_eq!(
+        exit_inputs.min_liquidity_required, None,
+        "non-finite configured minimum must not serialize into forced-flat exit evidence"
+    );
+    assert_eq!(
+        exit_inputs.liquidity_available, None,
+        "non-finite active liquidity must not serialize into forced-flat exit evidence"
+    );
+}
+
+// A minimal entry evaluation that carries no signal — enough to drive
+// `record_entry_skip_once` past evidence assembly to the writer call.
+fn minimal_entry_evaluation() -> EntryEvaluation {
+    EntryEvaluation {
+        gate: EntryGateDecision { blocked_by: vec![] },
+        pricing_blocked_by: vec![],
+        fair_probability_up: None,
+        uncertainty_band_probability: None,
+        up_executable_edge: None,
+        down_executable_edge: None,
+        up_worst_case_ev_bps: None,
+        down_worst_case_ev_bps: None,
+        sized_executable_edge: None,
+        sized_worst_case_ev_bps: None,
+        min_worst_case_ev_bps: None,
+        expected_ev_per_notional: None,
+        book_impact_cap_notional: None,
+        sized_notional: None,
+        selected_side: None,
+    }
+}
+
+fn minimal_entry_submission_decision() -> EntrySubmissionDecision {
+    EntrySubmissionDecision {
+        evaluation: minimal_entry_evaluation(),
+        instrument_id: None,
+        order_side: None,
+        price: None,
+        quantity_value: None,
+        client_order_id: None,
+        blocked_reason: None,
+    }
+}
+
+// A minimal exit decision with a non-`no_open_position` block reason, so it
+// clears the early-return guards in `record_exit_decision_once` and reaches the
+// writer call.
+fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
+    ExitSubmissionDecision {
+        evaluation: ExitEvaluation {
+            position_outcome_side: None,
+            forced_flat_reasons: vec![],
+            hold_ev_bps: None,
+            exit_ev_bps: None,
+            exit_decision: Some(ExitDecision::Hold),
+            blocked_reason: Some(EXIT_BLOCK_REASON_EXIT_HOLD),
+        },
+        instrument_id: None,
+        order_type: None,
+        order_side: None,
+        position_side: None,
+        time_in_force: None,
+        price: None,
+        quantity: None,
+        client_order_id: None,
+        is_post_only: None,
+        is_reduce_only: None,
+        is_quote_quantity: None,
+        expire_time_unix_nanos: None,
+        trigger_price: None,
+        activation_price: None,
+        trigger_type: None,
+        trigger_instrument_id: None,
+        trailing_offset: None,
+        trailing_offset_type: None,
+        blocked_reason: Some(EXIT_BLOCK_REASON_EXIT_HOLD),
+        forced_flat_reasons: vec![],
+    }
+}
+
+#[test]
+fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
+    // A telemetry-write failure on the exit-decision evidence path MUST NOT
+    // propagate: record_exit_decision_once is called at the exit-submit chokepoint
+    // immediately BEFORE the risk-reducing exit order is built and submitted. The
+    // pre-fix `record_exit_decision(&evidence)?` propagated the writer Err, which
+    // would abort the exit-submit callback and BLOCK a risk-reducing exit on a lost
+    // log line. The fix swaps `?` for a `log::error!` + continue, so the helper
+    // returns Ok(()) even when the writer fails. The FailingDecisionEvidenceWriter
+    // returns Err from record_exit_decision, so on the buggy `?` variant this call
+    // returns Err and the assertion below fails — the differential channel is the
+    // helper's Result, which mirrors the exit-submit return.
+    if std::env::var(LOG_CAPTURE_CHILD_ENV).ok().as_deref() != Some("exit") {
+        run_log_capture_test_in_subprocess(
+            "exit_decision_evidence_write_failure_does_not_block_the_exit",
+            "exit",
+        );
+        return;
+    }
+
+    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+        RecordingFeeProvider::cold(),
+        Arc::new(FailingDecisionEvidenceWriter),
+    );
+    let strategy_id = unique_log_capture_strategy_id("exit");
+    strategy.config.strategy_id = strategy_id.clone();
+
+    let decision = minimal_exit_submission_decision();
+    let result = with_captured_error_log(
+        "binary_oracle_edge_taker exit decision evidence write failed",
+        &strategy_id,
+        || {
+            strategy.record_exit_decision_once(
+                1_000,
+                ExitEvaluationTriggerContext::unknown(1_000),
+                &decision,
+            )
+        },
+    );
+
+    assert!(
+        result.is_ok(),
+        "an exit-decision evidence write failure must not propagate and block the exit: {result:?}"
+    );
+    assert!(
+        strategy.last_recorded_exit_decision.is_some(),
+        "the dedupe key must still be set so the lost write is not retried in a tight loop"
+    );
+}
+
 /// Build a ready-to-trade strategy with one open managed position and a recording
 /// evidence writer, for #885 exit-evaluation evidence tests. Returns the strategy
 /// and the writer (the caller drives exits and reads back `events()`).
@@ -1378,11 +1995,13 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     let control_result = control_strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-            Some(1_200),
-            Some(1_180),
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                Some(1_180),
+            ),
         )
         .expect("control exit evaluation should not error with a ready realized-vol surface");
 
@@ -1393,11 +2012,13 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
     let failing_result = failing_strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-            Some(1_200),
-            Some(1_180),
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                Some(1_180),
+            ),
         )
         .expect("a failing exit-evaluation sink must be swallowed, not propagated");
 
@@ -1414,6 +2035,56 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
 }
 
 #[test]
+fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
+    // An entry skip is DECLINING new risk. record_entry_skip_once is called inside
+    // the entry-submit callback immediately before downstream safety logic (e.g.
+    // enforce_one_position_invariant). The pre-fix `record_entry_skip(&evidence)?`
+    // propagated the writer Err, aborting the callback and SKIPPING that downstream
+    // safety logic on a lost log line. The fix swaps `?` for a `log::error!` +
+    // continue, so the helper returns Ok(()) even when the writer fails. The
+    // FailingDecisionEvidenceWriter returns Err from record_entry_skip, so on the
+    // buggy `?` variant this call returns Err and the assertion fails — the
+    // differential channel is the helper's Result.
+    if std::env::var(LOG_CAPTURE_CHILD_ENV).ok().as_deref() != Some("entry") {
+        run_log_capture_test_in_subprocess(
+            "entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback",
+            "entry",
+        );
+        return;
+    }
+
+    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
+        RecordingFeeProvider::cold(),
+        Arc::new(FailingDecisionEvidenceWriter),
+    );
+    let strategy_id = unique_log_capture_strategy_id("entry");
+    strategy.config.strategy_id = strategy_id.clone();
+
+    let decision = minimal_entry_submission_decision();
+    let result = with_captured_error_log(
+        "binary_oracle_edge_taker entry skip evidence write failed",
+        &strategy_id,
+        || {
+            strategy.record_entry_skip_once(
+                1_000,
+                &decision,
+                BoltV3EntrySkipReasonCategory::NoSideSelected,
+                None,
+            )
+        },
+    );
+
+    assert!(
+        result.is_ok(),
+        "an entry-skip evidence write failure must not abort the strategy callback: {result:?}"
+    );
+    assert!(
+        strategy.last_recorded_entry_skip.is_some(),
+        "the dedupe key must still be set so the lost write is not retried in a tight loop"
+    );
+}
+
+#[test]
 fn exit_evaluation_evidence_records_accepted_rv_gate() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
     // RV ready at as_of == now == 1_200 → the gate accepts the snapshot.
@@ -1422,11 +2093,13 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
 
     strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-            Some(1_200),
-            Some(1_180),
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                Some(1_180),
+            ),
         )
         .expect("exit evaluation should not error with a ready realized-vol surface");
 
@@ -1468,11 +2141,13 @@ fn exit_evaluation_evidence_records_future_dated_rv_gate_with_delta() {
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 2_000);
 
     strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
-            Some(1_190),
-            None,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::BookDelta,
+                1_190,
+                None,
+            ),
         )
         .expect("exit evaluation should not error with a future-dated realized-vol surface");
 
@@ -1506,11 +2181,13 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
 
     // First evaluation submits a would-be exit (one record, outcome key = Exit).
     strategy
-        .try_submit_exit_order(
+        .try_submit_exit_order_for_trigger(
             1_200,
-            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-            Some(1_200),
-            None,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                1_200,
+                None,
+            ),
         )
         .expect("first shadow exit should pass evidence and admission");
 
@@ -1521,11 +2198,13 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
     for tick in 1_201..=1_204 {
         assert_eq!(
             strategy
-                .try_submit_exit_order(
+                .try_submit_exit_order_for_trigger(
                     tick,
-                    crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
-                    Some(tick as i64),
-                    None,
+                    ExitEvaluationTriggerContext::new(
+                        crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+                        tick,
+                        None,
+                    ),
                 )
                 .expect("latched exit evaluation should not error"),
             None,

@@ -84,6 +84,22 @@ impl RequoteBudget {
         self.window_cost
     }
 
+    pub fn max_cost_per_window(&self) -> u64 {
+        self.max_cost_per_window
+    }
+
+    pub fn window_ms(&self) -> u64 {
+        self.window_ms
+    }
+
+    pub fn min_interval_ms(&self) -> u64 {
+        self.min_interval_ms
+    }
+
+    pub fn last_emit_ms(&self) -> Option<u64> {
+        self.last_emit_ms
+    }
+
     fn evict(&mut self, now_ms: u64) {
         if now_ms <= self.window_ms {
             return;
@@ -175,6 +191,34 @@ impl RequoteBudgetPair {
     /// Total REST-call cost currently counted inside the venue REST window.
     pub fn rest_cost_in_window(&self) -> u64 {
         self.rest_calls.cost_in_window()
+    }
+
+    pub fn submit_command_cap(&self) -> u64 {
+        self.submit_commands.max_cost_per_window()
+    }
+
+    pub fn submit_window_ms(&self) -> u64 {
+        self.submit_commands.window_ms()
+    }
+
+    pub fn rest_cap_per_window(&self) -> u64 {
+        self.rest_calls.max_cost_per_window()
+    }
+
+    pub fn rest_window_ms(&self) -> u64 {
+        self.rest_calls.window_ms()
+    }
+
+    pub fn min_interval_ms(&self) -> u64 {
+        self.submit_commands
+            .min_interval_ms()
+            .max(self.rest_calls.min_interval_ms())
+    }
+
+    pub fn last_emit_ms(&self) -> Option<u64> {
+        self.submit_commands
+            .last_emit_ms()
+            .max(self.rest_calls.last_emit_ms())
     }
 
     /// Atomically reserve `submit_cost` submit commands and `rest_cost` REST calls.

@@ -4,15 +4,18 @@ use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
-    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
-    BoltV3OrderRejectReason, BoltV3PositionSizerRebuildAuditEvidence, BoltV3RejectSource,
+    BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
+    BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
+    BoltV3OrderIntentKind, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
+    BoltV3PositionSizerRebuildAuditEvidence, BoltV3RejectSource, BoltV3RequoteThrottleEvidence,
     BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
     BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
-use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
+use bolt_v2::bolt_v3_loss_governor::{
+    LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
+};
 use bolt_v2::bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingPolicy};
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
@@ -1128,6 +1131,14 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
         Ok(())
     }
 
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("synthetic entry-skip write failure"))
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("synthetic exit-decision write failure"))
+    }
+
     fn record_exit_evaluation(
         &self,
         _evidence: &BoltV3ExitEvaluationEvidence,
@@ -1144,6 +1155,13 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
 
     fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!("synthetic requote-throttle write failure"))
     }
 }
 
@@ -1255,6 +1273,18 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
         Ok(())
     }
 
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "blocking admission writer received entry-skip evidence"
+        ))
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "blocking admission writer received exit-decision evidence"
+        ))
+    }
+
     fn record_exit_evaluation(
         &self,
         _evidence: &BoltV3ExitEvaluationEvidence,
@@ -1271,6 +1301,15 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
 
     fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "blocking admission writer received requote-throttle evidence"
+        ))
     }
 }
 
@@ -1374,6 +1413,21 @@ impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
             .expect("order-reject failing writer mutex should not be poisoned")
             .push(evidence.clone());
         Err(anyhow::anyhow!("synthetic order-reject write failure"))
+    }
+
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -1483,6 +1537,21 @@ impl BoltV3DecisionEvidenceWriter for LossHaltFailingDecisionEvidenceWriter {
     fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
         Ok(())
     }
+
+    fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_requote_throttle(
+        &self,
+        _throttle: &BoltV3RequoteThrottleEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -1506,6 +1575,7 @@ fn loss_halt_evidence_write_failure_does_not_change_admission_outcome() {
         rolling_pnl: Some(Decimal::ZERO),
         current_equity: Some(Decimal::new(1_000, 0)),
         peak_equity: Some(Decimal::new(1_000, 0)),
+        source_observations: LossSourceObservationTimestamps::unobserved(),
     };
 
     let control_writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
@@ -1606,6 +1676,7 @@ fn stale_loss_halt_records_future_dated_reason_with_no_age() {
         rolling_pnl: Some(Decimal::ZERO),
         current_equity: Some(Decimal::new(1_000, 0)),
         peak_equity: Some(Decimal::new(1_000, 0)),
+        source_observations: LossSourceObservationTimestamps::unobserved(),
     });
 
     let error = admission
@@ -1740,6 +1811,7 @@ fn loss_governor_halt_is_mece_with_order_reject_evidence() {
         rolling_pnl: Some(Decimal::ZERO),
         current_equity: Some(Decimal::new(1_000, 0)),
         peak_equity: Some(Decimal::new(1_000, 0)),
+        source_observations: LossSourceObservationTimestamps::unobserved(),
     });
 
     let loss_error = loss_admission

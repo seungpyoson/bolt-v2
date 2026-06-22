@@ -934,10 +934,12 @@ mod tests {
     use crate::{
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-            BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence,
-            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-            BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
-            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+            BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
+            BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
+            BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
+            BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
+            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
+            BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
@@ -1058,6 +1060,14 @@ mod tests {
             Ok(())
         }
 
+        fn record_entry_skip(&self, _skip: &BoltV3EntrySkipEvidence) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received entry-skip evidence")
+        }
+
+        fn record_exit_decision(&self, _decision: &BoltV3ExitDecisionEvidence) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received exit-decision evidence")
+        }
+
         fn record_exit_evaluation(&self, _evidence: &BoltV3ExitEvaluationEvidence) -> Result<()> {
             Ok(())
         }
@@ -1067,6 +1077,10 @@ mod tests {
             _evidence: &BoltV3LossGovernorHaltEvidence,
         ) -> Result<()> {
             Ok(())
+        }
+
+        fn record_requote_throttle(&self, _throttle: &BoltV3RequoteThrottleEvidence) -> Result<()> {
+            anyhow::bail!("loss-protection noop writer received requote-throttle evidence")
         }
 
         fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> Result<()> {

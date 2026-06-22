@@ -526,7 +526,7 @@ jobs:
       - name: Build nextest archive binary sidecars
         if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
         env:
-          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
       - name: Build nextest archive
@@ -7110,11 +7110,19 @@ def main() -> int:
             """      - name: Build nextest archive binary sidecars
         if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
         env:
-          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
 """,
             "",
+        ),
+    )
+    assert_error(
+        "test-archive sidecar build must use dev profile debug knob",
+        replace_once(
+            BASE_WORKFLOW,
+            '          CARGO_PROFILE_DEV_DEBUG: "0"',
+            '          CARGO_PROFILE_TEST_DEBUG: "0"',
         ),
     )
     assert_error(

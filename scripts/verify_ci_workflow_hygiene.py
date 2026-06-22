@@ -500,6 +500,7 @@ TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_BUILD_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit == 'true'"
+TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
     'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins'
 )
@@ -8516,6 +8517,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
             or TEST_ARCHIVE_SIDECAR_BUILD_COMMAND not in archive_text
         ):
             errors.append("test-archive must build CARGO_BIN_EXE sidecars on archive cache hit")
+        sidecar_block = named_step_block(archive_lines, "Build nextest archive binary sidecars")
+        if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PROFILE_ENV not in uncommented_text(sidecar_block):
+            errors.append("test-archive sidecar build must use dev profile debug knob")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:

@@ -502,7 +502,7 @@ jobs:
         env:
           # Archived integration tests can embed CARGO_BIN_EXE_* paths; cache-hit
           # runs still need those package binaries present at the managed target dir.
-          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
 

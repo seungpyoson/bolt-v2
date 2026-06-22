@@ -180,11 +180,17 @@ check("D6 parseJsonl rejects non-object lines", () => {
   assertEqual(result.errors.length, 3, "each bad line gets an error");
   assertTrue(result.errors.every(e => /not a JSON object/.test(e)), "descriptive error");
 });
-check("D6 parseJsonl still accepts real objects", () => {
+check("D6 parseJsonl still accepts real (schema-2) objects", () => {
+  // Use minimal VALID schema-2 sample rows rather than arbitrary {"a":1} blobs:
+  // for a health viewer, "accepts an object" is only meaningful when the object
+  // is a plausible sample row. Shape acceptance is the point here; the rendered
+  // outcome for these rows is asserted by the Fix B render-level tests.
   const parseJsonl = requireFn(ctx, "parseJsonl");
-  const result = parseJsonl("{\"a\":1}\n{\"b\":2}");
+  const result = parseJsonl("{\"schema_version\":2,\"service\":{\"active_state\":\"active\"}}\n{\"schema_version\":2,\"disk\":{\"used_pct\":20}}");
   assertEqual(result.records.length, 2);
   assertEqual(result.errors.length, 0);
+  assertEqual(result.records[0].schema_version, 2);
+  assertEqual(result.records[1].disk.used_pct, 20);
 });
 
 // D2: standing degraded state in the latest sample produces a banner reason
@@ -298,7 +304,10 @@ check("R2-5 serviceBadge active+n_restarts>0 -> amb", () => {
 });
 check("R2-5 serviceBadge clean active -> green", () => {
   const serviceBadge = requireFn(ctx, "serviceBadge");
-  const html = serviceBadge({ oom_killed: null, service: { active_state: "active", sub_state: "running", n_restarts: 0, result: "success" } });
+  // A genuinely clean record is schema-2 with no collector errors AND a healthy
+  // service. Without schema_version the record is degraded at the record level
+  // (Fix A), so it would no longer be green — the sanity input must be clean.
+  const html = serviceBadge({ schema_version: 2, oom_killed: null, service: { active_state: "active", sub_state: "running", n_restarts: 0, result: "success" } });
   assertTrue(/badge grn/.test(html), "a clean active service is still green");
 });
 check("R2-5 serviceBadge no service data -> degraded, never blank", () => {
@@ -375,7 +384,7 @@ check("E1 serviceBadge active/exited -> amb, not green", () => {
 });
 check("E1 serviceBadge active/running clean -> green (unchanged)", () => {
   const serviceBadge = requireFn(ctx, "serviceBadge");
-  const html = serviceBadge({ service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } });
+  const html = serviceBadge({ schema_version: 2, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } });
   assertTrue(/badge grn/.test(html), "clean active/running is still green");
 });
 
@@ -408,7 +417,7 @@ check("E4 serviceBadge non-finite n_restarts -> not green", () => {
 });
 check("E4 serviceBadge null n_restarts stays green-eligible", () => {
   const serviceBadge = requireFn(ctx, "serviceBadge");
-  const html = serviceBadge({ service: { active_state: "active", sub_state: "running", result: "success", n_restarts: null } });
+  const html = serviceBadge({ schema_version: 2, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: null } });
   assertTrue(/badge grn/.test(html), "null/absent restart field may stay green");
 });
 
@@ -592,6 +601,130 @@ check("Fix G bannerReasons flags missing schema_version", () => {
   assertTrue(
     reasons.some(r => /schema_version missing/.test(r)),
     "missing schema_version must fail closed in the banner"
+  );
+});
+
+// === PR #886 review round (Fix A: record-level integrity caps the badge) =====
+//
+// serviceBadge previously computed PURELY from the service block and ignored
+// record-level integrity, so a record that bannerReasons simultaneously flags
+// (missing schema_version, or a non-empty errors[]) could render a healthy
+// GREEN badge — a self-contradictory dashboard. Fix A caps green via the shared
+// recordHasIntegrityIssue predicate. These tests are DIFFERENTIAL: they FAIL
+// against the pre-fix host-health.html and PASS against the fix.
+
+check("Fix A recordHasIntegrityIssue predicate", () => {
+  const recordHasIntegrityIssue = requireFn(ctx, "recordHasIntegrityIssue");
+  assertEqual(recordHasIntegrityIssue(null), true, "falsy record is an integrity issue");
+  assertEqual(recordHasIntegrityIssue({}), true, "missing schema_version is an integrity issue");
+  assertEqual(recordHasIntegrityIssue({ schema_version: null }), true, "null schema_version is an integrity issue");
+  assertEqual(recordHasIntegrityIssue({ schema_version: 99 }), true, "unexpected schema_version is an integrity issue");
+  assertEqual(recordHasIntegrityIssue({ schema_version: 2, errors: ["boom"] }), true, "non-empty errors[] is an integrity issue");
+  assertEqual(recordHasIntegrityIssue({ schema_version: 2, errors: [] }), false, "schema-2 with empty errors is clean");
+  assertEqual(recordHasIntegrityIssue({ schema_version: 2 }), false, "schema-2 with no errors field is clean");
+});
+
+check("Fix A serviceBadge missing schema_version -> not green (banner contradiction)", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  // Healthy-looking service, but the record has NO schema_version. bannerReasons
+  // flags it; the badge must not contradict that with green.
+  const latest = { service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const html = serviceBadge(latest);
+  assertTrue(!/badge grn/.test(html), "missing-schema record must NOT render green");
+  assertTrue(/badge amb/.test(html), "degraded record renders amber");
+  assertTrue(
+    bannerReasons(latest, [latest]).some(r => /schema_version missing/.test(r)),
+    "banner still flags the missing schema_version (no divergence)"
+  );
+});
+
+check("Fix A serviceBadge non-empty errors[] -> not green (banner contradiction)", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  // schema-2, healthy-looking service, but the sampler reported a collector
+  // error. The badge must not read green while the banner reports the error.
+  const latest = {
+    schema_version: 2,
+    errors: ["service: NRestarts malformed: 'x'"],
+    service: { active_state: "active", sub_state: "running", result: "success", n_restarts: null }
+  };
+  const html = serviceBadge(latest);
+  assertTrue(!/badge grn/.test(html), "errors[]-non-empty record must NOT render green");
+  assertTrue(/badge amb/.test(html), "degraded record renders amber");
+  assertTrue(
+    bannerReasons(latest, [latest]).some(r => /collector error/.test(r)),
+    "banner still flags the collector error (no divergence)"
+  );
+});
+
+check("Fix A serviceBadge unexpected schema_version -> not green", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ schema_version: 99, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } });
+  assertTrue(!/badge grn/.test(html), "schema!=2 record must NOT render green");
+  assertTrue(/badge amb/.test(html), "degraded record renders amber");
+});
+
+check("Fix A integrity cap does not over-suppress: clean schema-2 stays green", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const html = serviceBadge({ schema_version: 2, errors: [], service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } });
+  assertTrue(/badge grn/.test(html), "a fully-clean schema-2 record is still green");
+});
+
+check("Fix A integrity cap does not weaken OOM red on a degraded record", () => {
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  // No schema_version (integrity issue) AND oom_killed: OOM-red must win, the
+  // amber cap must not override the stronger red signal.
+  const html = serviceBadge({ oom_killed: true, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } });
+  assertTrue(/badge red/.test(html), "OOM red survives the integrity-issue path");
+  assertTrue(!/badge grn/.test(html), "must NOT be green");
+});
+
+// === PR #886 review round (Fix B: replace vacuous parser tests) ==============
+//
+// The old D6 acceptance test fed arbitrary objects ({"a":1},{"b":2}) — vacuous
+// for a health viewer because it never asserts the RENDERED badge/banner outcome
+// for a malformed-shape row. Replaced below with minimal VALID schema-2 samples
+// where parser-shape coverage is the point, plus render-level assertions tied to
+// Fix A.
+
+check("Fix B parseJsonl accepts minimal valid schema-2 objects", () => {
+  const parseJsonl = requireFn(ctx, "parseJsonl");
+  const result = parseJsonl("{\"schema_version\":2}\n{\"schema_version\":2,\"service\":{\"active_state\":\"active\"}}");
+  assertEqual(result.records.length, 2, "two valid schema-2 rows parse as records");
+  assertEqual(result.errors.length, 0, "no parse errors on valid rows");
+  assertEqual(result.records[0].schema_version, 2);
+  assertEqual(result.records[1].service.active_state, "active");
+});
+
+check("Fix B render-level: missing-schema healthy-service row is NOT green", () => {
+  const parseJsonl = requireFn(ctx, "parseJsonl");
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  // A malformed-SHAPE row (no schema_version) that nonetheless carries a
+  // healthy-looking service. Parser accepts the object; the RENDER must fail
+  // closed: no green badge, banner flags it.
+  const result = parseJsonl("{\"service\":{\"active_state\":\"active\",\"sub_state\":\"running\",\"result\":\"success\",\"n_restarts\":0}}");
+  assertEqual(result.records.length, 1, "the row parses as a record");
+  const record = result.records[0];
+  assertTrue(!/badge grn/.test(serviceBadge(record)), "missing-schema row must not render green");
+  assertTrue(
+    bannerReasons(record, [record]).some(r => /schema_version missing/.test(r)),
+    "banner flags the missing schema_version"
+  );
+});
+
+check("Fix B render-level: errors[]-non-empty healthy-service row is NOT green", () => {
+  const parseJsonl = requireFn(ctx, "parseJsonl");
+  const serviceBadge = requireFn(ctx, "serviceBadge");
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const result = parseJsonl("{\"schema_version\":2,\"errors\":[\"collector boom\"],\"service\":{\"active_state\":\"active\",\"sub_state\":\"running\",\"result\":\"success\",\"n_restarts\":0}}");
+  assertEqual(result.records.length, 1, "the row parses as a record");
+  const record = result.records[0];
+  assertTrue(!/badge grn/.test(serviceBadge(record)), "errors[]-non-empty row must not render green");
+  assertTrue(
+    bannerReasons(record, [record]).some(r => /collector error/.test(r)),
+    "banner flags the collector error"
   );
 });
 

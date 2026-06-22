@@ -530,6 +530,17 @@
       } else if (active === "activating" || active === "deactivating") {
         klass = "amb";
       }
+      // Record-level integrity caps green: a record the banner flags at the
+      // record level (missing/unexpected schema_version, or sampler-reported
+      // collector errors) must never render a healthy-green service badge, even
+      // when the service block itself looks clean. Downgrade green to amber
+      // (degraded) without weakening the OOM-red, service-unknown, or
+      // failed/restart downgrades above. The text is unchanged; only the class
+      // changes. Mirrors bannerReasons' schema/errors conditions via the shared
+      // recordHasIntegrityIssue predicate.
+      if (klass === "grn" && recordHasIntegrityIssue(record)) {
+        klass = "amb";
+      }
       return `<span class="badge ${klass}">${escapeHtml(text)}</span>`;
     }
 
@@ -600,11 +611,33 @@
       return !service || (!service.active_state && !service.sub_state);
     }
 
+    function recordHasIntegrityIssue(record) {
+      // Record-LEVEL integrity gate: true when the record is unusable or the
+      // sampler itself reported trouble, independent of the service block. This
+      // is the SINGLE SOURCE OF TRUTH for the schema_version + errors[]
+      // conditions; bannerReasons derives its (richer-worded) schema/errors
+      // pushes from the SAME conditions below so the badge and the banner can
+      // never disagree. serviceBadge consumes this to cap a green badge: a
+      // record the banner flags at the record level must never read as healthy
+      // green (item: false-green while degraded).
+      if (!record) return true;
+      if (record.schema_version === undefined || record.schema_version === null) return true;
+      if (record.schema_version !== 2) return true;
+      if (Array.isArray(record.errors) && record.errors.length > 0) return true;
+      return false;
+    }
+
     function bannerReasons(latest, records) {
       // Pure: returns the list of human-readable banner reasons for a record set.
       // Kept testable so the false-green / standing-state cases are verifiable.
       const reasons = [];
       if (!latest) return reasons;
+      // SINGLE SOURCE OF TRUTH: these schema_version + errors[] conditions are
+      // exactly the record-level conditions in recordHasIntegrityIssue, which
+      // serviceBadge uses to cap a green badge. The boolean gate lives there;
+      // here we emit the richer human wording (missing vs unexpected schema,
+      // error count). Keep the two in lockstep — any condition added here must
+      // also flip recordHasIntegrityIssue, or the badge and banner will drift.
       // Preserve visibility for additive/future records, but fail loud when the
       // sample schema is not the schema-2 shape this viewer expects.
       if (latest.schema_version === undefined || latest.schema_version === null) {

@@ -578,7 +578,14 @@
     }
 
     function oomIncreased(records) {
-      return counterIncreased(records, record => cgroupOomCount(record));
+      // The increase trend MUST be computed only from records whose cgroup data
+      // is trustworthy. A record with one garbage mirror is integrity-capped
+      // (cgroupMalformed) -- letting its count contribute to the trend would
+      // contradict that cap and let a malformed sample DRIVE a "real earlier
+      // increase" (e.g. the only 0->5 step coming from a record whose top mirror
+      // is garbage). cgroupOomCountTrusted returns NaN for such records, so
+      // counterIncreased (which rejects non-finite values) skips them.
+      return counterIncreased(records, record => cgroupOomCountTrusted(record));
     }
 
     function cgroupOomCount(record) {
@@ -601,6 +608,18 @@
       if (top.valid) return top.value;
       if (nested.valid) return nested.value;
       return NaN;
+    }
+
+    function cgroupOomCountTrusted(record) {
+      // The cgroup count usable for the increase TREND: the record's count, but
+      // ONLY when its mirrors are not malformed. A cgroupMalformed record (one
+      // garbage mirror) is integrity-capped and must not contribute to a
+      // "trustworthy earlier increase", so it reads as UNAVAILABLE (NaN) here --
+      // consistent with the same predicate that caps the green badge. The
+      // concrete-count render sites keep using cgroupOomCount directly (they are
+      // independently gated on !cgroupMalformed(latest)); only the trend detector
+      // needs this stricter, malformed-excluding view.
+      return cgroupMalformed(record) ? NaN : cgroupOomCount(record);
     }
 
     // A systemd Result is degraded if it is present and anything OTHER than
@@ -891,11 +910,13 @@
       // CONCRETE count untrustworthy, so the cumulative line and any "to N"
       // endpoint are dropped (a concrete number would contradict the "cgroup
       // oom_kill count malformed" integrity reason -- self-contradictory signal,
-      // viewer contract). BUT a real increase is detected by counterIncreased
-      // from earlier VALID records (it skips invalid samples), so it is a
-      // TRUSTWORTHY historical signal that must NOT be erased merely because the
-      // latest sample is corrupt: surface the trend without the untrustworthy
-      // count rather than going silent on a genuine earlier OOM.
+      // viewer contract). BUT a real increase is detected by oomIncreased over
+      // cgroupOomCountTrusted, which counts ONLY records that are not themselves
+      // cgroupMalformed (malformed records read as NaN and are skipped) -- so a
+      // surviving trend is always between TRUSTWORTHY samples and must NOT be
+      // erased merely because the LATEST sample is corrupt: surface the trend
+      // without the untrustworthy count rather than going silent on a genuine
+      // earlier OOM.
       const latestCgroupMalformed = cgroupMalformed(latest);
       const cgroupOomKills = cgroupOomCount(latest);
       const cumulative = Number.isFinite(cgroupOomKills) ? cgroupOomKills : 0;

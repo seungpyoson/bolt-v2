@@ -1442,6 +1442,32 @@ check("CLASS guard: a malformed latest with NO earlier increase stays count-sile
   );
 });
 
+check("CLASS: a malformed record must NOT drive the earlier-increase trend (badge-cap consistency)", () => {
+  // Round-8 (GPT): oomIncreased used cgroupOomCount, which yields a value when
+  // ONE mirror is valid -- so a cgroupMalformed record (one garbage mirror) could
+  // contribute the only 0 -> 5 step and drive a "trustworthy earlier increase",
+  // contradicting the badge cap that declares THAT record untrustworthy. The
+  // trend must exclude malformed records (oomIncreased over cgroupOomCountTrusted).
+  const bannerReasons = requireFn(ctx, "bannerReasons");
+  const base = { schema_version: 2, oom_killed: false, disk: { used_pct: 10 }, service: { active_state: "active", sub_state: "running", result: "success", n_restarts: 0 } };
+  const records = [
+    { ...base, sampled_at: "t0", cgroup_oom_kills: 0, service: { ...base.service, cgroup_oom_kills: 0 } },
+    // t1: top mirror garbage (cgroupMalformed) but nested=5 -- old code counted the 5
+    { ...base, sampled_at: "t1", cgroup_oom_kills: "bad", service: { ...base.service, cgroup_oom_kills: 5 } },
+    { ...base, sampled_at: "t2", cgroup_oom_kills: "bad-top", service: { ...base.service, cgroup_oom_kills: "bad-nested" } },
+  ];
+  const latest = records[2];
+  const reasons = bannerReasons(latest, records);
+  assertTrue(
+    !reasons.some(r => /increased earlier in this file/.test(r) || /increased to \d/.test(r)),
+    `a trend whose only increase comes from a malformed record must not render; got ${JSON.stringify(reasons)}`,
+  );
+  assertTrue(
+    reasons.some(r => /cgroup oom_kill count malformed/.test(r)),
+    `the malformed reason must still be surfaced; got ${JSON.stringify(reasons)}`,
+  );
+});
+
 check("CLASS (behavioral): each KNOWN numeric health field surfaces a present-invalid value", () => {
   // Behavioral check over the numeric fields that exist TODAY. This is a hand
   // list -- it proves the known fields surface, but it cannot catch a NEW field

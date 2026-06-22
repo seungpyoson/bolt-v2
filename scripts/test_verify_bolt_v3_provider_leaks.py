@@ -1018,6 +1018,39 @@ def test_strict_mode_fails_on_fixture_findings() -> None:
         assert "concrete NT provider factory import" in result.stderr
 
 
+def test_scan_root_cache_does_not_mask_changed_file_content() -> None:
+    """scan_root memoizes stripped file text per path, but the cache is scoped
+    to a single scan_root call. Hoisting it to module scope would let a file
+    edited between two scans be served from stale cache, masking a
+    newly-introduced leak (fail open). Scan with a clean readiness file, then
+    overwrite the SAME path with a provider leak on the same module instance and
+    rescan: the leak must surface."""
+    verifier = load_verifier()
+    base = binding_files() | {
+        "src/bolt_v3_providers/market_data.rs": 'pub const BITMEX_KEY: &str = "BITMEX";\n',
+    }
+    readiness = "src/bolt_v3_readiness.rs"
+    clean = "pub enum Mode {\n    Quote,\n    Book,\n}\n"
+    leak = (
+        "pub struct BitmexAdapterLeak;\n\n"
+        "pub fn leaked(kind: &str) -> bool {\n"
+        '    kind == "bitmex"\n'
+        "}\n"
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(root, base | {readiness: clean})
+        assert verifier.scan_root(root) == [], "clean readiness fixture must have no findings"
+
+        # Overwrite the SAME path with leaky content and rescan on the same module.
+        write_fixture(root, {readiness: leak})
+        messages = "\n".join(finding.message for finding in verifier.scan_root(root))
+        assert "provider-key string literal in core production code" in messages, (
+            "scan_root must re-read changed file content; a hoisted text cache "
+            "masked a newly-introduced provider-key leak (fail open)"
+        )
+
+
 def main() -> int:
     tests = [
         test_clean_fixture_has_no_findings,
@@ -1051,6 +1084,7 @@ def main() -> int:
         test_char_literal_parser_accepts_rust_escape_lengths,
         test_char_literal_braces_do_not_keep_cfg_test_open,
         test_strict_mode_fails_on_fixture_findings,
+        test_scan_root_cache_does_not_mask_changed_file_content,
     ]
     for test in tests:
         test()

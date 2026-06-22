@@ -2,13 +2,14 @@ use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationRejectionReason, ReservationRequest,
 };
 use crate::bolt_v3_decision_evidence::{
-    BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3BasketAdmissionDecisionEvidence,
-    BoltV3BasketAdmissionOutcome, BoltV3DecisionEvidenceWriter, BoltV3LossGovernorHaltEvidence,
-    BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
-    BoltV3OrderRejectReason, BoltV3PositionSizerRebuildAuditEvidence,
-    BoltV3RecoveredSubmitReservationEvidence, BoltV3RejectSource, BoltV3StaleLossReason,
-    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
-    compiled_order_price_source,
+    BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
+    BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
+    BoltV3DecisionEvidenceWriter, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
+    BoltV3OrderIntentKind, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
+    BoltV3PositionSizerRebuildAuditEvidence, BoltV3RecoveredSubmitReservationEvidence,
+    BoltV3RejectSource, BoltV3StaleLossReason, BoltV3SubmitReservationFillEvidence,
+    BoltV3SubmitReservationMetadataEvidence, EpisodeFirstNs, compiled_order_price_source,
+    evict_oldest_episodes_over_cap,
 };
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_loss_governor::{
@@ -186,6 +187,12 @@ struct RejectEpisode {
     count: u32,
     first_ns: u64,
     last_client_order_id: String,
+}
+
+impl EpisodeFirstNs for RejectEpisode {
+    fn first_ns(&self) -> u64 {
+        self.first_ns
+    }
 }
 
 #[derive(Debug)]
@@ -1615,12 +1622,19 @@ impl BoltV3SubmitAdmissionState {
             episode.count = episode.count.saturating_add(1);
             episode.last_client_order_id = request.client_order_id.clone();
             let elapsed_ns = now_ns.saturating_sub(episode.first_ns);
-            (
-                prior_client_order_id,
-                episode.count,
-                elapsed_ns,
-                episode.count.is_power_of_two(),
-            )
+            let retry_count = episode.count;
+            let should_emit = episode.count.is_power_of_two();
+            // Bound the map while the lock is held: the get_mut-first insert/update
+            // above is the only growth point, and admits clear() the whole map, so a
+            // sustained-reject regime (no admit ever fires) is the only path that
+            // grows it. Eviction drops only the oldest evidence-sampling episode and
+            // never touches a trading decision. Re-uses the shared helper so the
+            // bound lives in exactly one place.
+            evict_oldest_episodes_over_cap(
+                &mut reject_episodes,
+                BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES,
+            );
+            (prior_client_order_id, retry_count, elapsed_ns, should_emit)
         };
         if !should_emit {
             return;
@@ -2145,6 +2159,24 @@ impl BoltV3SubmitAdmissionState {
             .lock()
             .expect("submit admission state mutex should not be poisoned")
             .admitted_order_count
+    }
+
+    /// Number of retained reject-episode keys. Observability-only accessor used to
+    /// prove the reject-episode map stays bounded under a sustained-reject regime;
+    /// it never participates in an admission decision.
+    pub fn reject_episode_count(&self) -> usize {
+        self.reject_episodes
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .len()
+    }
+
+    /// Upper bound the reject-episode map is held to. Surfaces the shared
+    /// `BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES` source-of-truth so callers (and the
+    /// bound test) can assert against it without re-stating the literal.
+    #[must_use]
+    pub fn reject_episode_capacity() -> usize {
+        BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES
     }
 }
 

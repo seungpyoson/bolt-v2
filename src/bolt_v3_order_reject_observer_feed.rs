@@ -8,8 +8,9 @@ use nautilus_model::{events::OrderEventAny, identifiers::AccountId};
 
 use crate::{
     bolt_v3_decision_evidence::{
-        BoltV3DecisionEvidenceWriter, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
-        BoltV3RejectSource,
+        BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES, BoltV3DecisionEvidenceWriter,
+        BoltV3OrderRejectEvidence, BoltV3OrderRejectReason, BoltV3RejectSource, EpisodeFirstNs,
+        evict_oldest_episodes_over_cap,
     },
     nt_runtime_capture::order_events_pattern,
 };
@@ -35,13 +36,6 @@ const REJECT_REASON_BALANCE_NEEDLE: &str = "balance";
 const REJECT_REASON_DUPLICATE_NEEDLE: &str = "duplicate";
 const REJECT_OBSERVER_INITIAL_EPISODE_COUNT: u32 = 0;
 const REJECT_OBSERVER_EPISODE_INCREMENT: u32 = 1;
-/// Upper bound on retained reject episodes. The map is keyed by
-/// `{instrument_id}/{source}/{reason}` and instrument ids are high-cardinality
-/// (e.g. Polymarket token ids churn), so without a cap it grows unbounded over a
-/// long-running node. Eviction is oldest-first and only resets that instrument's
-/// evidence-sampling counter, never any trading decision. Set generously so
-/// eviction is rare in practice.
-const REJECT_OBSERVER_MAX_EPISODES: usize = 4096;
 /// Placeholder substituted for a wallet/proxy address run (a `0x`-prefixed hex
 /// run or a bare run of >= `REJECT_REASON_ADDR_HEX_MIN_LEN` hex characters) in
 /// the verbatim venue reason before it is recorded or logged.
@@ -63,6 +57,12 @@ struct RejectObserverEpisode {
     count: u32,
     first_ns: u64,
     last_client_order_id: String,
+}
+
+impl EpisodeFirstNs for RejectObserverEpisode {
+    fn first_ns(&self) -> u64 {
+        self.first_ns
+    }
 }
 
 pub struct OrderRejectObserverFeedSubscription {
@@ -234,28 +234,10 @@ impl BoltV3OrderRejectObserverFeed {
     /// Bound the episode map: while it exceeds the cap, drop the entry with the
     /// smallest `first_ns` (oldest episode). Eviction only discards an
     /// evidence-sampling counter, so a later reject for the same instrument simply
-    /// re-starts its episode; no trading state is touched.
+    /// re-starts its episode; no trading state is touched. Delegates to the shared
+    /// `evict_oldest_episodes_over_cap` helper so the bound lives in one place.
     fn evict_oldest_episodes_over_cap(&mut self) {
-        evict_oldest_episodes_over_cap(&mut self.episodes);
-    }
-}
-
-/// While the map exceeds the cap, drop the entry with the smallest `first_ns`
-/// (oldest episode). A single linear scan per eviction is adequate at this cap and
-/// avoids pulling in an LRU dependency. Free function so the bound can be tested
-/// in isolation without constructing a feed.
-fn evict_oldest_episodes_over_cap(episodes: &mut BTreeMap<String, RejectObserverEpisode>) {
-    while episodes.len() > REJECT_OBSERVER_MAX_EPISODES {
-        let oldest_key = episodes
-            .iter()
-            .min_by_key(|(_, episode)| episode.first_ns)
-            .map(|(key, _)| key.clone());
-        match oldest_key {
-            Some(key) => {
-                episodes.remove(&key);
-            }
-            None => break,
-        }
+        evict_oldest_episodes_over_cap(&mut self.episodes, BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
     }
 }
 
@@ -509,7 +491,7 @@ mod tests {
         let mut episodes: BTreeMap<String, RejectObserverEpisode> = BTreeMap::new();
         // Insert one past the cap, with strictly increasing first_ns so the oldest
         // (first_ns == 0) is unambiguous.
-        let over_cap = REJECT_OBSERVER_MAX_EPISODES + 1;
+        let over_cap = BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES + 1;
         for index in 0..over_cap {
             episodes.insert(
                 format!("instrument-{index}/venue/other"),
@@ -524,9 +506,9 @@ mod tests {
         let oldest_key = "instrument-0/venue/other".to_string();
         assert!(episodes.contains_key(&oldest_key));
 
-        evict_oldest_episodes_over_cap(&mut episodes);
+        evict_oldest_episodes_over_cap(&mut episodes, BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
 
-        assert_eq!(episodes.len(), REJECT_OBSERVER_MAX_EPISODES);
+        assert_eq!(episodes.len(), BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES);
         assert!(
             !episodes.contains_key(&oldest_key),
             "the oldest episode (smallest first_ns) must be evicted first"

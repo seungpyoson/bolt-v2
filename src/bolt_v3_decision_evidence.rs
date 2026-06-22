@@ -46,6 +46,45 @@ pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
 pub const BOLT_V3_ORDER_REJECT_GATE_ID: &str = "bolt_v3.order_reject";
 pub const BOLT_V3_ORDER_REJECT_RECORD_KIND: &str = "order_reject";
 
+/// Single source of truth for the upper bound on retained reject-episode maps. Both
+/// the submit-admission reject-episode map and the venue/NT order-reject observer
+/// feed key by high-cardinality identifiers (instrument ids churn, e.g. Polymarket
+/// token ids), so without a cap either map grows unbounded over a long-running node.
+/// Eviction is oldest-first and only resets an evidence-sampling counter; it never
+/// touches any trading decision. Set generously so eviction is rare in practice.
+pub(crate) const BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES: usize = 4096;
+
+/// Implemented by reject-episode value types so the shared bounded-map helper can
+/// rank episodes by age (oldest-first) without knowing the concrete struct.
+pub(crate) trait EpisodeFirstNs {
+    /// Nanosecond timestamp of the first observation in this episode. Smaller is
+    /// older, and the oldest episode is evicted first when the map exceeds its cap.
+    fn first_ns(&self) -> u64;
+}
+
+/// While `map` exceeds `cap`, drop the entry with the smallest `first_ns` (oldest
+/// episode). A single linear scan per eviction is adequate at this cap and avoids
+/// pulling in an LRU dependency. Shared by every reject-episode map so the eviction
+/// semantics live in exactly one place. Eviction only discards an evidence-sampling
+/// counter; a later reject for the same key simply re-starts its episode.
+pub(crate) fn evict_oldest_episodes_over_cap<V: EpisodeFirstNs>(
+    map: &mut BTreeMap<String, V>,
+    cap: usize,
+) {
+    while map.len() > cap {
+        let oldest_key = map
+            .iter()
+            .min_by_key(|(_, episode)| episode.first_ns())
+            .map(|(key, _)| key.clone());
+        match oldest_key {
+            Some(key) => {
+                map.remove(&key);
+            }
+            None => break,
+        }
+    }
+}
+
 pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_strategy_input_snapshot(
         &self,

@@ -382,6 +382,45 @@ fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
 }
 
 #[test]
+fn sustained_rejects_over_distinct_keys_bound_the_reject_episode_map() {
+    // RCA #885 R1: the reject-episode map is cleared only on an Admitted outcome.
+    // Under a sustained-reject regime with rotating high-cardinality instrument ids
+    // (and no admit ever firing), the map must NOT grow without bound. Drive
+    // `cap + margin` DISTINCT instrument ids, each over the notional cap so the
+    // outcome is RejectedNotionalCapExceeded, with NO interleaved admit, and assert
+    // the map is held at the shared cap rather than the number of inserted keys.
+    //
+    // Without the bound this asserts `len() == cap + margin` (every key retained)
+    // and fails; with the bound it asserts `len() == cap`.
+    let admission = limited_admission(u32::MAX, Decimal::new(1, 0));
+    let cap = BoltV3SubmitAdmissionState::reject_episode_capacity();
+    let margin = 5usize;
+    let inserted = cap + margin;
+
+    for index in 0..inserted {
+        let mut request = submit_request(Decimal::new(2, 0));
+        // Distinct instrument id per iteration => distinct stable_episode_key
+        // (`{instrument_id}/{side}/{outcome}`), so each reject is a new episode.
+        request.instrument_id = format!("instrument-{index}");
+        let error = admission
+            .admit(&request)
+            .expect_err("over-cap notional must reject");
+        assert!(matches!(
+            error,
+            BoltV3SubmitAdmissionError::NotionalCapExceeded
+        ));
+    }
+
+    // No admit ever fired, so the only thing keeping the map finite is eviction.
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(
+        admission.reject_episode_count(),
+        cap,
+        "reject-episode map must be bounded at the shared cap, not the {inserted} inserted keys"
+    );
+}
+
+#[test]
 fn notional_equal_to_cap_is_admitted() {
     let admission = limited_admission(1, Decimal::new(1, 0));
 

@@ -18947,12 +18947,12 @@ classification = "order_reject_observer_episode_key_template"
 reason = "Stable episode-key template joining instrument, reject source, and reject reason while intentionally excluding client_order_id so RCA #885 client-order-id churn remains correlated."
 
 [[allowed]]
-path = "src/bolt_v3_order_reject_observer_feed.rs"
+path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
 literal = "4096"
-context = '''const REJECT_OBSERVER_MAX_EPISODES: usize = 4096;'''
-classification = "order_reject_observer_episode_map_bound"
-reason = "Upper bound on retained venue/NT reject episodes so the durable RCA #885 observability map cannot grow unbounded under high-cardinality instrument ids; oldest-first eviction discards only a sampling counter and never gates submissions."
+context = '''pub(crate) const BOLT_V3_REJECT_EVIDENCE_MAX_EPISODES: usize = 4096;'''
+classification = "reject_evidence_episode_map_bound"
+reason = "Single-source upper bound on retained reject-episode maps (submit-admission reject episodes and the venue/NT order-reject observer feed) so the durable RCA #885 observability maps cannot grow unbounded under high-cardinality instrument ids; oldest-first eviction discards only a sampling counter and never gates submissions."
 
 [[allowed]]
 path = "src/bolt_v3_order_reject_observer_feed.rs"

@@ -1869,8 +1869,10 @@ mod tests {
         // the `NoTargetConfigured => Ok(())` degrade WITHOUT reaching the real
         // IMDS endpoint (no gating binding means the host is never observed),
         // so the test is hermetic — no 169.254.x network call. The
-        // `Mismatched => Err` mapping is covered by `verify_deploy_target`
-        // unit tests in `bolt_v3_deploy_target.rs`.
+        // The `Mismatched => Err` and observe-error fail-closed exits of
+        // `run_loaded_target_verify` are pinned directly by
+        // `run_loaded_target_verify_errors_when_host_facts_mismatch_configured_target`
+        // and `run_loaded_target_verify_errors_when_host_unobservable_for_configured_target`.
         let temp = tempfile::tempdir().expect("tempdir should create");
         let mut context =
             OpsLaunchContext::new("fixture-profile".to_string(), temp.path().to_path_buf());
@@ -1923,6 +1925,53 @@ mod tests {
             observed.is_none(),
             "an unconfigured target must observe no host facts"
         );
+    }
+
+    #[test]
+    fn run_loaded_target_verify_errors_when_host_facts_mismatch_configured_target() {
+        // Fail-closed launch gate: a configured gating binding whose value
+        // differs from the observed host must abort the launch (Err), never
+        // silently proceed. Pins the `Mismatched => Err` arm of
+        // `run_loaded_target_verify`; flipping that arm to `Ok(None)` makes this
+        // test fail. The injected fake source keeps it hermetic (no IMDS call).
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        std::fs::write(
+            temp.path().join("deploy.toml"),
+            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
+        )
+        .expect("deploy.toml fixture should write");
+        let source = FakeHostFactsSource::facts(ObservedHostFacts {
+            region: Some("region-x".to_string()),
+            availability_zone: Some("region-x-zone-a".to_string()),
+            instance_id: Some("instance-other".to_string()),
+        });
+
+        let error = run_loaded_target_verify(temp.path(), &source)
+            .expect_err("a configured target that does not match the host must fail closed");
+
+        assert!(
+            error.to_string().contains("do not match the running host"),
+            "the abort message must name the host mismatch: {error}"
+        );
+    }
+
+    #[test]
+    fn run_loaded_target_verify_errors_when_host_unobservable_for_configured_target() {
+        // Fail-closed on an unobservable host: with a gating binding configured,
+        // an erroring host-facts source must abort the launch (Err propagated
+        // from `verify_deploy_target`), never degrade to `Ok(None)`. Without a
+        // gating binding the source is never consulted, so this fail-closed path
+        // is only reachable with a configured target.
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        std::fs::write(
+            temp.path().join("deploy.toml"),
+            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
+        )
+        .expect("deploy.toml fixture should write");
+        let source = FakeHostFactsSource::erroring();
+
+        run_loaded_target_verify(temp.path(), &source)
+            .expect_err("an unobservable host with a configured target must fail closed");
     }
 
     #[test]

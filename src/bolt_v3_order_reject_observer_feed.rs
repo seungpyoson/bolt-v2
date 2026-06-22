@@ -151,15 +151,11 @@ impl BoltV3OrderRejectObserverFeed {
             reject_source_key(reject_source),
             reject_reason_key(reject_reason)
         );
-        let (prior_client_order_id, retry_count, elapsed_ns) = {
-            let episode = self
-                .episodes
-                .entry(stable_episode_key.clone())
-                .or_insert_with(|| RejectObserverEpisode {
-                    count: REJECT_OBSERVER_INITIAL_EPISODE_COUNT,
-                    first_ns: ts_event_ns,
-                    last_client_order_id: String::new(),
-                });
+        let mut episode_inserted = false;
+        let (prior_client_order_id, retry_count, elapsed_ns) = if let Some(episode) =
+            self.episodes.get_mut(&stable_episode_key)
+        {
+            // Existing episode: prior id comes from the pre-increment count.
             let prior_client_order_id = if episode.count > REJECT_OBSERVER_INITIAL_EPISODE_COUNT {
                 Some(episode.last_client_order_id.clone())
             } else {
@@ -174,8 +170,26 @@ impl BoltV3OrderRejectObserverFeed {
                 episode.count,
                 ts_event_ns.saturating_sub(episode.first_ns),
             )
+        } else {
+            // First reject for this key: insert at the post-increment count and
+            // flag so eviction runs (the map only grows on this branch).
+            episode_inserted = true;
+            let first_count =
+                REJECT_OBSERVER_INITIAL_EPISODE_COUNT + REJECT_OBSERVER_EPISODE_INCREMENT;
+            let first_ns = ts_event_ns;
+            self.episodes.insert(
+                stable_episode_key.clone(),
+                RejectObserverEpisode {
+                    count: first_count,
+                    first_ns,
+                    last_client_order_id: client_order_id.clone(),
+                },
+            );
+            (None, first_count, ts_event_ns.saturating_sub(first_ns))
         };
-        self.evict_oldest_episodes_over_cap();
+        if episode_inserted {
+            self.evict_oldest_episodes_over_cap();
+        }
         if !retry_count.is_power_of_two() {
             return;
         }
@@ -365,8 +379,8 @@ fn classify_reject_reason(raw_reason_text: &str) -> BoltV3OrderRejectReason {
         && lowercased.contains(REJECT_REASON_NOTIONAL_NEEDLE)
     {
         BoltV3OrderRejectReason::MinNotionalRejected
-    } else if lowercased.contains(REJECT_REASON_MIN_NEEDLE)
-        && lowercased.contains(REJECT_REASON_SIZE_NEEDLE)
+    } else if (lowercased.contains(REJECT_REASON_MIN_NEEDLE)
+        && lowercased.contains(REJECT_REASON_SIZE_NEEDLE))
         || lowercased.contains(REJECT_REASON_TOO_SMALL_NEEDLE)
     {
         BoltV3OrderRejectReason::MinSizeRejected

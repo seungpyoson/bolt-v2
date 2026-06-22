@@ -1592,7 +1592,9 @@ impl BoltV3SubmitAdmissionState {
                 .reject_episodes
                 .lock()
                 .expect("submit admission state mutex should not be poisoned");
-            if !reject_episodes.contains_key(&stable_episode_key) {
+            let episode = if let Some(episode) = reject_episodes.get_mut(&stable_episode_key) {
+                episode
+            } else {
                 reject_episodes.insert(
                     stable_episode_key.clone(),
                     RejectEpisode {
@@ -1601,10 +1603,10 @@ impl BoltV3SubmitAdmissionState {
                         last_client_order_id: String::new(),
                     },
                 );
-            }
-            let episode = reject_episodes
-                .get_mut(&stable_episode_key)
-                .expect("reject episode should exist after insertion");
+                reject_episodes
+                    .get_mut(&stable_episode_key)
+                    .expect("reject episode should exist after insertion")
+            };
             let prior_client_order_id = if episode.count > 0 {
                 Some(episode.last_client_order_id.clone())
             } else {

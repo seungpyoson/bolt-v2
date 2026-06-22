@@ -4998,12 +4998,20 @@ impl BinaryOracleEdgeTaker {
         // durable record per open position. An actual submit always records (it is a
         // distinct, rare event). The per-tick tracing log above is untouched.
         if let Some(position_id) = log_fields.position_id {
-            let changed = self.last_exit_evidence_outcome.get(&position_id) != Some(&outcome_key);
+            let mut changed = true;
+            if let Some(last_outcome) = self.last_exit_evidence_outcome.get_mut(&position_id) {
+                if last_outcome == &outcome_key {
+                    changed = false;
+                } else {
+                    *last_outcome = outcome_key;
+                }
+            } else {
+                self.last_exit_evidence_outcome
+                    .insert(position_id, outcome_key);
+            }
             if !submitted && !changed {
                 return;
             }
-            self.last_exit_evidence_outcome
-                .insert(position_id, outcome_key);
         }
 
         let evidence = BoltV3ExitEvaluationEvidence {

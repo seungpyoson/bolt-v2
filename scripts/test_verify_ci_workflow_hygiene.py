@@ -26,6 +26,11 @@ GATE_NAME = """name: >-
           && github.event.pull_request.draft == true
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
+          || github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (github.event.action == 'reopened'
+              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+          && 'gate-noop'
           || 'gate' }}"""
 GATE_DEFER_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]]; then
@@ -35,6 +40,17 @@ GATE_DEFER_CONTEXT_GUARD = """            if [[ "$defer_run_context" != "true" ]
 """
 GATE_DEFER_BLOCK = f"""          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
 {GATE_DEFER_CONTEXT_GUARD}            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
+            exit 0
+          fi
+"""
+GATE_NOOP_CONTEXT_ASSIGNMENT = """noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}\""""
+GATE_NOOP_CONTEXT_GUARD = """            if [[ "$noop_run_context" != "true" ]]; then
+              echo "noop CI policy outside ready PR no-code context"
+              exit 1
+            fi
+"""
+GATE_NOOP_BLOCK = f"""          if [[ "$policy_path" == "noop" ]]; then
+{GATE_NOOP_CONTEXT_GUARD}            echo "no code-change CI event; preserving prior required same-SHA gate conclusion"
             exit 0
           fi
 """
@@ -123,6 +139,8 @@ draft_pr_reopened = "defer"
 draft_pr_edited = "defer"
 converted_to_draft = "defer"
 ready_pr = "full"
+ready_pr_edited_no_base = "noop"
+ready_pr_reopened = "noop"
 ready_for_review = "full"
 workflow_dispatch = "full"
 main_push = "full"
@@ -211,6 +229,11 @@ concurrency:
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
         || github.event_name == 'pull_request'
+        && github.event.pull_request.draft == false
+        && (github.event.action == 'reopened'
+            || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+        && format('pr-{0}-noop', github.event.number)
+        || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
@@ -219,6 +242,9 @@ concurrency:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(github.event.pull_request.draft == false
+             && (github.event.action == 'reopened'
+                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
         || github.event_name == 'workflow_dispatch' }}
 
 permissions:
@@ -248,6 +274,7 @@ jobs:
           --event-name "${{ github.event_name }}"
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
 
@@ -317,8 +344,8 @@ jobs:
 
   deny:
     name: deny
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -341,8 +368,8 @@ jobs:
 
   clippy:
     name: clippy
-    needs: detector
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
       - uses: ./.github/actions/setup-environment
@@ -676,6 +703,11 @@ jobs:
           && github.event.pull_request.draft == true
           && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
           && 'gate-deferred'
+          || github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && (github.event.action == 'reopened'
+              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+          && 'gate-noop'
           || 'gate' }}
     needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
@@ -726,12 +758,21 @@ jobs:
             exit 1
           fi
           defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}"
+          noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}"
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
             if [[ "$defer_run_context" != "true" ]]; then
               echo "deferred CI policy outside deferred draft PR context"
               exit 1
             fi
             echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
+            exit 0
+          fi
+          if [[ "$policy_path" == "noop" ]]; then
+            if [[ "$noop_run_context" != "true" ]]; then
+              echo "noop CI policy outside ready PR no-code context"
+              exit 1
+            fi
+            echo "no code-change CI event; preserving prior required same-SHA gate conclusion"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then
@@ -1185,6 +1226,14 @@ check_name = "test"
             valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
         ),
         (
+            "ci_provenance.policy.ready_pr_edited_no_base must be noop",
+            valid.replace('ready_pr_edited_no_base = "noop"', 'ready_pr_edited_no_base = "full"'),
+        ),
+        (
+            "ci_provenance.policy.ready_pr_reopened must be noop",
+            valid.replace('ready_pr_reopened = "noop"', 'ready_pr_reopened = "full"'),
+        ),
+        (
             "ci_provenance.policy.ready_for_review must be full",
             valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
         ),
@@ -1249,24 +1298,29 @@ def assert_ci_policy_matrix() -> None:
     )
     policy = config["policy"]
     cases = [
-        ("push", "", False, "refs/heads/main", "full"),
-        ("push", "", False, "refs/tags/v1.2.3", "tag_reuse"),
-        ("pull_request", "opened", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "synchronize", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "reopened", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "converted_to_draft", True, "refs/pull/1/merge", "defer"),
-        ("pull_request", "opened", False, "refs/pull/1/merge", "full"),
-        ("pull_request", "ready_for_review", True, "refs/pull/1/merge", "full"),
-        ("workflow_dispatch", "", True, "refs/heads/codex/branch", "full"),
-        ("merge_group", "checks_requested", False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
-        ("unknown_event", "", True, "refs/heads/codex/branch", "full"),
+        ("push", "", False, False, "refs/heads/main", "full"),
+        ("push", "", False, False, "refs/tags/v1.2.3", "tag_reuse"),
+        ("pull_request", "opened", True, False, "refs/pull/1/merge", "defer"),
+        ("pull_request", "synchronize", True, False, "refs/pull/1/merge", "defer"),
+        ("pull_request", "reopened", True, False, "refs/pull/1/merge", "defer"),
+        ("pull_request", "edited", True, False, "refs/pull/1/merge", "defer"),
+        ("pull_request", "converted_to_draft", True, False, "refs/pull/1/merge", "defer"),
+        ("pull_request", "opened", False, False, "refs/pull/1/merge", "full"),
+        ("pull_request", "edited", False, False, "refs/pull/1/merge", "noop"),
+        ("pull_request", "edited", False, True, "refs/pull/1/merge", "full"),
+        ("pull_request", "reopened", False, False, "refs/pull/1/merge", "noop"),
+        ("pull_request", "ready_for_review", True, False, "refs/pull/1/merge", "full"),
+        ("workflow_dispatch", "", True, False, "refs/heads/codex/branch", "full"),
+        ("merge_group", "checks_requested", False, False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
+        ("unknown_event", "", True, False, "refs/heads/codex/branch", "full"),
     ]
-    for event_name, action, draft, ref, expected in cases:
+    for event_name, action, draft, base_changed, ref, expected in cases:
         result = verifier.evaluate_ci_policy(
             policy,
             event_name=event_name,
             action=action,
             pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
             ref=ref,
         )
         if result.ci_policy_path != expected:
@@ -1284,6 +1338,7 @@ def assert_ci_policy_matrix() -> None:
         event_name="pull_request",
         action="synchronize",
         pull_request_draft=True,
+        pull_request_base_changed=False,
         ref="refs/pull/1/merge",
     )
     if forced_result.ci_policy_path != "full":
@@ -1305,29 +1360,39 @@ def assert_ci_policy_resolvers_agree() -> None:
     policy = verifier.validate_ci_provenance_config(verifier.tomllib.loads(config_text))["policy"]
     prov_config = provenance.load_config(config_path)
     cases = [
-        ("push", "", False, "refs/heads/main"),
-        ("push", "", False, "refs/tags/v1.2.3"),
-        ("pull_request", "opened", True, "refs/pull/1/merge"),
-        ("pull_request", "synchronize", True, "refs/pull/1/merge"),
-        ("pull_request", "reopened", True, "refs/pull/1/merge"),
-        ("pull_request", "edited", True, "refs/pull/1/merge"),
-        ("pull_request", "converted_to_draft", True, "refs/pull/1/merge"),
-        ("pull_request", "opened", False, "refs/pull/1/merge"),
-        ("pull_request", "ready_for_review", True, "refs/pull/1/merge"),
-        ("workflow_dispatch", "", True, "refs/heads/codex/branch"),
-        ("merge_group", "checks_requested", False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef"),
-        ("unknown_event", "", True, "refs/heads/codex/branch"),
+        ("push", "", False, False, "refs/heads/main"),
+        ("push", "", False, False, "refs/tags/v1.2.3"),
+        ("pull_request", "opened", True, False, "refs/pull/1/merge"),
+        ("pull_request", "synchronize", True, False, "refs/pull/1/merge"),
+        ("pull_request", "reopened", True, False, "refs/pull/1/merge"),
+        ("pull_request", "edited", True, False, "refs/pull/1/merge"),
+        ("pull_request", "converted_to_draft", True, False, "refs/pull/1/merge"),
+        ("pull_request", "opened", False, False, "refs/pull/1/merge"),
+        ("pull_request", "edited", False, False, "refs/pull/1/merge"),
+        ("pull_request", "edited", False, True, "refs/pull/1/merge"),
+        ("pull_request", "reopened", False, False, "refs/pull/1/merge"),
+        ("pull_request", "ready_for_review", True, False, "refs/pull/1/merge"),
+        ("workflow_dispatch", "", True, False, "refs/heads/codex/branch"),
+        ("merge_group", "checks_requested", False, False, "refs/heads/gh-readonly-queue/main/pr-1-deadbeef"),
+        ("unknown_event", "", True, False, "refs/heads/codex/branch"),
     ]
     saw_full = saw_defer = False
-    for event_name, action, draft, ref in cases:
+    saw_noop = False
+    for event_name, action, draft, base_changed, ref in cases:
         ver = verifier.evaluate_ci_policy(
-            policy, event_name=event_name, action=action, pull_request_draft=draft, ref=ref
+            policy,
+            event_name=event_name,
+            action=action,
+            pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
+            ref=ref,
         )
         prov = provenance.evaluate_ci_policy(
             prov_config,
             event_name=event_name,
             event_action=action,
             pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
             ref=ref,
         )
         ver_tuple = (ver.ci_policy_path, ver.full_ci_required, ver.full_ci_deferred, ver.reason)
@@ -1339,18 +1404,24 @@ def assert_ci_policy_resolvers_agree() -> None:
             )
         saw_full = saw_full or ver.ci_policy_path == "full"
         saw_defer = saw_defer or ver.ci_policy_path == "defer"
+        saw_noop = saw_noop or ver.ci_policy_path == "noop"
     # Non-vacuous: the matrix must exercise both a full and a deferred resolution
     # so the parity assertion compares real divergent branches, not a constant.
-    if not (saw_full and saw_defer):
-        raise AssertionError("parity matrix must cover both full and defer resolutions")
+    if not (saw_full and saw_defer and saw_noop):
+        raise AssertionError("parity matrix must cover full, defer, and noop resolutions")
     # The merge_group row #848 adds must resolve to full on both sides.
     if not any(
-        c[0] == "merge_group"
+        event_name == "merge_group"
         and verifier.evaluate_ci_policy(
-            policy, event_name=c[0], action=c[1], pull_request_draft=c[2], ref=c[3]
+            policy,
+            event_name=event_name,
+            action=action,
+            pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
+            ref=ref,
         ).ci_policy_path
         == "full"
-        for c in cases
+        for event_name, action, draft, base_changed, ref in cases
     ):
         raise AssertionError("merge_group must resolve to full in the parity matrix")
     # force_full_ci override: production keeps it false (asserted elsewhere), so
@@ -1364,15 +1435,25 @@ def assert_ci_policy_resolvers_agree() -> None:
         "override": {**(policy.get("override") or {}), "force_full_ci": True},
     }
     forced_prov = dataclasses.replace(prov_config, force_full_ci=True)
-    for event_name, action, draft, ref in [
-        ("pull_request", "opened", True, "refs/pull/1/merge"),
-        ("pull_request", "synchronize", False, "refs/pull/1/merge"),
+    for event_name, action, draft, base_changed, ref in [
+        ("pull_request", "opened", True, False, "refs/pull/1/merge"),
+        ("pull_request", "synchronize", False, False, "refs/pull/1/merge"),
     ]:
         ver = verifier.evaluate_ci_policy(
-            forced_policy, event_name=event_name, action=action, pull_request_draft=draft, ref=ref
+            forced_policy,
+            event_name=event_name,
+            action=action,
+            pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
+            ref=ref,
         )
         prov = provenance.evaluate_ci_policy(
-            forced_prov, event_name=event_name, event_action=action, pull_request_draft=draft, ref=ref
+            forced_prov,
+            event_name=event_name,
+            event_action=action,
+            pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
+            ref=ref,
         )
         ver_tuple = (ver.ci_policy_path, ver.full_ci_required, ver.full_ci_deferred, ver.reason)
         prov_tuple = (prov.ci_policy_path, prov.full_ci_required, prov.full_ci_deferred, prov.reason)
@@ -2212,6 +2293,9 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
     workflow = repo_workflow_text(".github/workflows/ci.yml")
     cancel_in_progress_for_pr_and_dispatch = """  cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(github.event.pull_request.draft == false
+             && (github.event.action == 'reopened'
+                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
         || github.event_name == 'workflow_dispatch' }}
 """
     cancel_in_progress_for_draft_pr_and_dispatch = """  cancel-in-progress: >-
@@ -2242,7 +2326,7 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
             ),
         ),
         (
-            "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
+            "cancel-in-progress must not cancel noop PR runs",
             replace_once(
                 workflow,
                 cancel_in_progress_for_pr_and_dispatch,
@@ -2693,6 +2777,54 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
     if not any("backtester draft deferral gate must publish backtester-gate-deferred" in error for error in static_gate_errors):
         raise AssertionError(f"backtester-ci workflow must reject static deferred gate names, got: {static_gate_errors}")
 
+    missing_noop_context = replace_once(
+        workflow,
+        verifier.BACKTESTER_NOOP_RUN_CONTEXT_ASSIGNMENT,
+        'noop_run_context="false"',
+    )
+    missing_noop_context_errors = verifier.verify_repo_automation_texts({workflow_name: missing_noop_context})
+    if not any(
+        "backtester draft deferral gate must compute ready PR noop context" in error
+        for error in missing_noop_context_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci workflow must reject missing noop context computation, got: {missing_noop_context_errors}"
+        )
+
+    backtester_noop_context_guard = """            if [[ "$noop_run_context" != "true" ]]; then
+              echo "backtester noop CI policy outside ready PR no-code context"
+              exit 1
+            fi
+"""
+    backtester_noop_block = f"""          if [[ "$policy_path" == "noop" ]]; then
+{backtester_noop_context_guard}            echo "backtester no code-change CI event; preserving prior required same-SHA gate conclusion"
+            exit 0
+          fi
+"""
+    failing_noop_block = replace_once(
+        workflow,
+        backtester_noop_block,
+        backtester_noop_block.replace("            exit 0\n", "            exit 1\n"),
+    )
+    failing_noop_block_errors = verifier.verify_repo_automation_texts({workflow_name: failing_noop_block})
+    if not any(
+        "backtester draft deferral gate must pass ready PR no-code runs under backtester-gate-noop" in error
+        for error in failing_noop_block_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci workflow must reject failing noop gate branches, got: {failing_noop_block_errors}"
+        )
+
+    missing_noop_guard = replace_once(workflow, backtester_noop_context_guard, "")
+    missing_noop_guard_errors = verifier.verify_repo_automation_texts({workflow_name: missing_noop_guard})
+    if not any(
+        "backtester draft deferral gate must fail noop policy outside ready PR no-code context" in error
+        for error in missing_noop_guard_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci workflow must reject missing noop context guards, got: {missing_noop_guard_errors}"
+        )
+
     for job, display_name in (("fmt", "bvs-fmt"), ("clippy", "bvs-clippy"), ("test", "bvs-test")):
         result_check = (
             f'          if [[ "${{{{ needs.{job}.result }}}}" != "success" ]]; then\n'
@@ -2996,6 +3128,11 @@ def without_pr_concurrency(workflow: str) -> str:
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
         || github.event_name == 'pull_request'
+        && github.event.pull_request.draft == false
+        && (github.event.action == 'reopened'
+            || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+        && format('pr-{0}-noop', github.event.number)
+        || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
         && format('{0}-full-ci', github.ref_name)
@@ -3004,6 +3141,9 @@ def without_pr_concurrency(workflow: str) -> str:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(github.event.pull_request.draft == false
+             && (github.event.action == 'reopened'
+                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
         || github.event_name == 'workflow_dispatch' }}
 
 """,
@@ -6530,6 +6670,30 @@ def main() -> int:
     assert_workflow_hygiene_reviewer_regressions()
     assert_error("workflow must define PR-only concurrency", without_pr_concurrency(BASE_WORKFLOW))
     assert_error(
+        "concurrency group must split noop PR runs from full CI runs",
+        replace_once(BASE_WORKFLOW, "format('pr-{0}-noop', github.event.number)", "format('pr-{0}-full', github.event.number)"),
+    )
+    assert_error(
+        "gate must publish gate-noop for ready PR no-code runs",
+        replace_once(BASE_WORKFLOW, "          && 'gate-noop'\n", ""),
+    )
+    assert_error(
+        "gate must compute ready PR noop run context",
+        replace_once(BASE_WORKFLOW, GATE_NOOP_CONTEXT_ASSIGNMENT, 'noop_run_context="false"'),
+    )
+    assert_error(
+        "gate must pass ready PR no-code runs under gate-noop",
+        replace_once(
+            BASE_WORKFLOW,
+            GATE_NOOP_BLOCK,
+            GATE_NOOP_BLOCK.replace("            exit 0\n", "            exit 1\n"),
+        ),
+    )
+    assert_error(
+        "gate must fail noop policy outside ready PR no-code context",
+        replace_once(BASE_WORKFLOW, GATE_NOOP_CONTEXT_GUARD, ""),
+    )
+    assert_error(
         "concurrency group must split deferred PR runs from full CI runs",
         replace_once(BASE_WORKFLOW, "format('pr-{0}-deferred', github.event.number)", "github.ref_name"),
     )
@@ -6538,21 +6702,27 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "format('{0}-{1}', github.ref_name, github.sha)", "github.ref_name"),
     )
     assert_error(
-        "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
+        "cancel-in-progress must not cancel merge_group queue validations",
         replace_once(
             BASE_WORKFLOW,
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(github.event.pull_request.draft == false
+             && (github.event.action == 'reopened'
+                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
         || github.event_name == 'workflow_dispatch' }}""",
             "cancel-in-progress: true",
         ),
     )
     assert_error(
-        "cancel-in-progress must apply to all pull_request and workflow_dispatch full CI runs only",
+        "cancel-in-progress must not cancel noop PR runs",
         replace_once(
             BASE_WORKFLOW,
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !(github.event.pull_request.draft == false
+             && (github.event.action == 'reopened'
+                 || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
         || github.event_name == 'workflow_dispatch' }}""",
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
@@ -6570,6 +6740,11 @@ def main() -> int:
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
+        || github.event_name == 'pull_request'
+        && github.event.pull_request.draft == false
+        && (github.event.action == 'reopened'
+            || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
+        && format('pr-{0}-noop', github.event.number)
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'

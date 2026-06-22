@@ -29,7 +29,7 @@ SUPPORTED_MODES = {
     "resolve-fingerprint",
     "validate-record",
 }
-POLICY_VALUES = {"full", "defer", "tag_reuse"}
+POLICY_VALUES = {"full", "defer", "noop", "tag_reuse"}
 POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -37,6 +37,8 @@ POLICY_ROWS = (
     "draft_pr_edited",
     "converted_to_draft",
     "ready_pr",
+    "ready_pr_edited_no_base",
+    "ready_pr_reopened",
     "ready_for_review",
     "workflow_dispatch",
     "main_push",
@@ -305,7 +307,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     for row in POLICY_ROWS:
         value = policy_table.get(row)
         if value not in POLICY_VALUES:
-            raise ProvenanceError(f"ci_provenance.policy.{row} must be full, defer, or tag_reuse")
+            raise ProvenanceError(f"ci_provenance.policy.{row} must be full, defer, noop, or tag_reuse")
         policy[row] = value
 
     force_full_ci = overrides.get("force_full_ci")
@@ -368,6 +370,7 @@ def evaluate_ci_policy(
     event_name: str,
     event_action: str,
     pull_request_draft: bool,
+    pull_request_base_changed: bool = False,
     ref: str,
 ) -> CiPolicyResult:
     if event_name == "merge_group":
@@ -392,6 +395,12 @@ def evaluate_ci_policy(
         elif event_action == "ready_for_review":
             path = config.policy["ready_for_review"]
             reason = "ready_for_review"
+        elif not pull_request_draft and event_action == "edited" and not pull_request_base_changed:
+            path = config.policy["ready_pr_edited_no_base"]
+            reason = "ready_pr_edited_no_base"
+        elif not pull_request_draft and event_action == "reopened":
+            path = config.policy["ready_pr_reopened"]
+            reason = "ready_pr_reopened"
         elif not pull_request_draft:
             path = config.policy["ready_pr"]
             reason = "ready_pr"
@@ -1505,6 +1514,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--event-name", required=True)
         parser.add_argument("--event-action", default="")
         parser.add_argument("--pull-request-draft", default="false")
+        parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--ref", required=True)
     if mode == "emit-full-ci":
         parser.add_argument("--output", type=pathlib.Path)
@@ -1548,6 +1558,7 @@ def main(argv: list[str] | None = None) -> int:
                 event_name=args.event_name,
                 event_action=args.event_action,
                 pull_request_draft=parse_bool(args.pull_request_draft),
+                pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")

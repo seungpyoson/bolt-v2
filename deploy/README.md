@@ -83,6 +83,40 @@ For live EC2 operation, start Bolt through the systemd unit or `just live`; dire
 `bolt-v2 run --config ...` is disabled for live arming: it refuses to start the node and redirects
 operators to `bolt-v2 ops launch --profile <profile-id> --config-root <config-root>`.
 
+## Host binding (optional)
+
+`config/deploy.toml` optionally pins this install to a specific host. When present, the launch
+lane's `TargetVerify` stage (which runs right after config verification, before secret resolution)
+checks the running host's IMDSv2 facts against the `[target]` table and **fails the launch closed**
+on a mismatch.
+
+```toml
+[target]
+# Any subset of the gating fields; every field that is set must match the running host.
+region = "..."             # IMDSv2 placement region
+availability_zone = "..."  # IMDSv2 placement availability-zone
+instance_id = "..."        # IMDSv2 instance-id (most specific)
+name_tag = "..."           # informational only — NOT enforced (IMDSv2 basic
+                           # metadata cannot observe instance tags)
+```
+
+Behavior:
+
+- **Absent file, empty `[target]`, or only `name_tag` set:** the binding **degrades** and the
+  launch is allowed on any host (intentional — the lane works before any instance exists).
+  `ops status` reports the deploy target as `no-target-configured`, so the unbound state is visible.
+- **A gating field set (`region`, `availability_zone`, and/or `instance_id`):** `TargetVerify`
+  fails the launch closed when the observed host facts mismatch, or when host facts cannot be
+  observed. A region- or AZ-only binding accepts any instance within that region/AZ; set
+  `instance_id` to pin a single instance.
+
+`config/deploy.toml` is **host-specific** which-machine metadata: each instance has its own binding,
+so it is **not** part of the reviewed release bundle and `deploy/install.sh` does not copy it. Author
+it on the instance at `/opt/bolt-v2/config/deploy.toml`, `root:bolt` mode `0640`, before starting the
+service, then confirm the binding:
+
+`/opt/bolt-v2/bolt-v2 ops status --profile "${BOLT_LIVE_PROFILE}" --config-root /opt/bolt-v2/config`
+
 ## Supervised live checklist
 
 Before any supervised live run, record one evidence packet that ties together:

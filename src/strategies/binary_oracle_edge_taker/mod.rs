@@ -6035,6 +6035,10 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
     }
 
     fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
+        // Reclaim the exit-evidence flood-guard entry for this terminal position:
+        // a closed position never re-emits exit evidence, so its dedup key is dead
+        // state. Removal here is behavior-neutral and bounds the map over a long run.
+        self.last_exit_evidence_outcome.remove(&event.position_id);
         let managed_position_close = match &self.exposure {
             ExposureState::Managed(position)
                 if position.position.position_id == event.position_id =>

@@ -18961,3 +18961,59 @@ literal = '''"{}/{}/{}"'''
 context = '''"{}/{}/{}",'''
 classification = "order_reject_observer_episode_key_template"
 reason = "Stable episode-key template joining instrument, reject source, and reject reason while intentionally excluding client_order_id so RCA #885 client-order-id churn remains correlated."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "4096"
+context = '''const REJECT_OBSERVER_MAX_EPISODES: usize = 4096;'''
+classification = "order_reject_observer_episode_map_bound"
+reason = "Upper bound on retained venue/NT reject episodes so the durable RCA #885 observability map cannot grow unbounded under high-cardinality instrument ids; oldest-first eviction discards only a sampling counter and never gates submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"[redacted-addr]"'''
+context = '''const REJECT_REASON_ADDR_PLACEHOLDER: &str = "[redacted-addr]";'''
+classification = "order_reject_observer_reason_redaction_placeholder"
+reason = "Fixed placeholder substituted for wallet/proxy address runs in the verbatim venue reject text before it is recorded for RCA #885; it scrubs identity from evidence and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"[redacted-num]"'''
+context = '''const REJECT_REASON_NUM_PLACEHOLDER: &str = "[redacted-num]";'''
+classification = "order_reject_observer_reason_redaction_placeholder"
+reason = "Fixed placeholder substituted for long digit runs in the verbatim venue reject text before it is recorded for RCA #885; it scrubs potential account/order identity from evidence and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "40"
+context = '''const REJECT_REASON_ADDR_HEX_MIN_LEN: usize = 40;'''
+classification = "order_reject_observer_reason_redaction_threshold"
+reason = "Minimum bare-hex run length treated as an address during RCA #885 reject-text redaction; it tunes evidence scrubbing only and does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "12"
+context = '''const REJECT_REASON_NUM_MIN_LEN: usize = 12;'''
+classification = "order_reject_observer_reason_redaction_threshold"
+reason = "Minimum digit-run length treated as a redactable number during RCA #885 reject-text redaction; it tunes evidence scrubbing only and does not gate submissions."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "number"
+literal = "256"
+context = '''const REJECT_REASON_MAX_LEN: usize = 256;'''
+classification = "order_reject_observer_reason_length_cap"
+reason = "Maximum retained character length of the redacted RCA #885 reject reason so a pathological venue message cannot bloat an evidence record; it bounds observability storage and does not configure order behavior."
+
+[[allowed]]
+path = "src/bolt_v3_order_reject_observer_feed.rs"
+kind = "string"
+literal = '''"..."'''
+context = '''const REJECT_REASON_TRUNCATION_MARKER: &str = "...";'''
+classification = "order_reject_observer_reason_truncation_marker"
+reason = "Marker appended when the redacted RCA #885 reject reason is truncated at the length cap; it labels truncated evidence text and does not configure order behavior."

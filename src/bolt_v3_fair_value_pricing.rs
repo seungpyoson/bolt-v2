@@ -409,3 +409,86 @@ pub fn classify_rv_gate(snapshot: Option<&RealizedVolSnapshot>, now_ms: u64) -> 
     }
     BoltV3RvGateResult::Accepted
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bolt_v3_realized_volatility::RealizedVolAggregation;
+
+    const TEST_SURFACE_ID: &str = "<surface_id>";
+
+    fn not_ready_snapshot(as_of_ms: u64) -> RealizedVolSnapshot {
+        // `invalid_config` yields `ready == false` (a blocked snapshot), so
+        // `ready_realized_vol()` is None while `as_of_ms` stays controllable.
+        RealizedVolSnapshot::invalid_config(
+            TEST_SURFACE_ID,
+            as_of_ms,
+            RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
+            31_536_000.0,
+            "",
+        )
+    }
+
+    fn engine_with_ready_snapshot(as_of_ms: u64) -> FairValuePricingState {
+        let mut engine =
+            FairValuePricingState::from_realized_volatility_surface_id(TEST_SURFACE_ID.to_string());
+        engine.seed_ready_realized_vol(Some("<source>".to_string()), 1.5, as_of_ms);
+        engine
+    }
+
+    #[test]
+    fn classify_rv_gate_covers_all_four_arms() {
+        // Missing snapshot.
+        assert_eq!(
+            classify_rv_gate(None, 1_000),
+            BoltV3RvGateResult::MissingSnapshot
+        );
+
+        // Present but as_of in the future relative to now.
+        let ready = engine_with_ready_snapshot(1_000);
+        let ready_snapshot = ready
+            .latest_realized_vol_snapshots
+            .get(TEST_SURFACE_ID)
+            .expect("seeded ready snapshot should be present");
+        assert_eq!(
+            classify_rv_gate(Some(ready_snapshot), 500),
+            BoltV3RvGateResult::RejectedFutureDated
+        );
+
+        // Present and not in the future, but not ready.
+        let not_ready = not_ready_snapshot(1_000);
+        assert_eq!(
+            classify_rv_gate(Some(&not_ready), 2_000),
+            BoltV3RvGateResult::RejectedNotReady
+        );
+
+        // Ready and as_of <= now.
+        assert_eq!(
+            classify_rv_gate(Some(ready_snapshot), 1_000),
+            BoltV3RvGateResult::Accepted
+        );
+    }
+
+    #[test]
+    fn surfaced_snapshot_admitted_iff_gate_accepts() {
+        let engine = engine_with_ready_snapshot(1_000);
+        // Accepted (as_of == now) → admitted (Some).
+        assert!(
+            engine
+                .current_surfaced_realized_vol_snapshot_at(TEST_SURFACE_ID, 1_000)
+                .is_some()
+        );
+        // Future-dated (as_of > now) → not admitted (None).
+        assert!(
+            engine
+                .current_surfaced_realized_vol_snapshot_at(TEST_SURFACE_ID, 500)
+                .is_none()
+        );
+        // Unknown surface → MissingSnapshot → not admitted (None).
+        assert!(
+            engine
+                .current_surfaced_realized_vol_snapshot_at("<other_surface>", 1_000)
+                .is_none()
+        );
+    }
+}

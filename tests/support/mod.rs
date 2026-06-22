@@ -55,6 +55,8 @@ pub struct RecordingDecisionEvidenceWriter {
     admission_decisions:
         Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence>>,
     order_rejects: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence>>,
+    loss_governor_halts:
+        Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence>>,
 }
 
 impl RecordingDecisionEvidenceWriter {
@@ -63,6 +65,7 @@ impl RecordingDecisionEvidenceWriter {
             records: Mutex::new(Vec::new()),
             admission_decisions: Mutex::new(Vec::new()),
             order_rejects: Mutex::new(Vec::new()),
+            loss_governor_halts: Mutex::new(Vec::new()),
         }
     }
 
@@ -86,6 +89,15 @@ impl RecordingDecisionEvidenceWriter {
         &self,
     ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence> {
         self.order_rejects
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn loss_governor_halts(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence> {
+        self.loss_governor_halts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -161,8 +173,12 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
 
     fn record_loss_governor_halt(
         &self,
-        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+        evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
     ) -> anyhow::Result<()> {
+        self.loss_governor_halts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(evidence.clone());
         Ok(())
     }
 
@@ -175,6 +191,101 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(evidence.clone());
         Ok(())
+    }
+}
+
+/// Records every order-reject sink attempt but errors on `record_order_reject`,
+/// returning `Ok` for all other sinks. Lets a test prove a caller's path is
+/// unchanged when the order-reject evidence sink fails.
+#[derive(Debug, Default)]
+pub struct OrderRejectFailingDecisionEvidenceWriter {
+    order_reject_attempts: Mutex<usize>,
+}
+
+impl OrderRejectFailingDecisionEvidenceWriter {
+    pub fn order_reject_attempts(&self) -> usize {
+        *self
+            .order_reject_attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
+    for OrderRejectFailingDecisionEvidenceWriter
+{
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &bolt_v2::bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(
+        &self,
+        _intent: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &bolt_v2::bolt_v3_decision_evidence::BoltV3BasketAdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3ExitEvaluationEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3LossGovernorHaltEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_reject(
+        &self,
+        _evidence: &bolt_v2::bolt_v3_decision_evidence::BoltV3OrderRejectEvidence,
+    ) -> anyhow::Result<()> {
+        *self
+            .order_reject_attempts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+        Err(anyhow::anyhow!("synthetic order-reject write failure"))
     }
 }
 

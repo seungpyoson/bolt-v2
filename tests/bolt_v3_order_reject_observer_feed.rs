@@ -180,6 +180,104 @@ fn same_episode_rejects_emit_exponential_samples_with_previous_client_order_id()
     );
 }
 
+#[test]
+fn order_reject_evidence_write_failure_is_swallowed() {
+    // FIX 3b: the observer's record_order_reject path is swallow-on-error. A writer
+    // that errors on record_order_reject must leave on_order_event returning
+    // normally with no panic.
+    let writer = Arc::new(support::OrderRejectFailingDecisionEvidenceWriter::default());
+    let mut feed =
+        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+
+    // The first reject has retry_count == 1 (a power of two), so the sink is
+    // attempted; the error must be swallowed rather than propagated/panicking.
+    feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
+        "client-order-1",
+        "instrument-yes.VENUE-A",
+        AccountId::from("ACCOUNT-001"),
+        "maker amount precision exceeds venue precision",
+        1_000,
+    )));
+
+    assert_eq!(
+        writer.order_reject_attempts(),
+        1,
+        "the order-reject sink must have been attempted exactly once"
+    );
+}
+
+#[test]
+fn recorded_raw_reason_text_redacts_address_and_long_digit_run() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let mut feed =
+        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+    let reason = "insufficient balance for 0xABCDEF0123456789 holding 123456789012345 units";
+
+    feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
+        "client-order-1",
+        "instrument-yes.VENUE-A",
+        AccountId::from("ACCOUNT-001"),
+        reason,
+        1_000,
+    )));
+
+    let records = writer.order_rejects();
+    assert_eq!(records.len(), 1);
+    let recorded = records[0]
+        .raw_reason_text
+        .as_deref()
+        .expect("reason recorded");
+    assert!(
+        !recorded.contains("0xABCDEF0123456789"),
+        "raw address must not persist: {recorded}"
+    );
+    assert!(
+        !recorded.contains("123456789012345"),
+        "raw long number must not persist: {recorded}"
+    );
+    assert!(
+        recorded.contains("[redacted-addr]"),
+        "address placeholder must persist: {recorded}"
+    );
+    assert!(
+        recorded.contains("[redacted-num]"),
+        "number placeholder must persist: {recorded}"
+    );
+    // Diagnostic words around the redaction are retained, so classification and
+    // the `Other`-bucket diagnostics still work.
+    assert!(recorded.contains("insufficient balance"));
+}
+
+#[test]
+fn recorded_raw_reason_text_is_truncated_to_cap() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let mut feed =
+        BoltV3OrderRejectObserverFeed::new(writer.clone(), AccountId::from("ACCOUNT-001"));
+    // 600 ASCII chars, well over the 256-char cap, with no redactable runs.
+    let reason = "z".repeat(600);
+
+    feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
+        "client-order-1",
+        "instrument-yes.VENUE-A",
+        AccountId::from("ACCOUNT-001"),
+        &reason,
+        1_000,
+    )));
+
+    let records = writer.order_rejects();
+    assert_eq!(records.len(), 1);
+    let recorded = records[0]
+        .raw_reason_text
+        .as_deref()
+        .expect("reason recorded");
+    assert!(
+        recorded.ends_with("..."),
+        "over-long reason must be marked truncated: {recorded}"
+    );
+    // 256-char body + the 3-char truncation marker.
+    assert_eq!(recorded.chars().count(), 256 + 3);
+}
+
 fn order_rejected_event(
     client_order_id: &str,
     instrument_id: &str,

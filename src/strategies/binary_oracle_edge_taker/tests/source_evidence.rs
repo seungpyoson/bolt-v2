@@ -1312,11 +1312,21 @@ fn exit_evidence_strategy_with_open_position() -> (
     Arc<RecordingSequencedDecisionEvidenceWriter>,
 ) {
     let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+    let strategy = exit_evidence_strategy_with_open_position_using_writer(evidence.clone());
+    (strategy, evidence)
+}
+
+/// Build the open-position exit-evidence fixture against an arbitrary decision
+/// evidence writer. Shared by the recording-writer tests and the failing-writer
+/// swallow test so the open-position setup lives in ONE place.
+fn exit_evidence_strategy_with_open_position_using_writer(
+    evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+) -> BinaryOracleEdgeTaker {
     let submit_admission = Arc::new(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
-        evidence.clone(),
+        evidence,
         submit_admission,
     );
     // Shadow policy so a would-be exit submits through the admission/evidence path
@@ -1341,7 +1351,7 @@ fn exit_evidence_strategy_with_open_position() -> (
         position,
         ManagedPositionOrigin::StrategyEntry,
     );
-    (strategy, evidence)
+    strategy
 }
 
 /// Collect every recorded exit-evaluation evidence record, in order.
@@ -1356,6 +1366,51 @@ fn recorded_exit_evaluations(
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
+    // FIX 3b: the exit-evaluation evidence sink is swallow-on-error. A writer that
+    // errors only on record_exit_evaluation must leave the exit submission result
+    // identical to a recording writer, with no panic.
+    let (mut control_strategy, _control_evidence) = exit_evidence_strategy_with_open_position();
+    control_strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    let control_result = control_strategy
+        .try_submit_exit_order(
+            1_200,
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            Some(1_200),
+            Some(1_180),
+        )
+        .expect("control exit evaluation should not error with a ready realized-vol surface");
+
+    let failing_evidence = Arc::new(ExitEvaluationFailingDecisionEvidenceWriter::default());
+    let mut failing_strategy =
+        exit_evidence_strategy_with_open_position_using_writer(failing_evidence.clone());
+    failing_strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
+    let failing_result = failing_strategy
+        .try_submit_exit_order(
+            1_200,
+            crate::bolt_v3_decision_evidence::BoltV3ExitTriggerSource::SignalQuote,
+            Some(1_200),
+            Some(1_180),
+        )
+        .expect("a failing exit-evaluation sink must be swallowed, not propagated");
+
+    // The trading-side result is structurally identical with and without the sink
+    // failure (the client order id itself is a fresh UUID per run, so compare the
+    // submit/no-submit shape, not the minted id).
+    assert_eq!(control_result.is_some(), failing_result.is_some());
+    // The swallow path was exercised: the sink was reached and did error.
+    assert_eq!(
+        failing_evidence.exit_evaluation_attempts(),
+        1,
+        "the exit-evaluation sink must have been attempted exactly once"
+    );
 }
 
 #[test]

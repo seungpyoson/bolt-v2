@@ -35,6 +35,28 @@ const REJECT_REASON_BALANCE_NEEDLE: &str = "balance";
 const REJECT_REASON_DUPLICATE_NEEDLE: &str = "duplicate";
 const REJECT_OBSERVER_INITIAL_EPISODE_COUNT: u32 = 0;
 const REJECT_OBSERVER_EPISODE_INCREMENT: u32 = 1;
+/// Upper bound on retained reject episodes. The map is keyed by
+/// `{instrument_id}/{source}/{reason}` and instrument ids are high-cardinality
+/// (e.g. Polymarket token ids churn), so without a cap it grows unbounded over a
+/// long-running node. Eviction is oldest-first and only resets that instrument's
+/// evidence-sampling counter, never any trading decision. Set generously so
+/// eviction is rare in practice.
+const REJECT_OBSERVER_MAX_EPISODES: usize = 4096;
+/// Placeholder substituted for a wallet/proxy address run (a `0x`-prefixed hex
+/// run or a bare run of >= `REJECT_REASON_ADDR_HEX_MIN_LEN` hex characters) in
+/// the verbatim venue reason before it is recorded or logged.
+const REJECT_REASON_ADDR_PLACEHOLDER: &str = "[redacted-addr]";
+/// Placeholder substituted for a long digit run (>= `REJECT_REASON_NUM_MIN_LEN`)
+/// in the verbatim venue reason.
+const REJECT_REASON_NUM_PLACEHOLDER: &str = "[redacted-num]";
+/// Minimum length of a bare hex run (no `0x` prefix) treated as an address.
+const REJECT_REASON_ADDR_HEX_MIN_LEN: usize = 40;
+/// Minimum length of a digit run treated as a number worth redacting.
+const REJECT_REASON_NUM_MIN_LEN: usize = 12;
+/// Maximum retained length (in chars) of the redacted reason text.
+const REJECT_REASON_MAX_LEN: usize = 256;
+/// Appended when the redacted reason text is truncated at the length cap.
+const REJECT_REASON_TRUNCATION_MARKER: &str = "...";
 
 #[derive(Debug, Clone)]
 struct RejectObserverEpisode {
@@ -98,19 +120,28 @@ impl BoltV3OrderRejectObserverFeed {
     }
 
     pub fn on_order_event(&mut self, event: &OrderEventAny) {
-        let (reject_source, raw_reason_text) = match event {
+        let (reject_source, venue_reason_text) = match event {
             OrderEventAny::Rejected(rejected) => {
                 if event.account_id() != Some(self.account_id) {
                     return;
                 }
-                (BoltV3RejectSource::Venue, rejected.reason.to_string())
+                (BoltV3RejectSource::Venue, rejected.reason.as_str())
             }
             OrderEventAny::Denied(denied) => {
-                (BoltV3RejectSource::NtExecution, denied.reason.to_string())
+                // scope: Denied is an NT-execution-level reject (tagged NtExecution) and
+                // OrderDenied carries no account_id. Per-trader filtering (OrderDenied
+                // exposes trader_id()) is deferred: this feed is constructed in live_node
+                // with only an account_id, and threading a TraderId would require new
+                // construction params through the live_node wiring (#885 minor item [14]).
+                (BoltV3RejectSource::NtExecution, denied.reason.as_str())
             }
             _ => return,
         };
-        let reject_reason = classify_reject_reason(&raw_reason_text);
+        // Classify on the full, unredacted reason (the classification only selects
+        // an enum arm and never persists the raw text); the redacted-and-capped
+        // copy is what is recorded and logged.
+        let reject_reason = classify_reject_reason(venue_reason_text);
+        let raw_reason_text = redact_and_cap_reject_reason(venue_reason_text);
         let instrument_id = event.instrument_id().to_string();
         let client_order_id = event.client_order_id().to_string();
         let ts_event_ns = event.ts_event().as_u64();
@@ -144,6 +175,7 @@ impl BoltV3OrderRejectObserverFeed {
                 ts_event_ns.saturating_sub(episode.first_ns),
             )
         };
+        self.evict_oldest_episodes_over_cap();
         if !retry_count.is_power_of_two() {
             return;
         }
@@ -184,6 +216,145 @@ impl BoltV3OrderRejectObserverFeed {
             );
         }
     }
+
+    /// Bound the episode map: while it exceeds the cap, drop the entry with the
+    /// smallest `first_ns` (oldest episode). Eviction only discards an
+    /// evidence-sampling counter, so a later reject for the same instrument simply
+    /// re-starts its episode; no trading state is touched.
+    fn evict_oldest_episodes_over_cap(&mut self) {
+        evict_oldest_episodes_over_cap(&mut self.episodes);
+    }
+}
+
+/// While the map exceeds the cap, drop the entry with the smallest `first_ns`
+/// (oldest episode). A single linear scan per eviction is adequate at this cap and
+/// avoids pulling in an LRU dependency. Free function so the bound can be tested
+/// in isolation without constructing a feed.
+fn evict_oldest_episodes_over_cap(episodes: &mut BTreeMap<String, RejectObserverEpisode>) {
+    while episodes.len() > REJECT_OBSERVER_MAX_EPISODES {
+        let oldest_key = episodes
+            .iter()
+            .min_by_key(|(_, episode)| episode.first_ns)
+            .map(|(key, _)| key.clone());
+        match oldest_key {
+            Some(key) => {
+                episodes.remove(&key);
+            }
+            None => break,
+        }
+    }
+}
+
+/// Redact identifying substrings from a verbatim venue/NT reject reason and cap
+/// its length before it is persisted to the S3-synced catalog tree or logged.
+/// The diagnostic value of the free-form text is retained for the `Other` bucket,
+/// but wallet/proxy addresses and long numeric runs (which can leak account or
+/// order identity) are replaced with fixed placeholders, and the result is bounded
+/// so a pathological venue message cannot bloat a record.
+///
+/// Redaction passes, in order:
+/// 1. A `0x`-prefixed hex run, or a bare run of >= `REJECT_REASON_ADDR_HEX_MIN_LEN`
+///    hex characters, becomes `REJECT_REASON_ADDR_PLACEHOLDER`.
+/// 2. A remaining digit run of >= `REJECT_REASON_NUM_MIN_LEN` digits becomes
+///    `REJECT_REASON_NUM_PLACEHOLDER`.
+/// 3. The result is truncated to `REJECT_REASON_MAX_LEN` chars, appending
+///    `REJECT_REASON_TRUNCATION_MARKER` when truncation occurs.
+fn redact_and_cap_reject_reason(raw: &str) -> String {
+    let address_redacted = redact_address_runs(raw);
+    let number_redacted = redact_long_digit_runs(&address_redacted);
+    cap_reason_length(&number_redacted)
+}
+
+/// Replace `0x`-prefixed hex runs and bare hex runs of at least
+/// `REJECT_REASON_ADDR_HEX_MIN_LEN` characters with the address placeholder.
+///
+/// Scans with a `peekable` char cursor (no index arithmetic): at each position it
+/// consumes either a `0x`/`0X`-prefixed hex run (always an address) or a maximal
+/// bare hex run (an address only when long enough), passing every other character
+/// through verbatim.
+fn redact_address_runs(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(&first) = chars.peek() {
+        // A `0`/`x` opener followed by a hex run is an address regardless of length.
+        if first == '0' {
+            let mut lookahead = chars.clone();
+            lookahead.next();
+            if matches!(lookahead.peek(), Some('x') | Some('X')) {
+                lookahead.next();
+                if lookahead.peek().is_some_and(char::is_ascii_hexdigit) {
+                    output.push_str(REJECT_REASON_ADDR_PLACEHOLDER);
+                    chars = lookahead;
+                    consume_run(&mut chars, char::is_ascii_hexdigit, None);
+                    continue;
+                }
+            }
+        }
+        if first.is_ascii_hexdigit() {
+            let mut run = String::new();
+            consume_run(&mut chars, char::is_ascii_hexdigit, Some(&mut run));
+            if run.chars().count() >= REJECT_REASON_ADDR_HEX_MIN_LEN {
+                output.push_str(REJECT_REASON_ADDR_PLACEHOLDER);
+            } else {
+                output.push_str(&run);
+            }
+            continue;
+        }
+        output.push(first);
+        chars.next();
+    }
+    output
+}
+
+/// Replace digit runs of at least `REJECT_REASON_NUM_MIN_LEN` characters with the
+/// numeric placeholder. Uses the same `peekable` run-scan as the address pass.
+fn redact_long_digit_runs(raw: &str) -> String {
+    let mut output = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(&first) = chars.peek() {
+        if first.is_ascii_digit() {
+            let mut run = String::new();
+            consume_run(&mut chars, char::is_ascii_digit, Some(&mut run));
+            if run.chars().count() >= REJECT_REASON_NUM_MIN_LEN {
+                output.push_str(REJECT_REASON_NUM_PLACEHOLDER);
+            } else {
+                output.push_str(&run);
+            }
+            continue;
+        }
+        output.push(first);
+        chars.next();
+    }
+    output
+}
+
+/// Advance the cursor over a maximal run of characters matching `predicate`,
+/// optionally collecting the consumed characters into `sink`.
+fn consume_run(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    predicate: fn(&char) -> bool,
+    mut sink: Option<&mut String>,
+) {
+    while let Some(&next) = chars.peek() {
+        if !predicate(&next) {
+            break;
+        }
+        if let Some(sink) = sink.as_deref_mut() {
+            sink.push(next);
+        }
+        chars.next();
+    }
+}
+
+/// Truncate to `REJECT_REASON_MAX_LEN` chars on a char boundary, appending the
+/// truncation marker when the input is longer than the cap.
+fn cap_reason_length(raw: &str) -> String {
+    if raw.chars().count() <= REJECT_REASON_MAX_LEN {
+        return raw.to_string();
+    }
+    let mut capped: String = raw.chars().take(REJECT_REASON_MAX_LEN).collect();
+    capped.push_str(REJECT_REASON_TRUNCATION_MARKER);
+    capped
 }
 
 fn classify_reject_reason(raw_reason_text: &str) -> BoltV3OrderRejectReason {
@@ -207,6 +378,145 @@ fn classify_reject_reason(raw_reason_text: &str) -> BoltV3OrderRejectReason {
         BoltV3OrderRejectReason::DuplicateClientOrderId
     } else {
         BoltV3OrderRejectReason::Other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_reject_reason_covers_every_arm_and_precedence() {
+        assert_eq!(
+            classify_reject_reason("maker amount precision exceeds venue precision"),
+            BoltV3OrderRejectReason::PrecisionRejected
+        );
+        assert_eq!(
+            classify_reject_reason("minimum notional not met"),
+            BoltV3OrderRejectReason::MinNotionalRejected
+        );
+        // The MinSize arm parses as `(min && size) || too_small`: pin both the
+        // `min`+`size` conjunction and the `too small` disjunct independently.
+        assert_eq!(
+            classify_reject_reason("order size below minimum"),
+            BoltV3OrderRejectReason::MinSizeRejected
+        );
+        assert_eq!(
+            classify_reject_reason("order too small"),
+            BoltV3OrderRejectReason::MinSizeRejected
+        );
+        assert_eq!(
+            classify_reject_reason("insufficient balance"),
+            BoltV3OrderRejectReason::InsufficientBalance
+        );
+        assert_eq!(
+            classify_reject_reason("duplicate client order id denied by NT"),
+            BoltV3OrderRejectReason::DuplicateClientOrderId
+        );
+        assert_eq!(
+            classify_reject_reason("unrecognized venue error"),
+            BoltV3OrderRejectReason::Other
+        );
+        // Precedence: precision wins over a message that also matches min+notional.
+        assert_eq!(
+            classify_reject_reason("precision exceeds minimum notional"),
+            BoltV3OrderRejectReason::PrecisionRejected
+        );
+    }
+
+    #[test]
+    fn redact_replaces_addresses_and_long_digit_runs() {
+        let raw = "rejected for 0xABCDEF0123456789 with balance 123456789012345 left";
+        let redacted = redact_and_cap_reject_reason(raw);
+        assert!(
+            redacted.contains(REJECT_REASON_ADDR_PLACEHOLDER),
+            "0x address should be redacted: {redacted}"
+        );
+        assert!(
+            redacted.contains(REJECT_REASON_NUM_PLACEHOLDER),
+            "long digit run should be redacted: {redacted}"
+        );
+        assert!(
+            !redacted.contains("0xABCDEF0123456789"),
+            "raw address must not survive: {redacted}"
+        );
+        assert!(
+            !redacted.contains("123456789012345"),
+            "raw long number must not survive: {redacted}"
+        );
+        // Diagnostic words are retained.
+        assert!(redacted.contains("rejected for"));
+        assert!(redacted.contains("left"));
+    }
+
+    #[test]
+    fn redact_replaces_bare_forty_char_hex_address() {
+        let bare_address = "a".repeat(REJECT_REASON_ADDR_HEX_MIN_LEN);
+        let raw = format!("denied wallet {bare_address} blocked");
+        let redacted = redact_and_cap_reject_reason(&raw);
+        assert!(
+            redacted.contains(REJECT_REASON_ADDR_PLACEHOLDER),
+            "bare 40-hex run should be redacted: {redacted}"
+        );
+        assert!(
+            !redacted.contains(&bare_address),
+            "raw bare address must not survive: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_keeps_short_hex_and_short_digit_runs() {
+        // A short hex token (< address threshold) and a short number (< num
+        // threshold) are diagnostic and must be preserved verbatim.
+        let raw = "code abc123 size 42 rejected";
+        let redacted = redact_and_cap_reject_reason(raw);
+        assert_eq!(redacted, raw);
+    }
+
+    #[test]
+    fn redact_caps_overlong_reason_with_marker() {
+        let raw = "z".repeat(REJECT_REASON_MAX_LEN + 50);
+        let redacted = redact_and_cap_reject_reason(&raw);
+        assert!(redacted.ends_with(REJECT_REASON_TRUNCATION_MARKER));
+        let body_len = redacted.chars().count() - REJECT_REASON_TRUNCATION_MARKER.chars().count();
+        assert_eq!(body_len, REJECT_REASON_MAX_LEN);
+    }
+
+    #[test]
+    fn redact_leaves_within_cap_reason_unmarked() {
+        let raw = "x".repeat(REJECT_REASON_MAX_LEN);
+        let redacted = redact_and_cap_reject_reason(&raw);
+        assert_eq!(redacted, raw);
+        assert!(!redacted.ends_with(REJECT_REASON_TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn evict_oldest_episodes_bounds_the_map() {
+        let mut episodes: BTreeMap<String, RejectObserverEpisode> = BTreeMap::new();
+        // Insert one past the cap, with strictly increasing first_ns so the oldest
+        // (first_ns == 0) is unambiguous.
+        let over_cap = REJECT_OBSERVER_MAX_EPISODES + 1;
+        for index in 0..over_cap {
+            episodes.insert(
+                format!("instrument-{index}/venue/other"),
+                RejectObserverEpisode {
+                    count: REJECT_OBSERVER_EPISODE_INCREMENT,
+                    first_ns: index as u64,
+                    last_client_order_id: String::new(),
+                },
+            );
+        }
+        assert_eq!(episodes.len(), over_cap);
+        let oldest_key = "instrument-0/venue/other".to_string();
+        assert!(episodes.contains_key(&oldest_key));
+
+        evict_oldest_episodes_over_cap(&mut episodes);
+
+        assert_eq!(episodes.len(), REJECT_OBSERVER_MAX_EPISODES);
+        assert!(
+            !episodes.contains_key(&oldest_key),
+            "the oldest episode (smallest first_ns) must be evicted first"
+        );
     }
 }
 

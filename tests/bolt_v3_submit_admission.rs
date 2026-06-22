@@ -7,8 +7,8 @@ use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3DecisionEvidenceWriter, BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
     BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
     BoltV3OrderRejectReason, BoltV3PositionSizerRebuildAuditEvidence, BoltV3RejectSource,
-    BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-    BoltV3SubmitReservationMetadataEvidence,
+    BoltV3StaleLossReason, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -1336,6 +1336,259 @@ impl BoltV3DecisionEvidenceWriter for OrderRejectFailingDecisionEvidenceWriter {
             .push(evidence.clone());
         Err(anyhow::anyhow!("synthetic order-reject write failure"))
     }
+}
+
+/// Records admission decisions but errors on `record_loss_governor_halt`, so a
+/// test can prove the trading-side admission outcome is unaffected when the
+/// loss-halt evidence sink fails.
+struct LossHaltFailingDecisionEvidenceWriter {
+    admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
+    loss_halt_attempts: Mutex<Vec<BoltV3LossGovernorHaltEvidence>>,
+}
+
+impl LossHaltFailingDecisionEvidenceWriter {
+    fn new() -> Self {
+        Self {
+            admission_decisions: Mutex::new(Vec::new()),
+            loss_halt_attempts: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
+        self.admission_decisions
+            .lock()
+            .expect("loss-halt failing writer mutex should not be poisoned")
+            .clone()
+    }
+
+    fn loss_halt_attempts(&self) -> Vec<BoltV3LossGovernorHaltEvidence> {
+        self.loss_halt_attempts
+            .lock()
+            .expect("loss-halt failing writer mutex should not be poisoned")
+            .clone()
+    }
+}
+
+impl BoltV3DecisionEvidenceWriter for LossHaltFailingDecisionEvidenceWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        self.admission_decisions
+            .lock()
+            .expect("loss-halt failing writer mutex should not be poisoned")
+            .push(decision.clone());
+        Ok(())
+    }
+
+    fn record_basket_admission_decision(
+        &self,
+        _decision: &BoltV3BasketAdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_exit_evaluation(
+        &self,
+        _evidence: &BoltV3ExitEvaluationEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_loss_governor_halt(
+        &self,
+        evidence: &BoltV3LossGovernorHaltEvidence,
+    ) -> anyhow::Result<()> {
+        self.loss_halt_attempts
+            .lock()
+            .expect("loss-halt failing writer mutex should not be poisoned")
+            .push(evidence.clone());
+        Err(anyhow::anyhow!(
+            "synthetic loss-governor-halt write failure"
+        ))
+    }
+
+    fn record_order_reject(&self, _evidence: &BoltV3OrderRejectEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn loss_halt_evidence_write_failure_does_not_change_admission_outcome() {
+    // FIX 3b: a failing loss-governor-halt sink must not change the trading-side
+    // admission outcome. Pair a recording writer (control) with a writer that
+    // errors only on record_loss_governor_halt and assert identical admission
+    // outcome + reasons.
+    let policy = LossGovernorPolicy {
+        max_snapshot_age_ns: 1_000,
+        max_per_trade_loss: Some(Decimal::new(10, 0)),
+        max_daily_loss: Some(Decimal::new(25, 0)),
+        max_rolling_loss: Some(Decimal::new(30, 0)),
+        max_drawdown: Some(Decimal::new(40, 0)),
+    };
+    let stale_snapshot = || LossSnapshot {
+        source: "nt_loss_runtime_feed".to_string(),
+        observed_at_ns: 1_000,
+        per_trade_pnl: Some(Decimal::ZERO),
+        daily_pnl: Some(Decimal::ZERO),
+        rolling_pnl: Some(Decimal::ZERO),
+        current_equity: Some(Decimal::new(1_000, 0)),
+        peak_equity: Some(Decimal::new(1_000, 0)),
+    };
+
+    let control_writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let control_admission =
+        BoltV3SubmitAdmissionState::new_with_loss_governor(control_writer.clone(), policy.clone());
+    control_admission.update_loss_snapshot(stale_snapshot());
+    let control_error = control_admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 2_101)
+        .expect_err("stale loss snapshot should reject through the loss governor");
+
+    let failing_writer = Arc::new(LossHaltFailingDecisionEvidenceWriter::new());
+    let failing_admission =
+        BoltV3SubmitAdmissionState::new_with_loss_governor(failing_writer.clone(), policy);
+    failing_admission.update_loss_snapshot(stale_snapshot());
+    let failing_error = failing_admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 2_101)
+        .expect_err("a failing loss-halt sink must not change the loss-governor rejection");
+
+    // The trading-side error (outcome + reasons) is identical with and without the sink failure.
+    match (&control_error, &failing_error) {
+        (
+            BoltV3SubmitAdmissionError::LossGovernorHalted {
+                reasons: control_reasons,
+            },
+            BoltV3SubmitAdmissionError::LossGovernorHalted {
+                reasons: failing_reasons,
+            },
+        ) => assert_eq!(control_reasons, failing_reasons),
+        other => panic!("expected loss-governor halt on both paths, got {other:?}"),
+    }
+    assert_eq!(
+        failing_writer.admission_decisions()[0].outcome,
+        BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+    );
+    // The sink was reached and did error (proving the swallow path is exercised).
+    assert_eq!(failing_writer.loss_halt_attempts().len(), 1);
+}
+
+#[test]
+fn stale_loss_halt_records_missing_snapshot_reason_with_no_age() {
+    // FIX 3c: a None snapshot yields MissingSnapshot, a stable_halt_key prefixed
+    // "missing_snapshot:", and no snapshot age.
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer.clone(),
+        LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_rolling_loss: Some(Decimal::new(30, 0)),
+            max_drawdown: Some(Decimal::new(40, 0)),
+        },
+    );
+
+    let error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 5_000)
+        .expect_err("missing loss snapshot should reject through the loss governor");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![LossHaltReason::StaleLossSnapshot]
+    ));
+
+    let halts = writer.loss_governor_halts();
+    assert_eq!(halts.len(), 1);
+    let halt = &halts[0];
+    assert_eq!(halt.stale_reason, BoltV3StaleLossReason::MissingSnapshot);
+    assert!(
+        halt.stable_halt_key.starts_with("missing_snapshot:"),
+        "stable_halt_key should be prefixed with the stale reason: {}",
+        halt.stable_halt_key
+    );
+    assert!(!halt.snapshot_present);
+    assert_eq!(halt.snapshot_age_ns, None);
+    assert_eq!(halt.snapshot_observed_at_ns, None);
+}
+
+#[test]
+fn stale_loss_halt_records_future_dated_reason_with_no_age() {
+    // FIX 3c: a future-dated snapshot (observed_at_ns > now_ns) yields FutureDated
+    // and snapshot_age_ns == None (the observed_at_ns > now_ns branch).
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::new());
+    let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
+        writer.clone(),
+        LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_rolling_loss: Some(Decimal::new(30, 0)),
+            max_drawdown: Some(Decimal::new(40, 0)),
+        },
+    );
+    admission.update_loss_snapshot(LossSnapshot {
+        source: "nt_loss_runtime_feed".to_string(),
+        observed_at_ns: 9_000,
+        per_trade_pnl: Some(Decimal::ZERO),
+        daily_pnl: Some(Decimal::ZERO),
+        rolling_pnl: Some(Decimal::ZERO),
+        current_equity: Some(Decimal::new(1_000, 0)),
+        peak_equity: Some(Decimal::new(1_000, 0)),
+    });
+
+    let error = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 5_000)
+        .expect_err("future-dated loss snapshot should reject through the loss governor");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
+            if reasons == vec![LossHaltReason::StaleLossSnapshot]
+    ));
+
+    let halts = writer.loss_governor_halts();
+    assert_eq!(halts.len(), 1);
+    let halt = &halts[0];
+    assert_eq!(halt.stale_reason, BoltV3StaleLossReason::FutureDated);
+    assert!(
+        halt.stable_halt_key.starts_with("future_dated:"),
+        "stable_halt_key should be prefixed with the stale reason: {}",
+        halt.stable_halt_key
+    );
+    assert!(halt.snapshot_present);
+    assert_eq!(halt.snapshot_observed_at_ns, Some(9_000));
+    assert_eq!(halt.snapshot_age_ns, None);
 }
 
 #[test]

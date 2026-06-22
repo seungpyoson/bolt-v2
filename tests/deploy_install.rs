@@ -45,3 +45,24 @@ fn install_script_repairs_deploy_toml_when_present() {
         "install.sh must conditionally repair config/deploy.toml when present (#768 lockout class)"
     );
 }
+
+#[test]
+fn install_script_repairs_binary_mode() {
+    // The systemd unit runs the installed binary as the bolt service user, so
+    // the #768 umask-lockout repair must cover execute permission too.
+    let script_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("deploy/install.sh");
+    let script = fs::read_to_string(&script_path).expect("install script should exist");
+    let repair_section = script
+        .split("for config_bundle_file in \"${config_bundle_files[@]}\"; do")
+        .nth(1)
+        .and_then(|section| {
+            section.split("install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d")
+                .next()
+        })
+        .expect("install.sh should have a repair section before systemd install");
+    assert!(
+        repair_section.contains("${BOLT_INSTALL_ROOT}/bolt-v2")
+            && repair_section.contains("chmod 0755"),
+        "install.sh must chmod-repair ${BOLT_INSTALL_ROOT}/bolt-v2 to 0755 in the repair section"
+    );
+}

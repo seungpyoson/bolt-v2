@@ -139,6 +139,15 @@ for config_bundle_file in "${config_bundle_files[@]}"; do
     repair_config_file "${config_bundle_file}" "config bundle file"
 done
 
+# The same #768 umask-lockout class applies to the executable: the bolt service
+# user needs execute access, not just read access to the config bundle.
+service_binary="${BOLT_INSTALL_ROOT}/bolt-v2"
+reject_symlinked_install_path "${service_binary}" "service binary"
+if [[ -f "${service_binary}" ]]; then
+    chown root:"${BOLT_GROUP}" "${service_binary}"
+    chmod 0755 "${service_binary}"
+fi
+
 install -d -m 0755 /etc/systemd/system /etc/systemd/journald.conf.d
 install -d -o root -g "${BOLT_GROUP}" -m 0750 "${LIVE_ENV_DIR}"
 install -m 0644 "${SYSTEMD_SRC_DIR}/bolt-v2.service" "${UNIT_DST}"

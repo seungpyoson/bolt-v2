@@ -402,6 +402,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/test_lane_governor.py
     python3 scripts/test_verify_lane_governance.py
     python3 scripts/verify_lane_governance.py
+    python3 scripts/test_verify_install_unit_generated.py
+    python3 scripts/verify_install_unit_generated.py
 
 source-fence: source-fence-static
     git fetch -q origin main 2>/dev/null
@@ -416,6 +418,12 @@ source-fence: source-fence-static
 # Cargo shim guard tests (pytest-based, unlike the self-running script tests)
 cargo-shim-tests:
     python3 -m pytest scripts/test_cargo_shim.py -q
+
+# Render the systemd unit from deploy/install-layout.env + the .in template. The
+# committed deploy/systemd/bolt-v2.service is a GENERATED artifact — edit the template
+# or layout and regenerate; never hand-edit the unit. Drift is caught by source-fence.
+generate-unit:
+    python3 scripts/render_install_unit.py > deploy/systemd/bolt-v2.service
 
 # Generate the runtime config by composing the operator-selected tracked profile
 # overlay onto config/root.toml. The single, fail-closed path from a reviewed

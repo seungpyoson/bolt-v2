@@ -113,6 +113,8 @@ fn realized_volatility_source_diagnostic_evidence_exports_config_participation()
         coverage_ratio: 0.0,
         max_inter_sample_gap_ms: None,
         last_rejected_reason: Some(RealizedVolSourceRejectReason::DisabledSource),
+        last_rejected_event_ts_ms: None,
+        last_rejected_recv_ts_ms: None,
         rejection_counters: BTreeMap::from([(RealizedVolSourceRejectReason::DisabledSource, 2)]),
         block_reason: Some(RealizedVolBlockReason::NotWarm),
     };
@@ -849,6 +851,7 @@ fn sample_entry_skip_evidence() -> BoltV3EntrySkipEvidence {
         strategy_id: "strategy-one".to_string(),
         now_ms: 1_200,
         reason_category: BoltV3EntrySkipReasonCategory::EntryPricingBlocked,
+        unclassified_context: None,
         gate_blocked_by: vec![BoltV3EntryBlockReason::ForcedFlat(
             BoltV3ForcedFlatReason::StaleReference,
         )],

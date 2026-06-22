@@ -34,7 +34,26 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      - name: Notice when Z.ai secret is not configured
+        if: env.GLM_API_KEY == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
+          cat > "$notice_file" <<EOF
+          ## GLM review notice
+
+          \`GLM_API_KEY\` is not configured, so the GLM review was skipped.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
+          EOF
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+
       - name: Checkout base AI review helpers
+        if: env.GLM_API_KEY != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
@@ -44,15 +63,6 @@ jobs:
             .pr_agent.toml
             scripts/ai_review_deliverables.py
           sparse-checkout-cone-mode: false
-
-      - name: Notice when Z.ai secret is not configured
-        if: env.GLM_API_KEY == ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          python3 scripts/ai_review_deliverables.py notice
-          --provider GLM
-          --message "\`GLM_API_KEY\` is not configured, so the GLM review was skipped."
 
       - name: Capture GLM review window
         id: review-window
@@ -69,6 +79,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI__API_BASE: https://api.z.ai/api/paas/v4
           OPENAI__KEY: ${{ env.GLM_API_KEY }}
+          OPENAI_KEY: ${{ env.GLM_API_KEY }}
           config.model: openai/glm-5.2
           config.fallback_models: '["openai/glm-5.2"]'
           config.custom_model_max_tokens: "128000"
@@ -102,8 +113,17 @@ jobs:
             && steps.glm_fallback.outputs.failure_notice_posted != 'true'
           }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          python3 scripts/ai_review_deliverables.py notice
-          --provider GLM
-          --message "The GLM fallback step failed or timed out before posting a usable failure notice. Check the action logs for this run."
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
+          cat > "$notice_file" <<EOF
+          ## GLM review notice
+
+          The GLM fallback step failed or timed out before posting a usable failure notice. Check the action logs for this run.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
+          EOF
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"

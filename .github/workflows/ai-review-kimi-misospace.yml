@@ -34,6 +34,24 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
 
     steps:
+      - name: Notice when Kimi secret is not configured
+        if: env.KIMI_API_KEY == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
+          cat > "$notice_file" <<EOF
+          ## Kimi review notice
+
+          \`KIMI_API_KEY\` is not configured, so the Kimi review was skipped.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
+          EOF
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+
       - name: Checkout PR head
         if: env.KIMI_API_KEY != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -43,6 +61,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Checkout base governance
+        if: env.KIMI_API_KEY != ''
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
@@ -53,15 +72,6 @@ jobs:
             AGENTS.md
             scripts/ai_review_deliverables.py
           sparse-checkout-cone-mode: false
-
-      - name: Notice when Kimi secret is not configured
-        if: env.KIMI_API_KEY == ''
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          python3 .ai-review/base/scripts/ai_review_deliverables.py notice
-          --provider Kimi
-          --message "\`KIMI_API_KEY\` is not configured, so the Kimi review was skipped."
 
       - name: Prepare Kimi review standards
         if: env.KIMI_API_KEY != ''
@@ -145,8 +155,17 @@ jobs:
             && steps.kimi_fallback.outputs.failure_notice_posted != 'true'
           }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          python3 .ai-review/base/scripts/ai_review_deliverables.py notice
-          --provider Kimi
-          --message "The Kimi fallback step failed or timed out before posting a usable failure notice. Check the action logs for this run."
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
+          cat > "$notice_file" <<EOF
+          ## Kimi review notice
+
+          The Kimi fallback step failed or timed out before posting a usable failure notice. Check the action logs for this run.
+
+          - PR: #${PR_NUMBER}
+          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
+          EOF
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"

@@ -142,6 +142,7 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Capture GLM review window",
     "id: pr-agent",
     "timeout-minutes: 8",
+    "OPENAI_KEY: ${{ env.GLM_API_KEY }}",
     "Ensure GLM deliverable or post split fallback",
     "id: glm_fallback",
     "scripts/ai_review_deliverables.py glm-fallback",
@@ -151,6 +152,8 @@ GLM_DELIVERABLE_SNIPPETS = (
     "Post GLM fallback infrastructure failure notice",
     "steps.glm_fallback.outputs.failure_notice_posted != 'true'",
     "fallback step failed or timed out before posting a usable failure notice",
+    "gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"",
+    "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
 )
 
 KIMI_DELIVERABLE_SNIPPETS = (
@@ -168,6 +171,8 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "Post Kimi fallback infrastructure failure notice",
     "steps.kimi_fallback.outputs.failure_notice_posted != 'true'",
     "fallback step failed or timed out before posting a usable failure notice",
+    "gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"",
+    "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
 )
 
 KIMI_FORBIDDEN_INPUTS = (
@@ -235,6 +240,9 @@ def verify_texts(
         findings.append(
             "GLM workflow must not define pr_reviewer.* overrides; keep reviewer behavior in .pr_agent.toml"
         )
+    for workflow_name, workflow in (("GLM workflow", glm_workflow), ("Kimi workflow", kimi_workflow)):
+        if "ai_review_deliverables.py notice" in workflow:
+            findings.append(f"{workflow_name} backup/skip notices must not depend on ai_review_deliverables.py")
 
     findings.extend(missing_snippets("GLM workflow", glm_workflow, GLM_DELIVERABLE_SNIPPETS))
     findings.extend(missing_snippets("Kimi workflow", kimi_workflow, KIMI_BASE_GOVERNANCE_SNIPPETS))
@@ -310,13 +318,13 @@ def run_self_tests(repo_root: Path) -> None:
     glm_missing_infrastructure_notice = verify_texts(
         agents_md=agents,
         pr_agent_toml=pr_agent,
-        glm_workflow=glm.replace("Post GLM fallback infrastructure failure notice", "Post GLM fallback no-op"),
+        glm_workflow=glm.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 scripts/ai_review_deliverables.py notice"),
         kimi_workflow=kimi,
     )
     assert_finding(
-        "GLM missing fallback infrastructure notice",
+        "GLM helper-based fallback infrastructure notice",
         glm_missing_infrastructure_notice,
-        "GLM workflow missing expected snippet",
+        "must not depend on ai_review_deliverables.py",
     )
 
     kimi_head_governance = verify_texts(
@@ -350,12 +358,12 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         glm_workflow=glm,
-        kimi_workflow=kimi.replace("Post Kimi fallback infrastructure failure notice", "Post Kimi fallback no-op"),
+        kimi_workflow=kimi.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 .ai-review/base/scripts/ai_review_deliverables.py notice"),
     )
     assert_finding(
-        "Kimi missing fallback infrastructure notice",
+        "Kimi helper-based fallback infrastructure notice",
         kimi_missing_infrastructure_notice,
-        "Kimi workflow missing expected snippet",
+        "must not depend on ai_review_deliverables.py",
     )
 
 

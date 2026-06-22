@@ -30,6 +30,9 @@ PR_AGENT_MARKERS = (
     "## PR Reviewer Guide",
     "## Incremental PR Reviewer Guide",
 )
+EXPLICIT_SECRET_ENV_NAMES = frozenset(("GLM_API_KEY", "KIMI_API_KEY", "GITHUB_TOKEN", "OPENAI__KEY", "OPENAI_KEY"))
+SECRET_ENV_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN")
+SECRET_ENV_PREFIXES = ("OPENAI__",)
 
 
 class ReviewFailed(RuntimeError):
@@ -48,6 +51,7 @@ class FallbackConfig:
     response_chars_per_chunk: int = DEFAULT_RESPONSE_CHARS_PER_CHUNK
     provider: str = "GLM"
     deliverable_markers: tuple[str, ...] = PR_AGENT_MARKERS
+    expected_bot_login: str = "github-actions[bot]"
 
 
 @dataclass(frozen=True)
@@ -228,9 +232,11 @@ def body_has_deliverable_marker(body: object, markers: tuple[str, ...]) -> bool:
     return isinstance(body, str) and any(body.lstrip().startswith(marker) for marker in markers)
 
 
-def actor_is_bot(payload: dict[str, object]) -> bool:
+def actor_is_expected_bot(payload: dict[str, object], expected_login: str) -> bool:
     user = payload.get("user")
-    return isinstance(user, dict) and str(user.get("type", "")).lower() == "bot"
+    if not isinstance(user, dict):
+        return False
+    return str(user.get("type", "")).lower() == "bot" and user.get("login") == expected_login
 
 
 def has_review_deliverable(
@@ -239,10 +245,11 @@ def has_review_deliverable(
     reviews: list[dict[str, object]],
     started_at: str,
     markers: tuple[str, ...],
+    expected_bot_login: str,
 ) -> bool:
     threshold = parse_iso_timestamp(started_at)
     for comment in comments:
-        if not actor_is_bot(comment):
+        if not actor_is_expected_bot(comment, expected_bot_login):
             continue
         if not body_has_deliverable_marker(comment.get("body"), markers):
             continue
@@ -251,7 +258,7 @@ def has_review_deliverable(
         ):
             return True
     for review in reviews:
-        if not actor_is_bot(review):
+        if not actor_is_expected_bot(review, expected_bot_login):
             continue
         if not body_has_deliverable_marker(review.get("body"), markers):
             continue
@@ -573,12 +580,24 @@ def render_review_comments(
     ]
 
 
+def secret_env_values() -> list[str]:
+    names = set(EXPLICIT_SECRET_ENV_NAMES)
+    names.update(
+        name
+        for name in os.environ
+        if name.startswith(SECRET_ENV_PREFIXES) or name.endswith(SECRET_ENV_SUFFIXES)
+    )
+    return sorted(
+        {secret for name in names if len(secret := os.environ.get(name, "")) >= 8},
+        key=len,
+        reverse=True,
+    )
+
+
 def sanitize_detail(value: str) -> str:
     sanitized = value
-    for name in ("GLM_API_KEY", "KIMI_API_KEY", "GITHUB_TOKEN", "OPENAI__KEY"):
-        secret = os.environ.get(name, "")
-        if secret:
-            sanitized = sanitized.replace(secret, "***")
+    for secret in secret_env_values():
+        sanitized = sanitized.replace(secret, "***")
     return sanitized
 
 
@@ -622,6 +641,7 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
             reviews=github.list_reviews(),
             started_at=config.started_at,
             markers=config.deliverable_markers,
+            expected_bot_login=config.expected_bot_login,
         ):
             return "existing-review-deliverable"
 

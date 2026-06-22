@@ -264,6 +264,39 @@ def test_human_kimi_marker_comment_does_not_suppress_fallback() -> None:
     assert len(github.posted) == 1, github.posted
 
 
+def test_unexpected_bot_marker_comment_does_not_suppress_fallback() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": "## PR Reviewer Guide\n\nmarker from a different automation bot",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "dependabot[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM()
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=module.FallbackConfig(
+            repo="seungpyoson/bolt-v2",
+            pr_number=895,
+            started_at="2026-06-22T12:21:00Z",
+            instructions="review hard evidence only",
+            max_chunk_chars=260,
+            run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+        ),
+    )
+
+    assert result == "fallback-posted"
+    assert glm.prompts
+    assert len(github.posted) == 1, github.posted
+
+
 def test_incremental_pr_agent_deliverable_suppresses_fallback() -> None:
     module = load_script()
     github = FakeGitHub(
@@ -568,6 +601,28 @@ def test_render_notice_redacts_secret_values() -> None:
     assert "provider returned ***" in notice
 
 
+def test_render_notice_redacts_new_provider_secret_env_names() -> None:
+    module = load_script()
+    secret = "fake-new-provider-secret-for-redaction"
+    previous_secret = os.environ.get("EXPERIMENTAL_PROVIDER_API_KEY")
+    os.environ["EXPERIMENTAL_PROVIDER_API_KEY"] = secret
+    try:
+        notice = module.render_notice(
+            "Provider",
+            895,
+            "https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+            f"provider returned {secret}",
+        )
+    finally:
+        if previous_secret is None:
+            os.environ.pop("EXPERIMENTAL_PROVIDER_API_KEY", None)
+        else:
+            os.environ["EXPERIMENTAL_PROVIDER_API_KEY"] = previous_secret
+
+    assert secret not in notice
+    assert "provider returned ***" in notice
+
+
 def main() -> int:
     test_packs_more_than_two_review_chunks_when_budget_requires_it()
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
@@ -576,6 +631,7 @@ def main() -> int:
     test_plain_pr_agent_phrase_does_not_suppress_fallback()
     test_human_pr_agent_marker_comment_does_not_suppress_fallback()
     test_human_kimi_marker_comment_does_not_suppress_fallback()
+    test_unexpected_bot_marker_comment_does_not_suppress_fallback()
     test_incremental_pr_agent_deliverable_suppresses_fallback()
     test_posts_failure_notice_when_glm_fallback_fails()
     test_sets_failure_notice_output_after_posting_failure_notice()
@@ -586,9 +642,13 @@ def main() -> int:
     test_posts_failure_notice_when_kimi_fallback_fails()
     test_redacts_kimi_api_key_from_failure_notice()
     test_render_notice_redacts_secret_values()
+    test_render_notice_redacts_new_provider_secret_env_names()
     print("GLM fallback self-tests OK")
     return 0
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

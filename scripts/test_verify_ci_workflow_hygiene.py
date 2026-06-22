@@ -1400,17 +1400,17 @@ def assert_ci_policy_resolvers_agree() -> None:
         raise AssertionError("parity matrix must cover full, defer, and noop resolutions")
     # The merge_group row #848 adds must resolve to full on both sides.
     if not any(
-        c[0] == "merge_group"
+        event_name == "merge_group"
         and verifier.evaluate_ci_policy(
             policy,
-            event_name=c[0],
-            action=c[1],
-            pull_request_draft=c[2],
-            pull_request_base_changed=c[3],
-            ref=c[4],
+            event_name=event_name,
+            action=action,
+            pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
+            ref=ref,
         ).ci_policy_path
         == "full"
-        for c in cases
+        for event_name, action, draft, base_changed, ref in cases
     ):
         raise AssertionError("merge_group must resolve to full in the parity matrix")
     # force_full_ci override: production keeps it false (asserted elsewhere), so

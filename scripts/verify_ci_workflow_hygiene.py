@@ -783,7 +783,7 @@ def cancel_in_progress_is_merge_group_safe(cancel_text: str) -> bool:
     value = _cancel_in_progress_value(cancel_text)
     if value == "false":
         return True
-    if value in KNOWN_SAFE_CANCEL_FORMS:
+    if _normalize_concurrency_text(value) in KNOWN_SAFE_CANCEL_FORMS:
         return True
     match = re.fullmatch(r"\$\{\{(.*)\}\}", value, re.DOTALL)
     if not match:

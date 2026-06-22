@@ -1147,17 +1147,18 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         .next()
         .expect("ready-to-trade fixture should expose an outcome instrument");
     let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+    let up_best_ask = strategy
+        .active
+        .books
+        .up
+        .best_ask
+        .expect("ready-to-trade fixture should expose an up ask");
     let position = materialize_configured_position(
         &mut strategy,
         instrument_id,
         PositionId::from(stringify!(P_SHADOW_EXIT_FUTURE_RV)),
         position_quantity,
-        strategy
-            .active
-            .books
-            .up
-            .best_ask
-            .expect("ready-to-trade fixture should expose an up ask"),
+        up_best_ask,
     );
     set_managed_position(
         &mut strategy,

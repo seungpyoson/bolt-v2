@@ -2775,7 +2775,11 @@ fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
         .expect("entry fill should materialize position for log test");
 
     let decision = strategy.exit_submission_decision_at(1_200);
-    let fields = strategy.exit_evaluation_log_fields_at(1_200, &decision);
+    let fields = strategy.exit_evaluation_log_fields_at(
+        1_200,
+        ExitEvaluationTriggerContext::unknown(1_200),
+        &decision,
+    );
 
     assert!(fields.historical_entry_fee_rate_known);
     assert_eq!(

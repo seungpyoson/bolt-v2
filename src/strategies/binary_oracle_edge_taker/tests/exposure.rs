@@ -2328,7 +2328,11 @@ fn exit_evaluation_log_fields_use_position_context_after_rotation() {
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 2_000);
 
     let decision = strategy.exit_submission_decision_at(2_000);
-    let fields = strategy.exit_evaluation_log_fields_at(2_000, &decision);
+    let fields = strategy.exit_evaluation_log_fields_at(
+        2_000,
+        ExitEvaluationTriggerContext::unknown(2_000),
+        &decision,
+    );
 
     assert_eq!(fields.market_id.as_deref(), Some("MKT-1"));
     assert_eq!(fields.spot_price, None);

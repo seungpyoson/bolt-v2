@@ -17,7 +17,13 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import ci_provenance
+from ci_provenance import (
+    GATE_NAME_KEYS,
+    POLICY_ROWS,
+    POLICY_VALUES,
+    expected_event_class_for,
+    gate_name_suffix_for,
+)
 
 # Keep the former verifier-local helper families module-scoped so parity tests
 # prove the old helper surface now points at the shared path.
@@ -163,9 +169,9 @@ CI_PROVENANCE_REQUIRED_JOBS = (
     "test-archive",
     "test",
 )
-CI_PROVENANCE_POLICY_VALUES = ci_provenance.POLICY_VALUES
-CI_PROVENANCE_POLICY_ROWS = ci_provenance.POLICY_ROWS
-CI_PROVENANCE_GATE_NAME_KEYS = ci_provenance.GATE_NAME_KEYS
+CI_PROVENANCE_POLICY_VALUES = POLICY_VALUES
+CI_PROVENANCE_POLICY_ROWS = POLICY_ROWS
+CI_PROVENANCE_GATE_NAME_KEYS = GATE_NAME_KEYS
 
 
 class PolicyRowSemantics(NamedTuple):
@@ -1088,14 +1094,14 @@ def evaluate_ci_policy(
 
     if path not in CI_PROVENANCE_POLICY_VALUES:
         raise ValueError(f"resolved invalid ci_policy_path {path!r}")
-    gate_name_suffix = ci_provenance.gate_name_suffix_for(reason, path)
+    gate_name_suffix = gate_name_suffix_for(reason, path)
     return CiPolicyResult(
         ci_policy_path=path,
         full_ci_required=path == "full",
         full_ci_deferred=path == "defer",
         gate_name=gate_names[f"gate_{gate_name_suffix}"],
         backtester_gate_name=gate_names[f"backtester_{gate_name_suffix}"],
-        expected_event_class=ci_provenance.expected_event_class_for(reason, path),
+        expected_event_class=expected_event_class_for(reason, path),
         is_mergify_temp_pr=False,
         reason=reason,
     )

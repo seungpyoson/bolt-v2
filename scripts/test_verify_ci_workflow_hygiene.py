@@ -1324,6 +1324,14 @@ check_name = "test"
             valid.replace('backtester_noop = "backtester-gate-noop"', 'backtester_noop = "backtester-gate-iteration"'),
         ),
         (
+            "ci_provenance.gate_names.gate_noop must not equal backtester_required",
+            valid.replace('gate_noop = "gate-noop"', 'gate_noop = "backtester-gate"'),
+        ),
+        (
+            "ci_provenance.gate_names.backtester_noop must not equal gate_required",
+            valid.replace('backtester_noop = "backtester-gate-noop"', 'backtester_noop = "gate"'),
+        ),
+        (
             "ci_provenance.gate_names.gate_dispatch_full must be a GitHub Actions output-safe check name",
             valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate\\nignored=1"'),
         ),

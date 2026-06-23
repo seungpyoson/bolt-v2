@@ -205,26 +205,28 @@ def require_gate_name(parent: dict[str, object], key: str, prefix: str) -> str:
 
 def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
     errors: list[str] = []
-    for keys in (
-        ("gate_required", "gate_defer", "gate_iteration", "gate_noop", "gate_dispatch_full"),
-        (
-            "backtester_required",
-            "backtester_defer",
-            "backtester_iteration",
-            "backtester_noop",
-            "backtester_dispatch_full",
-        ),
-    ):
-        seen: dict[str, str] = {}
-        for key in keys:
-            value = gate_names.get(key)
-            if value is None:
-                continue
-            previous = seen.get(value)
-            if previous is not None:
-                errors.append(f"ci_provenance.gate_names.{key} must not equal {previous}")
-            else:
-                seen[value] = key
+    keys = (
+        "gate_required",
+        "backtester_required",
+        "gate_defer",
+        "backtester_defer",
+        "gate_iteration",
+        "backtester_iteration",
+        "gate_noop",
+        "backtester_noop",
+        "gate_dispatch_full",
+        "backtester_dispatch_full",
+    )
+    seen: dict[str, str] = {}
+    for key in keys:
+        value = gate_names.get(key)
+        if value is None:
+            continue
+        previous = seen.get(value)
+        if previous is not None:
+            errors.append(f"ci_provenance.gate_names.{key} must not equal {previous}")
+        else:
+            seen[value] = key
     return errors
 
 

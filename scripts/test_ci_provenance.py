@@ -1236,6 +1236,14 @@ def assert_gate_names_reject_collisions() -> None:
             'backtester_noop = "backtester-gate-noop"',
             'backtester_noop = "backtester-gate-iteration"',
         ),
+        "ci_provenance.gate_names.gate_noop must not equal backtester_required": CONFIG_TOML.replace(
+            'gate_noop = "gate-noop"',
+            'gate_noop = "backtester-gate"',
+        ),
+        "ci_provenance.gate_names.backtester_noop must not equal gate_required": CONFIG_TOML.replace(
+            'backtester_noop = "backtester-gate-noop"',
+            'backtester_noop = "gate"',
+        ),
     }
     for fragment, config_text in cases.items():
         with tempfile.TemporaryDirectory() as tmp:

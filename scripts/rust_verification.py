@@ -2897,6 +2897,7 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
     run_name_full = dispatch.get("run_name_full")
     run_name_iteration = dispatch.get("run_name_iteration")
     proof_gate_job = dispatch.get("proof_gate_job")
+    gate_names = provenance.get("gate_names")
     if not isinstance(workflow_name, str) or not workflow_name:
         return None, "ci_provenance.workflow_name must be a non-empty string"
     if not isinstance(workflow_path, str) or not workflow_path:
@@ -2911,6 +2912,11 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
         return None, "ci_provenance.dispatch run_name_full and run_name_iteration must differ"
     if not isinstance(proof_gate_job, str) or not proof_gate_job:
         return None, "ci_provenance.dispatch.proof_gate_job must be a non-empty string"
+    if not isinstance(gate_names, dict):
+        return None, "ci_provenance.gate_names table is required for verify-remote dispatch"
+    dispatch_full_gate_job = gate_names.get("gate_dispatch_full")
+    if not isinstance(dispatch_full_gate_job, str) or not dispatch_full_gate_job:
+        return None, "ci_provenance.gate_names.gate_dispatch_full must be a non-empty string"
     api_limits = provenance.get("api_limits")
     run_limit = None
     if isinstance(api_limits, dict):
@@ -2926,6 +2932,7 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
         "run_name_full": run_name_full,
         "run_name_iteration": run_name_iteration,
         "proof_gate_job": proof_gate_job,
+        "dispatch_full_gate_job": dispatch_full_gate_job,
         "workflow_runs_per_page": run_limit,
     }, None
 
@@ -3638,10 +3645,15 @@ def evaluate_full_ci_run(
                 print(f"Remote full CI failed for {head} on {pr_url}: {error or 'unable to inspect gate job'}", file=sys.stderr)
                 return 1
             if not any(
-                job_text(job, "name") == dispatch_config["proof_gate_job"] and job_text(job, "conclusion") == "success"
+                job_text(job, "name") == dispatch_config["dispatch_full_gate_job"]
+                and job_text(job, "conclusion") == "success"
                 for job in jobs
             ):
-                print(f"Remote full CI failed for {head} on {pr_url}: workflow_dispatch run lacks successful gate job", file=sys.stderr)
+                print(
+                    f"Remote full CI failed for {head} on {pr_url}: "
+                    "workflow_dispatch run lacks successful dispatch full gate job",
+                    file=sys.stderr,
+                )
                 print(f"- {workflow_run_summary(run)}", file=sys.stderr)
                 return 1
         print(f"OK: remote full CI passed for {head} on {pr_url}: {workflow_run_summary(run)}")
@@ -3861,7 +3873,7 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
         return verify_remote_fail(error or "unable to inspect CI dispatch config")
 
     print(
-        "verify-remote final-proof full CI: use just rust-probe suggest for targeted Rust debugging "
+        "verify-remote full CI feedback: use just rust-probe suggest for targeted Rust debugging "
         "before spending full CI."
     )
 

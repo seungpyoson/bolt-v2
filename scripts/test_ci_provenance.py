@@ -99,6 +99,18 @@ run_name_full = "CI [dispatch:full]"
 run_name_iteration = "CI [dispatch:iteration]"
 proof_gate_job = "gate"
 
+[ci_provenance.gate_names]
+gate_required = "gate"
+gate_defer = "gate-deferred"
+gate_iteration = "gate-iteration"
+gate_noop = "gate-noop"
+gate_dispatch_full = "gate-dispatch"
+backtester_required = "backtester-gate"
+backtester_defer = "backtester-gate-deferred"
+backtester_iteration = "backtester-gate-iteration"
+backtester_noop = "backtester-gate-noop"
+backtester_dispatch_full = "backtester-gate-dispatch"
+
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
 run_jobs_per_page = 100
@@ -174,6 +186,18 @@ run_name_default = "CI"
 run_name_full = "CI [dispatch:full]"
 run_name_iteration = "CI [dispatch:iteration]"
 proof_gate_job = "gate"
+
+[ci_provenance.gate_names]
+backtester_dispatch_full = "backtester-gate-dispatch"
+backtester_noop = "backtester-gate-noop"
+backtester_iteration = "backtester-gate-iteration"
+backtester_defer = "backtester-gate-deferred"
+backtester_required = "backtester-gate"
+gate_dispatch_full = "gate-dispatch"
+gate_noop = "gate-noop"
+gate_iteration = "gate-iteration"
+gate_defer = "gate-deferred"
+gate_required = "gate"
 
 [ci_provenance.deploy]
 require_gate_check = true
@@ -941,6 +965,31 @@ def assert_top_level_help_is_supported() -> None:
 def assert_ci_policy_outputs_matrix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        expected_event_classes = {
+            "draft_pr_synchronize": "defer",
+            "draft_pr_opened": "defer",
+            "draft_pr_reopened": "defer",
+            "draft_pr_edited": "defer",
+            "converted_to_draft": "defer",
+            "ready_pr": "full",
+            "ready_pr_edited_no_base": "noop",
+            "ready_pr_reopened": "noop",
+            "ready_for_review": "full",
+            "workflow_dispatch": "iteration",
+            "workflow_dispatch_full_ci": "full",
+            "main_push": "full",
+            "merge_group": "full",
+            "tag": "tag_reuse",
+            "unknown_event": "full",
+        }
+        gate_names = {
+            "full": ("gate", "backtester-gate"),
+            "tag_reuse": ("gate", "backtester-gate"),
+            "defer": ("gate-deferred", "backtester-gate-deferred"),
+            "iteration": ("gate-iteration", "backtester-gate-iteration"),
+            "noop": ("gate-noop", "backtester-gate-noop"),
+            "workflow_dispatch_full_ci": ("gate-dispatch", "backtester-gate-dispatch"),
+        }
         cases = [
             ("push", "", "false", "false", "", "refs/heads/main", "full", "main_push"),
             ("push", "", "false", "false", "true", "refs/heads/main", "full", "main_push"),
@@ -996,6 +1045,18 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(f"full_ci_deferred must derive from {expected}: {output}")
             if output.get("reason") != reason:
                 raise AssertionError(f"ci-policy must expose reason {reason}: {output}")
+            if output.get("expected_event_class") != expected_event_classes[reason]:
+                raise AssertionError(f"ci-policy must expose expected_event_class for {reason}: {output}")
+            name_key = reason if reason == "workflow_dispatch_full_ci" else expected
+            expected_gate, expected_backtester_gate = gate_names[name_key]
+            if output.get("gate_name") != expected_gate:
+                raise AssertionError(f"ci-policy must expose gate_name {expected_gate}: {output}")
+            if output.get("backtester_gate_name") != expected_backtester_gate:
+                raise AssertionError(
+                    f"ci-policy must expose backtester_gate_name {expected_backtester_gate}: {output}"
+                )
+            if output.get("is_mergify_temp_pr") != "false":
+                raise AssertionError(f"ci-policy must expose is_mergify_temp_pr=false: {output}")
             if output.get("ignore_emit_failure") != "false":
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
 
@@ -1028,6 +1089,99 @@ def assert_ci_policy_outputs_matrix() -> None:
         output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
         if output.get("ci_policy_path") != "full":
             raise AssertionError(f"force_full_ci must force draft PR events to full, got {output}")
+        if output.get("gate_name") != "gate" or output.get("backtester_gate_name") != "backtester-gate":
+            raise AssertionError(f"force_full_ci must publish required gate names, got {output}")
+        if output.get("expected_event_class") != "full":
+            raise AssertionError(f"force_full_ci must publish full event class, got {output}")
+
+
+def legacy_workflow_gate_names(
+    *,
+    event_name: str,
+    action: str,
+    pull_request_draft: bool,
+    pull_request_base_changed: bool,
+    workflow_dispatch_full_ci: str,
+) -> tuple[str, str]:
+    deferred_actions = {"opened", "synchronize", "reopened", "converted_to_draft", "edited"}
+    if event_name == "pull_request" and pull_request_draft and action in deferred_actions:
+        return "gate-deferred", "backtester-gate-deferred"
+    ready_noop = (
+        event_name == "pull_request"
+        and not pull_request_draft
+        and (action == "reopened" or (action == "edited" and not pull_request_base_changed))
+    )
+    if ready_noop:
+        return "gate-noop", "backtester-gate-noop"
+    if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
+        return "gate", "backtester-gate"
+    if event_name == "workflow_dispatch":
+        return "gate-iteration", "backtester-gate-iteration"
+    return "gate", "backtester-gate"
+
+
+def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    cases: list[tuple[str, str, bool, bool, str, str]] = [
+        ("push", "", False, False, "", "refs/heads/main"),
+        ("push", "", False, False, "", "refs/tags/v1.2.3"),
+        ("push", "", False, False, "", "refs/heads/codex/branch"),
+        ("merge_group", "checks_requested", False, False, "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef"),
+        ("unknown_event", "", False, False, "", "refs/heads/codex/branch"),
+    ]
+    for full_ci in ("", "false", "true", "TRUE", " true "):
+        cases.append(("workflow_dispatch", "", False, False, full_ci, "refs/heads/codex/branch"))
+    for action in (
+        "opened",
+        "synchronize",
+        "reopened",
+        "ready_for_review",
+        "converted_to_draft",
+        "edited",
+        "labeled",
+    ):
+        for draft in (False, True):
+            for base_changed in (False, True):
+                cases.append(("pull_request", action, draft, base_changed, "", "refs/pull/1/merge"))
+
+    saw_intentional_dispatch_flip = False
+    for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref in cases:
+        result = module.evaluate_ci_policy(
+            config,
+            event_name=event_name,
+            event_action=action,
+            pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
+            workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+            ref=ref,
+        )
+        legacy_gate, legacy_backtester_gate = legacy_workflow_gate_names(
+            event_name=event_name,
+            action=action,
+            pull_request_draft=draft,
+            pull_request_base_changed=base_changed,
+            workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+        )
+        case_label = (event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref)
+        if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
+            saw_intentional_dispatch_flip = True
+            if (legacy_gate, legacy_backtester_gate) != ("gate", "backtester-gate"):
+                raise AssertionError(f"legacy dispatch full snapshot must publish required gates: {case_label}")
+            if (result.gate_name, result.backtester_gate_name) != (
+                "gate-dispatch",
+                "backtester-gate-dispatch",
+            ):
+                raise AssertionError(f"dispatch full must flip to non-required gate names: {case_label} {result}")
+            continue
+        if (result.gate_name, result.backtester_gate_name) != (legacy_gate, legacy_backtester_gate):
+            raise AssertionError(
+                f"resolver gate names drifted outside the intentional dispatch-full flip: "
+                f"{case_label} legacy={(legacy_gate, legacy_backtester_gate)} result={result}"
+            )
+    if not saw_intentional_dispatch_flip:
+        raise AssertionError("differential snapshot must exercise workflow_dispatch full_ci=true")
 
 
 def assert_dispatch_run_names_come_from_config() -> None:
@@ -1041,6 +1195,10 @@ def assert_dispatch_run_names_come_from_config() -> None:
     if config.dispatch_run_name_iteration != "CI [dispatch:iteration]":
         raise AssertionError(config)
     if config.dispatch_proof_gate_job != "gate":
+        raise AssertionError(config)
+    if config.gate_names["gate_dispatch_full"] != "gate-dispatch":
+        raise AssertionError(config)
+    if config.gate_names["backtester_dispatch_full"] != "backtester-gate-dispatch":
         raise AssertionError(config)
 
 
@@ -1628,6 +1786,7 @@ def main() -> int:
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
+    assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full()
     assert_dispatch_run_names_come_from_config()
     assert_main_evidence_matching_ignores_mutable_run_name()
     assert_config_digest_is_canonical()

@@ -90,6 +90,9 @@ def write_policy(repo: pathlib.Path, *, checks_timeout: int = 300, overall_timeo
             run_name_full = "CI [dispatch:full]"
             run_name_iteration = "CI [dispatch:iteration]"
             proof_gate_job = "gate"
+
+            [ci_provenance.gate_names]
+            gate_dispatch_full = "gate-dispatch"
             """
         ),
         encoding="utf-8",

@@ -314,6 +314,9 @@ def write_verify_remote_config(repo: pathlib.Path) -> None:
             run_name_full = "CI [dispatch:full]"
             run_name_iteration = "CI [dispatch:iteration]"
             proof_gate_job = "gate"
+
+            [ci_provenance.gate_names]
+            gate_dispatch_full = "gate-dispatch"
             """
         ),
         encoding="utf-8",
@@ -362,7 +365,7 @@ def workflow_jobs(*, gate_conclusion: str | None = "success") -> dict[str, objec
         "jobs": [
             {
                 "databaseId": 9001,
-                "name": "gate",
+                "name": "gate-dispatch",
                 "status": "completed",
                 "conclusion": gate_conclusion,
             }
@@ -548,7 +551,7 @@ def assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped() -> None
         dispatch_text = " ".join(harness.dispatches[0])
         if ".github/workflows/ci.yml" not in dispatch_text or "full_ci=true" not in dispatch_text:
             raise AssertionError(dispatch_text)
-        if "final-proof full CI" not in stdout or "just rust-probe suggest" not in stdout:
+        if "full CI feedback" not in stdout or "just rust-probe suggest" not in stdout:
             raise AssertionError(stdout)
         if harness.pr_checks_calls:
             raise AssertionError("draft dispatch wait must not use aggregate gh pr checks")
@@ -696,7 +699,7 @@ def assert_verify_remote_rejects_full_marker_without_gate_success() -> None:
             jobs_by_run_id={205: workflow_jobs(gate_conclusion="skipped")},
         ) as harness:
             result, _stdout, stderr = run_verify_remote_with_harness(harness)
-        if result != 1 or "successful gate job" not in stderr:
+        if result != 1 or "successful dispatch full gate job" not in stderr:
             raise AssertionError((result, stderr))
 
 

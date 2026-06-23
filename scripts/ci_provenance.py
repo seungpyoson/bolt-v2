@@ -30,6 +30,18 @@ SUPPORTED_MODES = {
     "validate-record",
 }
 POLICY_VALUES = {"full", "defer", "iteration", "noop", "tag_reuse"}
+GATE_NAME_KEYS = (
+    "gate_required",
+    "gate_defer",
+    "gate_iteration",
+    "gate_noop",
+    "gate_dispatch_full",
+    "backtester_required",
+    "backtester_defer",
+    "backtester_iteration",
+    "backtester_noop",
+    "backtester_dispatch_full",
+)
 POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -107,6 +119,7 @@ class ProvenanceConfig:
     max_lookback_age_seconds: int
     artifact_retention_days: int
     policy: dict[str, str]
+    gate_names: dict[str, str]
     force_full_ci: bool
     ignore_emit_failure: bool
 
@@ -116,6 +129,10 @@ class CiPolicyResult:
     ci_policy_path: str
     full_ci_required: bool
     full_ci_deferred: bool
+    gate_name: str
+    backtester_gate_name: str
+    expected_event_class: str
+    is_mergify_temp_pr: bool
     reason: str
 
 
@@ -296,6 +313,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
 
     deploy = require_table(ci_provenance, "deploy", "ci_provenance")
     dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
+    gate_names_table = require_table(ci_provenance, "gate_names", "ci_provenance")
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
     policy_table = require_table(ci_provenance, "policy", "ci_provenance")
@@ -323,6 +341,24 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     dispatch_proof_gate_job = require_string(dispatch, "proof_gate_job", "ci_provenance.dispatch")
     if dispatch_run_name_full == dispatch_run_name_iteration:
         raise ProvenanceError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
+
+    gate_names = {
+        key: require_string(gate_names_table, key, "ci_provenance.gate_names")
+        for key in GATE_NAME_KEYS
+    }
+    if dispatch_proof_gate_job != gate_names["gate_required"]:
+        raise ProvenanceError("ci_provenance.dispatch.proof_gate_job must match required gate name")
+    for key in ("gate_defer", "gate_iteration", "gate_noop", "gate_dispatch_full"):
+        if gate_names[key] == gate_names["gate_required"]:
+            raise ProvenanceError(f"ci_provenance.gate_names.{key} must not equal gate_required")
+    for key in (
+        "backtester_defer",
+        "backtester_iteration",
+        "backtester_noop",
+        "backtester_dispatch_full",
+    ):
+        if gate_names[key] == gate_names["backtester_required"]:
+            raise ProvenanceError(f"ci_provenance.gate_names.{key} must not equal backtester_required")
 
     force_full_ci = overrides.get("force_full_ci")
     ignore_emit_failure = overrides.get("ignore_emit_failure")
@@ -368,6 +404,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         max_lookback_age_seconds=max_lookback_age_seconds,
         artifact_retention_days=retention_days,
         policy=policy,
+        gate_names=gate_names,
         force_full_ci=force_full_ci,
         ignore_emit_failure=ignore_emit_failure,
     )
@@ -380,6 +417,40 @@ def parse_bool(value: str) -> bool:
     if normalized == "false":
         return False
     raise ProvenanceError(f"expected boolean true or false, got {value!r}")
+
+
+def expected_event_class_for(reason: str, path: str) -> str:
+    if reason in {
+        "draft_pr_synchronize",
+        "draft_pr_opened",
+        "draft_pr_reopened",
+        "draft_pr_edited",
+        "converted_to_draft",
+    }:
+        return "defer"
+    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"}:
+        return "noop"
+    if reason == "workflow_dispatch":
+        return "iteration"
+    if reason == "tag":
+        return "tag_reuse"
+    if reason in {"ready_pr", "ready_for_review"} and path == "iteration":
+        return "iteration"
+    return "full"
+
+
+def gate_name_suffix_for(reason: str, path: str) -> str:
+    if reason == "workflow_dispatch_full_ci":
+        return "dispatch_full"
+    if path in {"full", "tag_reuse"}:
+        return "required"
+    if path == "defer":
+        return "defer"
+    if path == "iteration":
+        return "iteration"
+    if path == "noop":
+        return "noop"
+    raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
 
 
 def evaluate_ci_policy(
@@ -451,10 +522,15 @@ def evaluate_ci_policy(
 
     if path not in POLICY_VALUES:
         raise ProvenanceError(f"resolved invalid ci_policy_path {path!r}")
+    gate_name_suffix = gate_name_suffix_for(reason, path)
     return CiPolicyResult(
         ci_policy_path=path,
         full_ci_required=path == "full",
         full_ci_deferred=path == "defer",
+        gate_name=config.gate_names[f"gate_{gate_name_suffix}"],
+        backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
+        expected_event_class=expected_event_class_for(reason, path),
+        is_mergify_temp_pr=False,
         reason=reason,
     )
 
@@ -1587,6 +1663,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ci_policy_path={result.ci_policy_path}")
             print(f"full_ci_required={str(result.full_ci_required).lower()}")
             print(f"full_ci_deferred={str(result.full_ci_deferred).lower()}")
+            print(f"gate_name={result.gate_name}")
+            print(f"backtester_gate_name={result.backtester_gate_name}")
+            print(f"expected_event_class={result.expected_event_class}")
+            print(f"is_mergify_temp_pr={str(result.is_mergify_temp_pr).lower()}")
             print(f"reason={result.reason}")
             print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")
         elif mode == "emit-full-ci":

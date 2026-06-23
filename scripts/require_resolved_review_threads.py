@@ -310,6 +310,22 @@ def _publish_gate_status(
     )
 
 
+def _evaluate_current_review_thread_gate(
+    *,
+    owner: str,
+    name: str,
+    pull_number: int,
+    token: str,
+) -> GateResult:
+    threads = fetch_review_threads(
+        owner=owner,
+        name=name,
+        pull_number=pull_number,
+        token=token,
+    )
+    return evaluate_review_thread_gate(review_threads=threads)
+
+
 def run() -> int:
     repository = _env("GITHUB_REPOSITORY")
     token = _env("GITHUB_TOKEN")
@@ -328,13 +344,24 @@ def run() -> int:
             context=status_context,
         )
     try:
-        threads = fetch_review_threads(
+        result = _evaluate_current_review_thread_gate(
             owner=owner,
             name=name,
             pull_number=pull_number,
             token=token,
         )
-        result = evaluate_review_thread_gate(review_threads=threads)
+        if status_context is not None and head_sha is not None:
+            # Without workflow concurrency, same-head event runs can overlap.
+            # Refresh live state immediately before the final latest-wins
+            # commit-status write. The GitHub status API has no atomic
+            # compare-and-set, so this narrows the stale-verdict window rather
+            # than making concurrent writers impossible.
+            result = _evaluate_current_review_thread_gate(
+                owner=owner,
+                name=name,
+                pull_number=pull_number,
+                token=token,
+            )
     except ReviewThreadGateError as exc:
         if status_context is not None and head_sha is not None:
             _publish_gate_status(

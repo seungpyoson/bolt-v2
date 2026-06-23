@@ -285,6 +285,118 @@ def assert_status_mode_posts_failure_without_failing_job() -> None:
     assert status_payload["target_url"] == "https://github.test/owner/repo/actions/runs/12345"
 
 
+def assert_status_mode_refreshes_live_review_state_before_final_post() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+    review_payloads = [
+        [review("sp-reviewer", "APPROVED", 10, node_id="U_kgDOEZMFhA", commit_id="current-head")],
+        [
+            review("sp-reviewer", "APPROVED", 10, node_id="U_kgDOEZMFhA", commit_id="current-head"),
+            review("sp-reviewer", "CHANGES_REQUESTED", 11, node_id="U_kgDOEZMFhA", commit_id="current-head"),
+        ],
+    ]
+
+    def fake_get_json(_url: str, _token: str) -> dict[str, object]:
+        return {"users": [], "teams": []}
+
+    def fake_paginate_json_list(_url: str, _token: str) -> list[dict[str, object]]:
+        assert review_payloads
+        return review_payloads.pop(0)
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_get_json = module._get_json
+    original_paginate_json_list = module._paginate_json_list
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 839, "head": {"sha": "current-head"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                    "REQUIRED_REVIEWER_NODE_ID": "U_kgDOEZMFhA",
+                    "REVIEWER_GATE_STATUS_CONTEXT": "required reviewer approved",
+                }
+            )
+            module._get_json = fake_get_json
+            module._paginate_json_list = fake_paginate_json_list
+            module._post_json = fake_post_json
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert module.run() == 0
+        finally:
+            module._get_json = original_get_json
+            module._paginate_json_list = original_paginate_json_list
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert review_payloads == []
+    assert [payload["state"] for _url, payload in posted] == ["pending", "failure"]
+    assert "CHANGES_REQUESTED" in str(posted[1][1]["description"])
+
+
+def assert_status_mode_refreshes_stale_failure_before_final_post() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+    review_payloads = [
+        [review("sp-reviewer", "CHANGES_REQUESTED", 10, node_id="U_kgDOEZMFhA", commit_id="current-head")],
+        [
+            review("sp-reviewer", "CHANGES_REQUESTED", 10, node_id="U_kgDOEZMFhA", commit_id="current-head"),
+            review("sp-reviewer", "APPROVED", 11, node_id="U_kgDOEZMFhA", commit_id="current-head"),
+        ],
+    ]
+
+    def fake_get_json(_url: str, _token: str) -> dict[str, object]:
+        return {"users": [], "teams": []}
+
+    def fake_paginate_json_list(_url: str, _token: str) -> list[dict[str, object]]:
+        assert review_payloads
+        return review_payloads.pop(0)
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_get_json = module._get_json
+    original_paginate_json_list = module._paginate_json_list
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 839, "head": {"sha": "current-head"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                    "REQUIRED_REVIEWER_NODE_ID": "U_kgDOEZMFhA",
+                    "REVIEWER_GATE_STATUS_CONTEXT": "required reviewer approved",
+                }
+            )
+            module._get_json = fake_get_json
+            module._paginate_json_list = fake_paginate_json_list
+            module._post_json = fake_post_json
+            with contextlib.redirect_stdout(io.StringIO()):
+                assert module.run() == 0
+        finally:
+            module._get_json = original_get_json
+            module._paginate_json_list = original_paginate_json_list
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert review_payloads == []
+    assert [payload["state"] for _url, payload in posted] == ["pending", "success"]
+    assert "approved this PR" in str(posted[1][1]["description"])
+
+
 def assert_status_mode_marks_pending_before_reviewer_fetch_error() -> None:
     module = load_script()
     posted: list[tuple[str, dict[str, object]]] = []
@@ -384,6 +496,9 @@ def assert_workflow_uses_base_script_and_requires_node_id() -> None:
     assert "name: reviewer node_id status publisher" not in workflow
     assert "statuses: write" in workflow
     assert "required reviewer approved" in workflow
+    assert "concurrency:" not in workflow
+    assert "cancel-in-progress" not in workflow
+    assert "concurrency-cancelled Actions" in workflow
     assert "reviewer node_id requested or approved" not in workflow
     assert "REVIEWER_GATE_STATUS_CONTEXT: required reviewer approved" in workflow
     assert "Run the reviewer gate from the protected base branch" in workflow
@@ -417,6 +532,8 @@ def main() -> int:
     assert_current_head_approval_passes()
     assert_commit_status_payload_is_latest_wins_context()
     assert_status_mode_posts_failure_without_failing_job()
+    assert_status_mode_refreshes_live_review_state_before_final_post()
+    assert_status_mode_refreshes_stale_failure_before_final_post()
     assert_status_mode_marks_pending_before_reviewer_fetch_error()
     assert_reviewer_api_invalid_json_fails_closed_at_request_boundary()
     assert_invalid_reviewer_event_json_raises_reviewer_gate_error()

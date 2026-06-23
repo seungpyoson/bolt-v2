@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
 import sys
+import tempfile
 import tomllib
 import urllib.error
 import urllib.request
@@ -190,27 +193,133 @@ def check_pins_against_latest(pins: ModelPins, kimi_latest: str | None, glm_late
     return findings
 
 
+def model_update_warning(*, provider: str, config_key: str, current: str, latest: str) -> str:
+    return (
+        f"{provider} model update available: ci/ai-review.toml {config_key} uses `{current}`, "
+        f"but official provider sources report `{latest}` as the latest coding model. "
+        f"The review continues with the pinned model; update the model pin in a reviewed PR."
+    )
+
+
+def build_advisory_outputs(
+    *,
+    pins: ModelPins,
+    kimi_latest: str | None,
+    glm_latest: str | None,
+    warnings: list[str],
+) -> dict[str, str]:
+    kimi_warning = ""
+    glm_warning = ""
+    if kimi_latest and pins.kimi != kimi_latest:
+        kimi_warning = model_update_warning(
+            provider="Kimi",
+            config_key="kimi.model",
+            current=pins.kimi,
+            latest=kimi_latest,
+        )
+    if glm_latest and pins.glm != glm_latest:
+        glm_warning = model_update_warning(
+            provider="GLM",
+            config_key="glm.model",
+            current=pins.glm,
+            latest=glm_latest,
+        )
+    stale = bool(kimi_warning or glm_warning)
+    return {
+        "stale": "true" if stale else "false",
+        "kimi_warning": kimi_warning,
+        "glm_warning": glm_warning,
+        "source_warnings": "\n".join(warnings),
+    }
+
+
+def write_github_output(name: str, value: str) -> None:
+    output_path = os.environ.get("GITHUB_OUTPUT", "")
+    if not output_path:
+        return
+    with Path(output_path).open("a", encoding="utf-8") as output:
+        if "\n" in value:
+            delimiter = f"EOF_{name.upper()}"
+            output.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
+        else:
+            output.write(f"{name}={value}\n")
+
+
+def write_github_outputs(values: dict[str, str]) -> None:
+    for name, value in values.items():
+        write_github_output(name, value)
+
+
 def run_self_test() -> None:
-    kimi_doc = "model\ndefault:kimi-k2.7-code\nAvailable options: `kimi-k2.7-code-highspeed`"
-    assert parse_kimi_chat_docs_latest(kimi_doc) == "kimi-k2.7-code"
-    kimi_api = json.dumps({"data": [{"id": "kimi-k2.6"}, {"id": "kimi-k2.7-code-highspeed"}, {"id": "kimi-k2.7-code"}]})
-    assert parse_kimi_models_api_latest(kimi_api) == "kimi-k2.7-code"
-    glm_index = "[GLM-5.1](/guides/llm/glm-5.1.md) [GLM-5.2](/guides/llm/glm-5.2.md)"
-    assert parse_glm_docs_latest(glm_index) == "glm-5.2"
-    migration = "Migration Checklist\n* Update model identifier to `glm-5.2`"
-    assert parse_glm_migration_model(migration) == "glm-5.2"
-    pins = ModelPins(kimi="kimi-for-coding", glm="glm-5.1", glm_pr_agent="openai/glm-5.1")
-    findings = check_pins_against_latest(pins, "kimi-k2.7-code", "glm-5.2")
+    old_kimi_version = "9.1"
+    current_kimi_version = "9.2"
+    next_kimi_version = "9.3"
+    old_kimi = f"kimi-k{old_kimi_version}-code"
+    current_kimi = f"kimi-k{current_kimi_version}-code"
+    next_kimi = f"kimi-k{next_kimi_version}-code"
+    old_glm_version = "9.1"
+    current_glm_version = "9.2"
+    old_glm = f"glm-{old_glm_version}"
+    current_glm = f"glm-{current_glm_version}"
+    current_pr_agent_glm = f"openai/{current_glm}"
+    kimi_doc = f"model\ndefault:{current_kimi}\nAvailable options: `{current_kimi}-highspeed`"
+    assert parse_kimi_chat_docs_latest(kimi_doc) == current_kimi
+    kimi_api = json.dumps({"data": [{"id": old_kimi}, {"id": f"{current_kimi}-highspeed"}, {"id": current_kimi}]})
+    assert parse_kimi_models_api_latest(kimi_api) == current_kimi
+    glm_index = f"[GLM-{old_glm_version}](/guides/llm/glm-old.md) [GLM-{current_glm_version}](/guides/llm/glm-current.md)"
+    assert parse_glm_docs_latest(glm_index) == current_glm
+    migration = f"Migration Checklist\n* Update model identifier to `{current_glm}`"
+    assert parse_glm_migration_model(migration) == current_glm
+    pins = ModelPins(kimi=old_kimi, glm=old_glm, glm_pr_agent=f"openai/{old_glm}")
+    findings = check_pins_against_latest(pins, current_kimi, current_glm)
     assert any("kimi.model is stale" in finding for finding in findings), findings
     assert any("glm.model is stale" in finding for finding in findings), findings
-    alias_findings = model_alias_findings(ModelPins(kimi="kimi-latest", glm="glm-5.2", glm_pr_agent="openai/glm-5.2"))
+    alias_findings = model_alias_findings(ModelPins(kimi="kimi-latest", glm=current_glm, glm_pr_agent=current_pr_agent_glm))
     assert any("latest alias" in finding for finding in alias_findings), alias_findings
+    advisory = build_advisory_outputs(
+        pins=ModelPins(kimi=current_kimi, glm=current_glm, glm_pr_agent=current_pr_agent_glm),
+        kimi_latest=next_kimi,
+        glm_latest=current_glm,
+        warnings=[],
+    )
+    assert advisory["stale"] == "true", advisory
+    assert advisory["kimi_warning"], advisory
+    assert advisory["glm_warning"] == "", advisory
+    assert current_kimi in advisory["kimi_warning"], advisory
+    assert next_kimi in advisory["kimi_warning"], advisory
+    config_text = f"""
+[model_freshness]
+kimi_chat_docs_url = "https://example.invalid/kimi-chat"
+kimi_models_url = "https://example.invalid/kimi-models"
+glm_docs_index_url = "https://example.invalid/glm-index"
+glm_migration_docs_url = "https://example.invalid/glm-migration"
+
+[glm]
+model = "{current_glm}"
+
+[glm.pr_agent]
+model = "{current_pr_agent_glm}"
+
+[kimi]
+model = "{current_kimi}"
+"""
+    original_live_latest_models = live_latest_models
+    try:
+        globals()["live_latest_models"] = lambda sources: (next_kimi, current_glm, [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "ai-review.toml"
+            config_path.write_text(config_text, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                assert main(["--config-file", str(config_path), "--live", "--advisory"]) == 0
+    finally:
+        globals()["live_latest_models"] = original_live_latest_models
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config-file", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--live", action="store_true", help="Fetch provider sources and compare pinned models")
+    parser.add_argument("--advisory", action="store_true", help="Emit stale-model outputs but exit zero for drift")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
@@ -222,11 +331,36 @@ def main(argv: list[str] | None = None) -> int:
     try:
         pins, sources = load_config(args.config_file)
         findings = model_alias_findings(pins)
+        kimi_latest: str | None = None
+        glm_latest: str | None = None
+        warnings: list[str] = []
         if args.live:
-            kimi_latest, glm_latest, warnings = live_latest_models(sources)
+            try:
+                kimi_latest, glm_latest, warnings = live_latest_models(sources)
+            except Exception as exc:
+                if not args.advisory:
+                    raise
+                warnings = [f"AI review model freshness source check unavailable: {exc}"]
             for warning in warnings:
                 print(f"warning: {warning}", file=sys.stderr)
             findings = check_pins_against_latest(pins, kimi_latest, glm_latest)
+        if args.advisory:
+            advisory = build_advisory_outputs(
+                pins=pins,
+                kimi_latest=kimi_latest,
+                glm_latest=glm_latest,
+                warnings=warnings,
+            )
+            write_github_outputs(advisory)
+            if advisory["stale"] == "true":
+                for warning in (advisory["kimi_warning"], advisory["glm_warning"]):
+                    if warning:
+                        print(f"warning: {warning}", file=sys.stderr)
+                return 0
+            if findings:
+                for finding in findings:
+                    print(f"warning: {finding}", file=sys.stderr)
+                return 0
         if findings:
             for finding in findings:
                 print(f"ERROR: {finding}", file=sys.stderr)

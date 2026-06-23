@@ -66,6 +66,7 @@ jobs:
             .pr_agent.toml
             ci/ai-review.toml
             scripts/ai_review_deliverables.py
+            scripts/verify_ai_review_model_freshness.py
           sparse-checkout-cone-mode: false
 
       - name: Load AI review runtime config
@@ -109,6 +110,18 @@ jobs:
           emit("glm_fallback_timeout_minutes", workflow["fallback_timeout_minutes"])
           PY
 
+      - name: Check AI review model freshness
+        id: model-freshness
+        if: env.GLM_API_KEY != ''
+        env:
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        run: >-
+          python3 scripts/verify_ai_review_model_freshness.py
+          --config-file ci/ai-review.toml
+          --live
+          --advisory
+
       - name: Capture GLM review window
         id: review-window
         if: env.GLM_API_KEY != ''
@@ -147,10 +160,28 @@ jobs:
           GLM_API_TIMEOUT_SECONDS: ${{ steps.runtime-config.outputs.glm_api_timeout_seconds }}
           GLM_REVIEW_MAX_CHUNK_CHARS: ${{ steps.runtime-config.outputs.glm_review_max_chunk_chars }}
           AI_REVIEW_MAX_COMMENT_CHARS: ${{ steps.runtime-config.outputs.ai_review_max_comment_chars }}
+          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.glm_warning }}
         run: >-
           python3 scripts/ai_review_deliverables.py glm-fallback
           --started-at "${{ steps.review-window.outputs.started_at }}"
           --instructions-file .pr_agent.toml
+          --config-file ci/ai-review.toml
+
+      - name: Post GLM model freshness advisory
+        if: >-
+          ${{
+            env.GLM_API_KEY != ''
+            && always()
+            && steps.model-freshness.outputs.glm_warning != ''
+          }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+          AI_REVIEW_MODEL_FRESHNESS_WARNING: ${{ steps.model-freshness.outputs.glm_warning }}
+        run: >-
+          python3 scripts/ai_review_deliverables.py model-freshness-notice
+          --provider GLM
+          --started-at "${{ steps.review-window.outputs.started_at }}"
           --config-file ci/ai-review.toml
 
       - name: Post GLM fallback infrastructure failure notice

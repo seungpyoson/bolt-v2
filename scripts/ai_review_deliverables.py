@@ -153,6 +153,9 @@ class GitHubClient:
     def post_issue_comment(self, body: str) -> None:
         self.post_issue_comment_for(self.pr_number, body)
 
+    def update_issue_comment(self, comment_id: int, body: str) -> None:
+        self._request_json("PATCH", f"issues/comments/{comment_id}", payload={"body": body})
+
 
 class OpenAIChatClient:
     def __init__(
@@ -295,6 +298,11 @@ def text_time_is_after_or_equal(value: object, threshold: datetime) -> bool:
 
 def body_has_deliverable_marker(body: object, markers: tuple[str, ...]) -> bool:
     return isinstance(body, str) and any(body.lstrip().startswith(marker) for marker in markers)
+
+
+def comment_id(payload: dict[str, object]) -> int | None:
+    value = payload.get("id")
+    return value if isinstance(value, int) else None
 
 
 def actor_is_expected_bot(payload: dict[str, object], expected_login: str) -> bool:
@@ -535,6 +543,103 @@ def write_github_output(name: str, value: str) -> None:
         output.write(f"{name}={value}\n")
 
 
+def model_freshness_warning_from_env() -> str:
+    return sanitize_detail(os.environ.get("AI_REVIEW_MODEL_FRESHNESS_WARNING", "").strip())
+
+
+def render_model_freshness_warning_block(warning: str) -> str:
+    sanitized = sanitize_detail(warning.strip())
+    if not sanitized:
+        return ""
+    return "\n".join(f"> {line}" if line else ">" for line in ["[!WARNING]", *sanitized.splitlines()])
+
+
+def model_freshness_notice_marker(provider: str) -> str:
+    provider_key = "".join(char.lower() if char.isalnum() else "-" for char in provider).strip("-")
+    return f"<!-- ai-review-model-freshness-notice-{provider_key} -->"
+
+
+def render_model_freshness_notice(*, provider: str, pr_number: int, run_url: str, warning: str) -> str:
+    marker = model_freshness_notice_marker(provider)
+    warning_block = render_model_freshness_warning_block(warning)
+    return textwrap.dedent(
+        f"""\
+        {marker}
+
+        ## {provider} model freshness notice
+
+        {warning_block}
+
+        - PR: #{pr_number}
+        - Action run: {run_url}
+
+        The advisory review is non-blocking and continues with the pinned model for auditability.
+        """
+    ).strip()
+
+
+def post_model_freshness_notice(
+    *,
+    github: Any,
+    provider: str,
+    pr_number: int,
+    run_url: str,
+    warning: str,
+    expected_bot_login: str,
+) -> str:
+    if not warning.strip():
+        return "no-warning"
+    marker = model_freshness_notice_marker(provider)
+    body = render_model_freshness_notice(provider=provider, pr_number=pr_number, run_url=run_url, warning=warning)
+    for existing in github.list_issue_comments():
+        if not actor_is_expected_bot(existing, expected_bot_login):
+            continue
+        existing_body = existing.get("body")
+        if not isinstance(existing_body, str) or not existing_body.lstrip().startswith(marker):
+            continue
+        existing_id = comment_id(existing)
+        if existing_id is None:
+            continue
+        github.update_issue_comment(existing_id, body)
+        return "notice-updated"
+    github.post_issue_comment(body)
+    return "notice-posted"
+
+
+def prepend_model_freshness_warning_to_existing_review(
+    *,
+    github: Any,
+    started_at: str,
+    markers: tuple[str, ...],
+    warning: str,
+    expected_bot_login: str,
+) -> int:
+    warning_block = render_model_freshness_warning_block(warning)
+    if not warning_block:
+        return 0
+    threshold = parse_iso_timestamp(started_at)
+    updated = 0
+    for comment in github.list_issue_comments():
+        if not actor_is_expected_bot(comment, expected_bot_login):
+            continue
+        existing_id = comment_id(comment)
+        if existing_id is None:
+            continue
+        body = comment.get("body")
+        if not body_has_deliverable_marker(body, markers):
+            continue
+        if warning_block in body:
+            continue
+        if not (
+            text_time_is_after_or_equal(comment.get("updated_at"), threshold)
+            or text_time_is_after_or_equal(comment.get("created_at"), threshold)
+        ):
+            continue
+        github.update_issue_comment(existing_id, f"{warning_block}\n\n{str(body).lstrip()}")
+        updated += 1
+    return updated
+
+
 def render_chunk_response_section(
     *,
     chunk: ReviewChunk,
@@ -575,6 +680,9 @@ def render_review_comment_body(
     parts = []
     if config.comment_marker:
         parts.extend([config.comment_marker, ""])
+    warning_block = render_model_freshness_warning_block(model_freshness_warning_from_env())
+    if warning_block:
+        parts.extend([warning_block, ""])
     parts.extend(
         [
         title,
@@ -696,8 +804,10 @@ def post_split_review(*, github: Any, reviewer: Any, config: FallbackConfig) -> 
     chunks = pack_review_chunks(review_files, max_chars=config.max_chunk_chars)
     if not chunks:
         marker = f"{config.comment_marker}\n\n" if config.comment_marker else ""
+        warning_block = render_model_freshness_warning_block(model_freshness_warning_from_env())
+        warning = f"{warning_block}\n\n" if warning_block else ""
         github.post_issue_comment(
-            f"{marker}## {config.provider} PR Review\n\nNo reviewable file diff was available from the GitHub API.\n"
+            f"{marker}{warning}## {config.provider} PR Review\n\nNo reviewable file diff was available from the GitHub API.\n"
         )
         return "no-reviewable-diff"
 
@@ -1004,6 +1114,46 @@ def post_notice_from_env(args: argparse.Namespace) -> int:
     return 0
 
 
+def review_markers_for_provider(runtime_config: dict[str, Any], provider: str) -> tuple[str, ...]:
+    provider_key = provider.lower()
+    if provider_key == "glm":
+        return config_str_tuple(config_table(runtime_config, "glm"), "deliverable_markers")
+    if provider_key == "kimi":
+        kimi_config = config_table(runtime_config, "kimi")
+        return (config_str(kimi_config, "deliverable_marker"),)
+    raise RuntimeError(f"unknown AI review provider {provider!r}")
+
+
+def post_model_freshness_notice_from_env(args: argparse.Namespace) -> int:
+    repo = env_required("GITHUB_REPOSITORY")
+    pr_number = int(env_required("PR_NUMBER"))
+    runtime_config = load_runtime_config(args)
+    github_config = config_table(runtime_config, "github")
+    github = build_github_client(repo, pr_number, runtime_config)
+    run_url = run_url_for(repo, runtime_config)
+    warning = args.warning or model_freshness_warning_from_env()
+    expected_bot_login = config_str(github_config, "expected_bot_login")
+    result = post_model_freshness_notice(
+        github=github,
+        provider=args.provider,
+        pr_number=pr_number,
+        run_url=run_url,
+        warning=warning,
+        expected_bot_login=expected_bot_login,
+    )
+    updated = 0
+    if args.started_at and warning:
+        updated = prepend_model_freshness_warning_to_existing_review(
+            github=github,
+            started_at=args.started_at,
+            markers=review_markers_for_provider(runtime_config, args.provider),
+            warning=warning,
+            expected_bot_login=expected_bot_login,
+        )
+    print(f"{result}; review-comments-updated={updated}")
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -1028,6 +1178,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     notice.add_argument("--message", required=True)
     notice.add_argument("--config-file", type=Path)
 
+    model_freshness_notice = subparsers.add_parser("model-freshness-notice")
+    model_freshness_notice.add_argument("--provider", required=True)
+    model_freshness_notice.add_argument("--started-at", default="")
+    model_freshness_notice.add_argument("--warning", default="")
+    model_freshness_notice.add_argument("--config-file", type=Path)
+
     return parser.parse_args(argv)
 
 
@@ -1041,6 +1197,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_kimi_review_from_env(args)
     if args.mode == "notice":
         return post_notice_from_env(args)
+    if args.mode == "model-freshness-notice":
+        return post_model_freshness_notice_from_env(args)
     raise RuntimeError(f"unknown mode {args.mode!r}")
 
 

@@ -1,0 +1,416 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import pathlib
+import sys
+import unittest
+from typing import Any
+
+
+SCRIPT = pathlib.Path(__file__).with_name("ci_storage_audit.py")
+spec = importlib.util.spec_from_file_location("ci_storage_audit", SCRIPT)
+assert spec is not None
+ci_storage_audit = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = ci_storage_audit
+assert spec.loader is not None
+spec.loader.exec_module(ci_storage_audit)
+
+
+class FakeClient:
+    def __init__(self, responses: dict[str, Any]) -> None:
+        self.responses = responses
+        self.calls: list[tuple[str, dict[str, str] | None, bool]] = []
+
+    def api(self, path: str, *, params: dict[str, str] | None = None, paginate: bool = False) -> Any:
+        self.calls.append((path, params, paginate))
+        value = self.responses[path]
+        if isinstance(value, Exception):
+            raise value
+        if paginate:
+            return ci_storage_audit.merge_paginated_payload(value)
+        return value
+
+
+class CiStorageAuditTests(unittest.TestCase):
+    def test_build_snapshot_serializes_stable_contract_from_fixture_payloads(self) -> None:
+        client = FakeClient(
+            {
+                "actions/caches": [
+                    {
+                        "total_count": 2,
+                        "actions_caches": [
+                            {
+                                "id": 101,
+                                "ref": "refs/heads/main",
+                                "key": "linux-a",
+                                "last_accessed_at": "2026-06-20T00:00:00Z",
+                                "size_in_bytes": 1024,
+                            }
+                        ],
+                    },
+                    {
+                        "total_count": 2,
+                        "actions_caches": [
+                            {
+                                "id": 102,
+                                "ref": "refs/pull/1/merge",
+                                "key": "linux-b",
+                                "last_accessed_at": "2026-06-21T00:00:00Z",
+                                "size_in_bytes": 2048,
+                            }
+                        ],
+                    },
+                ],
+                "actions/artifacts": [
+                    {
+                        "total_count": 3,
+                        "artifacts": [
+                            {"name": "logs", "size_in_bytes": 512},
+                            {"name": "binary", "size_in_bytes": 4096},
+                        ],
+                    },
+                    {
+                        "total_count": 3,
+                        "artifacts": [
+                            {"name": "logs", "size_in_bytes": 1536},
+                        ],
+                    },
+                ],
+                "actions/permissions/artifact-and-log-retention": {
+                    "days": 30,
+                    "maximum_allowed_days": 400,
+                },
+                "rules/branches/main": [
+                    {
+                        "type": "required_status_checks",
+                        "parameters": {
+                            "required_status_checks": [
+                                {"context": "gate"},
+                                {"context": "actionlint", "integration_id": 15368},
+                            ]
+                        },
+                    }
+                ],
+            }
+        )
+
+        snapshot = ci_storage_audit.build_snapshot(
+            client,
+            repo="owner/repo",
+            branch="main",
+            snapshot_utc="2026-06-23T00:00:00+00:00",
+        )
+        encoded = json.dumps(snapshot, sort_keys=True)
+        decoded = json.loads(encoded)
+
+        self.assertEqual(decoded["snapshot_utc"], "2026-06-23T00:00:00+00:00")
+        self.assertEqual(decoded["repo"], "owner/repo")
+        self.assertEqual(decoded["cache"]["total_bytes"], 3072)
+        self.assertEqual(decoded["cache"]["count"], 2)
+        self.assertEqual(decoded["cache"]["count_source"], "github_total_count")
+        self.assertEqual(decoded["cache"]["enumerated_count"], 2)
+        self.assertEqual(decoded["cache"]["enumeration_consistency"], "live_churn_possible")
+        self.assertEqual(
+            decoded["cache"]["entries"][0],
+            {
+                "cache_id": 101,
+                "ref": "refs/heads/main",
+                "key": "linux-a",
+                "last_accessed_at": "2026-06-20T00:00:00Z",
+                "size_bytes": 1024,
+            },
+        )
+        self.assertEqual(decoded["artifacts"]["total_bytes"], 6144)
+        self.assertEqual(decoded["artifacts"]["count"], 3)
+        self.assertEqual(decoded["artifacts"]["count_source"], "github_total_count")
+        self.assertEqual(decoded["artifacts"]["enumerated_count"], 3)
+        self.assertEqual(decoded["artifacts"]["enumeration_consistency"], "live_churn_possible")
+        self.assertEqual(
+            decoded["artifacts"]["by_name"],
+            [
+                {"name": "binary", "total_bytes": 4096, "count": 1},
+                {"name": "logs", "total_bytes": 2048, "count": 2},
+            ],
+        )
+        self.assertEqual(
+            decoded["retention_setting"],
+            {"artifact_and_log_days": 30, "source": "rest"},
+        )
+        self.assertEqual(
+            decoded["required_checks"],
+            {
+                "available": True,
+                "source": "rulesets",
+                "contexts": [{"context": "gate"}, {"context": "actionlint", "integration_id": 15368}],
+            },
+        )
+        self.assertEqual(
+            client.calls,
+            [
+                ("actions/caches", {"per_page": "100"}, True),
+                ("actions/artifacts", {"per_page": "100"}, True),
+                ("actions/permissions/artifact-and-log-retention", None, False),
+                ("rules/branches/main", None, False),
+            ],
+        )
+
+    def test_counts_distinguish_github_total_from_enumerated_rows(self) -> None:
+        client = FakeClient(
+            {
+                "actions/caches": {
+                    "total_count": 10,
+                    "actions_caches": [{"id": 1, "size_in_bytes": 100}],
+                },
+                "actions/artifacts": {
+                    "total_count": 20,
+                    "artifacts": [{"name": "logs", "size_in_bytes": 200}],
+                },
+            }
+        )
+
+        cache = ci_storage_audit.fetch_cache(client)
+        artifacts = ci_storage_audit.fetch_artifacts(client)
+
+        self.assertEqual(cache["count"], 10)
+        self.assertEqual(cache["count_source"], "github_total_count")
+        self.assertEqual(cache["enumerated_count"], 1)
+        self.assertEqual(cache["enumeration_consistency"], "live_churn_possible")
+        self.assertEqual(artifacts["count"], 20)
+        self.assertEqual(artifacts["count_source"], "github_total_count")
+        self.assertEqual(artifacts["enumerated_count"], 1)
+        self.assertEqual(artifacts["enumeration_consistency"], "live_churn_possible")
+
+    def test_counts_fall_back_to_enumerated_rows_when_total_count_is_invalid(self) -> None:
+        for total_count in (None, "20", -1, True):
+            with self.subTest(total_count=total_count):
+                client = FakeClient(
+                    {
+                        "actions/caches": {
+                            "total_count": total_count,
+                            "actions_caches": [{"id": 1, "size_in_bytes": 100}],
+                        },
+                        "actions/artifacts": {
+                            "total_count": total_count,
+                            "artifacts": [{"name": "logs", "size_in_bytes": 200}],
+                        },
+                    }
+                )
+
+                cache = ci_storage_audit.fetch_cache(client)
+                artifacts = ci_storage_audit.fetch_artifacts(client)
+
+                self.assertEqual(cache["count"], 1)
+                self.assertEqual(cache["count_source"], "enumerated_count_fallback")
+                self.assertEqual(cache["enumerated_count"], 1)
+                self.assertEqual(artifacts["count"], 1)
+                self.assertEqual(artifacts["count_source"], "enumerated_count_fallback")
+                self.assertEqual(artifacts["enumerated_count"], 1)
+
+    def test_merge_paginated_payload_merges_real_slurp_shape(self) -> None:
+        payload = [
+            {
+                "total_count": 2,
+                "artifacts": [{"name": "first", "size_in_bytes": 1}],
+            },
+            {
+                "total_count": 2,
+                "artifacts": [{"name": "second", "size_in_bytes": 2}],
+            },
+        ]
+
+        self.assertEqual(
+            ci_storage_audit.merge_paginated_payload(payload),
+            {
+                "total_count": 2,
+                "artifacts": [
+                    {"name": "first", "size_in_bytes": 1},
+                    {"name": "second", "size_in_bytes": 2},
+                ],
+            },
+        )
+
+    def test_merge_paginated_payload_rejects_mixed_page_shapes(self) -> None:
+        payload = [
+            [{"name": "list-page"}],
+            {"artifacts": [{"name": "object-page"}]},
+        ]
+
+        with self.assertRaisesRegex(ci_storage_audit.AuditError, "mixed page shapes"):
+            ci_storage_audit.merge_paginated_payload(payload)
+
+    def test_human_bytes_uses_binary_units(self) -> None:
+        self.assertEqual(ci_storage_audit.human_bytes(0), "0 B")
+        self.assertEqual(ci_storage_audit.human_bytes(999), "999 B")
+        self.assertEqual(ci_storage_audit.human_bytes(1024), "1.0 KiB")
+        self.assertEqual(ci_storage_audit.human_bytes(1536), "1.5 KiB")
+        self.assertEqual(ci_storage_audit.human_bytes(1024 * 1024), "1.0 MiB")
+        self.assertEqual(ci_storage_audit.human_bytes(1024**3), "1.0 GiB")
+        self.assertEqual(ci_storage_audit.human_bytes(1024**4), "1.0 TiB")
+        self.assertEqual(ci_storage_audit.human_bytes(1024**5), "1.0 PiB")
+        with self.assertRaises(ValueError):
+            ci_storage_audit.human_bytes(-1)
+
+    def test_render_text_limits_artifact_name_details(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "cache": {"total_bytes": 0, "count": 0, "entries": []},
+            "artifacts": {
+                "total_bytes": 10,
+                "count": 5,
+                "by_name": [
+                    {"name": f"artifact-{index}", "total_bytes": index + 1, "count": 1}
+                    for index in range(5)
+                ],
+            },
+            "retention_setting": {"artifact_and_log_days": None, "source": "settings-ui-only"},
+            "required_checks": {"available": True, "source": "rulesets", "contexts": []},
+        }
+
+        rendered = ci_storage_audit.render_text(snapshot, artifact_name_limit=2)
+
+        self.assertIn("artifact-0", rendered)
+        self.assertIn("artifact-1", rendered)
+        self.assertNotIn("artifact-2", rendered)
+        self.assertIn("3 additional artifact names in --json", rendered)
+
+    def test_render_text_includes_retention_days(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "cache": {"total_bytes": 0, "count": 0, "entries": []},
+            "artifacts": {"total_bytes": 0, "count": 0, "by_name": []},
+            "retention_setting": {"artifact_and_log_days": 90, "source": "rest"},
+            "required_checks": {"available": True, "source": "rulesets", "contexts": []},
+        }
+
+        rendered = ci_storage_audit.render_text(snapshot)
+
+        self.assertIn("Retention setting: 90 days (source: rest)", rendered)
+
+    def test_retention_settings_ui_only_when_rest_field_absent(self) -> None:
+        client = FakeClient({"actions/permissions/artifact-and-log-retention": {"maximum_allowed_days": 400}})
+
+        self.assertEqual(
+            ci_storage_audit.fetch_retention_setting(client),
+            {"artifact_and_log_days": None, "source": "settings-ui-only"},
+        )
+
+    def test_retention_unavailable_on_api_error(self) -> None:
+        client = FakeClient(
+            {
+                "actions/permissions/artifact-and-log-retention": ci_storage_audit.GhApiError(
+                    "actions/permissions/artifact-and-log-retention",
+                    "denied",
+                )
+            }
+        )
+
+        self.assertEqual(
+            ci_storage_audit.fetch_retention_setting(client),
+            {"artifact_and_log_days": None, "source": "unavailable"},
+        )
+
+    def test_retention_unavailable_on_malformed_response(self) -> None:
+        client = FakeClient(
+            {"actions/permissions/artifact-and-log-retention": ["unexpected"]}
+        )
+
+        self.assertEqual(
+            ci_storage_audit.fetch_retention_setting(client),
+            {"artifact_and_log_days": None, "source": "unavailable"},
+        )
+
+    def test_required_checks_unavailable_when_all_sources_are_unreadable(self) -> None:
+        client = FakeClient(
+            {
+                "rules/branches/main": ci_storage_audit.GhApiError("rules/branches/main", "denied"),
+                "branches/main/protection/required_status_checks": ci_storage_audit.GhApiError(
+                    "branches/main/protection/required_status_checks",
+                    "not enabled",
+                ),
+            }
+        )
+
+        self.assertEqual(
+            ci_storage_audit.fetch_required_checks(client, "main"),
+            {"available": False, "source": "unavailable", "contexts": []},
+        )
+
+    def test_required_checks_unavailable_when_rulesets_are_unreadable_even_if_branch_protection_works(self) -> None:
+        client = FakeClient(
+            {
+                "rules/branches/main": ci_storage_audit.GhApiError("rules/branches/main", "denied"),
+                "branches/main/protection/required_status_checks": {
+                    "contexts": ["gate"],
+                    "checks": [],
+                },
+            }
+        )
+
+        self.assertEqual(
+            ci_storage_audit.fetch_required_checks(client, "main"),
+            {"available": False, "source": "unavailable", "contexts": []},
+        )
+
+    def test_required_checks_unavailable_when_rulesets_payload_is_malformed(self) -> None:
+        client = FakeClient({"rules/branches/main": {"unexpected": []}})
+
+        self.assertEqual(
+            ci_storage_audit.fetch_required_checks(client, "main"),
+            {"available": False, "source": "unavailable", "contexts": []},
+        )
+
+    def test_required_checks_falls_back_to_branch_protection(self) -> None:
+        client = FakeClient(
+            {
+                "rules/branches/main": [],
+                "branches/main/protection/required_status_checks": {
+                    "contexts": ["gate", "actionlint"],
+                    "checks": [],
+                },
+            }
+        )
+
+        self.assertEqual(
+            ci_storage_audit.fetch_required_checks(client, "main"),
+            {
+                "available": True,
+                "source": "branch-protection",
+                "contexts": ["gate", "actionlint"],
+            },
+        )
+
+    def test_required_checks_falls_back_to_branch_protection_checks(self) -> None:
+        client = FakeClient(
+            {
+                "rules/branches/main": [],
+                "branches/main/protection/required_status_checks": {
+                    "contexts": [],
+                    "checks": [{"context": "backtester-gate", "app_id": 1234}],
+                },
+            }
+        )
+
+        result = ci_storage_audit.fetch_required_checks(client, "main")
+
+        self.assertEqual(
+            result,
+            {
+                "available": True,
+                "source": "branch-protection",
+                "contexts": [{"context": "backtester-gate", "app_id": 1234}],
+            },
+        )
+        self.assertEqual(
+            ci_storage_audit.check_label(result["contexts"][0]),
+            "backtester-gate (app_id=1234)",
+        )
+
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
+    unittest.main()

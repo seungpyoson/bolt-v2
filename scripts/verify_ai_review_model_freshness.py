@@ -140,7 +140,7 @@ def parse_glm_docs_latest(text: str) -> str | None:
 
 def parse_glm_migration_model(text: str) -> str | None:
     match = re.search(r"Update\s+`?model`?\s+to\s+`(glm-\d+(?:\.\d+)*)`", text, re.IGNORECASE)
-    return match.group(1) if match else parse_glm_docs_latest(text)
+    return match.group(1).lower() if match else parse_glm_docs_latest(text)
 
 
 def fetch_text(url: str, token: str | None = None) -> str:
@@ -270,6 +270,10 @@ def run_self_test() -> None:
     assert parse_glm_docs_latest(glm_index) == current_glm
     migration = f"Migration Checklist\n* Update model identifier to `{current_glm}`"
     assert parse_glm_migration_model(migration) == current_glm
+    uppercase_migration = f"Migration Checklist\n* Update model identifier to `{current_glm.upper()}`"
+    assert parse_glm_migration_model(uppercase_migration) == current_glm
+    explicit_uppercase_migration = f"Migration Checklist\n* Update `model` to `{current_glm.upper()}`"
+    assert parse_glm_migration_model(explicit_uppercase_migration) == current_glm
     pins = ModelPins(kimi=old_kimi, glm=old_glm, glm_pr_agent=f"openai/{old_glm}")
     findings = check_pins_against_latest(pins, current_kimi, current_glm)
     assert any("kimi.model is stale" in finding for finding in findings), findings

@@ -108,6 +108,9 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(decoded["repo"], "owner/repo")
         self.assertEqual(decoded["cache"]["total_bytes"], 3072)
         self.assertEqual(decoded["cache"]["count"], 2)
+        self.assertEqual(decoded["cache"]["count_source"], "github_total_count")
+        self.assertEqual(decoded["cache"]["enumerated_count"], 2)
+        self.assertEqual(decoded["cache"]["enumeration_consistency"], "live_churn_possible")
         self.assertEqual(
             decoded["cache"]["entries"][0],
             {
@@ -120,6 +123,9 @@ class CiStorageAuditTests(unittest.TestCase):
         )
         self.assertEqual(decoded["artifacts"]["total_bytes"], 6144)
         self.assertEqual(decoded["artifacts"]["count"], 3)
+        self.assertEqual(decoded["artifacts"]["count_source"], "github_total_count")
+        self.assertEqual(decoded["artifacts"]["enumerated_count"], 3)
+        self.assertEqual(decoded["artifacts"]["enumeration_consistency"], "live_churn_possible")
         self.assertEqual(
             decoded["artifacts"]["by_name"],
             [
@@ -148,6 +154,32 @@ class CiStorageAuditTests(unittest.TestCase):
                 ("rules/branches/main", None, False),
             ],
         )
+
+    def test_counts_distinguish_github_total_from_enumerated_rows(self) -> None:
+        client = FakeClient(
+            {
+                "actions/caches": {
+                    "total_count": 10,
+                    "actions_caches": [{"id": 1, "size_in_bytes": 100}],
+                },
+                "actions/artifacts": {
+                    "total_count": 20,
+                    "artifacts": [{"name": "logs", "size_in_bytes": 200}],
+                },
+            }
+        )
+
+        cache = ci_storage_audit.fetch_cache(client)
+        artifacts = ci_storage_audit.fetch_artifacts(client)
+
+        self.assertEqual(cache["count"], 10)
+        self.assertEqual(cache["count_source"], "github_total_count")
+        self.assertEqual(cache["enumerated_count"], 1)
+        self.assertEqual(cache["enumeration_consistency"], "live_churn_possible")
+        self.assertEqual(artifacts["count"], 20)
+        self.assertEqual(artifacts["count_source"], "github_total_count")
+        self.assertEqual(artifacts["enumerated_count"], 1)
+        self.assertEqual(artifacts["enumeration_consistency"], "live_churn_possible")
 
     def test_merge_paginated_payload_merges_real_slurp_shape(self) -> None:
         payload = [

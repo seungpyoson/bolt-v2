@@ -7,6 +7,10 @@ the raw source shape, so rulesets entries are objects such as
 ``{"context": "...", "integration_id": ...}`` while legacy branch-protection
 fallback entries may be strings or objects such as ``{"context": "...",
 "app_id": ...}``.
+
+``cache.count`` and ``artifacts.count`` are GitHub's ``total_count`` when that
+field is available. ``enumerated_count`` is derived from the paginated rows this
+audit actually read; the two may differ under live CI churn.
 """
 
 from __future__ import annotations
@@ -162,6 +166,15 @@ def nonnegative_int(value: Any, *, default: int = 0) -> int:
     return default
 
 
+def count_with_source(payload: dict[str, Any], *, fallback: int) -> tuple[int, str]:
+    value = payload.get("total_count")
+    if isinstance(value, bool):
+        return fallback, "enumerated_count_fallback"
+    if isinstance(value, int) and value >= 0:
+        return value, "github_total_count"
+    return fallback, "enumerated_count_fallback"
+
+
 def fetch_cache(client: GhClient) -> dict[str, Any]:
     payload = require_object(
         client.api("actions/caches", params={"per_page": "100"}, paginate=True),
@@ -185,9 +198,13 @@ def fetch_cache(client: GhClient) -> dict[str, Any]:
             }
         )
 
+    count, count_source = count_with_source(payload, fallback=len(entries))
     return {
         "total_bytes": total_bytes,
-        "count": nonnegative_int(payload.get("total_count"), default=len(entries)),
+        "count": count,
+        "count_source": count_source,
+        "enumerated_count": len(entries),
+        "enumeration_consistency": "live_churn_possible",
         "entries": entries,
     }
 
@@ -217,9 +234,13 @@ def fetch_artifacts(client: GhClient) -> dict[str, Any]:
         for name, values in by_name.items()
     ]
     grouped.sort(key=lambda entry: (-entry["total_bytes"], entry["name"]))
+    count, count_source = count_with_source(payload, fallback=artifact_count)
     return {
         "total_bytes": total_bytes,
-        "count": nonnegative_int(payload.get("total_count"), default=artifact_count),
+        "count": count,
+        "count_source": count_source,
+        "enumerated_count": artifact_count,
+        "enumeration_consistency": "live_churn_possible",
         "by_name": grouped,
     }
 

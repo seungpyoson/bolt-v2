@@ -181,6 +181,32 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(artifacts["enumerated_count"], 1)
         self.assertEqual(artifacts["enumeration_consistency"], "live_churn_possible")
 
+    def test_counts_fall_back_to_enumerated_rows_when_total_count_is_invalid(self) -> None:
+        for total_count in (None, "20", -1, True):
+            with self.subTest(total_count=total_count):
+                client = FakeClient(
+                    {
+                        "actions/caches": {
+                            "total_count": total_count,
+                            "actions_caches": [{"id": 1, "size_in_bytes": 100}],
+                        },
+                        "actions/artifacts": {
+                            "total_count": total_count,
+                            "artifacts": [{"name": "logs", "size_in_bytes": 200}],
+                        },
+                    }
+                )
+
+                cache = ci_storage_audit.fetch_cache(client)
+                artifacts = ci_storage_audit.fetch_artifacts(client)
+
+                self.assertEqual(cache["count"], 1)
+                self.assertEqual(cache["count_source"], "enumerated_count_fallback")
+                self.assertEqual(cache["enumerated_count"], 1)
+                self.assertEqual(artifacts["count"], 1)
+                self.assertEqual(artifacts["count_source"], "enumerated_count_fallback")
+                self.assertEqual(artifacts["enumerated_count"], 1)
+
     def test_merge_paginated_payload_merges_real_slurp_shape(self) -> None:
         payload = [
             {
@@ -384,4 +410,7 @@ class CiStorageAuditTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     unittest.main()

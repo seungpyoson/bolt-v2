@@ -560,12 +560,23 @@ def assert_finding(name: str, findings: list[str], expected: str) -> None:
         raise AssertionError(f"{name}: expected finding containing {expected!r}, got {findings!r}")
 
 
+def bump_model_version(model_id: str) -> str:
+    match = re.search(r"\d+(?:\.\d+)*", model_id)
+    if not match:
+        raise AssertionError(f"model id has no numeric version: {model_id!r}")
+    parts = [int(part) for part in match.group(0).split(".")]
+    parts[-1] += 1
+    bumped = ".".join(str(part) for part in parts)
+    return f"{model_id[: match.start()]}{bumped}{model_id[match.end():]}"
+
+
 def run_self_tests(repo_root: Path) -> None:
     agents = read_text(repo_root / "AGENTS.md")
     pr_agent = read_text(repo_root / ".pr_agent.toml")
     ai_review = read_text(repo_root / "ci/ai-review.toml")
     ai_review_config = tomllib.loads(ai_review)
     current_glm_model = ai_review_config["glm"]["model"]
+    current_kimi_model = ai_review_config["kimi"]["model"]
     glm = read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml")
     kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml")
     smoke = read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml")
@@ -580,6 +591,24 @@ def run_self_tests(repo_root: Path) -> None:
     )
     if baseline:
         raise AssertionError(f"real repository must satisfy AI review governance check, got {baseline!r}")
+
+    future_ai_review = ai_review.replace(
+        current_glm_model,
+        bump_model_version(current_glm_model),
+    ).replace(
+        current_kimi_model,
+        bump_model_version(current_kimi_model),
+    )
+    future_model_config = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=future_ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    if future_model_config:
+        raise AssertionError(f"future exact model pins must be accepted, got {future_model_config!r}")
 
     wrong_ai_review_config = verify_texts(
         agents_md=agents,

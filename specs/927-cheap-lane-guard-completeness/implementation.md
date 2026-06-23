@@ -4,12 +4,13 @@
 This file is the **build sequence** — concrete functions, signatures, and proof obligations, every
 "modify" anchored to `scripts/test_lane_governor.py` at HEAD `a59ae0776`.
 
-**Single file changed:** `scripts/test_lane_governor.py` (the guard + its analyzer). `lane_governor.py`,
+**Changed artifacts:** `scripts/test_lane_governor.py` (the guard + its analyzer), the committed
+discovered-but-unlabeled manifest (§3), and the #927 spec docs (`plan.md` / this file). `lane_governor.py`,
 `rust_verification.py`, `ci/rust-verification.toml`, and the `justfile` are **read-only** for this work.
-**Plus** one **new committed data file**: the discovered-but-unlabeled manifest (§3).
 
 **Run/verify with CI Python 3.12** (`/opt/homebrew/bin/python3.12`) — local default 3.14 differs; the
-guard runs under 3.12 in CI. No new third-party deps (`just`, `ast`, `json`, `subprocess`, `tomllib` only).
+guard runs under 3.12 in CI. No new third-party deps (stdlib only: `ast`, `asyncio`, `json`, `subprocess`,
+`tomllib`, etc.).
 
 ---
 
@@ -82,9 +83,10 @@ The core of Change 1. Runs on **one script's AST**; returns `(resolved_targets: 
   innermost→outer→module. **Only a single, unconditional, textually-prior `Assign` binding resolves;**
   multiple/conditional/absent → leave unresolved → L2.
 - **Edge recognition binds to real call expressions only** (F8′): `subprocess.run/Popen/call/check_call/check_output`,
-  and the loader allowlist `spec_from_file_location` / `SourceFileLoader` / `importlib.import_module` /
-  `runpy.run_path` / `runpy.run_module`. **Never** treat a bare list literal as an edge (ignore
-  `test_command_understanding.py:277-299`; catch the real `subprocess.run(-c)` at `:163`).
+  `asyncio.create_subprocess_exec` / `asyncio.create_subprocess_shell`, and the loader allowlist
+  `spec_from_file_location` / `SourceFileLoader` / `importlib.import_module` / `runpy.run_path` /
+  `runpy.run_module`. **Never** treat a bare list literal as an edge (ignore the parser-fixture lists in
+  `assert_python_inline_payloads_match_current_verifiers`; catch the real `subprocess.run(-c)` at `:163`).
 - **Target grammar** (`_resolve_target(node) -> ResolvedTarget|UNRESOLVED`): literal str; `str(EXPR)`/`Path(EXPR)`
   (unwrap); `Name` (scope lookup above); `BinOp(/)`, `.joinpath()`, `.parent`, `.parents[N]` chains (recursive);
   `__file__`-anchored chains → repo paths. A **module name** (`import_module`/`run_module`, constant) →
@@ -94,18 +96,19 @@ The core of Change 1. Runs on **one script's AST**; returns `(resolved_targets: 
   into a loader/spawn — incl. `DIR / f"{name}.py"`, `SCRIPTS_DIR / f"{name}.py"`,
   `Path(__file__).with_name(f"{name}.py")`, where the parameter is the **sole** non-literal — resolves one hop
   from the constant call-site arg. **This supersedes the general f-string exclusion** for that sole-non-literal
-  case. Anchors: `_load` at `test_lane_governor.py:18-19` / `test_local_verification_gate.py:18-19`, called
+  case. Anchors: `_load` in `test_lane_governor.py` / `test_local_verification_gate.py`, called
   `_load("rust_verification")`/`_load("lane_governor")`/`_load("local_verification_gate")`. Other f-strings,
   cross-module-imported constants, dynamically built argv → **L2**.
-- **Interpreter shape** for subprocess argv[0]: Python interpreter → resolve argv[1]; non-Python (`bash`/`sh`)
-  or bare PATH → **boundary**; an **opaque** argv that is a passed-in variable → **boundary** (the
+- **Interpreter shape** for subprocess commands: direct repo-local Python process image, `executable=`, or
+  argv[0] (`scripts/X.py`, `scripts/cargo-shim`, `Path(...)`) → L1; Python interpreter → resolve argv[1];
+  non-Python (`bash`/`sh`) or bare PATH → **boundary**; an **opaque** argv that is a passed-in variable → **boundary** (the
   coordinator/owner dynamic dispatch — `local_verification_gate.py:51`; callees discovered via 1d + labels).
 - **`-c` heuristic (boundary + sub-tripwire).** A non-constant `-c` string → boundary. A **constant** `-c`
   string — after **adjacent-string-literal concatenation** (incl. parenthesized multiline, `ast.Constant`
   joins) — that names literal `scripts/…` paths → those must be scan-set members else hard-fail
   (`test_command_understanding.py:155-164`). `-c` whose payload is pure-tmp → no edge.
-- **`eval(`/`exec(`** and shell-string execution (`os.system`, `os.popen`,
-  `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`) → **L2 hard-fail**.
+- **`eval(`/`exec(`** (including `builtins.eval` / `builtins.exec`) and shell-string execution (`os.system`,
+  `os.popen`, `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`) → **L2 hard-fail**.
   `os.exec*` / `os.spawn*` / `os.posix_spawn*` are L2 only when the replacement program image resolves to
   a Python interpreter or Python script, or is unresolved while replacement argv is Python-shaped; resolved
   non-Python replacement remains the documented Layer-3 cargo-shim boundary.
@@ -171,8 +174,8 @@ JSON-dump fixtures and synthetic AST snippets** — **never mutate the real `jus
   across direct/assigned/chained/`.parent`/`.parents[N]`/`.joinpath`; the real owner → **0** findings; **no
   new findings** across the existing scan set (run §1h + §2 over today's tree → empty).
 - **(c) In-process loads = L1, green today** → AC3: each of the nine F7′ targets, loaded via the `_load`
-  f-string wrapper, is added + analyzed clean; a non-constant load target → hard-fail; the `:277-299` list
-  literals are **not** edges.
+  f-string wrapper, is added + analyzed clean; a non-constant load target → hard-fail; the parser-fixture
+  list literals in `assert_python_inline_payloads_match_current_verifiers` are **not** edges.
 - **(d) `-c` heuristic** → AC4: concatenated constant `-c` naming a `scripts/…` path not in the set fails;
   pure-tmp `-c` passes; non-constant `-c` = boundary.
 - **(e) Layer-2 tripwires** → AC5: positively-Python unresolvable target; `Name` zero/multiple/conditional;
@@ -192,7 +195,7 @@ JSON-dump fixtures and synthetic AST snippets** — **never mutate the real `jus
 
 ## §5 — Inventory constant (Change 5)
 Publish the recognized invocation-form inventory (interpreters, loader allowlist, code-exec family, mutating
-methods) as a single module constant referenced by §1g/§2 — single source of truth, no scattered literals.
+methods) as a module constant derived from the resolver's real call-family constants and referenced by §1g/§2.
 
 ---
 

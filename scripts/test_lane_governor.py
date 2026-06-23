@@ -104,22 +104,20 @@ _OS_SPAWN_FUNCTIONS = frozenset(
 _SHELL_PYTHON_PREFIX_WRAPPERS = frozenset(
     {"command", "nice", "nohup", "stdbuf", "timeout", "time", "xargs"}
 )
-_MANIFEST_PATH = SCRIPTS_DIR / "cheap_lane_discovered_unlabeled.manifest"
-_GATE_ALIASES: dict[str, str] = {}
-_JUST_DUMP_CACHE: dict | None = None
-_DISCOVERY_CACHE: set[Path] | None = None
-
-_INVOCATION_FORMS = {
-    "python_interpreters": ("python", "python3", "sys.executable"),
-    "subprocess_calls": ("run", "Popen", "call", "check_call", "check_output"),
-    "loader_calls": (
+_SUBPROCESS_CALLS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
+_ASYNCIO_EXEC_CALLS = frozenset({"create_subprocess_exec"})
+_ASYNCIO_SHELL_CALLS = frozenset({"create_subprocess_shell"})
+_LOADER_CALLS = frozenset(
+    {
         "spec_from_file_location",
         "SourceFileLoader",
         "import_module",
         "run_path",
         "run_module",
-    ),
-    "dynamic_code_calls": (
+    }
+)
+_DYNAMIC_CODE_CALLS = frozenset(
+    {
         "eval",
         "exec",
         "os.system",
@@ -131,7 +129,21 @@ _INVOCATION_FORMS = {
         "subprocess.getoutput",
         "subprocess.getstatusoutput",
         "pty.spawn",
-    ),
+        "builtins.eval",
+        "builtins.exec",
+    }
+)
+_MANIFEST_PATH = SCRIPTS_DIR / "cheap_lane_discovered_unlabeled.manifest"
+_GATE_ALIASES: dict[str, str] = {}
+_JUST_DUMP_CACHE: dict | None = None
+_DISCOVERY_CACHE: set[Path] | None = None
+
+_INVOCATION_FORMS = {
+    "python_interpreters": ("python", "python3", "python3.*", "sys.executable"),
+    "subprocess_calls": tuple(sorted(_SUBPROCESS_CALLS)),
+    "asyncio_subprocess_calls": tuple(sorted(_ASYNCIO_EXEC_CALLS | _ASYNCIO_SHELL_CALLS)),
+    "loader_calls": tuple(sorted(_LOADER_CALLS)),
+    "dynamic_code_calls": tuple(sorted(_DYNAMIC_CODE_CALLS)),
     "mutating_path_methods": tuple(sorted(_MUTATING_PATH_METHODS)),
 }
 
@@ -870,7 +882,16 @@ def _shell_segment_mentions_python_or_just(command: str) -> bool:
         "python" in lowered
         or " just " in f" {command} "
         or command.strip().startswith("$")
+        or _shell_segment_starts_with_python_process_image(command)
     )
+
+
+def _shell_segment_starts_with_python_process_image(command: str) -> bool:
+    try:
+        tokens = _normalized_shell_tokens(command)
+    except AssertionError:
+        return False
+    return bool(tokens) and _shell_token_is_python_process_image(tokens[0])
 
 
 def _shell_command_segments(line: str) -> list[str]:
@@ -1147,15 +1168,19 @@ def _classify_command(line: str) -> str:
             return "boundary"
         if not isinstance(env_tokens[0], str):
             return "boundary"
-        if env_tokens[0].startswith("$"):
+        if _token_has_shell_expansion(env_tokens[0]):
             return "dynamic-shell"
         if _is_python_interpreter_token(env_tokens[0]):
             return "dynamic-shell" if _python_command_has_shell_expanded_operand(env_tokens) else "py-exec"
+        if _shell_token_is_python_process_image(env_tokens[0]):
+            return "py-exec"
         return "boundary"
-    if command.startswith("$") or "*" in command or "?" in command:
+    if _token_has_shell_expansion(command) or "*" in command or "?" in command:
         return "dynamic-shell"
     if _is_python_interpreter_token(command):
         return "dynamic-shell" if _python_command_has_shell_expanded_operand(tokens) else "py-exec"
+    if _shell_token_is_python_process_image(command):
+        return "py-exec"
     return "boundary"
 
 
@@ -1343,7 +1368,7 @@ def _python_script_from_tokens(tokens: list[str], scan_set: set[Path]) -> Path |
     if not tokens:
         return None
     if not _is_python_interpreter_token(tokens[0]):
-        return None
+        return _resolve_shell_python_process_image(tokens[0])
     operand_index = _python_operand_index(tokens)
     if operand_index >= len(tokens):
         raise AssertionError(f"Python command missing operand: {tokens}")
@@ -1385,6 +1410,33 @@ def _resolve_script_operand(raw: str) -> Path | None:
     if raw.startswith("scripts/") or raw.endswith(".py"):
         raise AssertionError(f"unresolved Python script target: {raw}")
     return None
+
+
+def _shell_token_is_python_process_image(token: object) -> bool:
+    if not isinstance(token, str) or _token_has_shell_expansion(token):
+        return False
+    target = _shell_process_image_path(token)
+    if target is not None and target.exists():
+        return _is_python_script_path(target)
+    return token.endswith(".py")
+
+
+def _resolve_shell_python_process_image(token: str) -> Path | None:
+    target = _shell_process_image_path(token)
+    if target is not None and target.exists() and _is_python_script_path(target):
+        return target
+    if token.endswith(".py"):
+        raise AssertionError(f"unresolved Python process image: {token}")
+    return None
+
+
+def _shell_process_image_path(token: str) -> Path | None:
+    if token.startswith("-"):
+        return None
+    path = Path(token)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path.resolve()
 
 
 def _is_python_interpreter_token(token: object) -> bool:
@@ -1463,20 +1515,25 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
         self.active_functions: set[str] = set()
         self.subprocess_modules = {"subprocess"}
+        self.asyncio_modules = {"asyncio"}
         self.os_modules = {"os"}
         self.pty_modules = {"pty"}
+        self.builtins_modules = {"builtins"}
         self.sys_modules = {"sys"}
         self.pathlib_modules = {"pathlib"}
         self.tempfile_modules = {"tempfile"}
         self.path_names = {"Path"}
         self.temp_path_names = {"TemporaryDirectory", "NamedTemporaryFile", "mkdtemp", "mkstemp", "gettempdir"}
         self.subprocess_call_names: set[str] = set()
+        self.asyncio_exec_names: set[str] = set()
+        self.asyncio_shell_names: set[str] = set()
         self.subprocess_output_names: set[str] = set()
         self.os_shell_names: set[str] = set()
         self.os_exec_names: set[str] = set()
         self.os_spawn_names: set[str] = set()
         self.os_posix_spawn_names: set[str] = set()
         self.pty_spawn_names: set[str] = set()
+        self.builtin_dynamic_names: set[str] = set()
         self.spec_loader_names = {"spec_from_file_location"}
         self.source_loader_names = {"SourceFileLoader"}
         self.import_module_names: set[str] = set()
@@ -1500,10 +1557,14 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             name = alias.asname or alias.name.split(".")[0]
             if alias.name == "subprocess":
                 self.subprocess_modules.add(name)
+            elif alias.name == "asyncio":
+                self.asyncio_modules.add(name)
             elif alias.name == "os":
                 self.os_modules.add(name)
             elif alias.name == "pty":
                 self.pty_modules.add(name)
+            elif alias.name == "builtins":
+                self.builtins_modules.add(name)
             elif alias.name == "sys":
                 self.sys_modules.add(name)
             elif alias.name == "pathlib":
@@ -1565,14 +1626,25 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         elif node.module == "subprocess":
             for alias in node.names:
                 if alias.name == "*":
-                    self.subprocess_call_names.update(_INVOCATION_FORMS["subprocess_calls"])
+                    self.subprocess_call_names.update(_SUBPROCESS_CALLS)
                     self.subprocess_output_names.update({"getoutput", "getstatusoutput"})
                     continue
                 name = alias.asname or alias.name
-                if alias.name in _INVOCATION_FORMS["subprocess_calls"]:
+                if alias.name in _SUBPROCESS_CALLS:
                     self.subprocess_call_names.add(name)
                 elif alias.name in {"getoutput", "getstatusoutput"}:
                     self.subprocess_output_names.add(name)
+        elif node.module == "asyncio":
+            for alias in node.names:
+                if alias.name == "*":
+                    self.asyncio_exec_names.update(_ASYNCIO_EXEC_CALLS)
+                    self.asyncio_shell_names.update(_ASYNCIO_SHELL_CALLS)
+                    continue
+                name = alias.asname or alias.name
+                if alias.name in _ASYNCIO_EXEC_CALLS:
+                    self.asyncio_exec_names.add(name)
+                elif alias.name in _ASYNCIO_SHELL_CALLS:
+                    self.asyncio_shell_names.add(name)
         elif node.module == "os":
             for alias in node.names:
                 if alias.name == "*":
@@ -1597,6 +1669,13 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                     continue
                 if alias.name == "spawn":
                     self.pty_spawn_names.add(alias.asname or alias.name)
+        elif node.module == "builtins":
+            for alias in node.names:
+                if alias.name == "*":
+                    self.builtin_dynamic_names.update({"eval", "exec"})
+                    continue
+                if alias.name in {"eval", "exec"}:
+                    self.builtin_dynamic_names.add(alias.asname or alias.name)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.functions[node.name] = node
@@ -1659,6 +1738,10 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             self._fail(node, f"dynamic code execution is not allowed: {call_name}")
         if self._is_os_exec_spawn_call(call_name):
             self._handle_os_exec_spawn_call(node, call_name)
+        if self._is_asyncio_subprocess_exec_call(call_name):
+            self._handle_asyncio_subprocess_exec_call(node)
+        if self._is_asyncio_subprocess_shell_call(call_name):
+            self._handle_asyncio_subprocess_shell_call(node)
         if self._is_subprocess_call(call_name):
             self._handle_subprocess_call(node)
         elif self._is_loader_call(call_name):
@@ -1774,6 +1857,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             return
         if isinstance(command, str):
             if shell:
+                if executable is not None and _is_python_interpreter_token(executable):
+                    self._handle_python_tokens(node, [executable, "-c", command])
+                    return
+                if executable is not None and self._value_is_python_process_image(executable):
+                    self._fail(node, "unsupported shell=True Python process-image executable")
+                    return
                 handled_python = False
                 for shell_line in [command, *_shell_subcommands(command)]:
                     try:
@@ -1792,11 +1881,17 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             if executable is not None and _is_python_interpreter_token(executable):
                 self._handle_python_tokens(node, [executable, command])
                 return
+        if executable is not None and self._value_is_python_process_image(executable):
+            self._handle_direct_python_process_image(node, executable)
+            return
         if command is _UNRESOLVED:
             if self._looks_like_python_command_expr(command_node):
                 self._fail(node, "unresolved Python subprocess command")
             return
         if command is _PARAMETER:
+            return
+        if self._value_is_python_process_image(command):
+            self._handle_direct_python_process_image(node, command)
             return
         if not isinstance(command, list) or not command:
             return
@@ -1822,6 +1917,75 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             self._fail(node, "Python subprocess command is missing a target")
             return
         self._handle_python_tokens(node, command)
+
+    def _handle_asyncio_subprocess_exec_call(self, node: ast.Call) -> None:
+        tokens = [self._resolve_value(arg) for arg in node.args]
+        if not tokens:
+            self._fail(node, "asyncio.create_subprocess_exec missing program")
+            return
+        tokens = self._normalized_process_tokens(tokens)
+        if not tokens:
+            return
+        executable = tokens[0]
+        if executable is _PARAMETER:
+            return
+        if executable is _UNRESOLVED:
+            if self._process_tokens_are_python_shaped(tokens):
+                self._fail(node, "unresolved Python asyncio subprocess executable")
+            return
+        if self._value_is_python_process_image(executable):
+            self._handle_direct_python_process_image(node, executable)
+            return
+        if not _is_python_interpreter_token(executable):
+            return
+        if len(tokens) < 2:
+            self._fail(node, "asyncio Python subprocess command is missing a target")
+            return
+        self._handle_python_tokens(node, tokens)
+
+    def _handle_asyncio_subprocess_shell_call(self, node: ast.Call) -> None:
+        command_node = self._command_argument(node)
+        if command_node is None:
+            self._fail(node, "asyncio.create_subprocess_shell missing command")
+            return
+        command = self._resolve_value(command_node)
+        if command is _PARAMETER:
+            return
+        if command is _UNRESOLVED:
+            if self._looks_like_python_command_expr(command_node):
+                self._fail(node, "unresolved Python asyncio shell command")
+            return
+        if not isinstance(command, str):
+            return
+        handled_python = False
+        for shell_line in [command, *_shell_subcommands(command)]:
+            try:
+                tokens = _normalized_shell_tokens(shell_line)
+            except AssertionError as exc:
+                self._fail(node, str(exc))
+                return
+            if tokens and _is_python_interpreter_token(tokens[0]):
+                self._handle_python_tokens(node, tokens)
+                handled_python = True
+            elif _classify_command(shell_line) == "dynamic-shell":
+                self._fail(node, f"unsupported dynamic asyncio shell command: {shell_line}")
+        if handled_python:
+            return
+
+    def _process_tokens_are_python_shaped(self, tokens: list[object]) -> bool:
+        if not tokens:
+            return False
+        first = tokens[0]
+        if _is_python_interpreter_token(first) or self._value_is_python_process_image(first):
+            return True
+        if first is _UNRESOLVED:
+            return any(
+                _is_python_interpreter_token(token)
+                or self._value_is_python_process_image(token)
+                or self._value_is_script_shaped(token)
+                for token in tokens[1:]
+            )
+        return False
 
     def _handle_direct_python_process_image(self, node: ast.AST, value: object) -> None:
         target = self._path_from_value(value)
@@ -2234,8 +2398,18 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return any(
             call_name == f"{module}.{method}"
             for module in self.subprocess_modules
-            for method in _INVOCATION_FORMS["subprocess_calls"]
+            for method in _SUBPROCESS_CALLS
         )
+
+    def _is_asyncio_subprocess_exec_call(self, call_name: str) -> bool:
+        if call_name in self.asyncio_exec_names:
+            return True
+        return any(call_name == f"{module}.create_subprocess_exec" for module in self.asyncio_modules)
+
+    def _is_asyncio_subprocess_shell_call(self, call_name: str) -> bool:
+        if call_name in self.asyncio_shell_names:
+            return True
+        return any(call_name == f"{module}.create_subprocess_shell" for module in self.asyncio_modules)
 
     def _is_loader_call(self, call_name: str) -> bool:
         if call_name in {
@@ -2256,7 +2430,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return call_name.endswith(suffixes)
 
     def _is_dynamic_code_call(self, call_name: str) -> bool:
-        if call_name in {"eval", "exec"}:
+        if call_name in {"eval", "exec"} or call_name in self.builtin_dynamic_names:
             return True
         if (
             call_name in self.os_shell_names
@@ -2271,7 +2445,9 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             for module in self.subprocess_modules
         ):
             return True
-        return any(call_name == f"{module}.spawn" for module in self.pty_modules)
+        if any(call_name == f"{module}.spawn" for module in self.pty_modules):
+            return True
+        return any(call_name in {f"{module}.eval", f"{module}.exec"} for module in self.builtins_modules)
 
     def _is_os_exec_spawn_call(self, call_name: str) -> bool:
         if call_name in self.os_exec_names or call_name in self.os_spawn_names or call_name in self.os_posix_spawn_names:
@@ -2505,6 +2681,16 @@ def test_direct_cheap_labels_resolve_python_by_semantics() -> None:
         raise AssertionError("missing direct cheap lane label must fail closed")
 
 
+def test_invocation_forms_inventory_matches_resolver_constants() -> None:
+    assert set(_INVOCATION_FORMS["subprocess_calls"]) == _SUBPROCESS_CALLS
+    assert set(_INVOCATION_FORMS["asyncio_subprocess_calls"]) == _ASYNCIO_EXEC_CALLS | _ASYNCIO_SHELL_CALLS
+    assert set(_INVOCATION_FORMS["loader_calls"]) == _LOADER_CALLS
+    assert set(_INVOCATION_FORMS["dynamic_code_calls"]) == _DYNAMIC_CODE_CALLS
+    assert set(_INVOCATION_FORMS["mutating_path_methods"]) == _MUTATING_PATH_METHODS
+    assert "python3.*" in _INVOCATION_FORMS["python_interpreters"]
+    assert _is_python_interpreter_token("python3.12")
+
+
 def test_python_script_semantics_reject_non_files_without_crashing() -> None:
     assert not _is_python_script_path(SCRIPTS_DIR)
     assert not _is_python_script_path(REPO_ROOT / "does-not-exist.py")
@@ -2579,6 +2765,7 @@ from pathlib import Path
 import importlib.util
 import subprocess
 import sys
+import asyncio
 from importlib import import_module
 from importlib.util import spec_from_file_location as direct_spec
 from runpy import run_module, run_path
@@ -2611,12 +2798,18 @@ subprocess.run(["python3", str(SCRIPT)])
 direct_run(["python3", str(SCRIPT)])
 subprocess.run([str(SCRIPT)], executable="python3")
 subprocess.run(["python3", str(SCRIPT)], executable="python3")
+subprocess.run(["--fingerprint"], executable=str(SCRIPT))
 subprocess.run(["env", "PYTHONPATH=/tmp", "python3", "scripts/test_nextest_fingerprint.py"])
 subprocess.run(["env", "-S", "PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"])
 subprocess.run("python3 scripts/test_nextest_fingerprint.py", shell=True)
 subprocess.run("echo data | python3 scripts/test_nextest_fingerprint.py", shell=True)
+subprocess.run("scripts/test_nextest_fingerprint.py")
+subprocess.run(SCRIPT)
 subprocess.run(["scripts/test_nextest_fingerprint.py"])
 subprocess.run(["scripts/cargo-shim"])
+asyncio.create_subprocess_exec("python3", "scripts/test_nextest_fingerprint.py")
+asyncio.create_subprocess_exec("scripts/cargo-shim")
+asyncio.create_subprocess_shell("python3 scripts/test_nextest_fingerprint.py")
 run(str(SCRIPTS / "clean_merged_artifacts.py"))
 """
     resolver = _CodeExecutionEdgeResolver(
@@ -2636,6 +2829,95 @@ run(str(SCRIPTS / "clean_merged_artifacts.py"))
         "command_understanding.py",
         "ci_provenance.py",
     } <= rels
+
+
+def test_subprocess_executable_keyword_process_image_resolves_before_argv0() -> None:
+    fixtures = {
+        """
+from pathlib import Path
+import subprocess
+
+SCRIPT = Path(__file__).resolve().parent / "test_nextest_fingerprint.py"
+subprocess.run(["--fingerprint"], executable=SCRIPT)
+""": "test_nextest_fingerprint.py",
+        "import subprocess\nsubprocess.run(['--help'], executable='scripts/cargo-shim')\n": "cargo-shim",
+    }
+    for source, expected in fixtures.items():
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures
+        rels = {target.relative_to(SCRIPTS_DIR).as_posix() for target in targets}
+        assert expected in rels
+
+
+def test_subprocess_direct_process_image_resolves_python_by_semantics() -> None:
+    fixtures = {
+        "import subprocess\nsubprocess.run('scripts/cargo-shim')\n": "cargo-shim",
+        """
+from pathlib import Path
+import subprocess
+
+SCRIPT = Path(__file__).resolve().parent / "test_nextest_fingerprint.py"
+subprocess.run(SCRIPT)
+""": "test_nextest_fingerprint.py",
+    }
+    for source, expected in fixtures.items():
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures
+        rels = {target.relative_to(SCRIPTS_DIR).as_posix() for target in targets}
+        assert expected in rels
+
+
+def test_asyncio_subprocess_resolves_python_targets() -> None:
+    fixtures = {
+        "import asyncio\nasyncio.create_subprocess_exec('python3', 'scripts/test_nextest_fingerprint.py')\n": (
+            "test_nextest_fingerprint.py"
+        ),
+        "import asyncio\nasyncio.create_subprocess_exec('scripts/cargo-shim')\n": "cargo-shim",
+        "import asyncio\nasyncio.create_subprocess_shell('python3 scripts/test_nextest_fingerprint.py')\n": (
+            "test_nextest_fingerprint.py"
+        ),
+        (
+            "from asyncio import create_subprocess_exec as direct_exec\n"
+            "direct_exec('python3', 'scripts/clean_merged_artifacts.py')\n"
+        ): "clean_merged_artifacts.py",
+    }
+    for source, expected in fixtures.items():
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures
+        rels = {target.relative_to(SCRIPTS_DIR).as_posix() for target in targets}
+        assert expected in rels
+
+
+def test_asyncio_subprocess_non_python_targets_are_boundaries() -> None:
+    fixtures = [
+        "import asyncio\nasyncio.create_subprocess_exec('/bin/echo', 'ok')\n",
+        "import asyncio\nasyncio.create_subprocess_shell('echo ok')\n",
+        "import asyncio\nasyncio.create_subprocess_exec(program, 'ok')\n",
+    ]
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures, f"expected asyncio non-Python target to remain a boundary:\n{source}"
+        assert not targets
 
 
 def test_local_wrappers_resolve_forward_and_nested_calls() -> None:
@@ -2692,6 +2974,7 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "import subprocess\nargs = ['scripts/test_nextest_fingerprint.py']\nsubprocess.run(['python3'] + args)\n",
         "import subprocess\nsubprocess.run(['scripts/test_nextest_fingerprint.py'], executable=PYTHON)\n",
         "import subprocess\nsubprocess.run('python3 scripts/missing_guard_fixture.py', shell=True)\n",
+        "import subprocess\nsubprocess.run('scripts/test_nextest_fingerprint.py', shell=True, executable='python3')\n",
         "import os\nos.system('python3 scripts/x.py')\n",
         "import os\nos.execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.execv('scripts/test_nextest_fingerprint.py', ['scripts/test_nextest_fingerprint.py'])\n",
@@ -2721,6 +3004,11 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "from pty import *\nspawn('/bin/echo')\n",
         "import subprocess\nsubprocess.run(['python3', '-c', 'from pathlib import Path; Path(\"inline-write\").write_text(\"x\")'])\n",
         "eval('1 + 1')\n",
+        "import builtins\nbuiltins.exec('x = 1')\n",
+        "from builtins import eval as direct_eval\ndirect_eval('1 + 1')\n",
+        "import asyncio\nasyncio.create_subprocess_exec(program, 'scripts/test_nextest_fingerprint.py')\n",
+        "import asyncio\nasyncio.create_subprocess_exec('python3', target)\n",
+        "import asyncio\nasyncio.create_subprocess_shell('python3 scripts/missing_guard_fixture.py')\n",
         "import importlib.util\nimportlib.util.spec_from_file_location('x', target)\n",
         (
             "from pathlib import Path\n"
@@ -2982,6 +3270,8 @@ def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
 def test_shell_expanded_python_commands_fail_closed() -> None:
     fixtures = [
         ['tool="$(${PYTHON} scripts/test_nextest_fingerprint.py)"'],
+        ["python${VERSION} scripts/test_nextest_fingerprint.py"],
+        ["python3.${VERSION} scripts/test_nextest_fingerprint.py"],
         ['python3 "$SCRIPT"'],
         ["python3 ${SCRIPT}"],
         ["bash -c 'python3 scripts/test_nextest_fingerprint.py'"],
@@ -3010,6 +3300,8 @@ def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
         recipes={
             "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
             "alpha-inner": [
+                ["scripts/cargo-shim"],
+                ["./scripts/cargo-shim"],
                 ["env PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"],
                 ["env -S 'PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py'"],
                 ["PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"],
@@ -3031,6 +3323,7 @@ def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
     recipes, _gates = _cheap_gate_closure(dump, {"local-gate:alpha"})
     scripts = _closure_python_scripts(dump, recipes)
     assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
+    assert SCRIPTS_DIR / "cargo-shim" in scripts
 
 
 def test_shell_comments_are_ignored_before_tokenization() -> None:
@@ -3667,8 +3960,8 @@ def test_help_invocation_bypasses_policy_load() -> None:
         assert elapsed < 5.0, "--help fast-path must not wait"
 
 
-def main() -> int:
-    tests = [
+def _registered_self_tests():
+    return [
         test_valid_lane_policy_passes,
         test_missing_lane_policy_rejected,
         test_disabled_lane_policy_rejected,
@@ -3686,10 +3979,15 @@ def main() -> int:
         test_manifest_floor_does_not_accept_labeled_seed_only,
         test_manifest_file_must_be_non_empty_and_existing_scripts,
         test_direct_cheap_labels_resolve_python_by_semantics,
+        test_invocation_forms_inventory_matches_resolver_constants,
         test_python_script_semantics_reject_non_files_without_crashing,
         test_repo_origin_detection_is_expression_based,
         test_repo_write_analyzer_catches_extended_mutators,
         test_code_execution_edges_are_static_fixed_point,
+        test_subprocess_executable_keyword_process_image_resolves_before_argv0,
+        test_subprocess_direct_process_image_resolves_python_by_semantics,
+        test_asyncio_subprocess_resolves_python_targets,
+        test_asyncio_subprocess_non_python_targets_are_boundaries,
         test_local_wrappers_resolve_forward_and_nested_calls,
         test_shell_true_python_wrappers_resolve,
         test_code_execution_tripwires_fail_closed,
@@ -3724,8 +4022,23 @@ def main() -> int:
         test_ci_false_env_does_not_bypass_lock,
         test_help_invocation_bypasses_lock,
         test_help_invocation_bypasses_policy_load,
+        test_self_test_runner_registers_all_test_functions,
     ]
-    for test in tests:
+
+
+def test_self_test_runner_registers_all_test_functions() -> None:
+    registered = {test.__name__ for test in _registered_self_tests()}
+    discovered = {
+        name
+        for name, value in globals().items()
+        if name.startswith("test_") and callable(value)
+    }
+    missing = sorted(discovered - registered)
+    assert not missing, f"self-test runner omitted test functions: {missing}"
+
+
+def main() -> int:
+    for test in _registered_self_tests():
         test()
     print("OK: lane governor self-tests passed.")
     return 0

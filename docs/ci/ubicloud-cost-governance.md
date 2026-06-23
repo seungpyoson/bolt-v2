@@ -155,7 +155,7 @@ Post-instrumentation evidence found real duplicate nextest spend:
 
 The workflow now resolves the current nextest fingerprint from the secure `nextest-fingerprint` job output after publishing `nextest-archive-fingerprint-*` for metering evidence. If a bounded search finds a newer-prior successful CI run with exactly one matching fingerprint artifact, exactly one matching CI provenance artifact, matching workflow/config digests, successful required job evidence, and the same parsed nextest fingerprint, the managed-heavy `test-archive` job is skipped. The `test` aggregate and `gate` jobs accept that path only when resolver outputs identify the reused source run, source SHA, and provenance artifact. Fingerprint reuse is disabled on `refs/heads/main` so main pushes still emit exact-SHA CI provenance for tag deploy reuse. Missing, malformed, ambiguous, expired, failed, cancelled, in-progress, wrong-workflow, wrong-OS, wrong-arch, wrong-profile, wrong-shard-count, wrong-schema, or otherwise unverifiable evidence falls back to normal full nextest archive execution.
 
-Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force the full-CI policy path for PRs while preserving the validated fingerprint reuse path for investigation. Revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs execute the nextest archive lane only when dispatched with `full_ci=true`; default manual dispatches publish `gate-iteration` and skip full feedback lanes. Full dispatches publish feedback-only dispatch gate names, not the required merge-proof `gate`. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
+Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` only for an explicit break-glass investigation; checked-in config must keep the override default `false` because CI hygiene intentionally rejects a merge candidate with the override enabled. Revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs execute the nextest archive lane only when dispatched with `full_ci=true`; default manual dispatches publish `gate-iteration` and skip full feedback lanes. Full dispatches publish feedback-only dispatch gate names, not the required merge-proof `gate`. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
 
 ### Lever B: full CI on demand
 
@@ -192,8 +192,8 @@ draft fork PRs cannot dispatch upstream full CI; mark the PR ready for review or
 
 Policy switches:
 
-- Set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to make draft PRs run full CI again without reverting the whole slice.
-- Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; set it only for an explicit provenance-emitter incident response where full CI evidence should not be blocked by artifact emission.
+- Set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` only for an explicit break-glass branch investigation; revert it before merge because hygiene requires the checked-in default to stay `false`.
+- Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; set it only for an explicit provenance-emitter incident response where full CI evidence should not be blocked by artifact emission, and revert it before merge because hygiene requires the checked-in default to stay `false`.
 - Revert the Slice 2b workflow-policy commits if the demand-shaping behavior itself must be removed.
 
 ## Reconciliation

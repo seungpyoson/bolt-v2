@@ -1336,6 +1336,17 @@ check_name = "test"
             valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate\\nignored=1"'),
         ),
         (
+            "ci_provenance.gate_names.gate_dispatch_full must be a GitHub Actions output-safe check name",
+            valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate-dispatch "'),
+        ),
+        (
+            "ci_provenance.gate_names.backtester_dispatch_full must be a GitHub Actions output-safe check name",
+            valid.replace(
+                'backtester_dispatch_full = "backtester-gate-dispatch"',
+                'backtester_dispatch_full = " backtester-gate-dispatch"',
+            ),
+        ),
+        (
             "ci_provenance.gate_names.gate_iteration must be a GitHub Actions output-safe check name",
             valid.replace('gate_iteration = "gate-iteration"', 'gate_iteration = "${{ github.ref }}"'),
         ),

@@ -190,7 +190,8 @@ def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
 
 def github_actions_output_safe_check_name(value: str) -> bool:
     return (
-        "${{" not in value
+        value == value.strip()
+        and "${{" not in value
         and "}}" not in value
         and all(char not in "\r\n" and 32 <= ord(char) < 127 for char in value)
     )

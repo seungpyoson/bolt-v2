@@ -1204,13 +1204,15 @@ def assert_dispatch_run_names_come_from_config() -> None:
 
 def assert_gate_names_reject_github_output_control_chars() -> None:
     module = load_script()
-    unsafe_values = {
-        "gate_dispatch_full": ("gate-dispatch", "gate\\nignored=1"),
-        "backtester_dispatch_full": ("backtester-gate-dispatch", "backtester-gate\\rignored=1"),
-        "gate_iteration": ("gate-iteration", "${{ github.ref }}"),
-        "backtester_iteration": ("backtester-gate-iteration", "backtester-gate-iteration }}"),
-    }
-    for key, (original, replacement) in unsafe_values.items():
+    unsafe_values = [
+        ("gate_dispatch_full", "gate-dispatch", "gate-dispatch "),
+        ("backtester_dispatch_full", "backtester-gate-dispatch", " backtester-gate-dispatch"),
+        ("gate_dispatch_full", "gate-dispatch", "gate\\nignored=1"),
+        ("backtester_dispatch_full", "backtester-gate-dispatch", "backtester-gate\\rignored=1"),
+        ("gate_iteration", "gate-iteration", "${{ github.ref }}"),
+        ("backtester_iteration", "backtester-gate-iteration", "backtester-gate-iteration }}"),
+    ]
+    for key, original, replacement in unsafe_values:
         with tempfile.TemporaryDirectory() as tmp:
             config = write_config(
                 pathlib.Path(tmp),

@@ -199,6 +199,8 @@ TAG_SKIPPED_JOBS = (
     "deny",
     "clippy",
     "source-fence",
+    "nextest-fingerprint",
+    "test-archive",
     "nextest-fingerprint-reuse",
     "test",
     "build",
@@ -8013,7 +8015,18 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         GATE_ITERATION_CONTEXT_FAILURE_CONDITION,
     ):
         errors.append("gate must fail iteration policy outside workflow_dispatch iteration context")
-    for job in ("deny", "clippy", "check-aarch64", "source-fence", "test", "nextest-fingerprint-reuse", "build", "ci-provenance-emit"):
+    for job in (
+        "deny",
+        "clippy",
+        "check-aarch64",
+        "source-fence",
+        "nextest-fingerprint",
+        "test-archive",
+        "test",
+        "nextest-fingerprint-reuse",
+        "build",
+        "ci-provenance-emit",
+    ):
         if iteration_body is None or not branch_exits_reachable(
             iteration_body,
             "if",
@@ -8862,6 +8875,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
                 errors.append(f"gate must check needs.{job}.result")
         if "same-sha-main-evidence" not in gate_needs:
             errors.append("gate needs same-sha-main-evidence")
+        for job in ("nextest-fingerprint", "test-archive"):
+            if job not in gate_needs:
+                errors.append(f"gate needs {job}")
         if "nextest-fingerprint-reuse" not in gate_needs:
             errors.append("gate needs nextest-fingerprint-reuse")
         errors.extend(gate_policy_truth_table_errors(gate_text))
@@ -9166,7 +9182,7 @@ BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","
 BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
 BACKTESTER_NOOP_RUN_CONTEXT_ASSIGNMENT = """noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}\""""
 BACKTESTER_ITERATION_RUN_CONTEXT_ASSIGNMENT = """iteration_run_context="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_ci != 'true' && 'true' || 'false' }}\""""
-BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
+BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for this branch or mark ready"
 BACKTESTER_REQUIRED_GATE_COMMENT = (
     "`backtester-gate` is required-capable; `backtester-gate-deferred` and\n"
     "# `backtester-gate-iteration` are feedback-only and must not be marked required"
@@ -9651,12 +9667,13 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
     run_name_full = require_config_string(dispatch, "run_name_full", "ci_provenance.dispatch")
     run_name_iteration = require_config_string(dispatch, "run_name_iteration", "ci_provenance.dispatch")
     proof_gate_job = require_config_string(dispatch, "proof_gate_job", "ci_provenance.dispatch")
-    if run_name_default != "CI":
-        raise ValueError("ci_provenance.dispatch.run_name_default must be CI")
+    workflow_name = require_config_string(ci_provenance, "workflow_name", "ci_provenance")
+    if run_name_default != workflow_name:
+        raise ValueError("ci_provenance.dispatch.run_name_default must match workflow_name")
     if run_name_full == run_name_iteration:
         raise ValueError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
     if proof_gate_job != "gate":
-        raise ValueError("ci_provenance.dispatch.proof_gate_job must be gate")
+        raise ValueError("ci_provenance.dispatch.proof_gate_job must match full gate name")
 
     api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")
     for key in (

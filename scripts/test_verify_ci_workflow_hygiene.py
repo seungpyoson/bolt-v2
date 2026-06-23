@@ -20,7 +20,7 @@ VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
 SYNC_CI_DEBUG_SSH_PATH = REPO_ROOT / "scripts" / "sync_ci_debug_ssh_secret.py"
 DEBUG_WORKFLOW_PATH = ".github/workflows/ci-runner-debug.yml"
 SSH_RUNNER_ACTION = "ubicloud/ssh-runner@b6ccad69f047c476b84a54a990f89b1ea5f2a828"
-GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
+GATE_NEEDS = "needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]"
 GATE_NAME = """name: >-
       ${{ github.event_name == 'pull_request'
           && github.event.pull_request.draft == true
@@ -759,7 +759,7 @@ jobs:
           || github.event_name == 'workflow_dispatch'
           && 'gate-iteration'
           || 'gate' }}
-    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -788,6 +788,12 @@ jobs:
               exit 1
             fi
             if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
               exit 1
             fi
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then
@@ -824,6 +830,12 @@ jobs:
               exit 1
             fi
             if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
+              exit 1
+            fi
+            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
               exit 1
             fi
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then
@@ -1302,6 +1314,14 @@ check_name = "test"
         (
             "ci_provenance.policy.override.ignore_emit_failure must default to false",
             valid.replace("ignore_emit_failure = false\n", ""),
+        ),
+        (
+            "ci_provenance.dispatch.run_name_default must match workflow_name",
+            valid.replace('workflow_name = "CI"', 'workflow_name = "CI Main"'),
+        ),
+        (
+            "ci_provenance.dispatch.proof_gate_job must match full gate name",
+            valid.replace('proof_gate_job = "gate"', 'proof_gate_job = "gate-iteration"'),
         ),
         (
             "ci_provenance.policy.ready_pr must be full",
@@ -2362,6 +2382,14 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
             replace_once(workflow, GATE_NEEDS, without_inline_need(GATE_NEEDS, "ci-policy")),
         ),
         (
+            "gate needs nextest-fingerprint",
+            replace_once(workflow, GATE_NEEDS, without_inline_need(GATE_NEEDS, "nextest-fingerprint")),
+        ),
+        (
+            "gate needs test-archive",
+            replace_once(workflow, GATE_NEEDS, without_inline_need(GATE_NEEDS, "test-archive")),
+        ),
+        (
             "gate must publish gate-deferred for deferred draft PR runs",
             replace_once(workflow, GATE_NAME, "name: gate"),
         ),
@@ -2375,6 +2403,70 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
                 workflow,
                 '"${{ needs.ci-policy.result }}" != "success"',
                 '"${{ omitted.ci-policy.result }}" != "success"',
+            ),
+        ),
+        (
+            "gate must pass workflow_dispatch iteration runs under gate-iteration",
+            replace_once(workflow, 'if [[ "$policy_path" == "iteration" ]]; then', 'if [[ "$policy_path" == "iter" ]]; then'),
+        ),
+        (
+            "gate must compute workflow_dispatch iteration run context",
+            replace_once(
+                workflow,
+                '          iteration_run_context="${{ github.event_name == \'workflow_dispatch\' && github.event.inputs.full_ci != \'true\' && \'true\' || \'false\' }}"\n',
+                "",
+            ),
+        ),
+        (
+            "gate must fail iteration policy outside workflow_dispatch iteration context",
+            replace_once(workflow, '"$iteration_run_context" != "true"', '"$iteration_run_context" == "true"'),
+        ),
+        (
+            "gate must require nextest-fingerprint skipped on iteration",
+            replace_once(
+                workflow,
+                """            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint unexpectedly ran during iteration"
+              exit 1
+            fi
+""",
+                "",
+            ),
+        ),
+        (
+            "gate must require test-archive skipped on iteration",
+            replace_once(
+                workflow,
+                """            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
+              echo "test-archive unexpectedly ran during iteration"
+              exit 1
+            fi
+""",
+                "",
+            ),
+        ),
+        (
+            "gate must require nextest-fingerprint skipped on tag reuse",
+            replace_once(
+                workflow,
+                """            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint unexpectedly ran during tag reuse"
+              exit 1
+            fi
+""",
+                "",
+            ),
+        ),
+        (
+            "gate must require test-archive skipped on tag reuse",
+            replace_once(
+                workflow,
+                """            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
+              echo "test-archive unexpectedly ran during tag reuse"
+              exit 1
+            fi
+""",
+                "",
             ),
         ),
         (
@@ -2905,7 +2997,7 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_gate_message = replace_once(
         workflow,
-        "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready",
+        "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for this branch or mark ready",
         "backtester proof deferred",
     )
     missing_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_gate_message})
@@ -2916,6 +3008,46 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
     static_gate_errors = verifier.verify_repo_automation_texts({workflow_name: static_gate_name})
     if not any("backtester draft deferral gate must publish backtester-gate-deferred" in error for error in static_gate_errors):
         raise AssertionError(f"backtester-ci workflow must reject static deferred gate names, got: {static_gate_errors}")
+
+    missing_iteration_context = replace_once(
+        workflow,
+        verifier.BACKTESTER_ITERATION_RUN_CONTEXT_ASSIGNMENT,
+        'iteration_run_context="false"',
+    )
+    missing_iteration_context_errors = verifier.verify_repo_automation_texts({workflow_name: missing_iteration_context})
+    if not any(
+        "backtester draft deferral gate must compute workflow_dispatch iteration context" in error
+        for error in missing_iteration_context_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci workflow must reject missing iteration context computation, got: {missing_iteration_context_errors}"
+        )
+
+    missing_iteration_branch = replace_once(
+        workflow,
+        'if [[ "$policy_path" == "iteration" ]]; then',
+        'if [[ "$policy_path" == "iter" ]]; then',
+    )
+    missing_iteration_branch_errors = verifier.verify_repo_automation_texts({workflow_name: missing_iteration_branch})
+    if not any("backtester draft deferral gate must pass workflow_dispatch iteration runs" in error for error in missing_iteration_branch_errors):
+        raise AssertionError(
+            f"backtester-ci workflow must reject missing iteration branch, got: {missing_iteration_branch_errors}"
+        )
+
+    backtester_iteration_context_guard = """            if [[ "$iteration_run_context" != "true" ]]; then
+              echo "backtester iteration CI policy outside workflow_dispatch iteration context"
+              exit 1
+            fi
+"""
+    missing_iteration_guard = replace_once(workflow, backtester_iteration_context_guard, "")
+    missing_iteration_guard_errors = verifier.verify_repo_automation_texts({workflow_name: missing_iteration_guard})
+    if not any(
+        "backtester draft deferral gate must fail iteration policy outside workflow_dispatch iteration context" in error
+        for error in missing_iteration_guard_errors
+    ):
+        raise AssertionError(
+            f"backtester-ci workflow must reject missing iteration context guard, got: {missing_iteration_guard_errors}"
+        )
 
     missing_noop_context = replace_once(
         workflow,

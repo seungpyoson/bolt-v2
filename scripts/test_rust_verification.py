@@ -635,6 +635,49 @@ def assert_verify_remote_draft_dispatch_ignores_existing_and_concurrent_iteratio
             raise AssertionError(harness.dispatches)
 
 
+def assert_verify_remote_draft_dispatch_ignores_preexisting_full_run() -> None:
+    owner = load_owner_module()
+    preexisting_full = workflow_run(
+        206,
+        status="completed",
+        conclusion="success",
+        created_at="2026-06-13T00:02:00Z",
+    )
+    fresh_pending = workflow_run(
+        207,
+        status="in_progress",
+        conclusion=None,
+        created_at="2026-06-13T00:01:00Z",
+    )
+    fresh_success = workflow_run(
+        207,
+        status="completed",
+        conclusion="success",
+        created_at="2026-06-13T00:01:00Z",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[
+                [preexisting_full],
+                [fresh_pending, preexisting_full],
+                [fresh_success, preexisting_full],
+            ],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if len(harness.dispatches) != 1:
+            raise AssertionError(harness.dispatches)
+        if harness.sleep_calls < 1:
+            raise AssertionError("expected verify-remote to ignore the pre-existing full run and wait")
+
+
 def assert_verify_remote_rejects_full_marker_without_gate_success() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1070,6 +1113,7 @@ def main() -> int:
     assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped()
     assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock()
     assert_verify_remote_draft_dispatch_ignores_existing_and_concurrent_iteration_runs()
+    assert_verify_remote_draft_dispatch_ignores_preexisting_full_run()
     assert_verify_remote_rejects_full_marker_without_gate_success()
     assert_verify_remote_fails_when_branch_advances_after_dispatch()
     assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate()

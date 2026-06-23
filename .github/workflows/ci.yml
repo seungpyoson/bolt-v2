@@ -786,7 +786,7 @@ jobs:
           && 'gate-iteration'
           || 'gate' }}
     # gate-iteration is intentionally non-required; only gate is merge proof.
-    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
+    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
@@ -826,6 +826,14 @@ jobs:
             fi
             if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
               echo "source-fence unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
+              echo "test-archive unexpectedly ran during tag reuse"
               exit 1
             fi
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then
@@ -872,6 +880,14 @@ jobs:
             fi
             if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
               echo "source-fence unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
+              echo "test-archive unexpectedly ran during iteration"
               exit 1
             fi
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then

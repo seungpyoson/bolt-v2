@@ -393,7 +393,7 @@ jobs:
               echo "backtester deferred CI policy outside deferred draft PR context"
               exit 1
             fi
-            echo "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
+            echo "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for this branch or mark ready"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then

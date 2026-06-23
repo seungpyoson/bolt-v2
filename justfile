@@ -312,6 +312,9 @@ ci-logs: check-workspace require-rust-verification-owner
 ci-runner-minutes *args:
     python3 scripts/ubicloud_runner_minutes.py {{args}}
 
+ci-storage-audit *args: check-workspace
+    python3 scripts/ci_storage_audit.py {{args}}
+
 source-fence-static: check-workspace require-rust-verification-owner
     python3 scripts/local_verification_gate.py source-fence-static -- just source-fence-static-inner
 

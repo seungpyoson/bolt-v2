@@ -1,7 +1,7 @@
 # #927 — Cheap-Lane Shared-State Guard: Complete, Drift-Proof Discovery
 
-**Status:** Implementation branch active. Base implementation committed through `a19af29c`; final
-root-review fixes are applied in this worktree before lock. Anchored to `main` lineage from `a59ae0776`.
+**Status:** Implementation branch active; root-review fixes are part of this branch before lock. Anchored to
+`main` lineage from `a59ae0776`.
 **Issue:** #927 (follow-up to #924, commit `cc5e6c4f0`). **Epic:** #333.
 **Provenance:** Synthesized across **seven** external adversarial review rounds (GLM / GPT / Kimi / Claude),
 every load-bearing claim re-verified at source by the author. Revision **A⁗** (three-layer model;
@@ -92,7 +92,7 @@ clean shim would make the guard unusable (it false-fails `test_run_rust_probe.py
 | Layer | Behavior | Forms (all verified in the closure) |
 |-------|----------|-------------------------------------|
 | **1 — Fence** | Statically resolve the target, **add it to the scan set**, recurse to a **fixed point** | `python3 scripts/X.py`; `-m scripts.X`; a **Python interpreter** (`python3`/`python`/`sys.executable`) in argv[0] whose script operand (argv[1]) resolves — incl. **non-`.py`** Python (`str(SHIM)` → `scripts/cargo-shim`); **in-process explicit loads** (`spec_from_file_location`/`SourceFileLoader` with a resolvable path; `importlib.import_module`/`runpy.run_module` with a constant name **whose `scripts/<name>.py` exists**); `-- just <inner>` routing; **seed = justfile cheap-gate closure** (via the `just --dump` assignment+dependency evaluator, Change 1) **∪ cheap-labeled scripts resolved by Python-semantics** |
-| **2 — Tripwire** | **Hard-fail** the test (no silent skip) | (a) a recognized **Python** execution edge (`python3`/`python`/`sys.executable`/`-m`/a recognized loader API) whose target is **non-constant / unresolvable** in a directly-resolved expression, or whose omitted wrapper argument has an unresolvable default; (b) `eval(` / `exec(`, or a call to the dynamic code-exec family (`os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`), in a scanned script; (c) an **unresolved `{{just-variable}}`** in a command position **within the cheap-gate closure** |
+| **2 — Tripwire** | **Hard-fail** the test (no silent skip) | (a) a recognized **Python** execution edge (`python3`/`python`/`sys.executable`/`-m`/a recognized loader API) whose target is **non-constant / unresolvable** in a directly-resolved expression, whose explicit wrapper target argument is undefined / conditional / multiply-bound / otherwise unresolvable, or whose omitted wrapper argument has an unresolvable default; (b) `eval(` / `exec(`, or a call to the dynamic code-exec family (`os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`), in a scanned script; (c) an **unresolved `{{just-variable}}`** in a command position **within the cheap-gate closure** |
 | **3 — Boundary** | **Documented** limit; not a Layer-2 trigger | `python3 -c <inline>` with a **non-constant** code string (no file to inspect); regular `import` / `from X import Y`, and `import_module`/`run_module` of a **constant name with no `scripts/<name>.py`** (a stdlib/installed package — module resolution, impractical without `sys.path` simulation); a **non-Python** execution target — a bare PATH command (`git`, `grep`, `cargo`, `printf`), a non-Python interpreter (`bash`/`sh`) + operand, or a repo-local non-Python file (`.sh` shim); an **opaque spawn/load** whose argv/path is parameter-bound and not resolved to a repo Python target (e.g. the coordinator/owner **dynamic dispatch** — `subprocess.run(command)` where `command` is a passed-in verifier list, whose callees are independently discovered via the just-closure + labels; temp-fixture loader wrappers that pass a dynamic path); `__import__` and functional `importlib` variants outside the loader allowlist. **Heuristic tripwire for a constant-resolvable `-c` string:** after concatenating adjacent string literals (incl. parenthesized multiline forms), if the inline code names literal `scripts/…` paths, those must be scan-set members, else fail |
 
 **Why in-process loads are L1 fence edges (resolve+add+recurse), not a membership hard-fail:** nine modules
@@ -149,9 +149,10 @@ mapped to `scripts/<name>.py` **only when that file exists**. **Zero, multiple, 
 Layer-2 tripwire (fail closed) when the `Name` is in a directly-resolved target expression.**
 A loader/spawn invoked through a **trivial wrapper** (a local helper whose path/name **parameter** flows into
 the target) resolves one hop from either a constant call-site arg **or a constant default parameter value**
-when, and only when, the call omits that arg. An explicit unresolved/conditionally-bound wrapper argument
-shadows the default and remains the Layer-3 opaque parameter boundary; it must never be treated as a fallback
-to the default. This **explicitly includes sibling-path construction from the parameter** —
+when, and only when, the call omits that arg. An explicit wrapper argument shadows the default; if that
+argument is undefined, conditional, multiply-bound, or otherwise unresolved, it is Layer 2, not a fallback
+to the default and not an opaque boundary. Only a wrapper argument proven to derive from a function parameter
+or temp-fixture source is Layer 3. This **explicitly includes sibling-path construction from the parameter** —
 `DIR / f"{name}.py"`, `SCRIPTS_DIR / f"{name}.py"`, `Path(__file__).with_name(f"{name}.py")` — where the
 parameter is the **sole** non-literal (anchors: the guard's own `_load` at `test_lane_governor.py:20-22`
 and `test_local_verification_gate.py:18-19`, called with constant names `_load("rust_verification")` /
@@ -159,8 +160,8 @@ and `test_local_verification_gate.py:18-19`, called with constant names `_load("
 `test_find_same_sha_main_evidence.py:25`, `test_verify_ci_workflow_hygiene.py:167-194`).
 The trivial-wrapper rule **supersedes** the general f-string exclusion when the sole non-literal is the resolved
 call-site arg/default value. Anything outside this grammar either hard-fails when it is a directly-resolved
-positively-Python expression, or is recorded as the Layer-3 opaque parameter boundary when the target is a
-dynamic parameter/temp fixture path — never a silent miss.
+positively-Python expression. The direct and wrapper paths must classify the same unresolved target the same
+way; only proven dynamic parameter/temp-fixture provenance is recorded as the Layer-3 opaque boundary.
 `lane_governor.py` is **untouched** — no runtime concurrency change.
 
 **Change 2 — `just --dump` fail-closed.**
@@ -253,12 +254,12 @@ as a single module constant.
    documented boundary (no check).
 5. **Layer-2 tripwires proven:** a **positively-Python** subprocess/`-m`/loader target that is
    non-constant/unresolvable in a directly-resolved expression; an unresolved wrapper default used by an
-   omitted argument; a `Name` with zero/multiple/conditional bindings; `eval(`/`exec(` or a dynamic
+   omitted argument; an explicit wrapper argument whose target is undefined / conditional / multiply-bound /
+   otherwise unresolvable; a `Name` with zero/multiple/conditional bindings; `eval(`/`exec(` or a dynamic
    code-exec-family call (`os.system`, …) in a scanned script; and an unresolved `{{just-variable}}` in a
    cheap-closure command position — each hard-fails. **Do not fail** (Layer-3 boundaries): a bare PATH command
    (`git`, `grep`, `cargo`, `printf`); a `bash`/`sh` + repo-local operand (anchor `test_run_rust_probe.py:75`);
    an opaque/coordinator dynamic dispatch (`local_verification_gate.py:51`); parameter-bound temp-fixture loader wrappers;
-   an explicit unresolved wrapper argument that shadows, but does not fall back to, a constant default;
    a `python3 -c` inside a
    `$(…)`/pipeline naming no `scripts/…` path (`justfile:481-483`).
 6. **`just --dump` fail-closed proven** via a **synthetic JSON fixture** (no real-`justfile` mutation): a
@@ -312,8 +313,8 @@ as a single module constant.
 - **R2 — target-path resolution depth.** Change 1's grammar resolves literal / `str()`/`Path()` /
   nested-then-module `Name` / `BinOp` / `.joinpath` / `.parent` / `.parents[N]` chains, constant/default
   wrapper args, and the f-string sibling-path trivial wrapper. Direct unresolved Python-shaped expressions
-  drop to the Layer-2 tripwire; an explicit unresolved wrapper arg never falls back to a default and remains
-  the documented Layer-3 opaque boundary.
+  and explicit unresolved wrapper arguments drop to the Layer-2 tripwire; proven parameter/temp-fixture
+  wrapper args remain the documented Layer-3 opaque boundary.
 - **R3 — precise-origin false positives.** Mitigated by F6 (owner-only `repo_path`) + proof-gate (c)
   regression across the whole scan set; the hard-decision fallback covers the residual.
 - **R4 — in-process-load resolution depth.** Loads are L1 fence edges (resolve→add→recurse); a direct load whose

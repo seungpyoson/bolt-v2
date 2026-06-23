@@ -909,6 +909,10 @@ def _closure_python_scripts(dump: dict, recipes: set[str]) -> set[Path]:
 
 
 def _normalize_shell_python_line(line: str) -> str:
+    return " ".join(shlex.quote(token) for token in _normalized_shell_tokens(line))
+
+
+def _normalized_shell_tokens(line: str) -> list[str]:
     stripped = line.strip()
     if stripped.startswith("if ! "):
         stripped = stripped[5:].strip()
@@ -918,7 +922,7 @@ def _normalize_shell_python_line(line: str) -> str:
     while tokens and _is_shell_assignment(tokens[0]):
         tokens = tokens[1:]
     tokens = _env_wrapped_command_tokens(tokens)
-    return " ".join(shlex.quote(token) for token in tokens)
+    return tokens
 
 
 def _python_script_from_tokens(tokens: list[str], scan_set: set[Path]) -> Path | None:
@@ -1043,15 +1047,23 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.pty_modules = {"pty"}
         self.sys_modules = {"sys"}
         self.pathlib_modules = {"pathlib"}
+        self.tempfile_modules = {"tempfile"}
         self.path_names = {"Path"}
+        self.temp_path_names = {"TemporaryDirectory", "NamedTemporaryFile", "mkdtemp", "mkstemp", "gettempdir"}
         self.spec_loader_names = {"spec_from_file_location"}
         self.source_loader_names = {"SourceFileLoader"}
         self.importlib_modules = {"importlib"}
         self.runpy_modules = {"runpy"}
 
     def resolve(self) -> tuple[set[Path], list[str]]:
+        self._collect_function_defs(self.tree)
         self.visit(self.tree)
         return self.targets, self.failures
+
+    def _collect_function_defs(self, tree: ast.AST) -> None:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.functions[node.name] = node
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -1066,11 +1078,17 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                 self.sys_modules.add(name)
             elif alias.name == "pathlib":
                 self.pathlib_modules.add(name)
+            elif alias.name == "tempfile":
+                self.tempfile_modules.add(name)
             elif alias.name == "importlib":
                 self.importlib_modules.add(name)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module == "pathlib":
+        if node.module == "tempfile":
+            for alias in node.names:
+                if alias.name in {"TemporaryDirectory", "NamedTemporaryFile", "mkdtemp", "mkstemp", "gettempdir"}:
+                    self.temp_path_names.add(alias.asname or alias.name)
+        elif node.module == "pathlib":
             for alias in node.names:
                 if alias.name == "Path":
                     self.path_names.add(alias.asname or alias.name)
@@ -1108,6 +1126,23 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             self.visit(statement)
         for statement in node.orelse:
             self.visit(statement)
+
+    def visit_With(self, node: ast.With) -> None:
+        original_scope = dict(self.scopes[-1])
+        try:
+            for item in node.items:
+                value = _PARAMETER if self._is_temp_path_source(item.context_expr) else _UNRESOLVED
+                if item.optional_vars is not None and value is _PARAMETER:
+                    for name in self._target_names(item.optional_vars):
+                        self.scopes[-1][name] = value
+                self.visit(item.context_expr)
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.scopes[-1] = original_scope
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self.visit_With(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         value = self._resolve_value(node.value)
@@ -1165,16 +1200,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         explicit_names: set[str] = set()
         for arg_def, arg_value in zip(parameters, node.args):
             value = self._resolve_value(arg_value)
-            if value is _UNRESOLVED:
-                value = _PARAMETER
             bound[arg_def.arg] = value
             explicit_names.add(arg_def.arg)
             bound_any = True
         for keyword in node.keywords:
             if keyword.arg is not None and keyword.arg in parameter_names:
                 value = self._resolve_value(keyword.value)
-                if value is _UNRESOLVED:
-                    value = _PARAMETER
                 bound[keyword.arg] = value
                 explicit_names.add(keyword.arg)
                 bound_any = True
@@ -1208,7 +1239,15 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                 defaults[arg.arg] = default
         return defaults
 
-    def _function_may_wrap_execution(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    def _function_may_wrap_execution(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        seen: set[str] | None = None,
+    ) -> bool:
+        seen = set() if seen is None else set(seen)
+        if node.name in seen:
+            return False
+        seen.add(node.name)
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
                 continue
@@ -1219,6 +1258,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                 or self._is_os_exec_spawn_call(call_name)
             ):
                 return True
+            if call_name in self.functions and self._function_may_wrap_execution(self.functions[call_name], seen):
+                return True
         return False
 
     def _handle_subprocess_call(self, node: ast.Call) -> None:
@@ -1228,15 +1269,23 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         command = self._resolve_value(command_node)
         executable = self._subprocess_executable(node)
         shell = self._subprocess_shell_enabled(node)
+        if executable is _UNRESOLVED:
+            if self._command_may_require_python_executable(command):
+                self._fail(node, "unresolved Python subprocess executable")
+            return
+        if executable is _PARAMETER and self._command_may_require_python_executable(command):
+            return
         if isinstance(command, str):
             if shell:
                 try:
-                    tokens = _shlex_tokens(command)
+                    tokens = _normalized_shell_tokens(command)
                 except AssertionError as exc:
                     self._fail(node, str(exc))
                     return
                 if tokens and _is_python_interpreter_token(tokens[0]):
                     self._handle_python_tokens(node, tokens)
+                elif _classify_command(command) == "dynamic-shell":
+                    self._fail(node, f"unsupported dynamic shell=True command: {command}")
                 return
             if executable is not None and _is_python_interpreter_token(executable):
                 self._handle_python_tokens(node, [executable, command])
@@ -1274,9 +1323,32 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
     def _subprocess_executable(self, node: ast.Call) -> object | None:
         for keyword in node.keywords:
             if keyword.arg == "executable":
-                value = self._resolve_value(keyword.value)
-                return None if value is _UNRESOLVED or value is _PARAMETER else value
+                return self._resolve_value(keyword.value)
         return None
+
+    def _command_may_require_python_executable(self, command: object) -> bool:
+        if isinstance(command, str):
+            try:
+                tokens = _normalized_shell_tokens(command)
+            except AssertionError:
+                tokens = [command]
+            return bool(tokens) and (
+                _is_python_interpreter_token(tokens[0])
+                or self._value_is_script_shaped(tokens[0])
+            )
+        if isinstance(command, list) and command:
+            first = command[0]
+            return _is_python_interpreter_token(first) or self._value_is_script_shaped(first)
+        return False
+
+    def _value_is_script_shaped(self, value: object) -> bool:
+        if value is _UNRESOLVED or value is _PARAMETER:
+            return False
+        if isinstance(value, Path):
+            return value.exists() and _is_python_script_path(value)
+        if not isinstance(value, str):
+            return False
+        return value.startswith("scripts/") or value.endswith(".py")
 
     def _handle_python_tokens(self, node: ast.AST, tokens: list[object]) -> None:
         operand_index = _python_operand_index(tokens)
@@ -1453,6 +1525,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
 
     def _resolve_call_value(self, node: ast.Call) -> object:
         call_name = self._call_name(node.func)
+        if self._is_temp_path_source(node):
+            return _PARAMETER
         if call_name in self.path_names or call_name.endswith(".Path"):
             if not node.args:
                 return Path()
@@ -1514,6 +1588,18 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                     if isinstance(value, str):
                         return owner.with_stem(value)
         return _UNRESOLVED
+
+    def _is_temp_path_source(self, node: ast.AST) -> bool:
+        if not isinstance(node, ast.Call):
+            return False
+        call_name = self._call_name(node.func)
+        if call_name in self.temp_path_names:
+            return True
+        return any(
+            call_name == f"{module}.{function}"
+            for module in self.tempfile_modules
+            for function in {"TemporaryDirectory", "NamedTemporaryFile", "mkdtemp", "mkstemp", "gettempdir"}
+        )
 
     def _path_from_value(self, value: object) -> Path | None:
         if isinstance(value, Path):
@@ -1671,6 +1757,10 @@ def _live_discovered_unlabeled(scripts: set[Path]) -> set[str]:
     }
 
 
+def _manifest_floor_missing(scripts: set[Path], manifest: set[str]) -> set[str]:
+    return manifest - _live_discovered_unlabeled(scripts)
+
+
 def _synthetic_just_dump(*, labels: list[str], recipes: dict[str, list[list[object]]]) -> dict:
     del labels
     return {
@@ -1733,7 +1823,8 @@ def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
     scripts = _discover_cheap_lane_scripts()
     rels = {path.relative_to(REPO_ROOT).as_posix() for path in scripts}
     manifest = _cheap_lane_discovered_unlabeled_manifest()
-    assert manifest <= rels, f"live discovery dropped committed manifest entries: {sorted(manifest - rels)}"
+    missing_manifest = _manifest_floor_missing(scripts, manifest)
+    assert not missing_manifest, f"live discovery dropped committed manifest entries: {sorted(missing_manifest)}"
     required = {
         "scripts/local_verification_gate.py",
         "scripts/rust_verification.py",
@@ -1752,6 +1843,12 @@ def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
         "scripts/require_resolved_review_threads.py",
     }
     assert required <= rels, f"guard did not discover required fixed-point edges: {sorted(required - rels)}"
+
+
+def test_manifest_floor_does_not_accept_labeled_seed_only() -> None:
+    labeled_only = {SCRIPTS_DIR / "test_lane_governor.py"}
+    manifest = {"scripts/test_lane_governor.py"}
+    assert _manifest_floor_missing(labeled_only, manifest) == manifest
 
 
 def test_direct_cheap_labels_resolve_python_by_semantics() -> None:
@@ -1851,11 +1948,59 @@ run(str(SCRIPTS / "clean_merged_artifacts.py"))
     } <= rels
 
 
+def test_local_wrappers_resolve_forward_and_nested_calls() -> None:
+    source = """
+import subprocess
+
+forward("scripts/test_nextest_fingerprint.py")
+
+def forward(script):
+    return subprocess.run(["python3", script])
+
+def inner(script):
+    return subprocess.run(["python3", script])
+
+def outer(script):
+    return inner(script)
+
+outer("scripts/clean_merged_artifacts.py")
+"""
+    resolver = _CodeExecutionEdgeResolver(
+        SCRIPTS_DIR / "synthetic_guard_fixture.py",
+        ast.parse(source),
+        scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+    )
+    targets, failures = resolver.resolve()
+    assert not failures
+    rels = {target.relative_to(SCRIPTS_DIR).as_posix() for target in targets}
+    assert {"test_nextest_fingerprint.py", "clean_merged_artifacts.py"} <= rels
+
+
+def test_shell_true_python_wrappers_resolve() -> None:
+    fixtures = [
+        "import subprocess\nsubprocess.run('env PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py', shell=True)\n",
+        "import subprocess\nsubprocess.run('PYTHONPATH=/tmp python3 scripts/clean_merged_artifacts.py', shell=True)\n",
+    ]
+    expected = {"test_nextest_fingerprint.py", "clean_merged_artifacts.py"}
+    rels: set[str] = set()
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures
+        rels.update(target.relative_to(SCRIPTS_DIR).as_posix() for target in targets)
+    assert expected <= rels
+
+
 def test_code_execution_tripwires_fail_closed() -> None:
     fixtures = [
         "import subprocess\nsubprocess.run(['python3', script])\n",
         "import subprocess\nscript = 'a.py'\nscript = 'b.py'\nsubprocess.run(['python3', script])\n",
         "import subprocess\nargs = ['scripts/test_nextest_fingerprint.py']\nsubprocess.run(['python3'] + args)\n",
+        "import subprocess\nsubprocess.run(['scripts/test_nextest_fingerprint.py'], executable=PYTHON)\n",
         "import subprocess\nsubprocess.run('python3 scripts/missing_guard_fixture.py', shell=True)\n",
         "import os\nos.system('python3 scripts/x.py')\n",
         "import os\nos.execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
@@ -1883,8 +2028,9 @@ def test_code_execution_tripwires_fail_closed() -> None:
         assert failures, f"expected fail-closed execution edge for:\n{source}"
 
 
-def test_parameter_bound_wrapper_call_does_not_fall_back_to_default() -> None:
-    source = """
+def test_unresolved_wrapper_call_fails_without_falling_back_to_default() -> None:
+    fixtures = [
+        """
 from pathlib import Path
 import importlib.util
 
@@ -1894,15 +2040,85 @@ def load(path=SCRIPT):
     return importlib.util.spec_from_file_location("x", path)
 
 load(target)
-"""
-    resolver = _CodeExecutionEdgeResolver(
-        SCRIPTS_DIR / "synthetic_guard_fixture.py",
-        ast.parse(source),
-        scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
-    )
-    targets, failures = resolver.resolve()
-    assert not failures
-    assert SCRIPTS_DIR / "nextest_fingerprint.py" not in targets
+""",
+        """
+from pathlib import Path
+import importlib.util
+
+SCRIPT = Path(__file__).resolve().parent / "nextest_fingerprint.py"
+
+if condition:
+    target = SCRIPT
+
+def load(path=SCRIPT):
+    return importlib.util.spec_from_file_location("x", path)
+
+load(target)
+""",
+        """
+from pathlib import Path
+import importlib.util
+
+SCRIPT = Path(__file__).resolve().parent / "nextest_fingerprint.py"
+target = SCRIPT
+target = SCRIPT
+
+def load(path=SCRIPT):
+    return importlib.util.spec_from_file_location("x", path)
+
+load(target)
+""",
+    ]
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert failures, f"expected unresolved wrapper target to fail:\n{source}"
+        assert SCRIPTS_DIR / "nextest_fingerprint.py" not in targets
+
+
+def test_temp_bound_wrapper_call_is_opaque_without_falling_back_to_default() -> None:
+    fixtures = [
+        """
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import importlib.util
+
+SCRIPT = Path(__file__).resolve().parent / "nextest_fingerprint.py"
+
+def load(path=SCRIPT):
+    return importlib.util.spec_from_file_location("x", path)
+
+with TemporaryDirectory() as tmp:
+    target = Path(tmp) / "scripts" / "verify_ci_workflow_hygiene.py"
+    load(target)
+""",
+        """
+from pathlib import Path
+import importlib.util
+import tempfile
+
+SCRIPT = Path(__file__).resolve().parent / "nextest_fingerprint.py"
+
+def load(path=SCRIPT):
+    return importlib.util.spec_from_file_location("x", path)
+
+target = Path(tempfile.mkdtemp()) / "scripts" / "verify_ci_workflow_hygiene.py"
+load(target)
+""",
+    ]
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures, f"expected temp-derived wrapper target to remain opaque:\n{source}"
+        assert SCRIPTS_DIR / "nextest_fingerprint.py" not in targets
 
 
 def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
@@ -2630,12 +2846,16 @@ def main() -> int:
         test_repo_policy_file_declares_lane_policy,
         test_cheap_lanes_do_not_write_repo_root_shared_state,
         test_cheap_lane_discovery_manifest_floor_and_required_edges,
+        test_manifest_floor_does_not_accept_labeled_seed_only,
         test_direct_cheap_labels_resolve_python_by_semantics,
         test_repo_origin_detection_is_expression_based,
         test_repo_write_analyzer_catches_extended_mutators,
         test_code_execution_edges_are_static_fixed_point,
+        test_local_wrappers_resolve_forward_and_nested_calls,
+        test_shell_true_python_wrappers_resolve,
         test_code_execution_tripwires_fail_closed,
-        test_parameter_bound_wrapper_call_does_not_fall_back_to_default,
+        test_unresolved_wrapper_call_fails_without_falling_back_to_default,
+        test_temp_bound_wrapper_call_is_opaque_without_falling_back_to_default,
         test_just_dump_gate_derivation_and_fail_closed_fixtures,
         test_shell_expanded_python_commands_fail_closed,
         test_shell_wrappers_and_pipelines_discover_python_commands,

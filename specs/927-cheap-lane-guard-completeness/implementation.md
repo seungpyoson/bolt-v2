@@ -68,8 +68,9 @@ the only subprocess is one `just --dump`.
 ### 1f. `_classify_command(line) -> Literal['none','py-exec','boundary','dynamic-shell']`
 - Over every command position in the closure's command lines (1c): a recognized Python interpreter
   (`python3`/`python`/`sys.executable`) + script operand → `py-exec` (feeds 1g); a bare PATH command /
-  non-Python interpreter (`bash`,`sh`) / non-Python operand → `boundary`; **an unresolved `{{var}}`, an
-  unrecognized interpreter wrapper (`env python3`, `${PYTHON}`, an alias), or a shell-expanded command
+  non-Python interpreter (`bash`,`sh`) / non-Python operand → `boundary`; strip shell/list `env` wrappers
+  and leading assignments through one shared normalizer before interpreter detection; **an unresolved `{{var}}`,
+  an unsupported interpreter wrapper (`${PYTHON}`, an alias), or a shell-expanded command
   position → `dynamic-shell` → hard-fail** (Change 2 completeness, L2(c)). (AC5, AC6.)
 
 ### 1g. `class _CodeExecutionEdgeResolver(ast.NodeVisitor)` — the L1/L2 edge resolver (NEW)
@@ -131,6 +132,10 @@ Extend `_RepoSharedStateWriteAnalyzer` **only** — additive, no behavior remove
   is caught. **Do not** treat the bare name `repo` as an origin (synthetic tmp across 100+ scripts → false cascade).
 - Existing origin propagation through `.parent`/path methods (`:264-296`) already chains; **verify by test
   (§4 obligation b), do not assume.**
+- Model filesystem mutations with explicit target-position tables, not ad hoc branches: pathlib receiver/arg
+  positions, os function arg indices, shutil destination semantics, and write-capable `open`/`os.open` mode
+  or flag checks. Tests must exercise destination-only cases such as `Path.replace(temp, REPO_ROOT / "dst")`
+  and alias imports such as `from os import open as os_open, O_CREAT`.
 
 ---
 

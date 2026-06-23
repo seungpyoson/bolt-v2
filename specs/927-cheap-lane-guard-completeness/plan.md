@@ -91,7 +91,7 @@ clean shim would make the guard unusable (it false-fails `test_run_rust_probe.py
 
 | Layer | Behavior | Forms (all verified in the closure) |
 |-------|----------|-------------------------------------|
-| **1 — Fence** | Statically resolve the target, **add it to the scan set**, recurse to a **fixed point** | `python3 scripts/X.py`; `-m scripts.X`; a **Python interpreter** (`python3`/`python`/`sys.executable`) in argv[0] whose script operand (argv[1]) resolves — incl. **non-`.py`** Python (`str(SHIM)` → `scripts/cargo-shim`); **in-process explicit loads** (`spec_from_file_location`/`SourceFileLoader` with a resolvable path; `importlib.import_module`/`runpy.run_module` with a constant name **whose `scripts/<name>.py` exists**); `-- just <inner>` routing; **seed = justfile cheap-gate closure** (via the `just --dump` assignment+dependency evaluator, Change 1) **∪ cheap-labeled scripts resolved by Python-semantics** |
+| **1 — Fence** | Statically resolve the target, **add it to the scan set**, recurse to a **fixed point** | `python3 scripts/X.py`; `-m scripts.X`; a **Python interpreter** (`python3`/`python`/`sys.executable`) in argv[0] whose script operand (argv[1]) resolves — incl. **non-`.py`** Python (`str(SHIM)` → `scripts/cargo-shim`); a subprocess argv[0] that itself resolves to a repo-local Python process image (`scripts/X.py`, `scripts/cargo-shim`); **in-process explicit loads** (`spec_from_file_location`/`SourceFileLoader` with a resolvable path; `importlib.import_module`/`runpy.run_module` with a constant name **whose `scripts/<name>.py` exists**); `-- just <inner>` routing; **seed = justfile cheap-gate closure** (via the `just --dump` assignment+dependency evaluator, Change 1) **∪ cheap-labeled scripts resolved by Python-semantics** |
 | **2 — Tripwire** | **Hard-fail** the test (no silent skip) | (a) a recognized **Python** execution edge (`python3`/`python`/`sys.executable`/`-m`/a recognized loader API) whose target is **non-constant / unresolvable** in a directly-resolved expression, whose explicit wrapper target argument is undefined / conditional / multiply-bound / otherwise unresolvable, or whose omitted wrapper argument has an unresolvable default; (b) `eval(` / `exec(`, or a call to the dynamic code-exec family (`os.system`, `os.popen`, `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`), in a scanned script; (c) an `os.exec*` / `os.spawn*` / `os.posix_spawn*` program image that resolves to a Python interpreter or Python script, or is unresolved while its replacement argv is Python-shaped; (d) an **unresolved `{{just-variable}}`** in a command position **within the cheap-gate closure** |
 | **3 — Boundary** | **Documented** limit; not a Layer-2 trigger | `python3 -c <inline>` with a **non-constant** code string (no file to inspect); regular `import` / `from X import Y`, and `import_module`/`run_module` of a **constant name with no `scripts/<name>.py`** (a stdlib/installed package — module resolution, impractical without `sys.path` simulation); a **non-Python** execution target — a bare PATH command (`git`, `grep`, `cargo`, `printf`), a non-Python interpreter (`bash`/`sh`) + operand, a repo-local non-Python file (`.sh` shim), a resolved non-Python `os.exec*` / `os.spawn*` / `os.posix_spawn*` program image, or an unresolved `os.exec*` / `os.spawn*` / `os.posix_spawn*` program image whose replacement argv is not Python-shaped; an **opaque spawn/load** whose argv/path is parameter-bound and not resolved to a repo Python target (e.g. the coordinator/owner **dynamic dispatch** — `subprocess.run(command)` where `command` is a passed-in verifier list, whose callees are independently discovered via the just-closure + labels; temp-fixture loader wrappers that pass a dynamic path); `__import__` and functional `importlib` variants outside the loader allowlist. **Heuristic tripwire for a constant-resolvable `-c` string:** after concatenating adjacent string literals (incl. parenthesized multiline forms), if the inline code names literal `scripts/…` paths, those must be scan-set members, else fail |
 
@@ -121,7 +121,7 @@ structured dump: stitch each recipe `body` (string fragments + `['variable', NAM
 be nested arrays — flatten recursively**) into a command line, and evaluate `assignments` recursively —
 `['concatenate', …]`, `['variable', NAME]`, `['call', 'justfile_directory']`, literals. This is **required**
 so `{{rust_verification_owner}}` resolves to `scripts/rust_verification.py` (F9) — otherwise the owner is
-absent from the closure. The evaluator must descend into **command-substitution `$(…)` and pipelines**
+absent from the closure. The evaluator must descend into **command-substitution `$(…)`, process substitution `<(…)` / `>(…)`, and pipelines**
 (`justfile:481-483`) and recognize the **bash-negated** form `if ! python3 scripts/X.py` (`justfile:499`, F4).
 Walk `dependencies` and `-- just <inner>` routing to a fixed point — **expand all L1 edges first**, then any
 residual checks. **All `just`-expression evaluation and command classification is scoped to the cheap-gate
@@ -133,7 +133,9 @@ parser fixtures (F8′) are excluded.
 
 **Interpreter shape.** For a subprocess argv, classify by argv[0]: a **Python interpreter**
 (`python3`/`python`/`sys.executable`) → resolve argv[1] as the Python script target (L1 if resolvable, else
-L2), including `executable="python3"` and `shell=True` strings after shell env/assignment prefix normalization;
+L2); a repo-local Python process image in argv[0] (`scripts/X.py`, `scripts/cargo-shim`) → L1 directly;
+including `executable="python3"` and `shell=True` strings after shared shell/list `env` and assignment prefix
+normalization;
 a **non-Python** interpreter (`bash`/`sh`) or any bare PATH command → Layer-3 boundary (the operand is
 not analyzed — anchor `test_run_rust_probe.py:75`, `["bash", str(SCRIPT_PATH)]` → `.github/scripts/run-rust-probe.sh`,
 cheap-labeled and clean). An **opaque** argv that is a passed-in variable (not positively Python) → Layer-3
@@ -191,7 +193,7 @@ is the floor source of truth. (A "superset of the old discovery" oracle is rejec
 the new set, so it can never shrink below them.) A coarse closure-size minimum is **advisory only** (warn,
 never hard-fail).
 **Completeness = command classification, not token-spotting:** over the scoped structured dump
-body+assignments (descending into `$(…)` and pipelines), classify **every command position** as
+body+assignments (descending into `$(…)`, `<(…)` / `>(…)`, and pipelines), classify **every command position** as
 {no Python execution | recognized Layer-1/2/3 Python execution | unsupported dynamic shell execution}; the
 last → hard-fail. An unresolved variable, an unrecognized interpreter wrapper (`python`, `${PYTHON}`,
 `env python3`, an alias), or a shell-expanded command position hard-fails. Shape-assert the dump; do **not**
@@ -212,6 +214,12 @@ leave a vacuity, e.g. a write to a `SCRIPT_DIR` bound module-scope from `Path(__
 scripts → false-positive cascade). **Proof gates exercise** direct (`repo/"x"`), assigned (`t = repo/"x"`),
 chained (`repo/"a"/"b"`), `.parent`, and `.joinpath()` repo-derived writes — verify the existing origin
 propagation through path methods (`test_lane_governor.py:264-267`) actually catches them, do not assume.
+Filesystem mutation coverage is **table-driven by target position**, not example-driven: each modeled
+mutator declares the receiver/argument positions that create, delete, replace, or metadata-mutate filesystem
+state (`Path.replace`: receiver + arg0; `os.replace`: arg0 + arg1; `os.link`/`os.symlink`: destination arg;
+`open`/`os.open`: file arg only when the mode/flags are write-capable). Proof gates must cover source-only,
+destination-only, alias-import, and negative temp-only shapes for the class; a repo-root source and
+repo-root destination in the same fixture is not sufficient proof.
 (a) a planted write **is** flagged in each form; (b) the real owner yields **zero** findings; (c) **no new
 findings** appear across the existing scan set. **Documented misses** (zero current mutating paths): aliasing
 across statements, repo passed as a function parameter, and `Path(args.repo_root)` / `Path(args.X)` arg-derived

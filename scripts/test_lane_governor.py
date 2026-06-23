@@ -36,45 +36,45 @@ _REPO_ORIGIN = "repo"
 _TEMP_ORIGIN = "temp"
 
 _REPO_ROOT_NAMES = frozenset({"REPO_ROOT", "SCRIPTS_DIR"})
-_MUTATING_PATH_METHODS = frozenset(
-    {
-        "chmod",
-        "chown",
-        "hardlink_to",
-        "lchmod",
-        "lchown",
-        "mkdir",
-        "replace",
-        "rmdir",
-        "rmtree",
-        "symlink_to",
-        "touch",
-        "truncate",
-        "unlink",
-        "write_bytes",
-        "write_text",
-    }
-)
-_OS_MUTATORS = frozenset(
-    {
-        "chmod",
-        "chown",
-        "lchmod",
-        "lchown",
-        "link",
-        "makedirs",
-        "mkdir",
-        "remove",
-        "removedirs",
-        "rename",
-        "replace",
-        "rmdir",
-        "symlink",
-        "truncate",
-        "unlink",
-        "utime",
-    }
-)
+_PATH_MUTATOR_TARGETS = {
+    "chmod": ("self",),
+    "chown": ("self",),
+    "hardlink_to": ("self",),
+    "lchmod": ("self",),
+    "lchown": ("self",),
+    "mkdir": ("self",),
+    "rename": ("self", "arg0"),
+    "replace": ("self", "arg0"),
+    "rmdir": ("self",),
+    "rmtree": ("self",),
+    "symlink_to": ("self",),
+    "touch": ("self",),
+    "truncate": ("self",),
+    "unlink": ("self",),
+    "write_bytes": ("self",),
+    "write_text": ("self",),
+}
+_MUTATING_PATH_METHODS = frozenset(_PATH_MUTATOR_TARGETS)
+_OS_MUTATOR_TARGETS = {
+    "chmod": (0,),
+    "chown": (0,),
+    "lchmod": (0,),
+    "lchown": (0,),
+    "link": (1,),
+    "makedirs": (0,),
+    "mkdir": (0,),
+    "remove": (0,),
+    "removedirs": (0,),
+    "rename": (0, 1),
+    "replace": (0, 1),
+    "rmdir": (0,),
+    "symlink": (1,),
+    "truncate": (0,),
+    "unlink": (0,),
+    "utime": (0,),
+}
+_OS_MUTATORS = frozenset(_OS_MUTATOR_TARGETS)
+_OS_OPEN_WRITE_FLAGS = frozenset({"O_APPEND", "O_CREAT", "O_RDWR", "O_TRUNC", "O_WRONLY"})
 _SHUTIL_MUTATORS = frozenset({"copy", "copy2", "copyfile", "copytree", "move", "rmtree"})
 _TEMPFILE_REPO_CREATORS = frozenset(
     {
@@ -262,6 +262,7 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         self.path_names = {"Path"}
         self.open_names = {"open"}
         self.os_mutator_names: dict[str, str] = {}
+        self.os_write_flag_names: set[str] = set()
         self.shutil_mutator_names: dict[str, str] = {}
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -301,9 +302,12 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
                 if alias.name == "*":
                     for name in _OS_MUTATORS | {"open"}:
                         self.os_mutator_names[name] = name
+                    self.os_write_flag_names.update(_OS_OPEN_WRITE_FLAGS)
                     continue
                 if alias.name in _OS_MUTATORS | {"open"}:
                     self.os_mutator_names[alias.asname or alias.name] = alias.name
+                elif alias.name in _OS_OPEN_WRITE_FLAGS:
+                    self.os_write_flag_names.add(alias.asname or alias.name)
         elif node.module == "shutil":
             for alias in node.names:
                 if alias.name == "*":
@@ -597,12 +601,9 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         func = node.func
         if isinstance(func, ast.Attribute):
             method = func.attr
-            if method in _MUTATING_PATH_METHODS:
-                targets.append((method, func.value))
-            elif method in {"rename", "replace"}:
-                targets.append((method, func.value))
-                if node.args:
-                    targets.append((method, node.args[0]))
+            if method in _PATH_MUTATOR_TARGETS:
+                for target in self._path_method_targets(method, func.value, node):
+                    targets.append((method, target))
             elif method == "open" and self._open_mode_writes(node, 0):
                 targets.append((method, func.value))
 
@@ -643,15 +644,23 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         os_attr: str | None,
         node: ast.Call,
     ) -> None:
-        if os_attr in _OS_MUTATORS - {"rename", "replace", "link", "symlink"} and node.args:
-            targets.append((os_attr, node.args[0]))
-        elif os_attr in {"rename", "replace"} and node.args:
-            for arg in node.args[:2]:
-                targets.append((os_attr, arg))
-        elif os_attr in {"link", "symlink"} and len(node.args) >= 2:
-            targets.append((os_attr, node.args[1]))
+        if os_attr in _OS_MUTATOR_TARGETS:
+            for index in _OS_MUTATOR_TARGETS[os_attr]:
+                if len(node.args) > index:
+                    targets.append((os_attr, node.args[index]))
         elif os_attr == "open" and node.args and self._os_open_flags_write(node):
             targets.append((os_attr, node.args[0]))
+
+    def _path_method_targets(self, method: str, receiver: ast.AST, node: ast.Call) -> list[ast.AST]:
+        targets: list[ast.AST] = []
+        for spec in _PATH_MUTATOR_TARGETS[method]:
+            if spec == "self":
+                targets.append(receiver)
+            elif spec.startswith("arg"):
+                index = int(spec.removeprefix("arg"))
+                if len(node.args) > index:
+                    targets.append(node.args[index])
+        return targets
 
     def _open_mode_writes(self, node: ast.Call, positional_index: int) -> bool:
         mode: ast.AST | None = None
@@ -675,7 +684,9 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
 
     def _os_flags_include_write(self, node: ast.AST | None) -> bool:
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in self.os_modules:
-            return node.attr in {"O_APPEND", "O_CREAT", "O_RDWR", "O_TRUNC", "O_WRONLY"}
+            return node.attr in _OS_OPEN_WRITE_FLAGS
+        if isinstance(node, ast.Name):
+            return node.id in self.os_write_flag_names
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
             return self._os_flags_include_write(node.left) or self._os_flags_include_write(node.right)
         return False
@@ -833,7 +844,11 @@ def _shell_subcommands(line: str) -> list[str]:
 
     for match in re.finditer(r"python3?\s+-c\s+('[^']*'|\"[^\"]*\")", line):
         commands.append(match.group(0))
-    for payload in [*_command_substitution_payloads(line), *_backtick_command_payloads(line)]:
+    for payload in [
+        *_command_substitution_payloads(line),
+        *_process_substitution_payloads(line),
+        *_backtick_command_payloads(line),
+    ]:
         payload = payload.strip()
         append_if_relevant(payload)
         for part in _shell_command_segments(payload):
@@ -993,6 +1008,58 @@ def _command_substitution_payloads(line: str) -> list[str]:
     return payloads
 
 
+def _process_substitution_payloads(line: str) -> list[str]:
+    payloads: list[str] = []
+    index = 0
+    while index < len(line) - 1:
+        if line[index : index + 2] not in {"<(", ">("}:
+            index += 1
+            continue
+        start = index + 2
+        cursor = start
+        depth = 1
+        quote: str | None = None
+        while cursor < len(line):
+            char = line[cursor]
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                cursor += 1
+                continue
+            if quote == '"':
+                if char == "\\":
+                    cursor += 2
+                    continue
+                if char == '"':
+                    quote = None
+                cursor += 1
+                continue
+            if char == "\\":
+                cursor += 2
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                cursor += 1
+                continue
+            if char == "(":
+                depth += 1
+                cursor += 1
+                continue
+            if char == ")":
+                depth -= 1
+                if depth == 0:
+                    payload = line[start:cursor]
+                    payloads.append(payload)
+                    payloads.extend(_process_substitution_payloads(payload))
+                    index = cursor + 1
+                    break
+            cursor += 1
+        else:
+            payloads.append(line[start:])
+            break
+    return payloads
+
+
 def _backtick_command_payloads(line: str) -> list[str]:
     payloads: list[str] = []
     index = 0
@@ -1078,6 +1145,8 @@ def _classify_command(line: str) -> str:
         env_tokens = _env_wrapped_command_tokens(tokens)
         if not env_tokens:
             return "boundary"
+        if not isinstance(env_tokens[0], str):
+            return "boundary"
         if env_tokens[0].startswith("$"):
             return "dynamic-shell"
         if _is_python_interpreter_token(env_tokens[0]):
@@ -1090,16 +1159,38 @@ def _classify_command(line: str) -> str:
     return "boundary"
 
 
-def _is_shell_assignment(token: str) -> bool:
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
+def _is_shell_assignment(token: object) -> bool:
+    return isinstance(token, str) and bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
 
 
-def _env_wrapped_command_tokens(tokens: list[str]) -> list[str]:
+def _env_wrapped_command_tokens(tokens: list[object]) -> list[object]:
     if not tokens or tokens[0] != "env":
         return tokens
     index = 1
-    while index < len(tokens) and _is_shell_assignment(tokens[index]):
-        index += 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in {"-i", "--ignore-environment"}:
+            index += 1
+            continue
+        if token in {"-u", "--unset"}:
+            index += 2
+            continue
+        if isinstance(token, str) and token.startswith("-u") and token != "-u":
+            index += 1
+            continue
+        if token == "-S" and index + 1 < len(tokens) and isinstance(tokens[index + 1], str):
+            split_tokens = _shlex_tokens(tokens[index + 1])
+            return _env_wrapped_command_tokens(["env", *split_tokens, *tokens[index + 2 :]])
+        if isinstance(token, str) and token.startswith("-S") and len(token) > 2:
+            split_tokens = _shlex_tokens(token[2:])
+            return _env_wrapped_command_tokens(["env", *split_tokens, *tokens[index + 1 :]])
+        if _is_shell_assignment(token):
+            index += 1
+            continue
+        break
     return tokens[index:]
 
 
@@ -1245,7 +1336,7 @@ def _normalized_shell_tokens(line: str) -> list[str]:
     while tokens and _is_shell_assignment(tokens[0]):
         tokens = tokens[1:]
     tokens = _env_wrapped_command_tokens(tokens)
-    return tokens
+    return [token for token in tokens if isinstance(token, str)]
 
 
 def _python_script_from_tokens(tokens: list[str], scan_set: set[Path]) -> Path | None:
@@ -1709,6 +1800,9 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             return
         if not isinstance(command, list) or not command:
             return
+        command = self._normalized_process_tokens(command)
+        if not command:
+            return
         if executable is not None and _is_python_interpreter_token(executable):
             tokens = command if _is_python_interpreter_token(command[0]) else [executable, *command]
             self._handle_python_tokens(node, tokens)
@@ -1719,12 +1813,22 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             return
         if executable is _PARAMETER:
             return
+        if self._value_is_python_process_image(executable):
+            self._handle_direct_python_process_image(node, executable)
+            return
         if not _is_python_interpreter_token(executable):
             return
         if len(command) < 2:
             self._fail(node, "Python subprocess command is missing a target")
             return
         self._handle_python_tokens(node, command)
+
+    def _handle_direct_python_process_image(self, node: ast.AST, value: object) -> None:
+        target = self._path_from_value(value)
+        if target is not None and target.exists() and _is_python_script_path(target):
+            self.targets.add(target)
+            return
+        self._fail(node, f"unresolved Python process image: {value!r}")
 
     def _subprocess_shell_enabled(self, node: ast.Call) -> bool:
         for keyword in node.keywords:
@@ -1749,9 +1853,15 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                 or self._value_is_script_shaped(tokens[0])
             )
         if isinstance(command, list) and command:
+            command = self._normalized_process_tokens(command)
+            if not command:
+                return False
             first = command[0]
             return _is_python_interpreter_token(first) or self._value_is_script_shaped(first)
         return False
+
+    def _normalized_process_tokens(self, tokens: list[object]) -> list[object]:
+        return _env_wrapped_command_tokens(tokens) if tokens and tokens[0] == "env" else tokens
 
     def _value_is_script_shaped(self, value: object) -> bool:
         if value is _UNRESOLVED or value is _PARAMETER:
@@ -1840,9 +1950,9 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         argv_node = node.args[args_index]
         argv = self._resolve_value(argv_node)
         if isinstance(argv, list) and argv:
-            return _is_python_interpreter_token(argv[0])
+            return _is_python_interpreter_token(argv[0]) or self._value_is_python_process_image(argv[0])
         if isinstance(argv, str):
-            return _is_python_interpreter_token(argv)
+            return _is_python_interpreter_token(argv) or self._value_is_python_process_image(argv)
         if argv is _UNRESOLVED:
             return self._looks_like_python_command_expr(argv_node)
         return False
@@ -2426,6 +2536,7 @@ def test_repo_write_analyzer_catches_extended_mutators() -> None:
     snippets = [
         "import os\nos.replace(REPO_ROOT / 'tmp', REPO_ROOT / 'dst')\n",
         "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n(ROOT / 'tmp').replace(ROOT / 'dst')\n",
+        "from pathlib import Path\nimport tempfile\nTMP = Path(tempfile.mkdtemp()) / 'tmp'\nTMP.replace(REPO_ROOT / 'dst')\n",
         "import os\nos.link('/tmp/src', REPO_ROOT / 'dst')\n",
         "import os\nos.symlink('/tmp/src', REPO_ROOT / 'dst')\n",
         "import os\nos.mkdir(REPO_ROOT / 'dst')\n",
@@ -2434,6 +2545,7 @@ def test_repo_write_analyzer_catches_extended_mutators() -> None:
         "import os\nos.chown(REPO_ROOT / 'dst', 0, 0)\n",
         "import os\nos.truncate(REPO_ROOT / 'dst', 0)\n",
         "import os\nos.open(REPO_ROOT / 'dst', os.O_CREAT | os.O_RDWR)\n",
+        "from os import open as os_open, O_CREAT\nos_open(REPO_ROOT / 'dst', O_CREAT)\n",
         "open(str(REPO_ROOT / 'dst'), 'w')\n",
         "import io\nio.open(REPO_ROOT / 'dst', 'w')\n",
         "import os\nopen(os.path.join(REPO_ROOT, 'dst'), 'w')\n",
@@ -2499,8 +2611,12 @@ subprocess.run(["python3", str(SCRIPT)])
 direct_run(["python3", str(SCRIPT)])
 subprocess.run([str(SCRIPT)], executable="python3")
 subprocess.run(["python3", str(SCRIPT)], executable="python3")
+subprocess.run(["env", "PYTHONPATH=/tmp", "python3", "scripts/test_nextest_fingerprint.py"])
+subprocess.run(["env", "-S", "PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"])
 subprocess.run("python3 scripts/test_nextest_fingerprint.py", shell=True)
 subprocess.run("echo data | python3 scripts/test_nextest_fingerprint.py", shell=True)
+subprocess.run(["scripts/test_nextest_fingerprint.py"])
+subprocess.run(["scripts/cargo-shim"])
 run(str(SCRIPTS / "clean_merged_artifacts.py"))
 """
     resolver = _CodeExecutionEdgeResolver(
@@ -2516,6 +2632,7 @@ run(str(SCRIPTS / "clean_merged_artifacts.py"))
         "find_same_sha_main_evidence.py",
         "nextest_fingerprint.py",
         "clean_merged_artifacts.py",
+        "cargo-shim",
         "command_understanding.py",
         "ci_provenance.py",
     } <= rels
@@ -2586,6 +2703,9 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "import os\nos.execv(program, ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.spawnv(os.P_NOWAIT, program, ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.posix_spawn(program, ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
+        "import os\nos.execv(program, ['scripts/test_nextest_fingerprint.py'])\n",
+        "import os\nos.spawnv(os.P_NOWAIT, program, ['scripts/test_nextest_fingerprint.py'])\n",
+        "import os\nos.posix_spawn(program, ['scripts/test_nextest_fingerprint.py'], {})\n",
         "from os import system as direct_system\ndirect_system('python3 scripts/test_nextest_fingerprint.py')\n",
         "from os import *\nsystem('python3 scripts/test_nextest_fingerprint.py')\n",
         "from os import execv as direct_execv\ndirect_execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
@@ -2891,6 +3011,7 @@ def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
             "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
             "alpha-inner": [
                 ["env PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"],
+                ["env -S 'PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py'"],
                 ["PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"],
                 ["python3 scripts/test_nextest_fingerprint.py | grep ok || true"],
                 ["echo setup && python3 scripts/test_nextest_fingerprint.py"],
@@ -2898,6 +3019,7 @@ def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
                 ["echo setup\npython3 scripts/test_nextest_fingerprint.py"],
                 ["echo setup & python3 scripts/test_nextest_fingerprint.py"],
                 ["false || python3 scripts/test_nextest_fingerprint.py"],
+                ["cat <(python3 scripts/test_nextest_fingerprint.py)"],
                 ["VALUE=\"$(echo $(python3 scripts/test_nextest_fingerprint.py))\""],
                 ["VALUE=`python3 scripts/test_nextest_fingerprint.py`"],
                 [

@@ -71,7 +71,7 @@ Examples:
   just rust-probe nextest-test-target-name <test_target> <test_name>
 
 Rust Probe is targeted remote debugging feedback only. It is not merge proof.
-Use just verify-remote only for final exact-head full-CI proof.
+Use just verify-remote for full remote feedback; mark the PR ready before treating it as merge proof.
 """
 RUST_PROBE_INPUT_KEYS = (
     "runner_tier",
@@ -2434,10 +2434,13 @@ def local_compile_refusal_payload(
         "next_steps": [
             "for targeted Rust debugging after cheap local checks: run: just rust-probe suggest",
             "then commit and push the branch before running the smallest suggested just rust-probe command",
+            "for full remote feedback on a draft PR: run: just verify-remote",
             "for merge proof: commit local changes",
             "for merge proof: push the branch",
-            "for merge proof: ensure a draft or open pull request exists",
-            "for merge proof: run: just verify-remote",
+            (
+                "for merge proof: mark the PR ready, then run: just verify-remote "
+                "to wait for the required PR gate, or use the merge-queue gate"
+            ),
         ],
         "reclaimable_bytes": 0,
         "refusal_code": "local_compile_disabled",
@@ -3529,7 +3532,7 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
     print("commands:")
     for suggestion in rust_probe_suggestions(changed_files, probe_policy["separate_workspaces"]):
         print(f"- {suggestion}")
-    print("Rust Probe is not merge proof. For final exact-head full-CI proof: just verify-remote")
+    print("Rust Probe is not merge proof. Draft verify-remote is full feedback only; mark the PR ready for merge proof.")
     return 0
 
 
@@ -3564,7 +3567,7 @@ def evaluate_rust_probe_run(
         return None
     if state == "pass":
         print(f"OK: Rust Probe {probe_id} passed for {head}: {summary}")
-        print("NOT MERGE PROOF -- run just verify-remote for proof")
+        print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof")
         return 0
     conclusion = str(run.get("conclusion") or "")
     if conclusion == "cancelled":
@@ -3575,7 +3578,7 @@ def evaluate_rust_probe_run(
         return 2
     print(f"Rust Probe {probe_id} failed for {head}; this is debugging feedback only:", file=sys.stderr)
     print(f"- {summary}", file=sys.stderr)
-    print("NOT MERGE PROOF -- run just verify-remote for proof", file=sys.stderr)
+    print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof", file=sys.stderr)
     return 1
 
 
@@ -3806,7 +3809,7 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     print(f"sha: {head}")
     print(f"scope: {scope}")
     print(f"runner_tier: {runner_tier}")
-    print("NOT MERGE PROOF -- run just verify-remote for proof")
+    print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof")
     return wait_for_rust_probe_run(
         repo=repo,
         remote_policy=probe_policy,

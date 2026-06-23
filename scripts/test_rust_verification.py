@@ -174,7 +174,13 @@ printf 'args=%s\\n' "$*" >> {just_log}
         if (
             refusal.get("refusal_code") != "local_compile_disabled"
             or "just rust-probe suggest" not in next_steps
-            or "for merge proof: run: just verify-remote" not in next_steps
+            or "for full remote feedback on a draft PR: run: just verify-remote" not in next_steps
+            or (
+                "for merge proof: mark the PR ready, then run: just verify-remote "
+                "to wait for the required PR gate, or use the merge-queue gate"
+            )
+            not in next_steps
+            or "for merge proof: run: just verify-remote" in next_steps
         ):
             raise AssertionError(refusal)
 
@@ -211,6 +217,40 @@ printf 'args=%s\\n' "$*" >> {just_log}
         }
         if payload != expected_payload:
             raise AssertionError(payload)
+
+
+def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
+    owner = load_owner_module()
+    stale_fragments = (
+        "run just verify-remote for proof",
+        "verify-remote only for final exact-head full-CI proof",
+    )
+    source = SCRIPT.read_text(encoding="utf-8")
+    if any(fragment in source for fragment in stale_fragments):
+        raise AssertionError("production Rust verification text contains stale verify-remote proof guidance")
+    if any(fragment in owner.RUST_PROBE_HELP_EPILOG for fragment in stale_fragments):
+        raise AssertionError(owner.RUST_PROBE_HELP_EPILOG)
+
+    stdout = io.StringIO()
+    run = {
+        "databaseId": 1001,
+        "event": "workflow_dispatch",
+        "headSha": VERIFY_REMOTE_HEAD,
+        "status": "completed",
+        "conclusion": "success",
+        "createdAt": "2026-06-13T00:00:00Z",
+        "displayTitle": "Rust Probe abc123 check-lib",
+        "url": "https://github.com/seungpyoson/bolt-v2/actions/runs/1001",
+    }
+    with contextlib.redirect_stdout(stdout):
+        result = owner.evaluate_rust_probe_run(run, head=VERIFY_REMOTE_HEAD, probe_id="abc123")
+    output = stdout.getvalue()
+    if result != 0:
+        raise AssertionError((result, output))
+    if "draft verify-remote is feedback only" not in output:
+        raise AssertionError(output)
+    if any(fragment in output for fragment in stale_fragments):
+        raise AssertionError(output)
 
 
 def assert_fmt_avoids_managed_cache_lock() -> None:
@@ -1109,6 +1149,7 @@ def assert_ci_logs_command_fails_when_diagnostics_unavailable() -> None:
 
 def main() -> int:
     assert_repo_local_owner_contract()
+    assert_rust_probe_guidance_distinguishes_feedback_from_proof()
     assert_fmt_avoids_managed_cache_lock()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()

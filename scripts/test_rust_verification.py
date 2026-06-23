@@ -224,10 +224,20 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
     stale_fragments = (
         "run just verify-remote for proof",
         "verify-remote only for final exact-head full-CI proof",
+        "For final proof, use exact-head PR CI evidence through `just verify-remote`",
+        "Full CI is proof. Rust Probe is debugging.",
+        "dispatch Backtester CI with full_ci=true for this branch or mark ready",
     )
-    source = SCRIPT.read_text(encoding="utf-8")
-    if any(fragment in source for fragment in stale_fragments):
-        raise AssertionError("production Rust verification text contains stale verify-remote proof guidance")
+    operator_surfaces = (
+        SCRIPT,
+        REPO_ROOT / "AGENTS.md",
+        REPO_ROOT / "docs" / "ci" / "ubicloud-cost-governance.md",
+        REPO_ROOT / ".github" / "workflows" / "backtester-ci.yml",
+    )
+    for path in operator_surfaces:
+        source = path.read_text(encoding="utf-8")
+        if any(fragment in source for fragment in stale_fragments):
+            raise AssertionError(f"{path.relative_to(REPO_ROOT)} contains stale verify-remote proof guidance")
     if any(fragment in owner.RUST_PROBE_HELP_EPILOG for fragment in stale_fragments):
         raise AssertionError(owner.RUST_PROBE_HELP_EPILOG)
 

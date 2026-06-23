@@ -24,6 +24,7 @@ from ci_provenance import (
     expected_event_class_for,
     github_actions_output_safe_check_name,
     gate_name_suffix_for,
+    policy_contract_errors,
 )
 
 # Keep the former verifier-local helper families module-scoped so parity tests
@@ -9214,7 +9215,7 @@ BACKTESTER_NOOP_CONDITION = '"$policy_path" == "noop"'
 BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)"""
 BACKTESTER_GATE_NAME_OUTPUT = "name: ${{ needs.ci-policy.outputs.backtester_gate_name }}"
 BACKTESTER_EXPECTED_EVENT_CLASS_ASSIGNMENT = 'expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"'
-BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for this branch or mark ready"
+BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for full feedback or mark ready for merge proof"
 BACKTESTER_REQUIRED_GATE_COMMENT = (
     "`backtester-gate` is required-capable; `backtester-gate-deferred` and\n"
     "# `backtester-gate-iteration` are feedback-only and must not be marked required"
@@ -9745,11 +9746,10 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
             raise ValueError(
                 f"ci_provenance.policy.{row} must be one of {sorted(CI_PROVENANCE_POLICY_VALUES)!r}"
             )
-    if policy.get("workflow_dispatch_full_ci") != "full":
-        raise ValueError("ci_provenance.policy.workflow_dispatch_full_ci must remain full")
     proof_errors = policy_proof_invariant_errors(policy)
-    if proof_errors:
-        raise ValueError("; ".join(proof_errors))
+    contract_errors = policy_contract_errors(policy)
+    if proof_errors or contract_errors:
+        raise ValueError("; ".join([*proof_errors, *contract_errors]))
     override = require_config_table(policy, "override", "ci_provenance.policy")
     if override.get("force_full_ci") is not False:
         raise ValueError("ci_provenance.policy.override.force_full_ci must default to false")

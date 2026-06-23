@@ -379,7 +379,7 @@ jobs:
               echo "backtester deferred CI policy outside resolver-permitted event class '$expected_event_class'"
               exit 1
             fi
-            echo "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for this branch or mark ready"
+            echo "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for full feedback or mark ready for merge proof"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then

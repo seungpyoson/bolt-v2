@@ -1207,6 +1207,8 @@ def assert_gate_names_reject_github_output_control_chars() -> None:
     unsafe_values = {
         "gate_dispatch_full": ("gate-dispatch", "gate\\nignored=1"),
         "backtester_dispatch_full": ("backtester-gate-dispatch", "backtester-gate\\rignored=1"),
+        "gate_iteration": ("gate-iteration", "${{ github.ref }}"),
+        "backtester_iteration": ("backtester-gate-iteration", "backtester-gate-iteration }}"),
     }
     for key, (original, replacement) in unsafe_values.items():
         with tempfile.TemporaryDirectory() as tmp:
@@ -1221,6 +1223,50 @@ def assert_gate_names_reject_github_output_control_chars() -> None:
                     raise AssertionError(f"unexpected error for {key}: {exc}") from exc
             else:
                 raise AssertionError(f"unsafe gate name {key}={replacement!r} must be rejected")
+
+
+def assert_policy_contract_rejects_required_gate_holes() -> None:
+    module = load_script()
+    cases = {
+        "ci_provenance.policy.workflow_dispatch must be iteration": CONFIG_TOML.replace(
+            'workflow_dispatch = "iteration"',
+            'workflow_dispatch = "full"',
+        ),
+        "ci_provenance.policy.draft_pr_synchronize must be defer": CONFIG_TOML.replace(
+            'draft_pr_synchronize = "defer"',
+            'draft_pr_synchronize = "full"',
+        ),
+        "ci_provenance.policy.converted_to_draft must be defer": CONFIG_TOML.replace(
+            'converted_to_draft = "defer"',
+            'converted_to_draft = "full"',
+        ),
+        "ci_provenance.policy.ready_pr must be full": CONFIG_TOML.replace(
+            'ready_pr = "full"',
+            'ready_pr = "iteration"',
+        ),
+    }
+    for fragment, config_text in cases.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp), config_text)
+            try:
+                module.load_config(config)
+            except module.ProvenanceError as exc:
+                if fragment not in str(exc):
+                    raise AssertionError(f"expected {fragment!r}, got {exc}") from exc
+            else:
+                raise AssertionError(f"unsafe policy mutation must be rejected: {fragment}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        policy = dict(module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML)).policy)
+        original_rows = module.POLICY_ROWS
+        try:
+            module.POLICY_ROWS = (*original_rows, "synthetic_uncontracted")
+            policy["synthetic_uncontracted"] = "iteration"
+            errors = module.policy_contract_errors(policy)
+        finally:
+            module.POLICY_ROWS = original_rows
+    if not any("rows must define required or allowed contract: synthetic_uncontracted" in error for error in errors):
+        raise AssertionError(f"uncontracted policy rows must fail closed, got: {errors}")
 
 
 def assert_main_evidence_matching_ignores_mutable_run_name() -> None:
@@ -1810,6 +1856,7 @@ def main() -> int:
     assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
+    assert_policy_contract_rejects_required_gate_holes()
     assert_main_evidence_matching_ignores_mutable_run_name()
     assert_config_digest_is_canonical()
     assert_github_api_bytes_strips_authorization_on_cross_host_redirect()

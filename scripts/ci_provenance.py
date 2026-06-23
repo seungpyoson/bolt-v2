@@ -59,6 +59,28 @@ POLICY_ROWS = (
     "tag",
     "unknown_event",
 )
+POLICY_REQUIRED_VALUES = {
+    "draft_pr_synchronize": "defer",
+    "draft_pr_opened": "defer",
+    "draft_pr_reopened": "defer",
+    "draft_pr_edited": "defer",
+    "converted_to_draft": "defer",
+    "ready_pr": "full",
+    "ready_for_review": "full",
+    "workflow_dispatch": "iteration",
+    "workflow_dispatch_full_ci": "full",
+    "main_push": "full",
+    "merge_group": "full",
+    "tag": "tag_reuse",
+    "unknown_event": "full",
+}
+POLICY_REQUIRED_MESSAGES = {
+    "workflow_dispatch_full_ci": "ci_provenance.policy.workflow_dispatch_full_ci must remain full",
+}
+POLICY_ALLOWED_VALUES = {
+    "ready_pr_edited_no_base": {"noop", "full"},
+    "ready_pr_reopened": {"noop", "full"},
+}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 NEXTEST_FINGERPRINT_RE = re.compile(
@@ -167,7 +189,11 @@ def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
 
 
 def github_actions_output_safe_check_name(value: str) -> bool:
-    return all(char not in "\r\n" and 32 <= ord(char) < 127 for char in value)
+    return (
+        "${{" not in value
+        and "}}" not in value
+        and all(char not in "\r\n" and 32 <= ord(char) < 127 for char in value)
+    )
 
 
 def require_gate_name(parent: dict[str, object], key: str, prefix: str) -> str:
@@ -189,6 +215,32 @@ def require_string_list(parent: dict[str, object], key: str, prefix: str) -> tup
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise ProvenanceError(f"{prefix}.{key} must be a non-empty string list")
     return tuple(value)
+
+
+def policy_contract_errors(policy: dict[str, object]) -> list[str]:
+    errors: list[str] = []
+    missing_contract = sorted(
+        set(POLICY_ROWS) - set(POLICY_REQUIRED_VALUES) - set(POLICY_ALLOWED_VALUES)
+    )
+    if missing_contract:
+        errors.append(
+            "ci_provenance.policy rows must define required or allowed contract: "
+            + ", ".join(missing_contract)
+        )
+    for row, expected in POLICY_REQUIRED_VALUES.items():
+        if policy.get(row) != expected:
+            errors.append(
+                POLICY_REQUIRED_MESSAGES.get(
+                    row,
+                    f"ci_provenance.policy.{row} must be {expected}",
+                )
+            )
+    for row, allowed in POLICY_ALLOWED_VALUES.items():
+        if policy.get(row) not in allowed:
+            errors.append(
+                f"ci_provenance.policy.{row} must be one of {sorted(allowed)!r}"
+            )
+    return errors
 
 
 def load_toml(path: pathlib.Path) -> dict[str, object]:
@@ -345,6 +397,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
                 f"ci_provenance.policy.{row} must be full, defer, iteration, noop, or tag_reuse"
             )
         policy[row] = value
+    contract_errors = policy_contract_errors(policy)
+    if contract_errors:
+        raise ProvenanceError("; ".join(contract_errors))
 
     dispatch_run_name_default = require_string(dispatch, "run_name_default", "ci_provenance.dispatch")
     dispatch_run_name_full = require_string(dispatch, "run_name_full", "ci_provenance.dispatch")

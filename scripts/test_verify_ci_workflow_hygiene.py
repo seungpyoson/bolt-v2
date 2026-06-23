@@ -1320,6 +1320,10 @@ check_name = "test"
             valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate\\nignored=1"'),
         ),
         (
+            "ci_provenance.gate_names.gate_iteration must be a GitHub Actions output-safe check name",
+            valid.replace('gate_iteration = "gate-iteration"', 'gate_iteration = "${{ github.ref }}"'),
+        ),
+        (
             "ci_provenance.policy.ready_pr is proof-affecting",
             valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
         ),
@@ -1356,6 +1360,22 @@ check_name = "test"
             valid.replace('workflow_dispatch_full_ci = "full"', 'workflow_dispatch_full_ci = "iteration"'),
         ),
         (
+            "ci_provenance.policy.workflow_dispatch must be iteration",
+            valid.replace('workflow_dispatch = "iteration"', 'workflow_dispatch = "full"'),
+        ),
+        (
+            "ci_provenance.policy.draft_pr_synchronize must be defer",
+            valid.replace('draft_pr_synchronize = "defer"', 'draft_pr_synchronize = "full"'),
+        ),
+        (
+            "ci_provenance.policy.converted_to_draft must be defer",
+            valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
+        ),
+        (
+            "ci_provenance.policy.ready_pr must be full",
+            valid.replace('ready_pr = "full"', 'ready_pr = "iteration"'),
+        ),
+        (
             "ci_provenance.policy has unexpected keys",
             valid.replace(
                 "[ci_provenance.policy.override]",
@@ -1375,9 +1395,6 @@ check_name = "test"
     reopened_full_config = valid.replace('ready_pr_reopened = "noop"', 'ready_pr_reopened = "full"')
     if runner_config_load_error(reopened_full_config):
         raise AssertionError("proof-preserving ready_pr_reopened must not be rejected as proof-affecting")
-    ready_iteration_config = valid.replace('ready_pr = "full"', 'ready_pr = "iteration"')
-    if runner_config_load_error(ready_iteration_config):
-        raise AssertionError("queue-covered ready_pr iteration must be accepted by the proof invariant")
 
     original_rows = verifier.CI_PROVENANCE_POLICY_ROWS
     original_semantics = verifier.CI_POLICY_ROW_SEMANTICS
@@ -3039,7 +3056,7 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_gate_message = replace_once(
         workflow,
-        "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for this branch or mark ready",
+        "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for full feedback or mark ready for merge proof",
         "backtester proof deferred",
     )
     missing_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_gate_message})

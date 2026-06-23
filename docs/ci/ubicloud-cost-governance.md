@@ -12,7 +12,7 @@ Remote-first Rust verification remains the invariant:
 2. For Rust debugging, run `just rust-probe suggest` and choose the smallest targeted remote probe.
 3. Commit and push.
 4. Open or update a PR.
-5. For final proof, use exact-head PR CI evidence through `just verify-remote`.
+5. For ready-PR final proof, use exact-head PR CI evidence through `just verify-remote`; draft `verify-remote` is feedback only.
 
 This policy does not move broad Rust verification back to local cargo and does not weaken the required final-head green CI gate.
 

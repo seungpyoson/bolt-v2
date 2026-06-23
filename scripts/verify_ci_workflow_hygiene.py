@@ -7840,6 +7840,19 @@ GATE_NAME_EXPRESSION = """name: >-
           || 'gate' }}"""
 
 
+def full_dispatch_gate_name_from_expression() -> str:
+    match = re.search(
+        r"github\.event_name == 'workflow_dispatch'\s+"
+        r"&& github\.event\.inputs\.full_ci == 'true'\s+"
+        r"&& '([^']+)'",
+        GATE_NAME_EXPRESSION,
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        raise ValueError("GATE_NAME_EXPRESSION must include workflow_dispatch full gate branch")
+    return match.group(1)
+
+
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
     condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
     return branch_exits_reachable(gate_text, "if", condition)
@@ -9672,7 +9685,7 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         raise ValueError("ci_provenance.dispatch.run_name_default must match workflow_name")
     if run_name_full == run_name_iteration:
         raise ValueError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
-    if proof_gate_job != "gate":
+    if proof_gate_job != full_dispatch_gate_name_from_expression():
         raise ValueError("ci_provenance.dispatch.proof_gate_job must match full gate name")
 
     api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")

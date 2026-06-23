@@ -189,10 +189,10 @@ def workflow_path_matches(run: dict[str, object], config: DispatchCancelConfig) 
 
 
 def run_display_title(run: dict[str, object]) -> str:
-    title = as_text(run.get("display_title"))
+    title = as_text(run.get("displayTitle"))
     if title:
         return title
-    return as_text(run.get("displayTitle"))
+    return as_text(run.get("display_title"))
 
 
 def dispatch_run_class(run: dict[str, object], config: DispatchCancelConfig) -> str | None:

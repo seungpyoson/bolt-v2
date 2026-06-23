@@ -1396,6 +1396,25 @@ check_name = "test"
         if fragment not in error:
             raise AssertionError(f"expected {fragment!r}, got {error!r}")
 
+    verifier = load_verifier()
+    original_gate_name_expression = verifier.GATE_NAME_EXPRESSION
+    verifier.GATE_NAME_EXPRESSION = original_gate_name_expression.replace(
+        "          && 'gate'\n          || github.event_name == 'workflow_dispatch'",
+        "          && 'renamed-gate'\n          || github.event_name == 'workflow_dispatch'",
+    )
+    try:
+        try:
+            verifier.validate_ci_provenance_config(verifier.tomllib.loads(valid))
+        except Exception as exc:  # noqa: BLE001 - verifier raises domain errors.
+            error = str(exc)
+        else:
+            error = ""
+        fragment = "ci_provenance.dispatch.proof_gate_job must match full gate name"
+        if fragment not in error:
+            raise AssertionError(f"expected {fragment!r}, got {error!r}")
+    finally:
+        verifier.GATE_NAME_EXPRESSION = original_gate_name_expression
+
 
 def assert_ci_policy_matrix() -> None:
     verifier = load_verifier()

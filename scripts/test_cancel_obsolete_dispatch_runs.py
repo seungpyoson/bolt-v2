@@ -194,6 +194,18 @@ def assert_missing_or_unknown_current_marker_skips_cancellation() -> None:
     assert fake.cancelled == [], fake.cancelled
 
 
+def assert_run_display_title_prefers_camel_case() -> None:
+    module = load_script()
+    title = module.run_display_title(
+        run_payload(
+            200,
+            display_title="CI [dispatch:iteration]",
+            displayTitle="CI [dispatch:full]",
+        )
+    )
+    assert title == "CI [dispatch:full]", title
+
+
 def assert_current_rehydrate_failure_skips_cancellation() -> None:
     module = load_script()
 
@@ -395,6 +407,7 @@ def main() -> int:
     assert_cancels_same_second_lower_id_dispatch_runs()
     assert_ignores_non_dispatch_and_branchless_runs()
     assert_missing_or_unknown_current_marker_skips_cancellation()
+    assert_run_display_title_prefers_camel_case()
     assert_current_rehydrate_failure_skips_cancellation()
     assert_dry_run_reports_without_cancelling()
     assert_cancel_conflict_is_recorded_not_failed()

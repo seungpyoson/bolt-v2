@@ -2121,6 +2121,49 @@ load(target)
         assert SCRIPTS_DIR / "nextest_fingerprint.py" not in targets
 
 
+def test_omitted_wrapper_arg_with_resolvable_default_is_l1() -> None:
+    source = """
+from pathlib import Path
+import importlib.util
+
+SCRIPT = Path(__file__).resolve().parent / "nextest_fingerprint.py"
+
+def load(path=SCRIPT):
+    return importlib.util.spec_from_file_location("x", path)
+
+load()
+"""
+    resolver = _CodeExecutionEdgeResolver(
+        SCRIPTS_DIR / "synthetic_guard_fixture.py",
+        ast.parse(source),
+        scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+    )
+    targets, failures = resolver.resolve()
+    assert not failures
+    assert SCRIPTS_DIR / "nextest_fingerprint.py" in targets
+
+
+def test_unresolved_direct_and_wrapper_targets_have_l2_parity() -> None:
+    fixtures = [
+        "import importlib.util\nimportlib.util.spec_from_file_location('x', target)\n",
+        (
+            "import importlib.util\n"
+            "def load(path):\n"
+            "    return importlib.util.spec_from_file_location('x', path)\n"
+            "load(target)\n"
+        ),
+    ]
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert failures, f"expected unresolved Python target to fail:\n{source}"
+        assert not targets
+
+
 def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
     dump = _synthetic_just_dump(
         labels=["local-gate:alpha"],
@@ -2856,6 +2899,8 @@ def main() -> int:
         test_code_execution_tripwires_fail_closed,
         test_unresolved_wrapper_call_fails_without_falling_back_to_default,
         test_temp_bound_wrapper_call_is_opaque_without_falling_back_to_default,
+        test_omitted_wrapper_arg_with_resolvable_default_is_l1,
+        test_unresolved_direct_and_wrapper_targets_have_l2_parity,
         test_just_dump_gate_derivation_and_fail_closed_fixtures,
         test_shell_expanded_python_commands_fail_closed,
         test_shell_wrappers_and_pipelines_discover_python_commands,

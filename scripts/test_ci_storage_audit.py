@@ -187,6 +187,11 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(ci_storage_audit.human_bytes(1024), "1.0 KiB")
         self.assertEqual(ci_storage_audit.human_bytes(1536), "1.5 KiB")
         self.assertEqual(ci_storage_audit.human_bytes(1024 * 1024), "1.0 MiB")
+        self.assertEqual(ci_storage_audit.human_bytes(1024**3), "1.0 GiB")
+        self.assertEqual(ci_storage_audit.human_bytes(1024**4), "1.0 TiB")
+        self.assertEqual(ci_storage_audit.human_bytes(1024**5), "1.0 PiB")
+        with self.assertRaises(ValueError):
+            ci_storage_audit.human_bytes(-1)
 
     def test_render_text_limits_artifact_name_details(self) -> None:
         snapshot = {
@@ -211,6 +216,20 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn("artifact-1", rendered)
         self.assertNotIn("artifact-2", rendered)
         self.assertIn("3 additional artifact names in --json", rendered)
+
+    def test_render_text_includes_retention_days(self) -> None:
+        snapshot = {
+            "snapshot_utc": "2026-06-23T00:00:00+00:00",
+            "repo": "owner/repo",
+            "cache": {"total_bytes": 0, "count": 0, "entries": []},
+            "artifacts": {"total_bytes": 0, "count": 0, "by_name": []},
+            "retention_setting": {"artifact_and_log_days": 90, "source": "rest"},
+            "required_checks": {"available": True, "source": "rulesets", "contexts": []},
+        }
+
+        rendered = ci_storage_audit.render_text(snapshot)
+
+        self.assertIn("Retention setting: 90 days (source: rest)", rendered)
 
     def test_retention_settings_ui_only_when_rest_field_absent(self) -> None:
         client = FakeClient({"actions/permissions/artifact-and-log-retention": {"maximum_allowed_days": 400}})
@@ -277,6 +296,14 @@ class CiStorageAuditTests(unittest.TestCase):
             {"available": False, "source": "unavailable", "contexts": []},
         )
 
+    def test_required_checks_unavailable_when_rulesets_payload_is_malformed(self) -> None:
+        client = FakeClient({"rules/branches/main": {"unexpected": []}})
+
+        self.assertEqual(
+            ci_storage_audit.fetch_required_checks(client, "main"),
+            {"available": False, "source": "unavailable", "contexts": []},
+        )
+
     def test_required_checks_falls_back_to_branch_protection(self) -> None:
         client = FakeClient(
             {
@@ -295,6 +322,32 @@ class CiStorageAuditTests(unittest.TestCase):
                 "source": "branch-protection",
                 "contexts": ["gate", "actionlint"],
             },
+        )
+
+    def test_required_checks_falls_back_to_branch_protection_checks(self) -> None:
+        client = FakeClient(
+            {
+                "rules/branches/main": [],
+                "branches/main/protection/required_status_checks": {
+                    "contexts": [],
+                    "checks": [{"context": "backtester-gate", "app_id": 1234}],
+                },
+            }
+        )
+
+        result = ci_storage_audit.fetch_required_checks(client, "main")
+
+        self.assertEqual(
+            result,
+            {
+                "available": True,
+                "source": "branch-protection",
+                "contexts": [{"context": "backtester-gate", "app_id": 1234}],
+            },
+        )
+        self.assertEqual(
+            ci_storage_audit.check_label(result["contexts"][0]),
+            "backtester-gate (app_id=1234)",
         )
 
 

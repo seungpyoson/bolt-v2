@@ -5,7 +5,8 @@ The ``--json`` output is a stable downstream contract for #936 and the storage
 tripwire: existing keys are append-only. ``required_checks.contexts`` preserves
 the raw source shape, so rulesets entries are objects such as
 ``{"context": "...", "integration_id": ...}`` while legacy branch-protection
-fallback entries may be strings.
+fallback entries may be strings or objects such as ``{"context": "...",
+"app_id": ...}``.
 """
 
 from __future__ import annotations
@@ -276,13 +277,10 @@ def required_checks_from_branch_protection(payload: Any) -> list[Any]:
 
 def fetch_required_checks(client: GhClient, branch: str) -> dict[str, Any]:
     encoded_branch = branch_path_segment(branch)
-    rulesets_available = False
-    ruleset_contexts: list[Any] = []
 
     try:
         ruleset_contexts = required_checks_from_rulesets(client.api(f"rules/branches/{encoded_branch}"))
-        rulesets_available = True
-    except GhApiError:
+    except (GhApiError, AuditError):
         return {"available": False, "source": "unavailable", "contexts": []}
 
     if ruleset_contexts:
@@ -292,16 +290,12 @@ def fetch_required_checks(client: GhClient, branch: str) -> dict[str, Any]:
         branch_contexts = required_checks_from_branch_protection(
             client.api(f"branches/{encoded_branch}/protection/required_status_checks")
         )
-    except GhApiError:
-        if rulesets_available:
-            return {"available": True, "source": "rulesets", "contexts": ruleset_contexts}
-        return {"available": False, "source": "unavailable", "contexts": []}
+    except (GhApiError, AuditError):
+        return {"available": True, "source": "rulesets", "contexts": ruleset_contexts}
 
     if branch_contexts:
         return {"available": True, "source": "branch-protection", "contexts": branch_contexts}
-    if rulesets_available:
-        return {"available": True, "source": "rulesets", "contexts": ruleset_contexts}
-    return {"available": True, "source": "branch-protection", "contexts": branch_contexts}
+    return {"available": True, "source": "rulesets", "contexts": ruleset_contexts}
 
 
 def build_snapshot(client: GhClient, *, repo: str, branch: str, snapshot_utc: str) -> dict[str, Any]:
@@ -320,10 +314,14 @@ def check_label(entry: Any) -> str:
         context = entry.get("context")
         if context is None:
             return json.dumps(entry, sort_keys=True)
-        integration_id = entry.get("integration_id")
-        if integration_id is None:
+        details = []
+        if entry.get("integration_id") is not None:
+            details.append(f"integration_id={entry['integration_id']}")
+        if entry.get("app_id") is not None:
+            details.append(f"app_id={entry['app_id']}")
+        if not details:
             return str(context)
-        return f"{context} (integration_id={integration_id})"
+        return f"{context} ({', '.join(details)})"
     return str(entry)
 
 

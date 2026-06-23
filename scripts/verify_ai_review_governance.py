@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -254,14 +255,11 @@ KIMI_FORBIDDEN_INPUTS = (
 FORBIDDEN_API_ENDPOINTS = (
     "https://api.z.ai/api/paas/v4",
     "https://api.moonshot.ai/v1",
-    "kimi-k2.7-code",
 )
 
 WORKFLOW_FORBIDDEN_RUNTIME_LITERALS = (
     "https://api.z.ai/api/coding/paas/v4",
     "https://api.kimi.com/coding/v1",
-    "glm-5.2",
-    "kimi-k2.7-code",
     "@moonshot-ai/kimi-code@0.19.0",
     "<!-- ai-pr-reviewer-kimi -->",
     "<!-- ai-pr-reviewer-glm -->",
@@ -290,7 +288,59 @@ def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
     return extra, []
 
 
-def verify_pr_agent_config(pr_agent_toml: str) -> list[str]:
+def exact_kimi_model_id(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"kimi-k\d+(?:\.\d+)*-code(?:-highspeed)?", value) is not None
+
+
+def exact_glm_model_id(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"glm-\d+(?:\.\d+)*", value) is not None
+
+
+def configured_runtime_literals(ai_review_toml: str) -> tuple[str, ...]:
+    try:
+        parsed = tomllib.loads(ai_review_toml)
+    except tomllib.TOMLDecodeError:
+        return ()
+    literals: list[str] = []
+    for table_name in ("glm", "kimi"):
+        table = parsed.get(table_name)
+        if isinstance(table, dict):
+            for key in ("api_base", "model", "deliverable_marker", "comment_marker", "cli_package"):
+                value = table.get(key)
+                if isinstance(value, str) and value:
+                    literals.append(value)
+            pr_agent = table.get("pr_agent")
+            if isinstance(pr_agent, dict):
+                value = pr_agent.get("model")
+                if isinstance(value, str) and value:
+                    literals.append(value)
+                fallback_models = pr_agent.get("fallback_models")
+                if isinstance(fallback_models, list):
+                    literals.extend(value for value in fallback_models if isinstance(value, str) and value)
+            workflow = table.get("workflow")
+            if isinstance(workflow, dict):
+                node_version = workflow.get("node_version")
+                if isinstance(node_version, str) and node_version:
+                    literals.append(f'node-version: "{node_version}"')
+    return tuple(dict.fromkeys(literals))
+
+
+def ai_review_model_values(ai_review_toml: str) -> tuple[object, object, object]:
+    try:
+        parsed = tomllib.loads(ai_review_toml)
+    except tomllib.TOMLDecodeError:
+        return None, None, None
+    glm = parsed.get("glm")
+    kimi = parsed.get("kimi")
+    if not isinstance(glm, dict) or not isinstance(kimi, dict):
+        return None, None, None
+    pr_agent = glm.get("pr_agent")
+    if not isinstance(pr_agent, dict):
+        return glm.get("model"), kimi.get("model"), None
+    return glm.get("model"), kimi.get("model"), pr_agent.get("model")
+
+
+def verify_pr_agent_config(pr_agent_toml: str, ai_review_toml: str) -> list[str]:
     findings: list[str] = []
     try:
         parsed = tomllib.loads(pr_agent_toml)
@@ -313,9 +363,13 @@ def verify_pr_agent_config(pr_agent_toml: str) -> list[str]:
         if reviewer.get(key) is not value:
             findings.append(f".pr_agent.toml pr_reviewer.{key} must be {value!r}")
 
+    glm_model, _kimi_model, glm_pr_agent_model = ai_review_model_values(ai_review_toml)
+    expected_source = f"GLM PR-Agent ({glm_pr_agent_model})" if isinstance(glm_pr_agent_model, str) else ""
     extra = reviewer.get("extra_instructions", "")
-    if "GLM PR-Agent (openai/glm-5.2)" not in extra:
+    if expected_source not in extra:
         findings.append(".pr_agent.toml extra_instructions must require explicit GLM PR-Agent source/model")
+    if isinstance(glm_model, str) and isinstance(glm_pr_agent_model, str) and glm_pr_agent_model != f"openai/{glm_model}":
+        findings.append(".pr_agent.toml source/model must match ci/ai-review.toml glm.pr_agent.model")
 
     return findings
 
@@ -363,11 +417,9 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("review.max_comment_chars", review.get("max_comment_chars"), 60000),
         ("review.response_chars_per_chunk", review.get("response_chars_per_chunk"), 8000),
         ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
-        ("glm.model", glm.get("model"), "glm-5.2"),
         ("glm.api_timeout_seconds", glm.get("api_timeout_seconds"), 300),
         ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
         ("glm.comment_marker", glm.get("comment_marker"), "<!-- ai-pr-reviewer-glm -->"),
-        ("glm.pr_agent.model", glm_pr_agent.get("model"), "openai/glm-5.2"),
         ("glm.pr_agent.custom_model_max_tokens", glm_pr_agent.get("custom_model_max_tokens"), 128000),
         ("glm.pr_agent.large_patch_policy", glm_pr_agent.get("large_patch_policy"), "clip"),
         ("glm.pr_agent.timeout_seconds", glm_pr_agent.get("timeout_seconds"), 300),
@@ -379,7 +431,6 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("glm.workflow.fallback_timeout_minutes", glm_workflow.get("fallback_timeout_minutes"), 20),
         ("glm.workflow.setup_overhead_timeout_minutes", glm_workflow.get("setup_overhead_timeout_minutes"), 7),
         ("kimi.api_base", kimi.get("api_base"), "https://api.kimi.com/coding/v1"),
-        ("kimi.model", kimi.get("model"), "kimi-k2.7-code"),
         ("kimi.provider_type", kimi.get("provider_type"), "kimi"),
         ("kimi.model_max_context_size", kimi.get("model_max_context_size"), 262144),
         ("kimi.default_thinking", kimi.get("default_thinking"), True),
@@ -406,8 +457,20 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
     ]
     if glm.get("deliverable_markers") != expected_glm_markers:
         findings.append("ci/ai-review.toml glm.deliverable_markers must include PR-Agent and GLM fallback markers")
-    if glm_pr_agent.get("fallback_models") != ["openai/glm-5.2"]:
-        findings.append("ci/ai-review.toml glm.pr_agent.fallback_models must contain only openai/glm-5.2")
+    glm_model = glm.get("model")
+    kimi_model = kimi.get("model")
+    glm_pr_agent_model = glm_pr_agent.get("model")
+    expected_glm_pr_agent_model = f"openai/{glm_model}" if isinstance(glm_model, str) else ""
+    if not exact_glm_model_id(glm_model):
+        findings.append("ci/ai-review.toml glm.model must be an exact GLM model id, not an alias")
+    if not exact_kimi_model_id(kimi_model):
+        findings.append("ci/ai-review.toml kimi.model must be an exact Kimi coding model id, not an alias")
+    if "latest" in str(glm_model).lower() or "latest" in str(kimi_model).lower():
+        findings.append("ci/ai-review.toml AI review models must not use latest aliases")
+    if glm_pr_agent_model != expected_glm_pr_agent_model:
+        findings.append("ci/ai-review.toml glm.pr_agent.model must wrap the same exact GLM model as glm.model")
+    if glm_pr_agent.get("fallback_models") != [expected_glm_pr_agent_model]:
+        findings.append("ci/ai-review.toml glm.pr_agent.fallback_models must contain only glm.pr_agent.model")
 
     return findings
 
@@ -479,7 +542,7 @@ def verify_texts(
     findings.extend(missing_snippets("AGENTS.md", agents_md, AGENTS_BACKPOINTER_SNIPPETS))
     findings.extend(missing_snippets(".pr_agent.toml extra_instructions", extra, PR_AGENT_MIRROR_NOTE_SNIPPETS))
     findings.extend(verify_ai_review_config(ai_review_toml))
-    findings.extend(verify_pr_agent_config(pr_agent_toml))
+    findings.extend(verify_pr_agent_config(pr_agent_toml, ai_review_toml))
     findings.extend(missing_snippets("scripts/ai_review_deliverables.py", ai_review_deliverables, AI_REVIEW_DELIVERABLES_SNIPPETS))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
@@ -512,6 +575,9 @@ def verify_texts(
             if endpoint in workflow:
                 findings.append(f"{workflow_name} must use coding-plan endpoint/model, not {endpoint!r}")
         for literal in WORKFLOW_FORBIDDEN_RUNTIME_LITERALS:
+            if literal in workflow:
+                findings.append(f"{workflow_name} must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
+        for literal in configured_runtime_literals(ai_review_toml):
             if literal in workflow:
                 findings.append(f"{workflow_name} must read AI review runtime value from ci/ai-review.toml, not {literal!r}")
 
@@ -547,6 +613,8 @@ def run_self_tests(repo_root: Path) -> None:
     agents = read_text(repo_root / "AGENTS.md")
     pr_agent = read_text(repo_root / ".pr_agent.toml")
     ai_review = read_text(repo_root / "ci/ai-review.toml")
+    ai_review_config = tomllib.loads(ai_review)
+    current_glm_model = ai_review_config["glm"]["model"]
     deliverables = read_text(repo_root / "scripts/ai_review_deliverables.py")
     glm = read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml")
     kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml")
@@ -580,7 +648,7 @@ def run_self_tests(repo_root: Path) -> None:
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
         ai_review_deliverables=deliverables,
-        glm_workflow=glm + "\n          GLM_MODEL: glm-5.2\n",
+        glm_workflow=glm + f"\n          GLM_MODEL: {current_glm_model}\n",
         kimi_workflow=kimi,
         smoke_workflow=smoke,
     )

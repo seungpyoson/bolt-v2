@@ -192,11 +192,11 @@ def fallback_config(module, **overrides):
         ),
         "expected_bot_login": "github-actions[bot]",
         "comment_marker": "<!-- ai-pr-reviewer-glm -->",
-        "source_label": "GLM direct fallback (`glm-5.2`)",
+        "source_label": "GLM direct fallback (`configured-glm-model`)",
     }
     values.update(overrides)
     if "source_label" not in overrides and values["provider"] == "Kimi":
-        values["source_label"] = "Kimi Code CLI (`kimi-k2.7-code`)"
+        values["source_label"] = "Kimi Code CLI (`configured-kimi-model`)"
     return module.FallbackConfig(**values)
 
 
@@ -774,7 +774,7 @@ def test_stamps_pr_agent_review_source_model() -> None:
         markers=("## PR Reviewer Guide", "<!-- ai-pr-reviewer-glm -->"),
         expected_bot_login="github-actions[bot]",
         marker="<!-- ai-pr-reviewer-glm -->",
-        source_label="GLM PR-Agent (`openai/glm-5.2`)",
+        source_label="GLM PR-Agent (`configured-pr-agent-model`)",
         run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
     )
 
@@ -783,7 +783,7 @@ def test_stamps_pr_agent_review_source_model() -> None:
     assert len(github.updated) == 1
     assert github.updated[0][0] == 77
     assert github.updated[0][1].startswith("<!-- ai-pr-reviewer-glm -->")
-    assert "**Source:** GLM PR-Agent (`openai/glm-5.2`)" in github.updated[0][1]
+    assert "**Source:** GLM PR-Agent (`configured-pr-agent-model`)" in github.updated[0][1]
     assert "**Action run:** https://github.com/seungpyoson/bolt-v2/actions/runs/1" in github.updated[0][1]
 
 
@@ -793,13 +793,13 @@ def test_stamping_preserves_existing_marker_as_first_line() -> None:
     stamped = module.add_source_line(
         "<!-- ai-pr-reviewer-glm -->\n\n## PR Reviewer Guide\n\nBody.",
         marker="<!-- ai-pr-reviewer-glm -->",
-        source_label="GLM PR-Agent (`openai/glm-5.2`)",
+        source_label="GLM PR-Agent (`configured-pr-agent-model`)",
         run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
     )
 
     assert stamped.startswith("<!-- ai-pr-reviewer-glm -->\n\n## PR Reviewer Guide")
     assert stamped.count("<!-- ai-pr-reviewer-glm -->") == 1
-    assert "**Source:** GLM PR-Agent (`openai/glm-5.2`)" in stamped
+    assert "**Source:** GLM PR-Agent (`configured-pr-agent-model`)" in stamped
 
 
 def test_truncates_fallback_review_to_one_comment_when_comment_budget_requires_it() -> None:
@@ -999,7 +999,7 @@ def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
             client = module.KimiCliClient(
                 api_key="fake-kimi-secret",
                 api_base="https://api.kimi.com/coding/v1",
-                model="kimi-k2.7-code",
+                model="configured-kimi-model",
                 provider="Kimi",
                 provider_type="kimi",
                 model_max_context_size=262144,
@@ -1022,7 +1022,7 @@ def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
     assert argv == ["kimi", "-p", "system\n\nuser"]
     assert "fake-kimi-secret" not in " ".join(argv)
     env = call["env"]
-    assert env["KIMI_MODEL_NAME"] == "kimi-k2.7-code"
+    assert env["KIMI_MODEL_NAME"] == "configured-kimi-model"
     assert env["KIMI_MODEL_API_KEY"] == "fake-kimi-secret"
     assert env["KIMI_MODEL_BASE_URL"] == "https://api.kimi.com/coding/v1"
     assert env["KIMI_MODEL_PROVIDER_TYPE"] == "kimi"

@@ -225,6 +225,8 @@ jobs:
     needs: [ci-policy, detect, fmt]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -270,6 +272,8 @@ jobs:
     needs: [ci-policy, detect, fmt]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

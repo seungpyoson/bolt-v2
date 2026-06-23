@@ -62,8 +62,20 @@ _OS_MUTATORS = frozenset(
         "rmdir",
         "symlink",
         "unlink",
+        "utime",
     }
 )
+_TEMPFILE_REPO_CREATORS = frozenset(
+    {
+        "NamedTemporaryFile",
+        "SpooledTemporaryFile",
+        "TemporaryDirectory",
+        "TemporaryFile",
+        "mkdtemp",
+        "mkstemp",
+    }
+)
+_JUST_EXPRESSION_OPS = frozenset({"call", "concatenate", "evaluate", "if", "join", "variable"})
 _MANIFEST_PATH = SCRIPTS_DIR / "cheap_lane_discovered_unlabeled.manifest"
 _GATE_ALIASES: dict[str, str] = {}
 _JUST_DUMP_CACHE: dict | None = None
@@ -86,6 +98,8 @@ _INVOCATION_FORMS = {
         "os.popen",
         "os.exec*",
         "os.spawn*",
+        "os.posix_spawn",
+        "os.posix_spawnp",
         "subprocess.getoutput",
         "subprocess.getstatusoutput",
         "pty.spawn",
@@ -213,7 +227,7 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         self.os_modules = {"os"}
         self.shutil_modules = {"shutil"}
         self.tempfile_modules = {"tempfile"}
-        self.tempdir_names = {"TemporaryDirectory"}
+        self.tempdir_names = set(_TEMPFILE_REPO_CREATORS)
         self.pathlib_modules = {"pathlib"}
         self.path_names = {"Path"}
 
@@ -232,7 +246,7 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module == "tempfile":
             for alias in node.names:
-                if alias.name == "TemporaryDirectory":
+                if alias.name in _TEMPFILE_REPO_CREATORS:
                     self.tempdir_names.add(alias.asname or alias.name)
         elif node.module == "pathlib":
             for alias in node.names:
@@ -286,7 +300,7 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
                         self.findings.append(
                             self._finding(
                                 item.context_expr,
-                                "tempfile.TemporaryDirectory",
+                                self._temporary_directory_label(item.context_expr),
                                 "dir=REPO_ROOT",
                             )
                         )
@@ -298,6 +312,17 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
             self.origins = original_origins
 
     def visit_Call(self, node: ast.Call) -> None:
+        if (
+            self._is_temporary_directory_call(node)
+            and self._temporary_directory_origin(node) == _REPO_ORIGIN
+        ):
+            self.findings.append(
+                self._finding(
+                    node,
+                    self._temporary_directory_label(node),
+                    "dir=REPO_ROOT",
+                )
+            )
         for operation, target in self._mutating_targets(node):
             if self._origin(target) == _REPO_ORIGIN:
                 self.findings.append(
@@ -446,7 +471,7 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
     def _is_temporary_directory_call(self, node: ast.AST) -> bool:
         return isinstance(node, ast.Call) and (
             (isinstance(node.func, ast.Name) and node.func.id in self.tempdir_names)
-            or self._is_module_call(node, self.tempfile_modules) == "TemporaryDirectory"
+            or (self._is_module_call(node, self.tempfile_modules) in _TEMPFILE_REPO_CREATORS)
         )
 
     def _temporary_directory_origin(self, node: ast.Call) -> str:
@@ -454,6 +479,13 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
             if keyword.arg == "dir" and self._origin(keyword.value) == _REPO_ORIGIN:
                 return _REPO_ORIGIN
         return _TEMP_ORIGIN
+
+    def _temporary_directory_label(self, node: ast.Call) -> str:
+        if isinstance(node.func, ast.Name):
+            return f"tempfile.{node.func.id}"
+        if isinstance(node.func, ast.Attribute):
+            return f"tempfile.{node.func.attr}"
+        return "tempfile"
 
     def _mutating_targets(self, node: ast.Call) -> list[tuple[str, ast.AST]]:
         targets: list[tuple[str, ast.AST]] = []
@@ -621,6 +653,14 @@ def _eval_assignment(expr: object, dump: dict, stack: tuple[str, ...] = ()) -> s
         if name not in os.environ:
             raise AssertionError(f"just env_var({name}) is unset")
         return os.environ[name]
+    if op == "join" and len(expr) >= 2:
+        parts = [_eval_assignment(part, dump, stack) for part in expr[1:]]
+        if not parts:
+            return ""
+        path = Path(parts[0])
+        for part in parts[1:]:
+            path /= part
+        return str(path)
     raise AssertionError(f"unrecognized just expression: {expr!r}")
 
 
@@ -640,7 +680,7 @@ def _flatten_just_fragments(fragment: object, dump: dict, *, strict: bool = True
 
 
 def _is_just_expression(fragment: list[object]) -> bool:
-    return bool(fragment) and isinstance(fragment[0], str) and fragment[0] in {"call", "concatenate", "variable"}
+    return bool(fragment) and isinstance(fragment[0], str) and fragment[0] in _JUST_EXPRESSION_OPS
 
 
 def _recipe_command_lines(recipe: dict, dump: dict, *, strict: bool = True) -> list[str]:
@@ -658,39 +698,115 @@ def _recipe_command_lines(recipe: dict, dump: dict, *, strict: bool = True) -> l
 
 def _shell_subcommands(line: str) -> list[str]:
     commands: list[str] = []
+
+    def append_if_relevant(command: str) -> None:
+        stripped = command.strip()
+        if stripped and _shell_segment_mentions_python_or_just(stripped):
+            commands.append(stripped)
+
     for match in re.finditer(r"python3?\s+-c\s+('[^']*'|\"[^\"]*\")", line):
         commands.append(match.group(0))
-    for payload in _command_substitution_payloads(line):
+    for payload in [*_command_substitution_payloads(line), *_backtick_command_payloads(line)]:
         payload = payload.strip()
-        if payload and (
-            "python" in payload.lower()
-            or " just " in f" {payload} "
-            or payload.startswith("$")
-        ):
-            commands.append(payload)
-            commands.extend(
-                part.strip()
-                for part in re.split(r"(?<!\|)\|(?!\|)", payload)
-                if part.strip()
-                and (
-                    "python" in part.lower()
-                    or " just " in f" {part} "
-                    or part.strip().startswith("$")
-                )
-            )
-    if "|" in line and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", line.strip()):
-        commands.extend(
-            part.strip()
-            for part in re.split(r"(?<!\|)\|(?!\|)", line)
-            if part.strip() and ("python" in part or " just " in f" {part} ")
-        )
+        append_if_relevant(payload)
+        for part in _shell_command_segments(payload):
+            append_if_relevant(part)
+    for part in _shell_command_segments(line):
+        append_if_relevant(part)
     stripped = line.strip()
     if stripped.startswith("if ! "):
         inner = stripped[5:].strip()
         if inner.endswith("; then"):
             inner = inner[:-6].strip()
         commands.append(inner)
-    return commands
+    return list(dict.fromkeys(commands))
+
+
+def _shell_segment_mentions_python_or_just(command: str) -> bool:
+    lowered = command.lower()
+    return (
+        "python" in lowered
+        or " just " in f" {command} "
+        or command.strip().startswith("$")
+    )
+
+
+def _shell_command_segments(line: str) -> list[str]:
+    segments: list[str] = []
+    start = 0
+    index = 0
+    quote: str | None = None
+    backtick = False
+    command_substitution_depth = 0
+    while index < len(line):
+        char = line[index]
+        if backtick:
+            if char == "\\":
+                index += 2
+                continue
+            if char == "`":
+                backtick = False
+            index += 1
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == "`":
+                backtick = True
+                index += 1
+                continue
+            if char == '"':
+                quote = None
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if char == "`":
+            backtick = True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if line[index : index + 2] == "$(":
+            command_substitution_depth += 1
+            index += 2
+            continue
+        if command_substitution_depth:
+            if char == ")":
+                command_substitution_depth -= 1
+            index += 1
+            continue
+        separator_width = 0
+        if line[index : index + 2] in {"&&", "||"}:
+            separator_width = 2
+        elif char == ";" or (
+            char == "|"
+            and line[index : index + 2] != "||"
+            and (index == 0 or line[index - 1] != "|")
+            and (index + 1 >= len(line) or line[index + 1] != "|")
+        ):
+            separator_width = 1
+        if separator_width:
+            segment = line[start:index].strip()
+            if segment:
+                segments.append(segment)
+            index += separator_width
+            start = index
+            continue
+        index += 1
+    tail = line[start:].strip()
+    if tail and (segments or tail != line.strip()):
+        segments.append(tail)
+    return segments
 
 
 def _command_substitution_payloads(line: str) -> list[str]:
@@ -742,6 +858,54 @@ def _command_substitution_payloads(line: str) -> list[str]:
         else:
             payloads.append(line[start:])
             break
+    return payloads
+
+
+def _backtick_command_payloads(line: str) -> list[str]:
+    payloads: list[str] = []
+    index = 0
+    quote: str | None = None
+    while index < len(line):
+        char = line[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if char == "\\":
+                index += 2
+                continue
+            if char == '"':
+                quote = None
+                index += 1
+                continue
+        elif char == "'":
+            quote = "'"
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if char == "`":
+            start = index + 1
+            cursor = start
+            while cursor < len(line):
+                if line[cursor] == "\\":
+                    cursor += 2
+                    continue
+                if line[cursor] == "`":
+                    payload = line[start:cursor]
+                    payloads.append(payload)
+                    payloads.extend(_backtick_command_payloads(payload))
+                    index = cursor + 1
+                    break
+                cursor += 1
+            else:
+                payloads.append(line[start:])
+                break
+            continue
+        index += 1
     return payloads
 
 
@@ -1057,6 +1221,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.os_shell_names: set[str] = set()
         self.os_exec_names: set[str] = set()
         self.os_spawn_names: set[str] = set()
+        self.os_posix_spawn_names: set[str] = set()
         self.pty_spawn_names: set[str] = set()
         self.spec_loader_names = {"spec_from_file_location"}
         self.source_loader_names = {"SourceFileLoader"}
@@ -1136,6 +1301,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                     self.os_shell_names.add(name)
                 elif alias.name.startswith("exec"):
                     self.os_exec_names.add(name)
+                elif alias.name in {"posix_spawn", "posix_spawnp"}:
+                    self.os_posix_spawn_names.add(name)
                 elif alias.name.startswith("spawn"):
                     self.os_spawn_names.add(name)
         elif node.module == "pty":
@@ -1319,15 +1486,20 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             return
         if isinstance(command, str):
             if shell:
-                try:
-                    tokens = _normalized_shell_tokens(command)
-                except AssertionError as exc:
-                    self._fail(node, str(exc))
+                handled_python = False
+                for shell_line in [command, *_shell_subcommands(command)]:
+                    try:
+                        tokens = _normalized_shell_tokens(shell_line)
+                    except AssertionError as exc:
+                        self._fail(node, str(exc))
+                        return
+                    if tokens and _is_python_interpreter_token(tokens[0]):
+                        self._handle_python_tokens(node, tokens)
+                        handled_python = True
+                    elif _classify_command(shell_line) == "dynamic-shell":
+                        self._fail(node, f"unsupported dynamic shell=True command: {shell_line}")
+                if handled_python:
                     return
-                if tokens and _is_python_interpreter_token(tokens[0]):
-                    self._handle_python_tokens(node, tokens)
-                elif _classify_command(command) == "dynamic-shell":
-                    self._fail(node, f"unsupported dynamic shell=True command: {command}")
                 return
             if executable is not None and _is_python_interpreter_token(executable):
                 self._handle_python_tokens(node, [executable, command])
@@ -1341,7 +1513,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         if not isinstance(command, list) or not command:
             return
         if executable is not None and _is_python_interpreter_token(executable):
-            self._handle_python_tokens(node, [executable, *command])
+            tokens = command if _is_python_interpreter_token(command[0]) else [executable, *command]
+            self._handle_python_tokens(node, tokens)
             return
         executable = command[0]
         if executable is _UNRESOLVED:
@@ -1444,7 +1617,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return False
 
     def _handle_os_exec_spawn_call(self, node: ast.Call, call_name: str) -> None:
-        target_index = 1 if self._is_os_spawn_call(call_name) else 0
+        target_index = 0 if self._is_os_posix_spawn_call(call_name) else 1 if self._is_os_spawn_call(call_name) else 0
         if len(node.args) <= target_index:
             return
         target = self._resolve_value(node.args[target_index])
@@ -1764,10 +1937,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return any(call_name == f"{module}.spawn" for module in self.pty_modules)
 
     def _is_os_exec_spawn_call(self, call_name: str) -> bool:
-        if call_name in self.os_exec_names or call_name in self.os_spawn_names:
+        if call_name in self.os_exec_names or call_name in self.os_spawn_names or call_name in self.os_posix_spawn_names:
             return True
         return any(
-            call_name.startswith(f"{module}.exec") or call_name.startswith(f"{module}.spawn")
+            call_name.startswith(f"{module}.exec")
+            or call_name.startswith(f"{module}.spawn")
+            or call_name in {f"{module}.posix_spawn", f"{module}.posix_spawnp"}
             for module in self.os_modules
         )
 
@@ -1775,6 +1950,11 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         if call_name in self.os_spawn_names:
             return True
         return any(call_name.startswith(f"{module}.spawn") for module in self.os_modules)
+
+    def _is_os_posix_spawn_call(self, call_name: str) -> bool:
+        if call_name in self.os_posix_spawn_names:
+            return True
+        return any(call_name in {f"{module}.posix_spawn", f"{module}.posix_spawnp"} for module in self.os_modules)
 
     def _fail(self, node: ast.AST, message: str) -> None:
         rel = self.path.relative_to(REPO_ROOT)
@@ -1977,10 +2157,19 @@ def test_repo_write_analyzer_catches_extended_mutators() -> None:
         "import os\nos.link('/tmp/src', REPO_ROOT / 'dst')\n",
         "import os\nos.symlink('/tmp/src', REPO_ROOT / 'dst')\n",
         "import os\nos.mkdir(REPO_ROOT / 'dst')\n",
+        "import os\nos.utime(REPO_ROOT / 'dst', None)\n",
         "import os\nos.open(REPO_ROOT / 'dst', os.O_CREAT | os.O_RDWR)\n",
         "open(str(REPO_ROOT / 'dst'), 'w')\n",
         "import os\nos.remove(os.fspath(REPO_ROOT / 'dst'))\n",
         "open(REPO_ROOT / 'dst', 'r+')\n",
+        "import shutil\nshutil.rmtree(REPO_ROOT / 'dst')\n",
+        "import shutil\nshutil.move('/tmp/src', REPO_ROOT / 'dst')\n",
+        "import shutil\nshutil.copy('/tmp/src', REPO_ROOT / 'dst')\n",
+        "import tempfile\nwith tempfile.NamedTemporaryFile(dir=REPO_ROOT, delete=False) as f:\n    f.write(b'x')\n",
+        "import tempfile\ntempfile.mkdtemp(dir=REPO_ROOT)\n",
+        "import tempfile\ntempfile.mkstemp(dir=REPO_ROOT)\n",
+        "import tempfile\ntempfile.TemporaryFile(dir=REPO_ROOT)\n",
+        "import tempfile\ntempfile.SpooledTemporaryFile(dir=REPO_ROOT)\n",
     ]
     for source in snippets:
         findings = _repo_shared_state_write_findings_from_source(source)
@@ -2024,7 +2213,9 @@ run_path(str(SCRIPT))
 subprocess.run(["python3", str(SCRIPT)])
 direct_run(["python3", str(SCRIPT)])
 subprocess.run([str(SCRIPT)], executable="python3")
+subprocess.run(["python3", str(SCRIPT)], executable="python3")
 subprocess.run("python3 scripts/test_nextest_fingerprint.py", shell=True)
+subprocess.run("echo data | python3 scripts/test_nextest_fingerprint.py", shell=True)
 run(str(SCRIPTS / "clean_merged_artifacts.py"))
 """
     resolver = _CodeExecutionEdgeResolver(
@@ -2102,9 +2293,12 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "import os\nos.system('python3 scripts/x.py')\n",
         "import os\nos.execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.spawnv(os.P_NOWAIT, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "import os\nos.posix_spawn('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
+        "import os\nos.posix_spawnp('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
         "from os import system as direct_system\ndirect_system('python3 scripts/test_nextest_fingerprint.py')\n",
         "from os import execv as direct_execv\ndirect_execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "from os import spawnv as direct_spawnv\ndirect_spawnv(0, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "from os import posix_spawn as direct_posix_spawn\ndirect_posix_spawn('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
         "import subprocess\nsubprocess.getoutput('echo x')\n",
         "import subprocess\nsubprocess.getstatusoutput('echo x')\n",
         "from subprocess import getoutput as direct_getoutput\ndirect_getoutput('echo x')\n",
@@ -2333,6 +2527,22 @@ def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
     scripts = _closure_python_scripts(call_fragment_dump, recipes)
     assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
 
+    join_fragment_dump = _synthetic_just_dump(
+        labels=["local-gate:alpha"],
+        recipes={
+            "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
+            "alpha-inner": [
+                [
+                    "python3 ",
+                    [["join", ["call", "justfile_directory"], ["join", "scripts", "test_nextest_fingerprint.py"]]],
+                ]
+            ],
+        },
+    )
+    recipes, _gates = _cheap_gate_closure(join_fragment_dump, {"local-gate:alpha"})
+    scripts = _closure_python_scripts(join_fragment_dump, recipes)
+    assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
+
 
 def test_shell_expanded_python_commands_fail_closed() -> None:
     dump = _synthetic_just_dump(
@@ -2359,7 +2569,11 @@ def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
             "alpha-inner": [
                 ["env PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"],
                 ["python3 scripts/test_nextest_fingerprint.py | grep ok || true"],
+                ["echo setup && python3 scripts/test_nextest_fingerprint.py"],
+                ["echo setup; python3 scripts/test_nextest_fingerprint.py"],
+                ["false || python3 scripts/test_nextest_fingerprint.py"],
                 ["VALUE=\"$(echo $(python3 scripts/test_nextest_fingerprint.py))\""],
+                ["VALUE=`python3 scripts/test_nextest_fingerprint.py`"],
                 [
                     "VALUE=\"$(printf '%s\\n' \"$policy_json\" | python3 -c 'import json, sys; print(json.load(sys.stdin)[\"x\"])')\""
                 ],

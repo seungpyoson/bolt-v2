@@ -8,6 +8,8 @@ import ast
 import importlib.util
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -38,6 +40,34 @@ _MUTATING_PATH_METHODS = frozenset(
     {"write_text", "write_bytes", "mkdir", "rmdir", "rmtree", "unlink", "touch"}
 )
 _OS_MUTATORS = frozenset({"makedirs", "remove", "rename", "rmdir"})
+_MANIFEST_PATH = SCRIPTS_DIR / "cheap_lane_discovered_unlabeled.manifest"
+_GATE_ALIASES: dict[str, str] = {}
+_JUST_DUMP_CACHE: dict | None = None
+_DISCOVERY_CACHE: set[Path] | None = None
+
+_INVOCATION_FORMS = {
+    "python_interpreters": ("python", "python3", "sys.executable"),
+    "subprocess_calls": ("run", "Popen", "call", "check_call", "check_output"),
+    "loader_calls": (
+        "spec_from_file_location",
+        "SourceFileLoader",
+        "import_module",
+        "run_path",
+        "run_module",
+    ),
+    "dynamic_code_calls": (
+        "eval",
+        "exec",
+        "os.system",
+        "os.popen",
+        "os.exec*",
+        "os.spawn*",
+        "subprocess.getoutput",
+        "subprocess.getstatusoutput",
+        "pty.spawn",
+    ),
+    "mutating_path_methods": tuple(sorted(_MUTATING_PATH_METHODS)),
+}
 
 
 def _valid_lane_policy() -> dict:
@@ -159,6 +189,8 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         self.shutil_modules = {"shutil"}
         self.tempfile_modules = {"tempfile"}
         self.tempdir_names = {"TemporaryDirectory"}
+        self.pathlib_modules = {"pathlib"}
+        self.path_names = {"Path"}
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -169,12 +201,18 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
                 self.shutil_modules.add(name)
             elif alias.name == "tempfile":
                 self.tempfile_modules.add(name)
+            elif alias.name == "pathlib":
+                self.pathlib_modules.add(name)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module == "tempfile":
             for alias in node.names:
                 if alias.name == "TemporaryDirectory":
                     self.tempdir_names.add(alias.asname or alias.name)
+        elif node.module == "pathlib":
+            for alias in node.names:
+                if alias.name == "Path":
+                    self.path_names.add(alias.asname or alias.name)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_isolated_body(node.body)
@@ -257,6 +295,8 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
     def _origin(self, node: ast.AST | None) -> str | None:
         if node is None:
             return None
+        if self._is_file_anchored_repo_path(node):
+            return _REPO_ORIGIN
         if isinstance(node, ast.Name):
             if node.id in _REPO_ROOT_NAMES:
                 return _REPO_ORIGIN
@@ -277,7 +317,9 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
 
     def _call_origin(self, node: ast.Call) -> str | None:
         func = node.func
-        if isinstance(func, ast.Name) and func.id == "Path" and node.args:
+        if isinstance(func, ast.Name) and func.id == "repo_path":
+            return _REPO_ORIGIN
+        if self._is_path_constructor_call(func) and node.args:
             return self._origin(node.args[0])
         if isinstance(func, ast.Attribute):
             if func.attr in {
@@ -295,6 +337,52 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
             }:
                 return self._origin(func.value)
         return None
+
+    def _is_path_constructor_call(self, func: ast.AST) -> bool:
+        if isinstance(func, ast.Name) and func.id in self.path_names:
+            return True
+        return (
+            isinstance(func, ast.Attribute)
+            and func.attr == "Path"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in self.pathlib_modules
+        )
+
+    def _is_file_anchored_repo_path(self, node: ast.AST) -> bool:
+        if self._is_path_file_chain(node):
+            return True
+        if isinstance(node, ast.Attribute) and node.attr == "parent":
+            return self._is_path_file_chain(node.value)
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "parents"
+            and self._is_path_file_chain(node.value.value)
+        ):
+            return True
+        return False
+
+    def _is_path_file_chain(self, node: ast.AST) -> bool:
+        if (
+            isinstance(node, ast.Call)
+            and self._is_path_constructor_call(node.func)
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "__file__"
+        ):
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"resolve", "absolute"}:
+                return self._is_path_file_chain(node.func.value)
+        if isinstance(node, ast.Attribute) and node.attr == "parent":
+            return self._is_path_file_chain(node.value)
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "parents"
+        ):
+            return self._is_path_file_chain(node.value.value)
+        return False
 
     def _merge_origin(self, *origins: str | None) -> str | None:
         if _REPO_ORIGIN in origins:
@@ -378,29 +466,15 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         return f"{rel}:{node.lineno}: {operation} targets shared repo state: {target}"
 
 
-def _justfile_recipe_python_scripts(recipe_name: str) -> set[Path]:
-    scripts: set[Path] = set()
-    in_recipe = False
-    for raw_line in (REPO_ROOT / "justfile").read_text(encoding="utf-8").splitlines():
-        if not in_recipe:
-            in_recipe = raw_line.startswith(f"{recipe_name}:")
-            continue
-        if raw_line and not raw_line[0].isspace():
-            break
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        parts = stripped.split()
-        if len(parts) >= 2 and parts[0] == "python3" and parts[1].startswith("scripts/"):
-            script = REPO_ROOT / parts[1]
-            if script.suffix == ".py":
-                scripts.add(script)
-    return scripts
-
-
-def _cheap_lane_python_scripts() -> set[Path]:
+def _cheap_lane_labels() -> list[str]:
     policy = RV.load_policy(REPO_ROOT)["local_lane_policy"]
     labels = policy.get("cheap_lane_labels", [])
+    assert isinstance(labels, list), "cheap_lane_labels must be a list"
+    return labels
+
+
+def _cheap_labeled_python_scripts(labels: list[str] | None = None) -> set[Path]:
+    labels = _cheap_lane_labels() if labels is None else labels
     missing = sorted(
         label
         for label in labels
@@ -409,18 +483,947 @@ def _cheap_lane_python_scripts() -> set[Path]:
         and not (SCRIPTS_DIR / label).is_file()
     )
     assert not missing, f"cheap lane script labels must exist: {missing}"
-
-    scripts = {
+    return {
         SCRIPTS_DIR / label
         for label in labels
         if isinstance(label, str) and label.endswith(".py")
     }
-    scripts.update(_justfile_recipe_python_scripts("source-fence-static-inner"))
+
+
+def _cheap_lane_python_scripts() -> set[Path]:
+    return _discover_cheap_lane_scripts()
+
+
+def _just_dump() -> dict:
+    global _JUST_DUMP_CACHE
+    if _JUST_DUMP_CACHE is not None:
+        return _JUST_DUMP_CACHE
+    result = subprocess.run(
+        ["just", "--dump", "--dump-format", "json"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, f"just --dump failed: {result.stderr.strip()}"
+    try:
+        dump = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"just --dump emitted invalid JSON: {exc}") from exc
+    _validate_just_dump_shape(dump)
+    _JUST_DUMP_CACHE = dump
+    return dump
+
+
+def _validate_just_dump_shape(dump: object) -> None:
+    assert isinstance(dump, dict), "just dump must be an object"
+    for key in ("recipes", "assignments", "settings"):
+        assert key in dump, f"just dump missing required key: {key}"
+    assert isinstance(dump["recipes"], dict), "just dump recipes must be an object"
+    assert isinstance(dump["assignments"], dict), "just dump assignments must be an object"
+
+
+def _eval_assignment(expr: object, dump: dict, stack: tuple[str, ...] = ()) -> str:
+    if isinstance(expr, dict) and "value" in expr:
+        return _eval_assignment(expr["value"], dump, stack)
+    if isinstance(expr, str):
+        return expr
+    if not isinstance(expr, list) or not expr:
+        raise AssertionError(f"unrecognized just expression: {expr!r}")
+    op = expr[0]
+    if op == "concatenate":
+        return "".join(_eval_assignment(part, dump, stack) for part in expr[1:])
+    if op == "variable" and len(expr) == 2 and isinstance(expr[1], str):
+        name = expr[1]
+        if name in stack:
+            raise AssertionError(f"recursive just assignment: {' -> '.join(stack + (name,))}")
+        assignments = dump.get("assignments", {})
+        assert isinstance(assignments, dict)
+        if name not in assignments:
+            raise AssertionError(f"unresolved just variable: {name}")
+        return _eval_assignment(assignments[name], dump, stack + (name,))
+    if op == "call" and len(expr) >= 2 and expr[1] == "justfile_directory":
+        return str(REPO_ROOT)
+    if op == "call" and len(expr) == 3 and expr[1] == "env_var" and isinstance(expr[2], str):
+        name = expr[2]
+        if name not in os.environ:
+            raise AssertionError(f"just env_var({name}) is unset")
+        return os.environ[name]
+    raise AssertionError(f"unrecognized just expression: {expr!r}")
+
+
+def _flatten_just_fragments(fragment: object, dump: dict, *, strict: bool = True) -> str:
+    if isinstance(fragment, str):
+        return fragment
+    if isinstance(fragment, list):
+        if fragment and fragment[0] == "variable" and len(fragment) == 2:
+            try:
+                return _eval_assignment(fragment, dump)
+            except AssertionError:
+                if strict:
+                    raise
+                return "{{" + str(fragment[1]) + "}}"
+        return "".join(_flatten_just_fragments(part, dump, strict=strict) for part in fragment)
+    raise AssertionError(f"unrecognized just body fragment: {fragment!r}")
+
+
+def _recipe_command_lines(recipe: dict, dump: dict, *, strict: bool = True) -> list[str]:
+    body = recipe.get("body")
+    assert isinstance(body, list), f"recipe {recipe.get('name', '<unknown>')} body must be a list"
+    lines: list[str] = []
+    for raw_line in body:
+        line = _flatten_just_fragments(raw_line, dump, strict=strict).strip()
+        if not line:
+            continue
+        lines.append(line)
+        lines.extend(_shell_subcommands(line))
+    return lines
+
+
+def _shell_subcommands(line: str) -> list[str]:
+    commands: list[str] = []
+    for match in re.finditer(r"python3?\s+-c\s+('[^']*'|\"[^\"]*\")", line):
+        commands.append(match.group(0))
+    for payload in re.findall(r"\$\(([^()]*)\)", line):
+        payload = payload.strip()
+        if payload and ("python" in payload or " just " in f" {payload} "):
+            commands.append(payload)
+            commands.extend(
+                part.strip()
+                for part in re.split(r"(?<!\|)\|(?!\|)", payload)
+                if part.strip() and ("python" in part or " just " in f" {part} ")
+            )
+    if "|" in line and "||" not in line and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", line.strip()):
+        commands.extend(
+            part.strip()
+            for part in re.split(r"(?<!\|)\|(?!\|)", line)
+            if part.strip() and ("python" in part or " just " in f" {part} ")
+        )
+    stripped = line.strip()
+    if stripped.startswith("if ! "):
+        inner = stripped[5:].strip()
+        if inner.endswith("; then"):
+            inner = inner[:-6].strip()
+        commands.append(inner)
+    return commands
+
+
+def _shlex_tokens(line: str) -> list[str]:
+    try:
+        return shlex.split(line, comments=False, posix=True)
+    except ValueError as exc:
+        raise AssertionError(f"cannot parse shell command statically: {line!r}: {exc}") from exc
+
+
+def _classify_command(line: str) -> str:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or stripped.startswith("#!"):
+        return "none"
+    if "{{" in stripped or "}}" in stripped:
+        return "dynamic-shell"
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", stripped):
+        return "none"
+    if stripped.startswith("if ! "):
+        stripped = stripped[5:].strip()
+        if stripped.endswith("; then"):
+            stripped = stripped[:-6].strip()
+    tokens = _shlex_tokens(stripped)
+    if not tokens:
+        return "none"
+    while tokens and _is_shell_assignment(tokens[0]):
+        tokens = tokens[1:]
+    if not tokens:
+        return "none"
+    command = tokens[0]
+    if command in {"if", "then", "fi", "for", "do", "done", "else", "elif", "set", "shopt"}:
+        return "boundary"
+    if command in {"env"} and len(tokens) > 1 and _is_python_interpreter_token(tokens[1]):
+        return "dynamic-shell"
+    if command.startswith("$") or "*" in command or "?" in command:
+        return "dynamic-shell"
+    if _is_python_interpreter_token(command):
+        return "py-exec"
+    if command in {"bash", "sh"}:
+        return "boundary"
+    return "boundary"
+
+
+def _is_shell_assignment(token: str) -> bool:
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
+
+
+def _cheap_gate_closure(dump: dict, labels: set[str] | None = None) -> tuple[set[str], dict[str, str]]:
+    _validate_just_dump_shape(dump)
+    labels = set(_cheap_lane_labels()) if labels is None else labels
+    recipes = dump["recipes"]
+    assert isinstance(recipes, dict)
+    gates: dict[str, str] = {}
+    for recipe_name, recipe in recipes.items():
+        assert isinstance(recipe, dict), f"recipe {recipe_name} must be an object"
+        for line in _recipe_command_lines(recipe, dump, strict=False):
+            parsed = _coordinator_gate_from_line(line)
+            if parsed is None:
+                continue
+            gate = parsed
+            if recipe.get("private") is True:
+                raise AssertionError(f"private recipe {recipe_name} invokes local_verification_gate.py")
+            gates[gate] = recipe_name
+
+    _validate_gates(gates, labels, recipes)
+
+    closure = set(gates.values())
+    queue = list(closure)
+    while queue:
+        recipe_name = queue.pop(0)
+        recipe = recipes.get(recipe_name)
+        if not isinstance(recipe, dict):
+            raise AssertionError(f"recipe in cheap-gate closure is missing: {recipe_name}")
+        for dep in recipe.get("dependencies", []):
+            if not isinstance(dep, dict) or not isinstance(dep.get("recipe"), str):
+                raise AssertionError(f"unrecognized dependency in {recipe_name}: {dep!r}")
+            dep_name = dep["recipe"]
+            if dep_name not in closure:
+                closure.add(dep_name)
+                queue.append(dep_name)
+        for line in _recipe_command_lines(recipe, dump):
+            target = _routed_just_recipe(line)
+            if target is not None and target not in closure:
+                if target not in recipes:
+                    raise AssertionError(f"cheap gate routes to missing recipe: {target}")
+                closure.add(target)
+                queue.append(target)
+    return closure, gates
+
+
+def _coordinator_gate_from_line(line: str) -> str | None:
+    if "local_verification_gate.py" not in line:
+        return None
+    tokens = _shlex_tokens(line)
+    for index, token in enumerate(tokens):
+        if Path(token).name == "local_verification_gate.py":
+            if index + 1 >= len(tokens):
+                raise AssertionError(f"missing gate name in coordinator call: {line}")
+            return tokens[index + 1]
+    return None
+
+
+def _routed_just_recipe(line: str) -> str | None:
+    if "-- just " not in line:
+        return None
+    tokens = _shlex_tokens(line)
+    for index, token in enumerate(tokens):
+        if token == "--" and tokens[index + 1 : index + 3] and tokens[index + 1] == "just":
+            if index + 2 >= len(tokens):
+                raise AssertionError(f"local gate route missing just recipe: {line}")
+            return tokens[index + 2]
+    return None
+
+
+def _validate_gates(gates: dict[str, str], labels: set[str], recipes: dict) -> None:
+    labeled_gates = {label.removeprefix("local-gate:") for label in labels if label.startswith("local-gate:")}
+    derived_gates = set(gates)
+    missing_recipe = sorted(labeled_gates - derived_gates)
+    missing_label = sorted(derived_gates - labeled_gates)
+    assert not missing_recipe, f"local-gate labels without coordinator recipe: {missing_recipe}"
+    assert not missing_label, f"coordinator recipes without local-gate labels: {missing_label}"
+    for gate, recipe_name in gates.items():
+        expected_recipe = _GATE_ALIASES.get(gate, gate)
+        assert recipe_name == expected_recipe, (
+            f"coordinator gate {gate} must be invoked by recipe {expected_recipe}, got {recipe_name}"
+        )
+        inner = f"{gate}-inner"
+        assert inner in recipes, f"cheap gate {gate} missing inner recipe {inner}"
+        recipe = recipes.get(recipe_name)
+        assert isinstance(recipe, dict) and recipe.get("private") is not True, (
+            f"cheap gate recipe {recipe_name} must be public"
+        )
+
+
+def _closure_python_scripts(dump: dict, recipes: set[str]) -> set[Path]:
+    scripts: set[Path] = set()
+    all_recipes = dump["recipes"]
+    for recipe_name in sorted(recipes):
+        recipe = all_recipes[recipe_name]
+        for line in _recipe_command_lines(recipe, dump):
+            classification = _classify_command(line)
+            if classification == "dynamic-shell":
+                raise AssertionError(f"unsupported dynamic shell command in cheap closure {recipe_name}: {line}")
+            if classification != "py-exec":
+                continue
+            tokens = _shlex_tokens(_normalize_shell_python_line(line))
+            target = _python_script_from_tokens(tokens, scan_set=scripts)
+            if target is not None:
+                scripts.add(target)
     return scripts
+
+
+def _normalize_shell_python_line(line: str) -> str:
+    stripped = line.strip()
+    if stripped.startswith("if ! "):
+        stripped = stripped[5:].strip()
+        if stripped.endswith("; then"):
+            stripped = stripped[:-6].strip()
+    tokens = _shlex_tokens(stripped)
+    while tokens and _is_shell_assignment(tokens[0]):
+        tokens = tokens[1:]
+    return " ".join(shlex.quote(token) for token in tokens)
+
+
+def _python_script_from_tokens(tokens: list[str], scan_set: set[Path]) -> Path | None:
+    if not tokens:
+        return None
+    if not _is_python_interpreter_token(tokens[0]):
+        return None
+    operand_index = _python_operand_index(tokens)
+    if operand_index >= len(tokens):
+        raise AssertionError(f"Python command missing operand: {tokens}")
+    if tokens[operand_index] == "-c":
+        if len(tokens) > operand_index + 1:
+            _validate_inline_python_payload(tokens[operand_index + 1], scan_set)
+        return None
+    if tokens[operand_index] == "-m":
+        if len(tokens) <= operand_index + 1:
+            raise AssertionError(f"Python -m command missing module: {tokens}")
+        return _script_from_module_name(tokens[operand_index + 1])
+    return _resolve_script_operand(tokens[operand_index])
+
+
+def _python_operand_index(tokens: list[object]) -> int:
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"-c", "-m"}:
+            return index
+        if isinstance(token, str) and token.startswith("-"):
+            index += 1
+            continue
+        return index
+    return index
+
+
+def _resolve_script_operand(raw: str) -> Path | None:
+    path = Path(raw)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    path = path.resolve()
+    if path.exists() and _is_python_script_path(path):
+        return path
+    if raw.startswith("scripts/") or raw.endswith(".py"):
+        raise AssertionError(f"unresolved Python script target: {raw}")
+    return None
+
+
+def _is_python_interpreter_token(token: object) -> bool:
+    if token == "sys.executable":
+        return True
+    if not isinstance(token, str):
+        return False
+    name = Path(token).name
+    return name in {"python", "python3"} or bool(re.fullmatch(r"python3?\.\d+", name))
+
+
+def _script_from_module_name(module: str) -> Path | None:
+    if module.startswith("scripts."):
+        rel = module.removeprefix("scripts.")
+    else:
+        rel = module
+    candidate = SCRIPTS_DIR / (rel.replace(".", "/") + ".py")
+    if candidate.is_file():
+        return candidate.resolve()
+    return None
+
+
+def _validate_inline_python_payload(payload: object, scan_set: set[Path]) -> None:
+    if not isinstance(payload, str):
+        return
+    for match in re.findall(r"scripts/[A-Za-z0-9_./-]+(?:\.py)?", payload):
+        script = _resolve_script_operand(match)
+        if script is not None and script not in scan_set:
+            rel = script.relative_to(REPO_ROOT)
+            raise AssertionError(f"inline python payload names unscanned script: {rel}")
+
+
+def _is_python_script_path(path: Path) -> bool:
+    if path.suffix == ".py":
+        return True
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return False
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    if first_line.startswith("#!") and "python" in first_line:
+        return True
+    try:
+        ast.parse(text, filename=str(path))
+    except SyntaxError:
+        return False
+    return True
+
+
+_UNRESOLVED = object()
+_PARAMETER = object()
+
+
+class _CodeExecutionEdgeResolver(ast.NodeVisitor):
+    def __init__(self, path: Path, tree: ast.AST, *, scan_set: set[Path]) -> None:
+        self.path = path
+        self.tree = tree
+        self.scan_set = scan_set
+        self.targets: set[Path] = set()
+        self.failures: list[str] = []
+        self.scopes: list[dict[str, object]] = [{}]
+        self.functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+        self.active_functions: set[str] = set()
+        self.subprocess_modules = {"subprocess"}
+        self.os_modules = {"os"}
+        self.pty_modules = {"pty"}
+        self.sys_modules = {"sys"}
+        self.pathlib_modules = {"pathlib"}
+        self.path_names = {"Path"}
+        self.spec_loader_names = {"spec_from_file_location"}
+        self.source_loader_names = {"SourceFileLoader"}
+        self.importlib_modules = {"importlib"}
+        self.runpy_modules = {"runpy"}
+
+    def resolve(self) -> tuple[set[Path], list[str]]:
+        self.visit(self.tree)
+        return self.targets, self.failures
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            name = alias.asname or alias.name.split(".")[0]
+            if alias.name == "subprocess":
+                self.subprocess_modules.add(name)
+            elif alias.name == "os":
+                self.os_modules.add(name)
+            elif alias.name == "pty":
+                self.pty_modules.add(name)
+            elif alias.name == "sys":
+                self.sys_modules.add(name)
+            elif alias.name == "pathlib":
+                self.pathlib_modules.add(name)
+            elif alias.name == "importlib":
+                self.importlib_modules.add(name)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module == "pathlib":
+            for alias in node.names:
+                if alias.name == "Path":
+                    self.path_names.add(alias.asname or alias.name)
+        elif node.module == "importlib.util":
+            for alias in node.names:
+                if alias.name == "spec_from_file_location":
+                    self.spec_loader_names.add(alias.asname or alias.name)
+        elif node.module == "importlib.machinery":
+            for alias in node.names:
+                if alias.name == "SourceFileLoader":
+                    self.source_loader_names.add(alias.asname or alias.name)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.functions[node.name] = node
+        self._visit_function_body(node, {})
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.functions[node.name] = node
+        self._visit_function_body(node, {})
+
+    def visit_If(self, node: ast.If) -> None:
+        for name in self._assigned_names(node.body) | self._assigned_names(node.orelse):
+            self.scopes[-1][name] = _UNRESOLVED
+        self.visit(node.test)
+        for statement in node.body:
+            self.visit(statement)
+        for statement in node.orelse:
+            self.visit(statement)
+
+    def visit_For(self, node: ast.For) -> None:
+        for name in self._target_names(node.target):
+            self.scopes[-1][name] = _UNRESOLVED
+        self.visit(node.iter)
+        for statement in node.body:
+            self.visit(statement)
+        for statement in node.orelse:
+            self.visit(statement)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        value = self._resolve_value(node.value)
+        for target in node.targets:
+            self._bind_target(target, value)
+        self.visit(node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        value = self._resolve_value(node.value) if node.value is not None else _UNRESOLVED
+        self._bind_target(node.target, value)
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        call_name = self._call_name(node.func)
+        if self._is_dynamic_code_call(call_name):
+            self._fail(node, f"dynamic code execution is not allowed: {call_name}")
+        if self._is_os_exec_spawn_call(call_name):
+            self._handle_os_exec_spawn_call(node, call_name)
+        if self._is_subprocess_call(call_name):
+            self._handle_subprocess_call(node)
+        elif self._is_loader_call(call_name):
+            self._handle_loader_call(node, call_name)
+        self._handle_local_wrapper_call(node)
+        self.generic_visit(node)
+
+    def _visit_function_body(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        bound_args: dict[str, object],
+    ) -> None:
+        parent = dict(self.scopes[-1])
+        for arg in node.args.args:
+            parent[arg.arg] = bound_args.get(arg.arg, _PARAMETER)
+        self.scopes.append(parent)
+        try:
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.scopes.pop()
+
+    def _handle_local_wrapper_call(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Name):
+            return
+        name = node.func.id
+        if name not in self.functions or name in self.active_functions:
+            return
+        function = self.functions[name]
+        bound: dict[str, object] = {}
+        for arg_def, arg_value in zip(function.args.args, node.args):
+            value = self._resolve_value(arg_value)
+            if value is not _UNRESOLVED:
+                bound[arg_def.arg] = value
+        if not bound:
+            return
+        self.active_functions.add(name)
+        try:
+            self._visit_function_body(function, bound)
+        finally:
+            self.active_functions.remove(name)
+
+    def _handle_subprocess_call(self, node: ast.Call) -> None:
+        command_node = self._command_argument(node)
+        if command_node is None:
+            return
+        command = self._resolve_value(command_node)
+        if command is _UNRESOLVED or command is _PARAMETER:
+            return
+        if not isinstance(command, list) or not command:
+            return
+        executable = command[0]
+        if executable is _UNRESOLVED:
+            self._fail(node, "unresolved Python command executable")
+            return
+        if executable is _PARAMETER:
+            return
+        if not _is_python_interpreter_token(executable):
+            return
+        if len(command) < 2:
+            self._fail(node, "Python subprocess command is missing a target")
+            return
+        self._handle_python_tokens(node, command)
+
+    def _handle_python_tokens(self, node: ast.AST, tokens: list[object]) -> None:
+        operand_index = _python_operand_index(tokens)
+        if operand_index >= len(tokens):
+            self._fail(node, "Python subprocess command is missing a target")
+            return
+        operand = tokens[operand_index]
+        if operand == "-c":
+            if len(tokens) > operand_index + 1 and isinstance(tokens[operand_index + 1], str):
+                try:
+                    _validate_inline_python_payload(tokens[operand_index + 1], self.scan_set)
+                except AssertionError as exc:
+                    self._fail(node, str(exc))
+            return
+        if operand == "-m":
+            if len(tokens) <= operand_index + 1:
+                self._fail(node, "Python -m command is missing a module")
+                return
+            module = tokens[operand_index + 1]
+            if module is _UNRESOLVED:
+                self._fail(node, "unresolved Python -m module")
+            elif module is not _PARAMETER and isinstance(module, str):
+                target = _script_from_module_name(module)
+                if target is not None:
+                    self.targets.add(target)
+            return
+        if operand is _PARAMETER:
+            return
+        if operand is _UNRESOLVED:
+            self._fail(node, "unresolved Python script target")
+            return
+        target = self._path_from_value(operand)
+        if target is None:
+            self._fail(node, f"unrecognized Python script target: {operand!r}")
+            return
+        if target.exists() and _is_python_script_path(target):
+            self.targets.add(target)
+            return
+        self._fail(node, f"unresolved Python script target: {target}")
+
+    def _handle_os_exec_spawn_call(self, node: ast.Call, call_name: str) -> None:
+        if not node.args:
+            return
+        target = self._resolve_value(node.args[0])
+        if target is _PARAMETER or target is _UNRESOLVED:
+            return
+        if _is_python_interpreter_token(str(target)):
+            self._fail(node, f"dynamic Python process replacement is not allowed: {call_name}")
+
+    def _handle_loader_call(self, node: ast.Call, call_name: str) -> None:
+        if call_name in {"importlib.import_module", "runpy.run_module"} or call_name.endswith(".import_module") or call_name.endswith(".run_module"):
+            if not node.args:
+                self._fail(node, f"{call_name} missing module name")
+                return
+            module = self._resolve_value(node.args[0])
+            if module is _PARAMETER:
+                return
+            if module is _UNRESOLVED:
+                self._fail(node, f"unresolved module load target in {call_name}")
+                return
+            if isinstance(module, str):
+                target = _script_from_module_name(module)
+                if target is not None:
+                    self.targets.add(target)
+            return
+
+        index = 0 if call_name.endswith("run_path") else 1
+        if len(node.args) <= index:
+            self._fail(node, f"{call_name} missing path target")
+            return
+        target_value = self._resolve_value(node.args[index])
+        if target_value is _PARAMETER:
+            return
+        if target_value is _UNRESOLVED:
+            self._fail(node, f"unresolved loader path target in {call_name}")
+            return
+        target = self._path_from_value(target_value)
+        if target is None:
+            self._fail(node, f"unrecognized loader target in {call_name}: {target_value!r}")
+            return
+        if target.exists() and _is_python_script_path(target):
+            self.targets.add(target)
+            return
+        self._fail(node, f"loader target is not a resolvable Python script: {target}")
+
+    def _command_argument(self, node: ast.Call) -> ast.AST | None:
+        if node.args:
+            return node.args[0]
+        for keyword in node.keywords:
+            if keyword.arg in {"args", "command"}:
+                return keyword.value
+        return None
+
+    def _resolve_value(self, node: ast.AST | None) -> object:
+        if node is None:
+            return _UNRESOLVED
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id == "__file__":
+                return self.path
+            return self._lookup(node.id)
+        if isinstance(node, ast.Attribute):
+            value = self._resolve_value(node.value)
+            if isinstance(node.value, ast.Name) and node.value.id in self.sys_modules and node.attr == "executable":
+                return "sys.executable"
+            if isinstance(value, Path):
+                if node.attr == "parent":
+                    return value.parent
+                if node.attr == "parents":
+                    return value.parents
+            return _PARAMETER if value is _PARAMETER else _UNRESOLVED
+        if isinstance(node, ast.Subscript):
+            value = self._resolve_value(node.value)
+            index = self._resolve_value(node.slice)
+            if isinstance(value, type(Path.cwd().parents)) and isinstance(index, int):
+                return value[index]
+            return _PARAMETER if value is _PARAMETER else _UNRESOLVED
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left = self._resolve_value(node.left)
+            right = self._resolve_value(node.right)
+            if left is _PARAMETER or right is _PARAMETER:
+                return _PARAMETER
+            if left is _UNRESOLVED or right is _UNRESOLVED:
+                return _UNRESOLVED
+            if isinstance(left, Path):
+                return left / str(right)
+            return _UNRESOLVED
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [self._resolve_value(element) for element in node.elts]
+        if isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for value in node.values:
+                resolved = self._resolve_value(value)
+                if resolved is _PARAMETER:
+                    return _PARAMETER
+                if resolved is _UNRESOLVED:
+                    return _UNRESOLVED
+                parts.append(str(resolved))
+            return "".join(parts)
+        if isinstance(node, ast.FormattedValue):
+            return self._resolve_value(node.value)
+        if isinstance(node, ast.Call):
+            return self._resolve_call_value(node)
+        return _UNRESOLVED
+
+    def _resolve_call_value(self, node: ast.Call) -> object:
+        call_name = self._call_name(node.func)
+        if call_name in self.path_names or call_name.endswith(".Path"):
+            if not node.args:
+                return Path()
+            value = self._resolve_value(node.args[0])
+            if value is _PARAMETER:
+                return _PARAMETER
+            if value is _UNRESOLVED:
+                return _UNRESOLVED
+            if value is None:
+                return _UNRESOLVED
+            try:
+                return Path(value)
+            except TypeError:
+                return _UNRESOLVED
+        if call_name == "str" and node.args:
+            value = self._resolve_value(node.args[0])
+            if value is _PARAMETER:
+                return _PARAMETER
+            if value is _UNRESOLVED:
+                return _UNRESOLVED
+            return str(value)
+        if call_name == "list" and node.args:
+            value = self._resolve_value(node.args[0])
+            if value is _PARAMETER:
+                return _PARAMETER
+            if isinstance(value, list):
+                return value
+            return _UNRESOLVED
+        if isinstance(node.func, ast.Attribute):
+            owner = self._resolve_value(node.func.value)
+            if owner is _PARAMETER:
+                return _PARAMETER
+            if isinstance(owner, Path):
+                if node.func.attr in {"resolve", "absolute", "expanduser"}:
+                    return owner.resolve() if node.func.attr != "expanduser" else owner.expanduser()
+                if node.func.attr == "joinpath":
+                    current = owner
+                    for arg in node.args:
+                        part = self._resolve_value(arg)
+                        if part is _PARAMETER:
+                            return _PARAMETER
+                        if part is _UNRESOLVED:
+                            return _UNRESOLVED
+                        current = current / str(part)
+                    return current
+                if node.func.attr == "with_name" and node.args:
+                    value = self._resolve_value(node.args[0])
+                    if value is _PARAMETER:
+                        return _PARAMETER
+                    if value is _UNRESOLVED:
+                        return _UNRESOLVED
+                    return owner.with_name(str(value))
+                if node.func.attr == "with_suffix" and node.args:
+                    value = self._resolve_value(node.args[0])
+                    if isinstance(value, str):
+                        return owner.with_suffix(value)
+                if node.func.attr == "with_stem" and node.args:
+                    value = self._resolve_value(node.args[0])
+                    if isinstance(value, str):
+                        return owner.with_stem(value)
+        return _UNRESOLVED
+
+    def _path_from_value(self, value: object) -> Path | None:
+        if isinstance(value, Path):
+            path = value
+        elif isinstance(value, str):
+            if value == "sys.executable":
+                return None
+            path = Path(value)
+        else:
+            return None
+        if not path.is_absolute():
+            if path.parts and path.parts[0] == "scripts":
+                path = REPO_ROOT / path
+            else:
+                path = self.path.parent / path
+        return path.resolve()
+
+    def _lookup(self, name: str) -> object:
+        for scope in reversed(self.scopes):
+            if name in scope:
+                return scope[name]
+        return _UNRESOLVED
+
+    def _bind_target(self, target: ast.AST, value: object) -> None:
+        for name in self._target_names(target):
+            if name in self.scopes[-1]:
+                self.scopes[-1][name] = _UNRESOLVED
+            else:
+                self.scopes[-1][name] = value
+
+    def _target_names(self, target: ast.AST) -> set[str]:
+        if isinstance(target, ast.Name):
+            return {target.id}
+        if isinstance(target, (ast.Tuple, ast.List)):
+            names: set[str] = set()
+            for element in target.elts:
+                names.update(self._target_names(element))
+            return names
+        return set()
+
+    def _assigned_names(self, body: list[ast.stmt]) -> set[str]:
+        names: set[str] = set()
+        for statement in body:
+            for child in ast.walk(statement):
+                if isinstance(child, (ast.Assign, ast.AnnAssign)):
+                    targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                    for target in targets:
+                        names.update(self._target_names(target))
+        return names
+
+    def _call_name(self, node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent = self._call_name(node.value)
+            return f"{parent}.{node.attr}" if parent else node.attr
+        return ""
+
+    def _is_subprocess_call(self, call_name: str) -> bool:
+        return any(
+            call_name == f"{module}.{method}"
+            for module in self.subprocess_modules
+            for method in _INVOCATION_FORMS["subprocess_calls"]
+        )
+
+    def _is_loader_call(self, call_name: str) -> bool:
+        if call_name in self.spec_loader_names or call_name in self.source_loader_names:
+            return True
+        suffixes = (
+            ".spec_from_file_location",
+            ".SourceFileLoader",
+            ".import_module",
+            ".run_path",
+            ".run_module",
+        )
+        return call_name.endswith(suffixes)
+
+    def _is_dynamic_code_call(self, call_name: str) -> bool:
+        if call_name in {"eval", "exec"}:
+            return True
+        if any(call_name == f"{module}.system" or call_name == f"{module}.popen" for module in self.os_modules):
+            return True
+        if any(
+            call_name in {f"{module}.getoutput", f"{module}.getstatusoutput"}
+            for module in self.subprocess_modules
+        ):
+            return True
+        return any(call_name == f"{module}.spawn" for module in self.pty_modules)
+
+    def _is_os_exec_spawn_call(self, call_name: str) -> bool:
+        return any(
+            call_name.startswith(f"{module}.exec") or call_name.startswith(f"{module}.spawn")
+            for module in self.os_modules
+        )
+
+    def _fail(self, node: ast.AST, message: str) -> None:
+        rel = self.path.relative_to(REPO_ROOT)
+        lineno = getattr(node, "lineno", 0)
+        self.failures.append(f"{rel}:{lineno}: {message}")
+
+
+def _discover_cheap_lane_scripts() -> set[Path]:
+    global _DISCOVERY_CACHE
+    if _DISCOVERY_CACHE is not None:
+        return set(_DISCOVERY_CACHE)
+    labels = _cheap_lane_labels()
+    labeled_scripts = _cheap_labeled_python_scripts(labels)
+    dump = _just_dump()
+    label_set = {label for label in labels if isinstance(label, str)}
+    closure, _gates = _cheap_gate_closure(dump, label_set)
+    scripts = set(labeled_scripts) | _closure_python_scripts(dump, closure)
+    failures: list[str] = []
+    scanned: set[Path] = set()
+    queue = list(sorted(scripts))
+    while queue:
+        script = queue.pop(0).resolve()
+        if script in scanned:
+            continue
+        scanned.add(script)
+        try:
+            source = script.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(script))
+        except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+            failures.append(f"{script.relative_to(REPO_ROOT)}: cannot statically parse Python script: {exc}")
+            continue
+        resolver = _CodeExecutionEdgeResolver(script, tree, scan_set=scripts)
+        targets, target_failures = resolver.resolve()
+        failures.extend(target_failures)
+        for target in targets:
+            target = target.resolve()
+            if target not in scripts:
+                scripts.add(target)
+                queue.append(target)
+    if failures:
+        raise AssertionError("cheap-lane code-execution discovery failed closed:\n  " + "\n  ".join(failures))
+    _DISCOVERY_CACHE = set(scripts)
+    return scripts
+
+
+def _cheap_lane_discovered_unlabeled_manifest() -> set[str]:
+    assert _MANIFEST_PATH.is_file(), f"missing cheap-lane manifest: {_MANIFEST_PATH.relative_to(REPO_ROOT)}"
+    return {
+        line.strip()
+        for line in _MANIFEST_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+
+def _live_discovered_unlabeled(scripts: set[Path]) -> set[str]:
+    labeled = _cheap_labeled_python_scripts()
+    return {
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in scripts
+        if path not in labeled
+    }
+
+
+def _synthetic_just_dump(*, labels: list[str], recipes: dict[str, list[list[object]]]) -> dict:
+    del labels
+    return {
+        "recipes": {
+            name: {
+                "name": name,
+                "private": name.startswith("_"),
+                "body": body,
+                "dependencies": [],
+            }
+            for name, body in recipes.items()
+        },
+        "assignments": {
+            "repo_root": {"value": ["call", "justfile_directory"]},
+            "rust_verification_owner": {
+                "value": ["concatenate", ["variable", "repo_root"], "/scripts/rust_verification.py"]
+            },
+        },
+        "settings": {},
+    }
 
 
 def _repo_shared_state_write_findings(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    analyzer = _RepoSharedStateWriteAnalyzer(path)
+    analyzer.visit(tree)
+    return analyzer.findings
+
+
+def _repo_shared_state_write_findings_from_source(source: str) -> list[str]:
+    path = SCRIPTS_DIR / "synthetic_guard_fixture.py"
+    tree = ast.parse(source, filename=str(path))
     analyzer = _RepoSharedStateWriteAnalyzer(path)
     analyzer.visit(tree)
     return analyzer.findings
@@ -445,6 +1448,128 @@ def test_cheap_lanes_do_not_write_repo_root_shared_state() -> None:
         "state; use process-private tempfile.TemporaryDirectory() instead:\n  "
         + "\n  ".join(findings)
     )
+
+
+def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
+    scripts = _discover_cheap_lane_scripts()
+    rels = {path.relative_to(REPO_ROOT).as_posix() for path in scripts}
+    manifest = _cheap_lane_discovered_unlabeled_manifest()
+    assert manifest <= rels, f"live discovery dropped committed manifest entries: {sorted(manifest - rels)}"
+    required = {
+        "scripts/local_verification_gate.py",
+        "scripts/rust_verification.py",
+        "scripts/test_nextest_fingerprint.py",
+        "scripts/nextest_fingerprint.py",
+        "scripts/cargo-shim",
+        "scripts/clean_merged_artifacts.py",
+        "scripts/lane_governor.py",
+        "scripts/command_understanding.py",
+    }
+    assert required <= rels, f"guard did not discover required fixed-point edges: {sorted(required - rels)}"
+
+
+def test_repo_origin_detection_is_expression_based() -> None:
+    snippets = [
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n(ROOT / 'x').write_text('x')\n",
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parent\np = ROOT / 'x'\np.write_text('x')\n",
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n(ROOT / 'a' / 'b').touch()\n",
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\nROOT.joinpath('x').mkdir()\n",
+        "from pathlib import Path\nSCRIPT = Path(__file__).resolve()\nSCRIPT.parent.joinpath('x').write_text('x')\n",
+        "def repo_path(raw):\n    return raw\np = repo_path('x')\np.mkdir()\n",
+    ]
+    for source in snippets:
+        findings = _repo_shared_state_write_findings_from_source(source)
+        assert findings, f"expected repo-root write finding for:\n{source}"
+
+    temp_fixture = (
+        "from pathlib import Path\n"
+        "import tempfile\n"
+        "repo = Path(tempfile.mkdtemp())\n"
+        "(repo / 'x').write_text('x')\n"
+    )
+    assert not _repo_shared_state_write_findings_from_source(temp_fixture)
+
+
+def test_code_execution_edges_are_static_fixed_point() -> None:
+    source = """
+from pathlib import Path
+import importlib.util
+import subprocess
+import sys
+
+SCRIPTS = Path(__file__).resolve().parent
+SCRIPT = SCRIPTS / "nextest_fingerprint.py"
+
+def load(name: str):
+    path = SCRIPTS / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    return spec
+
+def run(script):
+    return subprocess.run([sys.executable, script])
+
+load("lane_governor")
+subprocess.run(["python3", str(SCRIPT)])
+run(str(SCRIPTS / "clean_merged_artifacts.py"))
+"""
+    resolver = _CodeExecutionEdgeResolver(
+        SCRIPTS_DIR / "synthetic_guard_fixture.py",
+        ast.parse(source),
+        scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+    )
+    targets, failures = resolver.resolve()
+    assert not failures
+    rels = {target.relative_to(SCRIPTS_DIR).as_posix() for target in targets}
+    assert {
+        "lane_governor.py",
+        "nextest_fingerprint.py",
+        "clean_merged_artifacts.py",
+    } <= rels
+
+
+def test_code_execution_tripwires_fail_closed() -> None:
+    fixtures = [
+        "import subprocess\nsubprocess.run(['python3', script])\n",
+        "import subprocess\nscript = 'a.py'\nscript = 'b.py'\nsubprocess.run(['python3', script])\n",
+        "import os\nos.system('python3 scripts/x.py')\n",
+        "eval('1 + 1')\n",
+        "import importlib.util\nimportlib.util.spec_from_file_location('x', target)\n",
+    ]
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        _targets, failures = resolver.resolve()
+        assert failures, f"expected fail-closed execution edge for:\n{source}"
+
+
+def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
+    dump = _synthetic_just_dump(
+        labels=["local-gate:alpha"],
+        recipes={
+            "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
+            "alpha-inner": [["if ! python3 scripts/test_nextest_fingerprint.py; then"]],
+        },
+    )
+    recipes, gates = _cheap_gate_closure(dump, {"local-gate:alpha"})
+    assert {"alpha", "alpha-inner"} <= recipes
+    assert gates == {"alpha": "alpha"}
+    scripts = _closure_python_scripts(dump, recipes)
+    assert SCRIPTS_DIR / "local_verification_gate.py" in scripts
+    assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
+
+    bad_dump = _synthetic_just_dump(
+        labels=["local-gate:alpha"],
+        recipes={"alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]]},
+    )
+    try:
+        _cheap_gate_closure(bad_dump, {"local-gate:alpha"})
+    except AssertionError as exc:
+        assert "inner" in str(exc)
+    else:
+        raise AssertionError("missing inner recipe must fail closed")
 
 
 def test_subcrate_lane_policy_matches_repo_policy() -> None:
@@ -1090,6 +2215,11 @@ def main() -> int:
         test_unknown_lane_policy_keys_rejected,
         test_repo_policy_file_declares_lane_policy,
         test_cheap_lanes_do_not_write_repo_root_shared_state,
+        test_cheap_lane_discovery_manifest_floor_and_required_edges,
+        test_repo_origin_detection_is_expression_based,
+        test_code_execution_edges_are_static_fixed_point,
+        test_code_execution_tripwires_fail_closed,
+        test_just_dump_gate_derivation_and_fail_closed_fixtures,
         test_subcrate_lane_policy_matches_repo_policy,
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,

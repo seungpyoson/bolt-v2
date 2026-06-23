@@ -1225,6 +1225,30 @@ def assert_gate_names_reject_github_output_control_chars() -> None:
                 raise AssertionError(f"unsafe gate name {key}={replacement!r} must be rejected")
 
 
+def assert_gate_names_reject_collisions() -> None:
+    module = load_script()
+    cases = {
+        "ci_provenance.gate_names.gate_noop must not equal gate_iteration": CONFIG_TOML.replace(
+            'gate_noop = "gate-noop"',
+            'gate_noop = "gate-iteration"',
+        ),
+        "ci_provenance.gate_names.backtester_noop must not equal backtester_iteration": CONFIG_TOML.replace(
+            'backtester_noop = "backtester-gate-noop"',
+            'backtester_noop = "backtester-gate-iteration"',
+        ),
+    }
+    for fragment, config_text in cases.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp), config_text)
+            try:
+                module.load_config(config)
+            except module.ProvenanceError as exc:
+                if fragment not in str(exc):
+                    raise AssertionError(f"expected {fragment!r}, got {exc}") from exc
+            else:
+                raise AssertionError(f"gate-name collision must be rejected: {fragment}")
+
+
 def assert_policy_contract_rejects_required_gate_holes() -> None:
     module = load_script()
     cases = {
@@ -1243,6 +1267,10 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
         "ci_provenance.policy.ready_pr must be full": CONFIG_TOML.replace(
             'ready_pr = "full"',
             'ready_pr = "iteration"',
+        ),
+        "ci_provenance.policy has unexpected keys": CONFIG_TOML.replace(
+            "[ci_provenance.policy.override]",
+            'synthetic_new = "full"\n\n[ci_provenance.policy.override]',
         ),
     }
     for fragment, config_text in cases.items():
@@ -1856,6 +1884,7 @@ def main() -> int:
     assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
+    assert_gate_names_reject_collisions()
     assert_policy_contract_rejects_required_gate_holes()
     assert_main_evidence_matching_ignores_mutable_run_name()
     assert_config_digest_is_canonical()

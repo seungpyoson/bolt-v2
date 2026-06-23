@@ -22,6 +22,7 @@ from ci_provenance import (
     POLICY_ROWS,
     POLICY_VALUES,
     expected_event_class_for,
+    gate_name_collision_errors,
     github_actions_output_safe_check_name,
     gate_name_suffix_for,
     policy_contract_errors,
@@ -9703,17 +9704,9 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
             )
     if proof_gate_job != gate_names["gate_required"]:
         raise ValueError("ci_provenance.dispatch.proof_gate_job must match required gate name")
-    for key in ("gate_defer", "gate_iteration", "gate_noop", "gate_dispatch_full"):
-        if gate_names[key] == gate_names["gate_required"]:
-            raise ValueError(f"ci_provenance.gate_names.{key} must not equal gate_required")
-    for key in (
-        "backtester_defer",
-        "backtester_iteration",
-        "backtester_noop",
-        "backtester_dispatch_full",
-    ):
-        if gate_names[key] == gate_names["backtester_required"]:
-            raise ValueError(f"ci_provenance.gate_names.{key} must not equal backtester_required")
+    gate_name_errors = gate_name_collision_errors(gate_names)
+    if gate_name_errors:
+        raise ValueError("; ".join(gate_name_errors))
 
     api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")
     for key in (

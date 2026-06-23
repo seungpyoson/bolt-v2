@@ -3634,11 +3634,19 @@ def evaluate_full_ci_run(
     if state == "pending":
         return None
     if state == "pass":
+        required_gate_job = None
+        missing_gate_message = ""
         if run.get("event") == "workflow_dispatch":
             if not workflow_dispatch_run_is_full(run, dispatch_config):
                 print(f"Remote full CI failed for {head} on {pr_url}: workflow_dispatch run is not marked full", file=sys.stderr)
                 print(f"- {workflow_run_summary(run)}", file=sys.stderr)
                 return 1
+            required_gate_job = dispatch_config["dispatch_full_gate_job"]
+            missing_gate_message = "workflow_dispatch run lacks successful dispatch full gate job"
+        elif run.get("event") == "pull_request":
+            required_gate_job = dispatch_config["proof_gate_job"]
+            missing_gate_message = "pull_request run lacks successful required gate job"
+        if required_gate_job is not None:
             run_id = run_database_id(run)
             if run_id is None:
                 print(f"Remote full CI failed for {head} on {pr_url}: workflow run databaseId missing", file=sys.stderr)
@@ -3648,13 +3656,12 @@ def evaluate_full_ci_run(
                 print(f"Remote full CI failed for {head} on {pr_url}: {error or 'unable to inspect gate job'}", file=sys.stderr)
                 return 1
             if not any(
-                job_text(job, "name") == dispatch_config["dispatch_full_gate_job"]
+                job_text(job, "name") == required_gate_job
                 and job_text(job, "conclusion") == "success"
                 for job in jobs
             ):
                 print(
-                    f"Remote full CI failed for {head} on {pr_url}: "
-                    "workflow_dispatch run lacks successful dispatch full gate job",
+                    f"Remote full CI failed for {head} on {pr_url}: {missing_gate_message}",
                     file=sys.stderr,
                 )
                 print(f"- {workflow_run_summary(run)}", file=sys.stderr)

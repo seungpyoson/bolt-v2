@@ -1316,6 +1316,14 @@ check_name = "test"
             valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate"'),
         ),
         (
+            "ci_provenance.gate_names.gate_noop must not equal gate_iteration",
+            valid.replace('gate_noop = "gate-noop"', 'gate_noop = "gate-iteration"'),
+        ),
+        (
+            "ci_provenance.gate_names.backtester_noop must not equal backtester_iteration",
+            valid.replace('backtester_noop = "backtester-gate-noop"', 'backtester_noop = "backtester-gate-iteration"'),
+        ),
+        (
             "ci_provenance.gate_names.gate_dispatch_full must be a GitHub Actions output-safe check name",
             valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate\\nignored=1"'),
         ),
@@ -1395,6 +1403,30 @@ check_name = "test"
     reopened_full_config = valid.replace('ready_pr_reopened = "noop"', 'ready_pr_reopened = "full"')
     if runner_config_load_error(reopened_full_config):
         raise AssertionError("proof-preserving ready_pr_reopened must not be rejected as proof-affecting")
+
+    queue_covered_policy = {
+        "draft_pr_synchronize": "defer",
+        "draft_pr_opened": "defer",
+        "draft_pr_reopened": "defer",
+        "draft_pr_edited": "defer",
+        "converted_to_draft": "defer",
+        "ready_pr": "iteration",
+        "ready_pr_edited_no_base": "noop",
+        "ready_pr_reopened": "noop",
+        "ready_for_review": "iteration",
+        "workflow_dispatch": "iteration",
+        "workflow_dispatch_full_ci": "full",
+        "main_push": "full",
+        "merge_group": "full",
+        "tag": "tag_reuse",
+        "unknown_event": "full",
+    }
+    queue_covered_errors = verifier.policy_proof_invariant_errors(queue_covered_policy)
+    if queue_covered_errors:
+        raise AssertionError(
+            "proof invariant must keep the future queue-covered iteration carve-out "
+            f"isolated from the active Design 0 contract, got: {queue_covered_errors}"
+        )
 
     original_rows = verifier.CI_PROVENANCE_POLICY_ROWS
     original_semantics = verifier.CI_POLICY_ROW_SEMANTICS

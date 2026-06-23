@@ -223,6 +223,8 @@ def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
     owner = load_owner_module()
     stale_fragments = (
         "run just verify-remote for proof",
+        "verify-remote is final proof",
+        "draft verify-remote is proof",
         "verify-remote only for final exact-head full-CI proof",
         "For final proof, use exact-head PR CI evidence through `just verify-remote`",
         "Full CI is proof. Rust Probe is debugging.",
@@ -413,6 +415,12 @@ def workflow_run(
 def workflow_jobs(*, gate_conclusion: str | None = "success") -> dict[str, object]:
     return {
         "jobs": [
+            {
+                "databaseId": 9000,
+                "name": "gate",
+                "status": "completed",
+                "conclusion": "success",
+            },
             {
                 "databaseId": 9001,
                 "name": "gate-dispatch",

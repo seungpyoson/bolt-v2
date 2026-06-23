@@ -203,6 +203,31 @@ def require_gate_name(parent: dict[str, object], key: str, prefix: str) -> str:
     return value
 
 
+def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    for keys in (
+        ("gate_required", "gate_defer", "gate_iteration", "gate_noop", "gate_dispatch_full"),
+        (
+            "backtester_required",
+            "backtester_defer",
+            "backtester_iteration",
+            "backtester_noop",
+            "backtester_dispatch_full",
+        ),
+    ):
+        seen: dict[str, str] = {}
+        for key in keys:
+            value = gate_names.get(key)
+            if value is None:
+                continue
+            previous = seen.get(value)
+            if previous is not None:
+                errors.append(f"ci_provenance.gate_names.{key} must not equal {previous}")
+            else:
+                seen[value] = key
+    return errors
+
+
 def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
     value = parent.get(key)
     if not isinstance(value, int) or value <= 0:
@@ -389,6 +414,10 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     if max_lookback_age_seconds > retention_days * 24 * 60 * 60:
         raise ProvenanceError("max lookback age must not exceed artifact retention")
 
+    unexpected_policy_keys = sorted(set(policy_table) - set(POLICY_ROWS) - {"override"})
+    if unexpected_policy_keys:
+        raise ProvenanceError(f"ci_provenance.policy has unexpected keys: {unexpected_policy_keys!r}")
+
     policy: dict[str, str] = {}
     for row in POLICY_ROWS:
         value = policy_table.get(row)
@@ -414,17 +443,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     }
     if dispatch_proof_gate_job != gate_names["gate_required"]:
         raise ProvenanceError("ci_provenance.dispatch.proof_gate_job must match required gate name")
-    for key in ("gate_defer", "gate_iteration", "gate_noop", "gate_dispatch_full"):
-        if gate_names[key] == gate_names["gate_required"]:
-            raise ProvenanceError(f"ci_provenance.gate_names.{key} must not equal gate_required")
-    for key in (
-        "backtester_defer",
-        "backtester_iteration",
-        "backtester_noop",
-        "backtester_dispatch_full",
-    ):
-        if gate_names[key] == gate_names["backtester_required"]:
-            raise ProvenanceError(f"ci_provenance.gate_names.{key} must not equal backtester_required")
+    gate_name_errors = gate_name_collision_errors(gate_names)
+    if gate_name_errors:
+        raise ProvenanceError("; ".join(gate_name_errors))
 
     force_full_ci = overrides.get("force_full_ci")
     ignore_emit_failure = overrides.get("ignore_emit_failure")

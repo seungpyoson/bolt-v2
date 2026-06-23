@@ -2803,6 +2803,46 @@ draft_timeline_items = 100
         raise AssertionError(f"runner contract must reject missing meter api limits, got: {errors}")
 
 
+def assert_runner_contract_requires_fingerprint_archive_tier_coupling() -> None:
+    verifier = load_verifier()
+    workflow_name = ".github/workflows/ci.yml"
+    workflow = repo_workflow_text(workflow_name)
+    recoupled_workflow = replace_once(
+        workflow,
+        """  nextest-fingerprint:
+    name: nextest fingerprint
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+""",
+        """  nextest-fingerprint:
+    name: nextest fingerprint
+    needs: [ci-policy, detector]
+    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+""",
+    )
+    original_config = verifier.DEFAULT_RUNNERS_CONFIG
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = pathlib.Path(tmp) / "github-actions-runners.toml"
+        config_text = original_config.read_text()
+        config_path.write_text(
+            replace_once(
+                config_text,
+                'nextest-fingerprint = "managed_heavy"',
+                'nextest-fingerprint = "managed_light"',
+            ),
+            encoding="utf-8",
+        )
+        verifier.DEFAULT_RUNNERS_CONFIG = config_path
+        try:
+            errors = verifier.verify_github_actions_runner_contract({workflow_name: recoupled_workflow})
+        finally:
+            verifier.DEFAULT_RUNNERS_CONFIG = original_config
+    if not any("nextest-fingerprint and test-archive must use the same runner tier" in error for error in errors):
+        raise AssertionError(f"runner contract must reject nextest fingerprint/archive tier split, got: {errors}")
+
+
 def assert_debug_workflow_rejects_non_manual_trigger() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(DEBUG_WORKFLOW_PATH)
@@ -9151,6 +9191,7 @@ def main() -> int:
     assert_runner_contract_rejects_unmapped_workflow_jobs()
     assert_runner_contract_requires_meter_workflows_for_managed_workflows()
     assert_runner_contract_requires_meter_api_limits()
+    assert_runner_contract_requires_fingerprint_archive_tier_coupling()
     assert_debug_workflow_rejects_non_manual_trigger()
     assert_debug_workflow_checks_each_ssh_runner_step()
     assert_bootstrap_uses_onepassword_key_generation()

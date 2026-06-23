@@ -1,7 +1,7 @@
 self-hosted-runner:
   labels:
     - ubicloud-standard-2
-    - ubicloud-standard-4
+    - ubicloud-standard-4-arm
 
 config-variables:
   - AWS_DEPLOY_ROLE_ARN

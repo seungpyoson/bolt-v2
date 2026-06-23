@@ -37,9 +37,33 @@ _TEMP_ORIGIN = "temp"
 
 _REPO_ROOT_NAMES = frozenset({"REPO_ROOT", "SCRIPTS_DIR"})
 _MUTATING_PATH_METHODS = frozenset(
-    {"write_text", "write_bytes", "mkdir", "rmdir", "rmtree", "unlink", "touch"}
+    {
+        "hardlink_to",
+        "mkdir",
+        "replace",
+        "rmdir",
+        "rmtree",
+        "symlink_to",
+        "touch",
+        "unlink",
+        "write_bytes",
+        "write_text",
+    }
 )
-_OS_MUTATORS = frozenset({"makedirs", "remove", "rename", "rmdir"})
+_OS_MUTATORS = frozenset(
+    {
+        "link",
+        "makedirs",
+        "mkdir",
+        "remove",
+        "removedirs",
+        "rename",
+        "replace",
+        "rmdir",
+        "symlink",
+        "unlink",
+    }
+)
 _MANIFEST_PATH = SCRIPTS_DIR / "cheap_lane_discovered_unlabeled.manifest"
 _GATE_ALIASES: dict[str, str] = {}
 _JUST_DUMP_CACHE: dict | None = None
@@ -181,10 +205,11 @@ def _expr_label(node: ast.AST) -> str:
 
 
 class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, relative_paths_are_repo: bool = False) -> None:
         self.path = path
         self.findings: list[str] = []
         self.origins: dict[str, str] = {name: _REPO_ORIGIN for name in _REPO_ROOT_NAMES}
+        self.relative_paths_are_repo = relative_paths_are_repo
         self.os_modules = {"os"}
         self.shutil_modules = {"shutil"}
         self.tempfile_modules = {"tempfile"}
@@ -295,6 +320,14 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
     def _origin(self, node: ast.AST | None) -> str | None:
         if node is None:
             return None
+        if (
+            self.relative_paths_are_repo
+            and isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value
+            and not Path(node.value).is_absolute()
+        ):
+            return _REPO_ORIGIN
         if self._is_file_anchored_repo_path(node):
             return _REPO_ORIGIN
         if isinstance(node, ast.Name):
@@ -319,9 +352,18 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         func = node.func
         if isinstance(func, ast.Name) and func.id == "repo_path":
             return _REPO_ORIGIN
+        if isinstance(func, ast.Name) and func.id == "str" and node.args:
+            return self._origin(node.args[0])
         if self._is_path_constructor_call(func) and node.args:
             return self._origin(node.args[0])
         if isinstance(func, ast.Attribute):
+            if (
+                func.attr == "fspath"
+                and isinstance(func.value, ast.Name)
+                and func.value.id in self.os_modules
+                and node.args
+            ):
+                return self._origin(node.args[0])
             if func.attr in {
                 "absolute",
                 "expanduser",
@@ -420,7 +462,7 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
             method = func.attr
             if method in _MUTATING_PATH_METHODS:
                 targets.append((method, func.value))
-            elif method == "rename":
+            elif method in {"rename", "replace"}:
                 targets.append((method, func.value))
                 if node.args:
                     targets.append((method, node.args[0]))
@@ -437,11 +479,15 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
                 targets.append((shutil_attr, node.args[1]))
 
             os_attr = self._is_module_call(node, self.os_modules)
-            if os_attr in _OS_MUTATORS - {"rename"} and node.args:
+            if os_attr in _OS_MUTATORS - {"rename", "replace", "link", "symlink"} and node.args:
                 targets.append((os_attr, node.args[0]))
-            elif os_attr == "rename" and node.args:
+            elif os_attr in {"rename", "replace"} and node.args:
                 for arg in node.args[:2]:
                     targets.append((os_attr, arg))
+            elif os_attr in {"link", "symlink"} and len(node.args) >= 2:
+                targets.append((os_attr, node.args[1]))
+            elif os_attr == "open" and node.args and self._os_open_flags_write(node):
+                targets.append((os_attr, node.args[0]))
 
         if isinstance(func, ast.Name) and func.id == "open" and node.args:
             if self._open_mode_writes(node, 1):
@@ -458,8 +504,22 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         return (
             isinstance(mode, ast.Constant)
             and isinstance(mode.value, str)
-            and any(flag in mode.value for flag in ("w", "a", "x"))
+            and any(flag in mode.value for flag in ("w", "a", "x", "+"))
         )
+
+    def _os_open_flags_write(self, node: ast.Call) -> bool:
+        flags: ast.AST | None = node.args[1] if len(node.args) >= 2 else None
+        for keyword in node.keywords:
+            if keyword.arg == "flags":
+                flags = keyword.value
+        return self._os_flags_include_write(flags)
+
+    def _os_flags_include_write(self, node: ast.AST | None) -> bool:
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in self.os_modules:
+            return node.attr in {"O_APPEND", "O_CREAT", "O_RDWR", "O_TRUNC", "O_WRONLY"}
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return self._os_flags_include_write(node.left) or self._os_flags_include_write(node.right)
+        return False
 
     def _finding(self, node: ast.AST, operation: str, target: str) -> str:
         rel = self.path.relative_to(REPO_ROOT)
@@ -480,7 +540,6 @@ def _cheap_labeled_python_scripts(labels: list[str] | None = None) -> set[Path]:
         for label in labels
         if isinstance(label, str)
         and not label.startswith("local-gate:")
-        and (label.endswith(".py") or "/" in label)
         and not (SCRIPTS_DIR / label).is_file()
     )
     assert not missing, f"cheap lane script labels must exist: {missing}"
@@ -569,15 +628,19 @@ def _flatten_just_fragments(fragment: object, dump: dict, *, strict: bool = True
     if isinstance(fragment, str):
         return fragment
     if isinstance(fragment, list):
-        if fragment and fragment[0] == "variable" and len(fragment) == 2:
+        if _is_just_expression(fragment):
             try:
                 return _eval_assignment(fragment, dump)
             except AssertionError:
                 if strict:
                     raise
-                return "{{" + str(fragment[1]) + "}}"
+                return "{{" + repr(fragment) + "}}"
         return "".join(_flatten_just_fragments(part, dump, strict=strict) for part in fragment)
     raise AssertionError(f"unrecognized just body fragment: {fragment!r}")
+
+
+def _is_just_expression(fragment: list[object]) -> bool:
+    return bool(fragment) and isinstance(fragment[0], str) and fragment[0] in {"call", "concatenate", "variable"}
 
 
 def _recipe_command_lines(recipe: dict, dump: dict, *, strict: bool = True) -> list[str]:
@@ -597,7 +660,7 @@ def _shell_subcommands(line: str) -> list[str]:
     commands: list[str] = []
     for match in re.finditer(r"python3?\s+-c\s+('[^']*'|\"[^\"]*\")", line):
         commands.append(match.group(0))
-    for payload in re.findall(r"\$\(([^()]*)\)", line):
+    for payload in _command_substitution_payloads(line):
         payload = payload.strip()
         if payload and (
             "python" in payload.lower()
@@ -615,7 +678,7 @@ def _shell_subcommands(line: str) -> list[str]:
                     or part.strip().startswith("$")
                 )
             )
-    if "|" in line and "||" not in line and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", line.strip()):
+    if "|" in line and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", line.strip()):
         commands.extend(
             part.strip()
             for part in re.split(r"(?<!\|)\|(?!\|)", line)
@@ -628,6 +691,58 @@ def _shell_subcommands(line: str) -> list[str]:
             inner = inner[:-6].strip()
         commands.append(inner)
     return commands
+
+
+def _command_substitution_payloads(line: str) -> list[str]:
+    payloads: list[str] = []
+    index = 0
+    while index < len(line) - 1:
+        if line[index : index + 2] != "$(":
+            index += 1
+            continue
+        start = index + 2
+        cursor = start
+        depth = 1
+        quote: str | None = None
+        while cursor < len(line):
+            char = line[cursor]
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                cursor += 1
+                continue
+            if quote == '"':
+                if char == "\\":
+                    cursor += 2
+                    continue
+                if char == '"':
+                    quote = None
+                cursor += 1
+                continue
+            if char == "\\":
+                cursor += 2
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                cursor += 1
+                continue
+            if line[cursor : cursor + 2] == "$(":
+                depth += 1
+                cursor += 2
+                continue
+            if char == ")":
+                depth -= 1
+                if depth == 0:
+                    payload = line[start:cursor]
+                    payloads.append(payload)
+                    payloads.extend(_command_substitution_payloads(payload))
+                    index = cursor + 1
+                    break
+            cursor += 1
+        else:
+            payloads.append(line[start:])
+            break
+    return payloads
 
 
 def _shlex_tokens(line: str) -> list[str]:
@@ -659,8 +774,13 @@ def _classify_command(line: str) -> str:
     command = tokens[0]
     if command in {"if", "then", "fi", "for", "do", "done", "else", "elif", "set", "shopt"}:
         return "boundary"
-    if command in {"env"} and len(tokens) > 1 and _is_python_interpreter_token(tokens[1]):
-        return "dynamic-shell"
+    if command == "env":
+        env_tokens = _env_wrapped_command_tokens(tokens)
+        if not env_tokens:
+            return "boundary"
+        if env_tokens[0].startswith("$"):
+            return "dynamic-shell"
+        return "py-exec" if _is_python_interpreter_token(env_tokens[0]) else "boundary"
     if command.startswith("$") or "*" in command or "?" in command:
         return "dynamic-shell"
     if _is_python_interpreter_token(command):
@@ -672,6 +792,15 @@ def _classify_command(line: str) -> str:
 
 def _is_shell_assignment(token: str) -> bool:
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token))
+
+
+def _env_wrapped_command_tokens(tokens: list[str]) -> list[str]:
+    if not tokens or tokens[0] != "env":
+        return tokens
+    index = 1
+    while index < len(tokens) and _is_shell_assignment(tokens[index]):
+        index += 1
+    return tokens[index:]
 
 
 def _cheap_gate_closure(dump: dict, labels: set[str] | None = None) -> tuple[set[str], dict[str, str]]:
@@ -788,6 +917,7 @@ def _normalize_shell_python_line(line: str) -> str:
     tokens = _shlex_tokens(stripped)
     while tokens and _is_shell_assignment(tokens[0]):
         tokens = tokens[1:]
+    tokens = _env_wrapped_command_tokens(tokens)
     return " ".join(shlex.quote(token) for token in tokens)
 
 
@@ -858,6 +988,18 @@ def _script_from_module_name(module: str) -> Path | None:
 def _validate_inline_python_payload(payload: object, scan_set: set[Path]) -> None:
     if not isinstance(payload, str):
         return
+    try:
+        tree = ast.parse(payload, filename="<python -c>")
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        analyzer = _RepoSharedStateWriteAnalyzer(
+            SCRIPTS_DIR / "inline_python_payload.py",
+            relative_paths_are_repo=True,
+        )
+        analyzer.visit(tree)
+        if analyzer.findings:
+            raise AssertionError("inline python payload mutates shared repo state: " + "; ".join(analyzer.findings))
     for match in re.findall(r"scripts/[A-Za-z0-9_./-]+(?:\.py)?", payload):
         script = _resolve_script_operand(match)
         if script is not None and script not in scan_set:
@@ -1020,23 +1162,27 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         bound_any = False
         parameters = self._function_parameters(function)
         parameter_names = {arg.arg for arg in parameters}
+        explicit_names: set[str] = set()
         for arg_def, arg_value in zip(parameters, node.args):
             value = self._resolve_value(arg_value)
-            if value is not _UNRESOLVED:
-                bound[arg_def.arg] = value
-                bound_any = True
+            if value is _UNRESOLVED:
+                value = _PARAMETER
+            bound[arg_def.arg] = value
+            explicit_names.add(arg_def.arg)
+            bound_any = True
         for keyword in node.keywords:
             if keyword.arg is not None and keyword.arg in parameter_names:
                 value = self._resolve_value(keyword.value)
-                if value is not _UNRESOLVED:
-                    bound[keyword.arg] = value
-                    bound_any = True
+                if value is _UNRESOLVED:
+                    value = _PARAMETER
+                bound[keyword.arg] = value
+                explicit_names.add(keyword.arg)
+                bound_any = True
         for name, default in self._function_defaults(function).items():
-            if name not in bound:
+            if name not in explicit_names and name not in bound:
                 value = self._resolve_value(default)
-                if value is not _UNRESOLVED:
-                    bound[name] = value
-                    bound_any = True
+                bound[name] = value
+                bound_any = True
         if not bound_any:
             return
         self.active_functions.add(name)
@@ -1080,6 +1226,21 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         if command_node is None:
             return
         command = self._resolve_value(command_node)
+        executable = self._subprocess_executable(node)
+        shell = self._subprocess_shell_enabled(node)
+        if isinstance(command, str):
+            if shell:
+                try:
+                    tokens = _shlex_tokens(command)
+                except AssertionError as exc:
+                    self._fail(node, str(exc))
+                    return
+                if tokens and _is_python_interpreter_token(tokens[0]):
+                    self._handle_python_tokens(node, tokens)
+                return
+            if executable is not None and _is_python_interpreter_token(executable):
+                self._handle_python_tokens(node, [executable, command])
+                return
         if command is _UNRESOLVED:
             if self._looks_like_python_command_expr(command_node):
                 self._fail(node, "unresolved Python subprocess command")
@@ -1087,6 +1248,9 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         if command is _PARAMETER:
             return
         if not isinstance(command, list) or not command:
+            return
+        if executable is not None and _is_python_interpreter_token(executable):
+            self._handle_python_tokens(node, [executable, *command])
             return
         executable = command[0]
         if executable is _UNRESOLVED:
@@ -1100,6 +1264,19 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             self._fail(node, "Python subprocess command is missing a target")
             return
         self._handle_python_tokens(node, command)
+
+    def _subprocess_shell_enabled(self, node: ast.Call) -> bool:
+        for keyword in node.keywords:
+            if keyword.arg == "shell":
+                return self._resolve_value(keyword.value) is True
+        return False
+
+    def _subprocess_executable(self, node: ast.Call) -> object | None:
+        for keyword in node.keywords:
+            if keyword.arg == "executable":
+                value = self._resolve_value(keyword.value)
+                return None if value is _UNRESOLVED or value is _PARAMETER else value
+        return None
 
     def _handle_python_tokens(self, node: ast.AST, tokens: list[object]) -> None:
         operand_index = _python_operand_index(tokens)
@@ -1153,9 +1330,10 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return False
 
     def _handle_os_exec_spawn_call(self, node: ast.Call, call_name: str) -> None:
-        if not node.args:
+        target_index = 1 if any(call_name.startswith(f"{module}.spawn") for module in self.os_modules) else 0
+        if len(node.args) <= target_index:
             return
-        target = self._resolve_value(node.args[0])
+        target = self._resolve_value(node.args[target_index])
         if target is _PARAMETER or target is _UNRESOLVED:
             return
         if _is_python_interpreter_token(str(target)):
@@ -1179,10 +1357,13 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             return
 
         index = 0 if call_name.endswith("run_path") else 1
-        if len(node.args) <= index:
+        target_node = node.args[index] if len(node.args) > index else None
+        if target_node is None:
+            target_node = self._loader_keyword_target(node, call_name)
+        if target_node is None:
             self._fail(node, f"{call_name} missing path target")
             return
-        target_value = self._resolve_value(node.args[index])
+        target_value = self._resolve_value(target_node)
         if target_value is _PARAMETER:
             return
         if target_value is _UNRESOLVED:
@@ -1196,6 +1377,18 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             self.targets.add(target)
             return
         self._fail(node, f"loader target is not a resolvable Python script: {target}")
+
+    def _loader_keyword_target(self, node: ast.Call, call_name: str) -> ast.AST | None:
+        if call_name.endswith("spec_from_file_location"):
+            keyword_names = {"location"}
+        elif call_name.endswith("run_path"):
+            keyword_names = {"path_name"}
+        else:
+            keyword_names = {"path"}
+        for keyword in node.keywords:
+            if keyword.arg in keyword_names:
+                return keyword.value
+        return None
 
     def _command_argument(self, node: ast.Call) -> ast.AST | None:
         if node.args:
@@ -1562,9 +1755,14 @@ def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
 
 
 def test_direct_cheap_labels_resolve_python_by_semantics() -> None:
-    scripts = _cheap_labeled_python_scripts(["cargo-shim", "non-script-runtime-label"])
+    scripts = _cheap_labeled_python_scripts(["cargo-shim"])
     assert SCRIPTS_DIR / "cargo-shim" in scripts
-    assert SCRIPTS_DIR / "non-script-runtime-label" not in scripts
+    try:
+        _cheap_labeled_python_scripts(["non-script-runtime-label"])
+    except AssertionError as exc:
+        assert "must exist" in str(exc)
+    else:
+        raise AssertionError("missing direct cheap lane label must fail closed")
 
 
 def test_repo_origin_detection_is_expression_based() -> None:
@@ -1587,6 +1785,23 @@ def test_repo_origin_detection_is_expression_based() -> None:
         "(repo / 'x').write_text('x')\n"
     )
     assert not _repo_shared_state_write_findings_from_source(temp_fixture)
+
+
+def test_repo_write_analyzer_catches_extended_mutators() -> None:
+    snippets = [
+        "import os\nos.replace(REPO_ROOT / 'tmp', REPO_ROOT / 'dst')\n",
+        "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n(ROOT / 'tmp').replace(ROOT / 'dst')\n",
+        "import os\nos.link('/tmp/src', REPO_ROOT / 'dst')\n",
+        "import os\nos.symlink('/tmp/src', REPO_ROOT / 'dst')\n",
+        "import os\nos.mkdir(REPO_ROOT / 'dst')\n",
+        "import os\nos.open(REPO_ROOT / 'dst', os.O_CREAT | os.O_RDWR)\n",
+        "open(str(REPO_ROOT / 'dst'), 'w')\n",
+        "import os\nos.remove(os.fspath(REPO_ROOT / 'dst'))\n",
+        "open(REPO_ROOT / 'dst', 'r+')\n",
+    ]
+    for source in snippets:
+        findings = _repo_shared_state_write_findings_from_source(source)
+        assert findings, f"expected repo-root write finding for:\n{source}"
 
 
 def test_code_execution_edges_are_static_fixed_point() -> None:
@@ -1614,7 +1829,10 @@ def run(script):
 
 load("lane_governor")
 load_default()
+importlib.util.spec_from_file_location("nextest_fingerprint_location", location=str(SCRIPT))
 subprocess.run(["python3", str(SCRIPT)])
+subprocess.run([str(SCRIPT)], executable="python3")
+subprocess.run("python3 scripts/test_nextest_fingerprint.py", shell=True)
 run(str(SCRIPTS / "clean_merged_artifacts.py"))
 """
     resolver = _CodeExecutionEdgeResolver(
@@ -1638,10 +1856,22 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "import subprocess\nsubprocess.run(['python3', script])\n",
         "import subprocess\nscript = 'a.py'\nscript = 'b.py'\nsubprocess.run(['python3', script])\n",
         "import subprocess\nargs = ['scripts/test_nextest_fingerprint.py']\nsubprocess.run(['python3'] + args)\n",
+        "import subprocess\nsubprocess.run('python3 scripts/missing_guard_fixture.py', shell=True)\n",
         "import os\nos.system('python3 scripts/x.py')\n",
         "import os\nos.execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "import os\nos.spawnv(os.P_NOWAIT, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "import subprocess\nsubprocess.getoutput('echo x')\n",
+        "import subprocess\nsubprocess.getstatusoutput('echo x')\n",
+        "import pty\npty.spawn('/bin/echo')\n",
+        "import subprocess\nsubprocess.run(['python3', '-c', 'from pathlib import Path; Path(\"inline-write\").write_text(\"x\")'])\n",
         "eval('1 + 1')\n",
         "import importlib.util\nimportlib.util.spec_from_file_location('x', target)\n",
+        (
+            "import importlib.util\n"
+            "def load(path=TARGET):\n"
+            "    return importlib.util.spec_from_file_location('x', path)\n"
+            "load()\n"
+        ),
     ]
     for source in fixtures:
         resolver = _CodeExecutionEdgeResolver(
@@ -1651,6 +1881,28 @@ def test_code_execution_tripwires_fail_closed() -> None:
         )
         _targets, failures = resolver.resolve()
         assert failures, f"expected fail-closed execution edge for:\n{source}"
+
+
+def test_parameter_bound_wrapper_call_does_not_fall_back_to_default() -> None:
+    source = """
+from pathlib import Path
+import importlib.util
+
+SCRIPT = Path(__file__).resolve().parent / "nextest_fingerprint.py"
+
+def load(path=SCRIPT):
+    return importlib.util.spec_from_file_location("x", path)
+
+load(target)
+"""
+    resolver = _CodeExecutionEdgeResolver(
+        SCRIPTS_DIR / "synthetic_guard_fixture.py",
+        ast.parse(source),
+        scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+    )
+    targets, failures = resolver.resolve()
+    assert not failures
+    assert SCRIPTS_DIR / "nextest_fingerprint.py" not in targets
 
 
 def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
@@ -1679,6 +1931,23 @@ def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
     else:
         raise AssertionError("missing inner recipe must fail closed")
 
+    call_fragment_dump = _synthetic_just_dump(
+        labels=["local-gate:alpha"],
+        recipes={
+            "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
+            "alpha-inner": [
+                [
+                    "python3 ",
+                    [["call", "justfile_directory"]],
+                    "/scripts/test_nextest_fingerprint.py",
+                ]
+            ],
+        },
+    )
+    recipes, _gates = _cheap_gate_closure(call_fragment_dump, {"local-gate:alpha"})
+    scripts = _closure_python_scripts(call_fragment_dump, recipes)
+    assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
+
 
 def test_shell_expanded_python_commands_fail_closed() -> None:
     dump = _synthetic_just_dump(
@@ -1695,6 +1964,26 @@ def test_shell_expanded_python_commands_fail_closed() -> None:
         assert "dynamic" in str(exc) or "unsupported" in str(exc)
     else:
         raise AssertionError("shell-expanded Python command must fail closed")
+
+
+def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
+    dump = _synthetic_just_dump(
+        labels=["local-gate:alpha"],
+        recipes={
+            "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
+            "alpha-inner": [
+                ["env PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"],
+                ["python3 scripts/test_nextest_fingerprint.py | grep ok || true"],
+                ["VALUE=\"$(echo $(python3 scripts/test_nextest_fingerprint.py))\""],
+                [
+                    "VALUE=\"$(printf '%s\\n' \"$policy_json\" | python3 -c 'import json, sys; print(json.load(sys.stdin)[\"x\"])')\""
+                ],
+            ],
+        },
+    )
+    recipes, _gates = _cheap_gate_closure(dump, {"local-gate:alpha"})
+    scripts = _closure_python_scripts(dump, recipes)
+    assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
 
 
 def test_subcrate_lane_policy_matches_repo_policy() -> None:
@@ -2343,10 +2632,13 @@ def main() -> int:
         test_cheap_lane_discovery_manifest_floor_and_required_edges,
         test_direct_cheap_labels_resolve_python_by_semantics,
         test_repo_origin_detection_is_expression_based,
+        test_repo_write_analyzer_catches_extended_mutators,
         test_code_execution_edges_are_static_fixed_point,
         test_code_execution_tripwires_fail_closed,
+        test_parameter_bound_wrapper_call_does_not_fall_back_to_default,
         test_just_dump_gate_derivation_and_fail_closed_fixtures,
         test_shell_expanded_python_commands_fail_closed,
+        test_shell_wrappers_and_pipelines_discover_python_commands,
         test_subcrate_lane_policy_matches_repo_policy,
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,

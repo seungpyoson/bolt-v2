@@ -9989,6 +9989,19 @@ def verify_github_actions_runner_contract(workflows: dict[str, str]) -> list[str
             "meter.included_workflows must match workflows with managed runner tiers: "
             f"expected {sorted(managed_workflows)!r}, got {sorted(meter_included_workflows)!r}"
         )
+    for workflow_key, job_table in sorted(workflow_tables.items()):
+        if not isinstance(job_table, dict):
+            continue
+        fingerprint_tier = job_table.get("nextest-fingerprint")
+        archive_tier = job_table.get("test-archive")
+        if (
+            isinstance(fingerprint_tier, str)
+            and isinstance(archive_tier, str)
+            and fingerprint_tier != archive_tier
+        ):
+            errors.append(
+                f"workflows.{workflow_key} nextest-fingerprint and test-archive must use the same runner tier"
+            )
 
     for workflow_name, workflow_text in sorted(workflows.items()):
         jobs = parse_jobs(workflow_text)

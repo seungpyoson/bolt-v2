@@ -11,7 +11,7 @@ response_chars_per_chunk = 8000
 api_base = "https://api.z.ai/api/coding/paas/v4"
 model = "glm-5.2"
 temperature = 0.2
-api_timeout_seconds = 180
+api_timeout_seconds = 300
 review_max_chunk_chars = 60000
 comment_marker = "<!-- ai-pr-reviewer-glm -->"
 deliverable_markers = [
@@ -38,7 +38,7 @@ setup_overhead_timeout_minutes = 7
 
 [kimi]
 api_base = "https://api.kimi.com/coding/v1"
-model = "kimi-for-coding"
+model = "kimi-k2.7-code"
 provider_type = "kimi"
 model_max_context_size = 262144
 default_thinking = true

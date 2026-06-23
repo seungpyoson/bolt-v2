@@ -42,17 +42,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
+          marker='<!-- ai-pr-reviewer-kimi-notice -->'
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           cat > "$notice_file" <<EOF
+          ${marker}
+
           ## Kimi review notice
 
           \`KIMI_API_KEY\` is not configured, so the Kimi review was skipped.
 
           - PR: #${PR_NUMBER}
-          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Action run: ${run_url}
 
           This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
           EOF
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\") | select(.body | contains(\"${marker}\")) | select(.body | contains(\"${run_url}\")) | .id" \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi
 
       - name: Checkout PR head
         id: checkout-head
@@ -231,14 +242,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/kimi-ai-review-notice.md"
+          marker='<!-- ai-pr-reviewer-kimi-notice -->'
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           cat > "$notice_file" <<EOF
+          ${marker}
+
           ## Kimi review notice
 
           The Kimi review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
 
           - PR: #${PR_NUMBER}
-          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Action run: ${run_url}
 
           This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
           EOF
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\") | select(.body | contains(\"${marker}\")) | select(.body | contains(\"${run_url}\")) | .id" \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi

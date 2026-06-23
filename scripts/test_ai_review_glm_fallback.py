@@ -4,15 +4,40 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import pathlib
 import sys
 import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ai_review_deliverables.py"
+
+
+def valid_no_findings_response() -> str:
+    return "\n".join(
+        [
+            "No hard-evidence findings in this chunk based only on the supplied diff.",
+            "Coverage reviewed: changed files in this chunk.",
+            "Evidence basis: supplied diff only; no omitted files, logs, or external state were assumed.",
+            "Risk areas considered: correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.",
+        ]
+    )
+
+
+def valid_finding_response(issue: str = "example issue") -> str:
+    return "\n".join(
+        [
+            "Severity: medium",
+            "Evidence: `+change`",
+            f"Issue: {issue}",
+            "Fix / verification: add a targeted verification.",
+        ]
+    )
 
 
 def load_script():
@@ -37,6 +62,7 @@ class FakeGitHub:
         self.issue_comments = list(self.issue_comments or [])
         self.reviews = list(self.reviews or [])
         self.posted: list[str] = []
+        self.updated: list[tuple[int, str]] = []
 
     def list_pr_files(self) -> list[dict[str, object]]:
         return list(self.files)
@@ -50,12 +76,15 @@ class FakeGitHub:
     def post_issue_comment(self, body: str) -> None:
         self.posted.append(body)
 
+    def update_issue_comment(self, comment_id: int, body: str) -> None:
+        self.updated.append((comment_id, body))
+
 
 class FakeGLM:
     def __init__(self, *, fail: bool = False, response: str | None = None, failure_message: str | None = None) -> None:
         self.fail = fail
         self.failure_message = failure_message or "provider rejected request"
-        self.response = response or "Findings\n\nNo hard-evidence findings in this chunk."
+        self.response = response or valid_no_findings_response()
         self.prompts: list[str] = []
 
     def review_chunk(self, *, system_prompt: str, user_prompt: str) -> str:
@@ -68,6 +97,70 @@ class FakeGLM:
 
 class FakeProvider(FakeGLM):
     pass
+
+
+class CommentApiHandler(BaseHTTPRequestHandler):
+    comments: list[dict[str, object]] = []
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def log_message(self, format: str, *args: object) -> None:
+        del format, args
+
+    def _read_payload(self) -> dict[str, object]:
+        length = int(self.headers.get("Content-Length") or "0")
+        if length == 0:
+            return {}
+        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise AssertionError("expected JSON object payload")
+        return payload
+
+    def _write_json(self, status: int, payload: object) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        self.requests.append(("GET", self.path, None))
+        if self.path.startswith("/repos/seungpyoson/bolt-v2/issues/895/comments"):
+            self._write_json(200, self.comments)
+            return
+        self._write_json(404, {"message": "not found"})
+
+    def do_POST(self) -> None:
+        payload = self._read_payload()
+        self.requests.append(("POST", self.path, payload))
+        if self.path == "/repos/seungpyoson/bolt-v2/issues/895/comments":
+            body = str(payload.get("body") or "")
+            self.comments.append(
+                {
+                    "id": 100 + len(self.comments),
+                    "body": body,
+                    "created_at": "2026-06-22T12:23:00Z",
+                    "updated_at": "2026-06-22T12:23:00Z",
+                    "user": {"type": "Bot", "login": "github-actions[bot]"},
+                }
+            )
+            self._write_json(201, self.comments[-1])
+            return
+        self._write_json(404, {"message": "not found"})
+
+    def do_PATCH(self) -> None:
+        payload = self._read_payload()
+        self.requests.append(("PATCH", self.path, payload))
+        prefix = "/repos/seungpyoson/bolt-v2/issues/comments/"
+        if self.path.startswith(prefix):
+            comment_id = int(self.path[len(prefix) :])
+            for comment in self.comments:
+                if comment.get("id") == comment_id:
+                    comment["body"] = str(payload.get("body") or "")
+                    comment["updated_at"] = "2026-06-22T12:24:00Z"
+                    self._write_json(200, comment)
+                    return
+        self._write_json(404, {"message": "not found"})
 
 
 def file_payload(name: str, patch: str) -> dict[str, object]:
@@ -99,8 +192,11 @@ def fallback_config(module, **overrides):
         ),
         "expected_bot_login": "github-actions[bot]",
         "comment_marker": "<!-- ai-pr-reviewer-glm -->",
+        "source_label": "GLM direct fallback (`glm-5.2`)",
     }
     values.update(overrides)
+    if "source_label" not in overrides and values["provider"] == "Kimi":
+        values["source_label"] = "Kimi Code CLI (`kimi-k2.7-code`)"
     return module.FallbackConfig(**values)
 
 
@@ -359,7 +455,7 @@ def test_prior_glm_fallback_marker_suppresses_later_fallback() -> None:
         files=[file_payload("src/lib.rs", "+change")],
         issue_comments=[
             {
-                "body": "<!-- ai-pr-reviewer-glm -->\n\n## GLM PR Review\n\nexisting fallback result",
+                "body": f"<!-- ai-pr-reviewer-glm -->\n\n## GLM PR Review\n\n{valid_no_findings_response()}",
                 "created_at": "2026-06-22T12:22:00Z",
                 "updated_at": "2026-06-22T12:22:00Z",
                 "user": {"type": "Bot", "login": "github-actions[bot]"},
@@ -377,6 +473,186 @@ def test_prior_glm_fallback_marker_suppresses_later_fallback() -> None:
     assert result == "existing-review-deliverable"
     assert glm.prompts == []
     assert github.posted == []
+
+
+def test_low_quality_marker_comment_does_not_suppress_fallback() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "body": "<!-- ai-pr-reviewer-glm -->\n\n## GLM PR Review\n\nNo hard-evidence findings in this chunk.",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM(response=valid_finding_response("fallback ran after weak marker."))
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
+    )
+
+    assert result == "fallback-posted"
+    assert len(glm.prompts) == 1
+    assert len(github.posted) == 1
+    assert "fallback ran after weak marker." in github.posted[0]
+
+
+def test_same_round_marker_comment_is_updated_instead_of_posting_new_comment() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "id": 42,
+                "body": (
+                    "<!-- ai-pr-reviewer-glm -->\n\n"
+                    "## GLM PR Review\n\n"
+                    "older fallback result\n\n"
+                    "- Action run: https://github.com/seungpyoson/bolt-v2/actions/runs/1\n"
+                ),
+                "created_at": "2026-06-22T11:22:00Z",
+                "updated_at": "2026-06-22T11:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM(response=valid_finding_response("updated review body."))
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
+    )
+
+    assert result == "fallback-posted"
+    assert github.posted == []
+    assert len(github.updated) == 1, github.updated
+    assert github.updated[0][0] == 42
+    assert github.updated[0][1].startswith("<!-- ai-pr-reviewer-glm -->")
+    assert "updated review body." in github.updated[0][1]
+
+
+def test_previous_round_marker_comment_does_not_get_overwritten() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[file_payload("src/lib.rs", "+change")],
+        issue_comments=[
+            {
+                "id": 42,
+                "body": (
+                    "<!-- ai-pr-reviewer-glm -->\n\n"
+                    "## GLM PR Review\n\n"
+                    "older fallback result\n\n"
+                    "- Action run: https://github.com/seungpyoson/bolt-v2/actions/runs/0\n"
+                ),
+                "created_at": "2026-06-22T11:22:00Z",
+                "updated_at": "2026-06-22T11:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+    glm = FakeGLM(response=valid_finding_response("new review round body."))
+
+    result = module.run_fallback_review(
+        github=github,
+        reviewer=glm,
+        config=fallback_config(module),
+    )
+
+    assert result == "fallback-posted"
+    assert github.updated == []
+    assert len(github.posted) == 1
+    assert "new review round body." in github.posted[0]
+    assert "actions/runs/1" in github.posted[0]
+
+
+def test_generated_low_quality_review_is_not_posted_as_deliverable() -> None:
+    module = load_script()
+    github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
+    glm = FakeGLM(response="No hard-evidence findings in this chunk.")
+
+    try:
+        module.run_fallback_review(
+            github=github,
+            reviewer=glm,
+            config=fallback_config(module),
+        )
+    except module.ReviewFailed as exc:
+        assert "did not meet the hard-evidence output contract" in str(exc)
+    else:
+        raise AssertionError("low-quality review response should fail")
+
+    assert len(github.posted) == 1
+    assert "review did not produce a deliverable" in github.posted[0]
+    assert "did not meet the hard-evidence output contract" in github.posted[0]
+
+
+def test_github_client_upserts_marker_comments_through_http_api() -> None:
+    module = load_script()
+    CommentApiHandler.comments = [
+        {
+            "id": 42,
+            "body": (
+                "<!-- ai-pr-reviewer-glm -->\n\n"
+                "## GLM PR Review\n\n"
+                "- Action run: https://github.com/seungpyoson/bolt-v2/actions/runs/1\n\n"
+                "old body\n"
+            ),
+            "created_at": "2026-06-22T12:22:00Z",
+            "updated_at": "2026-06-22T12:22:00Z",
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+        }
+    ]
+    CommentApiHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), CommentApiHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        api_url = f"http://127.0.0.1:{server.server_port}"
+        github = module.GitHubClient(
+            repo="seungpyoson/bolt-v2",
+            pr_number=895,
+            token="test-token",
+            api_url=api_url,
+        )
+        module.post_or_update_marker_comment(
+            github=github,
+            config=fallback_config(module),
+            body=(
+                "<!-- ai-pr-reviewer-glm -->\n\n"
+                "## GLM PR Review\n\n"
+                "- Action run: https://github.com/seungpyoson/bolt-v2/actions/runs/1\n\n"
+                "updated body\n"
+            ),
+        )
+        module.post_or_update_marker_comment(
+            github=github,
+            config=fallback_config(
+                module,
+                run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/2",
+            ),
+            body=(
+                "<!-- ai-pr-reviewer-glm -->\n\n"
+                "## GLM PR Review\n\n"
+                "- Action run: https://github.com/seungpyoson/bolt-v2/actions/runs/2\n\n"
+                "new round body\n"
+            ),
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    methods = [method for method, _, _ in CommentApiHandler.requests]
+    assert methods == ["GET", "PATCH", "GET", "POST"], CommentApiHandler.requests
+    assert len(CommentApiHandler.comments) == 2
+    assert CommentApiHandler.comments[0]["id"] == 42
+    assert "updated body" in str(CommentApiHandler.comments[0]["body"])
+    assert "new round body" in str(CommentApiHandler.comments[1]["body"])
 
 
 def test_posts_failure_notice_when_glm_fallback_fails() -> None:
@@ -473,14 +749,64 @@ def test_kimi_fallback_uses_same_chunked_deliverable_contract() -> None:
     assert len(github.posted) == 1, github.posted
     assert github.posted[0].startswith(marker)
     assert "## Kimi PR Review" in github.posted[0]
-    assert "Review chunks:" in github.posted[0]
+    assert "Per-chunk character budget:" not in github.posted[0]
+    assert "Source: Kimi Code CLI" in github.posted[0]
 
 
-def test_posts_fallback_review_across_multiple_comments_when_comment_budget_requires_it() -> None:
+def test_stamps_pr_agent_review_source_model() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        issue_comments=[
+            {
+                "id": 77,
+                "body": "## PR Reviewer Guide\n\nHere are some observations.",
+                "created_at": "2026-06-22T12:22:00Z",
+                "updated_at": "2026-06-22T12:22:00Z",
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+        ],
+    )
+
+    result = module.stamp_existing_review_comment(
+        github=github,
+        started_at="2026-06-22T12:21:00Z",
+        markers=("## PR Reviewer Guide", "<!-- ai-pr-reviewer-glm -->"),
+        expected_bot_login="github-actions[bot]",
+        marker="<!-- ai-pr-reviewer-glm -->",
+        source_label="GLM PR-Agent (`openai/glm-5.2`)",
+        run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+    )
+
+    assert result == "existing-review-stamped"
+    assert github.posted == []
+    assert len(github.updated) == 1
+    assert github.updated[0][0] == 77
+    assert github.updated[0][1].startswith("<!-- ai-pr-reviewer-glm -->")
+    assert "**Source:** GLM PR-Agent (`openai/glm-5.2`)" in github.updated[0][1]
+    assert "**Action run:** https://github.com/seungpyoson/bolt-v2/actions/runs/1" in github.updated[0][1]
+
+
+def test_stamping_preserves_existing_marker_as_first_line() -> None:
+    module = load_script()
+
+    stamped = module.add_source_line(
+        "<!-- ai-pr-reviewer-glm -->\n\n## PR Reviewer Guide\n\nBody.",
+        marker="<!-- ai-pr-reviewer-glm -->",
+        source_label="GLM PR-Agent (`openai/glm-5.2`)",
+        run_url="https://github.com/seungpyoson/bolt-v2/actions/runs/1",
+    )
+
+    assert stamped.startswith("<!-- ai-pr-reviewer-glm -->\n\n## PR Reviewer Guide")
+    assert stamped.count("<!-- ai-pr-reviewer-glm -->") == 1
+    assert "**Source:** GLM PR-Agent (`openai/glm-5.2`)" in stamped
+
+
+def test_truncates_fallback_review_to_one_comment_when_comment_budget_requires_it() -> None:
     module = load_script()
     files = [file_payload(f"src/file_{idx}.rs", "+" + ("x" * 80)) for idx in range(7)]
     github = FakeGitHub(files=files)
-    glm = FakeGLM(response="Findings\n\n" + ("hard evidence finding. " * 12))
+    glm = FakeGLM(response=valid_finding_response("hard evidence finding. " * 12))
 
     result = module.run_fallback_review(
         github=github,
@@ -498,17 +824,17 @@ def test_posts_fallback_review_across_multiple_comments_when_comment_budget_requ
     )
 
     assert result == "fallback-posted"
-    assert len(github.posted) > 1, github.posted
-    assert all(len(body) <= 520 for body in github.posted), [len(body) for body in github.posted]
-    assert all("## GLM PR Review (part " in body for body in github.posted), github.posted
-    joined = "\n".join(github.posted)
-    assert "Chunk 1/" in joined
-    assert f"Chunk {len(glm.prompts)}/" in joined
+    assert len(github.posted) == 1, github.posted
+    assert len(github.posted[0]) <= 520, len(github.posted[0])
+    assert "## GLM PR Review" in github.posted[0]
+    assert "## GLM PR Review (part " not in github.posted[0]
+    assert "Chunk 1/" in github.posted[0]
+    assert "[truncated to fit GitHub comment limit]" in github.posted[0]
 
 
 def test_large_model_response_is_split_without_truncating_content() -> None:
     module = load_script()
-    response = "Findings\n\n" + ("X" * 20000)
+    response = valid_finding_response("X" * 20000)
     github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
     glm = FakeGLM(response=response)
 
@@ -537,7 +863,17 @@ def test_large_model_response_is_split_without_truncating_content() -> None:
 
 def test_split_model_response_keeps_markdown_fences_balanced() -> None:
     module = load_script()
-    response = "```python\n" + "\n".join(f"print({idx})" for idx in range(60)) + "\n```"
+    response = "\n".join(
+        [
+            "Severity: medium",
+            "Evidence: `+change`",
+            "Issue: fenced evidence needs balanced splitting.",
+            "```python",
+            *[f"print({idx})" for idx in range(60)],
+            "```",
+            "Fix / verification: keep fences balanced.",
+        ]
+    )
     github = FakeGitHub(files=[file_payload("src/lib.rs", "+change")])
     glm = FakeGLM(response=response)
 
@@ -663,7 +999,7 @@ def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
             client = module.KimiCliClient(
                 api_key="fake-kimi-secret",
                 api_base="https://api.kimi.com/coding/v1",
-                model="kimi-for-coding",
+                model="kimi-k2.7-code",
                 provider="Kimi",
                 provider_type="kimi",
                 model_max_context_size=262144,
@@ -686,7 +1022,7 @@ def test_kimi_cli_client_uses_documented_env_auth_path() -> None:
     assert argv == ["kimi", "-p", "system\n\nuser"]
     assert "fake-kimi-secret" not in " ".join(argv)
     env = call["env"]
-    assert env["KIMI_MODEL_NAME"] == "kimi-for-coding"
+    assert env["KIMI_MODEL_NAME"] == "kimi-k2.7-code"
     assert env["KIMI_MODEL_API_KEY"] == "fake-kimi-secret"
     assert env["KIMI_MODEL_BASE_URL"] == "https://api.kimi.com/coding/v1"
     assert env["KIMI_MODEL_PROVIDER_TYPE"] == "kimi"
@@ -750,10 +1086,17 @@ def main() -> int:
     test_unexpected_bot_marker_comment_does_not_suppress_fallback()
     test_incremental_pr_agent_deliverable_suppresses_fallback()
     test_prior_glm_fallback_marker_suppresses_later_fallback()
+    test_low_quality_marker_comment_does_not_suppress_fallback()
+    test_same_round_marker_comment_is_updated_instead_of_posting_new_comment()
+    test_previous_round_marker_comment_does_not_get_overwritten()
+    test_generated_low_quality_review_is_not_posted_as_deliverable()
+    test_github_client_upserts_marker_comments_through_http_api()
     test_posts_failure_notice_when_glm_fallback_fails()
     test_sets_failure_notice_output_after_posting_failure_notice()
     test_kimi_fallback_uses_same_chunked_deliverable_contract()
-    test_posts_fallback_review_across_multiple_comments_when_comment_budget_requires_it()
+    test_stamps_pr_agent_review_source_model()
+    test_stamping_preserves_existing_marker_as_first_line()
+    test_truncates_fallback_review_to_one_comment_when_comment_budget_requires_it()
     test_large_model_response_is_split_without_truncating_content()
     test_split_model_response_keeps_markdown_fences_balanced()
     test_posts_failure_notice_when_kimi_fallback_fails()

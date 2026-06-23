@@ -45,6 +45,7 @@ class FallbackConfig:
     expected_bot_login: str = ""
     comment_marker: str = ""
     review_intro: str = ""
+    source_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -152,6 +153,9 @@ class GitHubClient:
 
     def post_issue_comment(self, body: str) -> None:
         self.post_issue_comment_for(self.pr_number, body)
+
+    def update_issue_comment(self, comment_id: int, body: str) -> None:
+        self._request_json("PATCH", f"issues/comments/{comment_id}", payload={"body": body})
 
 
 class OpenAIChatClient:
@@ -318,6 +322,8 @@ def has_review_deliverable(
             continue
         if not body_has_deliverable_marker(comment.get("body"), markers):
             continue
+        if not review_body_is_quality_deliverable(str(comment.get("body") or "")):
+            continue
         if text_time_is_after_or_equal(comment.get("updated_at"), threshold) or text_time_is_after_or_equal(
             comment.get("created_at"), threshold
         ):
@@ -327,9 +333,136 @@ def has_review_deliverable(
             continue
         if not body_has_deliverable_marker(review.get("body"), markers):
             continue
+        if not review_body_is_quality_deliverable(str(review.get("body") or "")):
+            continue
         if text_time_is_after_or_equal(review.get("submitted_at"), threshold):
             return True
     return False
+
+
+def review_body_is_quality_deliverable(body: str) -> bool:
+    text = body.strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if "review did not produce a deliverable" in lowered or "review notice" in lowered:
+        return False
+    if "severity:" in lowered:
+        return all(label in lowered for label in ("evidence:", "issue:", "fix / verification:"))
+    if "no hard-evidence findings" in lowered:
+        return all(
+            label in lowered
+            for label in (
+                "coverage reviewed:",
+                "evidence basis:",
+                "risk areas considered:",
+            )
+        )
+    pr_agent_markers = ("## pr reviewer guide", "## incremental pr reviewer guide")
+    if any(marker in lowered for marker in pr_agent_markers):
+        disabled_noise = (
+            "ticket compliance analysis",
+            "estimated effort to review",
+            "can be split",
+        )
+        return not any(noise in lowered for noise in disabled_noise)
+    return False
+
+
+def latest_marker_comment(
+    *,
+    comments: list[dict[str, object]],
+    marker: str,
+    expected_bot_login: str,
+    run_url: str,
+) -> dict[str, object] | None:
+    marker_comments = [
+        comment
+        for comment in comments
+        if actor_is_expected_bot(comment, expected_bot_login)
+        and isinstance(comment.get("body"), str)
+        and body_has_deliverable_marker(comment.get("body"), (marker,))
+        and run_url in comment.get("body", "")
+        and isinstance(comment.get("id"), int)
+        and not isinstance(comment.get("id"), bool)
+    ]
+    if not marker_comments:
+        return None
+    return max(marker_comments, key=lambda comment: str(comment.get("updated_at") or comment.get("created_at") or ""))
+
+
+def post_or_update_marker_comment(*, github: Any, config: FallbackConfig, body: str) -> None:
+    if not config.comment_marker:
+        github.post_issue_comment(body)
+        return
+    existing = latest_marker_comment(
+        comments=github.list_issue_comments(),
+        marker=config.comment_marker,
+        expected_bot_login=config.expected_bot_login,
+        run_url=config.run_url,
+    )
+    if existing is None:
+        github.post_issue_comment(body)
+        return
+    github.update_issue_comment(int(existing["id"]), body)
+
+
+def add_source_line(body: str, *, marker: str, source_label: str, run_url: str = "") -> str:
+    if not source_label:
+        return body
+    source_line = f"**Source:** {source_label}"
+    run_line = f"**Action run:** {run_url}" if run_url else ""
+    text = body.lstrip()
+    prefix = ""
+    if marker and text.startswith(marker):
+        prefix = f"{marker}\n\n"
+        text = text[len(marker):].lstrip()
+    elif marker:
+        prefix = f"{marker}\n\n"
+    if source_line in text[:1000] and (not run_line or run_line in text[:1000]):
+        return prefix + text
+    lines = text.splitlines()
+    insert_at = 1 if lines and lines[0].startswith("## ") else 0
+    metadata = ["", source_line]
+    if run_line:
+        metadata.append(run_line)
+    metadata.append("")
+    lines[insert_at:insert_at] = metadata
+    return prefix + "\n".join(lines).strip() + "\n"
+
+
+def stamp_existing_review_comment(
+    *,
+    github: Any,
+    started_at: str,
+    markers: tuple[str, ...],
+    expected_bot_login: str,
+    marker: str,
+    source_label: str,
+    run_url: str,
+) -> str:
+    threshold = parse_iso_timestamp(started_at)
+    candidates = [
+        comment
+        for comment in github.list_issue_comments()
+        if actor_is_expected_bot(comment, expected_bot_login)
+        and body_has_deliverable_marker(comment.get("body"), markers)
+        and isinstance(comment.get("id"), int)
+        and not isinstance(comment.get("id"), bool)
+        and (
+            text_time_is_after_or_equal(comment.get("updated_at"), threshold)
+            or text_time_is_after_or_equal(comment.get("created_at"), threshold)
+        )
+    ]
+    if not candidates:
+        return "no-existing-review"
+    comment = max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
+    body = str(comment.get("body") or "")
+    stamped = add_source_line(body, marker=marker, source_label=source_label, run_url=run_url)
+    if stamped == body:
+        return "existing-review-already-stamped"
+    github.update_issue_comment(int(comment["id"]), stamped)
+    return "existing-review-stamped"
 
 
 def file_fragment_body(review_file: ReviewFile, patch_lines: list[str]) -> str:
@@ -441,9 +574,17 @@ def build_system_prompt(instructions: str) -> str:
         You are conducting an advisory pull request review for bolt-v2.
 
         Use only hard evidence from the supplied chunk. Report actionable findings only.
-        Quote the smallest relevant evidence snippet or line reference before explaining the implication.
-        If this chunk contains no hard-evidence findings, say exactly:
-        No hard-evidence findings in this chunk.
+        For every finding, include:
+        - Severity: blocking, high, medium, or low
+        - Evidence: the smallest relevant snippet or line reference from the supplied chunk
+        - Issue: why this is a real behavior, safety, governance, or verification problem
+        - Fix / verification: the concrete next step
+        Do not write generic summaries, praise, scorecards, or broad review guidance.
+        If this chunk contains no hard-evidence findings, use exactly this structure:
+        No hard-evidence findings in this chunk based only on the supplied diff.
+        Coverage reviewed: <specific changed files or diff areas reviewed in this chunk>.
+        Evidence basis: supplied diff only; no omitted files, logs, or external state were assumed.
+        Risk areas considered: correctness, security, workflow safety, verification, and repo-governance impact visible in this chunk.
 
         Repository review instructions:
         {instructions.strip()}
@@ -527,6 +668,15 @@ def split_response_for_sections(response: str, limit: int) -> list[str]:
     return balance_markdown_fence_parts(split_text_for_comment_sections(response, limit))
 
 
+def validate_review_responses(responses: list[str]) -> None:
+    for index, response in enumerate(responses, start=1):
+        if review_body_is_quality_deliverable(response):
+            continue
+        raise RuntimeError(
+            f"review response {index} did not meet the hard-evidence output contract"
+        )
+
+
 def write_github_output(name: str, value: str) -> None:
     output_path = os.environ.get("GITHUB_OUTPUT", "")
     if not output_path:
@@ -570,7 +720,7 @@ def render_review_comment_body(
         title += f" (part {part_index}/{part_total})"
     intro = config.review_intro or (
         f"The primary {config.provider} review action completed without a visible deliverable after this run started, "
-        f"so the fallback reviewer split the PR diff and reviewed each chunk with {config.provider}."
+        f"so the fallback reviewer reviewed the PR diff with {config.provider}."
     )
     parts = []
     if config.comment_marker:
@@ -581,11 +731,11 @@ def render_review_comment_body(
         "",
         intro,
         "",
-        f"- Review chunks: {total_chunks}",
-        f"- Per-chunk character budget: {config.max_chunk_chars}",
         f"- Action run: {config.run_url}",
         ]
     )
+    if config.source_label:
+        parts.append(f"- Source: {config.source_label}")
     if part_index is not None and part_total is not None:
         parts.append(f"- Comment part: {part_index}/{part_total}")
     parts.append("")
@@ -613,44 +763,8 @@ def render_review_comments(
             )
             for response_part_idx, response_part in enumerate(response_parts, start=1)
         )
-    single_comment = render_review_comment_body(config=config, total_chunks=len(chunks), sections=sections)
-    if len(single_comment) <= config.max_comment_chars:
-        return [single_comment]
-
-    packed_sections: list[list[str]] = []
-    current_sections: list[str] = []
-    max_possible_parts = max(1, len(sections))
-    for section in sections:
-        candidate_sections = [*current_sections, section]
-        candidate = render_review_comment_body(
-            config=config,
-            total_chunks=len(chunks),
-            sections=candidate_sections,
-            part_index=len(packed_sections) + 1,
-            part_total=max_possible_parts,
-        )
-        if current_sections and len(candidate) > config.max_comment_chars:
-            packed_sections.append(current_sections)
-            current_sections = [section]
-            continue
-        current_sections = candidate_sections
-
-    if current_sections:
-        packed_sections.append(current_sections)
-
-    return [
-        truncate_text(
-            render_review_comment_body(
-                config=config,
-                total_chunks=len(chunks),
-                sections=page_sections,
-                part_index=idx,
-                part_total=len(packed_sections),
-            ),
-            config.max_comment_chars,
-        )
-        for idx, page_sections in enumerate(packed_sections, start=1)
-    ]
+    comment = render_review_comment_body(config=config, total_chunks=len(chunks), sections=sections)
+    return [truncate_text(comment, config.max_comment_chars)]
 
 
 def secret_env_values() -> list[str]:
@@ -676,7 +790,9 @@ def sanitize_detail(value: str) -> str:
 
 def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseException) -> str:
     detail = sanitize_detail(str(error))
-    return textwrap.dedent(
+    marker = f"{config.comment_marker}\n\n" if config.comment_marker else ""
+    source = f"\n        - Source: {config.source_label}" if config.source_label else ""
+    return marker + textwrap.dedent(
         f"""\
         ## {provider} review did not produce a deliverable
 
@@ -685,6 +801,7 @@ def render_failure_notice(*, provider: str, config: FallbackConfig, error: BaseE
         - PR: #{config.pr_number}
         - Action run: {config.run_url}
         - Failure: `{truncate_text(detail, 1200)}`
+        {source}
 
         This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
         """
@@ -696,8 +813,23 @@ def post_split_review(*, github: Any, reviewer: Any, config: FallbackConfig) -> 
     chunks = pack_review_chunks(review_files, max_chars=config.max_chunk_chars)
     if not chunks:
         marker = f"{config.comment_marker}\n\n" if config.comment_marker else ""
-        github.post_issue_comment(
-            f"{marker}## {config.provider} PR Review\n\nNo reviewable file diff was available from the GitHub API.\n"
+        details = [f"- Action run: {config.run_url}"]
+        if config.source_label:
+            details.append(f"- Source: {config.source_label}")
+        body = "\n".join(
+            [
+                f"{marker}## {config.provider} PR Review",
+                "",
+                "No reviewable file diff was available from the GitHub API.",
+                "",
+                *details,
+                "",
+            ]
+        )
+        post_or_update_marker_comment(
+            github=github,
+            config=config,
+            body=body,
         )
         return "no-reviewable-diff"
 
@@ -709,8 +841,9 @@ def post_split_review(*, github: Any, reviewer: Any, config: FallbackConfig) -> 
         )
         for index, chunk in enumerate(chunks, start=1)
     ]
+    validate_review_responses(responses)
     for comment in render_review_comments(config=config, chunks=chunks, responses=responses):
-        github.post_issue_comment(comment)
+        post_or_update_marker_comment(github=github, config=config, body=comment)
     return "review-posted"
 
 
@@ -745,7 +878,11 @@ def run_fallback_review(*, github: Any, reviewer: Any, config: FallbackConfig) -
         return "fallback-posted" if result == "review-posted" else result
     except Exception as exc:
         try:
-            github.post_issue_comment(render_failure_notice(provider=config.provider, config=config, error=exc))
+            post_or_update_marker_comment(
+                github=github,
+                config=config,
+                body=render_failure_notice(provider=config.provider, config=config, error=exc),
+            )
             write_github_output("failure_notice_posted", "true")
         finally:
             raise ReviewFailed(sanitize_detail(str(exc))) from None
@@ -868,6 +1005,7 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
 
     api_key = os.environ.get("GLM_API_KEY", "")
     comment_marker = config_str(glm_config, "comment_marker")
+    model = os.environ.get("GLM_MODEL", config_str(glm_config, "model"))
     config = FallbackConfig(
         repo=repo,
         pr_number=pr_number,
@@ -881,6 +1019,7 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
         deliverable_markers=config_str_tuple(glm_config, "deliverable_markers"),
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=comment_marker,
+        source_label=f"GLM direct fallback (`{model}`)",
     )
     if not api_key:
         github.post_issue_comment_for(
@@ -897,12 +1036,33 @@ def run_glm_fallback_from_env(args: argparse.Namespace) -> int:
     reviewer = OpenAIChatClient(
         api_key=api_key,
         api_base=os.environ.get("GLM_API_BASE", config_str(glm_config, "api_base")),
-        model=os.environ.get("GLM_MODEL", config_str(glm_config, "model")),
+        model=model,
         provider="GLM",
         temperature=config_float(glm_config, "temperature"),
         timeout_seconds=int_env("GLM_API_TIMEOUT_SECONDS", config_int(glm_config, "api_timeout_seconds")),
     )
     result = run_fallback_review(github=github, reviewer=reviewer, config=config)
+    print(result)
+    return 0
+
+
+def run_glm_stamp_from_env(args: argparse.Namespace) -> int:
+    repo = env_required("GITHUB_REPOSITORY")
+    pr_number = int(env_required("PR_NUMBER"))
+    runtime_config = load_runtime_config(args)
+    github_config = config_table(runtime_config, "github")
+    glm_config = config_table(runtime_config, "glm")
+    pr_agent = nested_config_table(runtime_config, "glm", "pr_agent")
+    github = build_github_client(repo, pr_number, runtime_config)
+    result = stamp_existing_review_comment(
+        github=github,
+        started_at=args.started_at,
+        markers=config_str_tuple(glm_config, "deliverable_markers"),
+        expected_bot_login=config_str(github_config, "expected_bot_login"),
+        marker=config_str(glm_config, "comment_marker"),
+        source_label=f"GLM PR-Agent (`{config_str(pr_agent, 'model')}`)",
+        run_url=run_url_for(repo, runtime_config),
+    )
     print(result)
     return 0
 
@@ -913,6 +1073,7 @@ def build_kimi_config_from_env(args: argparse.Namespace, *, repo: str, pr_number
     github_config = config_table(runtime_config, "github")
     kimi_config = config_table(runtime_config, "kimi")
     marker = os.environ.get("KIMI_DELIVERABLE_MARKER", config_str(kimi_config, "deliverable_marker"))
+    model = os.environ.get("KIMI_MODEL_NAME", config_str(kimi_config, "model"))
     return FallbackConfig(
         repo=repo,
         pr_number=pr_number,
@@ -927,6 +1088,7 @@ def build_kimi_config_from_env(args: argparse.Namespace, *, repo: str, pr_number
         expected_bot_login=config_str(github_config, "expected_bot_login"),
         comment_marker=marker,
         review_intro=review_intro,
+        source_label=f"Kimi Code CLI (`{model}`)",
     )
 
 
@@ -958,7 +1120,7 @@ def run_kimi_review_from_env(args: argparse.Namespace) -> int:
         args,
         repo=repo,
         pr_number=pr_number,
-        review_intro="The Kimi CLI reviewer split the PR diff and reviewed each chunk with Kimi.",
+        review_intro="The Kimi CLI reviewer reviewed the PR diff with Kimi.",
     )
     try:
         result = post_split_review(github=github, reviewer=build_kimi_reviewer_from_env(api_key, args), config=config)
@@ -1013,6 +1175,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     fallback.add_argument("--instructions-file", required=True)
     fallback.add_argument("--config-file", type=Path)
 
+    glm_stamp = subparsers.add_parser("glm-stamp")
+    glm_stamp.add_argument("--started-at", required=True)
+    glm_stamp.add_argument("--config-file", type=Path)
+
     kimi_fallback = subparsers.add_parser("kimi-fallback")
     kimi_fallback.add_argument("--started-at", required=True)
     kimi_fallback.add_argument("--instructions-file", required=True)
@@ -1035,6 +1201,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.mode == "glm-fallback":
         return run_glm_fallback_from_env(args)
+    if args.mode == "glm-stamp":
+        return run_glm_stamp_from_env(args)
     if args.mode == "kimi-fallback":
         return run_kimi_fallback_from_env(args)
     if args.mode == "kimi-review":

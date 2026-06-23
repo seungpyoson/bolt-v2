@@ -42,17 +42,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
+          marker='<!-- ai-pr-reviewer-glm-notice -->'
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           cat > "$notice_file" <<EOF
+          ${marker}
+
           ## GLM review notice
 
           \`GLM_API_KEY\` is not configured, so the GLM review was skipped.
 
           - PR: #${PR_NUMBER}
-          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Action run: ${run_url}
 
           This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
           EOF
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\") | select(.body | contains(\"${marker}\")) | select(.body | contains(\"${run_url}\")) | .id" \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi
 
       - name: Checkout base AI review helpers
         id: base-checkout
@@ -134,6 +145,18 @@ jobs:
           github_action_config.auto_describe: ${{ steps.runtime-config.outputs.glm_pr_agent_auto_describe }}
           github_action_config.auto_improve: ${{ steps.runtime-config.outputs.glm_pr_agent_auto_improve }}
 
+      - name: Stamp GLM PR-Agent review source
+        id: glm_stamp
+        if: env.GLM_API_KEY != ''
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ steps.runtime-config.outputs.github_api_url }}
+        run: >-
+          python3 scripts/ai_review_deliverables.py glm-stamp
+          --started-at "${{ steps.review-window.outputs.started_at }}"
+          --config-file ci/ai-review.toml
+
       - name: Ensure GLM deliverable or post split fallback
         id: glm_fallback
         if: env.GLM_API_KEY != ''
@@ -169,14 +192,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           notice_file="${RUNNER_TEMP}/glm-ai-review-notice.md"
+          marker='<!-- ai-pr-reviewer-glm-notice -->'
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           cat > "$notice_file" <<EOF
+          ${marker}
+
           ## GLM review notice
 
           The GLM review infrastructure failed or timed out before posting a usable failure notice. Check the action logs for this run.
 
           - PR: #${PR_NUMBER}
-          - Action run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - Action run: ${run_url}
 
           This advisory review is non-blocking, but the missing AI deliverable should not be treated as review evidence.
           EOF
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\") | select(.body | contains(\"${marker}\")) | select(.body | contains(\"${run_url}\")) | .id" \
+            | tail -n 1)"
+          if [ -n "$existing_id" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}" --field body="$(cat "$notice_file")" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$notice_file"
+          fi

@@ -152,6 +152,9 @@ GLM_DELIVERABLE_SNIPPETS = (
     "id: pr-agent",
     "timeout-minutes: ${{ fromJSON(steps.runtime-config.outputs.glm_primary_timeout_minutes) }}",
     "OPENAI_KEY: ${{ env.GLM_API_KEY }}",
+    "Stamp GLM PR-Agent review source",
+    "id: glm_stamp",
+    "scripts/ai_review_deliverables.py glm-stamp",
     "Ensure GLM deliverable or post split fallback",
     "id: glm_fallback",
     "continue-on-error: true",
@@ -164,6 +167,9 @@ GLM_DELIVERABLE_SNIPPETS = (
     "steps.runtime-config.outcome == 'failure'",
     "steps.glm_fallback.outputs.failure_notice_posted != 'true'",
     "review infrastructure failed or timed out before posting a usable failure notice",
+    "<!-- ai-pr-reviewer-glm-notice -->",
+    "gh api \"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments\" --paginate",
+    "gh api --method PATCH \"repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}\"",
     "gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"",
     "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
 )
@@ -205,6 +211,9 @@ KIMI_DELIVERABLE_SNIPPETS = (
     "steps.runtime-config.outcome == 'failure'",
     "steps.kimi_fallback.outputs.failure_notice_posted != 'true'",
     "review infrastructure failed or timed out before posting a usable failure notice",
+    "<!-- ai-pr-reviewer-kimi-notice -->",
+    "gh api \"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments\" --paginate",
+    "gh api --method PATCH \"repos/${GITHUB_REPOSITORY}/issues/comments/${existing_id}\"",
     "gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"",
     "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
 )
@@ -217,6 +226,16 @@ SMOKE_TRUSTED_CONFIG_SNIPPETS = (
     "Path(\".ai-review/smoke-base/ci/ai-review.toml\")",
     "steps.trusted-config.outputs.available == 'true'",
     "Future smoke runs use the base-branch config before sending provider secrets",
+)
+
+AI_REVIEW_DELIVERABLES_SNIPPETS = (
+    "def review_body_is_quality_deliverable(",
+    "coverage reviewed:",
+    "evidence basis:",
+    "risk areas considered:",
+    "def validate_review_responses(",
+    "did not meet the hard-evidence output contract",
+    "validate_review_responses(responses)",
 )
 
 KIMI_FORBIDDEN_INPUTS = (
@@ -242,7 +261,7 @@ WORKFLOW_FORBIDDEN_RUNTIME_LITERALS = (
     "https://api.z.ai/api/coding/paas/v4",
     "https://api.kimi.com/coding/v1",
     "glm-5.2",
-    "kimi-for-coding",
+    "kimi-k2.7-code",
     "@moonshot-ai/kimi-code@0.19.0",
     "<!-- ai-pr-reviewer-kimi -->",
     "<!-- ai-pr-reviewer-glm -->",
@@ -269,6 +288,36 @@ def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
         return "", [".pr_agent.toml missing non-empty pr_reviewer.extra_instructions"]
 
     return extra, []
+
+
+def verify_pr_agent_config(pr_agent_toml: str) -> list[str]:
+    findings: list[str] = []
+    try:
+        parsed = tomllib.loads(pr_agent_toml)
+    except tomllib.TOMLDecodeError as exc:
+        return [f".pr_agent.toml invalid TOML: {exc}"]
+
+    reviewer = parsed.get("pr_reviewer")
+    if not isinstance(reviewer, dict):
+        return [".pr_agent.toml missing [pr_reviewer]"]
+
+    expected = (
+        ("persistent_comment", False),
+        ("publish_output_no_suggestions", False),
+        ("require_ticket_analysis_review", False),
+        ("require_can_be_split_review", False),
+        ("enable_review_labels_security", False),
+        ("enable_review_labels_effort", False),
+    )
+    for key, value in expected:
+        if reviewer.get(key) is not value:
+            findings.append(f".pr_agent.toml pr_reviewer.{key} must be {value!r}")
+
+    extra = reviewer.get("extra_instructions", "")
+    if "GLM PR-Agent (openai/glm-5.2)" not in extra:
+        findings.append(".pr_agent.toml extra_instructions must require explicit GLM PR-Agent source/model")
+
+    return findings
 
 
 def missing_snippets(label: str, text: str, snippets: tuple[str, ...]) -> list[str]:
@@ -315,6 +364,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("review.response_chars_per_chunk", review.get("response_chars_per_chunk"), 8000),
         ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
         ("glm.model", glm.get("model"), "glm-5.2"),
+        ("glm.api_timeout_seconds", glm.get("api_timeout_seconds"), 300),
         ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
         ("glm.comment_marker", glm.get("comment_marker"), "<!-- ai-pr-reviewer-glm -->"),
         ("glm.pr_agent.model", glm_pr_agent.get("model"), "openai/glm-5.2"),
@@ -329,7 +379,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("glm.workflow.fallback_timeout_minutes", glm_workflow.get("fallback_timeout_minutes"), 20),
         ("glm.workflow.setup_overhead_timeout_minutes", glm_workflow.get("setup_overhead_timeout_minutes"), 7),
         ("kimi.api_base", kimi.get("api_base"), "https://api.kimi.com/coding/v1"),
-        ("kimi.model", kimi.get("model"), "kimi-for-coding"),
+        ("kimi.model", kimi.get("model"), "kimi-k2.7-code"),
         ("kimi.provider_type", kimi.get("provider_type"), "kimi"),
         ("kimi.model_max_context_size", kimi.get("model_max_context_size"), 262144),
         ("kimi.default_thinking", kimi.get("default_thinking"), True),
@@ -414,6 +464,7 @@ def verify_texts(
     agents_md: str,
     pr_agent_toml: str,
     ai_review_toml: str,
+    ai_review_deliverables: str,
     glm_workflow: str,
     kimi_workflow: str,
     smoke_workflow: str,
@@ -428,6 +479,8 @@ def verify_texts(
     findings.extend(missing_snippets("AGENTS.md", agents_md, AGENTS_BACKPOINTER_SNIPPETS))
     findings.extend(missing_snippets(".pr_agent.toml extra_instructions", extra, PR_AGENT_MIRROR_NOTE_SNIPPETS))
     findings.extend(verify_ai_review_config(ai_review_toml))
+    findings.extend(verify_pr_agent_config(pr_agent_toml))
+    findings.extend(missing_snippets("scripts/ai_review_deliverables.py", ai_review_deliverables, AI_REVIEW_DELIVERABLES_SNIPPETS))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
@@ -478,6 +531,7 @@ def verify_repo(repo_root: Path) -> list[str]:
         agents_md=read_text(repo_root / "AGENTS.md"),
         pr_agent_toml=read_text(repo_root / ".pr_agent.toml"),
         ai_review_toml=read_text(repo_root / "ci/ai-review.toml"),
+        ai_review_deliverables=read_text(repo_root / "scripts/ai_review_deliverables.py"),
         glm_workflow=read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml"),
         kimi_workflow=read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml"),
         smoke_workflow=read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml"),
@@ -493,6 +547,7 @@ def run_self_tests(repo_root: Path) -> None:
     agents = read_text(repo_root / "AGENTS.md")
     pr_agent = read_text(repo_root / ".pr_agent.toml")
     ai_review = read_text(repo_root / "ci/ai-review.toml")
+    deliverables = read_text(repo_root / "scripts/ai_review_deliverables.py")
     glm = read_text(repo_root / ".github/workflows/ai-review-glm-pr-agent.yml")
     kimi = read_text(repo_root / ".github/workflows/ai-review-kimi-cli.yml")
     smoke = read_text(repo_root / ".github/workflows/ai-review-coding-plan-smoke.yml")
@@ -501,6 +556,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -512,6 +568,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review.replace("https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/paas/v4"),
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -522,6 +579,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm + "\n          GLM_MODEL: glm-5.2\n",
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -532,6 +590,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke + "\n          GLM_API_BASE: https://api.z.ai/api/coding/paas/v4\n",
@@ -542,6 +601,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm.replace("timeout-minutes: 35", "timeout-minutes: 20"),
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -552,6 +612,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi.replace("timeout-minutes: 45", "timeout-minutes: 35"),
         smoke_workflow=smoke,
@@ -562,6 +623,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke.replace("timeout-minutes: 10", "timeout-minutes: 8"),
@@ -572,6 +634,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke.replace(
@@ -585,6 +648,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent.replace("NO HARDCODES: every runtime value comes from TOML config", "NO HARDCODES"),
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -595,6 +659,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents.replace("**NO DUAL PATHS**", "**NO MULTI PATHS**"),
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -605,6 +670,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm + "\n          pr_reviewer.num_max_findings: \"6\"\n",
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -615,6 +681,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm.replace("scripts/ai_review_deliverables.py glm-fallback", "echo missing"),
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -625,6 +692,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 scripts/ai_review_deliverables.py notice"),
         kimi_workflow=kimi,
         smoke_workflow=smoke,
@@ -639,6 +707,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi.replace(
             "ref: ${{ github.event.pull_request.base.sha }}",
@@ -652,6 +721,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi + "\n      - uses: misospace/pr-reviewer-action@deadbeef\n",
         smoke_workflow=smoke,
@@ -662,6 +732,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi + "\n          system_prompt_mode: append\n",
         smoke_workflow=smoke,
@@ -672,6 +743,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi.replace(".ai-review/base/scripts/ai_review_deliverables.py kimi-fallback", "echo missing"),
         smoke_workflow=smoke,
@@ -682,6 +754,7 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents,
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables,
         glm_workflow=glm,
         kimi_workflow=kimi.replace("gh pr comment \"$PR_NUMBER\" --repo \"$GITHUB_REPOSITORY\"", "python3 .ai-review/base/scripts/ai_review_deliverables.py notice"),
         smoke_workflow=smoke,
@@ -690,6 +763,21 @@ def run_self_tests(repo_root: Path) -> None:
         "Kimi helper-based fallback infrastructure notice",
         kimi_missing_infrastructure_notice,
         "must not depend on ai_review_deliverables.py",
+    )
+
+    missing_quality_gate = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        ai_review_deliverables=deliverables.replace("def validate_review_responses(", "def removed_validate_review_responses("),
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding(
+        "missing review quality gate",
+        missing_quality_gate,
+        "scripts/ai_review_deliverables.py missing expected snippet",
     )
 
 

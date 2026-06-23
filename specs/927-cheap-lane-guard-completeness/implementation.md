@@ -103,8 +103,11 @@ The core of Change 1. Runs on **one script's AST**; returns `(resolved_targets: 
   string — after **adjacent-string-literal concatenation** (incl. parenthesized multiline, `ast.Constant`
   joins) — that names literal `scripts/…` paths → those must be scan-set members else hard-fail
   (`test_command_understanding.py:155-164`). `-c` whose payload is pure-tmp → no edge.
-- **`eval(`/`exec(`** and the dynamic code-exec family (`os.system`, `os.popen`, `os.exec*`, `os.spawn*`,
-  `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`) → **L2 hard-fail** (F8 drift-fence).
+- **`eval(`/`exec(`** and shell-string execution (`os.system`, `os.popen`,
+  `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`) → **L2 hard-fail**.
+  `os.exec*` / `os.spawn*` / `os.posix_spawn*` are L2 only when the replacement program image resolves to
+  a Python interpreter or Python script, or is unresolved while replacement argv is Python-shaped; resolved
+  non-Python replacement remains the documented Layer-3 cargo-shim boundary.
 
 ### 1h. `_discover_cheap_lane_scripts() -> set[Path]` — the fixed point (replaces `_cheap_lane_python_scripts`)
 - `seed` = (cheap-labeled `.py`, existence-checked as today `:404-411`) ∪ (closure scripts from 1c/1d/1f).

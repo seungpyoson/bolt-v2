@@ -38,13 +38,18 @@ _TEMP_ORIGIN = "temp"
 _REPO_ROOT_NAMES = frozenset({"REPO_ROOT", "SCRIPTS_DIR"})
 _MUTATING_PATH_METHODS = frozenset(
     {
+        "chmod",
+        "chown",
         "hardlink_to",
+        "lchmod",
+        "lchown",
         "mkdir",
         "replace",
         "rmdir",
         "rmtree",
         "symlink_to",
         "touch",
+        "truncate",
         "unlink",
         "write_bytes",
         "write_text",
@@ -52,6 +57,10 @@ _MUTATING_PATH_METHODS = frozenset(
 )
 _OS_MUTATORS = frozenset(
     {
+        "chmod",
+        "chown",
+        "lchmod",
+        "lchown",
         "link",
         "makedirs",
         "mkdir",
@@ -61,10 +70,12 @@ _OS_MUTATORS = frozenset(
         "replace",
         "rmdir",
         "symlink",
+        "truncate",
         "unlink",
         "utime",
     }
 )
+_SHUTIL_MUTATORS = frozenset({"copy", "copy2", "copyfile", "copytree", "move", "rmtree"})
 _TEMPFILE_REPO_CREATORS = frozenset(
     {
         "NamedTemporaryFile",
@@ -75,7 +86,24 @@ _TEMPFILE_REPO_CREATORS = frozenset(
         "mkstemp",
     }
 )
+_TEMPFILE_DIR_POSITION = {
+    "NamedTemporaryFile": 6,
+    "SpooledTemporaryFile": 7,
+    "TemporaryDirectory": 2,
+    "TemporaryFile": 6,
+    "mkdtemp": 2,
+    "mkstemp": 2,
+}
 _JUST_EXPRESSION_OPS = frozenset({"call", "concatenate", "evaluate", "if", "join", "variable"})
+_OS_EXEC_FUNCTIONS = frozenset(
+    {"execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp", "execvpe"}
+)
+_OS_SPAWN_FUNCTIONS = frozenset(
+    {"spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe"}
+)
+_SHELL_PYTHON_PREFIX_WRAPPERS = frozenset(
+    {"command", "nice", "nohup", "stdbuf", "timeout", "time", "xargs"}
+)
 _MANIFEST_PATH = SCRIPTS_DIR / "cheap_lane_discovered_unlabeled.manifest"
 _GATE_ALIASES: dict[str, str] = {}
 _JUST_DUMP_CACHE: dict | None = None
@@ -225,17 +253,24 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         self.origins: dict[str, str] = {name: _REPO_ORIGIN for name in _REPO_ROOT_NAMES}
         self.relative_paths_are_repo = relative_paths_are_repo
         self.os_modules = {"os"}
+        self.io_modules = {"io"}
         self.shutil_modules = {"shutil"}
         self.tempfile_modules = {"tempfile"}
         self.tempdir_names = set(_TEMPFILE_REPO_CREATORS)
+        self.tempfile_creator_aliases = {name: name for name in _TEMPFILE_REPO_CREATORS}
         self.pathlib_modules = {"pathlib"}
         self.path_names = {"Path"}
+        self.open_names = {"open"}
+        self.os_mutator_names: dict[str, str] = {}
+        self.shutil_mutator_names: dict[str, str] = {}
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             name = alias.asname or alias.name
             if alias.name == "os":
                 self.os_modules.add(name)
+            elif alias.name == "io":
+                self.io_modules.add(name)
             elif alias.name == "shutil":
                 self.shutil_modules.add(name)
             elif alias.name == "tempfile":
@@ -246,12 +281,44 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module == "tempfile":
             for alias in node.names:
+                if alias.name == "*":
+                    self.tempdir_names.update(_TEMPFILE_REPO_CREATORS)
+                    self.tempfile_creator_aliases.update({name: name for name in _TEMPFILE_REPO_CREATORS})
+                    continue
                 if alias.name in _TEMPFILE_REPO_CREATORS:
-                    self.tempdir_names.add(alias.asname or alias.name)
+                    name = alias.asname or alias.name
+                    self.tempdir_names.add(name)
+                    self.tempfile_creator_aliases[name] = alias.name
         elif node.module == "pathlib":
             for alias in node.names:
+                if alias.name == "*":
+                    self.path_names.add("Path")
+                    continue
                 if alias.name == "Path":
                     self.path_names.add(alias.asname or alias.name)
+        elif node.module == "os":
+            for alias in node.names:
+                if alias.name == "*":
+                    for name in _OS_MUTATORS | {"open"}:
+                        self.os_mutator_names[name] = name
+                    continue
+                if alias.name in _OS_MUTATORS | {"open"}:
+                    self.os_mutator_names[alias.asname or alias.name] = alias.name
+        elif node.module == "shutil":
+            for alias in node.names:
+                if alias.name == "*":
+                    for name in _SHUTIL_MUTATORS:
+                        self.shutil_mutator_names[name] = name
+                    continue
+                if alias.name in _SHUTIL_MUTATORS:
+                    self.shutil_mutator_names[alias.asname or alias.name] = alias.name
+        elif node.module in {"builtins", "io"}:
+            for alias in node.names:
+                if alias.name == "*":
+                    self.open_names.add("open")
+                    continue
+                if alias.name == "open":
+                    self.open_names.add(alias.asname or alias.name)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_isolated_body(node.body)
@@ -278,6 +345,11 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         self._assign_origin(node.target, origin)
         if node.value is not None:
             self.visit(node.value)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        origin = self._origin(node.value)
+        self._assign_origin(node.target, origin)
+        self.visit(node.value)
 
     def visit_For(self, node: ast.For) -> None:
         origin = self._origin(node.iter)
@@ -356,9 +428,15 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         if self._is_file_anchored_repo_path(node):
             return _REPO_ORIGIN
         if isinstance(node, ast.Name):
+            if node.id == "__file__":
+                return _REPO_ORIGIN
             if node.id in _REPO_ROOT_NAMES:
                 return _REPO_ORIGIN
             return self.origins.get(node.id)
+        if isinstance(node, ast.NamedExpr):
+            origin = self._origin(node.value)
+            self._assign_origin(node.target, origin)
+            return origin
         if isinstance(node, ast.Attribute):
             if node.attr in _REPO_ROOT_NAMES:
                 return _REPO_ORIGIN
@@ -375,12 +453,20 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
 
     def _call_origin(self, node: ast.Call) -> str | None:
         func = node.func
+        call_name = self._call_name(func)
         if isinstance(func, ast.Name) and func.id == "repo_path":
             return _REPO_ORIGIN
         if isinstance(func, ast.Name) and func.id == "str" and node.args:
             return self._origin(node.args[0])
         if self._is_path_constructor_call(func) and node.args:
             return self._origin(node.args[0])
+        if any(
+            call_name in {f"{module}.fspath", f"{module}.path.fspath"}
+            for module in self.os_modules
+        ) and node.args:
+            return self._origin(node.args[0])
+        if any(call_name == f"{module}.path.join" for module in self.os_modules):
+            return self._merge_origin(*(self._origin(arg) for arg in node.args))
         if isinstance(func, ast.Attribute):
             if (
                 func.attr == "fspath"
@@ -404,6 +490,14 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
             }:
                 return self._origin(func.value)
         return None
+
+    def _call_name(self, node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent = self._call_name(node.value)
+            return f"{parent}.{node.attr}" if parent else node.attr
+        return ""
 
     def _is_path_constructor_call(self, func: ast.AST) -> bool:
         if isinstance(func, ast.Name) and func.id in self.path_names:
@@ -478,14 +572,25 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
         for keyword in node.keywords:
             if keyword.arg == "dir" and self._origin(keyword.value) == _REPO_ORIGIN:
                 return _REPO_ORIGIN
+        function_name = self._temporary_directory_function_name(node)
+        position = _TEMPFILE_DIR_POSITION.get(function_name or "")
+        if position is not None and len(node.args) > position and self._origin(node.args[position]) == _REPO_ORIGIN:
+            return _REPO_ORIGIN
         return _TEMP_ORIGIN
 
     def _temporary_directory_label(self, node: ast.Call) -> str:
         if isinstance(node.func, ast.Name):
-            return f"tempfile.{node.func.id}"
+            return f"tempfile.{self.tempfile_creator_aliases.get(node.func.id, node.func.id)}"
         if isinstance(node.func, ast.Attribute):
             return f"tempfile.{node.func.attr}"
         return "tempfile"
+
+    def _temporary_directory_function_name(self, node: ast.Call) -> str | None:
+        if isinstance(node.func, ast.Name):
+            return self.tempfile_creator_aliases.get(node.func.id, node.func.id)
+        if isinstance(node.func, ast.Attribute):
+            return node.func.attr
+        return None
 
     def _mutating_targets(self, node: ast.Call) -> list[tuple[str, ast.AST]]:
         targets: list[tuple[str, ast.AST]] = []
@@ -502,29 +607,51 @@ class _RepoSharedStateWriteAnalyzer(ast.NodeVisitor):
                 targets.append((method, func.value))
 
             shutil_attr = self._is_module_call(node, self.shutil_modules)
-            if shutil_attr == "rmtree" and node.args:
-                targets.append((shutil_attr, node.args[0]))
-            elif shutil_attr == "move" and node.args:
-                for arg in node.args:
-                    targets.append((shutil_attr, arg))
-            elif (shutil_attr or "").startswith("copy") and len(node.args) >= 2:
-                targets.append((shutil_attr, node.args[1]))
+            self._append_shutil_targets(targets, shutil_attr, node)
 
             os_attr = self._is_module_call(node, self.os_modules)
-            if os_attr in _OS_MUTATORS - {"rename", "replace", "link", "symlink"} and node.args:
-                targets.append((os_attr, node.args[0]))
-            elif os_attr in {"rename", "replace"} and node.args:
-                for arg in node.args[:2]:
-                    targets.append((os_attr, arg))
-            elif os_attr in {"link", "symlink"} and len(node.args) >= 2:
-                targets.append((os_attr, node.args[1]))
-            elif os_attr == "open" and node.args and self._os_open_flags_write(node):
-                targets.append((os_attr, node.args[0]))
+            self._append_os_targets(targets, os_attr, node)
 
-        if isinstance(func, ast.Name) and func.id == "open" and node.args:
-            if self._open_mode_writes(node, 1):
+            io_attr = self._is_module_call(node, self.io_modules)
+            if io_attr == "open" and node.args and self._open_mode_writes(node, 1):
+                targets.append((io_attr, node.args[0]))
+
+        if isinstance(func, ast.Name):
+            if func.id in self.open_names and node.args and self._open_mode_writes(node, 1):
                 targets.append(("open", node.args[0]))
+            self._append_os_targets(targets, self.os_mutator_names.get(func.id), node)
+            self._append_shutil_targets(targets, self.shutil_mutator_names.get(func.id), node)
         return targets
+
+    def _append_shutil_targets(
+        self,
+        targets: list[tuple[str, ast.AST]],
+        shutil_attr: str | None,
+        node: ast.Call,
+    ) -> None:
+        if shutil_attr == "rmtree" and node.args:
+            targets.append((shutil_attr, node.args[0]))
+        elif shutil_attr == "move" and node.args:
+            for arg in node.args:
+                targets.append((shutil_attr, arg))
+        elif (shutil_attr or "").startswith("copy") and len(node.args) >= 2:
+            targets.append((shutil_attr or "copy", node.args[1]))
+
+    def _append_os_targets(
+        self,
+        targets: list[tuple[str, ast.AST]],
+        os_attr: str | None,
+        node: ast.Call,
+    ) -> None:
+        if os_attr in _OS_MUTATORS - {"rename", "replace", "link", "symlink"} and node.args:
+            targets.append((os_attr, node.args[0]))
+        elif os_attr in {"rename", "replace"} and node.args:
+            for arg in node.args[:2]:
+                targets.append((os_attr, arg))
+        elif os_attr in {"link", "symlink"} and len(node.args) >= 2:
+            targets.append((os_attr, node.args[1]))
+        elif os_attr == "open" and node.args and self._os_open_flags_write(node):
+            targets.append((os_attr, node.args[0]))
 
     def _open_mode_writes(self, node: ast.Call, positional_index: int) -> bool:
         mode: ast.AST | None = None
@@ -788,11 +915,16 @@ def _shell_command_segments(line: str) -> list[str]:
         separator_width = 0
         if line[index : index + 2] in {"&&", "||"}:
             separator_width = 2
-        elif char == ";" or (
+        elif char in {";", "\n"} or (
             char == "|"
             and line[index : index + 2] != "||"
             and (index == 0 or line[index - 1] != "|")
             and (index + 1 >= len(line) or line[index + 1] != "|")
+        ) or (
+            char == "&"
+            and line[index : index + 2] != "&&"
+            and (index == 0 or line[index - 1] not in {"&", "<", ">"})
+            and (index + 1 >= len(line) or line[index + 1] not in {"&", ">"})
         ):
             separator_width = 1
         if separator_width:
@@ -922,7 +1054,7 @@ def _classify_command(line: str) -> str:
         return "none"
     if "{{" in stripped or "}}" in stripped:
         return "dynamic-shell"
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", stripped):
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\(", stripped):
         return "none"
     if stripped.startswith("if ! "):
         stripped = stripped[5:].strip()
@@ -938,19 +1070,23 @@ def _classify_command(line: str) -> str:
     command = tokens[0]
     if command in {"if", "then", "fi", "for", "do", "done", "else", "elif", "set", "shopt"}:
         return "boundary"
+    if command in {"bash", "sh"}:
+        return "dynamic-shell" if _shell_c_payload_mentions_python(tokens) else "boundary"
+    if command in _SHELL_PYTHON_PREFIX_WRAPPERS:
+        return "dynamic-shell" if any(_is_python_interpreter_token(token) for token in tokens[1:]) else "boundary"
     if command == "env":
         env_tokens = _env_wrapped_command_tokens(tokens)
         if not env_tokens:
             return "boundary"
         if env_tokens[0].startswith("$"):
             return "dynamic-shell"
-        return "py-exec" if _is_python_interpreter_token(env_tokens[0]) else "boundary"
+        if _is_python_interpreter_token(env_tokens[0]):
+            return "dynamic-shell" if _python_command_has_shell_expanded_operand(env_tokens) else "py-exec"
+        return "boundary"
     if command.startswith("$") or "*" in command or "?" in command:
         return "dynamic-shell"
     if _is_python_interpreter_token(command):
-        return "py-exec"
-    if command in {"bash", "sh"}:
-        return "boundary"
+        return "dynamic-shell" if _python_command_has_shell_expanded_operand(tokens) else "py-exec"
     return "boundary"
 
 
@@ -965,6 +1101,29 @@ def _env_wrapped_command_tokens(tokens: list[str]) -> list[str]:
     while index < len(tokens) and _is_shell_assignment(tokens[index]):
         index += 1
     return tokens[index:]
+
+
+def _token_has_shell_expansion(token: object) -> bool:
+    return isinstance(token, str) and "$" in token
+
+
+def _python_command_has_shell_expanded_operand(tokens: list[str]) -> bool:
+    operand_index = _python_operand_index(tokens)
+    if operand_index >= len(tokens):
+        return False
+    operand = tokens[operand_index]
+    if operand == "-c":
+        return False
+    if operand == "-m":
+        return len(tokens) > operand_index + 1 and _token_has_shell_expansion(tokens[operand_index + 1])
+    return _token_has_shell_expansion(operand)
+
+
+def _shell_c_payload_mentions_python(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token == "-c" and index + 1 < len(tokens):
+            return _shell_segment_mentions_python_or_just(tokens[index + 1])
+    return False
 
 
 def _cheap_gate_closure(dump: dict, labels: set[str] | None = None) -> tuple[set[str], dict[str, str]]:
@@ -1104,7 +1263,11 @@ def _python_script_from_tokens(tokens: list[str], scan_set: set[Path]) -> Path |
     if tokens[operand_index] == "-m":
         if len(tokens) <= operand_index + 1:
             raise AssertionError(f"Python -m command missing module: {tokens}")
+        if _token_has_shell_expansion(tokens[operand_index + 1]):
+            raise AssertionError(f"unsupported shell-expanded Python module target: {tokens[operand_index + 1]}")
         return _script_from_module_name(tokens[operand_index + 1])
+    if _token_has_shell_expansion(tokens[operand_index]):
+        raise AssertionError(f"unsupported shell-expanded Python script target: {tokens[operand_index]}")
     return _resolve_script_operand(tokens[operand_index])
 
 
@@ -1262,26 +1425,47 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.module == "tempfile":
             for alias in node.names:
+                if alias.name == "*":
+                    self.temp_path_names.update(
+                        {"TemporaryDirectory", "NamedTemporaryFile", "mkdtemp", "mkstemp", "gettempdir"}
+                    )
+                    continue
                 if alias.name in {"TemporaryDirectory", "NamedTemporaryFile", "mkdtemp", "mkstemp", "gettempdir"}:
                     self.temp_path_names.add(alias.asname or alias.name)
         elif node.module == "pathlib":
             for alias in node.names:
+                if alias.name == "*":
+                    self.path_names.add("Path")
+                    continue
                 if alias.name == "Path":
                     self.path_names.add(alias.asname or alias.name)
         elif node.module == "importlib.util":
             for alias in node.names:
+                if alias.name == "*":
+                    self.spec_loader_names.add("spec_from_file_location")
+                    continue
                 if alias.name == "spec_from_file_location":
                     self.spec_loader_names.add(alias.asname or alias.name)
         elif node.module == "importlib.machinery":
             for alias in node.names:
+                if alias.name == "*":
+                    self.source_loader_names.add("SourceFileLoader")
+                    continue
                 if alias.name == "SourceFileLoader":
                     self.source_loader_names.add(alias.asname or alias.name)
         elif node.module == "importlib":
             for alias in node.names:
+                if alias.name == "*":
+                    self.import_module_names.add("import_module")
+                    continue
                 if alias.name == "import_module":
                     self.import_module_names.add(alias.asname or alias.name)
         elif node.module == "runpy":
             for alias in node.names:
+                if alias.name == "*":
+                    self.run_path_names.add("run_path")
+                    self.run_module_names.add("run_module")
+                    continue
                 name = alias.asname or alias.name
                 if alias.name == "run_path":
                     self.run_path_names.add(name)
@@ -1289,6 +1473,10 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                     self.run_module_names.add(name)
         elif node.module == "subprocess":
             for alias in node.names:
+                if alias.name == "*":
+                    self.subprocess_call_names.update(_INVOCATION_FORMS["subprocess_calls"])
+                    self.subprocess_output_names.update({"getoutput", "getstatusoutput"})
+                    continue
                 name = alias.asname or alias.name
                 if alias.name in _INVOCATION_FORMS["subprocess_calls"]:
                     self.subprocess_call_names.add(name)
@@ -1296,17 +1484,26 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                     self.subprocess_output_names.add(name)
         elif node.module == "os":
             for alias in node.names:
+                if alias.name == "*":
+                    self.os_shell_names.update({"system", "popen"})
+                    self.os_exec_names.update(_OS_EXEC_FUNCTIONS)
+                    self.os_spawn_names.update(_OS_SPAWN_FUNCTIONS)
+                    self.os_posix_spawn_names.update({"posix_spawn", "posix_spawnp"})
+                    continue
                 name = alias.asname or alias.name
                 if alias.name in {"system", "popen"}:
                     self.os_shell_names.add(name)
-                elif alias.name.startswith("exec"):
+                elif alias.name in _OS_EXEC_FUNCTIONS:
                     self.os_exec_names.add(name)
                 elif alias.name in {"posix_spawn", "posix_spawnp"}:
                     self.os_posix_spawn_names.add(name)
-                elif alias.name.startswith("spawn"):
+                elif alias.name in _OS_SPAWN_FUNCTIONS:
                     self.os_spawn_names.add(name)
         elif node.module == "pty":
             for alias in node.names:
+                if alias.name == "*":
+                    self.pty_spawn_names.add("spawn")
+                    continue
                 if alias.name == "spawn":
                     self.pty_spawn_names.add(alias.asname or alias.name)
 
@@ -1583,6 +1780,9 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                 self._fail(node, "Python -m command is missing a module")
                 return
             module = tokens[operand_index + 1]
+            if _token_has_shell_expansion(module):
+                self._fail(node, f"unsupported shell-expanded Python module target: {module!r}")
+                return
             if module is _UNRESOLVED:
                 self._fail(node, "unresolved Python -m module")
             elif module is not _PARAMETER and isinstance(module, str):
@@ -1594,6 +1794,9 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             return
         if operand is _UNRESOLVED:
             self._fail(node, "unresolved Python script target")
+            return
+        if _token_has_shell_expansion(operand):
+            self._fail(node, f"unsupported shell-expanded Python script target: {operand!r}")
             return
         target = self._path_from_value(operand)
         if target is None:
@@ -1627,7 +1830,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             if self._os_exec_spawn_args_are_python_shaped(node, target_index):
                 self._fail(node, f"unresolved Python process replacement target in {call_name}")
             return
-        if _is_python_interpreter_token(str(target)):
+        if _is_python_interpreter_token(str(target)) or self._value_is_python_process_image(target):
             self._fail(node, f"dynamic Python process replacement is not allowed: {call_name}")
 
     def _os_exec_spawn_args_are_python_shaped(self, node: ast.Call, target_index: int) -> bool:
@@ -1643,6 +1846,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         if argv is _UNRESOLVED:
             return self._looks_like_python_command_expr(argv_node)
         return False
+
+    def _value_is_python_process_image(self, value: object) -> bool:
+        target = self._path_from_value(value)
+        if target is not None and target.exists():
+            return _is_python_script_path(target)
+        return isinstance(value, str) and value.endswith(".py")
 
     def _handle_loader_call(self, node: ast.Call, call_name: str) -> None:
         if (
@@ -2019,12 +2228,31 @@ def _discover_cheap_lane_scripts() -> set[Path]:
 
 
 def _cheap_lane_discovered_unlabeled_manifest() -> set[str]:
-    assert _MANIFEST_PATH.is_file(), f"missing cheap-lane manifest: {_MANIFEST_PATH.relative_to(REPO_ROOT)}"
-    return {
+    label = _repo_relative_label(_MANIFEST_PATH)
+    assert _MANIFEST_PATH.is_file(), f"missing cheap-lane manifest: {label}"
+    entries = {
         line.strip()
         for line in _MANIFEST_PATH.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.strip().startswith("#")
     }
+    assert entries, f"cheap-lane manifest must not be empty: {label}"
+    invalid = sorted(
+        entry
+        for entry in entries
+        if Path(entry).is_absolute()
+        or Path(entry).parts[:1] != ("scripts",)
+        or not (REPO_ROOT / entry).is_file()
+        or not _is_python_script_path(REPO_ROOT / entry)
+    )
+    assert not invalid, f"cheap-lane manifest entries must be existing Python scripts: {invalid}"
+    return entries
+
+
+def _repo_relative_label(path: Path) -> str:
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _live_discovered_unlabeled(scripts: set[Path]) -> set[str]:
@@ -2130,6 +2358,32 @@ def test_manifest_floor_does_not_accept_labeled_seed_only() -> None:
     assert _manifest_floor_missing(labeled_only, manifest) == manifest
 
 
+def test_manifest_file_must_be_non_empty_and_existing_scripts() -> None:
+    global _MANIFEST_PATH
+    original_manifest_path = _MANIFEST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest_path = Path(tmp) / "cheap_lane_discovered_unlabeled.manifest"
+        try:
+            _MANIFEST_PATH = manifest_path
+            manifest_path.write_text("", encoding="utf-8")
+            try:
+                _cheap_lane_discovered_unlabeled_manifest()
+            except AssertionError as exc:
+                assert "must not be empty" in str(exc)
+            else:
+                raise AssertionError("empty manifest must fail closed")
+
+            manifest_path.write_text("scripts/missing_guard_fixture.py\n", encoding="utf-8")
+            try:
+                _cheap_lane_discovered_unlabeled_manifest()
+            except AssertionError as exc:
+                assert "existing Python scripts" in str(exc)
+            else:
+                raise AssertionError("manifest entry for missing script must fail closed")
+        finally:
+            _MANIFEST_PATH = original_manifest_path
+
+
 def test_direct_cheap_labels_resolve_python_by_semantics() -> None:
     scripts = _cheap_labeled_python_scripts(["cargo-shim"])
     assert SCRIPTS_DIR / "cargo-shim" in scripts
@@ -2176,15 +2430,28 @@ def test_repo_write_analyzer_catches_extended_mutators() -> None:
         "import os\nos.symlink('/tmp/src', REPO_ROOT / 'dst')\n",
         "import os\nos.mkdir(REPO_ROOT / 'dst')\n",
         "import os\nos.utime(REPO_ROOT / 'dst', None)\n",
+        "import os\nos.chmod(REPO_ROOT / 'dst', 0o700)\n",
+        "import os\nos.chown(REPO_ROOT / 'dst', 0, 0)\n",
+        "import os\nos.truncate(REPO_ROOT / 'dst', 0)\n",
         "import os\nos.open(REPO_ROOT / 'dst', os.O_CREAT | os.O_RDWR)\n",
         "open(str(REPO_ROOT / 'dst'), 'w')\n",
+        "import io\nio.open(REPO_ROOT / 'dst', 'w')\n",
+        "import os\nopen(os.path.join(REPO_ROOT, 'dst'), 'w')\n",
         "import os\nos.remove(os.fspath(REPO_ROOT / 'dst'))\n",
+        "import os\nos.remove(os.path.fspath(REPO_ROOT / 'dst'))\n",
         "open(REPO_ROOT / 'dst', 'r+')\n",
         "import shutil\nshutil.rmtree(REPO_ROOT / 'dst')\n",
         "import shutil\nshutil.move('/tmp/src', REPO_ROOT / 'dst')\n",
         "import shutil\nshutil.copy('/tmp/src', REPO_ROOT / 'dst')\n",
+        "from os import mkdir as os_mkdir\nos_mkdir(REPO_ROOT / 'dst')\n",
+        "from shutil import rmtree as rm_tree\nrm_tree(REPO_ROOT / 'dst')\n",
+        "from pathlib import Path\n(ROOT := Path(__file__).resolve().parent / 'dst').write_text('x')\n",
+        "open(__file__, 'w')\n",
+        "import os\nos.remove(__file__)\n",
+        "from pathlib import Path\n(Path(__file__).resolve().parent / 'dst').chmod(0o700)\n",
         "import tempfile\nwith tempfile.NamedTemporaryFile(dir=REPO_ROOT, delete=False) as f:\n    f.write(b'x')\n",
         "import tempfile\ntempfile.mkdtemp(dir=REPO_ROOT)\n",
+        "import tempfile\ntempfile.mkdtemp(None, None, REPO_ROOT)\n",
         "import tempfile\ntempfile.mkstemp(dir=REPO_ROOT)\n",
         "import tempfile\ntempfile.TemporaryFile(dir=REPO_ROOT)\n",
         "import tempfile\ntempfile.SpooledTemporaryFile(dir=REPO_ROOT)\n",
@@ -2310,13 +2577,17 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "import subprocess\nsubprocess.run('python3 scripts/missing_guard_fixture.py', shell=True)\n",
         "import os\nos.system('python3 scripts/x.py')\n",
         "import os\nos.execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "import os\nos.execv('scripts/test_nextest_fingerprint.py', ['scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.spawnv(os.P_NOWAIT, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "import os\nos.spawnv(os.P_NOWAIT, 'scripts/test_nextest_fingerprint.py', ['scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.posix_spawn('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
+        "import os\nos.posix_spawn('scripts/test_nextest_fingerprint.py', ['scripts/test_nextest_fingerprint.py'], {})\n",
         "import os\nos.posix_spawnp('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
         "import os\nos.execv(program, ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.spawnv(os.P_NOWAIT, program, ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.posix_spawn(program, ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
         "from os import system as direct_system\ndirect_system('python3 scripts/test_nextest_fingerprint.py')\n",
+        "from os import *\nsystem('python3 scripts/test_nextest_fingerprint.py')\n",
         "from os import execv as direct_execv\ndirect_execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "from os import spawnv as direct_spawnv\ndirect_spawnv(0, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "from os import posix_spawn as direct_posix_spawn\ndirect_posix_spawn('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
@@ -2324,8 +2595,10 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "import subprocess\nsubprocess.getoutput('echo x')\n",
         "import subprocess\nsubprocess.getstatusoutput('echo x')\n",
         "from subprocess import getoutput as direct_getoutput\ndirect_getoutput('echo x')\n",
+        "from subprocess import *\ngetoutput('echo x')\n",
         "import pty\npty.spawn('/bin/echo')\n",
         "from pty import spawn as direct_pty_spawn\ndirect_pty_spawn('/bin/echo')\n",
+        "from pty import *\nspawn('/bin/echo')\n",
         "import subprocess\nsubprocess.run(['python3', '-c', 'from pathlib import Path; Path(\"inline-write\").write_text(\"x\")'])\n",
         "eval('1 + 1')\n",
         "import importlib.util\nimportlib.util.spec_from_file_location('x', target)\n",
@@ -2587,20 +2860,28 @@ def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
 
 
 def test_shell_expanded_python_commands_fail_closed() -> None:
-    dump = _synthetic_just_dump(
-        labels=["local-gate:alpha"],
-        recipes={
-            "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
-            "alpha-inner": [['tool="$(${PYTHON} scripts/test_nextest_fingerprint.py)"']],
-        },
-    )
-    recipes, _gates = _cheap_gate_closure(dump, {"local-gate:alpha"})
-    try:
-        _closure_python_scripts(dump, recipes)
-    except AssertionError as exc:
-        assert "dynamic" in str(exc) or "unsupported" in str(exc)
-    else:
-        raise AssertionError("shell-expanded Python command must fail closed")
+    fixtures = [
+        ['tool="$(${PYTHON} scripts/test_nextest_fingerprint.py)"'],
+        ['python3 "$SCRIPT"'],
+        ["python3 ${SCRIPT}"],
+        ["bash -c 'python3 scripts/test_nextest_fingerprint.py'"],
+        ["time python3 scripts/test_nextest_fingerprint.py"],
+    ]
+    for body in fixtures:
+        dump = _synthetic_just_dump(
+            labels=["local-gate:alpha"],
+            recipes={
+                "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
+                "alpha-inner": [body],
+            },
+        )
+        recipes, _gates = _cheap_gate_closure(dump, {"local-gate:alpha"})
+        try:
+            _closure_python_scripts(dump, recipes)
+        except AssertionError as exc:
+            assert "dynamic" in str(exc) or "unsupported" in str(exc)
+        else:
+            raise AssertionError(f"shell-expanded or wrapped Python command must fail closed: {body}")
 
 
 def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
@@ -2610,9 +2891,12 @@ def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
             "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
             "alpha-inner": [
                 ["env PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"],
+                ["PYTHONPATH=/tmp python3 scripts/test_nextest_fingerprint.py"],
                 ["python3 scripts/test_nextest_fingerprint.py | grep ok || true"],
                 ["echo setup && python3 scripts/test_nextest_fingerprint.py"],
                 ["echo setup; python3 scripts/test_nextest_fingerprint.py"],
+                ["echo setup\npython3 scripts/test_nextest_fingerprint.py"],
+                ["echo setup & python3 scripts/test_nextest_fingerprint.py"],
                 ["false || python3 scripts/test_nextest_fingerprint.py"],
                 ["VALUE=\"$(echo $(python3 scripts/test_nextest_fingerprint.py))\""],
                 ["VALUE=`python3 scripts/test_nextest_fingerprint.py`"],
@@ -3278,6 +3562,7 @@ def main() -> int:
         test_cheap_lanes_do_not_write_repo_root_shared_state,
         test_cheap_lane_discovery_manifest_floor_and_required_edges,
         test_manifest_floor_does_not_accept_labeled_seed_only,
+        test_manifest_file_must_be_non_empty_and_existing_scripts,
         test_direct_cheap_labels_resolve_python_by_semantics,
         test_python_script_semantics_reject_non_files_without_crashing,
         test_repo_origin_detection_is_expression_based,

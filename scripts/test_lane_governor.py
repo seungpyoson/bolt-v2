@@ -479,14 +479,27 @@ def _cheap_labeled_python_scripts(labels: list[str] | None = None) -> set[Path]:
         label
         for label in labels
         if isinstance(label, str)
-        and label.endswith(".py")
+        and not label.startswith("local-gate:")
+        and (label.endswith(".py") or "/" in label)
         and not (SCRIPTS_DIR / label).is_file()
     )
     assert not missing, f"cheap lane script labels must exist: {missing}"
+    non_python = sorted(
+        label
+        for label in labels
+        if isinstance(label, str)
+        and not label.startswith("local-gate:")
+        and (SCRIPTS_DIR / label).is_file()
+        and not _is_python_script_path(SCRIPTS_DIR / label)
+    )
+    assert not non_python, f"cheap lane script labels must be Python scripts: {non_python}"
     return {
         SCRIPTS_DIR / label
         for label in labels
-        if isinstance(label, str) and label.endswith(".py")
+        if isinstance(label, str)
+        and not label.startswith("local-gate:")
+        and (SCRIPTS_DIR / label).is_file()
+        and _is_python_script_path(SCRIPTS_DIR / label)
     }
 
 
@@ -586,12 +599,21 @@ def _shell_subcommands(line: str) -> list[str]:
         commands.append(match.group(0))
     for payload in re.findall(r"\$\(([^()]*)\)", line):
         payload = payload.strip()
-        if payload and ("python" in payload or " just " in f" {payload} "):
+        if payload and (
+            "python" in payload.lower()
+            or " just " in f" {payload} "
+            or payload.startswith("$")
+        ):
             commands.append(payload)
             commands.extend(
                 part.strip()
                 for part in re.split(r"(?<!\|)\|(?!\|)", payload)
-                if part.strip() and ("python" in part or " just " in f" {part} ")
+                if part.strip()
+                and (
+                    "python" in part.lower()
+                    or " just " in f" {part} "
+                    or part.strip().startswith("$")
+                )
             )
     if "|" in line and "||" not in line and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", line.strip()):
         commands.extend(
@@ -976,7 +998,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         bound_args: dict[str, object],
     ) -> None:
         parent = dict(self.scopes[-1])
-        for arg in node.args.args:
+        for arg in self._function_parameters(node):
             parent[arg.arg] = bound_args.get(arg.arg, _PARAMETER)
         self.scopes.append(parent)
         try:
@@ -992,25 +1014,77 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         if name not in self.functions or name in self.active_functions:
             return
         function = self.functions[name]
+        if not self._function_may_wrap_execution(function):
+            return
         bound: dict[str, object] = {}
-        for arg_def, arg_value in zip(function.args.args, node.args):
+        bound_any = False
+        parameters = self._function_parameters(function)
+        parameter_names = {arg.arg for arg in parameters}
+        for arg_def, arg_value in zip(parameters, node.args):
             value = self._resolve_value(arg_value)
             if value is not _UNRESOLVED:
                 bound[arg_def.arg] = value
-        if not bound:
+                bound_any = True
+        for keyword in node.keywords:
+            if keyword.arg is not None and keyword.arg in parameter_names:
+                value = self._resolve_value(keyword.value)
+                if value is not _UNRESOLVED:
+                    bound[keyword.arg] = value
+                    bound_any = True
+        for name, default in self._function_defaults(function).items():
+            if name not in bound:
+                value = self._resolve_value(default)
+                if value is not _UNRESOLVED:
+                    bound[name] = value
+                    bound_any = True
+        if not bound_any:
             return
         self.active_functions.add(name)
         try:
             self._visit_function_body(function, bound)
         finally:
-            self.active_functions.remove(name)
+            self.active_functions.discard(name)
+
+    def _function_parameters(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
+        return [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+
+    def _function_defaults(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, ast.AST]:
+        positional = [*node.args.posonlyargs, *node.args.args]
+        padded_defaults: list[ast.AST | None] = [None] * (len(positional) - len(node.args.defaults))
+        padded_defaults.extend(node.args.defaults)
+        defaults = {
+            arg.arg: default
+            for arg, default in zip(positional, padded_defaults)
+            if default is not None
+        }
+        for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
+            if default is not None:
+                defaults[arg.arg] = default
+        return defaults
+
+    def _function_may_wrap_execution(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            call_name = self._call_name(child.func)
+            if (
+                self._is_subprocess_call(call_name)
+                or self._is_loader_call(call_name)
+                or self._is_os_exec_spawn_call(call_name)
+            ):
+                return True
+        return False
 
     def _handle_subprocess_call(self, node: ast.Call) -> None:
         command_node = self._command_argument(node)
         if command_node is None:
             return
         command = self._resolve_value(command_node)
-        if command is _UNRESOLVED or command is _PARAMETER:
+        if command is _UNRESOLVED:
+            if self._looks_like_python_command_expr(command_node):
+                self._fail(node, "unresolved Python subprocess command")
+            return
+        if command is _PARAMETER:
             return
         if not isinstance(command, list) or not command:
             return
@@ -1065,6 +1139,18 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             self.targets.add(target)
             return
         self._fail(node, f"unresolved Python script target: {target}")
+
+    def _looks_like_python_command_expr(self, node: ast.AST) -> bool:
+        if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+            first = self._resolve_value(node.elts[0])
+            return _is_python_interpreter_token(first)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return self._looks_like_python_command_expr(node.left) or self._looks_like_python_command_expr(node.right)
+        if isinstance(node, ast.Name):
+            value = self._lookup(node.id)
+            if isinstance(value, list) and value:
+                return _is_python_interpreter_token(value[0])
+        return False
 
     def _handle_os_exec_spawn_call(self, node: ast.Call, call_name: str) -> None:
         if not node.args:
@@ -1464,8 +1550,21 @@ def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
         "scripts/clean_merged_artifacts.py",
         "scripts/lane_governor.py",
         "scripts/command_understanding.py",
+        "scripts/cancel_obsolete_dispatch_runs.py",
+        "scripts/ci_provenance.py",
+        "scripts/ubicloud_runner_minutes.py",
+        "scripts/developer_tool_storage_hygiene.py",
+        "scripts/find_same_sha_main_evidence.py",
+        "scripts/require_sp_reviewer.py",
+        "scripts/require_resolved_review_threads.py",
     }
     assert required <= rels, f"guard did not discover required fixed-point edges: {sorted(required - rels)}"
+
+
+def test_direct_cheap_labels_resolve_python_by_semantics() -> None:
+    scripts = _cheap_labeled_python_scripts(["cargo-shim", "non-script-runtime-label"])
+    assert SCRIPTS_DIR / "cargo-shim" in scripts
+    assert SCRIPTS_DIR / "non-script-runtime-label" not in scripts
 
 
 def test_repo_origin_detection_is_expression_based() -> None:
@@ -1499,16 +1598,22 @@ import sys
 
 SCRIPTS = Path(__file__).resolve().parent
 SCRIPT = SCRIPTS / "nextest_fingerprint.py"
+DEFAULT_SCRIPT = SCRIPTS / "find_same_sha_main_evidence.py"
 
 def load(name: str):
     path = SCRIPTS / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, path)
     return spec
 
+def load_default(path=DEFAULT_SCRIPT, module_name="find_same_sha_main_evidence"):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    return spec
+
 def run(script):
     return subprocess.run([sys.executable, script])
 
 load("lane_governor")
+load_default()
 subprocess.run(["python3", str(SCRIPT)])
 run(str(SCRIPTS / "clean_merged_artifacts.py"))
 """
@@ -1522,6 +1627,7 @@ run(str(SCRIPTS / "clean_merged_artifacts.py"))
     rels = {target.relative_to(SCRIPTS_DIR).as_posix() for target in targets}
     assert {
         "lane_governor.py",
+        "find_same_sha_main_evidence.py",
         "nextest_fingerprint.py",
         "clean_merged_artifacts.py",
     } <= rels
@@ -1531,7 +1637,9 @@ def test_code_execution_tripwires_fail_closed() -> None:
     fixtures = [
         "import subprocess\nsubprocess.run(['python3', script])\n",
         "import subprocess\nscript = 'a.py'\nscript = 'b.py'\nsubprocess.run(['python3', script])\n",
+        "import subprocess\nargs = ['scripts/test_nextest_fingerprint.py']\nsubprocess.run(['python3'] + args)\n",
         "import os\nos.system('python3 scripts/x.py')\n",
+        "import os\nos.execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "eval('1 + 1')\n",
         "import importlib.util\nimportlib.util.spec_from_file_location('x', target)\n",
     ]
@@ -1570,6 +1678,23 @@ def test_just_dump_gate_derivation_and_fail_closed_fixtures() -> None:
         assert "inner" in str(exc)
     else:
         raise AssertionError("missing inner recipe must fail closed")
+
+
+def test_shell_expanded_python_commands_fail_closed() -> None:
+    dump = _synthetic_just_dump(
+        labels=["local-gate:alpha"],
+        recipes={
+            "alpha": [["python3 scripts/local_verification_gate.py alpha -- just alpha-inner"]],
+            "alpha-inner": [['tool="$(${PYTHON} scripts/test_nextest_fingerprint.py)"']],
+        },
+    )
+    recipes, _gates = _cheap_gate_closure(dump, {"local-gate:alpha"})
+    try:
+        _closure_python_scripts(dump, recipes)
+    except AssertionError as exc:
+        assert "dynamic" in str(exc) or "unsupported" in str(exc)
+    else:
+        raise AssertionError("shell-expanded Python command must fail closed")
 
 
 def test_subcrate_lane_policy_matches_repo_policy() -> None:
@@ -2216,10 +2341,12 @@ def main() -> int:
         test_repo_policy_file_declares_lane_policy,
         test_cheap_lanes_do_not_write_repo_root_shared_state,
         test_cheap_lane_discovery_manifest_floor_and_required_edges,
+        test_direct_cheap_labels_resolve_python_by_semantics,
         test_repo_origin_detection_is_expression_based,
         test_code_execution_edges_are_static_fixed_point,
         test_code_execution_tripwires_fail_closed,
         test_just_dump_gate_derivation_and_fail_closed_fixtures,
+        test_shell_expanded_python_commands_fail_closed,
         test_subcrate_lane_policy_matches_repo_policy,
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,

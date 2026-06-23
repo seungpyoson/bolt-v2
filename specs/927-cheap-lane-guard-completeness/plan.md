@@ -1,12 +1,13 @@
 # #927 — Cheap-Lane Shared-State Guard: Complete, Drift-Proof Discovery
 
-**Status:** Plan / spec only — no implementation. Not committed. Anchored at `main` HEAD `a59ae0776`.
+**Status:** Implementation branch active. Base implementation committed at `bb3d8d5`; round-7 review fixes
+are applied in this worktree before final lock. Anchored to `main` lineage from `a59ae0776`.
 **Issue:** #927 (follow-up to #924, commit `cc5e6c4f0`). **Epic:** #333.
 **Provenance:** Synthesized across **five** external adversarial review rounds (GLM / GPT / Kimi),
 every load-bearing claim re-verified at source by the author. Revision **A⁗** (three-layer model;
-**round-5 reversal applied**: in-process loads restored to L1 fence edges, and the Layer-2 subprocess
-trigger reframed from "any unresolvable / repo-local non-Python target" to "a **positively-Python-shaped**
-target that is unresolvable" — the broad form false-failed clean shims and the coordinator's dynamic dispatch).
+**round-5 reversal applied**: in-process loads restored to L1 fence edges, and the broad repo-local
+non-Python over-fence narrowed to a **positively-Python-shaped** unresolvable target — the broad form
+false-failed clean shims and the coordinator's dynamic dispatch).
 
 ---
 
@@ -70,7 +71,7 @@ Notes that make the invariant precise (not circular):
 | F5 | **Owner is clean:** `rust_verification.py`'s only mutating calls all resolve to `root_base()` = `~/.cache/rust-verification`, **independent of the `repo` arg**; `repo_path(args.repo)` feeds reads/cwd only | `rust_verification.py:515-519,522-529,535-536,2252,3999,222-223` |
 | F6 | **`repo_path(` is owner-only** (15 call sites); no other scanned script uses it (the apparent matches are a different fn `normalize_repo_path` and `Path(args.repo_root)`), so precise-origin tracking is false-positive-safe | `rust_verification.py`; `nextest_fingerprint.py:63,311` |
 | F7 | **Five sub-script execution forms exist in the closure** (see §4) | A `-m`: `test_command_understanding.py:177`; B `-c`: `test_local_verification_gate.py:52,73,138,163` + `test_command_understanding.py:163-164`; C non-`.py` spawn: `test_cargo_shim.py:16,84` (`cargo-shim` is `#!/usr/bin/env python3`, clean); D file-load: `spec_from_file_location`/`SourceFileLoader` with constant paths; E module-load: `importlib.import_module("command_understanding")` `test_command_understanding.py:48` |
-| **F7′** | **In-process loads MUST be L1 fence edges, not a membership hard-fail.** **Nine** load **targets** of cheap-labeled tests are **unscanned** today (not labeled, not in the closure): `lane_governor.py`, `command_understanding.py`, `cancel_obsolete_dispatch_runs.py`, `ci_provenance.py`, `ubicloud_runner_minutes.py`, `developer_tool_storage_hygiene.py`, `find_same_sha_main_evidence.py`, `require_sp_reviewer.py`, `require_resolved_review_threads.py`. (Corrected in round 6: `host_health_sampler.py` / `ai_review_deliverables.py` were dropped — their loading tests `test_host_health_sampler.py` / `test_ai_review_glm_fallback.py` are **not** in `cheap_lane_labels`, so they are not reached from a cheap-labeled seed.) A "must already be in the scan set" check would turn the guard **RED on clean code** → the resolver must **resolve→add→recurse** (the round-4 demotion was a regression) | targets grepped against `cheap_lane_labels`; load sites incl. `test_lane_governor.py:18-19,29,911,953`, `test_command_understanding.py:48`, `test_cancel_obsolete_dispatch_runs.py:21`, `test_ci_provenance.py:243`, `test_ubicloud_runner_minutes.py:21`, `test_developer_tool_storage_hygiene.py:26`, `test_find_same_sha_main_evidence.py:28`, `test_require_sp_reviewer.py:25`, `test_require_resolved_review_threads.py:24` |
+| **F7′** | **In-process loads MUST be L1 fence edges, not a membership hard-fail.** **Nine** load **targets** of cheap-labeled tests are **unscanned** today (not labeled, not in the closure): `lane_governor.py`, `command_understanding.py`, `cancel_obsolete_dispatch_runs.py`, `ci_provenance.py`, `ubicloud_runner_minutes.py`, `developer_tool_storage_hygiene.py`, `find_same_sha_main_evidence.py`, `require_sp_reviewer.py`, `require_resolved_review_threads.py`. (Corrected in round 6: `host_health_sampler.py` / `ai_review_deliverables.py` were dropped — their loading tests `test_host_health_sampler.py` / `test_ai_review_glm_fallback.py` are **not** in `cheap_lane_labels`, so they are not reached from a cheap-labeled seed.) A "must already be in the scan set" check would turn the guard **RED on clean code** → the resolver must **resolve→add→recurse** (the round-4 demotion was a regression) | targets grepped against `cheap_lane_labels`; load sites incl. `test_lane_governor.py:20-22,31,2098,2140`, `test_local_verification_gate.py:18-19,29`, `test_command_understanding.py:48`, `test_cancel_obsolete_dispatch_runs.py:21`, `test_ci_provenance.py:243`, `test_ubicloud_runner_minutes.py:21`, `test_developer_tool_storage_hygiene.py:26`, `test_find_same_sha_main_evidence.py:28`, `test_require_sp_reviewer.py:25`, `test_require_resolved_review_threads.py:24` |
 | F8 | `eval(`/`exec(` and the dynamic code-exec family (`os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`) appear in **0** scanned scripts → an enumeration tripwire over them is pure drift-fence, breaks nothing today | (grep at HEAD) |
 | F8′ | **Parser fixtures look like execution edges but are not.** `test_command_understanding.py:203,219,235,250,277-299` hold argv-shaped **list literals** (e.g. `["python","-c","import os; os.system('cargo build')"]`, and `["python",…,"not valid python"]`) passed as **test data** to the parser-under-test — never `subprocess.run`. The **same file** also holds a **real** `subprocess.run([sys.executable, "-c", command])` at `:163-164` whose `-c` payload is built by **adjacent-string-literal concatenation** (`:155-162`) and names literal `scripts/…` paths. Edge-detection must bind to real call expressions (catch `:163`) **not** bare list literals (ignore `:277-299`) | `test_command_understanding.py:155-164,277-299` |
 | F9 | `just --dump --dump-format json` exposes structural `assignments` + `dependencies` + recipe `body` fragments (fragments may be **nested arrays**, flattened recursively); it does **not** evaluate `-- just <inner>` routing or bash `if ! python3 …` forms (those are body text). The owner is reached **only** via the variable chain `rust_verification_owner := repo_root + "/scripts/rust_verification.py"` (`justfile:19`), `repo_root := justfile_directory()` (`justfile:18`), invoked as `python3 "{{rust_verification_owner}}"` (`justfile:49,241,…`, incl. inside command-substitution `$(…)` at `:481` and `-c` pipelines at `:482-483`) → a literal-text parser cannot see it | (dump inspection); `justfile:18,19,49,241,481-483` |
@@ -91,14 +92,14 @@ clean shim would make the guard unusable (it false-fails `test_run_rust_probe.py
 | Layer | Behavior | Forms (all verified in the closure) |
 |-------|----------|-------------------------------------|
 | **1 — Fence** | Statically resolve the target, **add it to the scan set**, recurse to a **fixed point** | `python3 scripts/X.py`; `-m scripts.X`; a **Python interpreter** (`python3`/`python`/`sys.executable`) in argv[0] whose script operand (argv[1]) resolves — incl. **non-`.py`** Python (`str(SHIM)` → `scripts/cargo-shim`); **in-process explicit loads** (`spec_from_file_location`/`SourceFileLoader` with a resolvable path; `importlib.import_module`/`runpy.run_module` with a constant name **whose `scripts/<name>.py` exists**); `-- just <inner>` routing; **seed = justfile cheap-gate closure** (via the `just --dump` assignment+dependency evaluator, Change 1) **∪ cheap-labeled scripts resolved by Python-semantics** |
-| **2 — Tripwire** | **Hard-fail** the test (no silent skip) | (a) a recognized **Python** execution edge (`python3`/`python`/`sys.executable`/`-m`/a recognized loader API) whose target is **non-constant / unresolvable**; (b) `eval(` / `exec(`, or a call to the dynamic code-exec family (`os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`), in a scanned script; (c) an **unresolved `{{just-variable}}`** in a command position **within the cheap-gate closure** |
-| **3 — Boundary** | **Documented** limit; not a Layer-2 trigger | `python3 -c <inline>` with a **non-constant** code string (no file to inspect); regular `import` / `from X import Y`, and `import_module`/`run_module` of a **constant name with no `scripts/<name>.py`** (a stdlib/installed package — module resolution, impractical without `sys.path` simulation); a **non-Python** execution target — a bare PATH command (`git`, `grep`, `cargo`, `printf`), a non-Python interpreter (`bash`/`sh`) + operand, or a repo-local non-Python file (`.sh` shim); an **opaque spawn** whose argv is not positively Python (e.g. the coordinator/owner **dynamic dispatch** — `subprocess.run(command)` where `command` is a passed-in verifier list, whose callees are independently discovered via the just-closure + labels); `__import__` and functional `importlib` variants outside the loader allowlist. **Heuristic tripwire for a constant-resolvable `-c` string:** after concatenating adjacent string literals (incl. parenthesized multiline forms), if the inline code names literal `scripts/…` paths, those must be scan-set members, else fail |
+| **2 — Tripwire** | **Hard-fail** the test (no silent skip) | (a) a recognized **Python** execution edge (`python3`/`python`/`sys.executable`/`-m`/a recognized loader API) whose target is **non-constant / unresolvable** in a directly-resolved expression or a wrapper call whose target argument/default resolves; (b) `eval(` / `exec(`, or a call to the dynamic code-exec family (`os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `subprocess.getoutput`, `subprocess.getstatusoutput`, `pty.spawn`), in a scanned script; (c) an **unresolved `{{just-variable}}`** in a command position **within the cheap-gate closure** |
+| **3 — Boundary** | **Documented** limit; not a Layer-2 trigger | `python3 -c <inline>` with a **non-constant** code string (no file to inspect); regular `import` / `from X import Y`, and `import_module`/`run_module` of a **constant name with no `scripts/<name>.py`** (a stdlib/installed package — module resolution, impractical without `sys.path` simulation); a **non-Python** execution target — a bare PATH command (`git`, `grep`, `cargo`, `printf`), a non-Python interpreter (`bash`/`sh`) + operand, or a repo-local non-Python file (`.sh` shim); an **opaque spawn/load** whose argv/path is parameter-bound and not resolved to a repo Python target (e.g. the coordinator/owner **dynamic dispatch** — `subprocess.run(command)` where `command` is a passed-in verifier list, whose callees are independently discovered via the just-closure + labels; temp-fixture loader wrappers that pass a dynamic path); `__import__` and functional `importlib` variants outside the loader allowlist. **Heuristic tripwire for a constant-resolvable `-c` string:** after concatenating adjacent string literals (incl. parenthesized multiline forms), if the inline code names literal `scripts/…` paths, those must be scan-set members, else fail |
 
 **Why in-process loads are L1 fence edges (resolve+add+recurse), not a membership hard-fail:** nine modules
 loaded in-process by cheap-labeled tests are **not** otherwise in the scan set (F7′). A "must already be in
 the scan set, else fail" rule would turn the guard **RED on clean code today**. Fencing them (resolve the
 target file, add it, analyze it, recurse) closes the class **and** stays green — the loaded modules are
-clean, so they pass. Only a **non-constant / unresolvable** load target is a Layer-2 hard-fail; a constant
+clean, so they pass. A **non-constant / unresolvable** direct load target is a Layer-2 hard-fail; a parameter-bound temp-fixture loader is the documented Layer-3 opaque boundary; a constant
 module name with **no** `scripts/<name>.py` is a stdlib/installed import → Layer-3 boundary (so a future
 `import_module("json")` does not false-fail).
 
@@ -147,13 +148,17 @@ at `test_clean_merged_artifacts.py:1185` and used in the nested `run_in_nongit` 
 mapped to `scripts/<name>.py` **only when that file exists**. **Zero, multiple, or conditional `Name` bindings →
 Layer-2 tripwire (fail closed).**
 A loader/spawn invoked through a **trivial wrapper** (a local helper whose path/name **parameter** flows into
-the target) resolves one hop from a constant call-site arg. This **explicitly includes sibling-path construction
-from the parameter** — `DIR / f"{name}.py"`, `SCRIPTS_DIR / f"{name}.py"`, `Path(__file__).with_name(f"{name}.py")`
-— where the parameter is the **sole** non-literal (anchors: the guard's own `_load` at `test_lane_governor.py:18-19`
-and `test_local_verification_gate.py:18-19`, called with constant names `_load("rust_verification")`/`_load("lane_governor")`/`_load("local_verification_gate")`).
-The trivial-wrapper rule **supersedes** the general f-string exclusion when the sole non-literal is the constant
-call-site arg. Anything outside this grammar (f-strings with **other** non-literal parts, cross-module-imported
-constants, dynamically built argv, an unresolved `{{variable}}`) **drops to the Layer-2 tripwire — never a silent miss.**
+the target) resolves one hop from either a constant call-site arg **or a constant default parameter value**
+when the call omits that arg. This **explicitly includes sibling-path construction from the parameter** —
+`DIR / f"{name}.py"`, `SCRIPTS_DIR / f"{name}.py"`, `Path(__file__).with_name(f"{name}.py")` — where the
+parameter is the **sole** non-literal (anchors: the guard's own `_load` at `test_lane_governor.py:20-22`
+and `test_local_verification_gate.py:18-19`, called with constant names `_load("rust_verification")` /
+`_load("lane_governor")` / `_load("local_verification_gate")`; default-parameter loaders at
+`test_find_same_sha_main_evidence.py:25`, `test_verify_ci_workflow_hygiene.py:167-194`).
+The trivial-wrapper rule **supersedes** the general f-string exclusion when the sole non-literal is the resolved
+call-site arg/default value. Anything outside this grammar either hard-fails when it is a directly-resolved
+positively-Python expression, or is recorded as the Layer-3 opaque parameter boundary when the target is a
+dynamic parameter/temp fixture path — never a silent miss.
 `lane_governor.py` is **untouched** — no runtime concurrency change.
 
 **Change 2 — `just --dump` fail-closed.**
@@ -170,13 +175,15 @@ frozen count (a count names no script and breaks on legitimate adds). It superse
 unlabeled closure script" phrasing, which was **self-vacuous** — re-deriving the expected set from the same
 walk it protects means a walk break drops a script from both sides and the check passes (the identical flaw
 the spec attributes to the superset oracle).
-**Seed (verified at HEAD; the implementation's emit completes it):** the 3 just-closure entries
-`local_verification_gate.py` (coordinator), `rust_verification.py` (owner), `test_nextest_fingerprint.py`;
-their fence children `nextest_fingerprint.py` (spawned by `test_nextest_fingerprint.py`),
-`clean_merged_artifacts.py` (spawned by cheap-labeled `test_clean_merged_artifacts.py:1188`), `cargo-shim`
-(loaded by cheap-labeled `test_cargo_shim.py:60`); and the nine in-process-load targets from F7′. (A "superset
-of the old discovery" oracle is rejected as vacuous — labels seed the new set, so it can never shrink below
-them.) A coarse closure-size minimum is **advisory only** (warn, never hard-fail).
+**Committed manifest (verified at HEAD; the implementation's emit completes it):** 20 literal names today.
+It contains the 3 just-closure entries (`local_verification_gate.py`, `rust_verification.py`,
+`test_nextest_fingerprint.py`), fence children (`nextest_fingerprint.py`, `clean_merged_artifacts.py`,
+`cargo-shim`, `install-cargo-shim`), the nine F7′ in-process-load targets, the install-unit load chain
+(`render_install_unit.py`, `test_verify_install_unit_generated.py`, `verify_install_unit_generated.py`), and
+the default-parameter loader target `sync_ci_debug_ssh_secret.py`. The manifest file, not this prose count,
+is the floor source of truth. (A "superset of the old discovery" oracle is rejected as vacuous — labels seed
+the new set, so it can never shrink below them.) A coarse closure-size minimum is **advisory only** (warn,
+never hard-fail).
 **Completeness = command classification, not token-spotting:** over the scoped structured dump
 body+assignments (descending into `$(…)` and pipelines), classify **every command position** as
 {no Python execution | recognized Layer-1/2/3 Python execution | unsupported dynamic shell execution}; the
@@ -218,16 +225,23 @@ as a single module constant.
 1. **Discovery completeness (committed manifest, not a count):** live discovery **⊇ the committed
    discovered-but-unlabeled manifest** (Change 2) — asserted **by name**, walk-independent. The manifest
    provably contains the coordinator, the **owner** (proving the `just`-variable evaluator resolves
-   `{{rust_verification_owner}}`), `test_nextest_fingerprint.py`, and `scripts/nextest_fingerprint.py`
-   **discovered as a child of** `test_nextest_fingerprint.py` (proves F4 closed).
+   `{{rust_verification_owner}}`), `test_nextest_fingerprint.py`, `scripts/nextest_fingerprint.py`
+   **discovered as a child of** `test_nextest_fingerprint.py` (proves F4 closed), and all nine F7′ targets by
+   name (`lane_governor.py`, `command_understanding.py`, `cancel_obsolete_dispatch_runs.py`,
+   `ci_provenance.py`, `ubicloud_runner_minutes.py`, `developer_tool_storage_hygiene.py`,
+   `find_same_sha_main_evidence.py`, `require_sp_reviewer.py`, `require_resolved_review_threads.py`) so an
+   emit-time discovery gap cannot be frozen into the floor.
 2. **Non-vacuity floor preserved** (F10) **and** a planted repo-root write is caught in each newly-covered
    form: `-m scripts.X`; constant- **and function-scope**-resolvable subprocess paths (incl. non-`.py`
    `cargo-shim`); the precise-origin idiom in **module and function scope** (anchors `test_cargo_shim.py:15`,
    `test_clean_merged_artifacts.py:1185/1188`) across direct/assigned/chained/`.parent`/`.parents[N]`/`.joinpath` writes.
 3. **In-process loads are L1 fence edges (stay green today):** loading one of the nine unscanned targets (F7′)
    via `spec_from_file_location`/`SourceFileLoader`/`import_module` **adds it to the scan set and analyzes it**
-   (clean → passes), including through the f-string sibling-path **trivial wrapper** (`test_lane_governor.py:18-19`,
-   `test_local_verification_gate.py:18-19`); a non-constant / unresolvable load target hard-fails; a constant
+   (clean → passes), including through the f-string sibling-path **trivial wrapper** (`test_lane_governor.py:20-22`,
+   `test_local_verification_gate.py:18-19`) and default-parameter loader wrappers
+   (`test_find_same_sha_main_evidence.py:25`, `test_verify_ci_workflow_hygiene.py:167-194`);
+   a non-constant / unresolvable direct load target hard-fails; a parameter-bound temp-fixture loader is L3;
+   a constant
    module name with no `scripts/<name>.py` (stdlib) is the documented boundary (no fail). **Edge recognition
    binds to real call expressions:** the argv-shaped list literals in `test_command_understanding.py:277-299`
    (F8′) are **not** mistaken for edges, while the real `subprocess.run(-c)` at `:163` **is**.
@@ -236,11 +250,12 @@ as a single module constant.
    `-c` string (today's `test_local_verification_gate.py` cases) passes; a non-constant `-c` string is the
    documented boundary (no check).
 5. **Layer-2 tripwires proven:** a **positively-Python** subprocess/`-m`/loader target that is
-   non-constant/unresolvable; a `Name` with zero/multiple/conditional bindings; `eval(`/`exec(` or a dynamic
+   non-constant/unresolvable in a directly-resolved expression; a `Name` with zero/multiple/conditional bindings; `eval(`/`exec(` or a dynamic
    code-exec-family call (`os.system`, …) in a scanned script; and an unresolved `{{just-variable}}` in a
    cheap-closure command position — each hard-fails. **Do not fail** (Layer-3 boundaries): a bare PATH command
    (`git`, `grep`, `cargo`, `printf`); a `bash`/`sh` + repo-local operand (anchor `test_run_rust_probe.py:75`);
-   an opaque/coordinator dynamic dispatch (`local_verification_gate.py:51`); a `python3 -c` inside a
+   an opaque/coordinator dynamic dispatch (`local_verification_gate.py:51`); parameter-bound temp-fixture loader wrappers;
+   a `python3 -c` inside a
    `$(…)`/pipeline naming no `scripts/…` path (`justfile:481-483`).
 6. **`just --dump` fail-closed proven** via a **synthetic JSON fixture** (no real-`justfile` mutation): a
    malformed / missing-key / unrecognized-expression / truncated-body dump fails; a synthetic new `local-gate:*`
@@ -269,7 +284,8 @@ as a single module constant.
   trace without `sys.path` simulation); bare **PATH commands** (`git`, `grep`, `cargo`, `printf`, …); a
   **non-Python** execution target — a `bash`/`sh` + operand or a repo-local non-Python file (`.sh` shim) — the
   Python-AST analyzer cannot inspect it (anchor `test_run_rust_probe.py:75`, cheap-labeled and clean); the
-  coordinator/owner **opaque dynamic dispatch** (`local_verification_gate.py:51`), callees discovered via the
+  coordinator/owner **opaque dynamic dispatch** (`local_verification_gate.py:51`), parameter-bound temp-fixture
+  loader wrappers, callees discovered via the
   closure + labels; `__import__` and functional `importlib` variants outside the recognized loader allowlist
   (`spec_from_file_location`, `SourceFileLoader`, `importlib.import_module`, `runpy.run_path`, `runpy.run_module`).
   A repo-local file that **is** Python-source despite a non-`.py` name (`cargo-shim`, shebang `python3`) with a
@@ -290,14 +306,16 @@ as a single module constant.
   fail-closed on any unrecognized expression + the **committed-manifest** floor; a future `just` upgrade that
   changes the dump fails loudly, never silently empties the closure.
 - **R2 — target-path resolution depth.** Change 1's grammar resolves literal / `str()`/`Path()` /
-  nested-then-module `Name` / `BinOp` / `.joinpath` / `.parent` / `.parents[N]` chains and the f-string
-  sibling-path trivial wrapper; anything else drops to the Layer-2 tripwire (loud), never silent.
+  nested-then-module `Name` / `BinOp` / `.joinpath` / `.parent` / `.parents[N]` chains, constant/default
+  wrapper args, and the f-string sibling-path trivial wrapper. Direct unresolved Python-shaped expressions
+  drop to the Layer-2 tripwire; parameter-bound temp fixture paths are documented Layer-3 opaque boundaries.
 - **R3 — precise-origin false positives.** Mitigated by F6 (owner-only `repo_path`) + proof-gate (c)
   regression across the whole scan set; the hard-decision fallback covers the residual.
-- **R4 — in-process-load resolution depth.** Loads are L1 fence edges (resolve→add→recurse); a load whose
-  target path/name is non-constant/unresolvable hard-fails (L2). Benign today: every current load site uses a
+- **R4 — in-process-load resolution depth.** Loads are L1 fence edges (resolve→add→recurse); a direct load whose
+  target path/name is non-constant/unresolvable hard-fails (L2). Benign today: repo-targeting load sites use a
   constant name (`import_module`) or a grammar-/trivial-wrapper-resolvable path (incl. the `_load` f-string
-  sibling-path helper); the nine newly-discovered targets (F7′) are clean and pass once added.
+  sibling-path helper and constant defaults); parameter-bound temp-fixture loaders stay L3. The nine F7′
+  targets are clean and pass once added.
 - **R5 — Layer-2 over-fence (round-5 regression, fixed in round-6).** The broad "any unresolvable / repo-local
   non-Python target → L2" would have RED'd clean shims (`test_run_rust_probe.py:75`) and the coordinator's
   dynamic dispatch (`local_verification_gate.py:51`). Fixed: L2 fires only on a **positively-Python-shaped**

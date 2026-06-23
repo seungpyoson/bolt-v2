@@ -369,6 +369,30 @@ def post_commit_status(
     )
 
 
+def _evaluate_current_reviewer_gate(
+    *,
+    repository: str,
+    pull_number: int,
+    token: str,
+    reviewer: str,
+    reviewer_id: int | None,
+    reviewer_node_id: str | None,
+    head_sha: str,
+) -> GateResult:
+    requested = _get_json(_pulls_api_url(repository, pull_number, "requested_reviewers"), token)
+    if not isinstance(requested, dict):
+        raise ReviewerGateError("requested reviewers payload must be a JSON object")
+    reviews = _paginate_json_list(_pulls_api_url(repository, pull_number, "reviews?per_page=100"), token)
+    return evaluate_reviewer_gate(
+        requested_reviewers=requested,
+        reviews=reviews,
+        reviewer=reviewer,
+        reviewer_id=reviewer_id,
+        reviewer_node_id=reviewer_node_id,
+        head_sha=head_sha,
+    )
+
+
 def run() -> int:
     reviewer_node_id = _optional_str_env("REQUIRED_REVIEWER_NODE_ID")
     reviewer_id = _optional_int_env("REQUIRED_REVIEWER_ID")
@@ -392,18 +416,30 @@ def run() -> int:
         )
 
     try:
-        requested = _get_json(_pulls_api_url(repository, pull_number, "requested_reviewers"), token)
-        if not isinstance(requested, dict):
-            raise ReviewerGateError("requested reviewers payload must be a JSON object")
-        reviews = _paginate_json_list(_pulls_api_url(repository, pull_number, "reviews?per_page=100"), token)
-        result = evaluate_reviewer_gate(
-            requested_reviewers=requested,
-            reviews=reviews,
+        result = _evaluate_current_reviewer_gate(
+            repository=repository,
+            pull_number=pull_number,
+            token=token,
             reviewer=reviewer,
             reviewer_id=reviewer_id,
             reviewer_node_id=reviewer_node_id,
             head_sha=head_sha,
         )
+        if status_context is not None:
+            # Without workflow concurrency, same-head event runs can overlap.
+            # Refresh live state immediately before the final latest-wins
+            # commit-status write. The GitHub status API has no atomic
+            # compare-and-set, so this narrows the stale-verdict window rather
+            # than making concurrent writers impossible.
+            result = _evaluate_current_reviewer_gate(
+                repository=repository,
+                pull_number=pull_number,
+                token=token,
+                reviewer=reviewer,
+                reviewer_id=reviewer_id,
+                reviewer_node_id=reviewer_node_id,
+                head_sha=head_sha,
+            )
     except ReviewerGateError as exc:
         if status_context is not None:
             post_status(

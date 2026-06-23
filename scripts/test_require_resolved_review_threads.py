@@ -218,6 +218,9 @@ def assert_workflow_uses_base_script_and_review_thread_events() -> None:
     assert "GitHub Actions does not expose review-thread resolved or reopened events" in workflow
     assert "Native conversation resolution is authoritative at merge" in workflow
     assert "github.event.pull_request.base.sha" in workflow
+    assert "concurrency:" not in workflow
+    assert "cancel-in-progress" not in workflow
+    assert "concurrency-cancelled Actions" in workflow
     assert "Bootstrap review-thread gate script" not in workflow
     assert "test -f scripts/require_resolved_review_threads.py" not in workflow
     assert "Remove this block after scripts/require_resolved_review_threads.py exists on main" not in workflow
@@ -337,6 +340,104 @@ def assert_status_mode_marks_pending_before_review_thread_fetch() -> None:
             module._post_json = original_post_json
             os.environ.clear()
             os.environ.update(old_env)
+
+
+def assert_status_mode_refreshes_live_thread_state_before_final_post() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+    thread_payloads = [
+        [{"id": "T1", "isResolved": True}],
+        [{"id": "T1", "isResolved": False}],
+    ]
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        assert (owner, name, pull_number, token) == ("owner", "repo", 333, "token")
+        assert thread_payloads
+        return thread_payloads.pop(0)
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333, "head": {"sha": "head-sha"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                    "REVIEW_THREAD_GATE_STATUS_CONTEXT": "required review threads resolved",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = module.run()
+            assert rc == 1
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert thread_payloads == []
+    assert [payload["state"] for _url, payload in posted] == ["pending", "failure"]
+    assert "unresolved review thread" in str(posted[1][1]["description"])
+
+
+def assert_status_mode_refreshes_stale_thread_failure_before_final_post() -> None:
+    module = load_script()
+    posted: list[tuple[str, dict[str, object]]] = []
+    thread_payloads = [
+        [{"id": "T1", "isResolved": False}],
+        [{"id": "T1", "isResolved": True}],
+    ]
+
+    def fake_fetch(*, owner: str, name: str, pull_number: int, token: str):
+        assert (owner, name, pull_number, token) == ("owner", "repo", 333, "token")
+        assert thread_payloads
+        return thread_payloads.pop(0)
+
+    def fake_post_json(url: str, _token: str, payload: dict[str, object]) -> None:
+        posted.append((url, payload))
+
+    old_env = os.environ.copy()
+    original_fetch = module.fetch_review_threads
+    original_post_json = module._post_json
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as event_file:
+        json.dump({"pull_request": {"number": 333, "head": {"sha": "head-sha"}}}, event_file)
+        event_file.flush()
+        try:
+            os.environ.update(
+                {
+                    "GITHUB_API_URL": "https://api.github.test",
+                    "GITHUB_EVENT_PATH": event_file.name,
+                    "GITHUB_REPOSITORY": "owner/repo",
+                    "GITHUB_TOKEN": "token",
+                    "REVIEW_THREAD_GATE_STATUS_CONTEXT": "required review threads resolved",
+                }
+            )
+            module.fetch_review_threads = fake_fetch
+            module._post_json = fake_post_json
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = module.run()
+            assert rc == 0
+        finally:
+            module.fetch_review_threads = original_fetch
+            module._post_json = original_post_json
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    assert thread_payloads == []
+    assert [payload["state"] for _url, payload in posted] == ["pending", "success"]
+    assert "No unresolved review threads" in str(posted[1][1]["description"])
 
 
 def assert_status_disabled_does_not_require_head_sha() -> None:
@@ -528,6 +629,8 @@ def main() -> int:
     assert_thread_url_uses_real_graphql_shape()
     assert_status_mode_publishes_verdict_without_disabling_job()
     assert_status_mode_marks_pending_before_review_thread_fetch()
+    assert_status_mode_refreshes_live_thread_state_before_final_post()
+    assert_status_mode_refreshes_stale_thread_failure_before_final_post()
     assert_status_disabled_does_not_require_head_sha()
     assert_status_mode_fails_closed_when_review_thread_fetch_errors()
     assert_status_mode_remains_non_success_when_failure_status_post_errors()

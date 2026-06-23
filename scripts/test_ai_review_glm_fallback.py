@@ -38,6 +38,7 @@ class FakeGitHub:
         self.reviews = list(self.reviews or [])
         self.posted: list[str] = []
         self.updated: list[tuple[int, str]] = []
+        self.updated_reviews: list[tuple[int, str]] = []
 
     def list_pr_files(self) -> list[dict[str, object]]:
         return list(self.files)
@@ -53,6 +54,9 @@ class FakeGitHub:
 
     def update_issue_comment(self, comment_id: int, body: str) -> None:
         self.updated.append((comment_id, body))
+
+    def update_pull_review(self, review_id: int, body: str) -> None:
+        self.updated_reviews.append((review_id, body))
 
 
 class FakeGLM:
@@ -822,6 +826,36 @@ def test_existing_pr_agent_review_comment_gets_model_freshness_warning() -> None
     assert "## PR Reviewer Guide" in github.updated[0][1]
 
 
+def test_existing_pr_agent_pull_review_gets_model_freshness_warning() -> None:
+    module = load_script()
+    github = FakeGitHub(
+        files=[],
+        reviews=[
+            {
+                "id": 789,
+                "body": "## PR Reviewer Guide\n\nExisting GLM review.",
+                "submitted_at": "2026-06-22T12:30:00Z",
+                "user": {"login": "github-actions[bot]", "type": "Bot"},
+            }
+        ],
+    )
+
+    updated = module.prepend_model_freshness_warning_to_existing_review(
+        github=github,
+        started_at="2026-06-22T12:00:00Z",
+        markers=("## PR Reviewer Guide",),
+        warning="GLM model update available: update the pinned model.",
+        expected_bot_login="github-actions[bot]",
+    )
+
+    assert updated == 1
+    assert not github.updated
+    assert len(github.updated_reviews) == 1
+    assert github.updated_reviews[0][0] == 789
+    assert github.updated_reviews[0][1].startswith("> [!WARNING]\n> GLM model update available")
+    assert "## PR Reviewer Guide" in github.updated_reviews[0][1]
+
+
 def main() -> int:
     test_packs_more_than_two_review_chunks_when_budget_requires_it()
     test_splits_one_oversized_file_patch_into_multiple_review_chunks()
@@ -847,6 +881,7 @@ def main() -> int:
     test_review_comment_includes_model_freshness_warning_at_top()
     test_model_freshness_notice_updates_existing_marker_comment()
     test_existing_pr_agent_review_comment_gets_model_freshness_warning()
+    test_existing_pr_agent_pull_review_gets_model_freshness_warning()
     print("GLM fallback self-tests OK")
     return 0
 

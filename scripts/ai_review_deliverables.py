@@ -156,6 +156,9 @@ class GitHubClient:
     def update_issue_comment(self, comment_id: int, body: str) -> None:
         self._request_json("PATCH", f"issues/comments/{comment_id}", payload={"body": body})
 
+    def update_pull_review(self, review_id: int, body: str) -> None:
+        self._request_json("PUT", f"pulls/{self.pr_number}/reviews/{review_id}", payload={"body": body})
+
 
 class OpenAIChatClient:
     def __init__(
@@ -636,6 +639,21 @@ def prepend_model_freshness_warning_to_existing_review(
         ):
             continue
         github.update_issue_comment(existing_id, f"{warning_block}\n\n{str(body).lstrip()}")
+        updated += 1
+    for review in github.list_reviews():
+        if not actor_is_expected_bot(review, expected_bot_login):
+            continue
+        existing_id = comment_id(review)
+        if existing_id is None:
+            continue
+        body = review.get("body")
+        if not body_has_deliverable_marker(body, markers):
+            continue
+        if warning_block in body:
+            continue
+        if not text_time_is_after_or_equal(review.get("submitted_at"), threshold):
+            continue
+        github.update_pull_review(existing_id, f"{warning_block}\n\n{str(body).lstrip()}")
         updated += 1
     return updated
 

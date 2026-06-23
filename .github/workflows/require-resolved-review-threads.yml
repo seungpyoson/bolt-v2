@@ -22,10 +22,6 @@ on:
       - edited
       - deleted
 
-concurrency:
-  group: review-threads-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
   pull-requests: read
@@ -62,5 +58,8 @@ jobs:
           # required check that blocks the merge. The main ruleset must require
           # this status context ("required review threads resolved") in place of
           # the "verify review threads are resolved" job name.
+          # Do not add workflow concurrency here: concurrency-cancelled Actions
+          # check runs remain visible as red/cancelled PR rollup rows even after
+          # this required commit-status context is republished green.
           REVIEW_THREAD_GATE_STATUS_CONTEXT: required review threads resolved
         run: python3 scripts/require_resolved_review_threads.py

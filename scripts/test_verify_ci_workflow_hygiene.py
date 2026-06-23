@@ -1316,6 +1316,10 @@ check_name = "test"
             valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate"'),
         ),
         (
+            "ci_provenance.gate_names.gate_dispatch_full must be a GitHub Actions output-safe check name",
+            valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate\\nignored=1"'),
+        ),
+        (
             "ci_provenance.policy.ready_pr is proof-affecting",
             valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
         ),
@@ -1328,12 +1332,28 @@ check_name = "test"
             valid.replace('main_push = "full"', 'main_push = "iteration"'),
         ),
         (
+            "ci_provenance.policy.main_push is proof-affecting and must be full",
+            valid.replace('main_push = "full"', 'main_push = "tag_reuse"'),
+        ),
+        (
             "ci_provenance.policy.merge_group is proof-affecting",
             valid.replace('merge_group = "full"', 'merge_group = "defer"'),
         ),
         (
+            "ci_provenance.policy.merge_group is proof-affecting and must be full",
+            valid.replace('merge_group = "full"', 'merge_group = "tag_reuse"'),
+        ),
+        (
             "ci_provenance.policy.unknown_event is proof-affecting",
             valid.replace('unknown_event = "full"', 'unknown_event = "defer"'),
+        ),
+        (
+            "ci_provenance.policy.unknown_event is proof-affecting and must be full",
+            valid.replace('unknown_event = "full"', 'unknown_event = "tag_reuse"'),
+        ),
+        (
+            "ci_provenance.policy.workflow_dispatch_full_ci must remain full",
+            valid.replace('workflow_dispatch_full_ci = "full"', 'workflow_dispatch_full_ci = "iteration"'),
         ),
         (
             "ci_provenance.policy has unexpected keys",

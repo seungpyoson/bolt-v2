@@ -1202,6 +1202,27 @@ def assert_dispatch_run_names_come_from_config() -> None:
         raise AssertionError(config)
 
 
+def assert_gate_names_reject_github_output_control_chars() -> None:
+    module = load_script()
+    unsafe_values = {
+        "gate_dispatch_full": ("gate-dispatch", "gate\\nignored=1"),
+        "backtester_dispatch_full": ("backtester-gate-dispatch", "backtester-gate\\rignored=1"),
+    }
+    for key, (original, replacement) in unsafe_values.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(
+                pathlib.Path(tmp),
+                CONFIG_TOML.replace(f'{key} = "{original}"', f'{key} = "{replacement}"'),
+            )
+            try:
+                module.load_config(config)
+            except module.ProvenanceError as exc:
+                if "must be a GitHub Actions output-safe check name" not in str(exc):
+                    raise AssertionError(f"unexpected error for {key}: {exc}") from exc
+            else:
+                raise AssertionError(f"unsafe gate name {key}={replacement!r} must be rejected")
+
+
 def assert_main_evidence_matching_ignores_mutable_run_name() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1788,6 +1809,7 @@ def main() -> int:
     assert_ci_policy_outputs_matrix()
     assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full()
     assert_dispatch_run_names_come_from_config()
+    assert_gate_names_reject_github_output_control_chars()
     assert_main_evidence_matching_ignores_mutable_run_name()
     assert_config_digest_is_canonical()
     assert_github_api_bytes_strips_authorization_on_cross_host_redirect()

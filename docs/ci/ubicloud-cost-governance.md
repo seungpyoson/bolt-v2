@@ -134,7 +134,7 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 - During the first week, run the meter daily and compare the runner-minute trend to the Ubicloud dashboard. After the first week, run weekly or before/after CI topology changes.
 - Default to a **draft** PR while iterating. Draft pushes defer the full-CI merge proof — the full-CI merge-proof lanes skip and the gate publishes `gate-deferred`, so a draft cannot merge — though always-on feedback (clippy on `managed_heavy`, deny on `managed_light`) still runs (see [Lever B](#lever-b-full-ci-on-demand)). Iterate on it freely. Mark the PR ready only when its head is the intended merge candidate; `ready_for_review` then triggers the full-CI merge proof on that exact head SHA. This is a major run-volume lever: draft-stage was ~26% of `managed_heavy` minutes in the slice 2b meter (2374.694 / 9023.518) — an upper bound that mixes always-on clippy minutes with full-proof dispatches, i.e. heavy work spent on intermediate commits a later push replaces.
 - Do not push exploratory or fixup commits to a **ready** PR. Each push re-runs full heavy CI on the new SHA and a prior green does not carry over, so return the PR to draft (or keep iterating on draft) until the next coherent slice.
-- Treat `just verify-remote` / full CI as a final-proof run once per coherent slice, not a debug loop. Use draft deferred runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#rust-probe-policy)) for mid-iteration feedback rather than repeated full dispatches.
+- Treat `just verify-remote` / full CI as a high-cost feedback run once per coherent draft slice, not a debug loop or merge proof. Use draft deferred runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#rust-probe-policy)) for mid-iteration feedback rather than repeated full dispatches.
 
 ## Lever Decisions
 
@@ -163,7 +163,7 @@ Decision: go for a separate focused follow-up PR under #648 and #333.
 
 The one-day filtered lookback measured draft-stage runs at 709.484 `managed_heavy` minutes and 64.183 `managed_light` minutes. That is enough addressable spend to justify designing an on-demand heavy-lane flow, provided the required `gate` still blocks merge until a full green run or provenance-verified reuse exists on the exact final head SHA.
 
-Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first final-proof runs such as `just verify-remote` that operators would still request before merge readiness. Normal Rust debugging should use targeted `just rust-probe ...` runs instead. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
+Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first full-feedback runs such as `just verify-remote` that operators may still request before merge readiness. Normal Rust debugging should use targeted `just rust-probe ...` runs instead. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
 
 Slice 2b remeasurement before the topology change:
 

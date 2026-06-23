@@ -22,6 +22,7 @@ from ci_provenance import (
     POLICY_ROWS,
     POLICY_VALUES,
     expected_event_class_for,
+    github_actions_output_safe_check_name,
     gate_name_suffix_for,
 )
 
@@ -1132,9 +1133,13 @@ def policy_proof_invariant_errors(policy: dict[str, object]) -> list[str]:
         semantics = CI_POLICY_ROW_SEMANTICS[row]
         if semantics.queue_covered and value == "iteration":
             continue
-        if policy_row_is_proof_affecting(semantics) and value not in {"full", "tag_reuse"}:
+        if row == "tag":
+            if value != "tag_reuse":
+                errors.append("ci_provenance.policy.tag is proof-affecting and must be tag_reuse")
+            continue
+        if policy_row_is_proof_affecting(semantics) and value != "full":
             errors.append(
-                f"ci_provenance.policy.{row} is proof-affecting and must be full/tag_reuse "
+                f"ci_provenance.policy.{row} is proof-affecting and must be full "
                 "or queue-covered iteration"
             )
     return errors
@@ -9690,7 +9695,11 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
 
     gate_names = require_config_table(ci_provenance, "gate_names", "ci_provenance")
     for key in CI_PROVENANCE_GATE_NAME_KEYS:
-        require_config_string(gate_names, key, "ci_provenance.gate_names")
+        gate_name = require_config_string(gate_names, key, "ci_provenance.gate_names")
+        if not github_actions_output_safe_check_name(gate_name):
+            raise ValueError(
+                f"ci_provenance.gate_names.{key} must be a GitHub Actions output-safe check name"
+            )
     if proof_gate_job != gate_names["gate_required"]:
         raise ValueError("ci_provenance.dispatch.proof_gate_job must match required gate name")
     for key in ("gate_defer", "gate_iteration", "gate_noop", "gate_dispatch_full"):
@@ -9736,6 +9745,8 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
             raise ValueError(
                 f"ci_provenance.policy.{row} must be one of {sorted(CI_PROVENANCE_POLICY_VALUES)!r}"
             )
+    if policy.get("workflow_dispatch_full_ci") != "full":
+        raise ValueError("ci_provenance.policy.workflow_dispatch_full_ci must remain full")
     proof_errors = policy_proof_invariant_errors(policy)
     if proof_errors:
         raise ValueError("; ".join(proof_errors))

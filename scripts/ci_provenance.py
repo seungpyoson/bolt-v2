@@ -166,6 +166,17 @@ def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
     return value
 
 
+def github_actions_output_safe_check_name(value: str) -> bool:
+    return all(char not in "\r\n" and 32 <= ord(char) < 127 for char in value)
+
+
+def require_gate_name(parent: dict[str, object], key: str, prefix: str) -> str:
+    value = require_string(parent, key, prefix)
+    if not github_actions_output_safe_check_name(value):
+        raise ProvenanceError(f"{prefix}.{key} must be a GitHub Actions output-safe check name")
+    return value
+
+
 def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
     value = parent.get(key)
     if not isinstance(value, int) or value <= 0:
@@ -343,7 +354,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         raise ProvenanceError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
 
     gate_names = {
-        key: require_string(gate_names_table, key, "ci_provenance.gate_names")
+        key: require_gate_name(gate_names_table, key, "ci_provenance.gate_names")
         for key in GATE_NAME_KEYS
     }
     if dispatch_proof_gate_job != gate_names["gate_required"]:

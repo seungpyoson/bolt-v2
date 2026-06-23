@@ -1621,10 +1621,28 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         if len(node.args) <= target_index:
             return
         target = self._resolve_value(node.args[target_index])
-        if target is _PARAMETER or target is _UNRESOLVED:
+        if target is _PARAMETER:
+            return
+        if target is _UNRESOLVED:
+            if self._os_exec_spawn_args_are_python_shaped(node, target_index):
+                self._fail(node, f"unresolved Python process replacement target in {call_name}")
             return
         if _is_python_interpreter_token(str(target)):
             self._fail(node, f"dynamic Python process replacement is not allowed: {call_name}")
+
+    def _os_exec_spawn_args_are_python_shaped(self, node: ast.Call, target_index: int) -> bool:
+        args_index = target_index + 1
+        if len(node.args) <= args_index:
+            return False
+        argv_node = node.args[args_index]
+        argv = self._resolve_value(argv_node)
+        if isinstance(argv, list) and argv:
+            return _is_python_interpreter_token(argv[0])
+        if isinstance(argv, str):
+            return _is_python_interpreter_token(argv)
+        if argv is _UNRESOLVED:
+            return self._looks_like_python_command_expr(argv_node)
+        return False
 
     def _handle_loader_call(self, node: ast.Call, call_name: str) -> None:
         if (
@@ -2295,10 +2313,14 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "import os\nos.spawnv(os.P_NOWAIT, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.posix_spawn('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
         "import os\nos.posix_spawnp('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
+        "import os\nos.execv(program, ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "import os\nos.spawnv(os.P_NOWAIT, program, ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "import os\nos.posix_spawn(program, ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
         "from os import system as direct_system\ndirect_system('python3 scripts/test_nextest_fingerprint.py')\n",
         "from os import execv as direct_execv\ndirect_execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "from os import spawnv as direct_spawnv\ndirect_spawnv(0, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "from os import posix_spawn as direct_posix_spawn\ndirect_posix_spawn('python3', ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
+        "from os import posix_spawn as direct_posix_spawn\ndirect_posix_spawn(program, ['python3', 'scripts/test_nextest_fingerprint.py'], {})\n",
         "import subprocess\nsubprocess.getoutput('echo x')\n",
         "import subprocess\nsubprocess.getstatusoutput('echo x')\n",
         "from subprocess import getoutput as direct_getoutput\ndirect_getoutput('echo x')\n",
@@ -2346,6 +2368,26 @@ def test_code_execution_tripwires_fail_closed() -> None:
         )
         _targets, failures = resolver.resolve()
         assert failures, f"expected fail-closed execution edge for:\n{source}"
+
+
+def test_os_exec_spawn_non_python_targets_are_boundaries() -> None:
+    fixtures = [
+        "import os\nos.execv('/bin/echo', ['echo', 'ok'])\n",
+        "import os\nos.spawnv(os.P_NOWAIT, '/bin/echo', ['echo', 'ok'])\n",
+        "import os\nos.posix_spawn('/bin/echo', ['echo', 'ok'], {})\n",
+        "import os\nos.execv(program, [program, 'ok'])\n",
+        "import os\nos.spawnv(os.P_NOWAIT, program, [program, 'ok'])\n",
+        "import os\nos.posix_spawn(program, [program, 'ok'], {})\n",
+    ]
+    for source in fixtures:
+        resolver = _CodeExecutionEdgeResolver(
+            SCRIPTS_DIR / "synthetic_guard_fixture.py",
+            ast.parse(source),
+            scan_set={SCRIPTS_DIR / "synthetic_guard_fixture.py"},
+        )
+        targets, failures = resolver.resolve()
+        assert not failures, f"expected resolved non-Python target to remain a boundary:\n{source}"
+        assert not targets
 
 
 def test_unresolved_wrapper_call_fails_without_falling_back_to_default() -> None:
@@ -3244,6 +3286,7 @@ def main() -> int:
         test_local_wrappers_resolve_forward_and_nested_calls,
         test_shell_true_python_wrappers_resolve,
         test_code_execution_tripwires_fail_closed,
+        test_os_exec_spawn_non_python_targets_are_boundaries,
         test_unresolved_wrapper_call_fails_without_falling_back_to_default,
         test_temp_bound_wrapper_call_is_opaque_without_falling_back_to_default,
         test_omitted_wrapper_arg_with_resolvable_default_is_l1,

@@ -25,8 +25,8 @@ name: Backtester CI
 #
 # DRAFT COST GOVERNANCE: draft pull_request opened/synchronize/reopened/converted_to_draft/edited
 # events publish `backtester-gate-deferred` and defer the managed-heavy proof lanes. Only
-# `backtester-gate` is required-capable; `backtester-gate-deferred` is draft-only feedback and
-# must not be marked required. Marking the PR ready, dispatching the workflow manually, or pushing
+# `backtester-gate` is required-capable; `backtester-gate-deferred` and
+# `backtester-gate-iteration` are feedback-only and must not be marked required. Marking the PR ready, dispatching the workflow with full_ci=true, or pushing
 # to main still runs full backtester proof. `bvs-fmt` remains cheap draft feedback and reports as
 # its own check; the deferred gate does not fold draft formatting failures into required proof.
 # Moving a ready PR back to draft does not rewrite a prior same-SHA `backtester-gate` result; the
@@ -38,6 +38,11 @@ on:
   # whose diff exceeds its internal size limit (observed at ~28k files on #610),
   # so oversized PRs need a manually dispatched run against the branch ref.
   workflow_dispatch:
+    inputs:
+      full_ci:
+        description: "Run full Backtester CI for the selected ref"
+        required: false
+        default: "false"
   pull_request:
     branches: [main]
     # Explicit types are required because the default set (opened, synchronize,
@@ -61,8 +66,7 @@ on:
 concurrency:
   # Deferred and full PR runs intentionally use separate groups. Moving a ready PR back to draft
   # records an explicit deferred verdict without cancelling a full proof already in progress.
-  # Manual workflow_dispatch runs share one full-CI group per branch, so a newer manual proof
-  # cancels an older manual proof for that branch.
+  # Manual workflow_dispatch runs are split by class so iteration smoke runs do not cancel full proof.
   group: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
@@ -76,7 +80,10 @@ concurrency:
         || github.event_name == 'pull_request'
         && format('bvs-pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
-        && format('bvs-{0}-full-ci', github.ref_name)
+        && github.event.inputs.full_ci == 'true'
+        && format('bvs-{0}-dispatch-full', github.ref_name)
+        || github.event_name == 'workflow_dispatch'
+        && format('bvs-{0}-dispatch-iteration', github.ref_name)
         || format('bvs-{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
@@ -119,6 +126,7 @@ jobs:
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
           --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
+          --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
 
@@ -321,7 +329,13 @@ jobs:
           && (github.event.action == 'reopened'
               || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
           && 'backtester-gate-noop'
+          || github.event_name == 'workflow_dispatch'
+          && github.event.inputs.full_ci == 'true'
+          && 'backtester-gate'
+          || github.event_name == 'workflow_dispatch'
+          && 'backtester-gate-iteration'
           || 'backtester-gate' }}
+    # backtester-gate-iteration is intentionally non-required; only backtester-gate is merge proof.
     needs: [ci-policy, detect, fmt, clippy, test]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
@@ -340,6 +354,27 @@ jobs:
             exit 1
           fi
           noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}"
+          iteration_run_context="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_ci != 'true' && 'true' || 'false' }}"
+          if [[ "$policy_path" == "iteration" ]]; then
+            if [[ "$iteration_run_context" != "true" ]]; then
+              echo "backtester iteration CI policy outside workflow_dispatch iteration context"
+              exit 1
+            fi
+            if [[ "${{ needs.fmt.result }}" != "success" && "${{ needs.fmt.result }}" != "skipped" ]]; then
+              echo "bvs-fmt did not succeed or skip during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              echo "bvs-clippy unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              echo "bvs-test unexpectedly ran during iteration"
+              exit 1
+            fi
+            echo "backtester workflow_dispatch iteration run; full proof requires full_ci=true"
+            exit 0
+          fi
           if [[ "$policy_path" == "noop" ]]; then
             if [[ "$noop_run_context" != "true" ]]; then
               echo "backtester noop CI policy outside ready PR no-code context"
@@ -358,7 +393,7 @@ jobs:
               echo "backtester deferred CI policy outside deferred draft PR context"
               exit 1
             fi
-            echo "backtester proof deferred for draft PR; manually dispatch Backtester CI for this branch or mark ready"
+            echo "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for this branch or mark ready"
             exit 0
           fi
           if [[ "$policy_path" == "full" ]]; then

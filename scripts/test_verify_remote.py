@@ -87,6 +87,9 @@ def write_policy(repo: pathlib.Path, *, checks_timeout: int = 300, overall_timeo
 
             [ci_provenance.dispatch]
             workflow_input = "full_ci"
+            run_name_full = "CI [dispatch:full]"
+            run_name_iteration = "CI [dispatch:iteration]"
+            proof_gate_job = "gate"
             """
         ),
         encoding="utf-8",

@@ -1,4 +1,11 @@
 name: CI
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+      && github.event.inputs.full_ci == 'true'
+      && 'CI [dispatch:full]'
+      || github.event_name == 'workflow_dispatch'
+      && 'CI [dispatch:iteration]'
+      || 'CI' }}
 
 on:
   pull_request:
@@ -43,16 +50,14 @@ on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
   # whose diff exceeds its internal size limit (observed at ~28k files on #610),
   # so oversized PRs need a manually dispatched run against the branch ref.
-  # full_ci is a required structural slot enforced by ci/github-actions-runners.toml
-  # (ci_provenance.dispatch.workflow_input = "full_ci") — its presence is what the
-  # ci_provenance policy resolver detects, not its value. The resolver always applies
-  # the workflow_dispatch = "full" policy regardless of the input value.
+  # full_ci is a required structural slot enforced by ci/github-actions-runners.toml.
+  # Default manual dispatches are cheap iteration runs; pass full_ci=true for final proof.
   workflow_dispatch:
     inputs:
       full_ci:
         description: "Run full CI for the selected ref"
         required: false
-        default: "true"
+        default: "false"
   # Merge queue lane: GitHub dispatches merge_group/checks_requested on the
   # temporary gh-readonly-queue ref carrying the exact to-be-merged commit.
   # Required checks MUST report on this event or the merge is blocked, and a
@@ -76,13 +81,16 @@ concurrency:
         || github.event_name == 'pull_request'
         && format('pr-{0}-full', github.event.number)
         || github.event_name == 'workflow_dispatch'
-        && format('{0}-full-ci', github.ref_name)
+        && github.event.inputs.full_ci == 'true'
+        && format('{0}-dispatch-full', github.ref_name)
+        || github.event_name == 'workflow_dispatch'
+        && format('{0}-dispatch-iteration', github.ref_name)
         || github.event_name == 'merge_group'
         && format('mq-{0}', github.ref)
         || format('{0}-{1}', github.ref_name, github.sha) }}
-  # cancel-in-progress is true only for PR and workflow_dispatch full CI runs.
-  # merge_group runs validate an in-flight queue entry and must never be
-  # cancelled, so they fall through to the default (false), like push/tag.
+  # cancel-in-progress is true only for PR and same-class workflow_dispatch runs.
+  # merge_group runs validate an in-flight queue entry and must never be cancelled,
+  # so they fall through to the default (false), like push/tag.
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
         && !(github.event.pull_request.draft == false
@@ -126,6 +134,7 @@ jobs:
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
           --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
+          --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
 
@@ -226,9 +235,8 @@ jobs:
         shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            # push and workflow_dispatch always require a full build: push covers main
-            # and tags; workflow_dispatch is the manual lane for oversized PRs where
-            # a dispatched run must not produce vacuous evidence.
+            # Pushes and manual dispatches do not have a PR diff to inspect. Treat
+            # the ref as changed; full-vs-iteration lane selection remains policy-gated.
             echo "value=true" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
             # merge_group validates the exact to-be-merged commit. The build job is
@@ -771,8 +779,14 @@ jobs:
           && (github.event.action == 'reopened'
               || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
           && 'gate-noop'
+          || github.event_name == 'workflow_dispatch'
+          && github.event.inputs.full_ci == 'true'
+          && 'gate'
+          || github.event_name == 'workflow_dispatch'
+          && 'gate-iteration'
           || 'gate' }}
-    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
+    # gate-iteration is intentionally non-required; only gate is merge proof.
+    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
@@ -814,6 +828,14 @@ jobs:
               echo "source-fence unexpectedly ran during tag reuse"
               exit 1
             fi
+            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint unexpectedly ran during tag reuse"
+              exit 1
+            fi
+            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
+              echo "test-archive unexpectedly ran during tag reuse"
+              exit 1
+            fi
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then
               echo "test unexpectedly ran during tag reuse"
               exit 1
@@ -838,6 +860,55 @@ jobs:
           fi
           defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}"
           noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}"
+          iteration_run_context="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_ci != 'true' && 'true' || 'false' }}"
+          if [[ "$policy_path" == "iteration" ]]; then
+            if [[ "$iteration_run_context" != "true" ]]; then
+              echo "iteration CI policy outside workflow_dispatch iteration context"
+              exit 1
+            fi
+            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
+              echo "deny unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
+              echo "clippy unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
+              echo "check-aarch64 unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
+              echo "source-fence unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
+              echo "test-archive unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
+              echo "test unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
+              echo "nextest-fingerprint-reuse unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
+              echo "build unexpectedly ran during iteration"
+              exit 1
+            fi
+            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
+              echo "ci-provenance-emit unexpectedly ran during iteration"
+              exit 1
+            fi
+            echo "workflow_dispatch iteration run; full proof requires full_ci=true"
+            exit 0
+          fi
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
             if [[ "$defer_run_context" != "true" ]]; then
               echo "deferred CI policy outside deferred draft PR context"

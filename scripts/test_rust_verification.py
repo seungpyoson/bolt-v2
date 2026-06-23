@@ -311,6 +311,9 @@ def write_verify_remote_config(repo: pathlib.Path) -> None:
 
             [ci_provenance.dispatch]
             workflow_input = "full_ci"
+            run_name_full = "CI [dispatch:full]"
+            run_name_iteration = "CI [dispatch:iteration]"
+            proof_gate_job = "gate"
             """
         ),
         encoding="utf-8",
@@ -337,7 +340,10 @@ def workflow_run(
     status: str = "completed",
     conclusion: str | None = "success",
     created_at: str = "2026-06-13T00:00:00Z",
+    display_title: str | None = None,
 ) -> dict[str, object]:
+    if display_title is None:
+        display_title = "CI [dispatch:full]" if event == "workflow_dispatch" else "CI"
     return {
         "databaseId": database_id,
         "attempt": 1,
@@ -346,7 +352,21 @@ def workflow_run(
         "status": status,
         "conclusion": conclusion,
         "createdAt": created_at,
+        "displayTitle": display_title,
         "url": f"https://github.com/seungpyoson/bolt-v2/actions/runs/{database_id}",
+    }
+
+
+def workflow_jobs(*, gate_conclusion: str | None = "success") -> dict[str, object]:
+    return {
+        "jobs": [
+            {
+                "databaseId": 9001,
+                "name": "gate",
+                "status": "completed",
+                "conclusion": gate_conclusion,
+            }
+        ]
     }
 
 
@@ -358,6 +378,7 @@ class VerifyRemoteHarness:
         *,
         pr: dict[str, object],
         run_lists: list[list[dict[str, object]]],
+        jobs_by_run_id: dict[int, dict[str, object]] | None = None,
         run_list_error: str | None = None,
         advance_after_dispatch: bool = False,
     ) -> None:
@@ -365,6 +386,7 @@ class VerifyRemoteHarness:
         self.repo = repo
         self.pr = pr
         self.run_lists = list(run_lists)
+        self.jobs_by_run_id = jobs_by_run_id or {}
         self.run_list_error = run_list_error
         self.advance_after_dispatch = advance_after_dispatch
         self.dispatches: list[list[str]] = []
@@ -435,6 +457,9 @@ class VerifyRemoteHarness:
     def fake_load_json_command(self, argv: list[str], *, repo: pathlib.Path) -> tuple[object | None, str | None]:
         if repo != self.repo:
             raise AssertionError(repo)
+        if argv[:3] == ["gh", "run", "view"] and argv[4:6] == ["--json", "jobs"]:
+            run_id = int(argv[3])
+            return self.jobs_by_run_id.get(run_id, workflow_jobs()), None
         if argv[:3] == ["gh", "run", "list"]:
             if self.run_list_error is not None:
                 return None, self.run_list_error
@@ -552,7 +577,7 @@ def assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock() -> None:
             raise AssertionError(harness.dispatches)
 
 
-def assert_verify_remote_reuses_existing_matching_full_ci_run() -> None:
+def assert_verify_remote_draft_dispatch_ignores_existing_and_concurrent_iteration_runs() -> None:
     owner = load_owner_module()
     with tempfile.TemporaryDirectory() as tmp:
         repo = pathlib.Path(tmp) / "repo"
@@ -562,13 +587,117 @@ def assert_verify_remote_reuses_existing_matching_full_ci_run() -> None:
             owner,
             repo,
             pr=verify_remote_pr(is_draft=True),
-            run_lists=[[workflow_run(202, status="completed", conclusion="success")]],
+            run_lists=[
+                [
+                    workflow_run(
+                        202,
+                        status="completed",
+                        conclusion="success",
+                        display_title="CI [dispatch:iteration]",
+                    )
+                ],
+                [
+                    workflow_run(
+                        203,
+                        status="completed",
+                        conclusion="success",
+                        created_at="2026-06-13T00:02:00Z",
+                        display_title="CI [dispatch:iteration]",
+                    ),
+                    workflow_run(
+                        204,
+                        status="in_progress",
+                        conclusion=None,
+                        created_at="2026-06-13T00:01:00Z",
+                    ),
+                ],
+                [
+                    workflow_run(
+                        203,
+                        status="completed",
+                        conclusion="success",
+                        created_at="2026-06-13T00:02:00Z",
+                        display_title="CI [dispatch:iteration]",
+                    ),
+                    workflow_run(
+                        204,
+                        status="completed",
+                        conclusion="success",
+                        created_at="2026-06-13T00:01:00Z",
+                    ),
+                ],
+            ],
         ) as harness:
             result, stdout, stderr = run_verify_remote_with_harness(harness)
         if result != 0:
             raise AssertionError((result, stdout, stderr))
-        if harness.dispatches:
+        if len(harness.dispatches) != 1:
             raise AssertionError(harness.dispatches)
+
+
+def assert_verify_remote_draft_dispatch_ignores_preexisting_full_run() -> None:
+    owner = load_owner_module()
+    preexisting_full = workflow_run(
+        206,
+        status="completed",
+        conclusion="success",
+        created_at="2026-06-13T00:02:00Z",
+    )
+    fresh_pending = workflow_run(
+        207,
+        status="in_progress",
+        conclusion=None,
+        created_at="2026-06-13T00:01:00Z",
+    )
+    fresh_success = workflow_run(
+        207,
+        status="completed",
+        conclusion="success",
+        created_at="2026-06-13T00:01:00Z",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[
+                [preexisting_full],
+                [fresh_pending, preexisting_full],
+                [fresh_success, preexisting_full],
+            ],
+        ) as harness:
+            result, stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 0:
+            raise AssertionError((result, stdout, stderr))
+        if len(harness.dispatches) != 1:
+            raise AssertionError(harness.dispatches)
+        if harness.sleep_calls < 1:
+            raise AssertionError("expected verify-remote to ignore the pre-existing full run and wait")
+
+
+def assert_verify_remote_rejects_full_marker_without_gate_success() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_verify_remote_config(repo)
+        with VerifyRemoteHarness(
+            owner,
+            repo,
+            pr=verify_remote_pr(is_draft=True),
+            run_lists=[
+                [],
+                [workflow_run(205, status="completed", conclusion="success")],
+                [workflow_run(205, status="completed", conclusion="success")],
+            ],
+            jobs_by_run_id={205: workflow_jobs(gate_conclusion="skipped")},
+        ) as harness:
+            result, _stdout, stderr = run_verify_remote_with_harness(harness)
+        if result != 1 or "successful gate job" not in stderr:
+            raise AssertionError((result, stderr))
 
 
 def assert_verify_remote_fails_when_branch_advances_after_dispatch() -> None:
@@ -983,7 +1112,9 @@ def main() -> int:
     assert_remote_diagnostics_policy_loads()
     assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped()
     assert_verify_remote_dispatch_wait_does_not_depend_on_local_clock()
-    assert_verify_remote_reuses_existing_matching_full_ci_run()
+    assert_verify_remote_draft_dispatch_ignores_existing_and_concurrent_iteration_runs()
+    assert_verify_remote_draft_dispatch_ignores_preexisting_full_run()
+    assert_verify_remote_rejects_full_marker_without_gate_success()
     assert_verify_remote_fails_when_branch_advances_after_dispatch()
     assert_verify_remote_waits_on_pending_full_run_over_stale_deferred_gate()
     assert_verify_remote_ready_pr_waits_for_full_run_after_stale_deferred_gate()

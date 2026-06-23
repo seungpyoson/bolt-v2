@@ -16,10 +16,6 @@ on:
       - submitted
       - dismissed
 
-concurrency:
-  group: reviewer-node-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
   pull-requests: read
@@ -52,6 +48,9 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           # Required merge context. This is a commit status, not the Actions job
           # name, so newer approval events replace older failed approval states.
+          # Do not add workflow concurrency here: concurrency-cancelled Actions
+          # check runs remain visible as red/cancelled PR rollup rows even after
+          # this required commit-status context is republished green.
           REVIEWER_GATE_STATUS_CONTEXT: required reviewer approved
           # Policy identity constant: the required human reviewer. Hardcoded
           # intentionally because PR-editable config must not select the reviewer.

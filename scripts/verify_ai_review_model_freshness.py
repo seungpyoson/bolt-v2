@@ -19,13 +19,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+try:
+    from ai_review_deliverables import sanitize_detail
+except ImportError:  # pragma: no cover - supports importing as scripts.verify_ai_review_model_freshness.
+    from scripts.ai_review_deliverables import sanitize_detail
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "ai-review.toml"
 KIMI_CODE_MODEL_RE = re.compile(r"\bkimi-k(?P<version>\d+(?:\.\d+)*)-code(?:-highspeed)?\b")
-GLM_TEXT_MODEL_RE = re.compile(r"\bGLM-(?P<version>\d+(?:\.\d+)*)(?![-\w])", re.IGNORECASE)
+GLM_TEXT_MODEL_RE = re.compile(r"\bGLM-(?P<version>\d+(?:\.\d+)*)(?!\.\d)(?![-\w])", re.IGNORECASE)
 MODEL_FRESHNESS_ISSUE_MARKER = "<!-- ai-review-model-freshness-issue -->"
 MODEL_FRESHNESS_ISSUE_TITLE = "AI review model pin update available"
+PROVIDER_ALL = "all"
+PROVIDER_KIMI = "kimi"
+PROVIDER_GLM = "glm"
 
 
 @dataclass(frozen=True)
@@ -45,6 +53,37 @@ class FreshnessSources:
 
 def version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
+
+
+def kimi_version_key(version: str) -> tuple[int, ...]:
+    if "." in version or len(version) == 1:
+        return version_key(version)
+    return (int(version[0]), int(version[1:]))
+
+
+def kimi_code_model_key(model_id: str) -> tuple[int, ...] | None:
+    match = KIMI_CODE_MODEL_RE.search(model_id)
+    if not match:
+        return None
+    return kimi_version_key(match.group("version"))
+
+
+def same_kimi_code_model(left: str, right: str) -> bool:
+    left_key = kimi_code_model_key(left)
+    right_key = kimi_code_model_key(right)
+    return left_key is not None and left_key == right_key
+
+
+def provider_enabled(scope: str, provider: str) -> bool:
+    return scope == PROVIDER_ALL or scope == provider
+
+
+def freshness_success_message(*, pins: ModelPins, provider: str) -> str:
+    if provider == PROVIDER_KIMI:
+        return f"AI review model pins are fresh: Kimi={pins.kimi}"
+    if provider == PROVIDER_GLM:
+        return f"AI review model pins are fresh: GLM={pins.glm}"
+    return f"AI review model pins are fresh: Kimi={pins.kimi}, GLM={pins.glm}"
 
 
 def load_config(path: Path) -> tuple[ModelPins, FreshnessSources]:
@@ -103,15 +142,16 @@ def model_alias_findings(pins: ModelPins) -> list[str]:
 
 
 def pick_latest_kimi_code_model(model_ids: Iterable[str]) -> str | None:
-    matches: list[tuple[tuple[int, ...], bool, str]] = []
+    matches: list[tuple[tuple[int, ...], bool, bool, str]] = []
     for model_id in model_ids:
         match = KIMI_CODE_MODEL_RE.search(model_id)
         if match:
-            matches.append((version_key(match.group("version")), model_id.endswith("-highspeed"), model_id))
+            version = match.group("version")
+            matches.append((kimi_version_key(version), not model_id.endswith("-highspeed"), "." in version, model_id))
     if not matches:
         return None
-    matches.sort(key=lambda item: (item[0], not item[1]), reverse=True)
-    return matches[0][2]
+    matches.sort(reverse=True)
+    return matches[0][3]
 
 
 def parse_kimi_chat_docs_latest(text: str) -> str | None:
@@ -221,39 +261,58 @@ class GitHubIssueClient:
         self._request_json("PATCH", f"issues/{issue_number}", payload=dict(fields))
 
 
-def live_latest_models(sources: FreshnessSources) -> tuple[str | None, str | None, list[str]]:
+def live_latest_models(
+    sources: FreshnessSources,
+    *,
+    provider: str = PROVIDER_ALL,
+) -> tuple[str | None, str | None, list[str]]:
     warnings: list[str] = []
-    kimi_token = os.environ.get("MOONSHOT_API_KEY") or os.environ.get("KIMI_API_KEY")
     kimi_latest: str | None = None
-    if kimi_token:
-        try:
-            kimi_latest = parse_kimi_models_api_latest(fetch_text(sources.kimi_models_url, token=kimi_token))
-        except Exception as exc:  # noqa: BLE001 - keep fallback diagnostic actionable.
-            warnings.append(f"Kimi models API unavailable; falling back to public docs: {exc}")
-    if kimi_latest is None:
-        kimi_latest = parse_kimi_chat_docs_latest(fetch_text(sources.kimi_chat_docs_url))
+    if provider_enabled(provider, PROVIDER_KIMI):
+        kimi_token = os.environ.get("MOONSHOT_API_KEY") or os.environ.get("KIMI_API_KEY")
+        if kimi_token:
+            try:
+                kimi_latest = parse_kimi_models_api_latest(fetch_text(sources.kimi_models_url, token=kimi_token))
+            except Exception as exc:  # noqa: BLE001 - keep fallback diagnostic actionable.
+                warnings.append(
+                    "Kimi models API unavailable; falling back to public docs: "
+                    f"{sanitize_detail(str(exc))}"
+                )
+        if kimi_latest is None:
+            kimi_latest = parse_kimi_chat_docs_latest(fetch_text(sources.kimi_chat_docs_url))
 
-    glm_latest = parse_glm_docs_latest(fetch_text(sources.glm_docs_index_url))
-    migration_model = parse_glm_migration_model(fetch_text(sources.glm_migration_docs_url))
-    if glm_latest and migration_model and glm_latest != migration_model:
-        warnings.append(
-            "Z.AI docs disagree on latest GLM text model: "
-            f"index={glm_latest!r}, migration={migration_model!r}"
-        )
-    return kimi_latest, migration_model or glm_latest, warnings
+    glm_latest: str | None = None
+    if provider_enabled(provider, PROVIDER_GLM):
+        glm_latest = parse_glm_docs_latest(fetch_text(sources.glm_docs_index_url))
+        migration_model = parse_glm_migration_model(fetch_text(sources.glm_migration_docs_url))
+        if glm_latest and migration_model and glm_latest != migration_model:
+            warnings.append(
+                "Z.AI docs disagree on latest GLM text model: "
+                f"index={glm_latest!r}, migration={migration_model!r}"
+            )
+        glm_latest = migration_model or glm_latest
+    return kimi_latest, glm_latest, warnings
 
 
-def check_pins_against_latest(pins: ModelPins, kimi_latest: str | None, glm_latest: str | None) -> list[str]:
+def check_pins_against_latest(
+    pins: ModelPins,
+    kimi_latest: str | None,
+    glm_latest: str | None,
+    *,
+    provider: str = PROVIDER_ALL,
+) -> list[str]:
     findings = model_alias_findings(pins)
-    if kimi_latest is None:
-        findings.append("Could not determine latest Kimi coding model from provider sources")
-    elif pins.kimi != kimi_latest:
-        findings.append(f"ci/ai-review.toml kimi.model is stale: {pins.kimi!r}; latest is {kimi_latest!r}")
+    if provider_enabled(provider, PROVIDER_KIMI):
+        if kimi_latest is None:
+            findings.append("Could not determine latest Kimi coding model from provider sources")
+        elif not same_kimi_code_model(pins.kimi, kimi_latest):
+            findings.append(f"ci/ai-review.toml kimi.model is stale: {pins.kimi!r}; latest is {kimi_latest!r}")
 
-    if glm_latest is None:
-        findings.append("Could not determine latest GLM text coding model from provider sources")
-    elif pins.glm != glm_latest:
-        findings.append(f"ci/ai-review.toml glm.model is stale: {pins.glm!r}; latest is {glm_latest!r}")
+    if provider_enabled(provider, PROVIDER_GLM):
+        if glm_latest is None:
+            findings.append("Could not determine latest GLM text coding model from provider sources")
+        elif pins.glm != glm_latest:
+            findings.append(f"ci/ai-review.toml glm.model is stale: {pins.glm!r}; latest is {glm_latest!r}")
     return findings
 
 
@@ -271,17 +330,18 @@ def build_advisory_outputs(
     kimi_latest: str | None,
     glm_latest: str | None,
     warnings: list[str],
+    provider: str = PROVIDER_ALL,
 ) -> dict[str, str]:
     kimi_warning = ""
     glm_warning = ""
-    if kimi_latest and pins.kimi != kimi_latest:
+    if provider_enabled(provider, PROVIDER_KIMI) and kimi_latest and not same_kimi_code_model(pins.kimi, kimi_latest):
         kimi_warning = model_update_warning(
             provider="Kimi",
             config_key="kimi.model",
             current=pins.kimi,
             latest=kimi_latest,
         )
-    if glm_latest and pins.glm != glm_latest:
+    if provider_enabled(provider, PROVIDER_GLM) and glm_latest and pins.glm != glm_latest:
         glm_warning = model_update_warning(
             provider="GLM",
             config_key="glm.model",
@@ -293,7 +353,7 @@ def build_advisory_outputs(
         "stale": "true" if stale else "false",
         "kimi_warning": kimi_warning,
         "glm_warning": glm_warning,
-        "source_warnings": "\n".join(warnings),
+        "source_warnings": "\n".join(sanitize_detail(warning) for warning in warnings),
     }
 
 
@@ -304,8 +364,8 @@ def render_model_freshness_issue_body(*, pins: ModelPins, advisory: dict[str, st
         if warning
     ]
     if warning_lines:
-        summary = "\n".join(f"- {warning}" for warning in warning_lines)
-        next_step = "Open a reviewed PR that updates `ci/ai-review.toml` and `.pr_agent.toml` to the provider-confirmed model pins."
+        summary = "\n".join(f"- {sanitize_detail(warning)}" for warning in warning_lines)
+        next_step = "Open a reviewed PR that updates `ci/ai-review.toml` to the provider-confirmed model pins."
     else:
         summary = "- Kimi and GLM model pins match the latest provider-confirmed coding models."
         next_step = "No model pin update is currently required."
@@ -313,7 +373,9 @@ def render_model_freshness_issue_body(*, pins: ModelPins, advisory: dict[str, st
     source_warnings = advisory.get("source_warnings", "").strip()
     source_warning_section = ""
     if source_warnings:
-        source_warning_section = "\n\nSource warnings:\n" + "\n".join(f"- {line}" for line in source_warnings.splitlines())
+        source_warning_section = "\n\nSource warnings:\n" + "\n".join(
+            f"- {sanitize_detail(line)}" for line in source_warnings.splitlines()
+        )
 
     return (
         f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\n"
@@ -336,23 +398,40 @@ def model_freshness_issue_number(issue: dict[str, object]) -> int | None:
     return None
 
 
+def model_freshness_issues(issues: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    return [issue for issue in issues if model_freshness_issue_number(issue) is not None]
+
+
+def issue_number(issue: dict[str, object]) -> int:
+    number = model_freshness_issue_number(issue)
+    if number is None:
+        raise ValueError("issue is missing model freshness marker or integer number")
+    return number
+
+
 def sync_model_freshness_issue(*, github: object, pins: ModelPins, advisory: dict[str, str]) -> str:
     body = render_model_freshness_issue_body(pins=pins, advisory=advisory)
-    existing_number: int | None = None
-    for issue in github.list_issues(state="open"):  # type: ignore[attr-defined]
-        existing_number = model_freshness_issue_number(issue)
-        if existing_number is not None:
-            break
+    existing_issues = model_freshness_issues(github.list_issues(state="all"))  # type: ignore[attr-defined]
+    existing_issues.sort(key=issue_number, reverse=True)
+    existing_issue = existing_issues[0] if existing_issues else None
 
     if advisory.get("stale") == "true":
-        if existing_number is not None:
+        if existing_issue is not None:
+            existing_number = issue_number(existing_issue)
             github.update_issue(existing_number, state="open", body=body)  # type: ignore[attr-defined]
+            for duplicate in existing_issues[1:]:
+                if duplicate.get("state") == "open":
+                    github.update_issue(issue_number(duplicate), state="closed", body=body)  # type: ignore[attr-defined]
+            if existing_issue.get("state") == "closed":
+                return "issue-reopened"
             return "issue-updated"
         github.create_issue(title=MODEL_FRESHNESS_ISSUE_TITLE, body=body)  # type: ignore[attr-defined]
         return "issue-created"
 
-    if existing_number is not None:
-        github.update_issue(existing_number, state="closed", body=body)  # type: ignore[attr-defined]
+    open_issues = [issue for issue in existing_issues if issue.get("state") == "open"]
+    for issue in open_issues:
+        github.update_issue(issue_number(issue), state="closed", body=body)  # type: ignore[attr-defined]
+    if open_issues:
         return "issue-closed"
     return "issue-not-needed"
 
@@ -401,8 +480,13 @@ def run_self_test() -> None:
     assert parse_kimi_chat_docs_latest(kimi_doc) == current_kimi
     kimi_api = json.dumps({"data": [{"id": old_kimi}, {"id": f"{current_kimi}-highspeed"}, {"id": current_kimi}]})
     assert parse_kimi_models_api_latest(kimi_api) == current_kimi
+    kimi_alias_doc = "Available options: `kimi-k2.7-code` `kimi-k2.7-code-highspeed` `kimi-k27-code`"
+    assert parse_kimi_chat_docs_latest(kimi_alias_doc) == "kimi-k2.7-code"
     glm_index = f"[GLM-{old_glm_version}](/guides/llm/glm-old.md) [GLM-{current_glm_version}](/guides/llm/glm-current.md)"
     assert parse_glm_docs_latest(glm_index) == current_glm
+    assert parse_glm_docs_latest("Variants: GLM-5.2-flash GLM-4.5-Air GLM-4.5V") is None
+    assert parse_glm_docs_latest("Variants: GLM-5.2-flash; current standalone GLM-4.6") == "glm-4.6"
+    assert parse_glm_docs_latest("Current model is GLM-5.2.") == "glm-5.2"
     migration = f"Migration Checklist\n* Update model identifier to `{current_glm}`"
     assert parse_glm_migration_model(migration) == current_glm
     uppercase_migration = f"Migration Checklist\n* Update model identifier to `{current_glm.upper()}`"
@@ -413,6 +497,12 @@ def run_self_test() -> None:
     findings = check_pins_against_latest(pins, current_kimi, current_glm)
     assert any("kimi.model is stale" in finding for finding in findings), findings
     assert any("glm.model is stale" in finding for finding in findings), findings
+    alias_findings = check_pins_against_latest(
+        ModelPins(kimi="kimi-k2.7-code", glm=current_glm, glm_pr_agent=current_pr_agent_glm),
+        "kimi-k27-code",
+        current_glm,
+    )
+    assert not any("kimi.model is stale" in finding for finding in alias_findings), alias_findings
     alias_findings = model_alias_findings(ModelPins(kimi="kimi-latest", glm=current_glm, glm_pr_agent=current_pr_agent_glm))
     assert any("latest alias" in finding for finding in alias_findings), alias_findings
     advisory = build_advisory_outputs(
@@ -426,6 +516,14 @@ def run_self_test() -> None:
     assert advisory["glm_warning"] == "", advisory
     assert current_kimi in advisory["kimi_warning"], advisory
     assert next_kimi in advisory["kimi_warning"], advisory
+    alias_advisory = build_advisory_outputs(
+        pins=ModelPins(kimi="kimi-k2.7-code", glm=current_glm, glm_pr_agent=current_pr_agent_glm),
+        kimi_latest="kimi-k27-code",
+        glm_latest=current_glm,
+        warnings=[],
+    )
+    assert alias_advisory["stale"] == "false", alias_advisory
+    assert alias_advisory["kimi_warning"] == "", alias_advisory
     config_text = f"""
 [model_freshness]
 kimi_chat_docs_url = "https://example.invalid/kimi-chat"
@@ -444,14 +542,47 @@ model = "{current_kimi}"
 """
     original_live_latest_models = live_latest_models
     try:
-        globals()["live_latest_models"] = lambda sources: (next_kimi, current_glm, [])
+        globals()["live_latest_models"] = lambda sources, *, provider=PROVIDER_ALL: (next_kimi, current_glm, [])
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "ai-review.toml"
             config_path.write_text(config_text, encoding="utf-8")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 assert main(["--config-file", str(config_path), "--live", "--advisory"]) == 0
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
+                assert main(["--config-file", str(config_path), "--live", "--advisory", "--provider", PROVIDER_GLM]) == 0
+            assert f"GLM={current_glm}" in stdout.getvalue(), stdout.getvalue()
+            assert "Kimi=" not in stdout.getvalue(), stdout.getvalue()
     finally:
         globals()["live_latest_models"] = original_live_latest_models
+
+    secret = "model-freshness-secret-value"
+    previous_secret = os.environ.get("MODEL_FRESHNESS_TEST_API_KEY")
+    os.environ["MODEL_FRESHNESS_TEST_API_KEY"] = secret
+    try:
+        def failing_live_latest_models(
+            sources: FreshnessSources,
+            *,
+            provider: str = PROVIDER_ALL,
+        ) -> tuple[str | None, str | None, list[str]]:
+            del sources, provider
+            raise RuntimeError(f"provider echoed {secret}")
+
+        globals()["live_latest_models"] = failing_live_latest_models
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "ai-review.toml"
+            config_path.write_text(config_text, encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                assert main(["--config-file", str(config_path), "--live", "--advisory"]) == 0
+            assert secret not in stderr.getvalue(), stderr.getvalue()
+            assert "***" in stderr.getvalue(), stderr.getvalue()
+    finally:
+        globals()["live_latest_models"] = original_live_latest_models
+        if previous_secret is None:
+            os.environ.pop("MODEL_FRESHNESS_TEST_API_KEY", None)
+        else:
+            os.environ["MODEL_FRESHNESS_TEST_API_KEY"] = previous_secret
 
     sources = FreshnessSources(
         kimi_chat_docs_url="https://example.invalid/kimi-chat",
@@ -478,6 +609,27 @@ model = "{current_kimi}"
     finally:
         globals()["fetch_text"] = original_fetch_text
 
+    provider_calls: list[str] = []
+    try:
+        def fake_provider_fetch_text(url: str, token: str | None = None) -> str:
+            del token
+            provider_calls.append(url)
+            if url == sources.kimi_chat_docs_url:
+                return f"default:{current_kimi}"
+            if url == sources.glm_docs_index_url:
+                return f"[GLM-{current_glm_version}](/current.md)"
+            if url == sources.glm_migration_docs_url:
+                return f"Migration Checklist\n* Update model identifier to `{current_glm}`"
+            raise AssertionError(f"unexpected URL {url}")
+
+        globals()["fetch_text"] = fake_provider_fetch_text
+        scoped_kimi, scoped_glm, _ = live_latest_models(sources, provider=PROVIDER_GLM)
+        assert scoped_kimi is None
+        assert scoped_glm == current_glm
+        assert provider_calls == [sources.glm_docs_index_url, sources.glm_migration_docs_url], provider_calls
+    finally:
+        globals()["fetch_text"] = original_fetch_text
+
     class FakeIssueClient:
         def __init__(self, issues: list[dict[str, object]] | None = None) -> None:
             self.issues = list(issues or [])
@@ -485,6 +637,8 @@ model = "{current_kimi}"
             self.updated: list[tuple[int, dict[str, str]]] = []
 
         def list_issues(self, *, state: str) -> list[dict[str, object]]:
+            if state == "all":
+                return list(self.issues)
             return [issue for issue in self.issues if issue.get("state") == state]
 
         def create_issue(self, *, title: str, body: str) -> None:
@@ -505,11 +659,60 @@ model = "{current_kimi}"
     assert MODEL_FRESHNESS_ISSUE_MARKER in fake_issues.created[0]["body"]
     assert "GLM model update available" in fake_issues.created[0]["body"]
 
+    previous_secret = os.environ.get("MODEL_FRESHNESS_TEST_API_KEY")
+    os.environ["MODEL_FRESHNESS_TEST_API_KEY"] = secret
+    try:
+        redacted_advisory = dict(stale_advisory)
+        redacted_advisory["source_warnings"] = f"provider echoed {secret}"
+        redacted_body = render_model_freshness_issue_body(pins=pins, advisory=redacted_advisory)
+        assert secret not in redacted_body, redacted_body
+        assert "***" in redacted_body, redacted_body
+    finally:
+        if previous_secret is None:
+            os.environ.pop("MODEL_FRESHNESS_TEST_API_KEY", None)
+        else:
+            os.environ["MODEL_FRESHNESS_TEST_API_KEY"] = previous_secret
+
     stale_issue = {
         "number": 321,
         "state": "open",
         "body": f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\nold stale body",
     }
+    fake_issues = FakeIssueClient([stale_issue])
+    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory) == "issue-updated"
+    assert fake_issues.created == []
+    assert fake_issues.updated == [(321, {"state": "open", "body": render_model_freshness_issue_body(pins=pins, advisory=stale_advisory)})]
+
+    closed_stale_issue = {
+        "number": 322,
+        "state": "closed",
+        "body": f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\nclosed stale body",
+    }
+    fake_issues = FakeIssueClient([closed_stale_issue])
+    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory) == "issue-reopened"
+    assert fake_issues.created == []
+    assert fake_issues.updated == [(322, {"state": "open", "body": render_model_freshness_issue_body(pins=pins, advisory=stale_advisory)})]
+
+    duplicate_issues = [
+        {
+            "number": 323,
+            "state": "open",
+            "body": f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\nolder duplicate",
+        },
+        {
+            "number": 324,
+            "state": "closed",
+            "body": f"{MODEL_FRESHNESS_ISSUE_MARKER}\n\nnewer closed issue",
+        },
+    ]
+    fake_issues = FakeIssueClient(duplicate_issues)
+    assert sync_model_freshness_issue(github=fake_issues, pins=pins, advisory=stale_advisory) == "issue-reopened"
+    assert fake_issues.created == []
+    assert fake_issues.updated == [
+        (324, {"state": "open", "body": render_model_freshness_issue_body(pins=pins, advisory=stale_advisory)}),
+        (323, {"state": "closed", "body": render_model_freshness_issue_body(pins=pins, advisory=stale_advisory)}),
+    ]
+
     fresh_advisory = build_advisory_outputs(
         pins=ModelPins(kimi=current_kimi, glm=current_glm, glm_pr_agent=current_pr_agent_glm),
         kimi_latest=current_kimi,
@@ -527,6 +730,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true", help="Fetch provider sources and compare pinned models")
     parser.add_argument("--advisory", action="store_true", help="Emit stale-model outputs but exit zero for drift")
     parser.add_argument("--github-notice", action="store_true", help="Create, update, or close the durable GitHub stale-model issue")
+    parser.add_argument(
+        "--provider",
+        choices=(PROVIDER_ALL, PROVIDER_KIMI, PROVIDER_GLM),
+        default=PROVIDER_ALL,
+        help="Limit live freshness checks to one review provider",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args(argv)
 
@@ -543,20 +752,21 @@ def main(argv: list[str] | None = None) -> int:
         warnings: list[str] = []
         if args.live:
             try:
-                kimi_latest, glm_latest, warnings = live_latest_models(sources)
+                kimi_latest, glm_latest, warnings = live_latest_models(sources, provider=args.provider)
             except Exception as exc:
                 if not args.advisory:
                     raise
-                warnings = [f"AI review model freshness source check unavailable: {exc}"]
+                warnings = [f"AI review model freshness source check unavailable: {sanitize_detail(str(exc))}"]
             for warning in warnings:
-                print(f"warning: {warning}", file=sys.stderr)
-            findings = check_pins_against_latest(pins, kimi_latest, glm_latest)
+                print(f"warning: {sanitize_detail(warning)}", file=sys.stderr)
+            findings = check_pins_against_latest(pins, kimi_latest, glm_latest, provider=args.provider)
         if args.advisory:
             advisory = build_advisory_outputs(
                 pins=pins,
                 kimi_latest=kimi_latest,
                 glm_latest=glm_latest,
                 warnings=warnings,
+                provider=args.provider,
             )
             write_github_outputs(advisory)
             if args.github_notice:
@@ -564,22 +774,22 @@ def main(argv: list[str] | None = None) -> int:
             if advisory["stale"] == "true":
                 for warning in (advisory["kimi_warning"], advisory["glm_warning"]):
                     if warning:
-                        print(f"warning: {warning}", file=sys.stderr)
+                        print(f"warning: {sanitize_detail(warning)}", file=sys.stderr)
                 return 0
             if findings:
                 for finding in findings:
-                    print(f"warning: {finding}", file=sys.stderr)
+                    print(f"warning: {sanitize_detail(finding)}", file=sys.stderr)
                 return 0
         if findings:
             for finding in findings:
-                print(f"ERROR: {finding}", file=sys.stderr)
+                print(f"ERROR: {sanitize_detail(finding)}", file=sys.stderr)
             return 1
     except Exception as exc:  # noqa: BLE001 - script should report clean verifier errors.
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(f"ERROR: {sanitize_detail(str(exc))}", file=sys.stderr)
         return 1
 
     if args.live:
-        print(f"AI review model pins are fresh: Kimi={pins.kimi}, GLM={pins.glm}")
+        print(freshness_success_message(pins=pins, provider=args.provider))
     else:
         print("AI review model pins use exact, internally consistent model ids")
     return 0

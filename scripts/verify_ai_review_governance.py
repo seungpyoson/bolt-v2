@@ -285,6 +285,44 @@ def missing_snippets(label: str, text: str, snippets: tuple[str, ...]) -> list[s
     return [f"{label} missing expected snippet: {snippet!r}" for snippet in snippets if snippet not in text]
 
 
+def workflow_step_block(workflow_text: str, step_name: str) -> str:
+    lines = workflow_text.splitlines()
+    needle = f"- name: {step_name}"
+    for index, line in enumerate(lines):
+        if line.strip() == needle:
+            indent = len(line) - len(line.lstrip())
+            block = [line]
+            for next_line in lines[index + 1:]:
+                next_indent = len(next_line) - len(next_line.lstrip())
+                if next_indent == indent and next_line.strip().startswith("- name: "):
+                    break
+                block.append(next_line)
+            return "\n".join(block)
+    return ""
+
+
+def verify_model_freshness_step_contracts(glm_workflow: str, kimi_workflow: str) -> list[str]:
+    findings: list[str] = []
+    provider_steps = (
+        ("GLM workflow", glm_workflow, "glm"),
+        ("Kimi workflow", kimi_workflow, "kimi"),
+    )
+    for workflow_name, workflow_text, provider in provider_steps:
+        block = workflow_step_block(workflow_text, "Check AI review model freshness")
+        if not block:
+            findings.append(f"{workflow_name} missing Check AI review model freshness step")
+            continue
+        if "continue-on-error: true" not in block:
+            findings.append(f"{workflow_name} model freshness step must be advisory via continue-on-error")
+        if f"--provider {provider}" not in block:
+            findings.append(f"{workflow_name} model freshness step must check only {provider.upper()} freshness")
+
+    glm_block = workflow_step_block(glm_workflow, "Check AI review model freshness")
+    if "KIMI_API_KEY" in glm_block or "MOONSHOT_API_KEY" in glm_block:
+        findings.append("GLM workflow model freshness step must not receive Kimi/Moonshot secrets")
+    return findings
+
+
 def exact_kimi_model_id(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"kimi-k\d+(?:\.\d+)*-code(?:-highspeed)?", value) is not None
 
@@ -499,6 +537,7 @@ def verify_texts(
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
+    findings.extend(verify_model_freshness_step_contracts(glm_workflow, kimi_workflow))
 
     for rule in MIRRORED_RULES:
         for snippet in rule.agents_snippets:
@@ -591,6 +630,76 @@ def run_self_tests(repo_root: Path) -> None:
     )
     if baseline:
         raise AssertionError(f"real repository must satisfy AI review governance check, got {baseline!r}")
+
+    glm_model_freshness_step = workflow_step_block(glm, "Check AI review model freshness")
+    if not glm_model_freshness_step:
+        raise AssertionError("missing GLM model freshness step")
+    if "continue-on-error: true" not in glm_model_freshness_step:
+        raise AssertionError("GLM model freshness step must be advisory via continue-on-error")
+    if "--provider glm" not in glm_model_freshness_step:
+        raise AssertionError("GLM model freshness step must check only GLM freshness")
+    if "KIMI_API_KEY" in glm_model_freshness_step or "MOONSHOT_API_KEY" in glm_model_freshness_step:
+        raise AssertionError("GLM model freshness step must not receive Kimi/Moonshot secrets")
+
+    kimi_model_freshness_step = workflow_step_block(kimi, "Check AI review model freshness")
+    if not kimi_model_freshness_step:
+        raise AssertionError("missing Kimi model freshness step")
+    if "continue-on-error: true" not in kimi_model_freshness_step:
+        raise AssertionError("Kimi model freshness step must be advisory via continue-on-error")
+    if "--provider kimi" not in kimi_model_freshness_step:
+        raise AssertionError("Kimi model freshness step must check only Kimi freshness")
+
+    glm_blocking_freshness = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm.replace(
+            "        continue-on-error: true\n        run: >-\n          python3 scripts/verify_ai_review_model_freshness.py",
+            "        run: >-\n          python3 scripts/verify_ai_review_model_freshness.py",
+            1,
+        ),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("GLM blocking freshness step", glm_blocking_freshness, "model freshness step must be advisory")
+
+    glm_unscoped_freshness = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm.replace("          --provider glm", "          --provider all", 1),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("GLM unscoped freshness step", glm_unscoped_freshness, "must check only GLM freshness")
+
+    glm_secret_expansion = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm.replace(
+            "        continue-on-error: true\n        run: >-",
+            "        continue-on-error: true\n        env:\n          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}\n        run: >-",
+            1,
+        ),
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    assert_finding("GLM model freshness secret expansion", glm_secret_expansion, "must not receive Kimi/Moonshot secrets")
+
+    kimi_blocking_freshness = verify_texts(
+        agents_md=agents,
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi.replace(
+            "        continue-on-error: true\n        env:\n          KIMI_API_KEY: ${{ env.KIMI_API_KEY }}",
+            "        env:\n          KIMI_API_KEY: ${{ env.KIMI_API_KEY }}",
+            1,
+        ),
+        smoke_workflow=smoke,
+    )
+    assert_finding("Kimi blocking freshness step", kimi_blocking_freshness, "model freshness step must be advisory")
 
     future_ai_review = ai_review.replace(
         current_glm_model,

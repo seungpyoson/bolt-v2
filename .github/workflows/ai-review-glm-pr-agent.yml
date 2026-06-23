@@ -113,14 +113,13 @@ jobs:
       - name: Check AI review model freshness
         id: model-freshness
         if: env.GLM_API_KEY != ''
-        env:
-          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
-          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        continue-on-error: true
         run: >-
           python3 scripts/verify_ai_review_model_freshness.py
           --config-file ci/ai-review.toml
           --live
           --advisory
+          --provider glm
 
       - name: Capture GLM review window
         id: review-window

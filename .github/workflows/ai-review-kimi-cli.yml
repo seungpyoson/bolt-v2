@@ -118,6 +118,7 @@ jobs:
       - name: Check AI review model freshness
         id: model-freshness
         if: env.KIMI_API_KEY != ''
+        continue-on-error: true
         env:
           KIMI_API_KEY: ${{ env.KIMI_API_KEY }}
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
@@ -126,6 +127,7 @@ jobs:
           --config-file .ai-review/base/ci/ai-review.toml
           --live
           --advisory
+          --provider kimi
 
       - name: Prepare Kimi review standards
         id: prepare-standards

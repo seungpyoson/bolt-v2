@@ -165,6 +165,10 @@ require_gate_check = true
 
 [ci_provenance.dispatch]
 workflow_input = "full_ci"
+run_name_default = "CI"
+run_name_full = "CI [dispatch:full]"
+run_name_iteration = "CI [dispatch:iteration]"
+proof_gate_job = "gate"
 
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
@@ -186,7 +190,8 @@ ready_pr = "full"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
 ready_for_review = "full"
-workflow_dispatch = "full"
+workflow_dispatch = "iteration"
+workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
 tag = "tag_reuse"

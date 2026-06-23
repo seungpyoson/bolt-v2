@@ -48,6 +48,8 @@ class DispatchCancelConfig:
     workflow_name: str
     workflow_path: str
     workflow_event: str
+    run_name_full: str
+    run_name_iteration: str
     active_statuses: frozenset[str]
     workflow_runs_per_page: int
     max_pages: int
@@ -58,6 +60,7 @@ class CurrentRun:
     run_id: int
     branch: str
     created_at: dt.datetime
+    run_class: str
 
 
 class GitHubClient:
@@ -142,6 +145,11 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> DispatchCancelConfig:
     workflow_name = require_string(ci_provenance, "workflow_name", "ci_provenance")
     workflow_path = require_string(ci_provenance, "workflow_path", "ci_provenance")
     workflow_event = require_string(dispatch_cancel, "workflow_event", "dispatch_cancel")
+    dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
+    run_name_full = require_string(dispatch, "run_name_full", "ci_provenance.dispatch")
+    run_name_iteration = require_string(dispatch, "run_name_iteration", "ci_provenance.dispatch")
+    if run_name_full == run_name_iteration:
+        raise DispatchCancelError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
     active_statuses_raw = dispatch_cancel.get("active_statuses")
     if (
         not isinstance(active_statuses_raw, list)
@@ -153,6 +161,8 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> DispatchCancelConfig:
         workflow_name=workflow_name,
         workflow_path=workflow_path,
         workflow_event=workflow_event,
+        run_name_full=run_name_full,
+        run_name_iteration=run_name_iteration,
         active_statuses=frozenset(active_statuses_raw),
         workflow_runs_per_page=require_positive_int(
             dispatch_cancel, "workflow_runs_per_page", "dispatch_cancel"
@@ -178,6 +188,22 @@ def workflow_path_matches(run: dict[str, object], config: DispatchCancelConfig) 
     return path == config.workflow_path
 
 
+def run_display_title(run: dict[str, object]) -> str:
+    title = as_text(run.get("displayTitle"))
+    if title:
+        return title
+    return as_text(run.get("display_title"))
+
+
+def dispatch_run_class(run: dict[str, object], config: DispatchCancelConfig) -> str | None:
+    title = run_display_title(run)
+    if title == config.run_name_full:
+        return "full"
+    if title == config.run_name_iteration:
+        return "iteration"
+    return None
+
+
 def current_run_from_payload(
     payload: dict[str, object], config: DispatchCancelConfig
 ) -> tuple[CurrentRun | None, str]:
@@ -186,8 +212,6 @@ def current_run_from_payload(
         raise DispatchCancelError("event payload must contain workflow_run object")
     if as_text(run.get("event")) != config.workflow_event:
         return None, "not configured workflow event"
-    if as_text(run.get("name")) != config.workflow_name:
-        return None, "not configured workflow name"
     if not workflow_path_matches(run, config):
         return None, "not configured workflow path"
     branch = as_text(run.get("head_branch"))
@@ -197,7 +221,7 @@ def current_run_from_payload(
     if not isinstance(run_id, int) or isinstance(run_id, bool):
         raise DispatchCancelError("workflow_run.id must be an integer")
     created_at = parse_timestamp(as_text(run.get("created_at")), "created_at")
-    return CurrentRun(run_id=run_id, branch=branch, created_at=created_at), "selected"
+    return CurrentRun(run_id=run_id, branch=branch, created_at=created_at, run_class=""), "selected"
 
 
 def candidate_runs(
@@ -246,9 +270,9 @@ def obsolete_run_ids(
             continue
         if as_text(run.get("event")) != config.workflow_event:
             continue
-        if as_text(run.get("name")) != config.workflow_name:
-            continue
         if not workflow_path_matches(run, config):
+            continue
+        if dispatch_run_class(run, config) != current.run_class:
             continue
         if as_text(run.get("head_branch")) != current.branch:
             continue
@@ -276,6 +300,19 @@ def handle_payload(
     current, reason = current_run_from_payload(payload, config)
     if current is None:
         return {"ignored": True, "reason": reason}
+    try:
+        current_run = client.get_json(f"actions/runs/{current.run_id}", {})
+    except (DispatchCancelError, GitHubApiError) as exc:
+        print(f"warning: could not rehydrate current workflow run {current.run_id}: {exc}", file=sys.stderr)
+        return {"ignored": True, "reason": "could not rehydrate current workflow run"}
+    if as_text(current_run.get("event")) != config.workflow_event:
+        return {"ignored": True, "reason": "rehydrated run is not configured workflow event"}
+    if not workflow_path_matches(current_run, config):
+        return {"ignored": True, "reason": "rehydrated run is not configured workflow path"}
+    current_class = dispatch_run_class(current_run, config)
+    if current_class is None:
+        return {"ignored": True, "reason": "current dispatch run has no configured class marker"}
+    current = dataclasses.replace(current, run_class=current_class)
 
     stale_ids = obsolete_run_ids(candidate_runs(client, config, current.branch), current=current, config=config)
     cancelled: list[int] = []

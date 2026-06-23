@@ -2894,12 +2894,23 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
     workflow_name = provenance.get("workflow_name")
     workflow_path = provenance.get("workflow_path")
     workflow_input = dispatch.get("workflow_input")
+    run_name_full = dispatch.get("run_name_full")
+    run_name_iteration = dispatch.get("run_name_iteration")
+    proof_gate_job = dispatch.get("proof_gate_job")
     if not isinstance(workflow_name, str) or not workflow_name:
         return None, "ci_provenance.workflow_name must be a non-empty string"
     if not isinstance(workflow_path, str) or not workflow_path:
         return None, "ci_provenance.workflow_path must be a non-empty string"
     if not isinstance(workflow_input, str) or not SAFE_IDENTIFIER_RE.match(workflow_input):
         return None, "ci_provenance.dispatch.workflow_input must be a safe identifier"
+    if not isinstance(run_name_full, str) or not run_name_full:
+        return None, "ci_provenance.dispatch.run_name_full must be a non-empty string"
+    if not isinstance(run_name_iteration, str) or not run_name_iteration:
+        return None, "ci_provenance.dispatch.run_name_iteration must be a non-empty string"
+    if run_name_full == run_name_iteration:
+        return None, "ci_provenance.dispatch run_name_full and run_name_iteration must differ"
+    if not isinstance(proof_gate_job, str) or not proof_gate_job:
+        return None, "ci_provenance.dispatch.proof_gate_job must be a non-empty string"
     api_limits = provenance.get("api_limits")
     run_limit = None
     if isinstance(api_limits, dict):
@@ -2912,6 +2923,9 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
         "workflow_name": workflow_name,
         "workflow_path": workflow_path,
         "workflow_input": workflow_input,
+        "run_name_full": run_name_full,
+        "run_name_iteration": run_name_iteration,
+        "proof_gate_job": proof_gate_job,
         "workflow_runs_per_page": run_limit,
     }, None
 
@@ -3088,6 +3102,18 @@ def run_attempt(run: dict[str, Any]) -> int | None:
     return None
 
 
+def run_display_title(run: dict[str, Any]) -> str:
+    value = run.get("displayTitle")
+    if isinstance(value, str) and value:
+        return value
+    value = run.get("display_title")
+    return value if isinstance(value, str) else ""
+
+
+def workflow_dispatch_run_is_full(run: dict[str, Any], dispatch_config: dict[str, Any]) -> bool:
+    return run_display_title(run) == dispatch_config.get("run_name_full")
+
+
 def job_database_id(job: dict[str, Any]) -> int | None:
     database_id = job.get("databaseId")
     if database_id is None:
@@ -3190,6 +3216,7 @@ def matching_full_ci_runs(
     *,
     head: str,
     events: set[str],
+    dispatch_config: dict[str, Any] | None = None,
     created_at_floor: str | None = None,
     ignored_run_ids: set[int] | None = None,
 ) -> list[dict[str, Any]]:
@@ -3198,6 +3225,9 @@ def matching_full_ci_runs(
         event = run.get("event")
         if run.get("headSha") != head or event not in events:
             continue
+        if event == "workflow_dispatch":
+            if dispatch_config is None or not workflow_dispatch_run_is_full(run, dispatch_config):
+                continue
         run_id = run_database_id(run)
         if ignored_run_ids is not None and run_id in ignored_run_ids:
             continue
@@ -3583,8 +3613,10 @@ def wait_for_rust_probe_run(
 
 
 def evaluate_full_ci_run(
+    repo: pathlib.Path,
     run: dict[str, Any],
     *,
+    dispatch_config: dict[str, Any],
     head: str,
     pr_url: str,
 ) -> int | None:
@@ -3592,6 +3624,26 @@ def evaluate_full_ci_run(
     if state == "pending":
         return None
     if state == "pass":
+        if run.get("event") == "workflow_dispatch":
+            if not workflow_dispatch_run_is_full(run, dispatch_config):
+                print(f"Remote full CI failed for {head} on {pr_url}: workflow_dispatch run is not marked full", file=sys.stderr)
+                print(f"- {workflow_run_summary(run)}", file=sys.stderr)
+                return 1
+            run_id = run_database_id(run)
+            if run_id is None:
+                print(f"Remote full CI failed for {head} on {pr_url}: workflow run databaseId missing", file=sys.stderr)
+                return 1
+            jobs, error = workflow_run_jobs(repo, run_id, run_attempt(run))
+            if error is not None or jobs is None:
+                print(f"Remote full CI failed for {head} on {pr_url}: {error or 'unable to inspect gate job'}", file=sys.stderr)
+                return 1
+            if not any(
+                job_text(job, "name") == dispatch_config["proof_gate_job"] and job_text(job, "conclusion") == "success"
+                for job in jobs
+            ):
+                print(f"Remote full CI failed for {head} on {pr_url}: workflow_dispatch run lacks successful gate job", file=sys.stderr)
+                print(f"- {workflow_run_summary(run)}", file=sys.stderr)
+                return 1
         print(f"OK: remote full CI passed for {head} on {pr_url}: {workflow_run_summary(run)}")
         return 0
     print(f"Remote full CI failed for {head} on {pr_url}:", file=sys.stderr)
@@ -3644,6 +3696,7 @@ def wait_for_full_ci_run(
                 runs,
                 head=head,
                 events=events,
+                dispatch_config=dispatch_config,
                 created_at_floor=created_at_floor,
                 ignored_run_ids=ignored_run_ids,
             )
@@ -3669,7 +3722,13 @@ def wait_for_full_ci_run(
             head_result = verify_remote_head_current_or_fail(repo, branch, head)
             if head_result is not None:
                 return head_result
-        result = evaluate_full_ci_run(run, head=head, pr_url=pr_url)
+        result = evaluate_full_ci_run(
+            repo,
+            run,
+            dispatch_config=dispatch_config,
+            head=head,
+            pr_url=pr_url,
+        )
         if result is not None:
             head_result = verify_remote_head_current_or_fail(repo, branch, head)
             if head_result is not None:
@@ -3770,6 +3829,7 @@ def cmd_ci_logs(args: argparse.Namespace) -> int:
         runs,
         head=head,
         events=events,
+        dispatch_config=dispatch_config,
     )
     if not matching:
         return verify_remote_fail(f"no matching full-CI workflow run found for {head} on {pr_url}")
@@ -3817,29 +3877,12 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
         runs, error = workflow_run_list(repo, dispatch_config, branch)
         if error is not None or runs is None:
             return verify_remote_fail(error or "unable to inspect workflow runs")
-        existing = matching_full_ci_runs(runs, head=head, events=FULL_CI_DRAFT_EVENTS)
-        if existing:
-            run = existing[0]
-            result = evaluate_full_ci_run(run, head=head, pr_url=str(pr_url))
-            if result is not None:
-                head_result = verify_remote_head_current_or_fail(repo, branch, head)
-                if head_result is not None:
-                    return head_result
-                return result
-            run_id = run_database_id(run)
-            if run_id is not None:
-                return wait_for_full_ci_run(
-                    repo=repo,
-                    dispatch_config=dispatch_config,
-                    branch=branch,
-                    head=head,
-                    pr_url=str(pr_url),
-                    remote_policy=remote_policy,
-                    events=FULL_CI_DRAFT_EVENTS,
-                    initial_tracked_run_id=run_id,
-                    sleep_before_initial_tracked_poll=True,
-                    track_run_once_found=True,
-                )
+        existing = matching_full_ci_runs(
+            runs,
+            head=head,
+            events=FULL_CI_DRAFT_EVENTS,
+            dispatch_config=dispatch_config,
+        )
         _unused, error = dispatch_full_ci(repo, dispatch_config, branch)
         if error is not None:
             return verify_remote_fail(error)
@@ -3859,12 +3902,23 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
     runs, error = workflow_run_list(repo, dispatch_config, branch)
     if error is not None or runs is None:
         return verify_remote_fail(error or "unable to inspect workflow runs")
-    existing = matching_full_ci_runs(runs, head=head, events=FULL_CI_READY_EVENTS)
+    existing = matching_full_ci_runs(
+        runs,
+        head=head,
+        events=FULL_CI_READY_EVENTS,
+        dispatch_config=dispatch_config,
+    )
     if existing:
         run = existing[0]
         state = workflow_run_state(run)
         if state == "pass":
-            result = evaluate_full_ci_run(run, head=head, pr_url=str(pr_url))
+            result = evaluate_full_ci_run(
+                repo,
+                run,
+                dispatch_config=dispatch_config,
+                head=head,
+                pr_url=str(pr_url),
+            )
             head_result = verify_remote_head_current_or_fail(repo, branch, head)
             if head_result is not None:
                 return head_result

@@ -28,14 +28,18 @@ def load_script():
 
 
 class FakeClient:
-    def __init__(self, pages, *, conflict_ids=None):
+    def __init__(self, pages, *, runs_by_id=None, conflict_ids=None):
         self.pages = list(pages)
+        self.runs_by_id = dict(runs_by_id or {})
         self.conflict_ids = set(conflict_ids or [])
         self.calls = []
         self.cancelled = []
 
     def get_json(self, path, params):
         self.calls.append((path, dict(params)))
+        if path.startswith("actions/runs/"):
+            run_id = int(path.rsplit("/", 1)[-1])
+            return self.runs_by_id.get(run_id, run_payload(run_id))
         page = int(params["page"])
         return {"workflow_runs": self.pages[page - 1] if page <= len(self.pages) else []}
 
@@ -51,6 +55,8 @@ def config(module, **overrides):
         "workflow_name": "CI",
         "workflow_path": ".github/workflows/ci.yml",
         "workflow_event": "workflow_dispatch",
+        "run_name_full": "CI [dispatch:full]",
+        "run_name_iteration": "CI [dispatch:iteration]",
         "active_statuses": frozenset({"queued", "requested", "waiting", "pending", "in_progress"}),
         "workflow_runs_per_page": 100,
         "max_pages": 2,
@@ -62,7 +68,8 @@ def config(module, **overrides):
 def run_payload(run_id, **overrides):
     payload = {
         "id": run_id,
-        "name": "CI",
+        "name": "CI [dispatch:full]",
+        "display_title": "CI [dispatch:full]",
         "path": ".github/workflows/ci.yml",
         "event": "workflow_dispatch",
         "head_branch": "feature/cost",
@@ -82,10 +89,17 @@ def event_payload(**overrides):
 
 def assert_cancels_only_older_active_same_branch_dispatch_runs() -> None:
     module = load_script()
+    current = run_payload(200, created_at="2026-06-15T08:20:42Z", status="requested")
     fake = FakeClient(
         [
             [
                 run_payload(100, created_at="2026-06-15T07:59:00Z"),
+                run_payload(
+                    107,
+                    name="CI [dispatch:iteration]",
+                    display_title="CI [dispatch:iteration]",
+                    created_at="2026-06-15T07:59:00Z",
+                ),
                 run_payload(101, head_branch="other", created_at="2026-06-15T07:59:00Z"),
                 run_payload(102, event="pull_request", created_at="2026-06-15T07:59:00Z"),
                 run_payload(
@@ -94,7 +108,12 @@ def assert_cancels_only_older_active_same_branch_dispatch_runs() -> None:
                     conclusion="success",
                     created_at="2026-06-15T07:59:00Z",
                 ),
-                run_payload(104, name="Backtester CI", created_at="2026-06-15T07:59:00Z"),
+                run_payload(
+                    104,
+                    name="Backtester CI",
+                    display_title="Backtester CI",
+                    created_at="2026-06-15T07:59:00Z",
+                ),
                 run_payload(
                     105,
                     path=".github/workflows/backtester-ci.yml",
@@ -104,13 +123,15 @@ def assert_cancels_only_older_active_same_branch_dispatch_runs() -> None:
                 run_payload(201, created_at="2026-06-15T08:21:00Z"),
                 run_payload(200, created_at="2026-06-15T08:20:42Z"),
             ]
-        ]
+        ],
+        runs_by_id={200: current},
     )
     summary = module.handle_payload(event_payload(), config=config(module), client=fake, dry_run=False)
     assert summary["obsolete_run_ids"] == [100], summary
     assert summary["cancelled_run_ids"] == [100], summary
     assert fake.cancelled == [100], fake.cancelled
-    assert fake.calls[0] == (
+    assert fake.calls[0] == ("actions/runs/200", {})
+    assert fake.calls[1] == (
         "actions/runs",
         {
             "branch": "feature/cost",
@@ -123,6 +144,7 @@ def assert_cancels_only_older_active_same_branch_dispatch_runs() -> None:
 
 def assert_cancels_same_second_lower_id_dispatch_runs() -> None:
     module = load_script()
+    current = run_payload(200, created_at="2026-06-15T08:20:42Z", status="requested")
     fake = FakeClient(
         [
             [
@@ -130,7 +152,8 @@ def assert_cancels_same_second_lower_id_dispatch_runs() -> None:
                 run_payload(200, created_at="2026-06-15T08:20:42Z"),
                 run_payload(201, created_at="2026-06-15T08:20:42Z"),
             ]
-        ]
+        ],
+        runs_by_id={200: current},
     )
     summary = module.handle_payload(event_payload(), config=config(module), client=fake, dry_run=False)
     assert summary["obsolete_run_ids"] == [199], summary
@@ -158,6 +181,32 @@ def assert_ignores_non_dispatch_and_branchless_runs() -> None:
     )
     assert missing_path == {"ignored": True, "reason": "not configured workflow path"}, missing_path
     assert fake.calls == [], fake.calls
+
+
+def assert_missing_or_unknown_current_marker_skips_cancellation() -> None:
+    module = load_script()
+    fake = FakeClient(
+        [[run_payload(100, created_at="2026-06-15T07:59:00Z")]],
+        runs_by_id={200: run_payload(200, display_title="CI", created_at="2026-06-15T08:20:42Z")},
+    )
+    summary = module.handle_payload(event_payload(), config=config(module), client=fake, dry_run=False)
+    assert summary == {"ignored": True, "reason": "current dispatch run has no configured class marker"}, summary
+    assert fake.cancelled == [], fake.cancelled
+
+
+def assert_current_rehydrate_failure_skips_cancellation() -> None:
+    module = load_script()
+
+    class FailingRehydrateClient(FakeClient):
+        def get_json(self, path, params):
+            if path.startswith("actions/runs/"):
+                raise module.DispatchCancelError("GitHub API GET actions/runs/200 network error: dns failed")
+            return super().get_json(path, params)
+
+    fake = FailingRehydrateClient([[run_payload(100, created_at="2026-06-15T07:59:00Z")]])
+    summary = module.handle_payload(event_payload(), config=config(module), client=fake, dry_run=False)
+    assert summary == {"ignored": True, "reason": "could not rehydrate current workflow run"}, summary
+    assert fake.cancelled == [], fake.cancelled
 
 
 def assert_dry_run_reports_without_cancelling() -> None:
@@ -219,7 +268,7 @@ def assert_paginates_until_partial_page() -> None:
         dry_run=False,
     )
     assert summary["obsolete_run_ids"] == [100, 101, 102], summary
-    assert [call[1]["page"] for call in fake.calls] == ["1", "2"], fake.calls
+    assert [call[1]["page"] for call in fake.calls if call[0] == "actions/runs"] == ["1", "2"], fake.calls
 
 
 def assert_warns_when_pagination_cap_is_full() -> None:
@@ -240,7 +289,7 @@ def assert_warns_when_pagination_cap_is_full() -> None:
         )
     assert summary["obsolete_run_ids"] == [100, 101, 102, 103], summary
     assert "max_pages=2" in stderr.getvalue(), stderr.getvalue()
-    assert [call[1]["page"] for call in fake.calls] == ["1", "2"], fake.calls
+    assert [call[1]["page"] for call in fake.calls if call[0] == "actions/runs"] == ["1", "2"], fake.calls
 
 
 def assert_config_comes_from_toml() -> None:
@@ -252,6 +301,10 @@ def assert_config_comes_from_toml() -> None:
 [ci_provenance]
 workflow_name = "CI"
 workflow_path = ".github/workflows/ci.yml"
+
+[ci_provenance.dispatch]
+run_name_full = "CI [dispatch:full]"
+run_name_iteration = "CI [dispatch:iteration]"
 
 [dispatch_cancel]
 workflow_event = "workflow_dispatch"
@@ -265,6 +318,8 @@ max_pages = 4
     assert loaded.workflow_name == "CI", loaded
     assert loaded.workflow_path == ".github/workflows/ci.yml", loaded
     assert loaded.workflow_event == "workflow_dispatch", loaded
+    assert loaded.run_name_full == "CI [dispatch:full]", loaded
+    assert loaded.run_name_iteration == "CI [dispatch:iteration]", loaded
     assert loaded.active_statuses == frozenset({"queued", "in_progress"}), loaded
     assert loaded.workflow_runs_per_page == 37, loaded
     assert loaded.max_pages == 4, loaded
@@ -339,6 +394,8 @@ def main() -> int:
     assert_cancels_only_older_active_same_branch_dispatch_runs()
     assert_cancels_same_second_lower_id_dispatch_runs()
     assert_ignores_non_dispatch_and_branchless_runs()
+    assert_missing_or_unknown_current_marker_skips_cancellation()
+    assert_current_rehydrate_failure_skips_cancellation()
     assert_dry_run_reports_without_cancelling()
     assert_cancel_conflict_is_recorded_not_failed()
     assert_terminal_cancel_http_errors_are_conflicts()

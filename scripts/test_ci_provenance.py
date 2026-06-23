@@ -94,6 +94,10 @@ require_gate_check = true
 
 [ci_provenance.dispatch]
 workflow_input = "full_ci"
+run_name_default = "CI"
+run_name_full = "CI [dispatch:full]"
+run_name_iteration = "CI [dispatch:iteration]"
+proof_gate_job = "gate"
 
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
@@ -115,7 +119,8 @@ ready_pr = "full"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
 ready_for_review = "full"
-workflow_dispatch = "full"
+workflow_dispatch = "iteration"
+workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
 tag = "tag_reuse"
@@ -141,7 +146,8 @@ unknown_event = "full"
 tag = "tag_reuse"
 merge_group = "full"
 main_push = "full"
-workflow_dispatch = "full"
+workflow_dispatch_full_ci = "full"
+workflow_dispatch = "iteration"
 ready_for_review = "full"
 ready_pr_reopened = "noop"
 ready_pr_edited_no_base = "noop"
@@ -164,6 +170,10 @@ workflow_runs_per_page = 100
 
 [ci_provenance.dispatch]
 workflow_input = "full_ci"
+run_name_default = "CI"
+run_name_full = "CI [dispatch:full]"
+run_name_iteration = "CI [dispatch:iteration]"
+proof_gate_job = "gate"
 
 [ci_provenance.deploy]
 require_gate_check = true
@@ -932,23 +942,30 @@ def assert_ci_policy_outputs_matrix() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         config = write_config(pathlib.Path(tmp), CONFIG_TOML)
         cases = [
-            ("push", "", "false", "false", "refs/heads/main", "full", "main_push"),
-            ("push", "", "false", "false", "refs/tags/v1.2.3", "tag_reuse", "tag"),
-            ("pull_request", "opened", "true", "false", "refs/pull/1/merge", "defer", "draft_pr_opened"),
-            ("pull_request", "synchronize", "true", "false", "refs/pull/1/merge", "defer", "draft_pr_synchronize"),
-            ("pull_request", "reopened", "true", "false", "refs/pull/1/merge", "defer", "draft_pr_reopened"),
-            ("pull_request", "edited", "true", "false", "refs/pull/1/merge", "defer", "draft_pr_edited"),
-            ("pull_request", "converted_to_draft", "true", "false", "refs/pull/1/merge", "defer", "converted_to_draft"),
-            ("pull_request", "opened", "false", "false", "refs/pull/1/merge", "full", "ready_pr"),
-            ("pull_request", "edited", "false", "false", "refs/pull/1/merge", "noop", "ready_pr_edited_no_base"),
-            ("pull_request", "edited", "false", "true", "refs/pull/1/merge", "full", "ready_pr"),
-            ("pull_request", "reopened", "false", "false", "refs/pull/1/merge", "noop", "ready_pr_reopened"),
-            ("pull_request", "ready_for_review", "true", "false", "refs/pull/1/merge", "full", "ready_for_review"),
-            ("workflow_dispatch", "", "true", "false", "refs/heads/codex/branch", "full", "workflow_dispatch"),
-            ("merge_group", "checks_requested", "false", "false", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full", "merge_group"),
-            ("unknown_event", "", "true", "false", "refs/heads/codex/branch", "full", "unknown_event"),
+            ("push", "", "false", "false", "", "refs/heads/main", "full", "main_push"),
+            ("push", "", "false", "false", "true", "refs/heads/main", "full", "main_push"),
+            ("push", "", "false", "false", "", "refs/tags/v1.2.3", "tag_reuse", "tag"),
+            ("pull_request", "opened", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_opened"),
+            ("pull_request", "synchronize", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_synchronize"),
+            ("pull_request", "reopened", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_reopened"),
+            ("pull_request", "edited", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_edited"),
+            ("pull_request", "converted_to_draft", "true", "false", "", "refs/pull/1/merge", "defer", "converted_to_draft"),
+            ("pull_request", "opened", "false", "false", "", "refs/pull/1/merge", "full", "ready_pr"),
+            ("pull_request", "edited", "false", "false", "", "refs/pull/1/merge", "noop", "ready_pr_edited_no_base"),
+            ("pull_request", "edited", "false", "true", "", "refs/pull/1/merge", "full", "ready_pr"),
+            ("pull_request", "reopened", "false", "false", "", "refs/pull/1/merge", "noop", "ready_pr_reopened"),
+            ("pull_request", "ready_for_review", "true", "false", "", "refs/pull/1/merge", "full", "ready_for_review"),
+            ("workflow_dispatch", "", "true", "false", "true", "refs/heads/codex/branch", "full", "workflow_dispatch_full_ci"),
+            ("workflow_dispatch", "", "true", "false", "false", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", "", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", "TRUE", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", " true ", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", "1", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", "yes", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
+            ("merge_group", "checks_requested", "false", "false", "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full", "merge_group"),
+            ("unknown_event", "", "true", "false", "", "refs/heads/codex/branch", "full", "unknown_event"),
         ]
-        for event_name, action, draft, base_changed, ref, expected, reason in cases:
+        for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref, expected, reason in cases:
             code, stdout, stderr = run_cli(
                 [
                     "ci-policy",
@@ -962,6 +979,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                     draft,
                     "--pull-request-base-changed",
                     base_changed,
+                    "--workflow-dispatch-full-ci",
+                    workflow_dispatch_full_ci,
                     "--ref",
                     ref,
                 ]
@@ -998,6 +1017,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "true",
                 "--pull-request-base-changed",
                 "false",
+                "--workflow-dispatch-full-ci",
+                "",
                 "--ref",
                 "refs/pull/1/merge",
             ]
@@ -1007,6 +1028,40 @@ def assert_ci_policy_outputs_matrix() -> None:
         output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
         if output.get("ci_policy_path") != "full":
             raise AssertionError(f"force_full_ci must force draft PR events to full, got {output}")
+
+
+def assert_dispatch_run_names_come_from_config() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    if config.dispatch_run_name_default != "CI":
+        raise AssertionError(config)
+    if config.dispatch_run_name_full != "CI [dispatch:full]":
+        raise AssertionError(config)
+    if config.dispatch_run_name_iteration != "CI [dispatch:iteration]":
+        raise AssertionError(config)
+    if config.dispatch_proof_gate_job != "gate":
+        raise AssertionError(config)
+
+
+def assert_main_evidence_matching_ignores_mutable_run_name() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    exact = {
+        "id": 100,
+        "name": "CI [dispatch:iteration]",
+        "path": ".github/workflows/ci.yml",
+        "event": "push",
+        "head_branch": "main",
+        "head_sha": SHA,
+        "status": "completed",
+        "conclusion": "success",
+    }
+    if not module.run_matches_exact_sha(exact, config, SHA, current_run_id=None):
+        raise AssertionError("exact-SHA evidence must not depend on mutable run.name")
+    if not module.run_matches_fingerprint_reuse(exact, config, current_run_id=None):
+        raise AssertionError("fingerprint reuse evidence must not depend on mutable run.name")
 
 
 def assert_config_digest_is_canonical() -> None:
@@ -1573,6 +1628,8 @@ def main() -> int:
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
+    assert_dispatch_run_names_come_from_config()
+    assert_main_evidence_matching_ignores_mutable_run_name()
     assert_config_digest_is_canonical()
     assert_github_api_bytes_strips_authorization_on_cross_host_redirect()
     assert_sensitive_headers_only_survive_same_https_origin_redirects()

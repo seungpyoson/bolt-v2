@@ -29,7 +29,7 @@ SUPPORTED_MODES = {
     "resolve-fingerprint",
     "validate-record",
 }
-POLICY_VALUES = {"full", "defer", "noop", "tag_reuse"}
+POLICY_VALUES = {"full", "defer", "iteration", "noop", "tag_reuse"}
 POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -41,6 +41,7 @@ POLICY_ROWS = (
     "ready_pr_reopened",
     "ready_for_review",
     "workflow_dispatch",
+    "workflow_dispatch_full_ci",
     "main_push",
     "merge_group",
     "tag",
@@ -95,6 +96,10 @@ class ProvenanceConfig:
     deploy_source_branch: str
     deploy_require_gate_check: bool
     dispatch_workflow_input: str
+    dispatch_run_name_default: str
+    dispatch_run_name_full: str
+    dispatch_run_name_iteration: str
+    dispatch_proof_gate_job: str
     workflow_runs_per_page: int
     run_jobs_per_page: int
     run_artifacts_per_page: int
@@ -307,8 +312,17 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     for row in POLICY_ROWS:
         value = policy_table.get(row)
         if value not in POLICY_VALUES:
-            raise ProvenanceError(f"ci_provenance.policy.{row} must be full, defer, noop, or tag_reuse")
+            raise ProvenanceError(
+                f"ci_provenance.policy.{row} must be full, defer, iteration, noop, or tag_reuse"
+            )
         policy[row] = value
+
+    dispatch_run_name_default = require_string(dispatch, "run_name_default", "ci_provenance.dispatch")
+    dispatch_run_name_full = require_string(dispatch, "run_name_full", "ci_provenance.dispatch")
+    dispatch_run_name_iteration = require_string(dispatch, "run_name_iteration", "ci_provenance.dispatch")
+    dispatch_proof_gate_job = require_string(dispatch, "proof_gate_job", "ci_provenance.dispatch")
+    if dispatch_run_name_full == dispatch_run_name_iteration:
+        raise ProvenanceError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
 
     force_full_ci = overrides.get("force_full_ci")
     ignore_emit_failure = overrides.get("ignore_emit_failure")
@@ -335,6 +349,10 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         deploy_source_branch=require_string(deploy, "require_source_branch", "ci_provenance.deploy"),
         deploy_require_gate_check=deploy.get("require_gate_check") is True,
         dispatch_workflow_input=require_string(dispatch, "workflow_input", "ci_provenance.dispatch"),
+        dispatch_run_name_default=dispatch_run_name_default,
+        dispatch_run_name_full=dispatch_run_name_full,
+        dispatch_run_name_iteration=dispatch_run_name_iteration,
+        dispatch_proof_gate_job=dispatch_proof_gate_job,
         workflow_runs_per_page=require_positive_int(
             api_limits, "workflow_runs_per_page", "ci_provenance.api_limits"
         ),
@@ -371,6 +389,7 @@ def evaluate_ci_policy(
     event_action: str,
     pull_request_draft: bool,
     pull_request_base_changed: bool = False,
+    workflow_dispatch_full_ci: str = "",
     ref: str,
 ) -> CiPolicyResult:
     if event_name == "merge_group":
@@ -383,8 +402,12 @@ def evaluate_ci_policy(
         path = config.policy["tag"]
         reason = "tag"
     elif event_name == "workflow_dispatch":
-        path = config.policy["workflow_dispatch"]
-        reason = "workflow_dispatch"
+        if workflow_dispatch_full_ci == "true":
+            path = config.policy["workflow_dispatch_full_ci"]
+            reason = "workflow_dispatch_full_ci"
+        else:
+            path = config.policy["workflow_dispatch"]
+            reason = "workflow_dispatch"
     elif event_name == "push" and ref == "refs/heads/main":
         path = config.policy["main_push"]
         reason = "main_push"
@@ -777,8 +800,7 @@ def run_matches_exact_sha(
     if current_run_id is not None and as_text(run.get("id")) == as_text(current_run_id):
         return False
     return (
-        as_text(run.get("name")) == config.workflow_name
-        and as_text(run.get("path")) == config.workflow_path
+        as_text(run.get("path")) == config.workflow_path
         and as_text(run.get("event")) == config.deploy_source_event
         and as_text(run.get("head_branch")) == config.deploy_source_branch
         and as_text(run.get("head_sha")) == requested_sha
@@ -795,8 +817,7 @@ def run_matches_fingerprint_reuse(
     if current_run_id is not None and as_text(run.get("id")) == as_text(current_run_id):
         return False
     return (
-        as_text(run.get("name")) == config.workflow_name
-        and as_text(run.get("path")) == config.workflow_path
+        as_text(run.get("path")) == config.workflow_path
         and as_text(run.get("event")) == config.deploy_source_event
         and as_text(run.get("head_branch")) == config.deploy_source_branch
         and as_text(run.get("status")) == "completed"
@@ -1515,6 +1536,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--event-action", default="")
         parser.add_argument("--pull-request-draft", default="false")
         parser.add_argument("--pull-request-base-changed", default="false")
+        parser.add_argument("--workflow-dispatch-full-ci", default="")
         parser.add_argument("--ref", required=True)
     if mode == "emit-full-ci":
         parser.add_argument("--output", type=pathlib.Path)
@@ -1559,6 +1581,7 @@ def main(argv: list[str] | None = None) -> int:
                 event_action=args.event_action,
                 pull_request_draft=parse_bool(args.pull_request_draft),
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
+                workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")

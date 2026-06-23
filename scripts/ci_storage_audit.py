@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Read-only GitHub Actions storage audit for the current repository."""
+"""Read-only GitHub Actions storage audit for the current repository.
+
+The ``--json`` output is a stable downstream contract for #936 and the storage
+tripwire: existing keys are append-only. ``required_checks.contexts`` preserves
+the raw source shape, so rulesets entries are objects such as
+``{"context": "...", "integration_id": ...}`` while legacy branch-protection
+fallback entries may be strings.
+"""
 
 from __future__ import annotations
 
@@ -60,11 +67,15 @@ def merge_paginated_payload(payload: Any) -> Any:
     saw_list_page = False
     for page in payload:
         if isinstance(page, list):
+            if merged:
+                raise AuditError("paginated payload mixed page shapes")
             saw_list_page = True
             merged_items.extend(page)
             continue
         if not isinstance(page, dict):
             continue
+        if saw_list_page:
+            raise AuditError("paginated payload mixed page shapes")
         for key, value in page.items():
             if isinstance(value, list):
                 merged.setdefault(key, [])
@@ -214,11 +225,16 @@ def fetch_artifacts(client: GhClient) -> dict[str, Any]:
 
 def fetch_retention_setting(client: GhClient) -> dict[str, Any]:
     try:
-        payload = require_object(client.api("actions/permissions"), "actions/permissions")
+        payload = require_object(
+            client.api("actions/permissions/artifact-and-log-retention"),
+            "actions/permissions/artifact-and-log-retention",
+        )
     except GhApiError:
         return {"artifact_and_log_days": None, "source": "unavailable"}
+    except AuditError:
+        return {"artifact_and_log_days": None, "source": "unavailable"}
 
-    days = payload.get("artifact_log_retention_days")
+    days = payload.get("days")
     if isinstance(days, int) and not isinstance(days, bool):
         return {"artifact_and_log_days": days, "source": "rest"}
     return {"artifact_and_log_days": None, "source": "settings-ui-only"}

@@ -20,14 +20,15 @@ spec.loader.exec_module(ci_storage_audit)
 class FakeClient:
     def __init__(self, responses: dict[str, Any]) -> None:
         self.responses = responses
-        self.calls: list[tuple[str, bool]] = []
+        self.calls: list[tuple[str, dict[str, str] | None, bool]] = []
 
     def api(self, path: str, *, params: dict[str, str] | None = None, paginate: bool = False) -> Any:
-        del params
-        self.calls.append((path, paginate))
+        self.calls.append((path, params, paginate))
         value = self.responses[path]
         if isinstance(value, Exception):
             raise value
+        if paginate:
+            return ci_storage_audit.merge_paginated_payload(value)
         return value
 
 
@@ -35,34 +36,51 @@ class CiStorageAuditTests(unittest.TestCase):
     def test_build_snapshot_serializes_stable_contract_from_fixture_payloads(self) -> None:
         client = FakeClient(
             {
-                "actions/caches": {
-                    "total_count": 2,
-                    "actions_caches": [
-                        {
-                            "id": 101,
-                            "ref": "refs/heads/main",
-                            "key": "linux-a",
-                            "last_accessed_at": "2026-06-20T00:00:00Z",
-                            "size_in_bytes": 1024,
-                        },
-                        {
-                            "id": 102,
-                            "ref": "refs/pull/1/merge",
-                            "key": "linux-b",
-                            "last_accessed_at": "2026-06-21T00:00:00Z",
-                            "size_in_bytes": 2048,
-                        },
-                    ],
+                "actions/caches": [
+                    {
+                        "total_count": 2,
+                        "actions_caches": [
+                            {
+                                "id": 101,
+                                "ref": "refs/heads/main",
+                                "key": "linux-a",
+                                "last_accessed_at": "2026-06-20T00:00:00Z",
+                                "size_in_bytes": 1024,
+                            }
+                        ],
+                    },
+                    {
+                        "total_count": 2,
+                        "actions_caches": [
+                            {
+                                "id": 102,
+                                "ref": "refs/pull/1/merge",
+                                "key": "linux-b",
+                                "last_accessed_at": "2026-06-21T00:00:00Z",
+                                "size_in_bytes": 2048,
+                            }
+                        ],
+                    },
+                ],
+                "actions/artifacts": [
+                    {
+                        "total_count": 3,
+                        "artifacts": [
+                            {"name": "logs", "size_in_bytes": 512},
+                            {"name": "binary", "size_in_bytes": 4096},
+                        ],
+                    },
+                    {
+                        "total_count": 3,
+                        "artifacts": [
+                            {"name": "logs", "size_in_bytes": 1536},
+                        ],
+                    },
+                ],
+                "actions/permissions/artifact-and-log-retention": {
+                    "days": 30,
+                    "maximum_allowed_days": 400,
                 },
-                "actions/artifacts": {
-                    "total_count": 3,
-                    "artifacts": [
-                        {"name": "logs", "size_in_bytes": 512},
-                        {"name": "binary", "size_in_bytes": 4096},
-                        {"name": "logs", "size_in_bytes": 1536},
-                    ],
-                },
-                "actions/permissions": {"artifact_log_retention_days": 30},
                 "rules/branches/main": [
                     {
                         "type": "required_status_checks",
@@ -124,12 +142,44 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertEqual(
             client.calls,
             [
-                ("actions/caches", True),
-                ("actions/artifacts", True),
-                ("actions/permissions", False),
-                ("rules/branches/main", False),
+                ("actions/caches", {"per_page": "100"}, True),
+                ("actions/artifacts", {"per_page": "100"}, True),
+                ("actions/permissions/artifact-and-log-retention", None, False),
+                ("rules/branches/main", None, False),
             ],
         )
+
+    def test_merge_paginated_payload_merges_real_slurp_shape(self) -> None:
+        payload = [
+            {
+                "total_count": 2,
+                "artifacts": [{"name": "first", "size_in_bytes": 1}],
+            },
+            {
+                "total_count": 2,
+                "artifacts": [{"name": "second", "size_in_bytes": 2}],
+            },
+        ]
+
+        self.assertEqual(
+            ci_storage_audit.merge_paginated_payload(payload),
+            {
+                "total_count": 2,
+                "artifacts": [
+                    {"name": "first", "size_in_bytes": 1},
+                    {"name": "second", "size_in_bytes": 2},
+                ],
+            },
+        )
+
+    def test_merge_paginated_payload_rejects_mixed_page_shapes(self) -> None:
+        payload = [
+            [{"name": "list-page"}],
+            {"artifacts": [{"name": "object-page"}]},
+        ]
+
+        with self.assertRaisesRegex(ci_storage_audit.AuditError, "mixed page shapes"):
+            ci_storage_audit.merge_paginated_payload(payload)
 
     def test_human_bytes_uses_binary_units(self) -> None:
         self.assertEqual(ci_storage_audit.human_bytes(0), "0 B")
@@ -163,7 +213,7 @@ class CiStorageAuditTests(unittest.TestCase):
         self.assertIn("3 additional artifact names in --json", rendered)
 
     def test_retention_settings_ui_only_when_rest_field_absent(self) -> None:
-        client = FakeClient({"actions/permissions": {"enabled": True}})
+        client = FakeClient({"actions/permissions/artifact-and-log-retention": {"maximum_allowed_days": 400}})
 
         self.assertEqual(
             ci_storage_audit.fetch_retention_setting(client),
@@ -172,7 +222,22 @@ class CiStorageAuditTests(unittest.TestCase):
 
     def test_retention_unavailable_on_api_error(self) -> None:
         client = FakeClient(
-            {"actions/permissions": ci_storage_audit.GhApiError("actions/permissions", "denied")}
+            {
+                "actions/permissions/artifact-and-log-retention": ci_storage_audit.GhApiError(
+                    "actions/permissions/artifact-and-log-retention",
+                    "denied",
+                )
+            }
+        )
+
+        self.assertEqual(
+            ci_storage_audit.fetch_retention_setting(client),
+            {"artifact_and_log_days": None, "source": "unavailable"},
+        )
+
+    def test_retention_unavailable_on_malformed_response(self) -> None:
+        client = FakeClient(
+            {"actions/permissions/artifact-and-log-retention": ["unexpected"]}
         )
 
         self.assertEqual(

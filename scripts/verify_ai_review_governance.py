@@ -291,6 +291,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
 
     github = table("github")
     review = table("review")
+    model_freshness = table("model_freshness")
     glm = table("glm")
     glm_pr_agent = glm.get("pr_agent")
     if not isinstance(glm_pr_agent, dict):
@@ -313,6 +314,14 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("github.expected_bot_login", github.get("expected_bot_login"), "github-actions[bot]"),
         ("review.max_comment_chars", review.get("max_comment_chars"), 60000),
         ("review.response_chars_per_chunk", review.get("response_chars_per_chunk"), 8000),
+        ("model_freshness.kimi_chat_docs_url", model_freshness.get("kimi_chat_docs_url"), "https://platform.kimi.ai/docs/api/chat"),
+        ("model_freshness.kimi_models_url", model_freshness.get("kimi_models_url"), "https://api.moonshot.ai/v1/models"),
+        ("model_freshness.glm_docs_index_url", model_freshness.get("glm_docs_index_url"), "https://docs.z.ai/llms.txt"),
+        (
+            "model_freshness.glm_migration_docs_url",
+            model_freshness.get("glm_migration_docs_url"),
+            "https://docs.z.ai/guides/overview/migrate-to-glm-new",
+        ),
         ("glm.api_base", glm.get("api_base"), "https://api.z.ai/api/coding/paas/v4"),
         ("glm.model", glm.get("model"), "glm-5.2"),
         ("glm.review_max_chunk_chars", glm.get("review_max_chunk_chars"), 60000),
@@ -329,7 +338,7 @@ def verify_ai_review_config(ai_review_toml: str) -> list[str]:
         ("glm.workflow.fallback_timeout_minutes", glm_workflow.get("fallback_timeout_minutes"), 20),
         ("glm.workflow.setup_overhead_timeout_minutes", glm_workflow.get("setup_overhead_timeout_minutes"), 7),
         ("kimi.api_base", kimi.get("api_base"), "https://api.kimi.com/coding/v1"),
-        ("kimi.model", kimi.get("model"), "kimi-for-coding"),
+        ("kimi.model", kimi.get("model"), "kimi-k2.7-code"),
         ("kimi.provider_type", kimi.get("provider_type"), "kimi"),
         ("kimi.model_max_context_size", kimi.get("model_max_context_size"), 262144),
         ("kimi.default_thinking", kimi.get("default_thinking"), True),

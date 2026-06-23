@@ -7,6 +7,12 @@ expected_bot_login = "github-actions[bot]"
 max_comment_chars = 60000
 response_chars_per_chunk = 8000
 
+[model_freshness]
+kimi_chat_docs_url = "https://platform.kimi.ai/docs/api/chat"
+kimi_models_url = "https://api.moonshot.ai/v1/models"
+glm_docs_index_url = "https://docs.z.ai/llms.txt"
+glm_migration_docs_url = "https://docs.z.ai/guides/overview/migrate-to-glm-new"
+
 [glm]
 api_base = "https://api.z.ai/api/coding/paas/v4"
 model = "glm-5.2"
@@ -38,7 +44,7 @@ setup_overhead_timeout_minutes = 7
 
 [kimi]
 api_base = "https://api.kimi.com/coding/v1"
-model = "kimi-for-coding"
+model = "kimi-k2.7-code"
 provider_type = "kimi"
 model_max_context_size = 262144
 default_thinking = true

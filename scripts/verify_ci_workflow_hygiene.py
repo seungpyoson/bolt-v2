@@ -65,6 +65,8 @@ WORKFLOW_RUNNER_CONFIG_KEYS = {
     ".github/workflows/ai-review-kimi-cli.yml": "ai_review_kimi_cli",
     "ai-review-coding-plan-smoke.yml": "ai_review_coding_plan_smoke",
     ".github/workflows/ai-review-coding-plan-smoke.yml": "ai_review_coding_plan_smoke",
+    "ai-review-model-freshness.yml": "ai_review_model_freshness",
+    ".github/workflows/ai-review-model-freshness.yml": "ai_review_model_freshness",
     "require-reviewer-node.yml": "require_reviewer_node",
     ".github/workflows/require-reviewer-node.yml": "require_reviewer_node",
     "require-resolved-review-threads.yml": "require_resolved_review_threads",

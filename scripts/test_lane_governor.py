@@ -747,7 +747,7 @@ def _command_substitution_payloads(line: str) -> list[str]:
 
 def _shlex_tokens(line: str) -> list[str]:
     try:
-        return shlex.split(line, comments=False, posix=True)
+        return shlex.split(line, comments=True, posix=True)
     except ValueError as exc:
         raise AssertionError(f"cannot parse shell command statically: {line!r}: {exc}") from exc
 
@@ -1012,11 +1012,13 @@ def _validate_inline_python_payload(payload: object, scan_set: set[Path]) -> Non
 
 
 def _is_python_script_path(path: Path) -> bool:
+    if not path.is_file():
+        return False
     if path.suffix == ".py":
         return True
     try:
         text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError, ValueError):
         return False
     first_line = text.splitlines()[0] if text.splitlines() else ""
     if first_line.startswith("#!") and "python" in first_line:
@@ -1050,8 +1052,17 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         self.tempfile_modules = {"tempfile"}
         self.path_names = {"Path"}
         self.temp_path_names = {"TemporaryDirectory", "NamedTemporaryFile", "mkdtemp", "mkstemp", "gettempdir"}
+        self.subprocess_call_names: set[str] = set()
+        self.subprocess_output_names: set[str] = set()
+        self.os_shell_names: set[str] = set()
+        self.os_exec_names: set[str] = set()
+        self.os_spawn_names: set[str] = set()
+        self.pty_spawn_names: set[str] = set()
         self.spec_loader_names = {"spec_from_file_location"}
         self.source_loader_names = {"SourceFileLoader"}
+        self.import_module_names: set[str] = set()
+        self.run_path_names: set[str] = set()
+        self.run_module_names: set[str] = set()
         self.importlib_modules = {"importlib"}
         self.runpy_modules = {"runpy"}
 
@@ -1100,6 +1111,37 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             for alias in node.names:
                 if alias.name == "SourceFileLoader":
                     self.source_loader_names.add(alias.asname or alias.name)
+        elif node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "import_module":
+                    self.import_module_names.add(alias.asname or alias.name)
+        elif node.module == "runpy":
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if alias.name == "run_path":
+                    self.run_path_names.add(name)
+                elif alias.name == "run_module":
+                    self.run_module_names.add(name)
+        elif node.module == "subprocess":
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if alias.name in _INVOCATION_FORMS["subprocess_calls"]:
+                    self.subprocess_call_names.add(name)
+                elif alias.name in {"getoutput", "getstatusoutput"}:
+                    self.subprocess_output_names.add(name)
+        elif node.module == "os":
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if alias.name in {"system", "popen"}:
+                    self.os_shell_names.add(name)
+                elif alias.name.startswith("exec"):
+                    self.os_exec_names.add(name)
+                elif alias.name.startswith("spawn"):
+                    self.os_spawn_names.add(name)
+        elif node.module == "pty":
+            for alias in node.names:
+                if alias.name == "spawn":
+                    self.pty_spawn_names.add(alias.asname or alias.name)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.functions[node.name] = node
@@ -1402,7 +1444,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return False
 
     def _handle_os_exec_spawn_call(self, node: ast.Call, call_name: str) -> None:
-        target_index = 1 if any(call_name.startswith(f"{module}.spawn") for module in self.os_modules) else 0
+        target_index = 1 if self._is_os_spawn_call(call_name) else 0
         if len(node.args) <= target_index:
             return
         target = self._resolve_value(node.args[target_index])
@@ -1412,7 +1454,13 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             self._fail(node, f"dynamic Python process replacement is not allowed: {call_name}")
 
     def _handle_loader_call(self, node: ast.Call, call_name: str) -> None:
-        if call_name in {"importlib.import_module", "runpy.run_module"} or call_name.endswith(".import_module") or call_name.endswith(".run_module"):
+        if (
+            call_name in self.import_module_names
+            or call_name in self.run_module_names
+            or call_name in {"importlib.import_module", "runpy.run_module"}
+            or call_name.endswith(".import_module")
+            or call_name.endswith(".run_module")
+        ):
             if not node.args:
                 self._fail(node, f"{call_name} missing module name")
                 return
@@ -1428,7 +1476,7 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                     self.targets.add(target)
             return
 
-        index = 0 if call_name.endswith("run_path") else 1
+        index = 0 if call_name in self.run_path_names or call_name.endswith("run_path") else 1
         target_node = node.args[index] if len(node.args) > index else None
         if target_node is None:
             target_node = self._loader_keyword_target(node, call_name)
@@ -1493,7 +1541,10 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
             value = self._resolve_value(node.value)
             index = self._resolve_value(node.slice)
             if isinstance(value, type(Path.cwd().parents)) and isinstance(index, int):
-                return value[index]
+                try:
+                    return value[index]
+                except IndexError:
+                    return _UNRESOLVED
             return _PARAMETER if value is _PARAMETER else _UNRESOLVED
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             left = self._resolve_value(node.left)
@@ -1578,15 +1629,24 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
                         return _PARAMETER
                     if value is _UNRESOLVED:
                         return _UNRESOLVED
-                    return owner.with_name(str(value))
+                    try:
+                        return owner.with_name(str(value))
+                    except ValueError:
+                        return _UNRESOLVED
                 if node.func.attr == "with_suffix" and node.args:
                     value = self._resolve_value(node.args[0])
                     if isinstance(value, str):
-                        return owner.with_suffix(value)
+                        try:
+                            return owner.with_suffix(value)
+                        except ValueError:
+                            return _UNRESOLVED
                 if node.func.attr == "with_stem" and node.args:
                     value = self._resolve_value(node.args[0])
                     if isinstance(value, str):
-                        return owner.with_stem(value)
+                        try:
+                            return owner.with_stem(value)
+                        except ValueError:
+                            return _UNRESOLVED
         return _UNRESOLVED
 
     def _is_temp_path_source(self, node: ast.AST) -> bool:
@@ -1659,6 +1719,8 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return ""
 
     def _is_subprocess_call(self, call_name: str) -> bool:
+        if call_name in self.subprocess_call_names:
+            return True
         return any(
             call_name == f"{module}.{method}"
             for module in self.subprocess_modules
@@ -1666,7 +1728,13 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         )
 
     def _is_loader_call(self, call_name: str) -> bool:
-        if call_name in self.spec_loader_names or call_name in self.source_loader_names:
+        if call_name in {
+            *self.spec_loader_names,
+            *self.source_loader_names,
+            *self.import_module_names,
+            *self.run_path_names,
+            *self.run_module_names,
+        }:
             return True
         suffixes = (
             ".spec_from_file_location",
@@ -1680,6 +1748,12 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
     def _is_dynamic_code_call(self, call_name: str) -> bool:
         if call_name in {"eval", "exec"}:
             return True
+        if (
+            call_name in self.os_shell_names
+            or call_name in self.subprocess_output_names
+            or call_name in self.pty_spawn_names
+        ):
+            return True
         if any(call_name == f"{module}.system" or call_name == f"{module}.popen" for module in self.os_modules):
             return True
         if any(
@@ -1690,10 +1764,17 @@ class _CodeExecutionEdgeResolver(ast.NodeVisitor):
         return any(call_name == f"{module}.spawn" for module in self.pty_modules)
 
     def _is_os_exec_spawn_call(self, call_name: str) -> bool:
+        if call_name in self.os_exec_names or call_name in self.os_spawn_names:
+            return True
         return any(
             call_name.startswith(f"{module}.exec") or call_name.startswith(f"{module}.spawn")
             for module in self.os_modules
         )
+
+    def _is_os_spawn_call(self, call_name: str) -> bool:
+        if call_name in self.os_spawn_names:
+            return True
+        return any(call_name.startswith(f"{module}.spawn") for module in self.os_modules)
 
     def _fail(self, node: ast.AST, message: str) -> None:
         rel = self.path.relative_to(REPO_ROOT)
@@ -1862,6 +1943,11 @@ def test_direct_cheap_labels_resolve_python_by_semantics() -> None:
         raise AssertionError("missing direct cheap lane label must fail closed")
 
 
+def test_python_script_semantics_reject_non_files_without_crashing() -> None:
+    assert not _is_python_script_path(SCRIPTS_DIR)
+    assert not _is_python_script_path(REPO_ROOT / "does-not-exist.py")
+
+
 def test_repo_origin_detection_is_expression_based() -> None:
     snippets = [
         "from pathlib import Path\nROOT = Path(__file__).resolve().parents[1]\n(ROOT / 'x').write_text('x')\n",
@@ -1907,6 +1993,10 @@ from pathlib import Path
 import importlib.util
 import subprocess
 import sys
+from importlib import import_module
+from importlib.util import spec_from_file_location as direct_spec
+from runpy import run_module, run_path
+from subprocess import run as direct_run
 
 SCRIPTS = Path(__file__).resolve().parent
 SCRIPT = SCRIPTS / "nextest_fingerprint.py"
@@ -1927,7 +2017,12 @@ def run(script):
 load("lane_governor")
 load_default()
 importlib.util.spec_from_file_location("nextest_fingerprint_location", location=str(SCRIPT))
+direct_spec("nextest_direct", str(SCRIPT))
+import_module("command_understanding")
+run_module("ci_provenance")
+run_path(str(SCRIPT))
 subprocess.run(["python3", str(SCRIPT)])
+direct_run(["python3", str(SCRIPT)])
 subprocess.run([str(SCRIPT)], executable="python3")
 subprocess.run("python3 scripts/test_nextest_fingerprint.py", shell=True)
 run(str(SCRIPTS / "clean_merged_artifacts.py"))
@@ -1945,6 +2040,8 @@ run(str(SCRIPTS / "clean_merged_artifacts.py"))
         "find_same_sha_main_evidence.py",
         "nextest_fingerprint.py",
         "clean_merged_artifacts.py",
+        "command_understanding.py",
+        "ci_provenance.py",
     } <= rels
 
 
@@ -2005,12 +2102,41 @@ def test_code_execution_tripwires_fail_closed() -> None:
         "import os\nos.system('python3 scripts/x.py')\n",
         "import os\nos.execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import os\nos.spawnv(os.P_NOWAIT, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "from os import system as direct_system\ndirect_system('python3 scripts/test_nextest_fingerprint.py')\n",
+        "from os import execv as direct_execv\ndirect_execv('python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
+        "from os import spawnv as direct_spawnv\ndirect_spawnv(0, 'python3', ['python3', 'scripts/test_nextest_fingerprint.py'])\n",
         "import subprocess\nsubprocess.getoutput('echo x')\n",
         "import subprocess\nsubprocess.getstatusoutput('echo x')\n",
+        "from subprocess import getoutput as direct_getoutput\ndirect_getoutput('echo x')\n",
         "import pty\npty.spawn('/bin/echo')\n",
+        "from pty import spawn as direct_pty_spawn\ndirect_pty_spawn('/bin/echo')\n",
         "import subprocess\nsubprocess.run(['python3', '-c', 'from pathlib import Path; Path(\"inline-write\").write_text(\"x\")'])\n",
         "eval('1 + 1')\n",
         "import importlib.util\nimportlib.util.spec_from_file_location('x', target)\n",
+        (
+            "from pathlib import Path\n"
+            "import importlib.util\n"
+            "SCRIPT = Path(__file__).resolve().parents[999] / 'x.py'\n"
+            "importlib.util.spec_from_file_location('x', SCRIPT)\n"
+        ),
+        (
+            "from pathlib import Path\n"
+            "import importlib.util\n"
+            "SCRIPT = Path().with_name('x.py')\n"
+            "importlib.util.spec_from_file_location('x', SCRIPT)\n"
+        ),
+        (
+            "from pathlib import Path\n"
+            "import importlib.util\n"
+            "SCRIPT = Path().with_suffix('.py')\n"
+            "importlib.util.spec_from_file_location('x', SCRIPT)\n"
+        ),
+        (
+            "from pathlib import Path\n"
+            "import importlib.util\n"
+            "SCRIPT = Path().with_stem('x')\n"
+            "importlib.util.spec_from_file_location('x', SCRIPT)\n"
+        ),
         (
             "import importlib.util\n"
             "def load(path=TARGET):\n"
@@ -2243,6 +2369,12 @@ def test_shell_wrappers_and_pipelines_discover_python_commands() -> None:
     recipes, _gates = _cheap_gate_closure(dump, {"local-gate:alpha"})
     scripts = _closure_python_scripts(dump, recipes)
     assert SCRIPTS_DIR / "test_nextest_fingerprint.py" in scripts
+
+
+def test_shell_comments_are_ignored_before_tokenization() -> None:
+    line = "python3 scripts/test_nextest_fingerprint.py # Don't parse this comment"
+    assert _shlex_tokens(line) == ["python3", "scripts/test_nextest_fingerprint.py"]
+    assert _classify_command(line) == "py-exec"
 
 
 def test_subcrate_lane_policy_matches_repo_policy() -> None:
@@ -2891,6 +3023,7 @@ def main() -> int:
         test_cheap_lane_discovery_manifest_floor_and_required_edges,
         test_manifest_floor_does_not_accept_labeled_seed_only,
         test_direct_cheap_labels_resolve_python_by_semantics,
+        test_python_script_semantics_reject_non_files_without_crashing,
         test_repo_origin_detection_is_expression_based,
         test_repo_write_analyzer_catches_extended_mutators,
         test_code_execution_edges_are_static_fixed_point,
@@ -2904,6 +3037,7 @@ def main() -> int:
         test_just_dump_gate_derivation_and_fail_closed_fixtures,
         test_shell_expanded_python_commands_fail_closed,
         test_shell_wrappers_and_pipelines_discover_python_commands,
+        test_shell_comments_are_ignored_before_tokenization,
         test_subcrate_lane_policy_matches_repo_policy,
         test_uncontended_acquire_is_fast,
         test_second_acquire_queues_until_release,

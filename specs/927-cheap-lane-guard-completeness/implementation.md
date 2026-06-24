@@ -1,8 +1,8 @@
 # #927 — Implementation Plan (code-level)
 
 **Reads with:** `plan.md` (architecture, invariant, three-layer model, findings F1–F10/F7′/F8′).
-This file is the **build sequence** — concrete functions, signatures, and proof obligations, every
-"modify" anchored to `scripts/test_lane_governor.py` at HEAD `a59ae0776`.
+This file is the **build sequence** — concrete functions, signatures, and proof obligations for the current
+PR implementation. The "Current state being replaced" section below is anchored to base HEAD `a59ae0776`.
 
 **Changed artifacts:** `scripts/test_lane_governor.py` (the guard + its analyzer), the committed
 discovered-but-unlabeled manifest (§3), and the #927 spec docs (`plan.md` / this file). `lane_governor.py`,

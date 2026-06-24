@@ -6282,6 +6282,7 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
         assert_v6_red_backtester_cache_keys_include_crate_sources,
         assert_v6_red_backtester_gate_fails_when_detect_fails,
+        assert_v6_red_backtester_test_is_sharded,
     ]
     failures: list[str] = []
     for check in checks:
@@ -6350,6 +6351,44 @@ def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
     assert not [
         error for error in good_errors if "backtester-gate must check needs.detect.result" in error
     ], good_errors
+
+
+def assert_v6_red_backtester_test_is_sharded() -> None:
+    verifier = load_verifier()
+    bad = """jobs:
+  test:
+    name: bvs-test
+    steps:
+      - name: test
+        run: just bte-test
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    assert any("backtester bvs-test must define four nextest shards" in error for error in errors), errors
+    assert any("backtester bvs-test must run nextest partition matching the shard" in error for error in errors), errors
+
+    good = """jobs:
+  test:
+    name: bvs-test ${{ matrix.shard }} of 4
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Restore test target cache
+        id: test-target-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: test
+        run: just bte-test --partition "count:${{ matrix.shard }}/4"
+      - name: Upload issue #789 first-P/L artifact
+        uses: actions/upload-artifact@example
+        with:
+          name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
+      - name: Save test target cache
+        if: ${{ matrix.shard == 1 && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+"""
+    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
+    assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
 
 
 def remove_fragment_if_present(text: str, fragment: str) -> str:

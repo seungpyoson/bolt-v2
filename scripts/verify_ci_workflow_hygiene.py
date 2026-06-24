@@ -9209,6 +9209,45 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
     return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
 
 
+def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    test_job = parse_jobs(text).get("test")
+    if test_job is None:
+        return ["backtester bvs-test must define test job"]
+    job_text = uncommented_text(test_job)
+    errors: list[str] = []
+    required_fragments = [
+        ("backtester bvs-test must name matrix shards", "name: bvs-test ${{ matrix.shard }} of 4"),
+        ("backtester bvs-test must keep shard fail-fast disabled", "fail-fast: false"),
+        ("backtester bvs-test must define four nextest shards", "shard: [1, 2, 3, 4]"),
+        (
+            "backtester bvs-test must run nextest partition matching the shard",
+            'just bte-test --partition "count:${{ matrix.shard }}/4"',
+        ),
+        (
+            "backtester bvs-test issue artifact names must include shard",
+            "name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}",
+        ),
+        (
+            "backtester bvs-test must restore target cache explicitly",
+            "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae",
+        ),
+        (
+            "backtester bvs-test must save target cache from one shard only",
+            "if: ${{ matrix.shard == 1 && steps.test-target-cache.outputs.cache-hit != 'true' }}",
+        ),
+        (
+            "backtester bvs-test must save target cache explicitly",
+            "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae",
+        ),
+    ]
+    for message, fragment in required_fragments:
+        if fragment not in job_text:
+            errors.append(message)
+    return errors
+
+
 BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}"
 BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 BACKTESTER_ITERATION_CONDITION = '"$policy_path" == "iteration"'
@@ -9434,6 +9473,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_gate_detect_result_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_test_shard_errors(file_name, text)),
         )
         add_unique_errors(
             errors,

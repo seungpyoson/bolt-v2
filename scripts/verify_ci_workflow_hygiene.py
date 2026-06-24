@@ -773,6 +773,19 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- actionlint-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
     "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
     "|| format('{0}-{1}', github.ref_name, github.sha) }}",
+    # .github/workflows/backtester-ci.yml — same draft/full PR split as ci.yml
+    # with a backtester-prefixed merge_group arm before the per-ref/sha fallback.
+    "group: >- ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true "
+    "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
+    "&& format('bvs-pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
+    "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
+    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) "
+    "&& format('bvs-pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
+    "&& format('bvs-pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
+    "&& github.event.inputs.full_ci == 'true' && format('bvs-{0}-dispatch-full', github.ref_name) "
+    "|| github.event_name == 'workflow_dispatch' && format('bvs-{0}-dispatch-iteration', github.ref_name) "
+    "|| github.event_name == 'merge_group' && format('bvs-mq-{0}', github.ref) "
+    "|| format('bvs-{0}-{1}', github.ref_name, github.sha) }}",
 })
 
 # cancel-in-progress is fail-closed for merge_group only when it is provably
@@ -8149,6 +8162,22 @@ def detector_forces_build_on_merge_group(job_lines: list[str]) -> bool:
     return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
 
 
+def backtester_detect_forces_bvs_changed_on_merge_group(job_lines: list[str]) -> bool:
+    # Backtester CI has its own change detector output. On merge_group it must
+    # force the proof lanes to run; otherwise backtester-gate would no-op green.
+    text = uncommented_text(job_lines)
+    branch = branch_body(
+        text,
+        "elif",
+        '"${{ github.event_name }}" == "merge_group"',
+    )
+    return (
+        branch is not None
+        and 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' in branch
+        and body_exits_zero(branch)
+    )
+
+
 def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
     normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
     matches = [
@@ -9470,6 +9499,7 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                 ),
             )
         if file_name == "backtester-ci.yml" or file_name.endswith("/backtester-ci.yml"):
+            jobs = parse_jobs(text)
             add_unique_errors(
                 errors,
                 (
@@ -9478,6 +9508,19 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                         text,
                         required_types=("ready_for_review", "edited", "converted_to_draft"),
                     )
+                ),
+            )
+            if "merge_group" not in workflow_trigger_keys(text):
+                errors.append(f"{file_name}: on must define merge_group for merge queue")
+            if "detect" in jobs and not backtester_detect_forces_bvs_changed_on_merge_group(jobs["detect"]):
+                errors.append(
+                    f"{file_name}: backtester detect must force bvs_changed=true for merge_group"
+                )
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in verify_merge_group_concurrency(text)
                 ),
             )
         if file_name == "ci-docs-pass-stub.yml" or file_name.endswith("/ci-docs-pass-stub.yml"):

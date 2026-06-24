@@ -16,8 +16,9 @@ name: Backtester CI
 # deploy lane here.
 #
 # ALWAYS-PRESENT GATE (no path-filter trap): the workflow has NO `on.*.paths` filter, so it
-# triggers on every pull_request to main and every push to main. That makes `backtester-gate` a
-# context that is ALWAYS reported — safe for the owner to mark required later without the GitHub
+# triggers on every pull_request to main, every push to main, and every
+# merge_group queue validation. That makes `backtester-gate` a context that is
+# ALWAYS reported — safe for the owner to mark required later without the GitHub
 # "frozen PR" problem (a path-filtered required check never reports on PRs that miss the path, so
 # the PR can never satisfy the rule). Crate-change detection moved INSIDE the workflow: the
 # `detect` job computes `bvs_changed`, the fmt/clippy/test lanes SKIP when the crate is untouched,
@@ -61,11 +62,16 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
   push:
     branches: [main]
+  # Merge queue lane: required merge-proof checks must report on the temporary
+  # gh-readonly-queue ref carrying the exact to-be-merged commit.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   # Deferred and full PR runs intentionally use separate groups. Moving a ready PR back to draft
   # records an explicit deferred verdict without cancelling a full proof already in progress.
   # Manual workflow_dispatch runs are split by class so iteration smoke runs do not cancel full proof.
+  # Merge queue runs are keyed by queue ref and are never cancelled by this workflow.
   group: >-
     ${{ github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
@@ -83,6 +89,8 @@ concurrency:
         && format('bvs-{0}-dispatch-full', github.ref_name)
         || github.event_name == 'workflow_dispatch'
         && format('bvs-{0}-dispatch-iteration', github.ref_name)
+        || github.event_name == 'merge_group'
+        && format('bvs-mq-{0}', github.ref)
         || format('bvs-{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
@@ -152,6 +160,11 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "push or manual dispatch event; treating crate as changed"
+            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            # A skipped required gate counts as passing, so queue validation must run proof lanes.
+            echo "merge_group event; treating crate as changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi

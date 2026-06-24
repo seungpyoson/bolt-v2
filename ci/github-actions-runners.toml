@@ -17,6 +17,7 @@ label = "ubicloud-standard-2"
 
 [workflows.ci]
 ci-policy = "github_hosted"
+sccache-proof = "managed_heavy"
 detector = "github_hosted"
 host-health = "github_hosted"
 deny = "managed_light"

@@ -2402,6 +2402,62 @@ def assert_managed_env_scrubs_build_target_dir_and_routes_target_dir() -> None:
             raise AssertionError((env.get("CARGO_TARGET_DIR"), expected_target))
 
 
+def assert_managed_env_allows_configured_ci_sccache_wrapper_only() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        with (repo / "ci" / "rust-verification.toml").open("a", encoding="utf-8") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """\
+
+                    [remote_compile_cache]
+                    enabled = true
+                    enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"
+                    ci_env = "GITHUB_ACTIONS"
+                    wrapper_env = "SCCACHE_PATH"
+                    wrapper_program = "sccache"
+                    """
+                )
+            )
+        root_base = tmp_path / "rust-root"
+        configured_wrapper = tmp_path / "tools" / "sccache"
+        configured_wrapper.parent.mkdir()
+        configured_wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        old_values = {
+            key: os.environ.get(key)
+            for key in (
+                "BOLT_RUST_VERIFICATION_SCCACHE",
+                "GITHUB_ACTIONS",
+                "RUSTC_WRAPPER",
+                "RUST_VERIFICATION_ROOT_BASE",
+                "SCCACHE_PATH",
+            )
+        }
+        try:
+            os.environ["BOLT_RUST_VERIFICATION_SCCACHE"] = "1"
+            os.environ["GITHUB_ACTIONS"] = "true"
+            os.environ["RUSTC_WRAPPER"] = str(tmp_path / "leaked-wrapper")
+            os.environ["RUST_VERIFICATION_ROOT_BASE"] = str(root_base)
+            os.environ["SCCACHE_PATH"] = str(configured_wrapper)
+            env = owner.managed_env(repo)
+        finally:
+            for key, value in old_values.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        if env.get("RUSTC_WRAPPER") != str(configured_wrapper):
+            raise AssertionError(
+                f"managed_env must inject configured sccache wrapper, got {env.get('RUSTC_WRAPPER')!r}"
+            )
+        if env.get("RUSTC_WRAPPER") == str(tmp_path / "leaked-wrapper"):
+            raise AssertionError("managed_env must not preserve ambient RUSTC_WRAPPER")
+
+
 def assert_managed_cargo_ignores_real_cargo_env_override() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
@@ -3208,6 +3264,7 @@ def main() -> int:
     assert_repo_policy_declares_cache_retention()
     assert_v6_regression_cargo_process_names_stay_visible()
     assert_managed_env_scrubs_build_target_dir_and_routes_target_dir()
+    assert_managed_env_allows_configured_ci_sccache_wrapper_only()
     assert_v6_red_policy_gaps()
     print("OK: Rust verification cache retention self-tests passed.")
     return 0

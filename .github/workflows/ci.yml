@@ -59,6 +59,10 @@ on:
         description: "Run full CI for the selected ref"
         required: false
         default: "false"
+      sccache_proof:
+        description: "Run the manual ARM nextest archive sccache proof lane"
+        required: false
+        default: "false"
   # Merge queue lane: GitHub dispatches merge_group/checks_requested on the
   # temporary gh-readonly-queue ref carrying the exact to-be-merged commit.
   # Required checks MUST report on this event or the merge is blocked, and a
@@ -142,6 +146,97 @@ jobs:
           --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
+
+  sccache-proof:
+    name: sccache proof
+    needs: [ci-policy]
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sccache_proof == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      BOLT_RUST_VERIFICATION_SCCACHE: "1"
+      CARGO_BUILD_JOBS: "2"
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/sccache-proof-nextest-archive.tar.zst
+      SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      SCCACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      SCCACHE_S3_KEY_PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+      SCCACHE_S3_SERVER_SIDE_ENCRYPTION: "true"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check sccache repository variables
+        env:
+          AWS_CI_CACHE_ROLE_ARN: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          CI_SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+          CI_SCCACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+          CI_SCCACHE_S3_KEY_PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+        run: |
+          missing=()
+          for name in AWS_CI_CACHE_ROLE_ARN CI_SCCACHE_BUCKET CI_SCCACHE_REGION CI_SCCACHE_S3_KEY_PREFIX; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'missing required repository variable: %s\n' "${missing[@]}"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials for sccache
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}
+          aws-region: ${{ vars.CI_SCCACHE_REGION }}
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: "v0.10.0"
+
+      - name: Reset sccache stats
+        run: |
+          if [[ -z "${SCCACHE_PATH:-}" ]]; then
+            echo "SCCACHE_PATH was not set by sccache action"
+            exit 1
+          fi
+          "$SCCACHE_PATH" --zero-stats
+
+      - name: Build nextest archive with sccache
+        env:
+          # Keep CI test binaries small enough for CI link/disk limits.
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          started_at="$(date +%s)"
+          just test-archive "$NEXTEST_ARCHIVE_PATH"
+          finished_at="$(date +%s)"
+          echo "sccache_proof_archive_seconds=$((finished_at - started_at))"
+
+      - name: Print sccache stats
+        if: always()
+        run: |
+          if [[ -n "${SCCACHE_PATH:-}" ]]; then
+            "$SCCACHE_PATH" --show-stats
+          else
+            echo "SCCACHE_PATH was not set"
+          fi
 
   # Host-health observability slice (#884): stdlib-Python sampler + dependency-free
   # HTML viewer + their test suites. These suites are the ONLY proof of the two hard

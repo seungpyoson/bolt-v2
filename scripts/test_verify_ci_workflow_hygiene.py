@@ -232,6 +232,10 @@ on:
         description: "Run full CI for the selected ref"
         required: false
         default: "false"
+      sccache_proof:
+        description: "Run the manual ARM nextest archive sccache proof lane"
+        required: false
+        default: "false"
   merge_group:
     types: [checks_requested]
 
@@ -298,6 +302,36 @@ jobs:
           --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
+
+  sccache-proof:
+    name: sccache proof
+    needs: [ci-policy]
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sccache_proof == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      BOLT_RUST_VERIFICATION_SCCACHE: "1"
+      CARGO_BUILD_JOBS: "2"
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/sccache-proof-nextest-archive.tar.zst
+      SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}
+      SCCACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}
+      SCCACHE_S3_KEY_PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}
+      SCCACHE_S3_SERVER_SIDE_ENCRYPTION: "true"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+      - uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+      - run: just test-archive "$NEXTEST_ARCHIVE_PATH"
 
   detector:
     name: detector
@@ -1100,6 +1134,15 @@ refused_managed_commands = ["test", "clippy", "build"]
 refused_cargo_subcommands = ["b", "bench", "build", "c", "check", "clippy", "d", "doc", "fetch", "install", "nextest", "r", "run", "rustc", "t", "test", "zigbuild"]
 """
 
+REMOTE_COMPILE_CACHE_TOML = """
+[remote_compile_cache]
+enabled = true
+enable_env = "BOLT_RUST_VERIFICATION_SCCACHE"
+ci_env = "GITHUB_ACTIONS"
+wrapper_env = "SCCACHE_PATH"
+wrapper_program = "sccache"
+"""
+
 LOCAL_LANE_POLICY_TOML = """
 [local_lane_policy]
 enabled = true
@@ -1116,6 +1159,7 @@ project_id = "bolt-v2"
 target_namespace = "bolt-v2"
 
 {LOCAL_COMPILE_POLICY_TOML}
+{REMOTE_COMPILE_CACHE_TOML}
 {LOCAL_LANE_POLICY_TOML}
 
 [remote_verification]
@@ -1795,6 +1839,53 @@ def assert_ci_workflow_run_name_matches_dispatch_config() -> None:
         "workflow run-name must preserve configured non-dispatch name",
         replace_once(workflow, "|| 'CI' }}", "|| 'CI default' }}"),
     )
+
+
+def assert_sccache_proof_lane_contract() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    jobs = verifier.parse_jobs(workflow)
+    job = "\n".join(jobs.get("sccache-proof", []))
+    if not job:
+        raise AssertionError("CI workflow must define manual sccache-proof job")
+    required_fragments = [
+        "github.event_name == 'workflow_dispatch'",
+        "github.event.inputs.sccache_proof == 'true'",
+        "runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}",
+        "id-token: write",
+        "BOLT_RUST_VERIFICATION_SCCACHE: \"1\"",
+        "role-to-assume: ${{ vars.AWS_CI_CACHE_ROLE_ARN }}",
+        "SCCACHE_BUCKET: ${{ vars.CI_SCCACHE_BUCKET }}",
+        "SCCACHE_REGION: ${{ vars.CI_SCCACHE_REGION }}",
+        "SCCACHE_S3_KEY_PREFIX: ${{ vars.CI_SCCACHE_S3_KEY_PREFIX }}",
+        "just test-archive \"$NEXTEST_ARCHIVE_PATH\"",
+        "\"$SCCACHE_PATH\" --show-stats",
+    ]
+    missing = [fragment for fragment in required_fragments if fragment not in job]
+    if missing:
+        raise AssertionError(f"sccache-proof job missing contract fragments: {missing!r}")
+    if "RUSTC_WRAPPER" in workflow:
+        raise AssertionError("workflow must not set RUSTC_WRAPPER directly")
+    gate = "\n".join(jobs.get("gate", []))
+    if "sccache-proof" in gate:
+        raise AssertionError("sccache-proof must remain outside the required gate")
+    runner_config = (REPO_ROOT / "ci" / "github-actions-runners.toml").read_text(encoding="utf-8")
+    if 'sccache-proof = "managed_heavy"' not in runner_config:
+        raise AssertionError("sccache-proof must be mapped to managed_heavy")
+    actionlint = (REPO_ROOT / ".github" / "actionlint.yaml").read_text(encoding="utf-8")
+    for variable in (
+        "AWS_CI_CACHE_ROLE_ARN",
+        "CI_SCCACHE_BUCKET",
+        "CI_SCCACHE_REGION",
+        "CI_SCCACHE_S3_KEY_PREFIX",
+    ):
+        if f"  - {variable}" not in actionlint:
+            raise AssertionError(f"actionlint config must allow {variable}")
+
+    raw_wrapper = workflow.replace('BOLT_RUST_VERIFICATION_SCCACHE: "1"', "RUSTC_WRAPPER: sccache")
+    errors = verifier.verify_workflow(raw_wrapper)
+    if not any("RUSTC_WRAPPER raw compiler wrapper must be classified" in error for error in errors):
+        raise AssertionError(f"raw RUSTC_WRAPPER mutation must be rejected, got: {errors}")
 
 
 def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
@@ -7916,8 +8007,9 @@ def main() -> int:
     )
     assert_error(
         "test-archive must not opt into managed target dir",
-        replace_once(
+        replace_once_after(
             BASE_WORKFLOW,
+            "  test-archive:",
             '          include-nextest-version: "true"',
             '          include-nextest-version: "true"\n          include-managed-target-dir: "true"',
         ),
@@ -8711,8 +8803,9 @@ def main() -> int:
     )
     assert_error(
         "ci.yml deny must install cargo-deny with pinned taiki-e/install-action",
-        replace_once(
+        replace_once_after(
             BASE_WORKFLOW,
+            "  deny:",
             "uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538",
             "uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538-suffix",
         ),
@@ -9686,6 +9779,7 @@ def main() -> int:
     assert_ci_policy_resolvers_agree()
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
+    assert_sccache_proof_lane_contract()
     assert_ci_detector_forces_build_on_workflow_dispatch()
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_config_gaps_are_reported()

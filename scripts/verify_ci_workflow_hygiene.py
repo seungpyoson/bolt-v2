@@ -8162,6 +8162,18 @@ def detector_forces_build_on_merge_group(job_lines: list[str]) -> bool:
     return branch is not None and 'echo "value=true" >> "$GITHUB_OUTPUT"' in branch
 
 
+def backtester_detect_forces_bvs_changed_on_merge_group(job_lines: list[str]) -> bool:
+    # Backtester CI has its own change detector output. On merge_group it must
+    # force the proof lanes to run; otherwise backtester-gate would no-op green.
+    text = uncommented_text(job_lines)
+    branch = branch_body(
+        text,
+        "elif",
+        '"${{ github.event_name }}" == "merge_group"',
+    )
+    return branch is not None and 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' in branch
+
+
 def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:
     normalized = re.sub(r"\\\s*\n\s*", " ", block_text)
     matches = [
@@ -9483,6 +9495,7 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                 ),
             )
         if file_name == "backtester-ci.yml" or file_name.endswith("/backtester-ci.yml"):
+            jobs = parse_jobs(text)
             add_unique_errors(
                 errors,
                 (
@@ -9495,6 +9508,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
             )
             if "merge_group" not in workflow_trigger_keys(text):
                 errors.append(f"{file_name}: on must define merge_group for merge queue")
+            if "detect" in jobs and not backtester_detect_forces_bvs_changed_on_merge_group(jobs["detect"]):
+                errors.append(
+                    f"{file_name}: backtester detect must force bvs_changed=true for merge_group"
+                )
             add_unique_errors(
                 errors,
                 (

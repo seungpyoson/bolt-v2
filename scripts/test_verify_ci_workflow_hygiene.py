@@ -1892,6 +1892,28 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             f"expected backtester-ci.yml merge_group trigger error, got: {backtester_trigger_errors}"
         )
 
+    # Backtester detect must force proof lanes on merge_group. A no-op required
+    # gate counts as passing and would poison the live queue evidence.
+    backtester_without_detector_arm = replace_once(
+        backtester_workflow,
+        '          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then\n'
+        "            # A skipped required gate counts as passing, so queue validation must run proof lanes.\n"
+        '            echo "merge_group event; treating crate as changed"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            exit 0\n',
+        "",
+    )
+    backtester_detector_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_without_detector_arm}
+    )
+    if not any(
+        "backtester detect must force bvs_changed=true for merge_group" in error
+        for error in backtester_detector_errors
+    ):
+        raise AssertionError(
+            f"expected backtester merge_group detector error, got: {backtester_detector_errors}"
+        )
+
     # Detector must force build on merge_group (a skipped required build is a hole).
     ci_without_detector_arm = replace_once(
         ci_workflow,

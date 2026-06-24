@@ -1818,6 +1818,7 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     verifier = load_verifier()
     ci_workflow = repo_workflow_text(".github/workflows/ci.yml")
     actionlint_workflow = repo_workflow_text(".github/workflows/actionlint.yml")
+    backtester_workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
 
     # Baseline: real workflows declare merge_group and resolve clean.
     if verifier.verify_workflow(ci_workflow):
@@ -1830,6 +1831,13 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     if any("merge_group" in error for error in actionlint_baseline):
         raise AssertionError(
             f"real actionlint.yml must be merge_group-clean, got: {actionlint_baseline}"
+        )
+    backtester_baseline = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_workflow}
+    )
+    if any("merge_group" in error for error in backtester_baseline):
+        raise AssertionError(
+            f"real backtester-ci.yml must be merge_group-clean, got: {backtester_baseline}"
         )
 
     # (i) merge_group policy value flipped away from required proof → config contract error.
@@ -1866,6 +1874,64 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     ):
         raise AssertionError(
             f"expected actionlint.yml merge_group trigger error, got: {actionlint_errors}"
+        )
+
+    # (ii-c) merge_group trigger removed from backtester-ci.yml → Backtester CI error.
+    backtester_without_merge_group = replace_once(
+        backtester_workflow,
+        "  merge_group:\n    types: [checks_requested]\n",
+        "",
+    )
+    backtester_trigger_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_without_merge_group}
+    )
+    if not any(
+        "on must define merge_group for merge queue" in error for error in backtester_trigger_errors
+    ):
+        raise AssertionError(
+            f"expected backtester-ci.yml merge_group trigger error, got: {backtester_trigger_errors}"
+        )
+
+    # Backtester detect must force proof lanes on merge_group. A no-op required
+    # gate counts as passing and would poison the live queue evidence.
+    backtester_without_detector_arm = replace_once(
+        backtester_workflow,
+        '          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then\n'
+        "            # A skipped required gate counts as passing, so queue validation must run proof lanes.\n"
+        '            echo "merge_group event; treating crate as changed"\n'
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        '            exit 0\n',
+        "",
+    )
+    backtester_detector_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_without_detector_arm}
+    )
+    if not any(
+        "backtester detect must force bvs_changed=true for merge_group" in error
+        for error in backtester_detector_errors
+    ):
+        raise AssertionError(
+            f"expected backtester merge_group detector error, got: {backtester_detector_errors}"
+        )
+
+    backtester_detector_without_exit = replace_once(
+        backtester_workflow,
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        "            exit 0\n"
+        "          fi\n",
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        "          fi\n",
+    )
+    backtester_detector_exit_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_detector_without_exit}
+    )
+    if not any(
+        "backtester detect must force bvs_changed=true for merge_group" in error
+        for error in backtester_detector_exit_errors
+    ):
+        raise AssertionError(
+            "expected backtester merge_group detector short-circuit error, "
+            f"got: {backtester_detector_exit_errors}"
         )
 
     # Detector must force build on merge_group (a skipped required build is a hole).
@@ -1906,6 +1972,38 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         for error in cancel_errors
     ):
         raise AssertionError(f"expected merge_group cancel-scope error, got: {cancel_errors}")
+
+    backtester_without_concurrency_arm = replace_once(
+        backtester_workflow,
+        "        || github.event_name == 'merge_group'\n        && format('bvs-mq-{0}', github.ref)\n",
+        "",
+    )
+    backtester_concurrency_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_without_concurrency_arm}
+    )
+    if not any(
+        "approved merge_group-safe form" in error
+        for error in backtester_concurrency_errors
+    ):
+        raise AssertionError(
+            f"expected backtester merge_group concurrency error, got: {backtester_concurrency_errors}"
+        )
+
+    backtester_cancelling_merge_group = replace_once(
+        backtester_workflow,
+        "        || github.event_name == 'workflow_dispatch' }}",
+        "        || github.event_name == 'workflow_dispatch'\n        || github.event_name == 'merge_group' }}",
+    )
+    backtester_cancel_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_cancelling_merge_group}
+    )
+    if not any(
+        "cancel-in-progress must not cancel merge_group queue validations" in error
+        for error in backtester_cancel_errors
+    ):
+        raise AssertionError(
+            f"expected backtester merge_group cancel-scope error, got: {backtester_cancel_errors}"
+        )
 
     # Decoupled merge_group arm (ci.yml): a merge_group arm must be caught even
     # when 'mq-{0}'/'github.ref' still appear elsewhere. Swap the merge_group and

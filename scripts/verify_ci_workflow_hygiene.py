@@ -9370,24 +9370,35 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     jobs = parse_jobs(text)
     archive_job = jobs.get("test-archive")
     test_job = jobs.get("test")
+    issue_job = jobs.get("issue_789")
+    gate_job = jobs.get("gate")
     errors: list[str] = []
     if archive_job is None:
         errors.append("backtester bvs-test must define archive producer job")
     if test_job is None:
         errors.append("backtester bvs-test must define matrix shard job")
+    if issue_job is None:
+        errors.append("backtester bvs-test must define dedicated issue-789 job")
     if archive_job is None or test_job is None:
         return errors
     archive_text = uncommented_text(archive_job)
     job_text = uncommented_text(test_job)
-    combined_text = f"{archive_text}\n{job_text}"
+    issue_text = uncommented_text(issue_job) if issue_job is not None else ""
+    gate_text = uncommented_text(gate_job) if gate_job is not None else ""
+    consumer_text = f"{job_text}\n{issue_text}"
+    combined_text = f"{archive_text}\n{consumer_text}"
     if "just bte-test --partition" in combined_text:
         errors.append("backtester bvs-test must not run direct per-shard target builds")
     if "for shard in $(seq" in archive_text or "just bte-test-archive-run" in archive_text:
         errors.append("backtester bvs-test archive producer must not run partitions serially")
-    if "build --locked --bins" in job_text:
-        errors.append("backtester bvs-test shards must not build binary sidecars")
-    if "managed-target-bvs-v1-" in job_text or "test-target-cache" in job_text:
-        errors.append("backtester bvs-test shards must not restore the managed target cache")
+    if "build --locked --bins" in consumer_text:
+        errors.append("backtester bvs-test consumers must not build binary sidecars")
+    if "managed-target-bvs-v1-" in consumer_text or "test-target-cache" in consumer_text:
+        errors.append("backtester bvs-test consumers must not restore the managed target cache")
+    if gate_job is not None and (
+        "issue_789" in extract_needs(gate_job) or "needs.issue_789.result" in gate_text
+    ):
+        errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
 
     archive_fragments = [
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
@@ -9502,12 +9513,69 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             'mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"',
         ),
         (
-            "backtester bvs-test shards must run one partition from local archive",
-            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}"',
+            "backtester bvs-test shards must exclude dedicated issue-789 lane",
+            "-- --skip issue_789_first_real_free_data_taker_pl",
         ),
         (
-            "backtester bvs-test issue artifact names must include shard",
-            "name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}",
+            "backtester bvs-test shards must run one partition from local archive",
+            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}" -- --skip issue_789_first_real_free_data_taker_pl',
+        ),
+    ]
+    issue_fragments = [
+        ("backtester bvs-test issue-789 must use dedicated job name", "name: bvs-test issue-789"),
+        (
+            "backtester bvs-test issue-789 must depend on archive producer and backtester-gate",
+            "needs: [ci-policy, detect, test-archive, gate]",
+        ),
+        (
+            "backtester bvs-test issue-789 must only run after archive producer succeeds",
+            "needs.test-archive.result == 'success'",
+        ),
+        (
+            "backtester bvs-test issue-789 must only run after required gate succeeds",
+            "needs.gate.result == 'success'",
+        ),
+        ("backtester bvs-test issue-789 must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
+        ("backtester bvs-test issue-789 must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
+        (
+            "backtester bvs-test issue-789 must write the first-P/L artifact path",
+            "BOLT_ISSUE_789_RESULT_PATH:",
+        ),
+        (
+            "backtester bvs-test issue-789 must restore nextest archive cache",
+            "id: bvs-nextest-archive-cache",
+        ),
+        (
+            "backtester bvs-test issue-789 must fail closed if archive cache is absent",
+            "Require BVS nextest archive cache",
+        ),
+        (
+            "backtester bvs-test issue-789 must restore binary sidecar cache",
+            "id: bvs-bin-sidecars-cache",
+        ),
+        (
+            "backtester bvs-test issue-789 must fail closed if sidecar cache is absent",
+            "Require BVS binary sidecars cache",
+        ),
+        (
+            "backtester bvs-test issue-789 must extract binary sidecars",
+            'tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"',
+        ),
+        (
+            "backtester bvs-test issue-789 must create archive extract root",
+            'mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"',
+        ),
+        (
+            "backtester bvs-test issue-789 must run only the dedicated long test",
+            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl',
+        ),
+        (
+            "backtester bvs-test issue-789 artifact name must be deterministic",
+            "name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}",
+        ),
+        (
+            "backtester bvs-test issue-789 artifact must fail closed if missing",
+            "if-no-files-found: error",
         ),
     ]
     for message, fragment in archive_fragments:
@@ -9516,6 +9584,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     for message, fragment in test_fragments:
         if fragment not in job_text:
             errors.append(message)
+    if issue_job is not None:
+        for message, fragment in issue_fragments:
+            if fragment not in issue_text:
+                errors.append(message)
     return errors
 
 
@@ -9620,7 +9692,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             if required not in policy_text:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
 
-    for heavy_job in ("clippy", "test-archive", "test"):
+    for heavy_job in ("clippy", "test-archive", "test", "issue_789"):
         job = jobs.get(heavy_job)
         if job is None:
             continue
@@ -9695,6 +9767,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
             if not branch_exits_reachable(full_body, "if", condition):
                 errors.append(f"backtester draft deferral gate must require {job} success on full proof path")
+        if gate_text and ("issue_789" in extract_needs(gate) or "needs.issue_789.result" in gate_text):
+            errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
 
     group_text = backtester_concurrency_group_text(text)
     if "format('bvs-pr-{0}-deferred', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:

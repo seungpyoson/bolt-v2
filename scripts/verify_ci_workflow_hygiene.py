@@ -9363,6 +9363,161 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
     return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
 
 
+def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
+    if not file_name.endswith("backtester-ci.yml"):
+        return []
+    jobs = parse_jobs(text)
+    archive_job = jobs.get("test-archive")
+    test_job = jobs.get("test")
+    errors: list[str] = []
+    if archive_job is None:
+        errors.append("backtester bvs-test must define archive producer job")
+    if test_job is None:
+        errors.append("backtester bvs-test must define matrix shard job")
+    if archive_job is None or test_job is None:
+        return errors
+    archive_text = uncommented_text(archive_job)
+    job_text = uncommented_text(test_job)
+    combined_text = f"{archive_text}\n{job_text}"
+    if "just bte-test --partition" in combined_text:
+        errors.append("backtester bvs-test must not run direct per-shard target builds")
+    if "for shard in $(seq" in archive_text or "just bte-test-archive-run" in archive_text:
+        errors.append("backtester bvs-test archive producer must not run partitions serially")
+    if "build --locked --bins" in job_text:
+        errors.append("backtester bvs-test shards must not build binary sidecars")
+    if "managed-target-bvs-v1-" in job_text or "test-target-cache" in job_text:
+        errors.append("backtester bvs-test shards must not restore the managed target cache")
+
+    archive_fragments = [
+        ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
+        ("backtester bvs-test archive must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
+        ("backtester bvs-test archive must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
+        (
+            "backtester bvs-test archive must restore nextest archive cache explicitly",
+            "id: bvs-nextest-archive-cache",
+        ),
+        (
+            "backtester bvs-test archive must restore caches through pinned actions/cache",
+            "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae",
+        ),
+        (
+            "backtester bvs-test archive cache key must be exact and content-addressed",
+            "key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+        ),
+        (
+            "backtester bvs-test archive must restore binary sidecar cache",
+            "id: bvs-bin-sidecars-cache",
+        ),
+        (
+            "backtester bvs-test sidecar cache key must be exact and content-addressed",
+            "key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
+        ),
+        (
+            "backtester bvs-test archive must resolve target only for cache misses",
+            "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'",
+        ),
+        (
+            "backtester bvs-test archive must save shared registry cache from the archive producer only",
+            "save-if: ${{ github.job == 'test-archive' }}",
+        ),
+        (
+            "backtester bvs-test archive must build archive only on cache miss",
+            "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'",
+        ),
+        (
+            "backtester bvs-test archive must build a nextest archive",
+            'just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH"',
+        ),
+        (
+            "backtester bvs-test archive must save nextest archive cache explicitly",
+            "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae",
+        ),
+        (
+            "backtester bvs-test archive must build sidecars only on sidecar cache miss",
+            "if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'",
+        ),
+        (
+            "backtester bvs-test archive must build binary sidecars",
+            "Build BVS binary sidecars",
+        ),
+        (
+            "backtester bvs-test archive sidecars must use managed cargo",
+            'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- build --locked --bins',
+        ),
+        (
+            "backtester bvs-test archive must pack sidecars from target debug",
+            "find debug -maxdepth 1 -type f -perm -111 -print0",
+        ),
+        (
+            "backtester bvs-test archive must save binary sidecar cache",
+            "Save BVS binary sidecars",
+        ),
+        (
+            "backtester bvs-test archive must restore target cache only while producing caches",
+            "if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'",
+        ),
+        (
+            "backtester bvs-test archive must save target cache only after archive/sidecar misses",
+            "if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}",
+        ),
+    ]
+    test_fragments = [
+        ("backtester bvs-test shards must name matrix shards", "name: bvs-test ${{ matrix.shard }} of 4"),
+        (
+            "backtester bvs-test shards must depend on archive producer",
+            "needs: [ci-policy, detect, fmt, test-archive]",
+        ),
+        (
+            "backtester bvs-test shards must only run after archive producer succeeds",
+            "needs.test-archive.result == 'success'",
+        ),
+        ("backtester bvs-test shards must keep fail-fast disabled", "fail-fast: false"),
+        ("backtester bvs-test shards must define four nextest shards", "shard: [1, 2, 3, 4]"),
+        ("backtester bvs-test shards must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
+        ("backtester bvs-test shards must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
+        ("backtester bvs-test shards must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
+        (
+            "backtester bvs-test shards must restore nextest archive cache",
+            "id: bvs-nextest-archive-cache",
+        ),
+        (
+            "backtester bvs-test shards must fail closed if archive cache is absent",
+            "Require BVS nextest archive cache",
+        ),
+        (
+            "backtester bvs-test shards must restore binary sidecar cache",
+            "id: bvs-bin-sidecars-cache",
+        ),
+        (
+            "backtester bvs-test shards must fail closed if sidecar cache is absent",
+            "Require BVS binary sidecars cache",
+        ),
+        (
+            "backtester bvs-test shards must extract binary sidecars",
+            'tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"',
+        ),
+        (
+            "backtester bvs-test shards must create archive extract root",
+            'mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"',
+        ),
+        (
+            "backtester bvs-test shards must run one partition from local archive",
+            'just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}"',
+        ),
+        (
+            "backtester bvs-test issue artifact names must include shard",
+            "name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}",
+        ),
+    ]
+    for message, fragment in archive_fragments:
+        if fragment not in archive_text:
+            errors.append(message)
+    for message, fragment in test_fragments:
+        if fragment not in job_text:
+            errors.append(message)
+    return errors
+
+
 BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}"
 BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 BACKTESTER_ITERATION_CONDITION = '"$policy_path" == "iteration"'
@@ -9388,6 +9543,13 @@ BACKTESTER_POLICY_DEFER_ACTIONS = {
         "converted_to_draft",
     )
 }
+
+
+def has_backtester_full_proof_guard(job_text: str) -> bool:
+    return (
+        "needs.ci-policy.outputs.full_ci_required == 'true'" in job_text
+        and "needs.detect.outputs.bvs_changed == 'true'" in job_text
+    )
 
 
 def backtester_concurrency_group_text(text: str) -> str:
@@ -9457,14 +9619,14 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             if required not in policy_text:
                 errors.append(f"backtester draft deferral ci-policy job must include {required}")
 
-    for heavy_job in ("clippy", "test"):
+    for heavy_job in ("clippy", "test-archive", "test"):
         job = jobs.get(heavy_job)
         if job is None:
             continue
         needs = extract_needs(job)
         if "ci-policy" not in needs:
             errors.append(f"backtester draft deferral managed-heavy job {heavy_job} must need ci-policy")
-        if BACKTESTER_FULL_PROOF_IF not in uncommented_text(job):
+        if not has_backtester_full_proof_guard(uncommented_text(job)):
             errors.append("backtester draft deferral managed-heavy jobs must require full CI policy")
 
     gate = jobs.get("gate")
@@ -9502,7 +9664,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '"${{ needs.fmt.result }}" != "success" && "${{ needs.fmt.result }}" != "skipped"',
         ):
             errors.append("backtester draft deferral gate must require fmt success or skipped on iteration")
-        for job in ("clippy", "test"):
+        for job in ("clippy", "test-archive", "test"):
             if iteration_body is None or not branch_exits_reachable(
                 iteration_body,
                 "if",
@@ -9528,7 +9690,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         ):
             errors.append("backtester draft deferral gate must fail deferred policy outside resolver-permitted event class")
         full_body = defer_sections[1] if defer_sections is not None else gate_text
-        for job in ("fmt", "clippy", "test"):
+        for job in ("fmt", "clippy", "test-archive", "test"):
             condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
             if not branch_exits_reachable(full_body, "if", condition):
                 errors.append(f"backtester draft deferral gate must require {job} success on full proof path")
@@ -9577,10 +9739,35 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     return errors
 
 
+def backtester_nextest_archive_recipe_errors(file_name: str, text: str) -> list[str]:
+    if file_name != "justfile" and not file_name.endswith("/justfile"):
+        return []
+    start = text.find("bte-test-archive archive *args:")
+    if start == -1:
+        return []
+    end = text.find("\nbte-build:", start)
+    recipe_text = text[start:] if end == -1 else text[start:end]
+    errors: list[str] = []
+    for required in (
+        'case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac',
+        '--archive-file "$archive_path"',
+    ):
+        if required not in recipe_text:
+            errors.append("backtester nextest archive recipes must absolutize archive paths from repo_root")
+    for forbidden in ('--archive-file "{{archive}}"', "--archive-file '{{archive}}'"):
+        if forbidden in recipe_text:
+            errors.append("backtester nextest archive recipes must not pass crate-relative archive paths")
+    return errors
+
+
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_nextest_archive_recipe_errors(file_name, text)),
+        )
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_managed_target_cache_errors(file_name, text)),
@@ -9588,6 +9775,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_gate_detect_result_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_test_shard_errors(file_name, text)),
         )
         add_unique_errors(
             errors,

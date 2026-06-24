@@ -14,6 +14,11 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.96.0"
 publish = false
+autotests = false
+
+[[test]]
+name = "backtesting_vertical_slice_tests"
+path = "tests/backtesting_vertical_slice_tests.rs"
 
 [dependencies]
 ahash = "=0.8.12"

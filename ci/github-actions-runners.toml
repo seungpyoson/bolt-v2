@@ -45,6 +45,7 @@ fmt = "managed_light"
 # free_bytes=10,622,885,888 < min_free_bytes=10,737,418,240. Kept consistent with the test lane,
 # which already compiles this crate on managed_heavy.
 clippy = "managed_heavy"
+test-archive = "managed_heavy"
 test = "managed_heavy"
 gate = "github_hosted"
 

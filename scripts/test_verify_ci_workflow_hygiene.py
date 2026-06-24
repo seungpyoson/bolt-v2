@@ -6507,6 +6507,8 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         assert_v6_red_exact_head_governance_inputs_are_cache_keyed,
         assert_v6_red_backtester_cache_keys_include_crate_sources,
         assert_v6_red_backtester_gate_fails_when_detect_fails,
+        assert_v6_red_backtester_test_uses_nextest_archive,
+        assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths,
     ]
     failures: list[str] = []
     for check in checks:
@@ -6574,6 +6576,127 @@ def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [
         error for error in good_errors if "backtester-gate must check needs.detect.result" in error
+    ], good_errors
+
+
+def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
+    verifier = load_verifier()
+    bad = """jobs:
+  test-archive:
+    name: bvs-test archive
+  test:
+    name: bvs-test
+    steps:
+      - name: test
+        run: just bte-test --partition "count:${{ matrix.shard }}/4"
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    assert any("backtester bvs-test must not run direct per-shard target builds" in error for error in errors), errors
+    assert any("backtester bvs-test shards must name matrix shards" in error for error in errors), errors
+
+    good = """jobs:
+  test-archive:
+    name: bvs-test archive
+    needs: [ci-policy, detect, fmt]
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+    steps:
+      - name: Restore BVS nextest archive
+        id: bvs-nextest-archive-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+      - name: Restore BVS binary sidecars
+        id: bvs-bin-sidecars-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**') }}
+      - name: Resolve crate managed target dir
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+      - uses: Swatinem/rust-cache@example
+        with:
+          save-if: ${{ github.job == 'test-archive' }}
+      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Build BVS nextest archive
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        run: just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH"
+      - name: Save BVS nextest archive
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Build BVS binary sidecars
+        if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- build --locked --bins
+          find debug -maxdepth 1 -type f -perm -111 -print0
+      - name: Save BVS binary sidecars
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Save archive build target cache
+        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+  test:
+    name: bvs-test ${{ matrix.shard }} of 4
+    needs: [ci-policy, detect, fmt, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BVS_NEXTEST_SHARDS: "4"
+    steps:
+      - name: Restore BVS nextest archive
+        id: bvs-nextest-archive-cache
+      - name: Require BVS nextest archive cache
+      - name: Restore BVS binary sidecars
+        id: bvs-bin-sidecars-cache
+      - name: Require BVS binary sidecars cache
+      - name: Extract BVS binary sidecars
+        run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+      - name: test
+        run: |
+          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
+          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}"
+      - name: Upload issue #789 first-P/L artifact
+        uses: actions/upload-artifact@example
+        with:
+          name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
+"""
+    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
+    assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
+
+
+def assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths() -> None:
+    verifier = load_verifier()
+    bad = """bte-test-archive archive *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
+
+bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+"""
+    errors = verifier.verify_repo_automation_texts({"justfile": bad})
+    assert any("backtester nextest archive recipes must absolutize archive paths" in error for error in errors), errors
+    assert any("backtester nextest archive recipes must not pass crate-relative archive paths" in error for error in errors), errors
+
+    good = """bte-test-archive archive *args: check-workspace require-rust-verification-owner
+    archive_path="{{archive}}"; \\
+      case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \\
+      mkdir -p "$(dirname "$archive_path")"; \\
+      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "$archive_path" {{args}}
+
+bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    archive_path="{{archive}}"; \\
+      case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \\
+      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "$archive_path" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+"""
+    good_errors = verifier.verify_repo_automation_texts({"justfile": good})
+    assert not [
+        error for error in good_errors if "backtester nextest archive recipes" in error
     ], good_errors
 
 

@@ -612,6 +612,16 @@ CI_HEAVY_JOBS = (
     "build",
 )
 
+CI_FULL_REQUIRED_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test")
+CI_ARCHIVE_REQUIRED_JOBS = ("nextest-fingerprint", "test-archive")
+BACKTESTER_SKIPPED_PROOF_JOBS = ("clippy", "test-archive", "test")
+BACKTESTER_REQUIRED_PROOF_JOBS = (
+    ("fmt", "bvs-fmt"),
+    ("clippy", "bvs-clippy"),
+    ("test-archive", "bvs-test archive"),
+    ("test", "bvs-test"),
+)
+
 
 def require_verified_carry_forward(carry_forward_verified: bool) -> None:
     if not carry_forward_verified:
@@ -707,7 +717,10 @@ def evaluate_ci_gate_verdict(
         if emit_result != "success" and not ignore_emit_failure:
             raise ProvenanceError("ci-provenance-emit did not succeed")
 
-    for job in ("deny", "clippy", "check-aarch64", "source-fence", "test"):
+    required_full_jobs = CI_FULL_REQUIRED_JOBS
+    if not reuse_found:
+        required_full_jobs = (*required_full_jobs, *CI_ARCHIVE_REQUIRED_JOBS)
+    for job in required_full_jobs:
         require_job_result(job_results, job, "success", f"{job} did not succeed")
     if build_required:
         require_job_result(job_results, "build", "success", "build did not succeed when build_required=true")
@@ -736,47 +749,34 @@ def evaluate_backtester_gate_verdict(
         if expected_event_class != "iteration":
             raise ProvenanceError(f"backtester iteration CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during iteration")
-        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester iteration")
+        require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester iteration")
         return "backtester iteration CI policy; no required full proof published by this run"
 
     if not bvs_changed:
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
-        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester no-crate")
+        require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester no-crate")
         return "backtester no-crate proof passed"
 
     if policy_path == "noop":
         if expected_event_class != "noop":
             raise ProvenanceError(f"backtester noop CI policy outside resolver-permitted event class {expected_event_class!r}")
-        for job, label in (
-            ("fmt", "bvs-fmt"),
-            ("clippy", "bvs-clippy"),
-            ("test-archive", "bvs-test archive"),
-            ("test", "bvs-test"),
-        ):
+        for job, label in BACKTESTER_REQUIRED_PROOF_JOBS:
             require_job_result(job_results, job, "success", f"{label} did not succeed")
         return "backtester no-code policy recomputed proof passed"
 
     if policy_path == "defer" or full_ci_deferred:
         if expected_event_class != "defer":
             raise ProvenanceError(f"backtester deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
-        for job, label in (
-            ("fmt", "bvs-fmt"),
-            ("clippy", "bvs-clippy"),
-            ("test-archive", "bvs-test archive"),
-            ("test", "bvs-test"),
-        ):
+        for job, label in BACKTESTER_REQUIRED_PROOF_JOBS:
             require_job_result(job_results, job, "success", f"{label} did not succeed")
         return "backtester deferred policy recomputed proof passed"
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown backtester CI policy path {policy_path!r}")
 
-    for job, label in (
-        ("fmt", "bvs-fmt"),
-        ("clippy", "bvs-clippy"),
-        ("test-archive", "bvs-test archive"),
-        ("test", "bvs-test"),
-    ):
+    # issue_789 is intentionally downstream of backtester-gate; requiring it here
+    # would make the diagnostic lane part of the merge gate and create a cycle.
+    for job, label in BACKTESTER_REQUIRED_PROOF_JOBS:
         require_job_result(job_results, job, "success", f"{label} did not succeed")
     return "backtester full proof passed"
 

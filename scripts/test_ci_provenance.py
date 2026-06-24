@@ -1934,6 +1934,104 @@ def assert_test_archive_and_build_rules() -> None:
         )
 
 
+def ci_gate_jobs(**overrides: str) -> dict[str, str]:
+    jobs = {
+        "ci-policy": "success",
+        "detector": "success",
+        "same-sha-main-evidence": "skipped",
+        "deny": "success",
+        "clippy": "success",
+        "check-aarch64": "success",
+        "source-fence": "success",
+        "nextest-fingerprint": "success",
+        "test-archive": "success",
+        "nextest-fingerprint-reuse": "skipped",
+        "test": "success",
+        "build": "success",
+        "ci-provenance-emit": "success",
+    }
+    jobs.update(overrides)
+    return jobs
+
+
+def bvs_gate_jobs(**overrides: str) -> dict[str, str]:
+    jobs = {
+        "ci-policy": "success",
+        "detect": "success",
+        "fmt": "success",
+        "clippy": "success",
+        "test-archive": "success",
+        "test": "success",
+    }
+    jobs.update(overrides)
+    return jobs
+
+
+def assert_ci_gate_full_requires_archive_proof_when_not_reused() -> None:
+    module = load_script()
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        carry_forward_verified=False,
+        job_results=ci_gate_jobs(),
+        build_required=True,
+    )
+    assert_raises(
+        "nextest-fingerprint did not succeed",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=ci_gate_jobs(**{"nextest-fingerprint": "skipped"}),
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "test-archive did not succeed",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=ci_gate_jobs(**{"test-archive": "skipped"}),
+            build_required=True,
+        ),
+    )
+
+
+def assert_backtester_gate_excludes_post_gate_issue_789_diagnostic() -> None:
+    module = load_script()
+    module.evaluate_backtester_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        job_results=bvs_gate_jobs(),
+        bvs_changed=True,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="iteration",
+        expected_event_class="iteration",
+        full_ci_deferred=False,
+        job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"}),
+        bvs_changed=True,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"}),
+        bvs_changed=False,
+    )
+
+
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
@@ -1985,6 +2083,8 @@ def main() -> int:
     assert_job_evidence_success_passes()
     assert_nextest_archive_job_failures_rejected()
     assert_test_archive_and_build_rules()
+    assert_ci_gate_full_requires_archive_proof_when_not_reused()
+    assert_backtester_gate_excludes_post_gate_issue_789_diagnostic()
     print("OK: CI provenance self-tests passed.")
     return 0
 

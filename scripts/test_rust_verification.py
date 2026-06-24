@@ -42,6 +42,48 @@ def load_owner_module() -> object:
     return module
 
 
+def load_ci_provenance_module() -> object:
+    path = REPO_ROOT / "scripts" / "ci_provenance.py"
+    spec = importlib.util.spec_from_file_location("ci_provenance_under_test", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load ci_provenance.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def assert_ci_provenance_gate_name_helpers_stay_in_parity() -> None:
+    owner = load_owner_module()
+    provenance = load_ci_provenance_module()
+    if owner.GATE_NAME_KEYS != provenance.GATE_NAME_KEYS:
+        raise AssertionError((owner.GATE_NAME_KEYS, provenance.GATE_NAME_KEYS))
+    for value in (
+        "gate",
+        "gate ",
+        " gate",
+        "gate\nignored=1",
+        "gate\tignored",
+        "${{ github.ref }}",
+        "gate }}",
+        "backtester-gate-dispatch",
+    ):
+        owner_result = owner.github_actions_output_safe_check_name(value)
+        provenance_result = provenance.github_actions_output_safe_check_name(value)
+        if owner_result != provenance_result:
+            raise AssertionError((value, owner_result, provenance_result))
+    collision_cases = (
+        {"gate_required": "gate", "gate_noop": "gate"},
+        {"gate_required": "gate", "backtester_noop": "gate"},
+        {"gate_dispatch_full": "gate-dispatch", "backtester_dispatch_full": "gate-dispatch"},
+    )
+    for gate_names in collision_cases:
+        owner_errors = owner.gate_name_collision_errors(gate_names)
+        provenance_errors = provenance.gate_name_collision_errors(gate_names)
+        if owner_errors != provenance_errors:
+            raise AssertionError((gate_names, owner_errors, provenance_errors))
+
+
 def write_executable(path: pathlib.Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
@@ -174,7 +216,13 @@ printf 'args=%s\\n' "$*" >> {just_log}
         if (
             refusal.get("refusal_code") != "local_compile_disabled"
             or "just rust-probe suggest" not in next_steps
-            or "for merge proof: run: just verify-remote" not in next_steps
+            or "for full remote feedback on a draft PR: run: just verify-remote" not in next_steps
+            or (
+                "for merge proof: mark the PR ready, then run: just verify-remote "
+                "to wait for the required PR gate, or use the merge-queue gate"
+            )
+            not in next_steps
+            or "for merge proof: run: just verify-remote" in next_steps
         ):
             raise AssertionError(refusal)
 
@@ -211,6 +259,52 @@ printf 'args=%s\\n' "$*" >> {just_log}
         }
         if payload != expected_payload:
             raise AssertionError(payload)
+
+
+def assert_rust_probe_guidance_distinguishes_feedback_from_proof() -> None:
+    owner = load_owner_module()
+    stale_fragments = (
+        "run just verify-remote for proof",
+        "verify-remote is final proof",
+        "draft verify-remote is proof",
+        "verify-remote only for final exact-head full-CI proof",
+        "For final proof, use exact-head PR CI evidence through `just verify-remote`",
+        "Full CI is proof. Rust Probe is debugging.",
+        "dispatch Backtester CI with full_ci=true for this branch or mark ready",
+    )
+    operator_surfaces = (
+        SCRIPT,
+        REPO_ROOT / "AGENTS.md",
+        REPO_ROOT / "docs" / "ci" / "ubicloud-cost-governance.md",
+        REPO_ROOT / ".github" / "workflows" / "backtester-ci.yml",
+    )
+    for path in operator_surfaces:
+        source = path.read_text(encoding="utf-8")
+        if any(fragment in source for fragment in stale_fragments):
+            raise AssertionError(f"{path.relative_to(REPO_ROOT)} contains stale verify-remote proof guidance")
+    if any(fragment in owner.RUST_PROBE_HELP_EPILOG for fragment in stale_fragments):
+        raise AssertionError(owner.RUST_PROBE_HELP_EPILOG)
+
+    stdout = io.StringIO()
+    run = {
+        "databaseId": 1001,
+        "event": "workflow_dispatch",
+        "headSha": VERIFY_REMOTE_HEAD,
+        "status": "completed",
+        "conclusion": "success",
+        "createdAt": "2026-06-13T00:00:00Z",
+        "displayTitle": "Rust Probe abc123 check-lib",
+        "url": "https://github.com/seungpyoson/bolt-v2/actions/runs/1001",
+    }
+    with contextlib.redirect_stdout(stdout):
+        result = owner.evaluate_rust_probe_run(run, head=VERIFY_REMOTE_HEAD, probe_id="abc123")
+    output = stdout.getvalue()
+    if result != 0:
+        raise AssertionError((result, output))
+    if "draft verify-remote is feedback only" not in output:
+        raise AssertionError(output)
+    if any(fragment in output for fragment in stale_fragments):
+        raise AssertionError(output)
 
 
 def assert_fmt_avoids_managed_cache_lock() -> None:
@@ -314,6 +408,9 @@ def write_verify_remote_config(repo: pathlib.Path) -> None:
             run_name_full = "CI [dispatch:full]"
             run_name_iteration = "CI [dispatch:iteration]"
             proof_gate_job = "gate"
+
+            [ci_provenance.gate_names]
+            gate_dispatch_full = "gate-dispatch"
             """
         ),
         encoding="utf-8",
@@ -361,8 +458,14 @@ def workflow_jobs(*, gate_conclusion: str | None = "success") -> dict[str, objec
     return {
         "jobs": [
             {
-                "databaseId": 9001,
+                "databaseId": 9000,
                 "name": "gate",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "databaseId": 9001,
+                "name": "gate-dispatch",
                 "status": "completed",
                 "conclusion": gate_conclusion,
             }
@@ -548,7 +651,7 @@ def assert_verify_remote_dispatches_draft_full_ci_and_waits_run_scoped() -> None
         dispatch_text = " ".join(harness.dispatches[0])
         if ".github/workflows/ci.yml" not in dispatch_text or "full_ci=true" not in dispatch_text:
             raise AssertionError(dispatch_text)
-        if "final-proof full CI" not in stdout or "just rust-probe suggest" not in stdout:
+        if "full CI feedback" not in stdout or "just rust-probe suggest" not in stdout:
             raise AssertionError(stdout)
         if harness.pr_checks_calls:
             raise AssertionError("draft dispatch wait must not use aggregate gh pr checks")
@@ -696,7 +799,7 @@ def assert_verify_remote_rejects_full_marker_without_gate_success() -> None:
             jobs_by_run_id={205: workflow_jobs(gate_conclusion="skipped")},
         ) as harness:
             result, _stdout, stderr = run_verify_remote_with_harness(harness)
-        if result != 1 or "successful gate job" not in stderr:
+        if result != 1 or "successful dispatch full gate job" not in stderr:
             raise AssertionError((result, stderr))
 
 
@@ -1106,6 +1209,8 @@ def assert_ci_logs_command_fails_when_diagnostics_unavailable() -> None:
 
 def main() -> int:
     assert_repo_local_owner_contract()
+    assert_ci_provenance_gate_name_helpers_stay_in_parity()
+    assert_rust_probe_guidance_distinguishes_feedback_from_proof()
     assert_fmt_avoids_managed_cache_lock()
     assert_system_python_contract()
     assert_oversized_policy_fails_closed()

@@ -12,7 +12,7 @@ Remote-first Rust verification remains the invariant:
 2. For Rust debugging, run `just rust-probe suggest` and choose the smallest targeted remote probe.
 3. Commit and push.
 4. Open or update a PR.
-5. For final proof, use exact-head PR CI evidence through `just verify-remote`.
+5. For ready-PR final proof, use exact-head PR CI evidence through `just verify-remote`; draft `verify-remote` is feedback only.
 
 This policy does not move broad Rust verification back to local cargo and does not weaken the required final-head green CI gate.
 
@@ -39,7 +39,7 @@ Fingerprint evidence is provenance-based. Runs before this instrumentation have 
 
 The nextest cache/fingerprint expression remains inline in `.github/workflows/ci.yml` because GitHub Actions evaluates `hashFiles(...)` inside workflow YAML. The hygiene verifier enforces structural identity across the cache restore key, cache save key, fingerprint file, and fingerprint artifact name so version, shard, or input drift fails CI.
 
-Fingerprint reuse is available only on pull request runs. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs, plus branch `workflow_dispatch` runs dispatched with `full_ci=true`, must run the normal nextest archive lane so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard. Default branch `workflow_dispatch` runs are iteration runs and are not merge proof.
+Fingerprint reuse is available only on pull request runs. It is disabled on pull requests that change the workflow, setup action, runner/provenance config, provenance resolver, or the resolver/hygiene self-tests. Those PRs, plus branch `workflow_dispatch` runs dispatched with `full_ci=true`, must run the normal nextest archive lane so PR-controlled reuse logic cannot decide to skip test execution outside the diff guard. `workflow_dispatch` runs are feedback only and are not merge proof.
 
 ## Baseline Evidence
 
@@ -134,7 +134,7 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 - During the first week, run the meter daily and compare the runner-minute trend to the Ubicloud dashboard. After the first week, run weekly or before/after CI topology changes.
 - Default to a **draft** PR while iterating. Draft pushes defer the full-CI merge proof — the full-CI merge-proof lanes skip and the gate publishes `gate-deferred`, so a draft cannot merge — though always-on feedback (clippy on `managed_heavy`, deny on `managed_light`) still runs (see [Lever B](#lever-b-full-ci-on-demand)). Iterate on it freely. Mark the PR ready only when its head is the intended merge candidate; `ready_for_review` then triggers the full-CI merge proof on that exact head SHA. This is a major run-volume lever: draft-stage was ~26% of `managed_heavy` minutes in the slice 2b meter (2374.694 / 9023.518) — an upper bound that mixes always-on clippy minutes with full-proof dispatches, i.e. heavy work spent on intermediate commits a later push replaces.
 - Do not push exploratory or fixup commits to a **ready** PR. Each push re-runs full heavy CI on the new SHA and a prior green does not carry over, so return the PR to draft (or keep iterating on draft) until the next coherent slice.
-- Treat `just verify-remote` / full CI as a final-proof run once per coherent slice, not a debug loop. Use draft deferred runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#rust-probe-policy)) for mid-iteration feedback rather than repeated full dispatches.
+- Treat `just verify-remote` / full CI as a high-cost feedback run once per coherent draft slice, not a debug loop or merge proof. Use draft deferred runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#rust-probe-policy)) for mid-iteration feedback rather than repeated full dispatches.
 
 ## Lever Decisions
 
@@ -155,7 +155,7 @@ Post-instrumentation evidence found real duplicate nextest spend:
 
 The workflow now resolves the current nextest fingerprint from the secure `nextest-fingerprint` job output after publishing `nextest-archive-fingerprint-*` for metering evidence. If a bounded search finds a newer-prior successful CI run with exactly one matching fingerprint artifact, exactly one matching CI provenance artifact, matching workflow/config digests, successful required job evidence, and the same parsed nextest fingerprint, the managed-heavy `test-archive` job is skipped. The `test` aggregate and `gate` jobs accept that path only when resolver outputs identify the reused source run, source SHA, and provenance artifact. Fingerprint reuse is disabled on `refs/heads/main` so main pushes still emit exact-SHA CI provenance for tag deploy reuse. Missing, malformed, ambiguous, expired, failed, cancelled, in-progress, wrong-workflow, wrong-OS, wrong-arch, wrong-profile, wrong-shard-count, wrong-schema, or otherwise unverifiable evidence falls back to normal full nextest archive execution.
 
-Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to force the full-CI policy path for PRs while preserving the validated fingerprint reuse path for investigation. Revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs execute the nextest archive lane only when dispatched with `full_ci=true`; default manual dispatches publish `gate-iteration` and skip full proof lanes. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
+Policy override: set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` only for an explicit break-glass investigation; checked-in config must keep the override default `false` because CI hygiene intentionally rejects a merge candidate with the override enabled. Revert the Slice A workflow/provenance commits if reuse itself must be removed. Branch `workflow_dispatch` runs execute the nextest archive lane only when dispatched with `full_ci=true`; default manual dispatches publish `gate-iteration` and skip full feedback lanes. Full dispatches publish feedback-only dispatch gate names, not the required merge-proof `gate`. Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; it does not make cache hits proof and does not bypass the validated reuse requirement.
 
 ### Lever B: full CI on demand
 
@@ -163,7 +163,7 @@ Decision: go for a separate focused follow-up PR under #648 and #333.
 
 The one-day filtered lookback measured draft-stage runs at 709.484 `managed_heavy` minutes and 64.183 `managed_light` minutes. That is enough addressable spend to justify designing an on-demand heavy-lane flow, provided the required `gate` still blocks merge until a full green run or provenance-verified reuse exists on the exact final head SHA.
 
-Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first final-proof runs such as `just verify-remote` that operators would still request before merge readiness. Normal Rust debugging should use targeted `just rust-probe ...` runs instead. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
+Those draft-stage minutes are an upper bound for Lever B savings because they include explicit remote-first full-feedback runs such as `just verify-remote` that operators may still request before merge readiness. Normal Rust debugging should use targeted `just rust-probe ...` runs instead. The defensible lower bound from the same baseline is the intersection of `draft-stage` and `cancelled-superseded`: 53.034 `managed_heavy` minutes and 4.016 `managed_light` minutes. The follow-up Lever B PR must remeasure both bounds before changing CI topology.
 
 Slice 2b remeasurement before the topology change:
 
@@ -180,9 +180,9 @@ The meter generated the report at `2026-06-13T05:10:26Z`. It reported `9023.518`
 
 Slice 2b implements Lever B only for `.github/workflows/ci.yml`. `backtester-ci.yml` remains measured by the same meter, but its draft-stage policy is out of scope for this slice.
 
-Deferred draft CI publishes `gate-deferred`, not `gate`. A draft PR push skips the full-CI merge-proof lanes (build, test, check-aarch64, source-fence, nextest fingerprint/reuse, test-archive — gated on `full_ci_required`, with runner tiers that vary) but still runs the always-on lanes (clippy on `managed_heavy`, deny on `managed_light`) for feedback, and exits `gate-deferred` successfully with the operator path to use `just rust-probe suggest` for debugging, then run `just verify-remote` only for final proof or mark the PR ready. This preserves branch-protection semantics: draft feedback is not represented as merge-ready green CI because the required `gate` check is not published by deferred draft runs.
+Deferred draft CI publishes `gate-deferred`, not `gate`. A draft PR push skips the full-CI merge-proof lanes (build, test, check-aarch64, source-fence, nextest fingerprint/reuse, test-archive — gated on `full_ci_required`, with runner tiers that vary) but still runs the always-on lanes (clippy on `managed_heavy`, deny on `managed_light`) for feedback, and exits `gate-deferred` successfully with the operator path to use `just rust-probe suggest` for debugging, then run `just verify-remote` for full feedback or mark the PR ready for merge proof. This preserves branch-protection semantics: draft feedback is not represented as merge-ready green CI because the required `gate` check is not published by deferred draft runs.
 
-For draft PRs, `just verify-remote` is final-proof-only: it dispatches configured full CI on the PR branch with `full_ci=true`, ignores pre-existing manual runs as proof, then waits for a full-marked workflow run on the exact pushed head SHA whose `gate` job succeeds. That dispatched run proves branch-head confidence for the operator. It is not the normal debug loop and is not a merge-readiness substitute; merge readiness still requires the ready/non-draft `pull_request` full run and branch protection to go green on that PR state.
+For draft PRs, `just verify-remote` is full-feedback-only: it dispatches configured full CI on the PR branch with `full_ci=true`, ignores pre-existing manual runs as proof, then waits for a full-marked workflow run on the exact pushed head SHA whose feedback dispatch gate succeeds. That dispatched run proves branch-head confidence for the operator. It is not the normal debug loop and is not a merge-readiness substitute; merge readiness still requires the ready/non-draft `pull_request` full run, or a later queue-produced required gate, to go green on the merge candidate.
 
 Draft fork PRs fail closed because upstream `workflow_dispatch` cannot safely target arbitrary fork refs. The operator message is:
 
@@ -192,8 +192,8 @@ draft fork PRs cannot dispatch upstream full CI; mark the PR ready for review or
 
 Policy switches:
 
-- Set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` to make draft PRs run full CI again without reverting the whole slice.
-- Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; set it only for an explicit provenance-emitter incident response where full CI evidence should not be blocked by artifact emission.
+- Set `[ci_provenance.policy.override].force_full_ci = true` in `ci/github-actions-runners.toml` only for an explicit break-glass branch investigation; revert it before merge because hygiene requires the checked-in default to stay `false`.
+- Keep `[ci_provenance.policy.override].ignore_emit_failure = false` during normal operation; set it only for an explicit provenance-emitter incident response where full CI evidence should not be blocked by artifact emission, and revert it before merge because hygiene requires the checked-in default to stay `false`.
 - Revert the Slice 2b workflow-policy commits if the demand-shaping behavior itself must be removed.
 
 ## Reconciliation

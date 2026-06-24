@@ -1,6 +1,6 @@
 # #942 — One trustworthy "is this safe to merge?" signal
 
-*Plain-language plan. Verified against `origin/main @ 1ecb4affd`. Two pieces of this work
+*Plain-language plan. Verified against `origin/main @ 6f7900fba`. Two pieces of this work
 already shipped and are referenced, not redone here: the merge-queue evidence trigger (#957)
 and retiring the custom review-gate checks (#959).*
 
@@ -73,7 +73,7 @@ There are exactly four required checks: `gate`, `backtester-gate`, `host-health`
 locked to the one app allowed to report them (`integration_id: null`, while
 `backtester-gate`/`host-health` pin app `15368`); the gate **verdict is re-derived in a long
 shell guard inside the job** *and* in Python, two copies that can drift; **two overlapping
-rulesets** carry conflicting pull-request settings; a dead `is_mergify_temp_pr` field lingers.
+rulesets** carry conflicting pull-request settings; a dead temp-PR policy artifact lingers.
 
 **Already shipped — referenced, not redone:** `backtester-gate` now runs on the merge queue
 (#957); the custom review-gate checks and their whole surface are retired (#959), so **no
@@ -114,7 +114,7 @@ Settled decisions:
   **Mergify** queue, which is its own planned effort in **#929** (native GitHub queue needs
   Enterprise, unavailable on this private personal-account repo). #942 **defers the queue to
   #929** and does not duplicate it; `strict=true` stays until the queue is the sole merge
-  path. The dead `is_mergify_temp_pr` field is removed.
+  path. The dead temp-PR policy artifact is removed.
 - **Green only with proof.** A required check turns green only from *real proof* (a full run,
   or a docs-only run that proves every heavy lane was skipped) or from *mirroring a prior
   proof on the same commit* (a no-code edit / draft toggle carries the previous green forward
@@ -189,7 +189,7 @@ and 5 can start now**; the registry (2) lands before its dependents (3, 4, 6); s
    no-code event didn't earn), so the literal `gate` may turn green **only** from real proof or a
    *verified* same-commit carry-forward (section 7b). Consolidate the verdict logic (today in a
    shell guard *and* in Python) into **one module + a parity test**, keep deriving it from the
-   run's trusted lane results, and delete the dead `is_mergify_temp_pr` field. In-workflow, no new
+   run's trusted lane results, and delete the dead temp-PR policy artifact. In-workflow, no new
    privilege, no migration. Design in section 7b. *(This does not make the badge appear earlier —
    that "looks stuck" symptom of part i is step 5's job.)*
 5. **Progress visibility** (the "is it running or stuck?" half of Defect D **part i** — the #960
@@ -297,12 +297,15 @@ required `gate` is meant to persist from the prior real run on the same commit. 
 job emits the literal `gate` on these paths, it must turn it green **only** from real proof (a
 full run that passed, or a docs-only run with every heavy lane verified-skipped) or from a
 *verified* carry-forward (a prior `gate=success` exists for this exact head SHA **and** the base
-is fresh); otherwise the required `gate` stays non-success (blocked) — never a bare `exit 0`. The
-verdict source is unchanged: the run's **own real lane results** (`needs.*.result`, trusted
-GitHub data), not the PR-produced provenance file — so there's no forgeable-green surface.
+is fresh); otherwise the required `gate` stays non-success (blocked) — never a bare `exit 0`.
+Base freshness is delegated to `strict=true` now and to the #929 merge queue as the durable path.
+Carry-forward base validation reads the **prior successful run's** provenance artifact
+(`base_sha` + proof kind), not the current PR run's emitted artifact. The verdict source is
+unchanged: the run's **own real lane results** (`needs.*.result`, trusted GitHub data), not the
+PR-produced provenance file — so there's no forgeable-green surface.
 
 Consolidate the verdict logic (today duplicated in a shell guard and in Python) into one module +
-a parity test, and delete the dead `is_mergify_temp_pr` field. **No migration window:** `gate`
+a parity test, and delete the dead temp-PR policy artifact. **No migration window:** `gate`
 stays the required name; code PRs already emit it (so the step-4 PR proves itself); only
 no-code/draft PRs change — strictly for the better. Note: step 4 does **not** make the badge
 appear *earlier* — the summary job is still late; that "looks stuck" symptom (part i, the #960

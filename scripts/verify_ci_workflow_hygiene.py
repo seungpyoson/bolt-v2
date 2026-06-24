@@ -308,11 +308,8 @@ NEXTEST_FINGERPRINT_REUSE_RESOLVER_STEP_SCALARS = {
     "run": ">",
 }
 NEXTEST_FINGERPRINT_REUSE_RESOLVER_ENV = {"GITHUB_TOKEN": "${{ github.token }}"}
-FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-git fetch --no-tags origin \\
-  "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \\
-  "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+FINGERPRINT_REUSE_INPUTS_CHANGED_RUN = """base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+head_ref="${{ steps.pr_refs.outputs.head_ref }}"
 changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
   .github/workflows/ci.yml \\
   .github/actions/setup-environment/action.yml \\
@@ -1207,8 +1204,13 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
             errors.append(f"ci-policy must expose {output}")
     if 'tee -a "$GITHUB_OUTPUT"' not in text:
         errors.append("ci-policy must write script output to GITHUB_OUTPUT")
-    if "python3 scripts/ci_provenance.py ci-policy" not in text:
-        errors.append("ci-policy must run ci_provenance.py ci-policy")
+    for required in (
+        "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+        "steps.policy_base.outputs.script",
+        'python3 "$policy_script" ci-policy',
+    ):
+        if required not in text:
+            errors.append(f"ci-policy must run ci_provenance.py ci-policy from trusted base tree ({required})")
     if '--event-name "${{ github.event_name }}"' not in text:
         errors.append("ci-policy must pass github.event_name")
     if '--event-action "${{ github.event.action || \'\' }}"' not in text:
@@ -8073,17 +8075,10 @@ def collect_if_chain_bodies(lines: list[str], start: int, condition: str) -> dic
 
 def gate_checks_same_sha_reuse(gate_text: str) -> list[str]:
     errors: list[str] = []
-    tag_body = gate_tag_reuse_body(gate_text)
-    standard_body = gate_standard_body(gate_text)
-    if not branch_exits_reachable(tag_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "success"'):
-        errors.append("gate must check same-sha-main-evidence success")
-    if not branch_exits_reachable(standard_body, "if", '"${{ needs.same-sha-main-evidence.result }}" != "skipped"'):
-        errors.append("gate must check same-sha-main-evidence skip on non-tag")
-    for job in TAG_SKIPPED_JOBS:
-        if not branch_exits_reachable(tag_body, "if", f'"${{{{ needs.{job}.result }}}}" != "skipped"'):
-            errors.append(f"gate must require {job} skipped on tag reuse")
-    if not branch_exits_reachable(tag_body, "if", '"${{ needs.check-aarch64.result }}" != "success"'):
-        errors.append("gate must require check-aarch64 success on tag reuse")
+    for job in (*TAG_SKIPPED_JOBS, "same-sha-main-evidence", "check-aarch64"):
+        required_arg = f"--job {job}=${{{{ needs.{job}.result }}}}"
+        if required_arg not in gate_text:
+            errors.append(f"gate shared verdict call must include {required_arg}")
     return errors
 
 
@@ -8104,8 +8099,13 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     errors: list[str] = []
     if GATE_NAME_OUTPUT not in gate_text:
         errors.append("gate name must come from ci-policy gate_name output")
-    if "python3 scripts/ci_provenance.py check-ci-gate" not in gate_text:
-        errors.append("gate must use shared ci_provenance.py check-ci-gate verdict")
+    for required in (
+        "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+        "steps.verdict_base.outputs.script",
+        'python3 "$verdict_script" check-ci-gate',
+    ):
+        if required not in gate_text:
+            errors.append(f"gate must use trusted base-tree ci_provenance.py check-ci-gate verdict ({required})")
     for required in (
         "--policy-path \"${{ needs.ci-policy.outputs.ci_policy_path }}\"",
         "--expected-event-class \"${{ needs.ci-policy.outputs.expected_event_class }}\"",
@@ -8134,8 +8134,8 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         required = f"--job {job}=${{{{ needs.{job}.result }}}}"
         if required not in gate_text:
             errors.append(f"gate shared verdict call must include {required}")
-    if "python3 scripts/ci_provenance.py resolve-gate-carry-forward" not in gate_text:
-        errors.append("gate must verify carry-forward through ci_provenance.py")
+    if 'python3 "$verdict_script" resolve-gate-carry-forward' not in gate_text:
+        errors.append("gate must verify carry-forward through trusted base-tree ci_provenance.py")
     if "--require-provenance-base true" not in gate_text:
         errors.append("gate carry-forward must require provenance base match")
     return errors
@@ -8959,14 +8959,9 @@ def verify_workflow(workflow_text: str) -> list[str]:
         for job in GATE_REQUIRED:
             if job not in gate_needs:
                 errors.append(f"gate needs {job}")
-            if job == "build":
-                checks_result = gate_checks_build_result(gate_text)
-            elif job == "detector":
-                checks_result = gate_checks_lane_success(gate_text, job)
-            else:
-                checks_result = gate_checks_standard_lane_success(gate_text, job)
-            if not checks_result:
-                errors.append(f"gate must check needs.{job}.result")
+            required_arg = f"--job {job}=${{{{ needs.{job}.result }}}}"
+            if required_arg not in gate_text:
+                errors.append(f"gate shared verdict call must include {required_arg}")
         if "same-sha-main-evidence" not in gate_needs:
             errors.append("gate needs same-sha-main-evidence")
         for job in ("nextest-fingerprint", "test-archive"):
@@ -9255,17 +9250,9 @@ def backtester_gate_detect_result_errors(file_name: str, text: str) -> list[str]
         return []
     if "detect" not in extract_needs(gate):
         return ["backtester-gate must need detect"]
-    lines = gate_text.splitlines()
-    for index, line in enumerate(lines):
-        if "needs.detect.result" not in line or "!=" not in line or "success" not in line:
-            continue
-        for nested in lines[index + 1 : index + 8]:
-            stripped = nested.strip()
-            if stripped == "fi":
-                break
-            if stripped == "exit 1":
-                return []
-    return ["backtester-gate must check needs.detect.result and exit 1 when detect fails"]
+    if "--job detect=${{ needs.detect.result }}" in gate_text:
+        return []
+    return ["backtester-gate shared verdict call must include needs.detect.result"]
 
 
 def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
@@ -9495,15 +9482,15 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     return errors
 
 
-BACKTESTER_FULL_PROOF_IF = "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}"
+BACKTESTER_FULL_PROOF_IF = "needs.detect.outputs.bvs_changed == 'true'"
 BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
 BACKTESTER_ITERATION_CONDITION = '"$policy_path" == "iteration"'
 BACKTESTER_NOOP_CONDITION = '"$policy_path" == "noop"'
 BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)"""
 BACKTESTER_GATE_NAME_OUTPUT = "name: ${{ needs.ci-policy.outputs.backtester_gate_name }}"
 BACKTESTER_REQUIRED_GATE_COMMENT = (
-    "`backtester-gate` only when a prior same-SHA proof is verified and defer the\n"
-    "# managed-heavy proof lanes. `backtester-gate-iteration` is feedback-only"
+    "`backtester-gate` after recomputing proof lanes for crate-changing noop/defer\n"
+    "# paths. `backtester-gate-iteration` is feedback-only"
 )
 BACKTESTER_DEFER_ACTION_LIST_RE = re.compile(
     r"contains\(fromJSON\('(?P<actions>\[[^']+\])'\), github\.event\.action\)"
@@ -9524,6 +9511,8 @@ def has_backtester_full_proof_guard(job_text: str) -> bool:
     return (
         "needs.ci-policy.outputs.full_ci_required == 'true'" in job_text
         and "needs.detect.outputs.bvs_changed == 'true'" in job_text
+        and "needs.ci-policy.outputs.ci_policy_path == 'noop'" in job_text
+        and "needs.ci-policy.outputs.full_ci_deferred == 'true'" in job_text
     )
 
 
@@ -9582,7 +9571,9 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "gate_name: ${{ steps.policy.outputs.gate_name }}",
             "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
             "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
-            "python3 scripts/ci_provenance.py ci-policy",
+            "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+            "steps.policy_base.outputs.script",
+            'python3 "$policy_script" ci-policy',
             '--event-name "${{ github.event_name }}"',
             '--event-action "${{ github.event.action || \'\' }}"',
             '--pull-request-draft "${{ github.event.pull_request.draft || false }}"',

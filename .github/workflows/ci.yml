@@ -113,22 +113,44 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Prepare trusted base policy tree
+        id: policy_base
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/ci-policy-base-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          base_tree="$RUNNER_TEMP/ci-policy-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
+
       - name: Compute CI policy
         id: policy
         shell: bash
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
-        run: >
-          python3 scripts/ci_provenance.py ci-policy
-          --event-name "${{ github.event_name }}"
-          --event-action "${{ github.event.action || '' }}"
-          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
-          --pull-request-head-ref "$PR_HEAD_REF"
-          --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
-          --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
-          --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}"
-          --ref "${{ github.ref }}"
-          | tee -a "$GITHUB_OUTPUT"
+        run: |
+          policy_script="${{ steps.policy_base.outputs.script }}"
+          if [[ -z "$policy_script" ]]; then
+            policy_script="scripts/ci_provenance.py"
+          fi
+          policy_config="${{ steps.policy_base.outputs.config }}"
+          if [[ -z "$policy_config" ]]; then
+            policy_config="ci/github-actions-runners.toml"
+          fi
+          python3 "$policy_script" ci-policy \
+            --config "$policy_config" \
+            --event-name "${{ github.event_name }}" \
+            --event-action "${{ github.event.action || '' }}" \
+            --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
+            --pull-request-head-ref "$PR_HEAD_REF" \
+            --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
+            --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
+            --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \
+            --ref "${{ github.ref }}" \
+            | tee -a "$GITHUB_OUTPUT"
 
   # Host-health observability slice (#884): stdlib-Python sampler + dependency-free
   # HTML viewer + their test suites. These suites are the ONLY proof of the two hard
@@ -811,6 +833,18 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Prepare trusted base verdict tree
+        id: verdict_base
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/ci-gate-base-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          base_tree="$RUNNER_TEMP/ci-gate-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+
       - name: Resolve gate carry-forward
         id: carry_forward
         if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
@@ -818,7 +852,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/ci_provenance.py resolve-gate-carry-forward \
+          verdict_script="${{ steps.verdict_base.outputs.script }}"
+          if [[ -z "$verdict_script" ]]; then
+            verdict_script="scripts/ci_provenance.py"
+          fi
+          python3 "$verdict_script" resolve-gate-carry-forward \
             --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
             --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
             --current-run-id "${{ github.run_id }}" \
@@ -828,28 +866,33 @@ jobs:
             | tee -a "$GITHUB_OUTPUT"
 
       - name: Check required lanes
-        run: >
-          python3 scripts/ci_provenance.py check-ci-gate
-          --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"
-          --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"
-          --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"
-          --ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}"
-          --reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}"
-          --carry-forward-verified "${{ steps.carry_forward.outputs.carry_forward_verified || 'false' }}"
-          --build-required "${{ needs.detector.outputs.build_required || 'false' }}"
-          --job ci-policy=${{ needs.ci-policy.result }}
-          --job detector=${{ needs.detector.result }}
-          --job deny=${{ needs.deny.result }}
-          --job clippy=${{ needs.clippy.result }}
-          --job check-aarch64=${{ needs.check-aarch64.result }}
-          --job source-fence=${{ needs.source-fence.result }}
-          --job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}
-          --job test-archive=${{ needs.test-archive.result }}
-          --job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }}
-          --job test=${{ needs.test.result }}
-          --job build=${{ needs.build.result }}
-          --job ci-provenance-emit=${{ needs.ci-provenance-emit.result }}
-          --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}
+        shell: bash
+        run: |
+          verdict_script="${{ steps.verdict_base.outputs.script }}"
+          if [[ -z "$verdict_script" ]]; then
+            verdict_script="scripts/ci_provenance.py"
+          fi
+          python3 "$verdict_script" check-ci-gate \
+            --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
+            --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
+            --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}" \
+            --ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}" \
+            --reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}" \
+            --carry-forward-verified "${{ steps.carry_forward.outputs.carry_forward_verified || 'false' }}" \
+            --build-required "${{ needs.detector.outputs.build_required || 'false' }}" \
+            --job ci-policy=${{ needs.ci-policy.result }} \
+            --job detector=${{ needs.detector.result }} \
+            --job deny=${{ needs.deny.result }} \
+            --job clippy=${{ needs.clippy.result }} \
+            --job check-aarch64=${{ needs.check-aarch64.result }} \
+            --job source-fence=${{ needs.source-fence.result }} \
+            --job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+            --job test-archive=${{ needs.test-archive.result }} \
+            --job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }} \
+            --job test=${{ needs.test.result }} \
+            --job build=${{ needs.build.result }} \
+            --job ci-provenance-emit=${{ needs.ci-provenance-emit.result }} \
+            --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}
 
   deploy:
     name: deploy

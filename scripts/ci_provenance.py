@@ -728,26 +728,34 @@ def evaluate_backtester_gate_verdict(
         require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester iteration")
         return "backtester iteration CI policy; no required full proof published by this run"
 
-    if policy_path == "noop":
-        if expected_event_class != "noop":
-            raise ProvenanceError(f"backtester noop CI policy outside resolver-permitted event class {expected_event_class!r}")
-        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during noop")
-        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester noop")
-        require_verified_carry_forward(carry_forward_verified)
-        return "backtester no-code policy carried forward prior same-SHA gate proof"
-
-    if policy_path == "defer" or full_ci_deferred:
-        if expected_event_class != "defer":
-            raise ProvenanceError(f"backtester deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
-        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during defer")
-        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester defer")
-        require_verified_carry_forward(carry_forward_verified)
-        return "backtester deferred policy carried forward prior same-SHA gate proof"
-
     if not bvs_changed:
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
         require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester no-crate")
         return "backtester no-crate proof passed"
+
+    if policy_path == "noop":
+        if expected_event_class != "noop":
+            raise ProvenanceError(f"backtester noop CI policy outside resolver-permitted event class {expected_event_class!r}")
+        for job, label in (
+            ("fmt", "bvs-fmt"),
+            ("clippy", "bvs-clippy"),
+            ("test-archive", "bvs-test archive"),
+            ("test", "bvs-test"),
+        ):
+            require_job_result(job_results, job, "success", f"{label} did not succeed")
+        return "backtester no-code policy recomputed proof passed"
+
+    if policy_path == "defer" or full_ci_deferred:
+        if expected_event_class != "defer":
+            raise ProvenanceError(f"backtester deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
+        for job, label in (
+            ("fmt", "bvs-fmt"),
+            ("clippy", "bvs-clippy"),
+            ("test-archive", "bvs-test archive"),
+            ("test", "bvs-test"),
+        ):
+            require_job_result(job_results, job, "success", f"{label} did not succeed")
+        return "backtester deferred policy recomputed proof passed"
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown backtester CI policy path {policy_path!r}")
@@ -1594,8 +1602,6 @@ def run_matches_gate_carry_forward(
         as_text(run.get("path")) == workflow_path
         and as_text(run.get("event")) == "pull_request"
         and as_text(run.get("head_sha")) == requested_sha
-        and as_text(run.get("status")) == "completed"
-        and as_text(run.get("conclusion")) == "success"
     )
 
 
@@ -1743,40 +1749,48 @@ def resolve_gate_carry_forward(
             ),
             reverse=True,
         )
-        for run in candidates:
+        if candidates:
+            run = candidates[0]
             run_id = positive_int_value(run.get("id"), "workflow run id")
+            status = as_text(run.get("status"))
+            conclusion = as_text(run.get("conclusion"))
+            if status != "completed" or conclusion != "success":
+                raise ProvenanceError(
+                    f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
+                )
+            jobs_payload = api_json(
+                repo,
+                token,
+                f"actions/runs/{run_id}/jobs",
+                {"per_page": str(config.run_jobs_per_page)},
+            )
+            jobs = jobs_payload.get("jobs")
+            if not isinstance(jobs, list):
+                raise ProvenanceError(f"source run {run_id} jobs payload is malformed")
+            require_complete_first_page(
+                jobs_payload,
+                jobs,
+                per_page=config.run_jobs_per_page,
+                label=f"source run {run_id} jobs",
+            )
             try:
-                jobs_payload = api_json(
-                    repo,
-                    token,
-                    f"actions/runs/{run_id}/jobs",
-                    {"per_page": str(config.run_jobs_per_page)},
-                )
-                jobs = jobs_payload.get("jobs")
-                if not isinstance(jobs, list):
-                    raise ProvenanceError(f"source run {run_id} jobs payload is malformed")
-                require_complete_first_page(
-                    jobs_payload,
-                    jobs,
-                    per_page=config.run_jobs_per_page,
-                    label=f"source run {run_id} jobs",
-                )
                 require_job_success(jobs_by_name(jobs_payload), gate_name)
-                if require_provenance_base:
-                    validate_gate_carry_forward_provenance(
-                        repo=repo,
-                        token=token,
-                        run=run,
-                        requested_sha=requested_sha,
-                        base_sha=base_sha,
-                        config=config,
-                        config_path=config_path,
-                        api_json=api_json,
-                        api_bytes=api_bytes,
-                    )
             except ProvenanceError as exc:
-                last_error = str(exc)
-                continue
+                raise ProvenanceError(
+                    f"newest same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
+                ) from exc
+            if require_provenance_base:
+                validate_gate_carry_forward_provenance(
+                    repo=repo,
+                    token=token,
+                    run=run,
+                    requested_sha=requested_sha,
+                    base_sha=base_sha,
+                    config=config,
+                    config_path=config_path,
+                    api_json=api_json,
+                    api_bytes=api_bytes,
+                )
             return GateCarryForwardResolution(
                 carry_forward_verified=True,
                 source_run_id=str(run_id),

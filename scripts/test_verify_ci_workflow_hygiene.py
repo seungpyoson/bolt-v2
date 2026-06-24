@@ -2542,6 +2542,11 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "manual queueing only",
         ),
         (
+            "merge protections enabled",
+            mergify_config + "\nmerge_protections:\n  - name: autoqueue\n",
+            "manual queueing only",
+        ),
+        (
             "queue conditions require gate",
             replace_once(
                 mergify_config,

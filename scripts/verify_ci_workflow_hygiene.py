@@ -4903,6 +4903,7 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     forbidden_keys = (
         "autoqueue",
         "auto_merge_conditions",
+        "merge_protections",
         "merge_protections_settings",
         "pull_request_rules",
     )

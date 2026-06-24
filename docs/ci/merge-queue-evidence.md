@@ -59,7 +59,7 @@ For the #929 rollout, record the Mergify queue path:
 | Backtester CI workflow | Runs full proof and publishes `backtester-gate` on the queue proof context |
 | Original PR merge | Happens only after required gates and reviewer conditions match |
 
-The default Mergify rule intentionally sets `checks_timeout: 60 minutes`. Current Mergify queue-rule docs mark `allow_inplace_checks` as deprecated and compute in-place eligibility automatically; a positive `checks_timeout` disables in-place checks and makes Mergify create a draft queue proof PR. Keep this value pinned unless live evidence shows Mergify changed that behavior.
+The default Mergify rule intentionally keeps `queue_conditions: []` and a stricter `merge_conditions` list. Current Mergify queue-rule docs mark `allow_inplace_checks` as deprecated and compute in-place eligibility automatically; because the queue rule is not single-step CI, Mergify should create a draft queue proof PR instead of reusing an up-to-date PR head. `checks_timeout: 60 minutes` only pins how long Mergify waits for pending checks before dequeueing.
 
 ### Mergify Capture Checklist
 
@@ -100,7 +100,7 @@ Mergify accepted `@mergifyio queue` on PR #957, queued it under rule `default`, 
 
 This proves the current repository queue path did not emit native GitHub `merge_group` evidence for PR #957. It also did not produce a durable Mergify temp-PR proof run to capture.
 
-This PR adds the repo-side Mergify queue configuration and verifier guard. Because Mergify reads `.mergify.yml` from the default branch, those settings take effect only after this PR reaches `main`. The config pins `checks_timeout: 60 minutes` so Mergify should create a queue proof PR instead of reusing an up-to-date PR head. The remaining live dependency is the GitHub ruleset shape: the Mergify-bypassed ruleset must enforce the required checks and review rules while rules that protect deletion/non-fast-forward remain non-bypassed. After that live settings check, requeue a PR and record the proof context where full `gate` and `backtester-gate` can be observed.
+This PR adds the repo-side Mergify queue configuration and verifier guard. Because Mergify reads `.mergify.yml` from the default branch, those settings take effect only after this PR reaches `main`. The config pins `queue_conditions: []` separately from the required-reviewer and gate `merge_conditions`, so Mergify should create a queue proof PR instead of reusing an up-to-date PR head. The remaining live dependency is the GitHub ruleset shape: the Mergify-bypassed ruleset must enforce the required checks and review rules while rules that protect deletion/non-fast-forward remain non-bypassed. After that live settings check, requeue a PR and record the proof context where full `gate` and `backtester-gate` can be observed.
 
 ## Mismatch Handling
 

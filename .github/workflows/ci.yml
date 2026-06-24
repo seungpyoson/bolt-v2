@@ -220,6 +220,7 @@ jobs:
             scripts/verify_ci_path_filters.py \
             scripts/ci_provenance.py \
             scripts/lane_governor.py \
+            scripts/rust_verification.py \
             ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
             | tar -x -C "$base_tree"

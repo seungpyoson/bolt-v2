@@ -8301,6 +8301,27 @@ def detector_fingerprint_reuse_errors(job_lines: list[str]) -> list[str]:
     return errors
 
 
+def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
+    docs_only_block = unique_step_with_id(job_lines, "docs_only")
+    if docs_only_block is None:
+        return []
+    text = uncommented_text(docs_only_block)
+    errors: list[str] = []
+    for required in (
+        'git archive "$base_ref"',
+        "scripts/verify_ci_path_filters.py",
+        "scripts/ci_provenance.py",
+        "scripts/lane_governor.py",
+        "scripts/rust_verification.py",
+        "ci/github-actions-runners.toml",
+        ".github/workflows/ci.yml",
+        'python3 "$base_tree/scripts/verify_ci_path_filters.py"',
+    ):
+        if required not in text:
+            errors.append(f"detector docs-only classifier base archive must include {required}")
+    return errors
+
+
 def deploy_verifies_downloaded_artifact_checksum(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
     return "cd artifact" in text and "sha256sum -c bolt-v2.sha256" in text
@@ -8659,6 +8680,7 @@ def verify_workflow(workflow_text: str) -> list[str]:
         errors.append("detector must force build_required=true for merge_group full CI")
     if "detector" in jobs:
         errors.extend(detector_fingerprint_reuse_errors(jobs["detector"]))
+        errors.extend(detector_docs_only_archive_errors(jobs["detector"]))
 
     if "ci-policy" in jobs:
         errors.extend(ci_policy_job_errors(jobs["ci-policy"]))

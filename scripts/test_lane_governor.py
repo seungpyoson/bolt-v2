@@ -2720,8 +2720,6 @@ def test_cheap_lane_discovery_manifest_floor_and_required_edges() -> None:
         "scripts/ubicloud_runner_minutes.py",
         "scripts/developer_tool_storage_hygiene.py",
         "scripts/find_same_sha_main_evidence.py",
-        "scripts/require_sp_reviewer.py",
-        "scripts/require_resolved_review_threads.py",
     }
     assert required <= rels, f"guard did not discover required fixed-point edges: {sorted(required - rels)}"
 

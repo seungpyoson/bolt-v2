@@ -1967,6 +1967,107 @@ def bvs_gate_jobs(**overrides: str) -> dict[str, str]:
     return jobs
 
 
+def assert_gate_verdict_rejects_inconsistent_deferred_flag() -> None:
+    module = load_script()
+    assert_raises(
+        "full_ci_deferred=true is only valid when policy_path is 'defer'",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=True,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=ci_gate_jobs(),
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "full_ci_deferred=true is only valid when policy_path is 'defer'",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=True,
+            job_results=bvs_gate_jobs(),
+            bvs_changed=True,
+        ),
+    )
+
+
+def assert_ci_gate_unrolled_paths_fail_closed() -> None:
+    module = load_script()
+    skipped_heavy = {job: "skipped" for job in module.CI_HEAVY_JOBS}
+    deferred_jobs = ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "skipped"})
+    docs_jobs = ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "success"})
+    assert_raises(
+        "deferred CI policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="defer",
+            expected_event_class="defer",
+            full_ci_deferred=True,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=deferred_jobs,
+            build_required=False,
+        ),
+    )
+    assert_raises(
+        "no-code CI policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="noop",
+            expected_event_class="noop",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=deferred_jobs,
+            build_required=False,
+        ),
+    )
+    assert_raises(
+        "docs CI policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="docs",
+            expected_event_class="docs",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=docs_jobs,
+            build_required=False,
+        ),
+    )
+
+
+def assert_ci_gate_rejects_emit_failure_override() -> None:
+    module = load_script()
+    assert_raises(
+        "ignore_emit_failure=true requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=True,
+            reuse_found=False,
+            job_results=ci_gate_jobs(**{"ci-provenance-emit": "failure"}),
+            build_required=True,
+        ),
+    )
+
+
+def assert_duplicate_job_results_fail_closed() -> None:
+    module = load_script()
+    assert_raises(
+        "duplicate --job result for 'test'",
+        lambda: module.parse_job_result_values(["test=success", "test=failure"]),
+    )
+
+
+def assert_missing_skipped_lane_reports_missing() -> None:
+    module = load_script()
+    assert_raises(
+        "missing-lane missing during test path; expected skipped",
+        lambda: module.require_jobs_skipped({}, ("missing-lane",), "test path"),
+    )
+
+
 def assert_ci_gate_full_requires_archive_proof_when_not_reused() -> None:
     module = load_script()
     module.evaluate_ci_gate_verdict(
@@ -1975,7 +2076,6 @@ def assert_ci_gate_full_requires_archive_proof_when_not_reused() -> None:
         full_ci_deferred=False,
         ignore_emit_failure=False,
         reuse_found=False,
-        carry_forward_verified=False,
         job_results=ci_gate_jobs(),
         build_required=True,
     )
@@ -1987,7 +2087,6 @@ def assert_ci_gate_full_requires_archive_proof_when_not_reused() -> None:
             full_ci_deferred=False,
             ignore_emit_failure=False,
             reuse_found=False,
-            carry_forward_verified=False,
             job_results=ci_gate_jobs(**{"nextest-fingerprint": "skipped"}),
             build_required=True,
         ),
@@ -2000,7 +2099,6 @@ def assert_ci_gate_full_requires_archive_proof_when_not_reused() -> None:
             full_ci_deferred=False,
             ignore_emit_failure=False,
             reuse_found=False,
-            carry_forward_verified=False,
             job_results=ci_gate_jobs(**{"test-archive": "skipped"}),
             build_required=True,
         ),
@@ -2013,22 +2111,47 @@ def assert_backtester_gate_excludes_post_gate_issue_789_diagnostic() -> None:
         policy_path="full",
         expected_event_class="full",
         full_ci_deferred=False,
-        job_results=bvs_gate_jobs(),
+        job_results=bvs_gate_jobs(issue_789="failure"),
         bvs_changed=True,
     )
     module.evaluate_backtester_gate_verdict(
         policy_path="iteration",
         expected_event_class="iteration",
         full_ci_deferred=False,
-        job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"}),
+        job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped", "issue_789": "failure"}),
         bvs_changed=True,
     )
     module.evaluate_backtester_gate_verdict(
         policy_path="full",
         expected_event_class="full",
         full_ci_deferred=False,
-        job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"}),
+        job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped", "issue_789": "failure"}),
         bvs_changed=False,
+    )
+
+
+def assert_backtester_gate_unrolled_paths_fail_closed_with_skipped_proof_jobs() -> None:
+    module = load_script()
+    skipped_heavy_jobs = bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"})
+    assert_raises(
+        "backtester no-code policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="noop",
+            expected_event_class="noop",
+            full_ci_deferred=False,
+            job_results=skipped_heavy_jobs,
+            bvs_changed=True,
+        ),
+    )
+    assert_raises(
+        "backtester deferred policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="defer",
+            expected_event_class="defer",
+            full_ci_deferred=True,
+            job_results=skipped_heavy_jobs,
+            bvs_changed=True,
+        ),
     )
 
 
@@ -2083,8 +2206,14 @@ def main() -> int:
     assert_job_evidence_success_passes()
     assert_nextest_archive_job_failures_rejected()
     assert_test_archive_and_build_rules()
+    assert_gate_verdict_rejects_inconsistent_deferred_flag()
+    assert_ci_gate_unrolled_paths_fail_closed()
+    assert_ci_gate_rejects_emit_failure_override()
+    assert_duplicate_job_results_fail_closed()
+    assert_missing_skipped_lane_reports_missing()
     assert_ci_gate_full_requires_archive_proof_when_not_reused()
     assert_backtester_gate_excludes_post_gate_issue_789_diagnostic()
+    assert_backtester_gate_unrolled_paths_fail_closed_with_skipped_proof_jobs()
     print("OK: CI provenance self-tests passed.")
     return 0
 

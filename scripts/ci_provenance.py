@@ -592,12 +592,11 @@ def require_job_result_in(
 
 def require_jobs_skipped(job_results: dict[str, str], jobs: tuple[str, ...], label: str) -> None:
     for job in jobs:
-        require_job_result(
-            job_results,
-            job,
-            "skipped",
-            f"{job} unexpectedly ran during {label}",
-        )
+        actual = job_results.get(job)
+        if actual is None:
+            raise ProvenanceError(f"{job} missing during {label}; expected skipped")
+        if actual != "skipped":
+            raise ProvenanceError(f"{job} unexpectedly resolved {actual!r} during {label}; expected skipped")
 
 
 CI_HEAVY_JOBS = (
@@ -623,9 +622,21 @@ BACKTESTER_REQUIRED_PROOF_JOBS = (
 )
 
 
-def require_verified_carry_forward(carry_forward_verified: bool) -> None:
-    if not carry_forward_verified:
-        raise ProvenanceError("verified carry-forward proof is required for this policy path")
+def require_deferred_flag_consistency(policy_path: str, full_ci_deferred: bool) -> None:
+    expected = policy_path == "defer"
+    if full_ci_deferred != expected:
+        actual = str(full_ci_deferred).lower()
+        if full_ci_deferred:
+            message = "full_ci_deferred=true is only valid when policy_path is 'defer'"
+        else:
+            message = "full_ci_deferred=false is invalid when policy_path is 'defer'"
+        raise ProvenanceError(
+            f"{message}; got policy_path={policy_path!r}, full_ci_deferred={actual}"
+        )
+
+
+def require_gate_rollout(policy_path: str) -> None:
+    raise ProvenanceError(f"{policy_path} gate proof requires the merge-readiness workflow rollout")
 
 
 def evaluate_ci_gate_verdict(
@@ -635,12 +646,14 @@ def evaluate_ci_gate_verdict(
     full_ci_deferred: bool,
     ignore_emit_failure: bool,
     reuse_found: bool,
-    carry_forward_verified: bool,
     job_results: dict[str, str],
     build_required: bool,
 ) -> str:
     require_job_result(job_results, "ci-policy", "success", "ci-policy did not succeed")
     require_job_result(job_results, "detector", "success", "detector did not succeed")
+    require_deferred_flag_consistency(policy_path, full_ci_deferred)
+    if ignore_emit_failure:
+        raise ProvenanceError("ignore_emit_failure=true requires the merge-readiness workflow rollout")
 
     if policy_path == "tag_reuse":
         require_job_result(job_results, "same-sha-main-evidence", "success", "same-sha-main-evidence did not succeed")
@@ -675,26 +688,24 @@ def evaluate_ci_gate_verdict(
         require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "iteration")
         return "iteration CI policy; no required full proof published by this run"
 
-    if policy_path == "defer" or full_ci_deferred:
+    if policy_path == "defer":
         if expected_event_class != "defer":
             raise ProvenanceError(f"deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "defer")
-        require_verified_carry_forward(carry_forward_verified)
-        return "deferred CI policy carried forward prior same-SHA gate proof"
+        require_gate_rollout("deferred CI policy")
 
     if policy_path == "noop":
         if expected_event_class != "noop":
             raise ProvenanceError(f"noop CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "noop")
-        require_verified_carry_forward(carry_forward_verified)
-        return "no-code CI policy carried forward prior same-SHA gate proof"
+        require_gate_rollout("no-code CI policy")
 
     if policy_path == "docs":
         if expected_event_class != "docs":
             raise ProvenanceError(f"docs CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_jobs_skipped(job_results, CI_HEAVY_JOBS, "docs")
         require_job_result(job_results, "ci-provenance-emit", "success", "ci-provenance-emit did not succeed for docs")
-        return "docs CI proof passed"
+        require_gate_rollout("docs CI policy")
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown CI policy path {policy_path!r}")
@@ -714,7 +725,7 @@ def evaluate_ci_gate_verdict(
         )
     else:
         emit_result = job_results.get("ci-provenance-emit")
-        if emit_result != "success" and not ignore_emit_failure:
+        if emit_result != "success":
             raise ProvenanceError("ci-provenance-emit did not succeed")
 
     required_full_jobs = CI_FULL_REQUIRED_JOBS
@@ -744,6 +755,7 @@ def evaluate_backtester_gate_verdict(
 ) -> str:
     require_job_result(job_results, "ci-policy", "success", "bvs-ci-policy did not succeed")
     require_job_result(job_results, "detect", "success", "bvs-detect did not succeed")
+    require_deferred_flag_consistency(policy_path, full_ci_deferred)
 
     if policy_path == "iteration":
         if expected_event_class != "iteration":
@@ -752,24 +764,24 @@ def evaluate_backtester_gate_verdict(
         require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester iteration")
         return "backtester iteration CI policy; no required full proof published by this run"
 
+    if policy_path == "noop":
+        if expected_event_class != "noop":
+            raise ProvenanceError(f"backtester noop CI policy outside resolver-permitted event class {expected_event_class!r}")
+        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during backtester noop")
+        require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester noop")
+        require_gate_rollout("backtester no-code policy")
+
+    if policy_path == "defer":
+        if expected_event_class != "defer":
+            raise ProvenanceError(f"backtester deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
+        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during backtester defer")
+        require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester defer")
+        require_gate_rollout("backtester deferred policy")
+
     if not bvs_changed:
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
         require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester no-crate")
         return "backtester no-crate proof passed"
-
-    if policy_path == "noop":
-        if expected_event_class != "noop":
-            raise ProvenanceError(f"backtester noop CI policy outside resolver-permitted event class {expected_event_class!r}")
-        for job, label in BACKTESTER_REQUIRED_PROOF_JOBS:
-            require_job_result(job_results, job, "success", f"{label} did not succeed")
-        return "backtester no-code policy recomputed proof passed"
-
-    if policy_path == "defer" or full_ci_deferred:
-        if expected_event_class != "defer":
-            raise ProvenanceError(f"backtester deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
-        for job, label in BACKTESTER_REQUIRED_PROOF_JOBS:
-            require_job_result(job_results, job, "success", f"{label} did not succeed")
-        return "backtester deferred policy recomputed proof passed"
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown backtester CI policy path {policy_path!r}")
@@ -1833,7 +1845,12 @@ def parse_key_value(value: str) -> tuple[str, str]:
 
 
 def parse_job_result_values(values: list[str]) -> dict[str, str]:
-    results = dict(parse_key_value(value) for value in values)
+    results: dict[str, str] = {}
+    for value in values:
+        key, parsed_value = parse_key_value(value)
+        if key in results:
+            raise ProvenanceError(f"duplicate --job result for {key!r}")
+        results[key] = parsed_value
     if not results:
         raise ProvenanceError("at least one --job result is required")
     return results
@@ -1967,7 +1984,6 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--full-ci-deferred", default="false")
         parser.add_argument("--ignore-emit-failure", default="false")
         parser.add_argument("--reuse-found", default="false")
-        parser.add_argument("--carry-forward-verified", default="false")
         parser.add_argument("--build-required", default="false")
         parser.add_argument("--job", action="append", default=[])
     if mode == "check-backtester-gate":
@@ -2052,7 +2068,6 @@ def main(argv: list[str] | None = None) -> int:
                     full_ci_deferred=parse_bool(args.full_ci_deferred),
                     ignore_emit_failure=parse_bool(args.ignore_emit_failure),
                     reuse_found=parse_bool(args.reuse_found),
-                    carry_forward_verified=parse_bool(args.carry_forward_verified),
                     job_results=parse_job_result_values(args.job),
                     build_required=parse_bool(args.build_required),
                 )

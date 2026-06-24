@@ -1914,6 +1914,26 @@ def assert_merge_group_support_gaps_are_reported() -> None:
             f"expected backtester merge_group detector error, got: {backtester_detector_errors}"
         )
 
+    backtester_detector_without_exit = replace_once(
+        backtester_workflow,
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        "            exit 0\n"
+        "          fi\n",
+        '            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"\n'
+        "          fi\n",
+    )
+    backtester_detector_exit_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": backtester_detector_without_exit}
+    )
+    if not any(
+        "backtester detect must force bvs_changed=true for merge_group" in error
+        for error in backtester_detector_exit_errors
+    ):
+        raise AssertionError(
+            "expected backtester merge_group detector short-circuit error, "
+            f"got: {backtester_detector_exit_errors}"
+        )
+
     # Detector must force build on merge_group (a skipped required build is a hole).
     ci_without_detector_arm = replace_once(
         ci_workflow,

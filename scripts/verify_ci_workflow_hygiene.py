@@ -8171,7 +8171,11 @@ def backtester_detect_forces_bvs_changed_on_merge_group(job_lines: list[str]) ->
         "elif",
         '"${{ github.event_name }}" == "merge_group"',
     )
-    return branch is not None and 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' in branch
+    return (
+        branch is not None
+        and 'echo "bvs_changed=true" >> "$GITHUB_OUTPUT"' in branch
+        and body_exits_zero(branch)
+    )
 
 
 def git_diff_pathspecs(block_text: str) -> tuple[str, ...] | None:

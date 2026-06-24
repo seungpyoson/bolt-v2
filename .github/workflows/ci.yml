@@ -133,11 +133,14 @@ jobs:
       - name: Compute CI policy
         id: policy
         shell: bash
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
         run: >
           python3 scripts/ci_provenance.py ci-policy
           --event-name "${{ github.event_name }}"
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --pull-request-head-ref "$PR_HEAD_REF"
           --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
           --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
           --ref "${{ github.ref }}"

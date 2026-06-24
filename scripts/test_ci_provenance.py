@@ -135,8 +135,12 @@ workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
+mergify_temp_pr = "full"
 tag = "tag_reuse"
 unknown_event = "full"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.policy.override]
 force_full_ci = false
@@ -156,6 +160,7 @@ force_full_ci = false
 [ci_provenance.policy]
 unknown_event = "full"
 tag = "tag_reuse"
+mergify_temp_pr = "full"
 merge_group = "full"
 main_push = "full"
 workflow_dispatch_full_ci = "full"
@@ -169,6 +174,9 @@ draft_pr_edited = "defer"
 draft_pr_reopened = "defer"
 draft_pr_opened = "defer"
 draft_pr_synchronize = "defer"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.artifacts]
 retention_days = 30
@@ -979,6 +987,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             "workflow_dispatch_full_ci": "full",
             "main_push": "full",
             "merge_group": "full",
+            "mergify_temp_pr": "full",
             "tag": "tag_reuse",
             "unknown_event": "full",
         }
@@ -1059,6 +1068,39 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(f"ci-policy must expose is_mergify_temp_pr=false: {output}")
             if output.get("ignore_emit_failure") != "false":
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "opened",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "mergify/merge-queue/83d4b0be7e",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--ref",
+                "refs/pull/965/merge",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"Mergify temp PR ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ci_policy_path") != "full":
+            raise AssertionError(f"Mergify temp PR must resolve to full CI: {output}")
+        if output.get("gate_name") != "gate" or output.get("backtester_gate_name") != "backtester-gate":
+            raise AssertionError(f"Mergify temp PR must publish required gates: {output}")
+        if output.get("reason") != "mergify_temp_pr":
+            raise AssertionError(f"Mergify temp PR must expose reason: {output}")
+        if output.get("is_mergify_temp_pr") != "true":
+            raise AssertionError(f"Mergify temp PR must be detected: {output}")
 
         force_config = write_config(
             pathlib.Path(tmp),
@@ -1180,6 +1222,23 @@ def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() ->
                 f"resolver gate names drifted outside the intentional dispatch-full flip: "
                 f"{case_label} legacy={(legacy_gate, legacy_backtester_gate)} result={result}"
             )
+    mergify_result = module.evaluate_ci_policy(
+        config,
+        event_name="pull_request",
+        event_action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        ref="refs/pull/965/merge",
+    )
+    if (mergify_result.gate_name, mergify_result.backtester_gate_name) != (
+        "gate",
+        "backtester-gate",
+    ):
+        raise AssertionError(f"Mergify temp PR must intentionally publish required gates: {mergify_result}")
+    if mergify_result.reason != "mergify_temp_pr" or not mergify_result.is_mergify_temp_pr:
+        raise AssertionError(f"Mergify temp PR must expose the live queue signal: {mergify_result}")
     if not saw_intentional_dispatch_flip:
         raise AssertionError("differential snapshot must exercise workflow_dispatch full_ci=true")
 
@@ -1278,9 +1337,13 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
             'ready_pr = "full"',
             'ready_pr = "iteration"',
         ),
+        "ci_provenance.policy.mergify_temp_pr must be full": CONFIG_TOML.replace(
+            'mergify_temp_pr = "full"',
+            'mergify_temp_pr = "defer"',
+        ),
         "ci_provenance.policy has unexpected keys": CONFIG_TOML.replace(
-            "[ci_provenance.policy.override]",
-            'synthetic_new = "full"\n\n[ci_provenance.policy.override]',
+            "[ci_provenance.mergify]",
+            'synthetic_new = "full"\n\n[ci_provenance.mergify]',
         ),
     }
     for fragment, config_text in cases.items():

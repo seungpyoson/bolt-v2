@@ -56,6 +56,7 @@ POLICY_ROWS = (
     "workflow_dispatch_full_ci",
     "main_push",
     "merge_group",
+    "mergify_temp_pr",
     "tag",
     "unknown_event",
 )
@@ -71,6 +72,7 @@ POLICY_REQUIRED_VALUES = {
     "workflow_dispatch_full_ci": "full",
     "main_push": "full",
     "merge_group": "full",
+    "mergify_temp_pr": "full",
     "tag": "tag_reuse",
     "unknown_event": "full",
 }
@@ -142,6 +144,7 @@ class ProvenanceConfig:
     artifact_retention_days: int
     policy: dict[str, str]
     gate_names: dict[str, str]
+    mergify_temp_pr_head_ref_prefix: str
     force_full_ci: bool
     ignore_emit_failure: bool
 
@@ -404,6 +407,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
 
     deploy = require_table(ci_provenance, "deploy", "ci_provenance")
     dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
+    mergify = require_table(ci_provenance, "mergify", "ci_provenance")
     gate_names_table = require_table(ci_provenance, "gate_names", "ci_provenance")
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
@@ -495,6 +499,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         artifact_retention_days=retention_days,
         policy=policy,
         gate_names=gate_names,
+        mergify_temp_pr_head_ref_prefix=require_string(
+            mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify"
+        ),
         force_full_ci=force_full_ci,
         ignore_emit_failure=ignore_emit_failure,
     )
@@ -543,16 +550,37 @@ def gate_name_suffix_for(reason: str, path: str) -> str:
     raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
 
 
+def is_mergify_temp_pr(
+    *,
+    event_name: str,
+    pull_request_draft: bool,
+    pull_request_head_ref: str,
+    temp_pr_head_ref_prefix: str,
+) -> bool:
+    return (
+        event_name == "pull_request"
+        and pull_request_draft
+        and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+    )
+
+
 def evaluate_ci_policy(
     config: ProvenanceConfig,
     *,
     event_name: str,
     event_action: str,
     pull_request_draft: bool,
+    pull_request_head_ref: str = "",
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
     ref: str,
 ) -> CiPolicyResult:
+    mergify_temp_pr = is_mergify_temp_pr(
+        event_name=event_name,
+        pull_request_draft=pull_request_draft,
+        pull_request_head_ref=pull_request_head_ref,
+        temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
+    )
     if event_name == "merge_group":
         # The merge queue validates the exact to-be-merged commit on a temporary
         # gh-readonly-queue ref. Resolve on event_name alone so the queue ref
@@ -576,6 +604,9 @@ def evaluate_ci_policy(
         if config.force_full_ci:
             path = "full"
             reason = "force_full_ci"
+        elif mergify_temp_pr:
+            path = config.policy["mergify_temp_pr"]
+            reason = "mergify_temp_pr"
         elif event_action == "ready_for_review":
             path = config.policy["ready_for_review"]
             reason = "ready_for_review"
@@ -620,7 +651,7 @@ def evaluate_ci_policy(
         gate_name=config.gate_names[f"gate_{gate_name_suffix}"],
         backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
         expected_event_class=expected_event_class_for(reason, path),
-        is_mergify_temp_pr=False,
+        is_mergify_temp_pr=mergify_temp_pr,
         reason=reason,
     )
 
@@ -1701,6 +1732,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--event-name", required=True)
         parser.add_argument("--event-action", default="")
         parser.add_argument("--pull-request-draft", default="false")
+        parser.add_argument("--pull-request-head-ref", default="")
         parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--workflow-dispatch-full-ci", default="")
         parser.add_argument("--ref", required=True)
@@ -1746,6 +1778,7 @@ def main(argv: list[str] | None = None) -> int:
                 event_name=args.event_name,
                 event_action=args.event_action,
                 pull_request_draft=parse_bool(args.pull_request_draft),
+                pull_request_head_ref=args.pull_request_head_ref,
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 ref=args.ref,

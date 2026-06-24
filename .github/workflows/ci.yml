@@ -222,6 +222,7 @@ jobs:
             scripts/lane_governor.py \
             scripts/rust_verification.py \
             scripts/command_understanding.py \
+            ci/rust-verification.toml \
             ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
             | tar -x -C "$base_tree"

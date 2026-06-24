@@ -8314,6 +8314,7 @@ def detector_docs_only_archive_errors(job_lines: list[str]) -> list[str]:
         "scripts/lane_governor.py",
         "scripts/rust_verification.py",
         "scripts/command_understanding.py",
+        "ci/rust-verification.toml",
         "ci/github-actions-runners.toml",
         ".github/workflows/ci.yml",
         'python3 "$base_tree/scripts/verify_ci_path_filters.py"',

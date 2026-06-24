@@ -52,6 +52,7 @@ DEFAULT_WORKFLOW_GLOBS = ("*.yml", "*.yaml")
 DEFAULT_SETUP_ACTION = REPO_ROOT / ".github" / "actions" / "setup-environment" / "action.yml"
 DEFAULT_NEXTEST_CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 DEFAULT_NO_MISTAKES_CONFIG = REPO_ROOT / ".no-mistakes.yaml"
+DEFAULT_MERGIFY_CONFIG = REPO_ROOT / ".mergify.yml"
 DEFAULT_RUNNERS_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 DEFAULT_ACTIONLINT_CONFIG = REPO_ROOT / ".github" / "actionlint.yaml"
 DEFAULT_RUST_VERIFICATION_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
@@ -4816,6 +4817,135 @@ def verify_no_mistakes_config(config_text: str, config_name: str = ".no-mistakes
             if storage_error == "BOLT_MANAGED_JUST private just recipe bypass must be classified":
                 continue
             errors.append(f"{config_name} commands.{command_name} {storage_error}")
+    return errors
+
+
+MERGIFY_REQUIRED_MERGE_CONDITIONS = frozenset(
+    {
+        "approved-reviews-by = sp-reviewer",
+        "check-success = gate",
+        "check-success = backtester-gate",
+        "check-success = actionlint",
+        "check-success = host-health",
+    }
+)
+
+
+def top_level_yaml_block(config_text: str, key: str) -> str | None:
+    lines = [strip_comment(line).rstrip() for line in config_text.splitlines()]
+    for index, line in enumerate(lines):
+        if re.fullmatch(rf"{re.escape(key)}\s*:\s*", line):
+            block = [line]
+            for nested in lines[index + 1 :]:
+                if nested.strip() and not nested.startswith(" "):
+                    break
+                block.append(nested)
+            return "\n".join(block)
+    return None
+
+
+def yaml_scalar_value(block_text: str, key: str) -> str | None:
+    for line in block_text.splitlines():
+        match = re.match(rf"^\s*{re.escape(key)}\s*:\s*(.*?)\s*$", line)
+        if match is not None:
+            return unquote_yaml_scalar(match.group(1))
+    return None
+
+
+def queue_rule_block(queue_rules_text: str, name: str) -> str | None:
+    lines = queue_rules_text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(r"^(\s*)-\s*name\s*:\s*(.*?)\s*$", line)
+        if match is None or unquote_yaml_scalar(match.group(2)) != name:
+            continue
+        item_indent = len(match.group(1))
+        block = [line]
+        for nested in lines[index + 1 :]:
+            if nested.strip():
+                indent = len(nested) - len(nested.lstrip(" "))
+                if indent == item_indent and nested.lstrip().startswith("- "):
+                    break
+            block.append(nested)
+        return "\n".join(block)
+    return None
+
+
+def yaml_list_values(block_text: str, key: str) -> list[str] | None:
+    lines = block_text.splitlines()
+    for index, line in enumerate(lines):
+        match = re.match(rf"^(\s*){re.escape(key)}\s*:\s*(.*?)\s*$", line)
+        if match is None:
+            continue
+        scalar = unquote_yaml_scalar(match.group(2))
+        if scalar == "[]":
+            return []
+        if scalar:
+            return None
+        parent_indent = len(match.group(1))
+        values: list[str] = []
+        for nested in lines[index + 1 :]:
+            if not nested.strip():
+                continue
+            indent = len(nested) - len(nested.lstrip(" "))
+            if indent <= parent_indent:
+                break
+            item_match = re.match(r"^\s*-\s*(.*?)\s*$", nested)
+            if item_match is None:
+                return None
+            values.append(unquote_yaml_scalar(item_match.group(1)))
+        return values
+    return None
+
+
+def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -> list[str]:
+    errors: list[str] = []
+    uncommented = uncommented_text(config_text.splitlines())
+    forbidden_keys = (
+        "autoqueue",
+        "auto_merge_conditions",
+        "merge_protections",
+        "merge_protections_settings",
+        "pull_request_rules",
+    )
+    for key in forbidden_keys:
+        if re.search(rf"(?m)^\s*{re.escape(key)}\s*:", uncommented):
+            errors.append(f"{config_name} must keep manual queueing only; remove {key}")
+
+    merge_queue = top_level_yaml_block(config_text, "merge_queue")
+    if merge_queue is None:
+        errors.append(f"{config_name} must define merge_queue")
+    else:
+        if yaml_scalar_value(merge_queue, "max_parallel_checks") != "1":
+            errors.append(f"{config_name} merge_queue.max_parallel_checks must be 1")
+        if yaml_scalar_value(merge_queue, "reset_on_external_merge") != "always":
+            errors.append(f"{config_name} merge_queue.reset_on_external_merge must be always")
+
+    queue_rules = top_level_yaml_block(config_text, "queue_rules")
+    default_rule = queue_rule_block(queue_rules, "default") if queue_rules is not None else None
+    if queue_rules is None:
+        errors.append(f"{config_name} must define queue_rules")
+    if default_rule is None:
+        errors.append(f"{config_name} queue_rules must define default")
+        return errors
+
+    if yaml_list_values(default_rule, "queue_conditions") != []:
+        errors.append(f"{config_name} default queue_conditions must be empty for manual entry")
+    merge_conditions = yaml_list_values(default_rule, "merge_conditions")
+    if merge_conditions is None:
+        errors.append(f"{config_name} default merge_conditions must be a list")
+    elif set(merge_conditions) != MERGIFY_REQUIRED_MERGE_CONDITIONS:
+        errors.append(f"{config_name} default merge_conditions must require sp-reviewer and all four gates")
+
+    expected_scalars = {
+        "branch_protection_injection_mode": "merge",
+        "batch_size": "1",
+        "checks_timeout": "60 minutes",
+        "draft_bot_account": "null",
+        "merge_method": "squash",
+    }
+    for key, expected in expected_scalars.items():
+        if yaml_scalar_value(default_rule, key) != expected:
+            errors.append(f"{config_name} default {key} must be {expected}")
     return errors
 
 
@@ -10456,6 +10586,10 @@ def main() -> int:
         errors.extend(verify_source_fence_static_recipe(repo_automation_texts["justfile"]))
     if DEFAULT_NO_MISTAKES_CONFIG.exists():
         errors.extend(verify_no_mistakes_config(DEFAULT_NO_MISTAKES_CONFIG.read_text()))
+    if DEFAULT_MERGIFY_CONFIG.exists():
+        errors.extend(verify_mergify_config(DEFAULT_MERGIFY_CONFIG.read_text()))
+    else:
+        errors.append(".mergify.yml is required for Mergify queue governance")
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)

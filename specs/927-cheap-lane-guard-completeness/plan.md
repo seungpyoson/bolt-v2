@@ -1,7 +1,7 @@
 # #927 — Cheap-Lane Shared-State Guard: Complete, Drift-Proof Discovery
 
-**Status:** Implementation branch active; root-review fixes are part of this branch before lock. Anchored to
-`main` lineage from `a59ae0776`.
+**Status:** Implementation branch active; root-review fixes are part of this branch before lock. Historical
+pre-#927 evidence is anchored to branch point `a59ae0776`.
 **Issue:** #927 (follow-up to #924, commit `cc5e6c4f0`). **Epic:** #333.
 **Provenance:** Synthesized across **seven** external adversarial review rounds (GLM / GPT / Kimi / Claude),
 every load-bearing claim re-verified at source by the author. Revision **A⁗** (three-layer model;
@@ -60,13 +60,13 @@ Notes that make the invariant precise (not circular):
 
 ---
 
-## 3. Verified findings (evidence base — re-verify at HEAD `a59ae0776`)
+## 3. Verified findings (pre-#927 evidence base — re-verify at branch point `a59ae0776`)
 
 | # | Finding | Anchor |
 |---|---------|--------|
 | F1 | 3 cheap public gates, each whose recipe **body** calls `local_verification_gate.py <gate> -- just <gate>-inner`, cheap lane `local-gate:<gate>`, `cheap_lane_max_concurrent=0` | recipes `fmt-check`/`source-fence-static`/`ci-lint-workflow` — coordinator call in each recipe **body** (`justfile:237,319,448`; recipe headers one line above at 236/318/447); `ci/rust-verification.toml [local_lane_policy]` |
 | F2 | Runtime concurrency classifier = `cheap_lane_labels`; gated **children** run lock-free via ancestor re-entrancy pass-through (so reducing labels to a closure-mirror would mis-reclassify direct-invocation cheap scripts as heavy — **Option B rejected**) | `lane_governor.py:153,279,321-333` |
-| F3 | The **pre-fix** guard at base HEAD scans **109**; the 3-gate **dependency**-closure is **107**, of which exactly **3** are invoked-but-unscanned (`local_verification_gate.py`, `rust_verification.py`, `test_nextest_fingerprint.py`). The two sets are **not** subset/superset: labels include direct-invocation cheap scripts outside the closure (F2), and the closure includes transitively-reached scripts outside labels — the gap is **directional** (closure-not-scanned), not a size comparison. The body-only parser returns **0** for `fmt-check-inner` and `ci-lint-workflow-inner` (dependency-only recipes) — empirical proof the closure needs `just --dump` `dependencies`, not single-recipe text | 109 reproduced at `a59ae0776`; 107 / 3 from the dependency-walk enumeration Change 1 builds |
+| F3 | The **pre-fix** guard at branch point `a59ae0776` scans **109**; the 3-gate **dependency**-closure is **107**, of which exactly **3** are invoked-but-unscanned (`local_verification_gate.py`, `rust_verification.py`, `test_nextest_fingerprint.py`). The two sets are **not** subset/superset: labels include direct-invocation cheap scripts outside the closure (F2), and the closure includes transitively-reached scripts outside labels — the gap is **directional** (closure-not-scanned), not a size comparison. The body-only parser returns **0** for `fmt-check-inner` and `ci-lint-workflow-inner` (dependency-only recipes) — empirical proof the closure needs `just --dump` `dependencies`, not single-recipe text | 109 reproduced at `a59ae0776`; 107 / 3 from the dependency-walk enumeration Change 1 builds |
 | F4 | **Spawn gap is real:** `test_nextest_fingerprint.py` (cheap closure, invoked via the bash-negated form `if ! python3 scripts/test_nextest_fingerprint.py` at `justfile:499`) spawns `scripts/nextest_fingerprint.py`, which writes files and is in **neither** the closure **nor** the labels. Child writes to caller-supplied paths (`--output-path`, `$GITHUB_OUTPUT`); the test passes tmp → not a live bug | `justfile:499`; `test_nextest_fingerprint.py:17,185-204`; `nextest_fingerprint.py:331-332,297-301` |
 | F5 | **Owner is clean:** `rust_verification.py`'s only mutating calls all resolve to `root_base()` = `~/.cache/rust-verification`, **independent of the `repo` arg**; `repo_path(args.repo)` feeds reads/cwd only | `rust_verification.py:515-519,522-529,535-536,2252,3999,222-223` |
 | F6 | **`repo_path(` is owner-only** (15 call sites); no other scanned script uses it (the apparent matches are a different fn `normalize_repo_path` and `Path(args.repo_root)`), so precise-origin tracking is false-positive-safe | `rust_verification.py`; `nextest_fingerprint.py:63,311` |

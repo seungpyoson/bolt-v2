@@ -2,7 +2,8 @@
 
 **Reads with:** `plan.md` (architecture, invariant, three-layer model, findings F1–F10/F7′/F8′).
 This file is the **build sequence** — concrete functions, signatures, and proof obligations for the current
-PR implementation. The "Current state being replaced" section below is anchored to base HEAD `a59ae0776`.
+PR implementation. The "Current state being replaced" section below is anchored to pre-#927 branch point
+`a59ae0776`.
 
 **Changed artifacts:** `scripts/test_lane_governor.py` (the guard + its analyzer), the committed
 discovered-but-unlabeled manifest (§3), and the #927 spec docs (`plan.md` / this file). `lane_governor.py`,
@@ -14,7 +15,7 @@ guard runs under 3.12 in CI. No new third-party deps (stdlib only: `ast`, `async
 
 ---
 
-## Current state being replaced (anchors @ `a59ae0776`)
+## Current state being replaced (anchors @ pre-#927 branch point `a59ae0776`)
 
 - `_justfile_recipe_python_scripts(recipe_name)` `:381-398` — body-only text parser; matches **only**
   `python3 scripts/X.py`. Returns 0 for dependency-only recipes (F3). **Replaced by the §1 evaluator.**

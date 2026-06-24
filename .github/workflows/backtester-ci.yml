@@ -467,8 +467,10 @@ jobs:
 
   issue_789:
     name: bvs-test issue-789
-    needs: [ci-policy, detect, fmt, test-archive]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' }}
+    # Diagnostic evidence lane: keep the long #789 first-P/L artifact visible
+    # without extending the required backtester-gate critical path.
+    needs: [ci-policy, detect, test-archive, gate]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' && needs.gate.result == 'success' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     env:
       BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
@@ -543,7 +545,7 @@ jobs:
   gate:
     name: ${{ needs.ci-policy.outputs.backtester_gate_name }}
     # backtester-gate-iteration is intentionally non-required; only backtester-gate is merge proof.
-    needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]
+    needs: [ci-policy, detect, fmt, clippy, test-archive, test]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
@@ -580,10 +582,6 @@ jobs:
             fi
             if [[ "${{ needs.test.result }}" != "skipped" ]]; then
               echo "bvs-test unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.issue_789.result }}" != "skipped" ]]; then
-              echo "bvs-test issue-789 unexpectedly ran during iteration"
               exit 1
             fi
             echo "backtester iteration CI policy; no required full proof published by this run"
@@ -629,10 +627,6 @@ jobs:
           fi
           if [[ "${{ needs.test.result }}" != "success" ]]; then
             echo "bvs-test did not succeed (${{ needs.test.result }})"
-            exit 1
-          fi
-          if [[ "${{ needs.issue_789.result }}" != "success" ]]; then
-            echo "bvs-test issue-789 did not succeed (${{ needs.issue_789.result }})"
             exit 1
           fi
           echo "backtester lanes passed"

@@ -9371,6 +9371,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     archive_job = jobs.get("test-archive")
     test_job = jobs.get("test")
     issue_job = jobs.get("issue_789")
+    gate_job = jobs.get("gate")
     errors: list[str] = []
     if archive_job is None:
         errors.append("backtester bvs-test must define archive producer job")
@@ -9383,6 +9384,7 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     archive_text = uncommented_text(archive_job)
     job_text = uncommented_text(test_job)
     issue_text = uncommented_text(issue_job) if issue_job is not None else ""
+    gate_text = uncommented_text(gate_job) if gate_job is not None else ""
     consumer_text = f"{job_text}\n{issue_text}"
     combined_text = f"{archive_text}\n{consumer_text}"
     if "just bte-test --partition" in combined_text:
@@ -9393,6 +9395,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester bvs-test consumers must not build binary sidecars")
     if "managed-target-bvs-v1-" in consumer_text or "test-target-cache" in consumer_text:
         errors.append("backtester bvs-test consumers must not restore the managed target cache")
+    if gate_job is not None and (
+        "issue_789" in extract_needs(gate_job) or "needs.issue_789.result" in gate_text
+    ):
+        errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
 
     archive_fragments = [
         ("backtester bvs-test archive must use archive job name", "name: bvs-test archive"),
@@ -9518,12 +9524,16 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     issue_fragments = [
         ("backtester bvs-test issue-789 must use dedicated job name", "name: bvs-test issue-789"),
         (
-            "backtester bvs-test issue-789 must depend on archive producer",
-            "needs: [ci-policy, detect, fmt, test-archive]",
+            "backtester bvs-test issue-789 must depend on archive producer and backtester-gate",
+            "needs: [ci-policy, detect, test-archive, gate]",
         ),
         (
             "backtester bvs-test issue-789 must only run after archive producer succeeds",
             "needs.test-archive.result == 'success'",
+        ),
+        (
+            "backtester bvs-test issue-789 must only run after required gate succeeds",
+            "needs.gate.result == 'success'",
         ),
         ("backtester bvs-test issue-789 must declare archive path", "BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst"),
         ("backtester bvs-test issue-789 must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
@@ -9727,7 +9737,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '"${{ needs.fmt.result }}" != "success" && "${{ needs.fmt.result }}" != "skipped"',
         ):
             errors.append("backtester draft deferral gate must require fmt success or skipped on iteration")
-        for job in ("clippy", "test-archive", "test", "issue_789"):
+        for job in ("clippy", "test-archive", "test"):
             if iteration_body is None or not branch_exits_reachable(
                 iteration_body,
                 "if",
@@ -9753,10 +9763,12 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         ):
             errors.append("backtester draft deferral gate must fail deferred policy outside resolver-permitted event class")
         full_body = defer_sections[1] if defer_sections is not None else gate_text
-        for job in ("fmt", "clippy", "test-archive", "test", "issue_789"):
+        for job in ("fmt", "clippy", "test-archive", "test"):
             condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
             if not branch_exits_reachable(full_body, "if", condition):
                 errors.append(f"backtester draft deferral gate must require {job} success on full proof path")
+        if gate_text and ("issue_789" in extract_needs(gate) or "needs.issue_789.result" in gate_text):
+            errors.append("backtester diagnostic issue-789 lane must not gate merge proof")
 
     group_text = backtester_concurrency_group_text(text)
     if "format('bvs-pr-{0}-deferred', github.event.number)" not in group_text or "format('bvs-pr-{0}-full', github.event.number)" not in group_text:

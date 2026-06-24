@@ -2498,6 +2498,97 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         verifier.merge_group_concurrency_workflow_errors = original_whole_workflow
 
 
+def assert_mergify_config_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    mergify_config = (REPO_ROOT / ".mergify.yml").read_text()
+    baseline_errors = verifier.verify_mergify_config(mergify_config)
+    if baseline_errors:
+        raise AssertionError(f"real .mergify.yml must be clean, got: {baseline_errors}")
+
+    mutations = [
+        (
+            "missing max_parallel_checks",
+            replace_once(mergify_config, "  max_parallel_checks: 1\n", ""),
+            "merge_queue.max_parallel_checks must be 1",
+        ),
+        (
+            "reset disabled",
+            replace_once(
+                mergify_config,
+                "  reset_on_external_merge: always\n",
+                "  reset_on_external_merge: never\n",
+            ),
+            "merge_queue.reset_on_external_merge must be always",
+        ),
+        (
+            "autoqueue enabled",
+            replace_once(
+                mergify_config,
+                "    batch_size: 1\n",
+                "    autoqueue: true\n    batch_size: 1\n",
+            ),
+            "manual queueing only",
+        ),
+        (
+            "queue conditions require gate",
+            replace_once(
+                mergify_config,
+                "    queue_conditions: []\n",
+                "    queue_conditions:\n      - check-success = gate\n",
+            ),
+            "default queue_conditions must be empty",
+        ),
+        (
+            "missing gate merge condition",
+            replace_once(mergify_config, "      - check-success = gate\n", ""),
+            "default merge_conditions must require sp-reviewer and all four gates",
+        ),
+        (
+            "queue-time injection",
+            replace_once(
+                mergify_config,
+                "    branch_protection_injection_mode: merge\n",
+                "    branch_protection_injection_mode: queue\n",
+            ),
+            "default branch_protection_injection_mode must be merge",
+        ),
+        (
+            "batch size widened",
+            replace_once(mergify_config, "    batch_size: 1\n", "    batch_size: 2\n"),
+            "default batch_size must be 1",
+        ),
+        (
+            "unbounded timeout",
+            replace_once(
+                mergify_config,
+                "    checks_timeout: 60 minutes\n",
+                "    checks_timeout: auto\n",
+            ),
+            "default checks_timeout must be explicitly bounded",
+        ),
+        (
+            "draft impersonation",
+            replace_once(
+                mergify_config,
+                "    draft_bot_account: null\n",
+                '    draft_bot_account: "{{ author }}"\n',
+            ),
+            "default draft_bot_account must be null",
+        ),
+        (
+            "non-squash merge",
+            replace_once(mergify_config, "    merge_method: squash\n", "    merge_method: merge\n"),
+            "default merge_method must be squash",
+        ),
+    ]
+    for label, mutated, expected in mutations:
+        errors = verifier.verify_mergify_config(mutated)
+        if not any(expected in error for error in errors):
+            raise AssertionError(
+                f"expected .mergify.yml {label} error containing {expected!r}, got: {errors}"
+            )
+
+
 def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
@@ -5868,6 +5959,7 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
 
         (tmp_path / ".no-mistakes.yaml").write_text(no_mistakes_text)
+        (tmp_path / ".mergify.yml").write_text((REPO_ROOT / ".mergify.yml").read_text())
         write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
@@ -9380,6 +9472,7 @@ def main() -> int:
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_detector_forces_build_on_workflow_dispatch()
     assert_merge_group_support_gaps_are_reported()
+    assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()

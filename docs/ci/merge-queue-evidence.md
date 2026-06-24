@@ -96,7 +96,9 @@ Mergify accepted `@mergifyio queue` on PR #957, queued it under rule `default`, 
 | Failure reason | GitHub could not merge after 10 minutes; `2 of 4 required status checks are expected` |
 | Native `merge_group` runs | none; `gh run list --event merge_group` returned `[]` |
 
-This proves the current repository queue path did not emit native GitHub `merge_group` evidence for PR #957. It also did not produce a durable Mergify temp-PR proof run to capture. The next rollout slice should target Mergify queue configuration/evidence so the queue creates or exposes a proof context where full `gate` and `backtester-gate` can be observed.
+This proves the current repository queue path did not emit native GitHub `merge_group` evidence for PR #957. It also did not produce a durable Mergify temp-PR proof run to capture.
+
+This PR adds the repo-side Mergify queue configuration and verifier guard. Because Mergify reads `.mergify.yml` from the default branch, those settings take effect only after this PR reaches `main`. The remaining live dependency is the GitHub ruleset shape: the Mergify-bypassed ruleset must enforce the required checks and review rules while rules that protect deletion/non-fast-forward remain non-bypassed. After that live settings check, requeue a PR and record the proof context where full `gate` and `backtester-gate` can be observed.
 
 ## Mismatch Handling
 

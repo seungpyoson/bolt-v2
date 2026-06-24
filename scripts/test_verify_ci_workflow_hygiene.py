@@ -374,6 +374,7 @@ jobs:
             scripts/ci_provenance.py \
             scripts/lane_governor.py \
             scripts/rust_verification.py \
+            scripts/command_understanding.py \
             ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
             | tar -x -C "$base_tree"
@@ -2062,13 +2063,14 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
 def assert_ci_detector_docs_only_archive_includes_runtime_dependencies() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
-    mutated = replace_once(workflow, "            scripts/rust_verification.py \\\n", "")
-    errors = verifier.verify_workflow(mutated)
-    if not any(
-        "detector docs-only classifier base archive must include scripts/rust_verification.py" in error
-        for error in errors
-    ):
-        raise AssertionError(f"expected detector docs-only base archive dependency error, got: {errors}")
+    for dependency in ("scripts/rust_verification.py", "scripts/command_understanding.py"):
+        mutated = replace_once(workflow, f"            {dependency} \\\n", "")
+        errors = verifier.verify_workflow(mutated)
+        if not any(
+            f"detector docs-only classifier base archive must include {dependency}" in error
+            for error in errors
+        ):
+            raise AssertionError(f"expected detector docs-only base archive dependency error for {dependency}, got: {errors}")
 
 
 def assert_merge_group_support_gaps_are_reported() -> None:

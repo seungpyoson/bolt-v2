@@ -221,6 +221,7 @@ jobs:
             scripts/ci_provenance.py \
             scripts/lane_governor.py \
             scripts/rust_verification.py \
+            scripts/command_understanding.py \
             ci/github-actions-runners.toml \
             .github/workflows/ci.yml \
             | tar -x -C "$base_tree"

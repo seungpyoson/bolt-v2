@@ -6283,6 +6283,7 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         assert_v6_red_backtester_cache_keys_include_crate_sources,
         assert_v6_red_backtester_gate_fails_when_detect_fails,
         assert_v6_red_backtester_test_uses_nextest_archive,
+        assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths,
     ]
     failures: list[str] = []
     for check in checks:
@@ -6443,6 +6444,35 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 """
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
+
+
+def assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths() -> None:
+    verifier = load_verifier()
+    bad = """bte-test-archive archive *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
+
+bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+"""
+    errors = verifier.verify_repo_automation_texts({"justfile": bad})
+    assert any("backtester nextest archive recipes must absolutize archive paths" in error for error in errors), errors
+    assert any("backtester nextest archive recipes must not pass crate-relative archive paths" in error for error in errors), errors
+
+    good = """bte-test-archive archive *args: check-workspace require-rust-verification-owner
+    archive_path="{{archive}}"; \\
+      case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \\
+      mkdir -p "$(dirname "$archive_path")"; \\
+      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "$archive_path" {{args}}
+
+bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    archive_path="{{archive}}"; \\
+      case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \\
+      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "$archive_path" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+"""
+    good_errors = verifier.verify_repo_automation_texts({"justfile": good})
+    assert not [
+        error for error in good_errors if "backtester nextest archive recipes" in error
+    ], good_errors
 
 
 def remove_fragment_if_present(text: str, fragment: str) -> str:

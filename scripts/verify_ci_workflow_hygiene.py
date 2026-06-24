@@ -9585,10 +9585,35 @@ def backtester_detect_path_errors(file_name: str, text: str) -> list[str]:
     return errors
 
 
+def backtester_nextest_archive_recipe_errors(file_name: str, text: str) -> list[str]:
+    if file_name != "justfile" and not file_name.endswith("/justfile"):
+        return []
+    start = text.find("bte-test-archive archive *args:")
+    if start == -1:
+        return []
+    end = text.find("\nbte-build:", start)
+    recipe_text = text[start:] if end == -1 else text[start:end]
+    errors: list[str] = []
+    for required in (
+        'case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac',
+        '--archive-file "$archive_path"',
+    ):
+        if required not in recipe_text:
+            errors.append("backtester nextest archive recipes must absolutize archive paths from repo_root")
+    for forbidden in ('--archive-file "{{archive}}"', "--archive-file '{{archive}}'"):
+        if forbidden in recipe_text:
+            errors.append("backtester nextest archive recipes must not pass crate-relative archive paths")
+    return errors
+
+
 def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for file_name, text in texts.items():
         errors.extend(f"{file_name}: {error}" for error in raw_rust_storage_errors(text))
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in backtester_nextest_archive_recipe_errors(file_name, text)),
+        )
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_managed_target_cache_errors(file_name, text)),

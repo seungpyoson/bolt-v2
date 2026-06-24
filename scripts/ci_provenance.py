@@ -23,8 +23,11 @@ import zipfile
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 SUPPORTED_MODES = {
+    "check-backtester-gate",
+    "check-ci-gate",
     "ci-policy",
     "emit-full-ci",
+    "resolve-gate-carry-forward",
     "resolve-exact-sha",
     "resolve-fingerprint",
     "validate-record",
@@ -562,6 +565,220 @@ def is_mergify_temp_pr(
         and pull_request_draft
         and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
     )
+
+
+def require_job_result(
+    job_results: dict[str, str],
+    job: str,
+    expected: str,
+    message: str | None = None,
+) -> None:
+    actual = job_results.get(job)
+    if actual != expected:
+        raise ProvenanceError(message or f"{job} did not resolve {expected}: {actual}")
+
+
+def require_job_result_in(
+    job_results: dict[str, str],
+    job: str,
+    expected: set[str],
+    message: str | None = None,
+) -> None:
+    actual = job_results.get(job)
+    if actual not in expected:
+        expected_text = ", ".join(sorted(expected))
+        raise ProvenanceError(message or f"{job} did not resolve one of {expected_text}: {actual}")
+
+
+def require_jobs_skipped(job_results: dict[str, str], jobs: tuple[str, ...], label: str) -> None:
+    for job in jobs:
+        require_job_result(
+            job_results,
+            job,
+            "skipped",
+            f"{job} unexpectedly ran during {label}",
+        )
+
+
+CI_HEAVY_JOBS = (
+    "deny",
+    "clippy",
+    "check-aarch64",
+    "source-fence",
+    "nextest-fingerprint",
+    "test-archive",
+    "nextest-fingerprint-reuse",
+    "test",
+    "build",
+)
+
+
+def require_verified_carry_forward(carry_forward_verified: bool) -> None:
+    if not carry_forward_verified:
+        raise ProvenanceError("verified carry-forward proof is required for this policy path")
+
+
+def evaluate_ci_gate_verdict(
+    *,
+    policy_path: str,
+    expected_event_class: str,
+    full_ci_deferred: bool,
+    ignore_emit_failure: bool,
+    reuse_found: bool,
+    carry_forward_verified: bool,
+    job_results: dict[str, str],
+    build_required: bool,
+) -> str:
+    require_job_result(job_results, "ci-policy", "success", "ci-policy did not succeed")
+    require_job_result(job_results, "detector", "success", "detector did not succeed")
+
+    if policy_path == "tag_reuse":
+        require_job_result(job_results, "same-sha-main-evidence", "success", "same-sha-main-evidence did not succeed")
+        require_jobs_skipped(
+            job_results,
+            (
+                "deny",
+                "clippy",
+                "source-fence",
+                "nextest-fingerprint",
+                "test-archive",
+                "nextest-fingerprint-reuse",
+                "test",
+                "build",
+                "ci-provenance-emit",
+            ),
+            "tag reuse",
+        )
+        require_job_result(job_results, "check-aarch64", "success", "check-aarch64 did not succeed during tag reuse")
+        return "tag reuse proof passed"
+
+    require_job_result(
+        job_results,
+        "same-sha-main-evidence",
+        "skipped",
+        "same-sha-main-evidence unexpectedly ran outside tag reuse",
+    )
+
+    if policy_path == "iteration":
+        if expected_event_class != "iteration":
+            raise ProvenanceError(f"iteration CI policy outside resolver-permitted event class {expected_event_class!r}")
+        require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "iteration")
+        return "iteration CI policy; no required full proof published by this run"
+
+    if policy_path == "defer" or full_ci_deferred:
+        if expected_event_class != "defer":
+            raise ProvenanceError(f"deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
+        require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "defer")
+        require_verified_carry_forward(carry_forward_verified)
+        return "deferred CI policy carried forward prior same-SHA gate proof"
+
+    if policy_path == "noop":
+        if expected_event_class != "noop":
+            raise ProvenanceError(f"noop CI policy outside resolver-permitted event class {expected_event_class!r}")
+        require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "noop")
+        require_verified_carry_forward(carry_forward_verified)
+        return "no-code CI policy carried forward prior same-SHA gate proof"
+
+    if policy_path == "docs":
+        if expected_event_class != "docs":
+            raise ProvenanceError(f"docs CI policy outside resolver-permitted event class {expected_event_class!r}")
+        require_jobs_skipped(job_results, CI_HEAVY_JOBS, "docs")
+        require_job_result(job_results, "ci-provenance-emit", "success", "ci-provenance-emit did not succeed for docs")
+        return "docs CI proof passed"
+
+    if policy_path != "full":
+        raise ProvenanceError(f"unknown CI policy path {policy_path!r}")
+
+    if reuse_found:
+        require_job_result(
+            job_results,
+            "nextest-fingerprint-reuse",
+            "success",
+            "nextest fingerprint reuse resolver did not succeed",
+        )
+        require_job_result(
+            job_results,
+            "ci-provenance-emit",
+            "skipped",
+            "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse",
+        )
+    else:
+        emit_result = job_results.get("ci-provenance-emit")
+        if emit_result != "success" and not ignore_emit_failure:
+            raise ProvenanceError("ci-provenance-emit did not succeed")
+
+    for job in ("deny", "clippy", "check-aarch64", "source-fence", "test"):
+        require_job_result(job_results, job, "success", f"{job} did not succeed")
+    if build_required:
+        require_job_result(job_results, "build", "success", "build did not succeed when build_required=true")
+    else:
+        require_job_result_in(
+            job_results,
+            "build",
+            {"success", "skipped"},
+            f"build produced unexpected result {job_results.get('build')!r} when build_required=false",
+        )
+    return "full CI proof passed"
+
+
+def evaluate_backtester_gate_verdict(
+    *,
+    policy_path: str,
+    expected_event_class: str,
+    full_ci_deferred: bool,
+    job_results: dict[str, str],
+    bvs_changed: bool,
+) -> str:
+    require_job_result(job_results, "ci-policy", "success", "bvs-ci-policy did not succeed")
+    require_job_result(job_results, "detect", "success", "bvs-detect did not succeed")
+
+    if policy_path == "iteration":
+        if expected_event_class != "iteration":
+            raise ProvenanceError(f"backtester iteration CI policy outside resolver-permitted event class {expected_event_class!r}")
+        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during iteration")
+        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester iteration")
+        return "backtester iteration CI policy; no required full proof published by this run"
+
+    if not bvs_changed:
+        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
+        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester no-crate")
+        return "backtester no-crate proof passed"
+
+    if policy_path == "noop":
+        if expected_event_class != "noop":
+            raise ProvenanceError(f"backtester noop CI policy outside resolver-permitted event class {expected_event_class!r}")
+        for job, label in (
+            ("fmt", "bvs-fmt"),
+            ("clippy", "bvs-clippy"),
+            ("test-archive", "bvs-test archive"),
+            ("test", "bvs-test"),
+        ):
+            require_job_result(job_results, job, "success", f"{label} did not succeed")
+        return "backtester no-code policy recomputed proof passed"
+
+    if policy_path == "defer" or full_ci_deferred:
+        if expected_event_class != "defer":
+            raise ProvenanceError(f"backtester deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
+        for job, label in (
+            ("fmt", "bvs-fmt"),
+            ("clippy", "bvs-clippy"),
+            ("test-archive", "bvs-test archive"),
+            ("test", "bvs-test"),
+        ):
+            require_job_result(job_results, job, "success", f"{label} did not succeed")
+        return "backtester deferred policy recomputed proof passed"
+
+    if policy_path != "full":
+        raise ProvenanceError(f"unknown backtester CI policy path {policy_path!r}")
+
+    for job, label in (
+        ("fmt", "bvs-fmt"),
+        ("clippy", "bvs-clippy"),
+        ("test-archive", "bvs-test archive"),
+        ("test", "bvs-test"),
+    ):
+        require_job_result(job_results, job, "success", f"{label} did not succeed")
+    return "backtester full proof passed"
 
 
 def evaluate_ci_policy(
@@ -1615,6 +1832,13 @@ def parse_key_value(value: str) -> tuple[str, str]:
     return key, parsed_value
 
 
+def parse_job_result_values(values: list[str]) -> dict[str, str]:
+    results = dict(parse_key_value(value) for value in values)
+    if not results:
+        raise ProvenanceError("at least one --job result is required")
+    return results
+
+
 def parse_bool(value: str) -> bool:
     lowered = value.lower()
     if lowered == "true":
@@ -1735,7 +1959,32 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--pull-request-head-ref", default="")
         parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--workflow-dispatch-full-ci", default="")
+        parser.add_argument("--docs-only", default="false")
         parser.add_argument("--ref", required=True)
+    if mode == "check-ci-gate":
+        parser.add_argument("--policy-path", required=True)
+        parser.add_argument("--expected-event-class", required=True)
+        parser.add_argument("--full-ci-deferred", default="false")
+        parser.add_argument("--ignore-emit-failure", default="false")
+        parser.add_argument("--reuse-found", default="false")
+        parser.add_argument("--carry-forward-verified", default="false")
+        parser.add_argument("--build-required", default="false")
+        parser.add_argument("--job", action="append", default=[])
+    if mode == "check-backtester-gate":
+        parser.add_argument("--policy-path", required=True)
+        parser.add_argument("--expected-event-class", required=True)
+        parser.add_argument("--full-ci-deferred", default="false")
+        parser.add_argument("--bvs-changed", default="false")
+        parser.add_argument("--job", action="append", default=[])
+    if mode == "resolve-gate-carry-forward":
+        parser.add_argument("--repo")
+        parser.add_argument("--token")
+        parser.add_argument("--sha", required=True)
+        parser.add_argument("--base-sha", default="")
+        parser.add_argument("--current-run-id")
+        parser.add_argument("--gate-name", required=True)
+        parser.add_argument("--workflow-path", required=True)
+        parser.add_argument("--require-provenance-base", default="false")
     if mode == "emit-full-ci":
         parser.add_argument("--output", type=pathlib.Path)
         parser.add_argument("--required-job", action="append", default=[])
@@ -1773,6 +2022,9 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(rest)
         config = load_config(args.config)
         if mode == "ci-policy":
+            docs_only = parse_bool(args.docs_only)
+            if docs_only:
+                raise ProvenanceError("docs-only policy requires the merge-readiness workflow rollout")
             result = evaluate_ci_policy(
                 config,
                 event_name=args.event_name,
@@ -1792,6 +2044,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"is_mergify_temp_pr={str(result.is_mergify_temp_pr).lower()}")
             print(f"reason={result.reason}")
             print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")
+        elif mode == "check-ci-gate":
+            print(
+                evaluate_ci_gate_verdict(
+                    policy_path=args.policy_path,
+                    expected_event_class=args.expected_event_class,
+                    full_ci_deferred=parse_bool(args.full_ci_deferred),
+                    ignore_emit_failure=parse_bool(args.ignore_emit_failure),
+                    reuse_found=parse_bool(args.reuse_found),
+                    carry_forward_verified=parse_bool(args.carry_forward_verified),
+                    job_results=parse_job_result_values(args.job),
+                    build_required=parse_bool(args.build_required),
+                )
+            )
+        elif mode == "check-backtester-gate":
+            print(
+                evaluate_backtester_gate_verdict(
+                    policy_path=args.policy_path,
+                    expected_event_class=args.expected_event_class,
+                    full_ci_deferred=parse_bool(args.full_ci_deferred),
+                    job_results=parse_job_result_values(args.job),
+                    bvs_changed=parse_bool(args.bvs_changed),
+                )
+            )
+        elif mode == "resolve-gate-carry-forward":
+            raise ProvenanceError("gate carry-forward requires the merge-readiness workflow rollout")
         elif mode == "emit-full-ci":
             record = emit_full_ci_record(
                 config=config,

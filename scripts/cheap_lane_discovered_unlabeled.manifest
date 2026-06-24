@@ -10,8 +10,6 @@ scripts/lane_governor.py
 scripts/local_verification_gate.py
 scripts/nextest_fingerprint.py
 scripts/render_install_unit.py
-scripts/require_resolved_review_threads.py
-scripts/require_sp_reviewer.py
 scripts/rust_verification.py
 scripts/sync_ci_debug_ssh_secret.py
 scripts/test_nextest_fingerprint.py

@@ -773,6 +773,19 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "group: >- actionlint-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
     "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
     "|| format('{0}-{1}', github.ref_name, github.sha) }}",
+    # .github/workflows/backtester-ci.yml — same draft/full PR split as ci.yml
+    # with a backtester-prefixed merge_group arm before the per-ref/sha fallback.
+    "group: >- ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true "
+    "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
+    "&& format('bvs-pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
+    "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
+    "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) "
+    "&& format('bvs-pr-{0}-noop', github.event.number) || github.event_name == 'pull_request' "
+    "&& format('bvs-pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
+    "&& github.event.inputs.full_ci == 'true' && format('bvs-{0}-dispatch-full', github.ref_name) "
+    "|| github.event_name == 'workflow_dispatch' && format('bvs-{0}-dispatch-iteration', github.ref_name) "
+    "|| github.event_name == 'merge_group' && format('bvs-mq-{0}', github.ref) "
+    "|| format('bvs-{0}-{1}', github.ref_name, github.sha) }}",
 })
 
 # cancel-in-progress is fail-closed for merge_group only when it is provably
@@ -9478,6 +9491,15 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
                         text,
                         required_types=("ready_for_review", "edited", "converted_to_draft"),
                     )
+                ),
+            )
+            if "merge_group" not in workflow_trigger_keys(text):
+                errors.append(f"{file_name}: on must define merge_group for merge queue")
+            add_unique_errors(
+                errors,
+                (
+                    f"{file_name}: {error}"
+                    for error in verify_merge_group_concurrency(text)
                 ),
             )
         if file_name == "ci-docs-pass-stub.yml" or file_name.endswith("/ci-docs-pass-stub.yml"):

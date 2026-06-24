@@ -3335,7 +3335,13 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
             f"backtester-ci workflow must reject missing noop context guards, got: {missing_noop_guard_errors}"
         )
 
-    for job, display_name in (("fmt", "bvs-fmt"), ("clippy", "bvs-clippy"), ("test", "bvs-test")):
+    for job, display_name in (
+        ("fmt", "bvs-fmt"),
+        ("clippy", "bvs-clippy"),
+        ("test-archive", "bvs-test archive"),
+        ("test", "bvs-test"),
+        ("issue_789", "bvs-test issue-789"),
+    ):
         result_check = (
             f'          if [[ "${{{{ needs.{job}.result }}}}" != "success" ]]; then\n'
             f'            echo "{display_name} did not succeed (${{{{ needs.{job}.result }}}})"\n'
@@ -6466,6 +6472,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
     assert any("backtester bvs-test must not run direct per-shard target builds" in error for error in errors), errors
     assert any("backtester bvs-test shards must name matrix shards" in error for error in errors), errors
+    assert any("backtester bvs-test must define dedicated issue-789 job" in error for error in errors), errors
 
     good = """jobs:
   test-archive:
@@ -6534,11 +6541,33 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: test
         run: |
           mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
-          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}"
+          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}" -- --skip issue_789_first_real_free_data_taker_pl
+  issue_789:
+    name: bvs-test issue-789
+    needs: [ci-policy, detect, fmt, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' }}
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BOLT_ISSUE_789_RESULT_PATH: result.json
+    steps:
+      - name: Restore BVS nextest archive
+        id: bvs-nextest-archive-cache
+      - name: Require BVS nextest archive cache
+      - name: Restore BVS binary sidecars
+        id: bvs-bin-sidecars-cache
+      - name: Require BVS binary sidecars cache
+      - name: Extract BVS binary sidecars
+        run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+      - name: test issue-789
+        run: |
+          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
+          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
       - name: Upload issue #789 first-P/L artifact
         uses: actions/upload-artifact@example
         with:
-          name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
+          name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
 """
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors

@@ -61,6 +61,18 @@ RUST_PROBE_MODES = (
 )
 RUST_PROBE_SUGGEST_COMMAND = "suggest"
 RUST_PROBE_COMMANDS = (RUST_PROBE_SUGGEST_COMMAND, *RUST_PROBE_MODES)
+GATE_NAME_KEYS = (
+    "gate_required",
+    "gate_defer",
+    "gate_iteration",
+    "gate_noop",
+    "gate_dispatch_full",
+    "backtester_required",
+    "backtester_defer",
+    "backtester_iteration",
+    "backtester_noop",
+    "backtester_dispatch_full",
+)
 RUST_PROBE_HELP_EPILOG = """\
 Examples:
   just rust-probe suggest
@@ -2873,6 +2885,42 @@ def check_summary(check: dict[str, Any]) -> str:
     return f"{name} [{bucket}]" + (f" {link}" if link else "")
 
 
+def github_actions_output_safe_check_name(value: str) -> bool:
+    return (
+        value == value.strip()
+        and "${{" not in value
+        and "}}" not in value
+        and all(char not in "\r\n" and 32 <= ord(char) < 127 for char in value)
+    )
+
+
+def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    keys = (
+        "gate_required",
+        "backtester_required",
+        "gate_defer",
+        "backtester_defer",
+        "gate_iteration",
+        "backtester_iteration",
+        "gate_noop",
+        "backtester_noop",
+        "gate_dispatch_full",
+        "backtester_dispatch_full",
+    )
+    seen: dict[str, str] = {}
+    for key in keys:
+        value = gate_names.get(key)
+        if value is None:
+            continue
+        previous = seen.get(value)
+        if previous is not None:
+            errors.append(f"ci_provenance.gate_names.{key} must not equal {previous}")
+        else:
+            seen[value] = key
+    return errors
+
+
 def verify_remote_head_current_or_fail(repo: pathlib.Path, branch: str, head: str) -> int | None:
     _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
     if error is not None:
@@ -2915,8 +2963,26 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
         return None, "ci_provenance.dispatch run_name_full and run_name_iteration must differ"
     if not isinstance(proof_gate_job, str) or not proof_gate_job:
         return None, "ci_provenance.dispatch.proof_gate_job must be a non-empty string"
+    if not github_actions_output_safe_check_name(proof_gate_job):
+        return None, "ci_provenance.dispatch.proof_gate_job must be a GitHub Actions output-safe check name"
     if not isinstance(gate_names, dict):
         return None, "ci_provenance.gate_names table is required for verify-remote dispatch"
+    configured_gate_names: dict[str, str] = {}
+    for key in GATE_NAME_KEYS:
+        if key not in gate_names:
+            continue
+        value = gate_names.get(key)
+        if not isinstance(value, str) or not value:
+            return None, f"ci_provenance.gate_names.{key} must be a non-empty string"
+        if not github_actions_output_safe_check_name(value):
+            return None, f"ci_provenance.gate_names.{key} must be a GitHub Actions output-safe check name"
+        configured_gate_names[key] = value
+    gate_required = configured_gate_names.get("gate_required")
+    if gate_required is not None and proof_gate_job != gate_required:
+        return None, "ci_provenance.dispatch.proof_gate_job must match required gate name"
+    gate_name_errors = gate_name_collision_errors(configured_gate_names)
+    if gate_name_errors:
+        return None, "; ".join(gate_name_errors)
     dispatch_full_gate_job = gate_names.get("gate_dispatch_full")
     if not isinstance(dispatch_full_gate_job, str) or not dispatch_full_gate_job:
         return None, "ci_provenance.gate_names.gate_dispatch_full must be a non-empty string"
@@ -3646,6 +3712,13 @@ def evaluate_full_ci_run(
         elif run.get("event") == "pull_request":
             required_gate_job = dispatch_config["proof_gate_job"]
             missing_gate_message = "pull_request run lacks successful required gate job"
+        else:
+            print(
+                f"Remote full CI failed for {head} on {pr_url}: unsupported workflow event {run.get('event')!r}",
+                file=sys.stderr,
+            )
+            print(f"- {workflow_run_summary(run)}", file=sys.stderr)
+            return 1
         if required_gate_job is not None:
             run_id = run_database_id(run)
             if run_id is None:

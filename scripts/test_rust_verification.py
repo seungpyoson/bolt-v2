@@ -42,6 +42,48 @@ def load_owner_module() -> object:
     return module
 
 
+def load_ci_provenance_module() -> object:
+    path = REPO_ROOT / "scripts" / "ci_provenance.py"
+    spec = importlib.util.spec_from_file_location("ci_provenance_under_test", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load ci_provenance.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def assert_ci_provenance_gate_name_helpers_stay_in_parity() -> None:
+    owner = load_owner_module()
+    provenance = load_ci_provenance_module()
+    if owner.GATE_NAME_KEYS != provenance.GATE_NAME_KEYS:
+        raise AssertionError((owner.GATE_NAME_KEYS, provenance.GATE_NAME_KEYS))
+    for value in (
+        "gate",
+        "gate ",
+        " gate",
+        "gate\nignored=1",
+        "gate\tignored",
+        "${{ github.ref }}",
+        "gate }}",
+        "backtester-gate-dispatch",
+    ):
+        owner_result = owner.github_actions_output_safe_check_name(value)
+        provenance_result = provenance.github_actions_output_safe_check_name(value)
+        if owner_result != provenance_result:
+            raise AssertionError((value, owner_result, provenance_result))
+    collision_cases = (
+        {"gate_required": "gate", "gate_noop": "gate"},
+        {"gate_required": "gate", "backtester_noop": "gate"},
+        {"gate_dispatch_full": "gate-dispatch", "backtester_dispatch_full": "gate-dispatch"},
+    )
+    for gate_names in collision_cases:
+        owner_errors = owner.gate_name_collision_errors(gate_names)
+        provenance_errors = provenance.gate_name_collision_errors(gate_names)
+        if owner_errors != provenance_errors:
+            raise AssertionError((gate_names, owner_errors, provenance_errors))
+
+
 def write_executable(path: pathlib.Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
@@ -1167,6 +1209,7 @@ def assert_ci_logs_command_fails_when_diagnostics_unavailable() -> None:
 
 def main() -> int:
     assert_repo_local_owner_contract()
+    assert_ci_provenance_gate_name_helpers_stay_in_parity()
     assert_rust_probe_guidance_distinguishes_feedback_from_proof()
     assert_fmt_avoids_managed_cache_lock()
     assert_system_python_contract()

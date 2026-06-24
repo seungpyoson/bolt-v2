@@ -107,6 +107,28 @@ def run_cmd_verify_remote(owner: object, repo: pathlib.Path) -> tuple[int, str]:
     return result, stdout.getvalue() + stderr.getvalue()
 
 
+def assert_verify_remote_dispatch_config_rejects_unsafe_gate_names() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        write_policy(repo)
+        runners = repo / "ci" / "github-actions-runners.toml"
+        runners.write_text(
+            runners.read_text(encoding="utf-8").replace(
+                'gate_dispatch_full = "gate-dispatch"',
+                'gate_dispatch_full = "gate-dispatch "',
+            ),
+            encoding="utf-8",
+        )
+        config, error = owner.ci_provenance_dispatch_config(repo)
+    if config is not None:
+        raise AssertionError(config)
+    expected = "ci_provenance.gate_names.gate_dispatch_full must be a GitHub Actions output-safe check name"
+    if error != expected:
+        raise AssertionError(error)
+
+
 def assert_diagnostic_excerpt_is_bounded_and_masked() -> None:
     owner = load_owner_module()
     text = (
@@ -563,6 +585,39 @@ def assert_verify_remote_ready_pr_requires_required_gate_job() -> None:
             owner.workflow_run_list = original_run_list
             owner.workflow_run_jobs = original_jobs
     if result != 1 or "pull_request run lacks successful required gate job" not in output:
+        raise AssertionError((result, output))
+
+
+def assert_verify_remote_rejects_unknown_success_event() -> None:
+    owner = load_owner_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = pathlib.Path(tmp) / "repo"
+        repo.mkdir()
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = owner.evaluate_full_ci_run(
+                repo,
+                {
+                    "databaseId": 204,
+                    "attempt": 1,
+                    "event": "merge_group",
+                    "headSha": "abc",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "createdAt": "2026-06-13T00:02:00Z",
+                    "url": "https://example.invalid/merge-group",
+                },
+                dispatch_config={
+                    "proof_gate_job": "gate",
+                    "dispatch_full_gate_job": "gate-dispatch",
+                    "run_name_full": "CI [dispatch:full]",
+                },
+                head="abc",
+                pr_url="https://example.invalid/pr/1",
+            )
+    output = stdout.getvalue() + stderr.getvalue()
+    if result != 1 or "unsupported workflow event 'merge_group'" not in output:
         raise AssertionError((result, output))
 
 
@@ -1481,6 +1536,7 @@ def assert_verify_remote_reports_failed_job_while_run_is_in_progress() -> None:
 
 
 def main() -> int:
+    assert_verify_remote_dispatch_config_rejects_unsafe_gate_names()
     assert_diagnostic_excerpt_is_bounded_and_masked()
     assert_secret_redaction_leaves_common_key_labels_readable()
     assert_job_log_failed_treats_ansi_whitespace_as_unavailable()
@@ -1493,6 +1549,7 @@ def main() -> int:
     assert_verify_remote_waits_then_passes()
     assert_verify_remote_uses_latest_full_run_over_stale_deferred_run()
     assert_verify_remote_ready_pr_requires_required_gate_job()
+    assert_verify_remote_rejects_unknown_success_event()
     assert_verify_remote_draft_dispatches_full_ci_and_waits_for_dispatch_gate()
     assert_verify_remote_draft_rejects_dispatch_without_dispatch_gate()
     assert_verify_remote_draft_fork_fails_closed_before_dispatch()

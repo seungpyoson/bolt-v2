@@ -72,6 +72,13 @@ The default Mergify rule intentionally keeps `queue_conditions: []` and a strict
 | Required gate jobs | `gh run view <run-id> --json jobs` |
 | Check conclusions on proof SHA | `gh api repos/{owner}/{repo}/commits/<proof-sha>/check-runs` |
 
+### Live Probe Requirements
+
+The probe PR must touch a full proof CI path before it is queued. A docs-only
+probe can exercise the no-code gate path instead of proving that the queue
+context runs both required gates. Record the probe PR head SHA before queueing
+and compare it with the Mergify proof context SHA after queueing.
+
 ### PR #957 Observation
 
 PR: https://github.com/seungpyoson/bolt-v2/pull/957

@@ -30,6 +30,18 @@ SUPPORTED_MODES = {
     "validate-record",
 }
 POLICY_VALUES = {"full", "defer", "iteration", "noop", "tag_reuse"}
+GATE_NAME_KEYS = (
+    "gate_required",
+    "gate_defer",
+    "gate_iteration",
+    "gate_noop",
+    "gate_dispatch_full",
+    "backtester_required",
+    "backtester_defer",
+    "backtester_iteration",
+    "backtester_noop",
+    "backtester_dispatch_full",
+)
 POLICY_ROWS = (
     "draft_pr_synchronize",
     "draft_pr_opened",
@@ -47,6 +59,28 @@ POLICY_ROWS = (
     "tag",
     "unknown_event",
 )
+POLICY_REQUIRED_VALUES = {
+    "draft_pr_synchronize": "defer",
+    "draft_pr_opened": "defer",
+    "draft_pr_reopened": "defer",
+    "draft_pr_edited": "defer",
+    "converted_to_draft": "defer",
+    "ready_pr": "full",
+    "ready_for_review": "full",
+    "workflow_dispatch": "iteration",
+    "workflow_dispatch_full_ci": "full",
+    "main_push": "full",
+    "merge_group": "full",
+    "tag": "tag_reuse",
+    "unknown_event": "full",
+}
+POLICY_REQUIRED_MESSAGES = {
+    "workflow_dispatch_full_ci": "ci_provenance.policy.workflow_dispatch_full_ci must remain full",
+}
+POLICY_ALLOWED_VALUES = {
+    "ready_pr_edited_no_base": {"noop", "full"},
+    "ready_pr_reopened": {"noop", "full"},
+}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 NEXTEST_FINGERPRINT_RE = re.compile(
@@ -107,6 +141,7 @@ class ProvenanceConfig:
     max_lookback_age_seconds: int
     artifact_retention_days: int
     policy: dict[str, str]
+    gate_names: dict[str, str]
     force_full_ci: bool
     ignore_emit_failure: bool
 
@@ -116,6 +151,10 @@ class CiPolicyResult:
     ci_policy_path: str
     full_ci_required: bool
     full_ci_deferred: bool
+    gate_name: str
+    backtester_gate_name: str
+    expected_event_class: str
+    is_mergify_temp_pr: bool
     reason: str
 
 
@@ -149,6 +188,49 @@ def require_string(parent: dict[str, object], key: str, prefix: str) -> str:
     return value
 
 
+def github_actions_output_safe_check_name(value: str) -> bool:
+    return (
+        value == value.strip()
+        and "${{" not in value
+        and "}}" not in value
+        and all(char not in "\r\n" and 32 <= ord(char) < 127 for char in value)
+    )
+
+
+def require_gate_name(parent: dict[str, object], key: str, prefix: str) -> str:
+    value = require_string(parent, key, prefix)
+    if not github_actions_output_safe_check_name(value):
+        raise ProvenanceError(f"{prefix}.{key} must be a GitHub Actions output-safe check name")
+    return value
+
+
+def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    keys = (
+        "gate_required",
+        "backtester_required",
+        "gate_defer",
+        "backtester_defer",
+        "gate_iteration",
+        "backtester_iteration",
+        "gate_noop",
+        "backtester_noop",
+        "gate_dispatch_full",
+        "backtester_dispatch_full",
+    )
+    seen: dict[str, str] = {}
+    for key in keys:
+        value = gate_names.get(key)
+        if value is None:
+            continue
+        previous = seen.get(value)
+        if previous is not None:
+            errors.append(f"ci_provenance.gate_names.{key} must not equal {previous}")
+        else:
+            seen[value] = key
+    return errors
+
+
 def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> int:
     value = parent.get(key)
     if not isinstance(value, int) or value <= 0:
@@ -161,6 +243,32 @@ def require_string_list(parent: dict[str, object], key: str, prefix: str) -> tup
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise ProvenanceError(f"{prefix}.{key} must be a non-empty string list")
     return tuple(value)
+
+
+def policy_contract_errors(policy: dict[str, object]) -> list[str]:
+    errors: list[str] = []
+    missing_contract = sorted(
+        set(POLICY_ROWS) - set(POLICY_REQUIRED_VALUES) - set(POLICY_ALLOWED_VALUES)
+    )
+    if missing_contract:
+        errors.append(
+            "ci_provenance.policy rows must define required or allowed contract: "
+            + ", ".join(missing_contract)
+        )
+    for row, expected in POLICY_REQUIRED_VALUES.items():
+        if policy.get(row) != expected:
+            errors.append(
+                POLICY_REQUIRED_MESSAGES.get(
+                    row,
+                    f"ci_provenance.policy.{row} must be {expected}",
+                )
+            )
+    for row, allowed in POLICY_ALLOWED_VALUES.items():
+        if policy.get(row) not in allowed:
+            errors.append(
+                f"ci_provenance.policy.{row} must be one of {sorted(allowed)!r}"
+            )
+    return errors
 
 
 def load_toml(path: pathlib.Path) -> dict[str, object]:
@@ -296,6 +404,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
 
     deploy = require_table(ci_provenance, "deploy", "ci_provenance")
     dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
+    gate_names_table = require_table(ci_provenance, "gate_names", "ci_provenance")
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
     policy_table = require_table(ci_provenance, "policy", "ci_provenance")
@@ -308,6 +417,10 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     if max_lookback_age_seconds > retention_days * 24 * 60 * 60:
         raise ProvenanceError("max lookback age must not exceed artifact retention")
 
+    unexpected_policy_keys = sorted(set(policy_table) - set(POLICY_ROWS) - {"override"})
+    if unexpected_policy_keys:
+        raise ProvenanceError(f"ci_provenance.policy has unexpected keys: {unexpected_policy_keys!r}")
+
     policy: dict[str, str] = {}
     for row in POLICY_ROWS:
         value = policy_table.get(row)
@@ -316,6 +429,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
                 f"ci_provenance.policy.{row} must be full, defer, iteration, noop, or tag_reuse"
             )
         policy[row] = value
+    contract_errors = policy_contract_errors(policy)
+    if contract_errors:
+        raise ProvenanceError("; ".join(contract_errors))
 
     dispatch_run_name_default = require_string(dispatch, "run_name_default", "ci_provenance.dispatch")
     dispatch_run_name_full = require_string(dispatch, "run_name_full", "ci_provenance.dispatch")
@@ -323,6 +439,16 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     dispatch_proof_gate_job = require_string(dispatch, "proof_gate_job", "ci_provenance.dispatch")
     if dispatch_run_name_full == dispatch_run_name_iteration:
         raise ProvenanceError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
+
+    gate_names = {
+        key: require_gate_name(gate_names_table, key, "ci_provenance.gate_names")
+        for key in GATE_NAME_KEYS
+    }
+    if dispatch_proof_gate_job != gate_names["gate_required"]:
+        raise ProvenanceError("ci_provenance.dispatch.proof_gate_job must match required gate name")
+    gate_name_errors = gate_name_collision_errors(gate_names)
+    if gate_name_errors:
+        raise ProvenanceError("; ".join(gate_name_errors))
 
     force_full_ci = overrides.get("force_full_ci")
     ignore_emit_failure = overrides.get("ignore_emit_failure")
@@ -368,6 +494,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         max_lookback_age_seconds=max_lookback_age_seconds,
         artifact_retention_days=retention_days,
         policy=policy,
+        gate_names=gate_names,
         force_full_ci=force_full_ci,
         ignore_emit_failure=ignore_emit_failure,
     )
@@ -380,6 +507,40 @@ def parse_bool(value: str) -> bool:
     if normalized == "false":
         return False
     raise ProvenanceError(f"expected boolean true or false, got {value!r}")
+
+
+def expected_event_class_for(reason: str, path: str) -> str:
+    if reason in {
+        "draft_pr_synchronize",
+        "draft_pr_opened",
+        "draft_pr_reopened",
+        "draft_pr_edited",
+        "converted_to_draft",
+    }:
+        return "defer"
+    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"}:
+        return "noop"
+    if reason == "workflow_dispatch":
+        return "iteration"
+    if reason == "tag":
+        return "tag_reuse"
+    if reason in {"ready_pr", "ready_for_review"} and path == "iteration":
+        return "iteration"
+    return "full"
+
+
+def gate_name_suffix_for(reason: str, path: str) -> str:
+    if reason == "workflow_dispatch_full_ci":
+        return "dispatch_full"
+    if path in {"full", "tag_reuse"}:
+        return "required"
+    if path == "defer":
+        return "defer"
+    if path == "iteration":
+        return "iteration"
+    if path == "noop":
+        return "noop"
+    raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
 
 
 def evaluate_ci_policy(
@@ -451,10 +612,15 @@ def evaluate_ci_policy(
 
     if path not in POLICY_VALUES:
         raise ProvenanceError(f"resolved invalid ci_policy_path {path!r}")
+    gate_name_suffix = gate_name_suffix_for(reason, path)
     return CiPolicyResult(
         ci_policy_path=path,
         full_ci_required=path == "full",
         full_ci_deferred=path == "defer",
+        gate_name=config.gate_names[f"gate_{gate_name_suffix}"],
+        backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
+        expected_event_class=expected_event_class_for(reason, path),
+        is_mergify_temp_pr=False,
         reason=reason,
     )
 
@@ -1587,6 +1753,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ci_policy_path={result.ci_policy_path}")
             print(f"full_ci_required={str(result.full_ci_required).lower()}")
             print(f"full_ci_deferred={str(result.full_ci_deferred).lower()}")
+            print(f"gate_name={result.gate_name}")
+            print(f"backtester_gate_name={result.backtester_gate_name}")
+            print(f"expected_event_class={result.expected_event_class}")
+            print(f"is_mergify_temp_pr={str(result.is_mergify_temp_pr).lower()}")
             print(f"reason={result.reason}")
             print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")
         elif mode == "emit-full-ci":

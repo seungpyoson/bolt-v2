@@ -18,7 +18,7 @@ on:
     # If main advances after the last full proof, gate-noop preserves the prior
     # head-SHA gate conclusion instead of re-proving the new merge commit. With
     # the current non-strict ruleset, stale-green can still merge; require base
-    # freshness with a push, manual dispatch, merge queue, or strict checks.
+    # freshness with a push, merge queue, or strict checks.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
     # paths-ignore is intentionally narrow: only explicitly-listed root-level
     # agent docs and pure-config dirs whose contents are NOT consumed by any
@@ -51,7 +51,8 @@ on:
   # whose diff exceeds its internal size limit (observed at ~28k files on #610),
   # so oversized PRs need a manually dispatched run against the branch ref.
   # full_ci is a required structural slot enforced by ci/github-actions-runners.toml.
-  # Default manual dispatches are cheap iteration runs; pass full_ci=true for final proof.
+  # Default manual dispatches are cheap iteration runs; full_ci=true runs full feedback lanes
+  # without publishing the required merge-proof gate.
   workflow_dispatch:
     inputs:
       full_ci:
@@ -115,6 +116,10 @@ jobs:
       ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
       full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}
+      gate_name: ${{ steps.policy.outputs.gate_name }}
+      backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
+      expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
+      is_mergify_temp_pr: ${{ steps.policy.outputs.is_mergify_temp_pr }}
       reason: ${{ steps.policy.outputs.reason }}
       ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
@@ -298,6 +303,8 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && !startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -336,6 +343,8 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'tag_reuse' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -389,6 +398,8 @@ jobs:
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -445,7 +456,7 @@ jobs:
     name: nextest fingerprint
     needs: [ci-policy, detector]
     if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}
-    runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     outputs:
       nextest_digest: ${{ steps.nextest-fingerprint.outputs.nextest_digest }}
       nextest_fingerprint: ${{ steps.nextest-fingerprint.outputs.nextest_fingerprint }}
@@ -516,6 +527,7 @@ jobs:
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.result == 'success' && needs.nextest-fingerprint.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     env:
+      CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -769,22 +781,7 @@ jobs:
         run: python3 scripts/find_same_sha_main_evidence.py
 
   gate:
-    name: >-
-      ${{ github.event_name == 'pull_request'
-          && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
-          && 'gate-deferred'
-          || github.event_name == 'pull_request'
-          && github.event.pull_request.draft == false
-          && (github.event.action == 'reopened'
-              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
-          && 'gate-noop'
-          || github.event_name == 'workflow_dispatch'
-          && github.event.inputs.full_ci == 'true'
-          && 'gate'
-          || github.event_name == 'workflow_dispatch'
-          && 'gate-iteration'
-          || 'gate' }}
+    name: ${{ needs.ci-policy.outputs.gate_name }}
     # gate-iteration is intentionally non-required; only gate is merge proof.
     needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build, ci-provenance-emit, same-sha-main-evidence]
     if: ${{ always() }}
@@ -795,6 +792,7 @@ jobs:
         run: |
           policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
           full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"
           ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
           reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
           if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
@@ -858,12 +856,9 @@ jobs:
             echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
             exit 1
           fi
-          defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}"
-          noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}"
-          iteration_run_context="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_ci != 'true' && 'true' || 'false' }}"
           if [[ "$policy_path" == "iteration" ]]; then
-            if [[ "$iteration_run_context" != "true" ]]; then
-              echo "iteration CI policy outside workflow_dispatch iteration context"
+            if [[ "$expected_event_class" != "iteration" ]]; then
+              echo "iteration CI policy outside resolver-permitted event class '$expected_event_class'"
               exit 1
             fi
             if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
@@ -906,20 +901,20 @@ jobs:
               echo "ci-provenance-emit unexpectedly ran during iteration"
               exit 1
             fi
-            echo "workflow_dispatch iteration run; full proof requires full_ci=true"
+            echo "iteration CI policy; no required full proof published by this run"
             exit 0
           fi
           if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-            if [[ "$defer_run_context" != "true" ]]; then
-              echo "deferred CI policy outside deferred draft PR context"
+            if [[ "$expected_event_class" != "defer" ]]; then
+              echo "deferred CI policy outside resolver-permitted event class '$expected_event_class'"
               exit 1
             fi
-            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote only for final proof or mark ready"
+            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote for full feedback or mark ready for merge proof"
             exit 0
           fi
           if [[ "$policy_path" == "noop" ]]; then
-            if [[ "$noop_run_context" != "true" ]]; then
-              echo "noop CI policy outside ready PR no-code context"
+            if [[ "$expected_event_class" != "noop" ]]; then
+              echo "noop CI policy outside resolver-permitted event class '$expected_event_class'"
               exit 1
             fi
             echo "no code-change CI event; preserving prior required same-SHA gate conclusion"

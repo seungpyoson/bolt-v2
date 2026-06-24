@@ -61,6 +61,18 @@ RUST_PROBE_MODES = (
 )
 RUST_PROBE_SUGGEST_COMMAND = "suggest"
 RUST_PROBE_COMMANDS = (RUST_PROBE_SUGGEST_COMMAND, *RUST_PROBE_MODES)
+GATE_NAME_KEYS = (
+    "gate_required",
+    "gate_defer",
+    "gate_iteration",
+    "gate_noop",
+    "gate_dispatch_full",
+    "backtester_required",
+    "backtester_defer",
+    "backtester_iteration",
+    "backtester_noop",
+    "backtester_dispatch_full",
+)
 RUST_PROBE_HELP_EPILOG = """\
 Examples:
   just rust-probe suggest
@@ -71,7 +83,7 @@ Examples:
   just rust-probe nextest-test-target-name <test_target> <test_name>
 
 Rust Probe is targeted remote debugging feedback only. It is not merge proof.
-Use just verify-remote only for final exact-head full-CI proof.
+Use just verify-remote for full remote feedback; mark the PR ready before treating it as merge proof.
 """
 RUST_PROBE_INPUT_KEYS = (
     "runner_tier",
@@ -2434,10 +2446,13 @@ def local_compile_refusal_payload(
         "next_steps": [
             "for targeted Rust debugging after cheap local checks: run: just rust-probe suggest",
             "then commit and push the branch before running the smallest suggested just rust-probe command",
+            "for full remote feedback on a draft PR: run: just verify-remote",
             "for merge proof: commit local changes",
             "for merge proof: push the branch",
-            "for merge proof: ensure a draft or open pull request exists",
-            "for merge proof: run: just verify-remote",
+            (
+                "for merge proof: mark the PR ready, then run: just verify-remote "
+                "to wait for the required PR gate, or use the merge-queue gate"
+            ),
         ],
         "reclaimable_bytes": 0,
         "refusal_code": "local_compile_disabled",
@@ -2870,6 +2885,42 @@ def check_summary(check: dict[str, Any]) -> str:
     return f"{name} [{bucket}]" + (f" {link}" if link else "")
 
 
+def github_actions_output_safe_check_name(value: str) -> bool:
+    return (
+        value == value.strip()
+        and "${{" not in value
+        and "}}" not in value
+        and all(char not in "\r\n" and 32 <= ord(char) < 127 for char in value)
+    )
+
+
+def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    keys = (
+        "gate_required",
+        "backtester_required",
+        "gate_defer",
+        "backtester_defer",
+        "gate_iteration",
+        "backtester_iteration",
+        "gate_noop",
+        "backtester_noop",
+        "gate_dispatch_full",
+        "backtester_dispatch_full",
+    )
+    seen: dict[str, str] = {}
+    for key in keys:
+        value = gate_names.get(key)
+        if value is None:
+            continue
+        previous = seen.get(value)
+        if previous is not None:
+            errors.append(f"ci_provenance.gate_names.{key} must not equal {previous}")
+        else:
+            seen[value] = key
+    return errors
+
+
 def verify_remote_head_current_or_fail(repo: pathlib.Path, branch: str, head: str) -> int | None:
     _pr, error = pr_for_exact_head(repo, branch, head, during_watch=True)
     if error is not None:
@@ -2897,6 +2948,7 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
     run_name_full = dispatch.get("run_name_full")
     run_name_iteration = dispatch.get("run_name_iteration")
     proof_gate_job = dispatch.get("proof_gate_job")
+    gate_names = provenance.get("gate_names")
     if not isinstance(workflow_name, str) or not workflow_name:
         return None, "ci_provenance.workflow_name must be a non-empty string"
     if not isinstance(workflow_path, str) or not workflow_path:
@@ -2911,6 +2963,29 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
         return None, "ci_provenance.dispatch run_name_full and run_name_iteration must differ"
     if not isinstance(proof_gate_job, str) or not proof_gate_job:
         return None, "ci_provenance.dispatch.proof_gate_job must be a non-empty string"
+    if not github_actions_output_safe_check_name(proof_gate_job):
+        return None, "ci_provenance.dispatch.proof_gate_job must be a GitHub Actions output-safe check name"
+    if not isinstance(gate_names, dict):
+        return None, "ci_provenance.gate_names table is required for verify-remote dispatch"
+    configured_gate_names: dict[str, str] = {}
+    for key in GATE_NAME_KEYS:
+        if key not in gate_names:
+            continue
+        value = gate_names.get(key)
+        if not isinstance(value, str) or not value:
+            return None, f"ci_provenance.gate_names.{key} must be a non-empty string"
+        if not github_actions_output_safe_check_name(value):
+            return None, f"ci_provenance.gate_names.{key} must be a GitHub Actions output-safe check name"
+        configured_gate_names[key] = value
+    gate_required = configured_gate_names.get("gate_required")
+    if gate_required is not None and proof_gate_job != gate_required:
+        return None, "ci_provenance.dispatch.proof_gate_job must match required gate name"
+    gate_name_errors = gate_name_collision_errors(configured_gate_names)
+    if gate_name_errors:
+        return None, "; ".join(gate_name_errors)
+    dispatch_full_gate_job = gate_names.get("gate_dispatch_full")
+    if not isinstance(dispatch_full_gate_job, str) or not dispatch_full_gate_job:
+        return None, "ci_provenance.gate_names.gate_dispatch_full must be a non-empty string"
     api_limits = provenance.get("api_limits")
     run_limit = None
     if isinstance(api_limits, dict):
@@ -2926,6 +3001,7 @@ def ci_provenance_dispatch_config(repo: pathlib.Path) -> tuple[dict[str, Any] | 
         "run_name_full": run_name_full,
         "run_name_iteration": run_name_iteration,
         "proof_gate_job": proof_gate_job,
+        "dispatch_full_gate_job": dispatch_full_gate_job,
         "workflow_runs_per_page": run_limit,
     }, None
 
@@ -3522,7 +3598,7 @@ def cmd_rust_probe_suggest(args: argparse.Namespace) -> int:
     print("commands:")
     for suggestion in rust_probe_suggestions(changed_files, probe_policy["separate_workspaces"]):
         print(f"- {suggestion}")
-    print("Rust Probe is not merge proof. For final exact-head full-CI proof: just verify-remote")
+    print("Rust Probe is not merge proof. Draft verify-remote is full feedback only; mark the PR ready for merge proof.")
     return 0
 
 
@@ -3557,7 +3633,7 @@ def evaluate_rust_probe_run(
         return None
     if state == "pass":
         print(f"OK: Rust Probe {probe_id} passed for {head}: {summary}")
-        print("NOT MERGE PROOF -- run just verify-remote for proof")
+        print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof")
         return 0
     conclusion = str(run.get("conclusion") or "")
     if conclusion == "cancelled":
@@ -3568,7 +3644,7 @@ def evaluate_rust_probe_run(
         return 2
     print(f"Rust Probe {probe_id} failed for {head}; this is debugging feedback only:", file=sys.stderr)
     print(f"- {summary}", file=sys.stderr)
-    print("NOT MERGE PROOF -- run just verify-remote for proof", file=sys.stderr)
+    print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof", file=sys.stderr)
     return 1
 
 
@@ -3624,11 +3700,26 @@ def evaluate_full_ci_run(
     if state == "pending":
         return None
     if state == "pass":
+        required_gate_job = None
+        missing_gate_message = ""
         if run.get("event") == "workflow_dispatch":
             if not workflow_dispatch_run_is_full(run, dispatch_config):
                 print(f"Remote full CI failed for {head} on {pr_url}: workflow_dispatch run is not marked full", file=sys.stderr)
                 print(f"- {workflow_run_summary(run)}", file=sys.stderr)
                 return 1
+            required_gate_job = dispatch_config["dispatch_full_gate_job"]
+            missing_gate_message = "workflow_dispatch run lacks successful dispatch full gate job"
+        elif run.get("event") == "pull_request":
+            required_gate_job = dispatch_config["proof_gate_job"]
+            missing_gate_message = "pull_request run lacks successful required gate job"
+        else:
+            print(
+                f"Remote full CI failed for {head} on {pr_url}: unsupported workflow event {run.get('event')!r}",
+                file=sys.stderr,
+            )
+            print(f"- {workflow_run_summary(run)}", file=sys.stderr)
+            return 1
+        if required_gate_job is not None:
             run_id = run_database_id(run)
             if run_id is None:
                 print(f"Remote full CI failed for {head} on {pr_url}: workflow run databaseId missing", file=sys.stderr)
@@ -3638,10 +3729,14 @@ def evaluate_full_ci_run(
                 print(f"Remote full CI failed for {head} on {pr_url}: {error or 'unable to inspect gate job'}", file=sys.stderr)
                 return 1
             if not any(
-                job_text(job, "name") == dispatch_config["proof_gate_job"] and job_text(job, "conclusion") == "success"
+                job_text(job, "name") == required_gate_job
+                and job_text(job, "conclusion") == "success"
                 for job in jobs
             ):
-                print(f"Remote full CI failed for {head} on {pr_url}: workflow_dispatch run lacks successful gate job", file=sys.stderr)
+                print(
+                    f"Remote full CI failed for {head} on {pr_url}: {missing_gate_message}",
+                    file=sys.stderr,
+                )
                 print(f"- {workflow_run_summary(run)}", file=sys.stderr)
                 return 1
         print(f"OK: remote full CI passed for {head} on {pr_url}: {workflow_run_summary(run)}")
@@ -3794,7 +3889,7 @@ def cmd_rust_probe(args: argparse.Namespace) -> int:
     print(f"sha: {head}")
     print(f"scope: {scope}")
     print(f"runner_tier: {runner_tier}")
-    print("NOT MERGE PROOF -- run just verify-remote for proof")
+    print("NOT MERGE PROOF -- draft verify-remote is feedback only; mark the PR ready for merge proof")
     return wait_for_rust_probe_run(
         repo=repo,
         remote_policy=probe_policy,
@@ -3861,7 +3956,7 @@ def cmd_verify_remote(args: argparse.Namespace) -> int:
         return verify_remote_fail(error or "unable to inspect CI dispatch config")
 
     print(
-        "verify-remote final-proof full CI: use just rust-probe suggest for targeted Rust debugging "
+        "verify-remote full CI feedback: use just rust-probe suggest for targeted Rust debugging "
         "before spending full CI."
     )
 

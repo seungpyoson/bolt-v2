@@ -64,8 +64,8 @@ These repo-level rules are in addition to any higher-level agent instructions.
 
 - Do not run local compile-heavy Rust verification by default: no local managed Rust test/build/clippy recipes through `just`, and no raw cargo subcommands refused by `ci/rust-verification.toml` `[local_compile_policy]`.
 - Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`. Use the public `just` recipes; do not invoke `*-inner` local-verification recipes directly.
-- For compile/test/clippy proof: commit, push, ensure the branch has an open or draft PR, then run `just verify-remote` and use exact-head PR CI evidence from Ubicloud/GitHub Actions.
-- `just verify-remote` waits for all reported PR checks on the exact head SHA, not a local subset of workflow jobs.
+- For draft PR compile/test/clippy feedback: commit, push, ensure the branch has an open or draft PR, then run `just verify-remote` for exact-head remote feedback from Ubicloud/GitHub Actions.
+- For merge proof: mark the PR ready, then run `just verify-remote` to wait for the required PR gate on the exact head SHA, or use the merge queue required gate.
 - Default to a draft PR while iterating; mark ready only for the merge candidate. Draft pushes defer the full-CI merge proof (clippy/deny still run) and cannot merge. See [Operator Policy](docs/ci/ubicloud-cost-governance.md#operator-policy).
 - Human operator break-glass exists for exceptional local repro and live/operator lanes only. Agents must not use it as a normal verification path.
 - Enforcement boundary: repo tooling gates cooperative paths through `just`, `scripts/rust_verification.py`, and `.no-mistakes.yaml`; standard PATH `cargo ...` is guarded by the machine-level cargo shim, whose source and installer are tracked in this repo at `scripts/cargo-shim` and `scripts/install-cargo-shim`. The shim reads this repo's `ci/rust-verification.toml` `[local_compile_policy]`.
@@ -74,7 +74,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 
 ## Rust Probe Policy
 
-- Full CI is proof. Rust Probe is debugging.
+- Ready PR or merge-queue full CI is proof. Draft workflow_dispatch full CI is feedback. Rust Probe is debugging.
 - Agents may use Rust Probe only when cheap local checks cannot answer the question.
 - Use `just rust-probe suggest` before dispatching a probe to choose the smallest targeted remote Rust debugging command.
 - Use dispatching `just rust-probe ...` modes only from a clean named branch whose `HEAD` is pushed to its upstream. Those modes dispatch the exact pushed SHA to GitHub Actions/Ubicloud and refuse unsafe local state.

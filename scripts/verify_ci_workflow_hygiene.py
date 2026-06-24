@@ -17,6 +17,17 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from ci_provenance import (
+    GATE_NAME_KEYS,
+    POLICY_ROWS,
+    POLICY_VALUES,
+    expected_event_class_for,
+    gate_name_collision_errors,
+    github_actions_output_safe_check_name,
+    gate_name_suffix_for,
+    policy_contract_errors,
+)
+
 # Keep the former verifier-local helper families module-scoped so parity tests
 # prove the old helper surface now points at the shared path.
 from command_understanding import (
@@ -107,6 +118,10 @@ class CiPolicyResult(NamedTuple):
     ci_policy_path: str
     full_ci_required: bool
     full_ci_deferred: bool
+    gate_name: str
+    backtester_gate_name: str
+    expected_event_class: str
+    is_mergify_temp_pr: bool
     reason: str
 
 
@@ -157,44 +172,38 @@ CI_PROVENANCE_REQUIRED_JOBS = (
     "test-archive",
     "test",
 )
-CI_PROVENANCE_POLICY_VALUES = {"full", "defer", "iteration", "noop", "tag_reuse"}
-CI_PROVENANCE_POLICY_ROWS = (
-    "draft_pr_synchronize",
-    "draft_pr_opened",
-    "draft_pr_reopened",
-    "draft_pr_edited",
-    "converted_to_draft",
-    "ready_pr",
-    "ready_pr_edited_no_base",
-    "ready_pr_reopened",
-    "ready_for_review",
-    "workflow_dispatch",
-    "workflow_dispatch_full_ci",
-    "main_push",
-    "merge_group",
-    "tag",
-    "unknown_event",
-)
-CI_PROVENANCE_POLICY_EXPECTED = {
-    "draft_pr_synchronize": "defer",
-    "draft_pr_opened": "defer",
-    "draft_pr_reopened": "defer",
-    "draft_pr_edited": "defer",
-    "converted_to_draft": "defer",
-    "ready_pr": "full",
-    "ready_pr_edited_no_base": "noop",
-    "ready_pr_reopened": "noop",
-    "ready_for_review": "full",
-    "workflow_dispatch": "iteration",
-    "workflow_dispatch_full_ci": "full",
-    "main_push": "full",
-    "merge_group": "full",
-    "tag": "tag_reuse",
-    "unknown_event": "full",
+CI_PROVENANCE_POLICY_VALUES = POLICY_VALUES
+CI_PROVENANCE_POLICY_ROWS = POLICY_ROWS
+CI_PROVENANCE_GATE_NAME_KEYS = GATE_NAME_KEYS
+
+
+class PolicyRowSemantics(NamedTuple):
+    changes_head_sha: bool = False
+    changes_base: bool = False
+    changes_target: bool = False
+    changes_queue_origin: bool = False
+    changes_required_context: bool = False
+    mergeable_without_queue: bool = True
+    queue_covered: bool = False
+
+
+CI_POLICY_ROW_SEMANTICS = {
+    "draft_pr_synchronize": PolicyRowSemantics(changes_head_sha=True, mergeable_without_queue=False),
+    "draft_pr_opened": PolicyRowSemantics(changes_head_sha=True, changes_target=True, mergeable_without_queue=False),
+    "draft_pr_reopened": PolicyRowSemantics(mergeable_without_queue=False),
+    "draft_pr_edited": PolicyRowSemantics(changes_base=True, mergeable_without_queue=False),
+    "converted_to_draft": PolicyRowSemantics(changes_required_context=True, mergeable_without_queue=False),
+    "ready_pr": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_target=True, queue_covered=True),
+    "ready_pr_edited_no_base": PolicyRowSemantics(),
+    "ready_pr_reopened": PolicyRowSemantics(),
+    "ready_for_review": PolicyRowSemantics(changes_required_context=True, queue_covered=True),
+    "workflow_dispatch": PolicyRowSemantics(changes_required_context=True, mergeable_without_queue=False),
+    "workflow_dispatch_full_ci": PolicyRowSemantics(changes_required_context=True, mergeable_without_queue=False),
+    "main_push": PolicyRowSemantics(changes_head_sha=True, changes_target=True),
+    "merge_group": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_queue_origin=True),
+    "tag": PolicyRowSemantics(changes_target=True),
+    "unknown_event": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_target=True),
 }
-assert set(CI_PROVENANCE_POLICY_ROWS) == set(
-    CI_PROVENANCE_POLICY_EXPECTED
-), "CI_PROVENANCE_POLICY_ROWS and CI_PROVENANCE_POLICY_EXPECTED keys must match"
 TAG_SKIPPED_JOBS = (
     "deny",
     "clippy",
@@ -1016,6 +1025,7 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
 
 def evaluate_ci_policy(
     policy: dict[str, object],
+    gate_names: dict[str, str],
     *,
     event_name: str,
     action: str,
@@ -1087,12 +1097,54 @@ def evaluate_ci_policy(
 
     if path not in CI_PROVENANCE_POLICY_VALUES:
         raise ValueError(f"resolved invalid ci_policy_path {path!r}")
+    gate_name_suffix = gate_name_suffix_for(reason, path)
     return CiPolicyResult(
         ci_policy_path=path,
         full_ci_required=path == "full",
         full_ci_deferred=path == "defer",
+        gate_name=gate_names[f"gate_{gate_name_suffix}"],
+        backtester_gate_name=gate_names[f"backtester_{gate_name_suffix}"],
+        expected_event_class=expected_event_class_for(reason, path),
+        is_mergify_temp_pr=False,
         reason=reason,
     )
+
+
+def policy_row_is_proof_affecting(semantics: PolicyRowSemantics) -> bool:
+    return semantics.mergeable_without_queue and (
+        semantics.changes_head_sha
+        or semantics.changes_base
+        or semantics.changes_target
+        or semantics.changes_queue_origin
+        or semantics.changes_required_context
+    )
+
+
+def policy_proof_invariant_errors(policy: dict[str, object]) -> list[str]:
+    errors: list[str] = []
+    missing_semantics = sorted(set(CI_PROVENANCE_POLICY_ROWS) - set(CI_POLICY_ROW_SEMANTICS))
+    if missing_semantics:
+        errors.append(
+            "ci_provenance.policy rows must define proof-affecting semantics: "
+            + ", ".join(missing_semantics)
+        )
+    for row in CI_PROVENANCE_POLICY_ROWS:
+        if row not in CI_POLICY_ROW_SEMANTICS:
+            continue
+        value = policy.get(row)
+        semantics = CI_POLICY_ROW_SEMANTICS[row]
+        if semantics.queue_covered and value == "iteration":
+            continue
+        if row == "tag":
+            if value != "tag_reuse":
+                errors.append("ci_provenance.policy.tag is proof-affecting and must be tag_reuse")
+            continue
+        if policy_row_is_proof_affecting(semantics) and value != "full":
+            errors.append(
+                f"ci_provenance.policy.{row} is proof-affecting and must be full "
+                "or queue-covered iteration"
+            )
+    return errors
 
 
 def workflow_trigger_block(workflow_text: str, trigger: str) -> list[str]:
@@ -1182,6 +1234,10 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         "ci_policy_path",
         "full_ci_required",
         "full_ci_deferred",
+        "gate_name",
+        "backtester_gate_name",
+        "expected_event_class",
+        "is_mergify_temp_pr",
         "reason",
         "ignore_emit_failure",
     ):
@@ -7816,41 +7872,11 @@ GATE_FULL_CONDITION = '"$policy_path" == "full"'
 GATE_ITERATION_CONDITION = '"$policy_path" == "iteration"'
 GATE_NOOP_CONDITION = '"$policy_path" == "noop"'
 GATE_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" == "true"'
-GATE_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
-GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$defer_run_context" != "true"'
-GATE_NOOP_RUN_CONTEXT_ASSIGNMENT = """noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}\""""
-GATE_NOOP_CONTEXT_FAILURE_CONDITION = '"$noop_run_context" != "true"'
-GATE_ITERATION_RUN_CONTEXT_ASSIGNMENT = """iteration_run_context="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_ci != 'true' && 'true' || 'false' }}\""""
-GATE_ITERATION_CONTEXT_FAILURE_CONDITION = '"$iteration_run_context" != "true"'
-GATE_NAME_EXPRESSION = """name: >-
-      ${{ github.event_name == 'pull_request'
-          && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
-          && 'gate-deferred'
-          || github.event_name == 'pull_request'
-          && github.event.pull_request.draft == false
-          && (github.event.action == 'reopened'
-              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
-          && 'gate-noop'
-          || github.event_name == 'workflow_dispatch'
-          && github.event.inputs.full_ci == 'true'
-          && 'gate'
-          || github.event_name == 'workflow_dispatch'
-          && 'gate-iteration'
-          || 'gate' }}"""
-
-
-def full_dispatch_gate_name_from_expression() -> str:
-    match = re.search(
-        r"github\.event_name == 'workflow_dispatch'\s+"
-        r"&& github\.event\.inputs\.full_ci == 'true'\s+"
-        r"&& '([^']+)'",
-        GATE_NAME_EXPRESSION,
-        flags=re.MULTILINE,
-    )
-    if match is None:
-        raise ValueError("GATE_NAME_EXPRESSION must include workflow_dispatch full gate branch")
-    return match.group(1)
+GATE_NAME_OUTPUT = "name: ${{ needs.ci-policy.outputs.gate_name }}"
+GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT = 'expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"'
+GATE_DEFER_CONTEXT_FAILURE_CONDITION = '"$expected_event_class" != "defer"'
+GATE_NOOP_CONTEXT_FAILURE_CONDITION = '"$expected_event_class" != "noop"'
+GATE_ITERATION_CONTEXT_FAILURE_CONDITION = '"$expected_event_class" != "iteration"'
 
 
 def gate_checks_lane_success(gate_text: str, job: str) -> bool:
@@ -7998,20 +8024,16 @@ def gate_checks_nextest_fingerprint_reuse(gate_text: str) -> list[str]:
 
 def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     errors: list[str] = []
-    if GATE_NAME_EXPRESSION not in gate_text:
-        errors.append("gate must publish gate-deferred for deferred draft PR runs")
-        errors.append("gate must publish gate-noop for ready PR no-code runs")
-        errors.append("gate must publish gate-iteration for workflow_dispatch iteration runs")
+    if GATE_NAME_OUTPUT not in gate_text:
+        errors.append("gate name must come from ci-policy gate_name output")
+    if "github.event" in gate_text:
+        errors.append("gate must not re-derive policy from github.event")
     if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
         errors.append("gate must read ci_policy_path")
     if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
         errors.append("gate must read full_ci_deferred")
-    if GATE_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
-        errors.append("gate must compute deferred draft PR run context")
-    if GATE_NOOP_RUN_CONTEXT_ASSIGNMENT not in gate_text:
-        errors.append("gate must compute ready PR noop run context")
-    if GATE_ITERATION_RUN_CONTEXT_ASSIGNMENT not in gate_text:
-        errors.append("gate must compute workflow_dispatch iteration run context")
+    if GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT not in gate_text:
+        errors.append("gate must read resolver expected_event_class")
     if 'ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"' not in gate_text:
         errors.append("gate must read ignore_emit_failure only for ci-provenance-emit")
     if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
@@ -8021,13 +8043,13 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     iteration_sections = top_level_if_body_and_remainder(gate_text, GATE_ITERATION_CONDITION)
     iteration_body = iteration_sections[0] if iteration_sections is not None else None
     if iteration_body is None or not body_exits_zero(iteration_body):
-        errors.append("gate must pass workflow_dispatch iteration runs under gate-iteration")
+        errors.append("gate must pass resolver-permitted iteration runs")
     if iteration_body is None or not branch_exits_reachable(
         iteration_body,
         "if",
         GATE_ITERATION_CONTEXT_FAILURE_CONDITION,
     ):
-        errors.append("gate must fail iteration policy outside workflow_dispatch iteration context")
+        errors.append("gate must fail iteration policy outside resolver-permitted event class")
     for job in (
         "deny",
         "clippy",
@@ -8052,18 +8074,18 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
         defer_body is None
         or "full CI deferred for draft PR" not in defer_body
         or "just rust-probe suggest" not in defer_body
-        or "just verify-remote only for final proof" not in defer_body
+        or "just verify-remote for full feedback" not in defer_body
         or not body_exits_zero(defer_body)
     ):
         errors.append("gate must pass deferred full CI without failing stale draft checks")
     if defer_body is None or not branch_exits_reachable(defer_body, "if", GATE_DEFER_CONTEXT_FAILURE_CONDITION):
-        errors.append("gate must fail deferred policy outside deferred draft PR context")
+        errors.append("gate must fail deferred policy outside resolver-permitted event class")
     noop_sections = top_level_if_body_and_remainder(gate_text, GATE_NOOP_CONDITION)
     noop_body = noop_sections[0] if noop_sections is not None else None
     if noop_body is None or not body_exits_zero(noop_body):
         errors.append("gate must pass ready PR no-code runs under gate-noop")
     if noop_body is None or not branch_exits_reachable(noop_body, "if", GATE_NOOP_CONTEXT_FAILURE_CONDITION):
-        errors.append("gate must fail noop policy outside ready PR no-code context")
+        errors.append("gate must fail noop policy outside resolver-permitted event class")
     if not branch_exists(gate_text, "if", GATE_FULL_CONDITION):
         errors.append("gate must branch on ci_policy_path full")
     emit_failure_body = branch_body(
@@ -9192,37 +9214,25 @@ BACKTESTER_DEFER_CONDITION = '"$policy_path" == "defer" || "$full_ci_deferred" =
 BACKTESTER_ITERATION_CONDITION = '"$policy_path" == "iteration"'
 BACKTESTER_NOOP_CONDITION = '"$policy_path" == "noop"'
 BACKTESTER_DEFER_ACTION_FILTER = """contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)"""
-BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT = """defer_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action) && 'true' || 'false' }}\""""
-BACKTESTER_NOOP_RUN_CONTEXT_ASSIGNMENT = """noop_run_context="${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && (github.event.action == 'reopened' || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))) && 'true' || 'false' }}\""""
-BACKTESTER_ITERATION_RUN_CONTEXT_ASSIGNMENT = """iteration_run_context="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.full_ci != 'true' && 'true' || 'false' }}\""""
-BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for this branch or mark ready"
+BACKTESTER_GATE_NAME_OUTPUT = "name: ${{ needs.ci-policy.outputs.backtester_gate_name }}"
+BACKTESTER_EXPECTED_EVENT_CLASS_ASSIGNMENT = 'expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"'
+BACKTESTER_DEFER_MESSAGE = "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for full feedback or mark ready for merge proof"
 BACKTESTER_REQUIRED_GATE_COMMENT = (
     "`backtester-gate` is required-capable; `backtester-gate-deferred` and\n"
     "# `backtester-gate-iteration` are feedback-only and must not be marked required"
 )
-BACKTESTER_GATE_NAME_EXPRESSION = """    name: >-
-      ${{ github.event_name == 'pull_request'
-          && github.event.pull_request.draft == true
-          && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
-          && 'backtester-gate-deferred'
-          || github.event_name == 'pull_request'
-          && github.event.pull_request.draft == false
-          && (github.event.action == 'reopened'
-              || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))
-          && 'backtester-gate-noop'
-          || github.event_name == 'workflow_dispatch'
-          && github.event.inputs.full_ci == 'true'
-          && 'backtester-gate'
-          || github.event_name == 'workflow_dispatch'
-          && 'backtester-gate-iteration'
-          || 'backtester-gate' }}"""
 BACKTESTER_DEFER_ACTION_LIST_RE = re.compile(
     r"contains\(fromJSON\('(?P<actions>\[[^']+\])'\), github\.event\.action\)"
 )
 BACKTESTER_POLICY_DEFER_ACTIONS = {
     row.removeprefix("draft_pr_") if row.startswith("draft_pr_") else row
-    for row, path in CI_PROVENANCE_POLICY_EXPECTED.items()
-    if path == "defer"
+    for row in (
+        "draft_pr_synchronize",
+        "draft_pr_opened",
+        "draft_pr_reopened",
+        "draft_pr_edited",
+        "converted_to_draft",
+    )
 }
 
 
@@ -9278,6 +9288,10 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         for required in [
             "full_ci_required: ${{ steps.policy.outputs.full_ci_required }}",
             "full_ci_deferred: ${{ steps.policy.outputs.full_ci_deferred }}",
+            "gate_name: ${{ steps.policy.outputs.gate_name }}",
+            "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
+            "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
+            "is_mergify_temp_pr: ${{ steps.policy.outputs.is_mergify_temp_pr }}",
             "python3 scripts/ci_provenance.py ci-policy",
             '--event-name "${{ github.event_name }}"',
             '--event-action "${{ github.event.action || \'\' }}"',
@@ -9304,33 +9318,30 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         errors.append("backtester draft deferral must define backtester-gate")
     else:
         gate_text = uncommented_text(gate)
-        if BACKTESTER_GATE_NAME_EXPRESSION not in gate_text:
-            errors.append("backtester draft deferral gate must publish backtester-gate-deferred for deferred draft PR runs")
-            errors.append("backtester draft deferral gate must publish backtester-gate-noop for ready PR no-code runs")
+        if BACKTESTER_GATE_NAME_OUTPUT not in gate_text:
+            errors.append("backtester draft deferral gate name must come from ci-policy backtester_gate_name output")
+        if "github.event" in gate_text:
+            errors.append("backtester draft deferral gate must not re-derive policy from github.event")
         if "ci-policy" not in extract_needs(gate):
             errors.append("backtester draft deferral gate must need ci-policy")
         if 'policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"' not in gate_text:
             errors.append("backtester draft deferral gate must read ci_policy_path")
         if 'full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"' not in gate_text:
             errors.append("backtester draft deferral gate must read full_ci_deferred")
+        if BACKTESTER_EXPECTED_EVENT_CLASS_ASSIGNMENT not in gate_text:
+            errors.append("backtester draft deferral gate must read resolver expected_event_class")
         if not branch_exits_reachable(gate_text, "if", '"${{ needs.ci-policy.result }}" != "success"'):
             errors.append("backtester draft deferral gate must check needs.ci-policy.result")
-        if BACKTESTER_DEFER_RUN_CONTEXT_ASSIGNMENT not in gate_text:
-            errors.append("backtester draft deferral gate must compute deferred draft PR context")
-        if BACKTESTER_NOOP_RUN_CONTEXT_ASSIGNMENT not in gate_text:
-            errors.append("backtester draft deferral gate must compute ready PR noop context")
-        if BACKTESTER_ITERATION_RUN_CONTEXT_ASSIGNMENT not in gate_text:
-            errors.append("backtester draft deferral gate must compute workflow_dispatch iteration context")
         iteration_sections = top_level_if_body_and_remainder(gate_text, BACKTESTER_ITERATION_CONDITION)
         iteration_body = iteration_sections[0] if iteration_sections is not None else None
         if iteration_body is None or not body_exits_zero(iteration_body):
-            errors.append("backtester draft deferral gate must pass workflow_dispatch iteration runs")
+            errors.append("backtester draft deferral gate must pass resolver-permitted iteration runs")
         if iteration_body is None or not branch_exits_reachable(
             iteration_body,
             "if",
-            '"$iteration_run_context" != "true"',
+            '"$expected_event_class" != "iteration"',
         ):
-            errors.append("backtester draft deferral gate must fail iteration policy outside workflow_dispatch iteration context")
+            errors.append("backtester draft deferral gate must fail iteration policy outside resolver-permitted event class")
         if iteration_body is None or not branch_exits_reachable(
             iteration_body,
             "if",
@@ -9348,8 +9359,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         noop_body = noop_sections[0] if noop_sections is not None else None
         if noop_body is None or not body_exits_zero(noop_body):
             errors.append("backtester draft deferral gate must pass ready PR no-code runs under backtester-gate-noop")
-        if noop_body is None or not branch_exits_reachable(noop_body, "if", '"$noop_run_context" != "true"'):
-            errors.append("backtester draft deferral gate must fail noop policy outside ready PR no-code context")
+        if noop_body is None or not branch_exits_reachable(noop_body, "if", '"$expected_event_class" != "noop"'):
+            errors.append("backtester draft deferral gate must fail noop policy outside resolver-permitted event class")
         defer_sections = top_level_if_body_and_remainder(gate_text, BACKTESTER_DEFER_CONDITION)
         defer_body = defer_sections[0] if defer_sections is not None else None
         if defer_body is None or not body_exits_zero(defer_body):
@@ -9359,9 +9370,9 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         if defer_body is None or not branch_exits_reachable(
             defer_body,
             "if",
-            '"$defer_run_context" != "true"',
+            '"$expected_event_class" != "defer"',
         ):
-            errors.append("backtester draft deferral gate must fail deferred policy outside deferred draft PR context")
+            errors.append("backtester draft deferral gate must fail deferred policy outside resolver-permitted event class")
         full_body = defer_sections[1] if defer_sections is not None else gate_text
         for job in ("fmt", "clippy", "test"):
             condition = f'"${{{{ needs.{job}.result }}}}" != "success"'
@@ -9384,11 +9395,9 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
     ):
         errors.append("backtester draft deferral concurrency must split workflow_dispatch full and iteration runs")
     defer_action_lists = backtester_defer_action_lists(group_text)
-    if gate is not None:
-        defer_action_lists.update(backtester_defer_action_lists(gate_text))
     if len(defer_action_lists) != 1:
         errors.append("backtester draft deferral must use one deferred draft action list across gate and concurrency")
-    defer_actions = backtester_defer_actions(group_text + "\n" + (gate_text if gate is not None else ""))
+    defer_actions = backtester_defer_actions(group_text)
     if defer_actions is None:
         errors.append("backtester draft deferral must use a valid deferred draft action list")
     elif defer_actions:
@@ -9685,8 +9694,19 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         raise ValueError("ci_provenance.dispatch.run_name_default must match workflow_name")
     if run_name_full == run_name_iteration:
         raise ValueError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
-    if proof_gate_job != full_dispatch_gate_name_from_expression():
-        raise ValueError("ci_provenance.dispatch.proof_gate_job must match full gate name")
+
+    gate_names = require_config_table(ci_provenance, "gate_names", "ci_provenance")
+    for key in CI_PROVENANCE_GATE_NAME_KEYS:
+        gate_name = require_config_string(gate_names, key, "ci_provenance.gate_names")
+        if not github_actions_output_safe_check_name(gate_name):
+            raise ValueError(
+                f"ci_provenance.gate_names.{key} must be a GitHub Actions output-safe check name"
+            )
+    if proof_gate_job != gate_names["gate_required"]:
+        raise ValueError("ci_provenance.dispatch.proof_gate_job must match required gate name")
+    gate_name_errors = gate_name_collision_errors(gate_names)
+    if gate_name_errors:
+        raise ValueError("; ".join(gate_name_errors))
 
     api_limits = require_config_table(ci_provenance, "api_limits", "ci_provenance")
     for key in (
@@ -9719,9 +9739,10 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
             raise ValueError(
                 f"ci_provenance.policy.{row} must be one of {sorted(CI_PROVENANCE_POLICY_VALUES)!r}"
             )
-        expected = CI_PROVENANCE_POLICY_EXPECTED[row]
-        if value != expected:
-            raise ValueError(f"ci_provenance.policy.{row} must be {expected}")
+    proof_errors = policy_proof_invariant_errors(policy)
+    contract_errors = policy_contract_errors(policy)
+    if proof_errors or contract_errors:
+        raise ValueError("; ".join([*proof_errors, *contract_errors]))
     override = require_config_table(policy, "override", "ci_provenance.policy")
     if override.get("force_full_ci") is not False:
         raise ValueError("ci_provenance.policy.override.force_full_ci must default to false")

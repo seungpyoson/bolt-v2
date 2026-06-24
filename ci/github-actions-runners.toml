@@ -170,6 +170,18 @@ run_name_full = "CI [dispatch:full]"
 run_name_iteration = "CI [dispatch:iteration]"
 proof_gate_job = "gate"
 
+[ci_provenance.gate_names]
+gate_required = "gate"
+gate_defer = "gate-deferred"
+gate_iteration = "gate-iteration"
+gate_noop = "gate-noop"
+gate_dispatch_full = "gate-dispatch"
+backtester_required = "backtester-gate"
+backtester_defer = "backtester-gate-deferred"
+backtester_iteration = "backtester-gate-iteration"
+backtester_noop = "backtester-gate-noop"
+backtester_dispatch_full = "backtester-gate-dispatch"
+
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
 run_jobs_per_page = 100

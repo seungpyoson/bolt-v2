@@ -25,14 +25,12 @@ name: Backtester CI
 # and `backtester-gate` concludes success as an explicit no-op on non-crate PRs.
 #
 # DRAFT COST GOVERNANCE: draft pull_request opened/synchronize/reopened/converted_to_draft/edited
-# events publish `backtester-gate-deferred` and defer the managed-heavy proof lanes. Only
-# `backtester-gate` is required-capable; `backtester-gate-deferred` and
-# `backtester-gate-iteration` are feedback-only and must not be marked required. Marking the PR ready or pushing
+# events publish `backtester-gate` only when a prior same-SHA proof is verified and defer the
+# managed-heavy proof lanes. `backtester-gate-iteration` is feedback-only and must not be marked required. Marking the PR ready or pushing
 # to main still runs full required backtester proof; workflow_dispatch full CI is feedback-only. `bvs-fmt` remains cheap draft feedback and reports as
 # its own check; the deferred gate does not fold draft formatting failures into required proof.
-# Moving a ready PR back to draft does not rewrite a prior same-SHA `backtester-gate` result; the
-# GitHub draft state plus the non-required deferred context is the safety boundary. Ready no-code
-# edits and ready reopen events likewise report only `backtester-gate-noop`.
+# Moving a ready PR back to draft or firing a ready no-code edit carries forward only a verified
+# prior same-SHA `backtester-gate` success; otherwise the required gate stays blocked.
 
 on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
@@ -51,12 +49,10 @@ on:
     # or base-ref changes (edited). Both can leave this always-reported check
     # unmet for a PR that ends up targeting main.
     # GitHub's edited event also fires on title/body edits. The policy resolver
-    # sends ready no-code edits to backtester-gate-noop while keeping base-ref
+    # sends ready no-code edits through verified carry-forward while keeping base-ref
     # edits on the full, cancelling proof path.
-    # If main advances after the last full proof, backtester-gate-noop preserves
-    # the prior head-SHA gate conclusion instead of re-proving the new merge
-    # commit. With the current non-strict ruleset, stale-green can still merge;
-    # require base freshness with a push, merge queue, or strict checks.
+    # If main advances after the last full proof, the primary CI gate rejects
+    # carry-forward unless its provenance records the current PR base SHA.
     # converted_to_draft is included so the gate records an explicit deferred
     # backtester verdict when a ready PR is moved back to draft.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
@@ -122,7 +118,6 @@ jobs:
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
-      is_mergify_temp_pr: ${{ steps.policy.outputs.is_mergify_temp_pr }}
       reason: ${{ steps.policy.outputs.reason }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
@@ -556,84 +551,38 @@ jobs:
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
-      - name: Check required lanes
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Resolve backtester gate carry-forward
+        id: carry_forward
+        if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
-          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
-          expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"
-          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
-            echo "bvs-ci-policy did not succeed (${{ needs.ci-policy.result }})"
-            exit 1
-          fi
-          if [[ "${{ needs.detect.result }}" != "success" ]]; then
-            echo "bvs-detect did not succeed (${{ needs.detect.result }})"
-            exit 1
-          fi
-          if [[ "$policy_path" == "iteration" ]]; then
-            if [[ "$expected_event_class" != "iteration" ]]; then
-              echo "backtester iteration CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            if [[ "${{ needs.fmt.result }}" != "success" && "${{ needs.fmt.result }}" != "skipped" ]]; then
-              echo "bvs-fmt did not succeed or skip during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
-              echo "bvs-clippy unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              echo "bvs-test archive unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
-              echo "bvs-test unexpectedly ran during iteration"
-              exit 1
-            fi
-            echo "backtester iteration CI policy; no required full proof published by this run"
-            exit 0
-          fi
-          if [[ "$policy_path" == "noop" ]]; then
-            if [[ "$expected_event_class" != "noop" ]]; then
-              echo "backtester noop CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "backtester no code-change CI event; preserving prior required same-SHA gate conclusion"
-            exit 0
-          fi
-          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
-            echo "no crate changes; gate is a no-op"
-            exit 0
-          fi
-          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-            if [[ "$expected_event_class" != "defer" ]]; then
-              echo "backtester deferred CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for full feedback or mark ready for merge proof"
-            exit 0
-          fi
-          if [[ "$policy_path" == "full" ]]; then
-            echo "backtester proof required"
-          else
-            echo "unknown backtester CI policy path '$policy_path'"
-            exit 1
-          fi
-          if [[ "${{ needs.fmt.result }}" != "success" ]]; then
-            echo "bvs-fmt did not succeed (${{ needs.fmt.result }})"
-            exit 1
-          fi
-          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
-            echo "bvs-clippy did not succeed (${{ needs.clippy.result }})"
-            exit 1
-          fi
-          if [[ "${{ needs.test-archive.result }}" != "success" ]]; then
-            echo "bvs-test archive did not succeed (${{ needs.test-archive.result }})"
-            exit 1
-          fi
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            echo "bvs-test did not succeed (${{ needs.test.result }})"
-            exit 1
-          fi
-          echo "backtester lanes passed"
+          python3 scripts/ci_provenance.py resolve-gate-carry-forward \
+            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --current-run-id "${{ github.run_id }}" \
+            --gate-name "${{ needs.ci-policy.outputs.backtester_gate_name }}" \
+            --workflow-path ".github/workflows/backtester-ci.yml" \
+            --require-provenance-base false \
+            | tee -a "$GITHUB_OUTPUT"
+
+      - name: Check required lanes
+        run: >
+          python3 scripts/ci_provenance.py check-backtester-gate
+          --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"
+          --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"
+          --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          --carry-forward-verified "${{ steps.carry_forward.outputs.carry_forward_verified || 'false' }}"
+          --bvs-changed "${{ needs.detect.outputs.bvs_changed || 'false' }}"
+          --job ci-policy=${{ needs.ci-policy.result }}
+          --job detect=${{ needs.detect.result }}
+          --job fmt=${{ needs.fmt.result }}
+          --job clippy=${{ needs.clippy.result }}
+          --job test-archive=${{ needs.test-archive.result }}
+          --job test=${{ needs.test.result }}

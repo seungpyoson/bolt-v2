@@ -13,33 +13,12 @@ on:
     # edited catches base-ref changes (including retargets to main). Without it
     # a PR created against another branch and later retargeted to main would not
     # trigger CI. GitHub's edited event also fires on title/body edits; the
-    # policy resolver sends ready no-code edits to gate-noop while keeping
+    # policy resolver sends ready no-code edits through verified carry-forward while keeping
     # base-ref edits on the full, cancelling proof path.
-    # If main advances after the last full proof, gate-noop preserves the prior
-    # head-SHA gate conclusion instead of re-proving the new merge commit. With
-    # the current non-strict ruleset, stale-green can still merge; require base
-    # freshness with a push, merge queue, or strict checks.
+    # If main advances after the last full proof, verified carry-forward must
+    # reject the prior head-SHA gate unless its provenance records the current
+    # PR base SHA.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
-    # paths-ignore is intentionally narrow: only explicitly-listed root-level
-    # agent docs and pure-config dirs whose contents are NOT consumed by any
-    # build/test/lint script. Do NOT add '**.md' or 'docs/**' — both contain
-    # files that are build inputs (e.g. docs/bolt-v3/research/...audit.toml
-    # is read by scripts/verify_bolt_v3_runtime_literals.py; specs/**/*.md
-    # files are include_str!'d by Rust tests). Tracked in #335.
-    paths-ignore:
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - 'GEMINI.md'
-      - 'REASONIX.md'
-      - 'LICENSE'
-      - 'SECURITY.md'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.claude/**'
-      - '.codex/**'
-      - '.gemini/**'
-      - '.opencode/**'
-      - '.pi/**'
-      - '.specify/**'
   push:
     # No paths-ignore on push: tag pushes and main pushes always run CI.
     # GitHub's paths-ignore behavior for tag pushes is ambiguous and could
@@ -116,6 +95,7 @@ permissions:
 jobs:
   ci-policy:
     name: ci-policy
+    needs: detector
     outputs:
       ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
@@ -123,7 +103,6 @@ jobs:
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
-      is_mergify_temp_pr: ${{ steps.policy.outputs.is_mergify_temp_pr }}
       reason: ${{ steps.policy.outputs.reason }}
       ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
@@ -147,6 +126,7 @@ jobs:
           --pull-request-head-ref "$PR_HEAD_REF"
           --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
           --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
+          --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}"
           --ref "${{ github.ref }}"
           | tee -a "$GITHUB_OUTPUT"
 
@@ -185,12 +165,13 @@ jobs:
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
       fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
+      docs_only: ${{ steps.docs_only.outputs.docs_only }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Detect build-affecting changes
-        id: build_inputs_changed
+      - name: Fetch PR base/head refs
+        id: pr_refs
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
@@ -199,6 +180,38 @@ jobs:
           git fetch --no-tags origin \
             "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
             "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
+          echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect docs-only safe changes
+        id: docs_only
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
+          changed_files="$RUNNER_TEMP/docs-safe-changed-files.txt"
+          git diff --name-only "${base_ref}...${head_ref}" > "$changed_files"
+          base_tree="$RUNNER_TEMP/ci-policy-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" \
+            scripts/verify_ci_path_filters.py \
+            scripts/ci_provenance.py \
+            scripts/lane_governor.py \
+            ci/github-actions-runners.toml \
+            .github/workflows/ci.yml \
+            | tar -x -C "$base_tree"
+          python3 "$base_tree/scripts/verify_ci_path_filters.py" \
+            --changed-files "$changed_files" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Detect build-affecting changes
+        id: build_inputs_changed
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
           changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
             Cargo.toml \
             Cargo.lock \
@@ -220,11 +233,8 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
-          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
           changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
@@ -727,7 +737,7 @@ jobs:
   ci-provenance-emit:
     name: ci-provenance-emit
     needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -743,6 +753,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: >
           python3 scripts/ci_provenance.py emit-full-ci
+          --ci-policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"
           --output ci-provenance.json
           --required-job detector=${{ needs.detector.result }}
           --required-job deny=${{ needs.deny.result }}
@@ -794,197 +805,51 @@ jobs:
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
-      - name: Check required lanes
-        shell: bash
-        run: |
-          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
-          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
-          expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"
-          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
-          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
-          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
-            echo "ci-policy did not succeed"
-            exit 1
-          fi
-          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            echo "detector did not succeed"
-            exit 1
-          fi
-          if [[ "$policy_path" == "tag_reuse" ]]; then
-            if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
-              echo "same-sha-main-evidence did not succeed"
-              exit 1
-            fi
-            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
-              echo "deny unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
-              echo "clippy unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            # Tag-side check-aarch64 is a topology no-op; the source main build
-            # required by same-sha-main-evidence carries real aarch64 coverage.
-            if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
-              echo "check-aarch64 did not succeed during tag reuse"
-              exit 1
-            fi
-            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
-              echo "source-fence unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              echo "nextest-fingerprint unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              echo "test-archive unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
-              echo "test unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
-              echo "nextest-fingerprint-reuse unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
-              echo "build unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              echo "ci-provenance-emit unexpectedly ran during tag reuse"
-              exit 1
-            fi
-            exit 0
-          fi
-          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
-            echo "same-sha-main-evidence unexpectedly ran outside tag reuse"
-            exit 1
-          fi
-          if [[ "$policy_path" == "iteration" ]]; then
-            if [[ "$expected_event_class" != "iteration" ]]; then
-              echo "iteration CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
-              echo "deny unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
-              echo "clippy unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
-              echo "check-aarch64 unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
-              echo "source-fence unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              echo "nextest-fingerprint unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              echo "test-archive unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
-              echo "test unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
-              echo "nextest-fingerprint-reuse unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
-              echo "build unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              echo "ci-provenance-emit unexpectedly ran during iteration"
-              exit 1
-            fi
-            echo "iteration CI policy; no required full proof published by this run"
-            exit 0
-          fi
-          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-            if [[ "$expected_event_class" != "defer" ]]; then
-              echo "deferred CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote for full feedback or mark ready for merge proof"
-            exit 0
-          fi
-          if [[ "$policy_path" == "noop" ]]; then
-            if [[ "$expected_event_class" != "noop" ]]; then
-              echo "noop CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "no code-change CI event; preserving prior required same-SHA gate conclusion"
-            exit 0
-          fi
-          if [[ "$policy_path" == "full" ]]; then
-            echo "full CI required"
-          else
-            echo "unknown CI policy path '$policy_path'"
-            exit 1
-          fi
-          if [[ "$reuse_found" == "true" ]]; then
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
-              exit 1
-            fi
-            echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
-          else
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
-              if [[ "$ignore_emit_failure" == "true" ]]; then
-                echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
-              else
-                echo "ci-provenance-emit did not succeed"
-                exit 1
-              fi
-            fi
-          fi
-          if [[ "${{ needs.deny.result }}" != "success" ]]; then
-            echo "deny did not succeed"
-            exit 1
-          fi
-          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
-            echo "clippy did not succeed"
-            exit 1
-          fi
-          if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
-            echo "check-aarch64 did not succeed"
-            exit 1
-          fi
-          if [[ "${{ needs.source-fence.result }}" != "success" ]]; then
-            echo "source-fence did not succeed"
-            exit 1
-          fi
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            echo "test did not succeed"
-            exit 1
-          fi
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-          build_required="${{ needs.detector.outputs.build_required }}"
-          build_result="${{ needs.build.result }}"
-          if [[ "$build_required" == "true" ]]; then
-            if [[ "$build_result" != "success" ]]; then
-              echo "build did not succeed when build_required=true"
-              exit 1
-            fi
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            echo "build produced unexpected result '$build_result' when build_required=false"
-            exit 1
-          fi
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Resolve gate carry-forward
+        id: carry_forward
+        if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci_provenance.py resolve-gate-carry-forward \
+            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
+            --current-run-id "${{ github.run_id }}" \
+            --gate-name "${{ needs.ci-policy.outputs.gate_name }}" \
+            --workflow-path ".github/workflows/ci.yml" \
+            --require-provenance-base true \
+            | tee -a "$GITHUB_OUTPUT"
+
+      - name: Check required lanes
+        run: >
+          python3 scripts/ci_provenance.py check-ci-gate
+          --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"
+          --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"
+          --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"
+          --ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}"
+          --reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}"
+          --carry-forward-verified "${{ steps.carry_forward.outputs.carry_forward_verified || 'false' }}"
+          --build-required "${{ needs.detector.outputs.build_required || 'false' }}"
+          --job ci-policy=${{ needs.ci-policy.result }}
+          --job detector=${{ needs.detector.result }}
+          --job deny=${{ needs.deny.result }}
+          --job clippy=${{ needs.clippy.result }}
+          --job check-aarch64=${{ needs.check-aarch64.result }}
+          --job source-fence=${{ needs.source-fence.result }}
+          --job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}
+          --job test-archive=${{ needs.test-archive.result }}
+          --job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }}
+          --job test=${{ needs.test.result }}
+          --job build=${{ needs.build.result }}
+          --job ci-provenance-emit=${{ needs.ci-provenance-emit.result }}
+          --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}
 
   deploy:
     name: deploy

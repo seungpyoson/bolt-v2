@@ -4,38 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import fnmatch
 import pathlib
 import re
 import sys
 
+SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import ci_provenance  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-DEFAULT_PASS_STUB_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci-docs-pass-stub.yml"
 DEFAULT_DOCS = REPO_ROOT / "docs" / "ci" / "paths-ignore-behavior.md"
 DEFAULT_RUST_POLICY = REPO_ROOT / "ci" / "rust-verification.toml"
+DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 LEGACY_RUST_POLICY = REPO_ROOT / ".claude" / "rust-verification.toml"
-EXPECTED_SAFE_PATHS = (
-    "AGENTS.md",
-    "CLAUDE.md",
-    "GEMINI.md",
-    "REASONIX.md",
-    "LICENSE",
-    "SECURITY.md",
-    ".github/ISSUE_TEMPLATE/**",
-    ".claude/**",
-    ".codex/**",
-    ".gemini/**",
-    ".opencode/**",
-    ".pi/**",
-    ".specify/**",
-)
-FORBIDDEN_IGNORED_BUILD_PATHS = frozenset(
-    {
-        ".claude/rust-verification.toml",
-    }
-)
 REQUIRED_DOC_SCENARIOS = (
     "docs-only root agent doc",
     "root security policy",
@@ -48,12 +34,43 @@ REQUIRED_DOC_SCENARIOS = (
     "ignored Claude agent dir",
     "ignored config dir",
 )
-REQUIRED_PASS_STUB_JOBS = ("build", "clippy", "test", "gate")
 MAX_TEXT_BYTES = 1_000_000
 
 
 class PathFilterError(RuntimeError):
     """Raised when CI path-filter evidence is missing or unsafe."""
+
+
+@dataclasses.dataclass(frozen=True)
+class DocsPathRegistry:
+    safe_paths: tuple[str, ...]
+    forbidden_ignored_build_paths: tuple[str, ...]
+
+
+def load_docs_path_registry(config_path: pathlib.Path = DEFAULT_CONFIG) -> DocsPathRegistry:
+    try:
+        data = ci_provenance.load_toml(config_path)
+        ci_table = ci_provenance.require_table(data, "ci_provenance", "config")
+        docs_table = ci_provenance.require_table(ci_table, "docs", "ci_provenance")
+        safe_paths = ci_provenance.require_string_list(
+            docs_table,
+            "safe_paths",
+            "ci_provenance.docs",
+        )
+        forbidden_paths = ci_provenance.require_string_list(
+            docs_table,
+            "forbidden_ignored_build_paths",
+            "ci_provenance.docs",
+        )
+        errors = ci_provenance.docs_safe_path_contract_errors(safe_paths)
+        if errors:
+            raise ci_provenance.ProvenanceError("; ".join(errors))
+    except ci_provenance.ProvenanceError as exc:
+        raise PathFilterError(str(exc)) from exc
+    return DocsPathRegistry(
+        safe_paths=safe_paths,
+        forbidden_ignored_build_paths=forbidden_paths,
+    )
 
 
 def read_text_bounded(path: pathlib.Path, label: str, limit: int = MAX_TEXT_BYTES) -> str:
@@ -126,16 +143,21 @@ def path_matches_pattern(path: str, pattern: str) -> bool:
     return fnmatch.fnmatchcase(normalized, pattern)
 
 
-def docs_only_safe(changed_files: tuple[str, ...] | list[str], safe_paths: tuple[str, ...] | list[str]) -> bool:
+def docs_only_safe(
+    changed_files: tuple[str, ...] | list[str],
+    safe_paths: tuple[str, ...] | list[str],
+    forbidden_ignored_build_paths: tuple[str, ...] | list[str] = (),
+) -> bool:
     if not changed_files:
         raise PathFilterError("changed file list is empty")
+    forbidden_paths = set(forbidden_ignored_build_paths)
     for path in changed_files:
         normalized = path.strip()
         if normalized.startswith("./"):
             normalized = normalized[2:]
         if not normalized:
             raise PathFilterError("changed file list contains an empty path")
-        if normalized in FORBIDDEN_IGNORED_BUILD_PATHS:
+        if normalized in forbidden_paths:
             raise PathFilterError(f"forbidden ignored build path changed: {path}")
         if not any(path_matches_pattern(normalized, pattern) for pattern in safe_paths):
             return False
@@ -159,13 +181,17 @@ def classify_changed_file_path(
     changed_files_path: pathlib.Path,
     output_path: pathlib.Path | None = None,
     *,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
     require_docs_only: bool = False,
     verbose: bool = True,
 ) -> bool:
-    safe_paths = extract_ci_paths_ignore(read_text_bounded(DEFAULT_CI_WORKFLOW, "CI workflow"))
-    verify_safe_path_contract(safe_paths)
+    registry = load_docs_path_registry(config_path)
     changed_files = read_changed_files(changed_files_path)
-    docs_only = docs_only_safe(changed_files, safe_paths)
+    docs_only = docs_only_safe(
+        changed_files,
+        registry.safe_paths,
+        registry.forbidden_ignored_build_paths,
+    )
     if output_path is not None:
         write_github_output(output_path, docs_only)
     if require_docs_only and not docs_only:
@@ -178,52 +204,17 @@ def classify_changed_file_path(
 
 
 def verify_safe_path_contract(paths: list[str]) -> None:
-    if tuple(paths) != EXPECTED_SAFE_PATHS:
-        raise PathFilterError(f"ci paths-ignore drift: expected {EXPECTED_SAFE_PATHS}, got {tuple(paths)}")
+    errors = ci_provenance.docs_safe_path_contract_errors(tuple(paths))
+    if errors:
+        raise PathFilterError("; ".join(errors))
 
 
-def extract_job_block(workflow_text: str, job_name: str) -> str:
-    lines = workflow_text.splitlines()
-    job_header = f"  {job_name}:"
-    for index, line in enumerate(lines):
-        if strip_comment(line).rstrip() != job_header:
-            continue
-        block = [line]
-        for nested in lines[index + 1 :]:
-            clean = strip_comment(nested)
-            if re.match(r"^  [A-Za-z0-9_-]+:\s*$", clean):
-                break
-            block.append(nested)
-        return "\n".join(strip_comment(line) for line in block)
-    raise PathFilterError(f"pass-stub workflow missing required stub job {job_name}")
-
-
-def verify_pass_stub_workflow(workflow_text: str) -> None:
-    text = "\n".join(strip_comment(line) for line in workflow_text.splitlines())
-    paths = extract_trigger_list(workflow_text, "paths")
-    if tuple(paths) != EXPECTED_SAFE_PATHS:
-        raise PathFilterError(f"pass-stub paths drift: expected {EXPECTED_SAFE_PATHS}, got {tuple(paths)}")
-    required_literals = (
-        "name: CI docs pass stub",
-        "pull_request:",
-    )
-    for literal in required_literals:
-        if literal not in text:
-            raise PathFilterError(f"pass-stub workflow missing {literal}")
-    for job_name in REQUIRED_PASS_STUB_JOBS:
-        job_block = extract_job_block(workflow_text, job_name)
-        if "needs:" in job_block:
-            raise PathFilterError(f"pass-stub {job_name} job must fail directly without dependent skipped jobs")
-        if re.search(r"^\s{4}if:\s+", job_block, flags=re.MULTILINE):
-            raise PathFilterError(f"pass-stub {job_name} job must not use job-level if")
-        if f"name: {job_name}" not in job_block:
-            raise PathFilterError(f"pass-stub required stub job {job_name} must be named {job_name}")
-        if "python3 scripts/verify_ci_path_filters.py" not in job_block:
-            raise PathFilterError(f"pass-stub required stub job {job_name} must run changed-file classifier")
-        if "$GITHUB_OUTPUT" not in job_block:
-            raise PathFilterError(f"pass-stub required stub job {job_name} must write github output")
-    if "--require-docs-only" in text:
-        raise PathFilterError("pass-stub must not require docs-only")
+def verify_ci_workflow_has_no_pull_request_paths_ignore(workflow_text: str) -> None:
+    try:
+        paths = extract_ci_paths_ignore(workflow_text)
+    except PathFilterError:
+        return
+    raise PathFilterError(f"ci workflow pull_request paths-ignore must be removed, got {tuple(paths)}")
 
 
 def verify_docs_table(docs_text: str) -> None:
@@ -245,17 +236,17 @@ def verify_rust_policy_location(
 def verify_repository(
     *,
     ci_workflow: pathlib.Path = DEFAULT_CI_WORKFLOW,
-    pass_stub_workflow: pathlib.Path = DEFAULT_PASS_STUB_WORKFLOW,
     docs: pathlib.Path = DEFAULT_DOCS,
+    config: pathlib.Path = DEFAULT_CONFIG,
 ) -> list[str]:
     errors: list[str] = []
     try:
-        paths = extract_ci_paths_ignore(read_text_bounded(ci_workflow, "CI workflow"))
-        verify_safe_path_contract(paths)
+        registry = load_docs_path_registry(config)
+        verify_safe_path_contract(list(registry.safe_paths))
     except Exception as exc:  # noqa: BLE001 - collect verifier failures.
         errors.append(str(exc))
     try:
-        verify_pass_stub_workflow(read_text_bounded(pass_stub_workflow, "pass-stub workflow"))
+        verify_ci_workflow_has_no_pull_request_paths_ignore(read_text_bounded(ci_workflow, "CI workflow"))
     except Exception as exc:  # noqa: BLE001
         errors.append(str(exc))
     try:
@@ -273,6 +264,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--changed-files", type=pathlib.Path)
     parser.add_argument("--github-output", type=pathlib.Path)
+    parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
     parser.add_argument("--require-docs-only", action="store_true")
     return parser.parse_args()
 
@@ -281,9 +273,14 @@ def main() -> int:
     args = parse_args()
     try:
         if args.changed_files is not None:
-            classify_changed_file_path(args.changed_files, args.github_output, require_docs_only=args.require_docs_only)
+            classify_changed_file_path(
+                args.changed_files,
+                args.github_output,
+                config_path=args.config,
+                require_docs_only=args.require_docs_only,
+            )
             return 0
-        errors = verify_repository()
+        errors = verify_repository(config=args.config)
         if errors:
             for error in errors:
                 print(f"ERROR: {error}", file=sys.stderr)

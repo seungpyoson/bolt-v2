@@ -198,6 +198,7 @@ CI_POLICY_ROW_SEMANTICS = {
     "workflow_dispatch_full_ci": PolicyRowSemantics(changes_required_context=True, mergeable_without_queue=False),
     "main_push": PolicyRowSemantics(changes_head_sha=True, changes_target=True),
     "merge_group": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_queue_origin=True),
+    "mergify_temp_pr": PolicyRowSemantics(changes_head_sha=True, changes_queue_origin=True),
     "tag": PolicyRowSemantics(changes_target=True),
     "unknown_event": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_target=True),
 }
@@ -1040,12 +1041,20 @@ def evaluate_ci_policy(
     event_name: str,
     action: str,
     pull_request_draft: bool,
+    pull_request_head_ref: str = "",
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
+    mergify_temp_pr_head_ref_prefix: str = "",
     ref: str,
 ) -> CiPolicyResult:
     override = policy.get("override")
     force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
+    is_mergify_temp_pr = (
+        bool(mergify_temp_pr_head_ref_prefix)
+        and event_name == "pull_request"
+        and pull_request_draft
+        and pull_request_head_ref.startswith(mergify_temp_pr_head_ref_prefix)
+    )
 
     if event_name == "merge_group":
         # Mirror of ci_provenance.evaluate_ci_policy: the merge queue validates
@@ -1071,6 +1080,9 @@ def evaluate_ci_policy(
         if force_full_ci:
             path = "full"
             reason = "force_full_ci"
+        elif is_mergify_temp_pr:
+            path = str(policy["mergify_temp_pr"])
+            reason = "mergify_temp_pr"
         elif action == "ready_for_review":
             path = str(policy["ready_for_review"])
             reason = "ready_for_review"
@@ -1115,7 +1127,7 @@ def evaluate_ci_policy(
         gate_name=gate_names[f"gate_{gate_name_suffix}"],
         backtester_gate_name=gate_names[f"backtester_{gate_name_suffix}"],
         expected_event_class=expected_event_class_for(reason, path),
-        is_mergify_temp_pr=False,
+        is_mergify_temp_pr=is_mergify_temp_pr,
         reason=reason,
     )
 
@@ -1263,6 +1275,10 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass github.event.action")
     if '--pull-request-draft "${{ github.event.pull_request.draft || false }}"' not in text:
         errors.append("ci-policy must pass pull_request draft state")
+    if "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}" not in text:
+        errors.append("ci-policy must pass pull_request head ref through an env var")
+    if '--pull-request-head-ref "$PR_HEAD_REF"' not in text:
+        errors.append("ci-policy must pass pull_request head ref")
     if f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"' not in text:
         errors.append("ci-policy must pass pull_request base-change state")
     if '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"' not in text:
@@ -9685,6 +9701,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '--event-name "${{ github.event_name }}"',
             '--event-action "${{ github.event.action || \'\' }}"',
             '--pull-request-draft "${{ github.event.pull_request.draft || false }}"',
+            "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}",
+            '--pull-request-head-ref "$PR_HEAD_REF"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"',
             '--ref "${{ github.ref }}"',
@@ -10128,6 +10146,10 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         raise ValueError("ci_provenance.dispatch.run_name_default must match workflow_name")
     if run_name_full == run_name_iteration:
         raise ValueError("ci_provenance.dispatch run_name_full and run_name_iteration must differ")
+
+    mergify = require_config_table(ci_provenance, "mergify", "ci_provenance")
+    if require_config_string(mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify") != "mergify/merge-queue/":
+        raise ValueError("ci_provenance.mergify.temp_pr_head_ref_prefix must be mergify/merge-queue/")
 
     gate_names = require_config_table(ci_provenance, "gate_names", "ci_provenance")
     for key in CI_PROVENANCE_GATE_NAME_KEYS:

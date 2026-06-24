@@ -151,8 +151,12 @@ workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
+mergify_temp_pr = "full"
 tag = "tag_reuse"
 unknown_event = "full"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.policy.override]
 force_full_ci = false
@@ -289,11 +293,14 @@ jobs:
       - name: Compute CI policy
         id: policy
         shell: bash
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
         run: >
           python3 scripts/ci_provenance.py ci-policy
           --event-name "${{ github.event_name }}"
           --event-action "${{ github.event.action || '' }}"
           --pull-request-draft "${{ github.event.pull_request.draft || false }}"
+          --pull-request-head-ref "$PR_HEAD_REF"
           --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
           --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
           --ref "${{ github.ref }}"
@@ -1375,6 +1382,10 @@ check_name = "test"
             valid.replace('merge_group = "full"', 'merge_group = "tag_reuse"'),
         ),
         (
+            "ci_provenance.policy.mergify_temp_pr is proof-affecting",
+            valid.replace('mergify_temp_pr = "full"', 'mergify_temp_pr = "defer"'),
+        ),
+        (
             "ci_provenance.policy.unknown_event is proof-affecting",
             valid.replace('unknown_event = "full"', 'unknown_event = "defer"'),
         ),
@@ -1405,8 +1416,8 @@ check_name = "test"
         (
             "ci_provenance.policy has unexpected keys",
             valid.replace(
-                "[ci_provenance.policy.override]",
-                'unexpected_policy_row = "defer"\n\n[ci_provenance.policy.override]',
+                "[ci_provenance.mergify]",
+                'unexpected_policy_row = "defer"\n\n[ci_provenance.mergify]',
             ),
         ),
     ]
@@ -1437,6 +1448,7 @@ check_name = "test"
         "workflow_dispatch_full_ci": "full",
         "main_push": "full",
         "merge_group": "full",
+        "mergify_temp_pr": "full",
         "tag": "tag_reuse",
         "unknown_event": "full",
     }
@@ -1456,8 +1468,8 @@ check_name = "test"
     }
     try:
         synthetic = valid.replace(
-            "[ci_provenance.policy.override]",
-            'synthetic_proof_affecting = "iteration"\n\n[ci_provenance.policy.override]',
+            "[ci_provenance.mergify]",
+            'synthetic_proof_affecting = "iteration"\n\n[ci_provenance.mergify]',
         )
         error = runner_config_load_error(synthetic, verifier=verifier)
         fragment = "ci_provenance.policy.synthetic_proof_affecting is proof-affecting"
@@ -1475,6 +1487,7 @@ def assert_ci_policy_matrix() -> None:
     )
     policy = config["policy"]
     gate_names = config["gate_names"]
+    mergify_prefix = str(config["mergify"]["temp_pr_head_ref_prefix"])
     cases = [
         ("push", "", False, False, "", "refs/heads/main", "full"),
         ("push", "", False, False, "true", "refs/heads/main", "full"),
@@ -1507,6 +1520,7 @@ def assert_ci_policy_matrix() -> None:
             pull_request_draft=draft,
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
             ref=ref,
         )
         if result.ci_policy_path != expected:
@@ -1518,6 +1532,27 @@ def assert_ci_policy_matrix() -> None:
         if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
             if result.gate_name != "gate-dispatch" or result.backtester_gate_name != "backtester-gate-dispatch":
                 raise AssertionError(f"workflow_dispatch full CI must publish non-required gate names: {result}")
+
+    mergify_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_result.ci_policy_path != "full"
+        or mergify_result.gate_name != "gate"
+        or mergify_result.backtester_gate_name != "backtester-gate"
+        or not mergify_result.is_mergify_temp_pr
+        or mergify_result.reason != "mergify_temp_pr"
+    ):
+        raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
 
     forced = dict(policy)
     forced["override"] = dict(policy["override"])
@@ -1551,6 +1586,7 @@ def assert_ci_policy_resolvers_agree() -> None:
     verifier_config = verifier.validate_ci_provenance_config(verifier.tomllib.loads(config_text))
     policy = verifier_config["policy"]
     gate_names = verifier_config["gate_names"]
+    mergify_prefix = str(verifier_config["mergify"]["temp_pr_head_ref_prefix"])
     prov_config = provenance.load_config(config_path)
     cases = [
         ("push", "", False, False, "", "refs/heads/main"),
@@ -1585,6 +1621,7 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_draft=draft,
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
             ref=ref,
         )
         prov = provenance.evaluate_ci_policy(
@@ -1639,6 +1676,7 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_draft=draft,
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
             ref=ref,
         ).ci_policy_path
         == "full"
@@ -1668,6 +1706,7 @@ def assert_ci_policy_resolvers_agree() -> None:
             pull_request_draft=draft,
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
             ref=ref,
         )
         prov = provenance.evaluate_ci_policy(
@@ -1708,6 +1747,51 @@ def assert_ci_policy_resolvers_agree() -> None:
             raise AssertionError(
                 f"force_full_ci must short-circuit {event_name}/{action!r} to full CI; got {ver_tuple}"
             )
+
+    ver = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        ref="refs/pull/965/merge",
+    )
+    prov = provenance.evaluate_ci_policy(
+        prov_config,
+        event_name="pull_request",
+        event_action="opened",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        ref="refs/pull/965/merge",
+    )
+    ver_tuple = (
+        ver.ci_policy_path,
+        ver.full_ci_required,
+        ver.full_ci_deferred,
+        ver.gate_name,
+        ver.backtester_gate_name,
+        ver.expected_event_class,
+        ver.is_mergify_temp_pr,
+        ver.reason,
+    )
+    prov_tuple = (
+        prov.ci_policy_path,
+        prov.full_ci_required,
+        prov.full_ci_deferred,
+        prov.gate_name,
+        prov.backtester_gate_name,
+        prov.expected_event_class,
+        prov.is_mergify_temp_pr,
+        prov.reason,
+    )
+    if ver_tuple != prov_tuple:
+        raise AssertionError(f"ci_policy resolver drift for Mergify temp PR: verifier={ver_tuple} provenance={prov_tuple}")
 
 
 def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:

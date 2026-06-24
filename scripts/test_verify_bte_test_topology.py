@@ -48,13 +48,28 @@ path = "tests/backtesting_vertical_slice_tests.rs"
 mod a_contract;
 #[path = "b_contract.rs"]
 mod b_contract;
-#[path = "backtesting_vertical_slice_public_api.rs"]
-mod backtesting_vertical_slice_public_api;
 """,
     )
     write(
-        root / "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_public_api.rs",
-        'let output = Command::new(env!("CARGO")).output();\n',
+        root / "crates/backtesting-vertical-slice/src/source_proof.rs",
+        """pub struct AcceptedDataset {
+    pub(crate) source_proof_id: String,
+}
+
+pub(crate) fn synthetic_accepted_dataset_for_tests() -> AcceptedDataset {
+    AcceptedDataset { source_proof_id: String::new() }
+}
+
+impl AcceptedDataset {
+    pub(crate) fn result_contract_claim_limits(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+pub fn select_accepted_dataset() -> AcceptedDataset {
+    synthetic_accepted_dataset_for_tests()
+}
+""",
     )
 
 
@@ -98,15 +113,31 @@ def test_inner_attrs_must_move_to_harness() -> None:
         assert any("must not keep crate-level attributes outside the harness" in error for error in errors), errors
 
 
-def test_public_api_probe_must_reuse_managed_target_when_present() -> None:
+def test_accepted_dataset_fields_must_not_be_public() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = pathlib.Path(tmp)
         write_good_fixture(root)
-        public_api = root / "crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_public_api.rs"
-        public_api.write_text('command.env("CARGO_TARGET_DIR", temp.path().join("target"));\n')
+        source_proof = root / "crates/backtesting-vertical-slice/src/source_proof.rs"
+        source_proof.write_text(source_proof.read_text().replace("pub(crate) source_proof_id", "pub source_proof_id"))
         errors = verifier.verify_root(root)
-        assert any("must not force an isolated temp CARGO_TARGET_DIR" in error for error in errors), errors
+        assert any("fields must stay non-public" in error for error in errors), errors
+
+
+def test_accepted_dataset_impl_must_not_expose_public_constructors() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        write_good_fixture(root)
+        source_proof = root / "crates/backtesting-vertical-slice/src/source_proof.rs"
+        source_proof.write_text(
+            source_proof.read_text().replace(
+                "pub(crate) fn result_contract_claim_limits",
+                "pub fn result_contract_claim_limits",
+            )
+        )
+        errors = verifier.verify_root(root)
+        assert any("must not expose public constructors or mutators" in error for error in errors), errors
 
 
 def main() -> int:
@@ -115,7 +146,8 @@ def main() -> int:
         test_missing_harness_shape_is_reported,
         test_missing_module_is_reported,
         test_inner_attrs_must_move_to_harness,
-        test_public_api_probe_must_reuse_managed_target_when_present,
+        test_accepted_dataset_fields_must_not_be_public,
+        test_accepted_dataset_impl_must_not_expose_public_constructors,
     ]
     for test in tests:
         test()
@@ -124,4 +156,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
     raise SystemExit(main())

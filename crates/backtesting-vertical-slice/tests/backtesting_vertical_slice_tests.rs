@@ -82,8 +82,6 @@ mod backtesting_vertical_slice_pmxt_reference_conversion;
 mod backtesting_vertical_slice_polymarket_metadata_gate;
 #[path = "backtesting_vertical_slice_polymarket_nt_surface.rs"]
 mod backtesting_vertical_slice_polymarket_nt_surface;
-#[path = "backtesting_vertical_slice_public_api.rs"]
-mod backtesting_vertical_slice_public_api;
 #[path = "backtesting_vertical_slice_reference_fixture_eviction.rs"]
 mod backtesting_vertical_slice_reference_fixture_eviction;
 #[path = "backtesting_vertical_slice_research_analytics.rs"]

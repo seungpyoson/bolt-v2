@@ -293,6 +293,12 @@ bte-clippy: check-workspace require-rust-verification-owner
 bte-test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" test {{args}}
 
+bte-test-archive archive *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
+
+bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+
 bte-build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" build
 

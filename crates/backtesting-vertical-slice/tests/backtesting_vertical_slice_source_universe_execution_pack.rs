@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 use std::{fs, path::Path};
 
 use backtesting_vertical_slice::{

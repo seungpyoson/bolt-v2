@@ -84,7 +84,6 @@ backtesting-vertical-slice = {{ path = "{}" }}
         .arg("--quiet")
         .arg("--offline")
         .current_dir(temp.path())
-        .env("CARGO_TARGET_DIR", temp.path().join("target"))
         .output()
         .expect("run cargo check");
 

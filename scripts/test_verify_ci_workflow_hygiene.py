@@ -6374,6 +6374,9 @@ def assert_v6_red_backtester_test_is_sharded() -> None:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
+      - uses: Swatinem/rust-cache@example
+        with:
+          save-if: ${{ github.job == 'test' && matrix.shard == 1 }}
       - name: Restore test target cache
         id: test-target-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae

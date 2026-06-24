@@ -378,6 +378,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bte_022_binary_option_bar_catalog.py
     python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py
     python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
+    python3 scripts/test_verify_bte_test_topology.py
+    python3 scripts/verify_bte_test_topology.py
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
     python3 scripts/test_verify_dashboard_field_source_matrix.py

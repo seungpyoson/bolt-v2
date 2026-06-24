@@ -9222,6 +9222,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ("backtester bvs-test must keep shard fail-fast disabled", "fail-fast: false"),
         ("backtester bvs-test must define four nextest shards", "shard: [1, 2, 3, 4]"),
         (
+            "backtester bvs-test must save shared registry cache from one shard only",
+            "save-if: ${{ github.job == 'test' && matrix.shard == 1 }}",
+        ),
+        (
             "backtester bvs-test must run nextest partition matching the shard",
             'just bte-test --partition "count:${{ matrix.shard }}/4"',
         ),

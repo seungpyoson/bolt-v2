@@ -293,6 +293,17 @@ bte-clippy: check-workspace require-rust-verification-owner
 bte-test *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" test {{args}}
 
+bte-test-archive archive *args: check-workspace require-rust-verification-owner
+    archive_path="{{archive}}"; \
+      case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \
+      mkdir -p "$(dirname "$archive_path")"; \
+      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest archive --locked --archive-file "$archive_path" {{args}}
+
+bte-test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
+    archive_path="{{archive}}"; \
+      case "$archive_path" in /*) ;; *) archive_path="{{repo_root}}/$archive_path";; esac; \
+      python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}/crates/backtesting-vertical-slice" -- nextest run --archive-file "$archive_path" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}/crates/backtesting-vertical-slice" {{args}}
+
 bte-build: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" run --repo "{{repo_root}}/crates/backtesting-vertical-slice" build
 
@@ -378,6 +389,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bte_022_binary_option_bar_catalog.py
     python3 scripts/test_verify_bte_022_pmxt_broad_backfill_efficiency.py
     python3 scripts/verify_bte_022_pmxt_broad_backfill_efficiency.py
+    python3 scripts/test_verify_bte_test_topology.py
+    python3 scripts/verify_bte_test_topology.py
     python3 scripts/test_verify_dashboard_customer_jobs.py
     python3 scripts/verify_dashboard_customer_jobs.py
     python3 scripts/test_verify_dashboard_field_source_matrix.py

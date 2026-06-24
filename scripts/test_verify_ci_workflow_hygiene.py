@@ -2505,6 +2505,13 @@ def assert_mergify_config_gaps_are_reported() -> None:
     if baseline_errors:
         raise AssertionError(f"real .mergify.yml must be clean, got: {baseline_errors}")
 
+    result, output = run_verifier_main_with_no_mistakes(
+        "commands:\n  test: just source-fence-static\n",
+        write_mergify_config=False,
+    )
+    if result == 0 or ".mergify.yml is required for Mergify queue governance" not in output:
+        raise AssertionError(f"verifier main must reject a missing .mergify.yml, got: {result}, {output!r}")
+
     mutations = [
         (
             "missing max_parallel_checks",
@@ -2530,6 +2537,11 @@ def assert_mergify_config_gaps_are_reported() -> None:
             "manual queueing only",
         ),
         (
+            "pull request rules enabled",
+            mergify_config + "\npull_request_rules:\n  - name: autoqueue\n",
+            "manual queueing only",
+        ),
+        (
             "queue conditions require gate",
             replace_once(
                 mergify_config,
@@ -2541,6 +2553,15 @@ def assert_mergify_config_gaps_are_reported() -> None:
         (
             "missing gate merge condition",
             replace_once(mergify_config, "      - check-success = gate\n", ""),
+            "default merge_conditions must require sp-reviewer and all four gates",
+        ),
+        (
+            "extra merge condition",
+            replace_once(
+                mergify_config,
+                "      - check-success = host-health\n",
+                "      - check-success = host-health\n      - label = queue-proof\n",
+            ),
             "default merge_conditions must require sp-reviewer and all four gates",
         ),
         (
@@ -2564,7 +2585,16 @@ def assert_mergify_config_gaps_are_reported() -> None:
                 "    checks_timeout: 60 minutes\n",
                 "    checks_timeout: auto\n",
             ),
-            "default checks_timeout must be explicitly bounded",
+            "default checks_timeout must be 60 minutes",
+        ),
+        (
+            "zero timeout",
+            replace_once(
+                mergify_config,
+                "    checks_timeout: 60 minutes\n",
+                "    checks_timeout: 0 minutes\n",
+            ),
+            "default checks_timeout must be 60 minutes",
         ),
         (
             "draft impersonation",
@@ -5940,7 +5970,11 @@ def write_base_workflows(workflow_dir: pathlib.Path) -> None:
     (workflow_dir / "dispatch-ci-cancel.yml").write_text(BASE_DISPATCH_CI_CANCEL_WORKFLOW)
 
 
-def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]:
+def run_verifier_main_with_no_mistakes(
+    no_mistakes_text: str,
+    *,
+    write_mergify_config: bool = True,
+) -> tuple[int, str]:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = pathlib.Path(tmp)
         verifier_path = tmp_path / "scripts" / "verify_ci_workflow_hygiene.py"
@@ -5959,7 +5993,8 @@ def run_verifier_main_with_no_mistakes(no_mistakes_text: str) -> tuple[int, str]
         nextest_path.write_text(BASE_NEXTEST_CONFIG)
 
         (tmp_path / ".no-mistakes.yaml").write_text(no_mistakes_text)
-        (tmp_path / ".mergify.yml").write_text((REPO_ROOT / ".mergify.yml").read_text())
+        if write_mergify_config:
+            (tmp_path / ".mergify.yml").write_text((REPO_ROOT / ".mergify.yml").read_text())
         write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")

@@ -13,6 +13,8 @@ queue_rules:
       - check-success = host-health
     branch_protection_injection_mode: merge
     batch_size: 1
+    # A positive timeout disables in-place checks in Mergify's queue model,
+    # forcing a queue proof context instead of reusing an up-to-date PR head.
     checks_timeout: 60 minutes
     draft_bot_account: null
     merge_method: squash

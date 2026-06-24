@@ -4938,16 +4938,13 @@ def verify_mergify_config(config_text: str, config_name: str = ".mergify.yml") -
     expected_scalars = {
         "branch_protection_injection_mode": "merge",
         "batch_size": "1",
+        "checks_timeout": "60 minutes",
         "draft_bot_account": "null",
         "merge_method": "squash",
     }
     for key, expected in expected_scalars.items():
         if yaml_scalar_value(default_rule, key) != expected:
             errors.append(f"{config_name} default {key} must be {expected}")
-
-    checks_timeout = yaml_scalar_value(default_rule, "checks_timeout")
-    if checks_timeout is None or checks_timeout in {"", "auto", "null"}:
-        errors.append(f"{config_name} default checks_timeout must be explicitly bounded")
     return errors
 
 

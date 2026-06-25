@@ -229,7 +229,7 @@ TAG_SKIP_REQUIRED_JOBS = (
     "test",
     "ci-provenance-emit",
 )
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "build")
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-archive", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 JOB_REQUIRED_JUST_RECIPE = {
     "deny": "deny",
@@ -523,6 +523,7 @@ TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_BUILD_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit == 'true'"
+TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: steps.test-target-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
     'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins'
@@ -546,6 +547,7 @@ MANAGED_TARGET_CACHE_KEYS = {
     "clippy": "clippy-host",
     "check-aarch64": "check-aarch64-dev",
     "source-fence": "source-fence-test",
+    "test-archive": "test-archive-test",
     "build": "build-aarch64-release",
 }
 JUST_LANE_RE = re.compile(
@@ -1435,7 +1437,11 @@ def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
 
 
 def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
-    return action_blocks(job_lines, "actions/cache@")
+    return (
+        action_blocks(job_lines, "actions/cache@")
+        + action_blocks(job_lines, "actions/cache/restore@")
+        + action_blocks(job_lines, "actions/cache/save@")
+    )
 
 
 def block_runs_command(block: list[str], command: str) -> bool:
@@ -8881,19 +8887,36 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must require detector success")
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
-        archive_cache_blocks = [
+        archive_restore_blocks = [
             block
-            for block in (
-                action_blocks(archive_lines, "actions/cache/restore@")
-                + action_blocks(archive_lines, "actions/cache/save@")
-            )
+            for block in action_blocks(archive_lines, "actions/cache/restore@")
             if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
         ]
+        archive_save_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/save@")
+            if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
+        archive_cache_blocks = archive_restore_blocks + archive_save_blocks
         archive_upload_blocks = [
             block
             for block in action_blocks(archive_lines, "actions/upload-artifact@")
             if block_has_input(block, "name", "nextest-archive")
             and block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
+        target_restore_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/restore@")
+            if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
+        ]
+        target_save_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/save@")
+            if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
+        ]
+        target_cache_keys = [
+            block_input_value(block, "key") or ""
+            for block in target_restore_blocks + target_save_blocks
         ]
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
@@ -8904,17 +8927,29 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest archive cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in archive_cache_blocks):
             errors.append("nextest archive cache key must use nextest fingerprint output")
-        if "include-managed-target-dir:" in archive_text:
-            errors.append("test-archive must not opt into managed target dir")
+        if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
+            errors.append("test-archive must opt into managed target dir")
+        if not target_restore_blocks:
+            errors.append("test-archive must restore archive build target cache")
+        if not target_save_blocks:
+            errors.append("test-archive must save archive build target cache")
+        if any(
+            TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD not in uncommented_text(block)
+            for block in target_save_blocks
+        ):
+            errors.append("test-archive must save target cache only on target cache miss")
+        for required in ("src/**", "tests/**"):
+            if not any(required in key for key in target_cache_keys):
+                errors.append(f"test-archive managed target cache key must include {required}")
         if "nextest-archive-build-v1" in archive_text:
             errors.append("test-archive must not save a second archive-build cache")
-        if TEST_ARCHIVE_RESTORE_ACTION not in archive_text:
+        if not archive_restore_blocks:
             errors.append("test-archive must restore nextest archive cache")
-        if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
+        if not archive_save_blocks:
             errors.append("test-archive must save nextest archive cache")
         if archive_upload_blocks:
             errors.append("test-archive must not upload nextest archive artifact")
-        if "restore-keys:" in archive_text:
+        if any(block_has_input(block, "restore-keys") for block in archive_cache_blocks):
             errors.append("test-archive cache must not use restore-keys")
         if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:
             errors.append("test-archive cache must use archive path env")

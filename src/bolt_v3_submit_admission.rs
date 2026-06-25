@@ -1,3 +1,7 @@
+use crate::bolt_v3_capital_admission_state::{
+    NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
+    PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
+};
 use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationRejectionReason, ReservationRequest,
 };
@@ -24,10 +28,6 @@ use crate::bolt_v3_position_sizer::{
     PositionSizingGateInputs, PositionSizingLifecycleAction, PositionSizingLifecycleKind,
     PositionSizingLifecycleUpdate, PositionSizingRequest, ProductKind, ProductSizingSnapshot,
     SizingPolicy,
-};
-use crate::bolt_v3_sizing_state::{
-    NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
-    ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use anyhow::Context;
 use nautilus_model::{
@@ -221,7 +221,7 @@ struct BoltV3SubmitPositionSizerState {
     capital_pool: CapitalPoolSnapshot,
     policy: SizingPolicy,
     dedupe_retention_ns: u64,
-    state: Option<NtDerivedSizingState>,
+    state: Option<NtDerivedCapitalAdmissionState>,
     latest_reservation_mutation_observed_at_ns: Option<u64>,
     gate: PositionSizingAdmissionGate,
     next_sequence: u64,
@@ -263,9 +263,9 @@ pub struct BoltV3SubmitPositionSizerConfig {
 pub struct BoltV3SubmitPositionSizingNtComponents {
     pub source: String,
     pub observed_at_ns: u64,
-    pub portfolio: PortfolioSizingSnapshot,
+    pub portfolio: PortfolioCapitalAdmissionSnapshot,
     pub venue_spendability: VenueSpendabilitySnapshot,
-    pub order_lifecycle: OrderLifecycleSizingSnapshot,
+    pub order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot,
     pub product_state: ProductSizingSnapshot,
     pub loss_snapshot: Option<LossSnapshot>,
 }
@@ -550,7 +550,7 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
-    pub fn position_sizer_state_snapshot(&self) -> Option<NtDerivedSizingState> {
+    pub fn position_sizer_state_snapshot(&self) -> Option<NtDerivedCapitalAdmissionState> {
         self.inner
             .lock()
             .expect("submit admission state mutex should not be poisoned")
@@ -794,7 +794,7 @@ impl BoltV3SubmitAdmissionState {
         snapshot: BoltV3SubmitPositionSizingOpenOrderSnapshot,
         now_ns: u64,
     ) -> BoltV3SubmitPositionSizingRebuildDecision {
-        let rebuilt_order_lifecycle = OrderLifecycleSizingSnapshot {
+        let rebuilt_order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
             source: snapshot.evidence_label.clone(),
             observed_at_ns: snapshot.observed_at_ns,
             open_order_count: snapshot.observed_open_order_count,
@@ -3625,7 +3625,7 @@ fn refresh_position_sizer_state_from_components(
 }
 
 fn preserve_fresher_order_lifecycle(
-    current_state: Option<&NtDerivedSizingState>,
+    current_state: Option<&NtDerivedCapitalAdmissionState>,
     components: &mut BoltV3SubmitPositionSizingNtComponents,
 ) {
     let Some(current_state) = current_state else {
@@ -3679,7 +3679,7 @@ fn refresh_position_sizer_reservation_snapshot_with_source(
 }
 
 fn nt_components_from_existing_position_sizer_state(
-    state: NtDerivedSizingState,
+    state: NtDerivedCapitalAdmissionState,
 ) -> BoltV3SubmitPositionSizingNtComponents {
     let product_observed_at_ns = match &state.product_state {
         ProductSizingSnapshot::PredictionMarketBinary(snapshot) => snapshot.observed_at_ns,
@@ -3737,12 +3737,12 @@ fn compose_position_sizing_state_from_components(
     components: BoltV3SubmitPositionSizingNtComponents,
     gate_reconciled: bool,
     latest_reservation_mutation_observed_at_ns: Option<u64>,
-) -> NtDerivedSizingState {
+) -> NtDerivedCapitalAdmissionState {
     let reservation_observed_at_ns = latest_reservation_mutation_observed_at_ns
         .map_or(components.observed_at_ns, |observed_at_ns| {
             components.observed_at_ns.max(observed_at_ns)
         });
-    NtDerivedSizingState {
+    NtDerivedCapitalAdmissionState {
         source: components.source,
         observed_at_ns: components.observed_at_ns.max(reservation_observed_at_ns),
         portfolio: components.portfolio,

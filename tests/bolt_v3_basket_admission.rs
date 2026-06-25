@@ -13,6 +13,10 @@ use bolt_v2::{
         BoltV3BasketAdmissionReleaseReason, BoltV3BasketAdmissionRequest,
         BoltV3BasketAdmissionState,
     },
+    bolt_v3_capital_admission_state::{
+        OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
+        VenueSpendabilitySnapshot,
+    },
     bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
@@ -38,9 +42,6 @@ use bolt_v2::{
     bolt_v3_position_sizer::{
         FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
         SizingPolicy,
-    },
-    bolt_v3_sizing_state::{
-        OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
     },
     bolt_v3_submit_admission::{
         BoltV3BasketSubmitSlotClaim, BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity,
@@ -1048,7 +1049,7 @@ fn position_sizing_components(
     BoltV3SubmitPositionSizingNtComponents {
         source: "basket-admission-test-state".to_string(),
         observed_at_ns,
-        portfolio: PortfolioSizingSnapshot {
+        portfolio: PortfolioCapitalAdmissionSnapshot {
             source: "basket-admission-test-portfolio".to_string(),
             observed_at_ns,
             venue_id: "POLYMARKET".to_string(),
@@ -1066,7 +1067,7 @@ fn position_sizing_components(
             spendable_collateral: dec!(100),
             collateral_allowance: dec!(100),
         },
-        order_lifecycle: OrderLifecycleSizingSnapshot {
+        order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
             source: "basket-admission-test-open-orders".to_string(),
             observed_at_ns,
             open_order_count: 0,

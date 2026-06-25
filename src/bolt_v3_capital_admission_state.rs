@@ -10,14 +10,14 @@ pub const VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION: u32 = 1;
 pub const VENUE_SPENDABILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.venue_spendability_source.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SizingStateError {
+pub enum CapitalAdmissionStateError {
     MissingNtState,
-    StaleNtState(SizingStateEvidenceKind),
-    UnattributedState(SizingStateEvidenceKind),
+    StaleNtState(CapitalAdmissionStateEvidenceKind),
+    UnattributedState(CapitalAdmissionStateEvidenceKind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SizingStateEvidenceKind {
+pub enum CapitalAdmissionStateEvidenceKind {
     State,
     Portfolio,
     VenueSpendability,
@@ -28,19 +28,19 @@ pub enum SizingStateEvidenceKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NtDerivedSizingState {
+pub struct NtDerivedCapitalAdmissionState {
     pub source: String,
     pub observed_at_ns: u64,
-    pub portfolio: PortfolioSizingSnapshot,
+    pub portfolio: PortfolioCapitalAdmissionSnapshot,
     pub venue_spendability: VenueSpendabilitySnapshot,
-    pub order_lifecycle: OrderLifecycleSizingSnapshot,
+    pub order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot,
     pub product_state: ProductSizingSnapshot,
     pub reservation_snapshot: ReservationLedgerSnapshot,
     pub loss_snapshot: Option<LossSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PortfolioSizingSnapshot {
+pub struct PortfolioCapitalAdmissionSnapshot {
     pub source: String,
     pub observed_at_ns: u64,
     pub venue_id: String,
@@ -211,7 +211,7 @@ fn parse_non_negative_decimal(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OrderLifecycleSizingSnapshot {
+pub struct OrderLifecycleCapitalAdmissionSnapshot {
     pub source: String,
     pub observed_at_ns: u64,
     pub open_order_count: usize,
@@ -226,63 +226,66 @@ pub struct ReservationLedgerSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SizingStateEvidenceSource {
-    pub kind: SizingStateEvidenceKind,
+pub struct CapitalAdmissionStateEvidenceSource {
+    pub kind: CapitalAdmissionStateEvidenceKind,
     pub source: String,
     pub observed_at_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SizingStateEvidence {
-    pub sources: Vec<SizingStateEvidenceSource>,
+pub struct CapitalAdmissionStateEvidence {
+    pub sources: Vec<CapitalAdmissionStateEvidenceSource>,
 }
 
-pub fn validate_nt_derived_sizing_state(
-    state: Option<&NtDerivedSizingState>,
+pub fn validate_nt_derived_capital_admission_state(
+    state: Option<&NtDerivedCapitalAdmissionState>,
     now_ns: u64,
     max_snapshot_age_ns: u64,
-) -> Result<SizingStateEvidence, SizingStateError> {
+) -> Result<CapitalAdmissionStateEvidence, CapitalAdmissionStateError> {
     let Some(state) = state else {
-        return Err(SizingStateError::MissingNtState);
+        return Err(CapitalAdmissionStateError::MissingNtState);
     };
 
-    validate_source(&state.source, SizingStateEvidenceKind::State)?;
+    validate_source(&state.source, CapitalAdmissionStateEvidenceKind::State)?;
     validate_freshness(
         state.observed_at_ns,
         now_ns,
         max_snapshot_age_ns,
-        SizingStateEvidenceKind::State,
+        CapitalAdmissionStateEvidenceKind::State,
     )?;
-    validate_source(&state.portfolio.source, SizingStateEvidenceKind::Portfolio)?;
+    validate_source(
+        &state.portfolio.source,
+        CapitalAdmissionStateEvidenceKind::Portfolio,
+    )?;
     validate_freshness(
         state.portfolio.observed_at_ns,
         now_ns,
         max_snapshot_age_ns,
-        SizingStateEvidenceKind::Portfolio,
+        CapitalAdmissionStateEvidenceKind::Portfolio,
     )?;
     validate_source(
         &state.venue_spendability.source,
-        SizingStateEvidenceKind::VenueSpendability,
+        CapitalAdmissionStateEvidenceKind::VenueSpendability,
     )?;
     validate_freshness(
         state.venue_spendability.observed_at_ns,
         now_ns,
         max_snapshot_age_ns,
-        SizingStateEvidenceKind::VenueSpendability,
+        CapitalAdmissionStateEvidenceKind::VenueSpendability,
     )?;
     validate_source(
         &state.order_lifecycle.source,
-        SizingStateEvidenceKind::OrderLifecycle,
+        CapitalAdmissionStateEvidenceKind::OrderLifecycle,
     )?;
     validate_freshness(
         state.order_lifecycle.observed_at_ns,
         now_ns,
         max_snapshot_age_ns,
-        SizingStateEvidenceKind::OrderLifecycle,
+        CapitalAdmissionStateEvidenceKind::OrderLifecycle,
     )?;
     if !state.order_lifecycle.all_open_orders_attributed {
-        return Err(SizingStateError::UnattributedState(
-            SizingStateEvidenceKind::OrderLifecycle,
+        return Err(CapitalAdmissionStateError::UnattributedState(
+            CapitalAdmissionStateEvidenceKind::OrderLifecycle,
         ));
     }
 
@@ -291,48 +294,57 @@ pub fn validate_nt_derived_sizing_state(
             (snapshot.source.as_str(), snapshot.observed_at_ns)
         }
     };
-    validate_source(product_source, SizingStateEvidenceKind::ProductState)?;
+    validate_source(
+        product_source,
+        CapitalAdmissionStateEvidenceKind::ProductState,
+    )?;
     validate_freshness(
         product_observed_at_ns,
         now_ns,
         max_snapshot_age_ns,
-        SizingStateEvidenceKind::ProductState,
+        CapitalAdmissionStateEvidenceKind::ProductState,
     )?;
 
     validate_source(
         &state.reservation_snapshot.source,
-        SizingStateEvidenceKind::ReservationLedger,
+        CapitalAdmissionStateEvidenceKind::ReservationLedger,
     )?;
     validate_freshness(
         state.reservation_snapshot.observed_at_ns,
         now_ns,
         max_snapshot_age_ns,
-        SizingStateEvidenceKind::ReservationLedger,
+        CapitalAdmissionStateEvidenceKind::ReservationLedger,
     )?;
     if !state.reservation_snapshot.all_live_reservations_attributed {
-        return Err(SizingStateError::UnattributedState(
-            SizingStateEvidenceKind::ReservationLedger,
+        return Err(CapitalAdmissionStateError::UnattributedState(
+            CapitalAdmissionStateEvidenceKind::ReservationLedger,
         ));
     }
 
     if let Some(loss_snapshot) = &state.loss_snapshot {
-        validate_source(&loss_snapshot.source, SizingStateEvidenceKind::LossSnapshot)?;
+        validate_source(
+            &loss_snapshot.source,
+            CapitalAdmissionStateEvidenceKind::LossSnapshot,
+        )?;
         validate_freshness(
             loss_snapshot.observed_at_ns,
             now_ns,
             max_snapshot_age_ns,
-            SizingStateEvidenceKind::LossSnapshot,
+            CapitalAdmissionStateEvidenceKind::LossSnapshot,
         )?;
     }
 
-    Ok(SizingStateEvidence {
+    Ok(CapitalAdmissionStateEvidence {
         sources: evidence_sources(state),
     })
 }
 
-fn validate_source(source: &str, kind: SizingStateEvidenceKind) -> Result<(), SizingStateError> {
+fn validate_source(
+    source: &str,
+    kind: CapitalAdmissionStateEvidenceKind,
+) -> Result<(), CapitalAdmissionStateError> {
     if source.trim().is_empty() {
-        return Err(SizingStateError::UnattributedState(kind));
+        return Err(CapitalAdmissionStateError::UnattributedState(kind));
     }
     Ok(())
 }
@@ -341,55 +353,57 @@ fn validate_freshness(
     observed_at_ns: u64,
     now_ns: u64,
     max_snapshot_age_ns: u64,
-    kind: SizingStateEvidenceKind,
-) -> Result<(), SizingStateError> {
+    kind: CapitalAdmissionStateEvidenceKind,
+) -> Result<(), CapitalAdmissionStateError> {
     if observed_at_ns > now_ns || now_ns - observed_at_ns > max_snapshot_age_ns {
-        return Err(SizingStateError::StaleNtState(kind));
+        return Err(CapitalAdmissionStateError::StaleNtState(kind));
     }
     Ok(())
 }
 
-fn evidence_sources(state: &NtDerivedSizingState) -> Vec<SizingStateEvidenceSource> {
+fn evidence_sources(
+    state: &NtDerivedCapitalAdmissionState,
+) -> Vec<CapitalAdmissionStateEvidenceSource> {
     let (product_source, product_observed_at_ns) = match &state.product_state {
         ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
             (snapshot.source.clone(), snapshot.observed_at_ns)
         }
     };
     let mut sources = vec![
-        SizingStateEvidenceSource {
-            kind: SizingStateEvidenceKind::State,
+        CapitalAdmissionStateEvidenceSource {
+            kind: CapitalAdmissionStateEvidenceKind::State,
             source: state.source.clone(),
             observed_at_ns: state.observed_at_ns,
         },
-        SizingStateEvidenceSource {
-            kind: SizingStateEvidenceKind::Portfolio,
+        CapitalAdmissionStateEvidenceSource {
+            kind: CapitalAdmissionStateEvidenceKind::Portfolio,
             source: state.portfolio.source.clone(),
             observed_at_ns: state.portfolio.observed_at_ns,
         },
-        SizingStateEvidenceSource {
-            kind: SizingStateEvidenceKind::VenueSpendability,
+        CapitalAdmissionStateEvidenceSource {
+            kind: CapitalAdmissionStateEvidenceKind::VenueSpendability,
             source: state.venue_spendability.source.clone(),
             observed_at_ns: state.venue_spendability.observed_at_ns,
         },
-        SizingStateEvidenceSource {
-            kind: SizingStateEvidenceKind::OrderLifecycle,
+        CapitalAdmissionStateEvidenceSource {
+            kind: CapitalAdmissionStateEvidenceKind::OrderLifecycle,
             source: state.order_lifecycle.source.clone(),
             observed_at_ns: state.order_lifecycle.observed_at_ns,
         },
-        SizingStateEvidenceSource {
-            kind: SizingStateEvidenceKind::ProductState,
+        CapitalAdmissionStateEvidenceSource {
+            kind: CapitalAdmissionStateEvidenceKind::ProductState,
             source: product_source,
             observed_at_ns: product_observed_at_ns,
         },
-        SizingStateEvidenceSource {
-            kind: SizingStateEvidenceKind::ReservationLedger,
+        CapitalAdmissionStateEvidenceSource {
+            kind: CapitalAdmissionStateEvidenceKind::ReservationLedger,
             source: state.reservation_snapshot.source.clone(),
             observed_at_ns: state.reservation_snapshot.observed_at_ns,
         },
     ];
     if let Some(loss_snapshot) = &state.loss_snapshot {
-        sources.push(SizingStateEvidenceSource {
-            kind: SizingStateEvidenceKind::LossSnapshot,
+        sources.push(CapitalAdmissionStateEvidenceSource {
+            kind: CapitalAdmissionStateEvidenceKind::LossSnapshot,
             source: loss_snapshot.source.clone(),
             observed_at_ns: loss_snapshot.observed_at_ns,
         });
@@ -406,26 +420,27 @@ mod tests {
     use crate::bolt_v3_position_sizer::{PredictionMarketSizingSnapshot, ProductSizingSnapshot};
 
     use super::{
-        NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
-        ReservationLedgerSnapshot, SizingStateError, SizingStateEvidenceKind,
-        VenueSpendabilityIdentity, VenueSpendabilitySnapshot, VenueSpendabilitySourceError,
-        VenueSpendabilitySourceFileRequest, validate_nt_derived_sizing_state,
+        CapitalAdmissionStateError, CapitalAdmissionStateEvidenceKind,
+        NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
+        PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilityIdentity,
+        VenueSpendabilitySnapshot, VenueSpendabilitySourceError,
+        VenueSpendabilitySourceFileRequest, validate_nt_derived_capital_admission_state,
         venue_spendability_snapshot_from_json_bytes, venue_spendability_snapshot_from_json_file,
     };
 
     #[test]
-    fn sizing_state_missing_nt_snapshot_fails_closed() {
-        let decision = validate_nt_derived_sizing_state(None, 1_000, 100)
+    fn capital_admission_state_missing_nt_snapshot_fails_closed() {
+        let decision = validate_nt_derived_capital_admission_state(None, 1_000, 100)
             .expect_err("missing NT-derived sizing state must fail closed");
 
-        assert_eq!(decision, SizingStateError::MissingNtState);
+        assert_eq!(decision, CapitalAdmissionStateError::MissingNtState);
     }
 
-    fn state() -> NtDerivedSizingState {
-        NtDerivedSizingState {
+    fn state() -> NtDerivedCapitalAdmissionState {
+        NtDerivedCapitalAdmissionState {
             source: "nt_sizing_state".to_string(),
             observed_at_ns: 1_000,
-            portfolio: PortfolioSizingSnapshot {
+            portfolio: PortfolioCapitalAdmissionSnapshot {
                 source: "nt_portfolio_snapshot".to_string(),
                 observed_at_ns: 1_000,
                 venue_id: "VENUE-A".to_string(),
@@ -443,7 +458,7 @@ mod tests {
                 spendable_collateral: Decimal::new(100, 0),
                 collateral_allowance: Decimal::new(100, 0),
             },
-            order_lifecycle: OrderLifecycleSizingSnapshot {
+            order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
                 source: "nt_open_order_cache".to_string(),
                 observed_at_ns: 1_000,
                 open_order_count: 1,
@@ -485,30 +500,30 @@ mod tests {
     }
 
     fn state_with_observed_at(
-        kind: SizingStateEvidenceKind,
+        kind: CapitalAdmissionStateEvidenceKind,
         observed_at_ns: u64,
-    ) -> NtDerivedSizingState {
+    ) -> NtDerivedCapitalAdmissionState {
         let mut candidate = state();
         match kind {
-            SizingStateEvidenceKind::State => candidate.observed_at_ns = observed_at_ns,
-            SizingStateEvidenceKind::Portfolio => {
+            CapitalAdmissionStateEvidenceKind::State => candidate.observed_at_ns = observed_at_ns,
+            CapitalAdmissionStateEvidenceKind::Portfolio => {
                 candidate.portfolio.observed_at_ns = observed_at_ns;
             }
-            SizingStateEvidenceKind::VenueSpendability => {
+            CapitalAdmissionStateEvidenceKind::VenueSpendability => {
                 candidate.venue_spendability.observed_at_ns = observed_at_ns;
             }
-            SizingStateEvidenceKind::OrderLifecycle => {
+            CapitalAdmissionStateEvidenceKind::OrderLifecycle => {
                 candidate.order_lifecycle.observed_at_ns = observed_at_ns;
             }
-            SizingStateEvidenceKind::ProductState => {
+            CapitalAdmissionStateEvidenceKind::ProductState => {
                 let ProductSizingSnapshot::PredictionMarketBinary(snapshot) =
                     &mut candidate.product_state;
                 snapshot.observed_at_ns = observed_at_ns;
             }
-            SizingStateEvidenceKind::ReservationLedger => {
+            CapitalAdmissionStateEvidenceKind::ReservationLedger => {
                 candidate.reservation_snapshot.observed_at_ns = observed_at_ns;
             }
-            SizingStateEvidenceKind::LossSnapshot => {
+            CapitalAdmissionStateEvidenceKind::LossSnapshot => {
                 let mut snapshot = loss_snapshot();
                 snapshot.observed_at_ns = observed_at_ns;
                 candidate.loss_snapshot = Some(snapshot);
@@ -518,8 +533,8 @@ mod tests {
     }
 
     #[test]
-    fn sizing_state_valid_snapshot_returns_expected_evidence_sources() {
-        let evidence = validate_nt_derived_sizing_state(Some(&state()), 1_000, 100)
+    fn capital_admission_state_valid_snapshot_returns_expected_evidence_sources() {
+        let evidence = validate_nt_derived_capital_admission_state(Some(&state()), 1_000, 100)
             .expect("fresh attributed NT-derived sizing state should be accepted");
 
         let kinds = evidence
@@ -531,28 +546,28 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
-                SizingStateEvidenceKind::State,
-                SizingStateEvidenceKind::Portfolio,
-                SizingStateEvidenceKind::VenueSpendability,
-                SizingStateEvidenceKind::OrderLifecycle,
-                SizingStateEvidenceKind::ProductState,
-                SizingStateEvidenceKind::ReservationLedger,
+                CapitalAdmissionStateEvidenceKind::State,
+                CapitalAdmissionStateEvidenceKind::Portfolio,
+                CapitalAdmissionStateEvidenceKind::VenueSpendability,
+                CapitalAdmissionStateEvidenceKind::OrderLifecycle,
+                CapitalAdmissionStateEvidenceKind::ProductState,
+                CapitalAdmissionStateEvidenceKind::ReservationLedger,
             ]
         );
     }
 
     #[test]
-    fn sizing_state_valid_loss_snapshot_is_included_in_evidence() {
+    fn capital_admission_state_valid_loss_snapshot_is_included_in_evidence() {
         let mut candidate = state();
         candidate.loss_snapshot = Some(loss_snapshot());
 
-        let evidence = validate_nt_derived_sizing_state(Some(&candidate), 1_000, 100)
+        let evidence = validate_nt_derived_capital_admission_state(Some(&candidate), 1_000, 100)
             .expect("fresh attributed loss snapshot should be accepted");
 
         assert_eq!(evidence.sources.len(), 7);
         assert_eq!(
             evidence.sources.last().map(|source| source.kind),
-            Some(SizingStateEvidenceKind::LossSnapshot)
+            Some(CapitalAdmissionStateEvidenceKind::LossSnapshot)
         );
     }
 
@@ -562,93 +577,103 @@ mod tests {
             {
                 let mut candidate = state();
                 candidate.source = " ".to_string();
-                (candidate, SizingStateEvidenceKind::State)
+                (candidate, CapitalAdmissionStateEvidenceKind::State)
             },
             {
                 let mut candidate = state();
                 candidate.portfolio.source = " ".to_string();
-                (candidate, SizingStateEvidenceKind::Portfolio)
+                (candidate, CapitalAdmissionStateEvidenceKind::Portfolio)
             },
             {
                 let mut candidate = state();
                 candidate.venue_spendability.source = " ".to_string();
-                (candidate, SizingStateEvidenceKind::VenueSpendability)
+                (
+                    candidate,
+                    CapitalAdmissionStateEvidenceKind::VenueSpendability,
+                )
             },
             {
                 let mut candidate = state();
                 candidate.order_lifecycle.all_open_orders_attributed = false;
-                (candidate, SizingStateEvidenceKind::OrderLifecycle)
+                (candidate, CapitalAdmissionStateEvidenceKind::OrderLifecycle)
             },
             {
                 let mut candidate = state();
                 let ProductSizingSnapshot::PredictionMarketBinary(snapshot) =
                     &mut candidate.product_state;
                 snapshot.source.clear();
-                (candidate, SizingStateEvidenceKind::ProductState)
+                (candidate, CapitalAdmissionStateEvidenceKind::ProductState)
             },
             {
                 let mut candidate = state();
                 candidate
                     .reservation_snapshot
                     .all_live_reservations_attributed = false;
-                (candidate, SizingStateEvidenceKind::ReservationLedger)
+                (
+                    candidate,
+                    CapitalAdmissionStateEvidenceKind::ReservationLedger,
+                )
             },
             {
                 let mut candidate = state();
                 let mut snapshot = loss_snapshot();
                 snapshot.source = " ".to_string();
                 candidate.loss_snapshot = Some(snapshot);
-                (candidate, SizingStateEvidenceKind::LossSnapshot)
+                (candidate, CapitalAdmissionStateEvidenceKind::LossSnapshot)
             },
         ];
 
         for (candidate, expected_kind) in cases {
-            let decision = validate_nt_derived_sizing_state(Some(&candidate), 1_000, 100)
-                .expect_err("unattributed NT-derived state must fail closed");
+            let decision =
+                validate_nt_derived_capital_admission_state(Some(&candidate), 1_000, 100)
+                    .expect_err("unattributed NT-derived state must fail closed");
 
-            assert_eq!(decision, SizingStateError::UnattributedState(expected_kind));
+            assert_eq!(
+                decision,
+                CapitalAdmissionStateError::UnattributedState(expected_kind)
+            );
         }
     }
 
     #[test]
-    fn stale_sizing_state_evidence_fails_closed_for_each_kind() {
+    fn stale_capital_admission_state_evidence_fails_closed_for_each_kind() {
         let kinds = [
-            SizingStateEvidenceKind::State,
-            SizingStateEvidenceKind::Portfolio,
-            SizingStateEvidenceKind::VenueSpendability,
-            SizingStateEvidenceKind::OrderLifecycle,
-            SizingStateEvidenceKind::ProductState,
-            SizingStateEvidenceKind::ReservationLedger,
-            SizingStateEvidenceKind::LossSnapshot,
+            CapitalAdmissionStateEvidenceKind::State,
+            CapitalAdmissionStateEvidenceKind::Portfolio,
+            CapitalAdmissionStateEvidenceKind::VenueSpendability,
+            CapitalAdmissionStateEvidenceKind::OrderLifecycle,
+            CapitalAdmissionStateEvidenceKind::ProductState,
+            CapitalAdmissionStateEvidenceKind::ReservationLedger,
+            CapitalAdmissionStateEvidenceKind::LossSnapshot,
         ];
 
         for kind in kinds {
             let stale = state_with_observed_at(kind, 899);
-            let decision = validate_nt_derived_sizing_state(Some(&stale), 1_000, 100)
+            let decision = validate_nt_derived_capital_admission_state(Some(&stale), 1_000, 100)
                 .expect_err("stale NT-derived sizing state must fail closed");
 
-            assert_eq!(decision, SizingStateError::StaleNtState(kind));
+            assert_eq!(decision, CapitalAdmissionStateError::StaleNtState(kind));
         }
     }
 
     #[test]
-    fn future_sizing_state_evidence_fails_closed_for_each_kind() {
+    fn future_capital_admission_state_evidence_fails_closed_for_each_kind() {
         let kinds = [
-            SizingStateEvidenceKind::State,
-            SizingStateEvidenceKind::Portfolio,
-            SizingStateEvidenceKind::VenueSpendability,
-            SizingStateEvidenceKind::OrderLifecycle,
-            SizingStateEvidenceKind::ProductState,
-            SizingStateEvidenceKind::ReservationLedger,
-            SizingStateEvidenceKind::LossSnapshot,
+            CapitalAdmissionStateEvidenceKind::State,
+            CapitalAdmissionStateEvidenceKind::Portfolio,
+            CapitalAdmissionStateEvidenceKind::VenueSpendability,
+            CapitalAdmissionStateEvidenceKind::OrderLifecycle,
+            CapitalAdmissionStateEvidenceKind::ProductState,
+            CapitalAdmissionStateEvidenceKind::ReservationLedger,
+            CapitalAdmissionStateEvidenceKind::LossSnapshot,
         ];
 
         for kind in kinds {
             let future = state_with_observed_at(kind, 1_001);
-            let decision = validate_nt_derived_sizing_state(Some(&future), 1_000, 100)
+            let decision = validate_nt_derived_capital_admission_state(Some(&future), 1_000, 100)
                 .expect_err("future NT-derived sizing state must fail closed");
 
-            assert_eq!(decision, SizingStateError::StaleNtState(kind));
+            assert_eq!(decision, CapitalAdmissionStateError::StaleNtState(kind));
         }
     }
 

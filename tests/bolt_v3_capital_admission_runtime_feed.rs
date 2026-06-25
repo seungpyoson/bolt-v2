@@ -10,11 +10,11 @@ use bolt_v2::bolt_v3_capital_admission_runtime_feed::{
     CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
     subscribe_capital_admission_runtime_feed,
 };
-use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
-use bolt_v2::bolt_v3_sizing_state::{
-    NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
-    ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
+use bolt_v2::bolt_v3_capital_admission_state::{
+    NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
+    PortfolioCapitalAdmissionSnapshot, ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
+use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
     BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3PositionSizerRejectReason,
@@ -2472,11 +2472,11 @@ fn sized_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequ
     request
 }
 
-fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
-    NtDerivedSizingState {
+fn fresh_capital_admission_state(observed_at_ns: u64) -> NtDerivedCapitalAdmissionState {
+    NtDerivedCapitalAdmissionState {
         source: "nt_sizing_state".to_string(),
         observed_at_ns,
-        portfolio: PortfolioSizingSnapshot {
+        portfolio: PortfolioCapitalAdmissionSnapshot {
             source: "nt_portfolio_snapshot".to_string(),
             observed_at_ns,
             venue_id: "VENUE-A".to_string(),
@@ -2486,7 +2486,7 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
             total_equity: Decimal::new(100, 0),
         },
         venue_spendability: venue_spendability_snapshot(observed_at_ns, 100, 100),
-        order_lifecycle: OrderLifecycleSizingSnapshot {
+        order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
             source: "nt_open_order_cache".to_string(),
             observed_at_ns,
             open_order_count: 0,
@@ -2515,7 +2515,7 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
 }
 
 fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitPositionSizingNtComponents {
-    let state = fresh_sizing_state(observed_at_ns);
+    let state = fresh_capital_admission_state(observed_at_ns);
     BoltV3SubmitPositionSizingNtComponents {
         source: state.source,
         observed_at_ns: state.observed_at_ns,

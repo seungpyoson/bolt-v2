@@ -17,10 +17,11 @@ use rust_decimal::Decimal;
 
 use crate::{
     bolt_v3_capital_admission::ProductAdmissionSnapshot,
-    bolt_v3_observed_dedupe::prune_observed_dedupe_entries,
-    bolt_v3_sizing_state::{
-        OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
+    bolt_v3_capital_admission_state::{
+        OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
+        VenueSpendabilitySnapshot,
     },
+    bolt_v3_observed_dedupe::prune_observed_dedupe_entries,
     bolt_v3_submit_admission::{
         BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizingFillUpdate,
         BoltV3SubmitPositionSizingLifecycleDecision, BoltV3SubmitPositionSizingNtComponents,
@@ -73,11 +74,11 @@ pub struct CapitalAdmissionRuntimeFeedSubscription {
 #[derive(Debug, Clone)]
 struct CapitalAdmissionRuntimeComponentBuilder {
     latest_account_free_collateral: Option<(Decimal, u64)>,
-    latest_portfolio: Option<PortfolioSizingSnapshot>,
+    latest_portfolio: Option<PortfolioCapitalAdmissionSnapshot>,
     latest_venue_spendability: Option<VenueSpendabilitySnapshot>,
     live_order_attribution: BTreeMap<String, bool>,
     terminal_order_ids_seen: BTreeMap<String, u64>,
-    order_lifecycle: OrderLifecycleSizingSnapshot,
+    order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot,
     product_state: ProductAdmissionSnapshot,
 }
 
@@ -212,7 +213,7 @@ impl CapitalAdmissionRuntimeFeed {
             .iter()
             .find(|money| money.currency.code.as_str() == self.config.collateral_currency)
             .map(|money| money.as_decimal())?;
-        self.component_builder.latest_portfolio = Some(PortfolioSizingSnapshot {
+        self.component_builder.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
             source: "nt_portfolio_snapshot".to_string(),
             observed_at_ns: portfolio_snapshot.ts_event.as_u64(),
             venue_id: self.config.venue_id.clone(),
@@ -550,7 +551,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             latest_venue_spendability: None,
             live_order_attribution: BTreeMap::new(),
             terminal_order_ids_seen: BTreeMap::new(),
-            order_lifecycle: OrderLifecycleSizingSnapshot {
+            order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
                 source: "nt_order_lifecycle_seed".to_string(),
                 observed_at_ns: config.startup_observed_at_ns,
                 open_order_count: 0,
@@ -597,7 +598,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
                 (client_order_id.clone(), attributed)
             })
             .collect();
-        self.order_lifecycle = OrderLifecycleSizingSnapshot {
+        self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
             source: "nt_open_order_cache".to_string(),
             observed_at_ns,
             open_order_count: self.live_order_attribution.len(),
@@ -621,7 +622,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
         observed_at_ns: u64,
     ) {
         self.latest_account_free_collateral = Some((free_collateral, observed_at_ns));
-        self.latest_portfolio = Some(PortfolioSizingSnapshot {
+        self.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
             source: NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE.to_string(),
             observed_at_ns,
             venue_id: config.venue_id.clone(),
@@ -650,7 +651,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
                 current.total_equity = total_equity;
             }
             None => {
-                self.latest_portfolio = Some(PortfolioSizingSnapshot {
+                self.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
                     source: NT_ACCOUNT_STATE_PORTFOLIO_SOURCE.to_string(),
                     observed_at_ns,
                     venue_id: config.venue_id.clone(),
@@ -767,7 +768,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
     }
 
     fn refresh_order_lifecycle_from_event(&mut self, observed_at_ns: u64) {
-        self.order_lifecycle = OrderLifecycleSizingSnapshot {
+        self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
             source: "nt_order_event".to_string(),
             observed_at_ns,
             open_order_count: self.live_order_attribution.len(),

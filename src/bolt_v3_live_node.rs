@@ -114,6 +114,10 @@ use crate::{
         CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
         CapitalAdmissionRuntimeFeedSubscription, subscribe_capital_admission_runtime_feed,
     },
+    bolt_v3_capital_admission_state::{
+        VenueSpendabilityIdentity, VenueSpendabilitySnapshot, VenueSpendabilitySourceFileRequest,
+        venue_spendability_snapshot_from_json_file,
+    },
     bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
@@ -183,10 +187,6 @@ use crate::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
-    },
-    bolt_v3_sizing_state::{
-        VenueSpendabilityIdentity, VenueSpendabilitySnapshot, VenueSpendabilitySourceFileRequest,
-        venue_spendability_snapshot_from_json_file,
     },
     bolt_v3_strategy_registration::{
         BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
@@ -8222,8 +8222,10 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
   "spendable_collateral": "{spendable_collateral}",
   "collateral_allowance": "{collateral_allowance}"
 }}"#,
-            schema_version = crate::bolt_v3_sizing_state::VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION,
-            record_kind = crate::bolt_v3_sizing_state::VENUE_SPENDABILITY_SOURCE_RECORD_KIND,
+            schema_version =
+                crate::bolt_v3_capital_admission_state::VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION,
+            record_kind =
+                crate::bolt_v3_capital_admission_state::VENUE_SPENDABILITY_SOURCE_RECORD_KIND,
             venue_id = pool.venue_id,
             account_id = pool.account_id,
             collateral_currency = pool.collateral_currency,

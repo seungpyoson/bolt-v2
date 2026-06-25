@@ -735,6 +735,10 @@ mod tests {
         BoltV3SubmitRoutingRequest, route_maker_order_command_with_runtime,
     };
     use crate::{
+        bolt_v3_capital_admission_state::{
+            OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
+            VenueSpendabilitySnapshot,
+        },
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
@@ -753,9 +757,6 @@ mod tests {
             SizingPolicy,
         },
         bolt_v3_quote_lifecycle::Leg,
-        bolt_v3_sizing_state::{
-            OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
-        },
         bolt_v3_submit_admission::{
             BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
             BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind,
@@ -1547,7 +1548,7 @@ mod tests {
         BoltV3SubmitPositionSizingNtComponents {
             source: "nt_sizing_state".to_string(),
             observed_at_ns: 0,
-            portfolio: PortfolioSizingSnapshot {
+            portfolio: PortfolioCapitalAdmissionSnapshot {
                 source: "nt_portfolio_snapshot".to_string(),
                 observed_at_ns: 0,
                 venue_id: "VENUE-A".to_string(),
@@ -1565,7 +1566,7 @@ mod tests {
                 spendable_collateral: Decimal::new(100, 0),
                 collateral_allowance: Decimal::new(100, 0),
             },
-            order_lifecycle: OrderLifecycleSizingSnapshot {
+            order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
                 source: "nt_open_order_cache".to_string(),
                 observed_at_ns: 0,
                 open_order_count: 0,

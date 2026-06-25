@@ -77,10 +77,10 @@ pub mod bolt_v3_reference_price_health;
 // "reference_price" token in its production Rust; the CamelCase type names are
 // fence-clean, the module path is not.
 pub use bolt_v3_reference_price::{ReferencePriceUpdate, ReferenceQuoteProvenance};
+pub mod bolt_v3_capital_admission_state;
 pub mod bolt_v3_requote_budget;
 pub mod bolt_v3_secrets;
 pub mod bolt_v3_sizing;
-pub mod bolt_v3_sizing_state;
 pub mod bolt_v3_source_integrity;
 pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_submit_admission;

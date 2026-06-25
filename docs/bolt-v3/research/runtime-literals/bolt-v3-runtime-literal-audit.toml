@@ -14298,7 +14298,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for the composed NT-derived sizing component packet before submit admission adds Bolt reservation state."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "number"
 literal = '''1'''
 context = '''pub const VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION: u32 = 1;'''
@@ -14306,7 +14306,7 @@ classification = "venue_spendability_source_schema_version"
 reason = "Schema version for persisted venue-spendability source evidence; it is an evidence contract version, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "number"
 literal = '''1'''
 context = '''.take(max_bytes.saturating_add(1))'''
@@ -14314,7 +14314,7 @@ classification = "venue_spendability_read_overflow_sentinel"
 reason = "Single-byte sentinel used to detect files larger than the configured maximum read size; the maximum remains caller/config-owned."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "number"
 literal = '''64'''
 context = '''value.len() == 64'''
@@ -14322,7 +14322,7 @@ classification = "sha256_hex_length"
 reason = "Canonical SHA-256 hex digest length used while validating evidence identity, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"bolt_v3.venue_spendability_source.v1"'''
 context = '''pub const VENUE_SPENDABILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.venue_spendability_source.v1";'''
@@ -14330,7 +14330,7 @@ classification = "venue_spendability_source_record_kind"
 reason = "Stable record-kind tag for persisted venue-spendability source evidence; it is a schema discriminator, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"account_id"'''
 context = '''require_identity("account_id", &source.account_id, expected.account_id)?;'''
@@ -14338,7 +14338,7 @@ classification = "venue_spendability_validation_field_name"
 reason = "Field label used when validating a spendability source account identity against expected config; it is schema text, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"account_id"'''
 context = '''require_non_empty("account_id", &source.account_id)?;'''
@@ -14346,7 +14346,7 @@ classification = "venue_spendability_validation_field_name"
 reason = "Field label used when validating a spendability source account field; it is schema text, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"collateral_allowance"'''
 context = '''parse_non_negative_decimal("collateral_allowance", &source.collateral_allowance)?;'''
@@ -14354,7 +14354,7 @@ classification = "venue_spendability_validation_field_name"
 reason = "Field label used when validating a spendability collateral allowance; it is schema text, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"collateral_currency"'''
 context = '''"collateral_currency",'''
@@ -14362,7 +14362,7 @@ classification = "venue_spendability_validation_field_name"
 reason = "Field label used when validating spendability collateral currency identity; it is schema text, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"collateral_currency"'''
 context = '''require_non_empty("collateral_currency", &source.collateral_currency)?;'''
@@ -14370,7 +14370,7 @@ classification = "venue_spendability_validation_field_name"
 reason = "Field label used when validating a spendability collateral-currency field; it is schema text, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"source"'''
 context = '''require_non_empty("source", &source.source)?;'''
@@ -14378,7 +14378,7 @@ classification = "venue_spendability_validation_field_name"
 reason = "Field label used when validating a spendability evidence source; it is schema text, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"spendable_collateral"'''
 context = '''parse_non_negative_decimal("spendable_collateral", &source.spendable_collateral)?;'''
@@ -14386,7 +14386,7 @@ classification = "venue_spendability_validation_field_name"
 reason = "Field label used when validating spendable collateral evidence; it is schema text, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"venue_id"'''
 context = '''require_identity("venue_id", &source.venue_id, expected.venue_id)?;'''
@@ -14394,7 +14394,7 @@ classification = "venue_spendability_validation_field_name"
 reason = "Field label used when validating a spendability source venue identity against expected config; it is schema text, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_sizing_state.rs"
+path = "src/bolt_v3_capital_admission_state.rs"
 kind = "string"
 literal = '''"venue_id"'''
 context = '''require_non_empty("venue_id", &source.venue_id)?;'''

@@ -1,15 +1,15 @@
 use rust_decimal::Decimal;
 
+use crate::bolt_v3_capital_admission_state::{
+    CapitalAdmissionStateError, CapitalAdmissionStateEvidence, CapitalAdmissionStateEvidenceKind,
+    NtDerivedCapitalAdmissionState, validate_nt_derived_capital_admission_state,
+};
 use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationReleaseDecision,
     ReservationReleaseRequest, ReservationRequest, ReservationRevalueDecision,
     ReservationRevalueRequest,
 };
 use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, evaluate_loss_admission};
-use crate::bolt_v3_sizing_state::{
-    NtDerivedSizingState, SizingStateError, SizingStateEvidence, SizingStateEvidenceKind,
-    validate_nt_derived_sizing_state,
-};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapitalAdmissionPolicy {
@@ -106,7 +106,7 @@ pub struct PredictionMarketBinaryLiabilityCalculator;
 
 pub struct CapitalAdmissionInputs<'a> {
     pub request: &'a CapitalAdmissionRequest,
-    pub state: Option<&'a NtDerivedSizingState>,
+    pub state: Option<&'a NtDerivedCapitalAdmissionState>,
     pub policy: &'a CapitalAdmissionPolicy,
     pub loss_policy: Option<&'a LossGovernorPolicy>,
     pub capital_pool: &'a CapitalPoolSnapshot,
@@ -115,7 +115,7 @@ pub struct CapitalAdmissionInputs<'a> {
 
 pub struct CapitalAdmissionGateInputs<'a> {
     pub request: &'a CapitalAdmissionRequest,
-    pub state: Option<&'a NtDerivedSizingState>,
+    pub state: Option<&'a NtDerivedCapitalAdmissionState>,
     pub policy: &'a CapitalAdmissionPolicy,
     pub loss_policy: Option<&'a LossGovernorPolicy>,
     pub capital_pool: &'a CapitalPoolSnapshot,
@@ -380,8 +380,8 @@ pub enum CapitalAdmissionReason {
     Reservation(ReservationRejectionReason),
     Liability(LiabilityError),
     MissingNtState,
-    StaleNtState(SizingStateEvidenceKind),
-    UnattributedNtState(SizingStateEvidenceKind),
+    StaleNtState(CapitalAdmissionStateEvidenceKind),
+    UnattributedNtState(CapitalAdmissionStateEvidenceKind),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -446,7 +446,7 @@ pub fn evaluate_capital_admission(inputs: CapitalAdmissionInputs<'_>) -> Capital
         );
     };
 
-    let state_evidence = match validate_nt_derived_sizing_state(
+    let state_evidence = match validate_nt_derived_capital_admission_state(
         Some(state),
         inputs.request.now_ns,
         max_snapshot_age_ns,
@@ -585,7 +585,7 @@ fn empty_evidence(original_quantity: Decimal) -> CapitalAdmissionEvidence {
 }
 
 fn admission_evidence(
-    state_evidence: &SizingStateEvidence,
+    state_evidence: &CapitalAdmissionStateEvidence,
     liability_observed_at_ns: u64,
     liability_quote: &LiabilityQuote,
 ) -> CapitalAdmissionEvidence {
@@ -616,30 +616,38 @@ fn admission_evidence(
 }
 
 fn capital_admission_evidence_kind(
-    kind: SizingStateEvidenceKind,
+    kind: CapitalAdmissionStateEvidenceKind,
 ) -> Option<CapitalAdmissionEvidenceKind> {
     match kind {
-        SizingStateEvidenceKind::State => None,
-        SizingStateEvidenceKind::Portfolio => Some(CapitalAdmissionEvidenceKind::Portfolio),
-        SizingStateEvidenceKind::VenueSpendability => {
+        CapitalAdmissionStateEvidenceKind::State => None,
+        CapitalAdmissionStateEvidenceKind::Portfolio => {
+            Some(CapitalAdmissionEvidenceKind::Portfolio)
+        }
+        CapitalAdmissionStateEvidenceKind::VenueSpendability => {
             Some(CapitalAdmissionEvidenceKind::VenueSpendability)
         }
-        SizingStateEvidenceKind::OrderLifecycle => {
+        CapitalAdmissionStateEvidenceKind::OrderLifecycle => {
             Some(CapitalAdmissionEvidenceKind::OrderLifecycle)
         }
-        SizingStateEvidenceKind::ProductState => Some(CapitalAdmissionEvidenceKind::ProductState),
-        SizingStateEvidenceKind::ReservationLedger => {
+        CapitalAdmissionStateEvidenceKind::ProductState => {
+            Some(CapitalAdmissionEvidenceKind::ProductState)
+        }
+        CapitalAdmissionStateEvidenceKind::ReservationLedger => {
             Some(CapitalAdmissionEvidenceKind::ReservationLedger)
         }
-        SizingStateEvidenceKind::LossSnapshot => Some(CapitalAdmissionEvidenceKind::LossSnapshot),
+        CapitalAdmissionStateEvidenceKind::LossSnapshot => {
+            Some(CapitalAdmissionEvidenceKind::LossSnapshot)
+        }
     }
 }
 
-fn state_error_reason(error: SizingStateError) -> CapitalAdmissionReason {
+fn state_error_reason(error: CapitalAdmissionStateError) -> CapitalAdmissionReason {
     match error {
-        SizingStateError::MissingNtState => CapitalAdmissionReason::MissingNtState,
-        SizingStateError::StaleNtState(kind) => CapitalAdmissionReason::StaleNtState(kind),
-        SizingStateError::UnattributedState(kind) => {
+        CapitalAdmissionStateError::MissingNtState => CapitalAdmissionReason::MissingNtState,
+        CapitalAdmissionStateError::StaleNtState(kind) => {
+            CapitalAdmissionReason::StaleNtState(kind)
+        }
+        CapitalAdmissionStateError::UnattributedState(kind) => {
             CapitalAdmissionReason::UnattributedNtState(kind)
         }
     }
@@ -747,16 +755,17 @@ fn validate_fee_slippage_policy(policy: &FeeSlippagePolicy) -> Result<(), Liabil
 mod tests {
     use rust_decimal::Decimal;
 
+    use crate::bolt_v3_capital_admission_state::{
+        CapitalAdmissionStateEvidenceKind, NtDerivedCapitalAdmissionState,
+        OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
+        ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
+    };
     use crate::bolt_v3_capital_reservation::{
         CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason,
         ReservationReleaseRequest, ReservationRequest, ReservationRevalueRequest,
     };
     use crate::bolt_v3_loss_governor::{
         LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSourceObservationTimestamps,
-    };
-    use crate::bolt_v3_sizing_state::{
-        NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
-        ReservationLedgerSnapshot, SizingStateEvidenceKind, VenueSpendabilitySnapshot,
     };
 
     use super::{
@@ -810,11 +819,11 @@ mod tests {
         })
     }
 
-    fn nt_state(loss_snapshot: Option<LossSnapshot>) -> NtDerivedSizingState {
-        NtDerivedSizingState {
+    fn nt_state(loss_snapshot: Option<LossSnapshot>) -> NtDerivedCapitalAdmissionState {
+        NtDerivedCapitalAdmissionState {
             source: "nt_sizing_state".to_string(),
             observed_at_ns: 1_000,
-            portfolio: PortfolioSizingSnapshot {
+            portfolio: PortfolioCapitalAdmissionSnapshot {
                 source: "nt_portfolio_snapshot".to_string(),
                 observed_at_ns: 1_000,
                 venue_id: "venue-a".to_string(),
@@ -832,7 +841,7 @@ mod tests {
                 spendable_collateral: Decimal::new(100, 0),
                 collateral_allowance: Decimal::new(100, 0),
             },
-            order_lifecycle: OrderLifecycleSizingSnapshot {
+            order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
                 source: "nt_open_order_cache".to_string(),
                 observed_at_ns: 1_000,
                 open_order_count: 0,
@@ -1182,7 +1191,7 @@ mod tests {
         assert_eq!(
             decision.reasons,
             vec![CapitalAdmissionReason::StaleNtState(
-                SizingStateEvidenceKind::Portfolio
+                CapitalAdmissionStateEvidenceKind::Portfolio
             )]
         );
         assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::ZERO);

@@ -25,7 +25,7 @@ KEY_STRING_REPLACEMENTS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
         b"capital_admission_rebuild",
     ),
     (
-        re.compile(rb'("gate_id"\s*:\s*)"bolt_v3.position_sizer_rebuild"'),
+        re.compile(rb'("gate_id"\s*:\s*)"bolt_v3\.position_sizer_rebuild"'),
         b"bolt_v3.capital_admission_rebuild",
     ),
     (

@@ -221,41 +221,41 @@ def unified_diff_for(planned: Sequence[PlannedFileMigration]) -> str:
     return "".join(chunks)
 
 
-def migrate_path(path: Path, *, dry_run: bool = False) -> dict[str, object]:
+def migrate_path(
+    path: Path, *, dry_run: bool = False, emit_diff: bool = False
+) -> dict[str, object]:
     planned = plan_migrations(path)
-    if not dry_run:
+    if dry_run:
+        if emit_diff:
+            diff = unified_diff_for(planned)
+            if diff:
+                print(diff, end="")
+    else:
         for item in planned:
             atomic_write_bytes(item.path, item.after)
     return manifest_for(planned)
 
 
-def migrate_cli(argv: Sequence[str] | None = None) -> dict[str, object]:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Migrate Bolt-v3 root TOML configs to capital_admission_policy/root schema v2.",
     )
     parser.add_argument("path", type=Path, help="Bolt-v3 root TOML file or directory")
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args(argv)
-    return migrate_path(args.path, dry_run=args.dry_run)
+    return parser.parse_args(argv)
+
+
+def migrate_cli(
+    argv: Sequence[str] | None = None, *, emit_diff: bool = False
+) -> dict[str, object]:
+    args = parse_args(argv)
+    return migrate_path(args.path, dry_run=args.dry_run, emit_diff=emit_diff)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Migrate Bolt-v3 root TOML configs to capital_admission_policy/root schema v2.",
-    )
-    parser.add_argument("path", type=Path, help="Bolt-v3 root TOML file or directory")
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args(argv)
     try:
-        planned = plan_migrations(args.path)
-        if args.dry_run:
-            diff = unified_diff_for(planned)
-            if diff:
-                print(diff, end="")
-        else:
-            for item in planned:
-                atomic_write_bytes(item.path, item.after)
-        print(json.dumps(manifest_for(planned), sort_keys=True))
+        manifest = migrate_cli(argv, emit_diff=True)
+        print(json.dumps(manifest, sort_keys=True))
     except MigrationError as error:
         print(error, file=sys.stderr)
         return 1

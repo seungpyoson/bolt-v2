@@ -43,6 +43,7 @@ SCAN_GLOBS = [
 ]
 MISNOMER_SCAN_GLOBS = [
     "src/**/*.rs",
+    "crates/**/*.rs",
     "tests/**/*.rs",
     "tests/fixtures/**/*",
     "config/**/*",

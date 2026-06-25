@@ -9605,6 +9605,18 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "id: bvs-bin-sidecars-cache",
         ),
         (
+            "backtester bvs-test archive must upload the run-scoped test payload artifact",
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        ),
+        (
+            "backtester bvs-test archive must publish the bvs-test-payload artifact",
+            "name: bvs-test-payload",
+        ),
+        (
+            "backtester bvs-test archive must upload hidden .nextest-archive contents",
+            "include-hidden-files: true",
+        ),
+        (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
             "key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
         ),
@@ -9673,20 +9685,20 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ("backtester bvs-test shards must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
         ("backtester bvs-test shards must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
         (
-            "backtester bvs-test shards must restore nextest archive cache",
-            "id: bvs-nextest-archive-cache",
+            "backtester bvs-test shards must download the run-scoped test payload artifact",
+            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
         ),
         (
-            "backtester bvs-test shards must fail closed if archive cache is absent",
-            "Require BVS nextest archive cache",
+            "backtester bvs-test shards must download the bvs-test-payload artifact by name",
+            "name: bvs-test-payload",
         ),
         (
-            "backtester bvs-test shards must restore binary sidecar cache",
-            "id: bvs-bin-sidecars-cache",
+            "backtester bvs-test shards must fail closed if the downloaded archive is missing or empty",
+            'test -s "$BVS_NEXTEST_ARCHIVE_PATH"',
         ),
         (
-            "backtester bvs-test shards must fail closed if sidecar cache is absent",
-            "Require BVS binary sidecars cache",
+            "backtester bvs-test shards must fail closed if the downloaded sidecars are missing or empty",
+            'test -s "$BVS_BIN_SIDECARS_PATH"',
         ),
         (
             "backtester bvs-test shards must extract binary sidecars",
@@ -9726,20 +9738,20 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "BOLT_ISSUE_789_RESULT_PATH:",
         ),
         (
-            "backtester bvs-test issue-789 must restore nextest archive cache",
-            "id: bvs-nextest-archive-cache",
+            "backtester bvs-test issue-789 must download the run-scoped test payload artifact",
+            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
         ),
         (
-            "backtester bvs-test issue-789 must fail closed if archive cache is absent",
-            "Require BVS nextest archive cache",
+            "backtester bvs-test issue-789 must download the bvs-test-payload artifact by name",
+            "name: bvs-test-payload",
         ),
         (
-            "backtester bvs-test issue-789 must restore binary sidecar cache",
-            "id: bvs-bin-sidecars-cache",
+            "backtester bvs-test issue-789 must fail closed if the downloaded archive is missing or empty",
+            'test -s "$BVS_NEXTEST_ARCHIVE_PATH"',
         ),
         (
-            "backtester bvs-test issue-789 must fail closed if sidecar cache is absent",
-            "Require BVS binary sidecars cache",
+            "backtester bvs-test issue-789 must fail closed if the downloaded sidecars are missing or empty",
+            'test -s "$BVS_BIN_SIDECARS_PATH"',
         ),
         (
             "backtester bvs-test issue-789 must extract binary sidecars",
@@ -9772,6 +9784,48 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         for message, fragment in issue_fragments:
             if fragment not in issue_text:
                 errors.append(message)
+    return errors
+
+
+CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE = (
+    "workflow must not use cache as a fail-closed same-run transport (fail-on-cache-miss: true); "
+    "use upload/download-artifact for same-run cross-job handoff"
+)
+CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE = (
+    "workflow must not fail a job on a cache miss (cache-hit guard + exit 1); cache is "
+    "best-effort and may be evicted before the consumer runs — use upload/download-artifact "
+    "for same-run cross-job handoff"
+)
+CACHE_MISS_IF_RE = re.compile(r"\bcache-hit\b\s*(?:!=\s*'true'|==\s*'false')")
+# A cache-miss-guarded build step may contain nested validation failures. The
+# banned same-run transport shape is a top-level fail-closed `exit 1` step.
+EXIT_ONE_RE = re.compile(r"(?m)^exit\s+1\b")
+
+
+def is_workflow_yaml(file_name: str) -> bool:
+    normalized = file_name.replace("\\", "/")
+    return normalized.startswith(".github/workflows/") and normalized.endswith((".yml", ".yaml"))
+
+
+def step_has_cache_miss_guard(block: list[str]) -> bool:
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if re.match(r"^\s+(?:-\s*)?if:\s*", clean) and CACHE_MISS_IF_RE.search(clean):
+            return True
+    return False
+
+
+def cache_same_run_transport_errors(file_name: str, text: str) -> list[str]:
+    if not is_workflow_yaml(file_name):
+        return []
+    errors: list[str] = []
+    if "fail-on-cache-miss: true" in uncommented_text(text.splitlines()):
+        errors.append(CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE)
+    for job_lines in parse_jobs(text).values():
+        for block in step_blocks(job_lines):
+            if step_has_cache_miss_guard(block) and EXIT_ONE_RE.search(block_run_body(block)):
+                errors.append(CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE)
+                return errors
     return errors
 
 
@@ -10048,6 +10102,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_draft_deferral_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in cache_same_run_transport_errors(file_name, text)),
         )
         if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
             add_unique_errors(

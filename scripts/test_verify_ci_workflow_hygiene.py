@@ -6965,6 +6965,7 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         assert_v6_red_backtester_cache_keys_include_crate_sources,
         assert_v6_red_backtester_gate_fails_when_detect_fails,
         assert_v6_red_backtester_test_uses_nextest_archive,
+        assert_cache_as_same_run_transport_is_banned,
         assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths,
     ]
     failures: list[str] = []
@@ -7095,6 +7096,12 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Save archive build target cache
         if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Upload BVS test payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+          include-hidden-files: true
   test:
     name: bvs-test ${{ matrix.shard }} of 4
     needs: [ci-policy, detect, fmt, test-archive]
@@ -7108,12 +7115,15 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
     steps:
-      - name: Restore BVS nextest archive
-        id: bvs-nextest-archive-cache
-      - name: Require BVS nextest archive cache
-      - name: Restore BVS binary sidecars
-        id: bvs-bin-sidecars-cache
-      - name: Require BVS binary sidecars cache
+      - name: Download BVS test payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+      - name: Require BVS test payload
+        run: |
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH"
+          test -s "$BVS_BIN_SIDECARS_PATH"
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: test
@@ -7129,12 +7139,15 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BOLT_ISSUE_789_RESULT_PATH: result.json
     steps:
-      - name: Restore BVS nextest archive
-        id: bvs-nextest-archive-cache
-      - name: Require BVS nextest archive cache
-      - name: Restore BVS binary sidecars
-        id: bvs-bin-sidecars-cache
-      - name: Require BVS binary sidecars cache
+      - name: Download BVS test payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+      - name: Require BVS test payload
+        run: |
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH"
+          test -s "$BVS_BIN_SIDECARS_PATH"
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: test issue-789
@@ -7149,6 +7162,56 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 """
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
+
+
+def assert_cache_as_same_run_transport_is_banned() -> None:
+    verifier = load_verifier()
+    bad_hand_rolled = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "payload cache unavailable"
+          exit 1
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": bad_hand_rolled})
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
+
+    bad_builtin = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: true
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": bad_builtin})
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+
+    good = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Build payload on miss
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: just build-payload
+      - name: Validate unrelated invariant
+        run: |
+          echo "unrelated failure path"
+          exit 1
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": good})
+    assert not [
+        error for error in errors if "cache" in error and "same-run" in error
+    ], errors
 
 
 def assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths() -> None:

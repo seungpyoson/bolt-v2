@@ -2473,6 +2473,99 @@ def assert_gate_carry_forward_newest_failure_blocks_across_pages() -> None:
         )
 
 
+def assert_gate_carry_forward_blocks_failure_hidden_behind_all_old_page() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 2"),
+        )
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        fresh_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:00:00Z",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        fresh_filler = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/other.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:01:00Z",
+            updated_at="2026-06-13T00:11:00Z",
+        )
+        old_success_a = run_payload(
+            id=RUN_ID + 2,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-05-01T00:00:00Z",
+            updated_at="2026-05-01T00:00:00Z",
+        )
+        old_success_b = run_payload(
+            id=RUN_ID + 3,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-05-01T00:01:00Z",
+            updated_at="2026-05-01T00:01:00Z",
+        )
+        old_failure_rerun_after_old_page = run_payload(
+            id=RUN_ID + 4,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            created_at="2026-05-01T00:02:00Z",
+            updated_at="2026-06-29T00:00:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[
+                [fresh_success, fresh_filler],
+                [old_success_a, old_success_b],
+                [old_failure_rerun_after_old_page],
+            ],
+            jobs_by_run_id={RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]}},
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 5,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-30T00:00:00Z"),
+            ),
+        )
+
+
 def base_ci_gate_jobs(**overrides: str) -> dict[str, str]:
     jobs = {
         "ci-policy": "success",
@@ -2892,6 +2985,7 @@ def main() -> int:
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress()
     assert_gate_carry_forward_uses_newest_success_with_provenance()
     assert_gate_carry_forward_newest_failure_blocks_across_pages()
+    assert_gate_carry_forward_blocks_failure_hidden_behind_all_old_page()
     assert_gate_carry_forward_blocks_old_failure_rerun_after_cutoff()
     assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()
     assert_ci_gate_verdict_hardens_full_and_reuse_proof()

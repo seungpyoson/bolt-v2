@@ -7837,6 +7837,39 @@ def main() -> int:
         "gate must verify carry-forward through trusted base-tree ci_provenance.py",
         replace_once(BASE_WORKFLOW, 'python3 "$verdict_script" resolve-gate-carry-forward', 'python3 "$verdict_script" skip-carry-forward'),
     )
+    for marker, replacement in (
+        (
+            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+            "if: github.event_name == 'pull_request'",
+        ),
+        (
+            "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
+            "MERGE_GROUP_BASE_REF: ''",
+        ),
+        (
+            'git check-ref-format "refs/heads/$base_branch"',
+            "echo skip-base-ref-format-check",
+        ),
+        (
+            'git archive "$base_ref" scripts/ ci/github-actions-runners.toml',
+            'git archive "$base_ref" scripts/',
+        ),
+        (
+            "steps.verdict_base.outputs.script",
+            "steps.verdict_base.outputs.local_script",
+        ),
+        (
+            'python3 "$verdict_script" check-ci-gate',
+            'python3 "$verdict_script" unchecked-ci-gate',
+        ),
+    ):
+        mutated_workflow = replace_once_after(BASE_WORKFLOW, "  gate:\n", marker, replacement)
+        if marker == "steps.verdict_base.outputs.script":
+            mutated_workflow = replace_once_after(mutated_workflow, "  gate:\n", marker, replacement)
+        assert_error(
+            f"gate must use trusted base-tree ci_provenance.py check-ci-gate verdict ({marker})",
+            mutated_workflow,
+        )
     assert_error(
         "concurrency group must split deferred PR runs from full CI runs",
         replace_once(BASE_WORKFLOW, "format('pr-{0}-deferred', github.event.number)", "github.ref_name"),

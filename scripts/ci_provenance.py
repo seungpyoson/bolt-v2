@@ -1826,8 +1826,6 @@ def resolve_gate_carry_forward(
             raise ProvenanceError("workflow runs payload is malformed")
         if not runs:
             break
-        page_has_fresh_run = False
-        page_has_old_run = False
         for run in runs:
             if not isinstance(run, dict):
                 raise ProvenanceError("workflow runs payload is malformed")
@@ -1841,7 +1839,6 @@ def resolve_gate_carry_forward(
                 workflow_path=workflow_path,
             )
             if parse_timestamp(created_at) < cutoff:
-                page_has_old_run = True
                 # The age cutoff bounds which prior *success* may be carried
                 # forward: a carried success must still have its provenance
                 # artifact within retention. A completed non-success run, by
@@ -1857,11 +1854,12 @@ def resolve_gate_carry_forward(
                 ):
                     candidates.append(run)
                 continue
-            page_has_fresh_run = True
             if matches:
                 candidates.append(run)
-        if page_has_old_run and not page_has_fresh_run:
-            break
+        # Old failures legitimately live on all-old created_at pages after a
+        # later success page. Keep scanning through the bounded lookback so a
+        # re-run failure can dominate by updated_at; the residual depth bound is
+        # max_lookback_pages, the same bound that limits the success search.
         if len(runs) < config.workflow_runs_per_page:
             break
 

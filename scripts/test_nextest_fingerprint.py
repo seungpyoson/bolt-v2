@@ -410,6 +410,21 @@ def assert_commented_compile_time_include_targets_are_ignored() -> None:
         fingerprint(repo)
 
 
+def assert_string_literal_include_text_is_ignored() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const DOC_EXAMPLE: &str = r#"\n'
+            'let _ = include_str!("../docs/extra/index.md");\n'
+            '"#;\n'
+            'pub const ESCAPED_EXAMPLE: &str = "include_bytes!(\\"../docs/extra/index.md\\")";\n'
+            'pub const ROOT: &str = include_str!("../tests/root.rs");\n',
+        )
+        commit_all(repo, "string literal include examples")
+        fingerprint(repo)
+
+
 def assert_compile_time_include_targets_must_be_tracked_files() -> None:
     with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
@@ -646,6 +661,7 @@ def main() -> int:
     assert_tracked_inputs_must_match_head_tree()
     assert_compile_time_include_targets_must_be_tracked()
     assert_commented_compile_time_include_targets_are_ignored()
+    assert_string_literal_include_text_is_ignored()
     assert_compile_time_include_targets_must_be_tracked_files()
     assert_safe_list_excludes_only_exact_backtester_prefix()
     assert_forbidden_safe_list_entries_fail_closed()

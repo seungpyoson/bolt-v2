@@ -338,6 +338,8 @@ changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
   ci/github-actions-runners.toml \\
   scripts/nextest_fingerprint.py \\
   scripts/test_nextest_fingerprint.py \\
+  scripts/root_bin_sidecars.py \\
+  scripts/test_root_bin_sidecars.py \\
   scripts/ci_provenance.py \\
   scripts/test_ci_provenance.py \\
   scripts/verify_ci_workflow_hygiene.py \\
@@ -374,6 +376,8 @@ FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     "ci/github-actions-runners.toml",
     "scripts/nextest_fingerprint.py",
     "scripts/test_nextest_fingerprint.py",
+    "scripts/root_bin_sidecars.py",
+    "scripts/test_root_bin_sidecars.py",
     "scripts/ci_provenance.py",
     "scripts/test_ci_provenance.py",
     "scripts/verify_ci_workflow_hygiene.py",
@@ -5091,6 +5095,9 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
     "source-fence-static",
     "ci-lint-workflow",
 )
+CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
+    "python3 scripts/test_root_bin_sidecars.py",
+)
 
 
 def local_verification_inner_errors(
@@ -5148,6 +5155,11 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
         ("ci-lint-workflow", "ci-lint-workflow-inner"),
     ):
         gated_inner_recipe_name(recipes, public_name, inner_name, errors)
+    if "ci-lint-workflow-inner" in recipes:
+        ci_lint_inner_lines = active_recipe_lines(recipes, "ci-lint-workflow-inner")
+        for required_command in CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS:
+            if not any(required_command in line for line in ci_lint_inner_lines):
+                errors.append(f"justfile ci-lint-workflow-inner must run {required_command}")
     return errors
 
 

@@ -433,6 +433,23 @@ impl FencedRiskStateStore {
         Ok(inner.reservation_records.clone())
     }
 
+    fn reservation_record_for_client_order(
+        &self,
+        lease: &PoolOwnershipLease,
+        client_order_id: ClientOrderId,
+    ) -> Result<Option<SubstrateReservationRecord>, RiskStateMutationError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
+        validate_lease(&inner, lease, &self.lease_authority)?;
+        Ok(
+            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)
+                .ok()
+                .map(|record_index| inner.reservation_records[record_index].clone()),
+        )
+    }
+
     pub fn reserved_bucket_stress_loss(
         &self,
         pool_id: &PoolId,
@@ -1256,6 +1273,14 @@ impl RiskStateOwner {
         &self,
     ) -> Result<Vec<SubstrateReservationRecord>, RiskStateMutationError> {
         self.store.reservation_records()
+    }
+
+    pub fn reservation_record_for_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+    ) -> Result<Option<SubstrateReservationRecord>, RiskStateMutationError> {
+        self.store
+            .reservation_record_for_client_order(&self.lease, client_order_id)
     }
 
     pub fn reserved_bucket_stress_loss(

@@ -52,77 +52,108 @@ use rust_decimal::Decimal;
 
 #[test]
 fn s5_reduce_only_safety_action_is_admitted_while_kill_switch_and_governor_freeze_new_risk() {
-    let (service, _owner, _store) = reconciled_risk_context("pool-s5-reduce", "owner-s5-reduce");
-    let safety_bucket = bucket("risk_class", "safety");
-    let view = published_view_with_positions(
-        RiskStateVersion::zero(),
+    let (service, owner, reconciler, client_order_id) = submitted_reservation_context(
         "pool-s5-reduce",
-        "affected-instrument",
-        safety_bucket.clone(),
-        dec(100),
-        dec(100),
-        vec![exposure(
-            "affected-instrument",
-            [safety_bucket.clone()],
-            12,
-            14,
-            2,
-        )],
+        "owner-s5-reduce",
+        "intent-s5-reduce",
+        "idempotency-s5-reduce",
+        "S5-REDUCE-ORDER",
     );
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s5-reduce-open"))
+        .expect("open truth should make the order fillable before the partial fill");
+    reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s5-reduce-fill",
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("partial fill should create authoritative filled-position exposure");
+    let filled_position_id = service
+        .reservation_records()
+        .expect("reservation ledger should remain readable")
+        .into_iter()
+        .find(|record| record.filled_position_exposure.is_some())
+        .expect("authoritative fill should leave a filled-position ledger target")
+        .admission_token
+        .reservation_id;
+    let source_version = owner
+        .policy_epoch_snapshot()
+        .expect("source version should be readable")
+        .risk_state_version;
     let frozen = BoundReusableSafetyState {
-        risk_state_version: RiskStateVersion::zero(),
+        risk_state_version: source_version,
         kill_switch_latched: true,
         loss_governor_halted: true,
     };
-    let request = reduce_only_safety_action_request(
-        "safety-action-reduce",
-        "position-reducible",
-        RiskStateVersion::zero(),
-        frozen,
-        vec![exposure(
-            "affected-instrument",
-            [bucket("risk_class", "safety")],
-            6,
-            7,
-            2,
-        )],
-        4,
-    );
+    let request =
+        reduce_only_safety_action_request("safety-action-reduce", &filled_position_id, frozen, 4);
 
     let admission = service
-        .admit_safety_action(&view, request)
-        .expect("recomputed reduce-only proof should bypass the new-risk freeze");
+        .admit_safety_action(request)
+        .expect("derived reduce-only proof should bypass the new-risk freeze");
 
     assert_eq!(admission.action_id, "safety-action-reduce");
-    assert_eq!(admission.risk_state_version.get(), 1);
-    assert_eq!(admission.before.equity_floor_stress_loss, dec(10));
-    assert_eq!(admission.after.equity_floor_stress_loss, dec(4));
-    assert_eq!(admission.before.governor_realized_loss, dec(12));
-    assert_eq!(admission.after.governor_realized_loss, dec(5));
-    assert_eq!(admission.proof_domain.before_exposure_count, 1);
-    assert_eq!(admission.proof_domain.after_exposure_count, 1);
+    assert_eq!(admission.source_risk_state_version, source_version);
+    assert_eq!(
+        admission.before.equity_floor_stress_loss - admission.after.equity_floor_stress_loss,
+        dec(23),
+        "derived after must remove the exact filled-position exposure from the ledger"
+    );
+    assert_eq!(
+        admission.before.governor_realized_loss - admission.after.governor_realized_loss,
+        dec(25),
+        "derived after must remove the exact filled-position governor exposure from the ledger"
+    );
+    assert_eq!(admission.after.equity_floor_stress_loss, dec(20));
+    assert_eq!(admission.after.governor_realized_loss, dec(20));
 }
 
 #[test]
 fn s5_reduce_only_safety_action_is_admitted_before_new_risk_reconciliation() {
-    let (service, _owner, _store) =
+    let (service, owner, store) =
         unreconciled_risk_context("pool-s5-unreconciled", "owner-s5-unreconciled");
-    let safety_bucket = bucket("risk_class", "safety");
-    let view = published_view_with_positions(
+    let bucket = bucket("risk_class", "safety");
+    let view = published_view(
         RiskStateVersion::zero(),
         "pool-s5-unreconciled",
         "unreconciled-instrument",
-        safety_bucket.clone(),
+        bucket,
         dec(100),
         dec(100),
-        vec![exposure(
-            "affected-instrument",
-            [safety_bucket.clone()],
-            12,
-            14,
-            2,
-        )],
     );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s5-unreconciled-source",
+                "idempotency-s5-unreconciled-source",
+                "pool-s5-unreconciled",
+                "unreconciled-instrument",
+                RiskStateVersion::zero(),
+                dec(20),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect("initial reservation is allowed after explicit setup reconciliation");
+    let authority = SubmissionAuthority::new(owner.clone());
+    let client_order_id = client_order_id("S5-UNRECONCILED-ORDER");
+    authority
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("submission should create open-order ledger target");
+    let successor = RiskStateOwner::acquire(
+        store,
+        PoolId::new("pool-s5-unreconciled").expect("pool id should be valid"),
+        "owner-s5-unreconciled-successor",
+    )
+    .expect("successor owner should acquire unreconciled pool");
+    let service = AdmissionService::new(successor.clone());
     let frozen_new_risk = service
         .compare_and_reserve(
             &view,
@@ -143,197 +174,174 @@ fn s5_reduce_only_safety_action_is_admitted_before_new_risk_reconciliation() {
         frozen_new_risk,
         AdmissionReserveError::StateMutation(RiskStateMutationError::ReconciliationRequired)
     ));
+    let source_version = successor
+        .policy_epoch_snapshot()
+        .expect("source version should be readable")
+        .risk_state_version;
 
-    let request = reduce_only_safety_action_request(
+    let request = cancel_order_safety_action_request(
         "safety-action-unreconciled",
-        "position-unreconciled",
-        RiskStateVersion::zero(),
-        unlatched_safety(RiskStateVersion::zero()),
-        vec![exposure(
-            "affected-instrument",
-            [bucket("risk_class", "safety")],
-            6,
-            7,
-            2,
-        )],
+        "S5-UNRECONCILED-ORDER",
+        unlatched_safety(source_version),
         4,
     );
 
     let admission = service
-        .admit_safety_action(&view, request)
-        .expect("recomputed reduce-only proof should bypass not-yet-reconciled new-risk freeze");
+        .admit_safety_action(request)
+        .expect("derived cancel proof should bypass not-yet-reconciled new-risk freeze");
 
-    assert_eq!(admission.risk_state_version.get(), 1);
+    assert_eq!(admission.source_risk_state_version, source_version);
+    assert_eq!(admission.before.equity_floor_stress_loss, dec(20));
+    assert_eq!(admission.after.equity_floor_stress_loss, Decimal::ZERO);
 }
 
 #[test]
-fn s5_fabricated_new_after_exposure_is_rejected_even_when_standalone_metrics_are_low() {
-    let (service, _owner, _store) =
-        reconciled_risk_context("pool-s5-fabricated", "owner-s5-fabricated");
-    let safety_bucket = bucket("risk_class", "safety");
-    let view = published_view_with_positions(
+fn f1_cancel_existing_order_derives_after_from_ledger_open_order() {
+    let (service, owner, _store) = reconciled_risk_context("pool-f1-cancel", "owner-f1-cancel");
+    let bucket = bucket("risk_class", "cancel");
+    let view = published_view(
         RiskStateVersion::zero(),
-        "pool-s5-fabricated",
-        "affected-instrument",
-        safety_bucket.clone(),
+        "pool-f1-cancel",
+        "candidate-instrument",
+        bucket,
         dec(100),
         dec(100),
-        vec![exposure(
-            "affected-instrument",
-            [safety_bucket.clone()],
-            12,
-            14,
-            2,
-        )],
     );
-    let frozen = BoundReusableSafetyState {
-        risk_state_version: RiskStateVersion::zero(),
-        kill_switch_latched: true,
-        loss_governor_halted: true,
-    };
-    let request = reduce_only_safety_action_request(
-        "safety-action-fabricated",
-        "position-fabricated",
-        RiskStateVersion::zero(),
-        frozen,
-        vec![exposure(
-            "fabricated-instrument",
-            [bucket("risk_class", "safety")],
-            1,
-            1,
-            1,
-        )],
-        4,
-    );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-f1-cancel",
+                "idempotency-f1-cancel",
+                "pool-f1-cancel",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(20),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect("reservation should create open-order ledger exposure");
+    let client_order_id = client_order_id("F1-CANCEL-ORDER");
+    SubmissionAuthority::new(owner.clone())
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("submission should bind client order id to reservation");
+    let source_version = owner
+        .policy_epoch_snapshot()
+        .expect("source version should be readable")
+        .risk_state_version;
 
-    let error = service
-        .admit_safety_action(&view, request)
-        .expect_err("a caller-fabricated after exposure must fail closed even with low metrics");
+    let admission = service
+        .admit_safety_action(cancel_order_safety_action_request(
+            "safety-action-f1-cancel",
+            "F1-CANCEL-ORDER",
+            unlatched_safety(source_version),
+            4,
+        ))
+        .expect("cancel action should derive after by removing the named open order");
 
     assert_eq!(
-        error,
-        SafetyActionAdmissionError::AfterExposureNotReduction {
-            new_exposure_count: 1,
-            increased_exposure_count: 0,
-            increased_metrics: BTreeSet::new(),
-            before_equity_floor_stress_loss: dec(10),
-            after_equity_floor_stress_loss: dec(0),
-            before_governor_realized_loss: dec(12),
-            after_governor_realized_loss: dec(0),
-        }
+        admission.before.equity_floor_stress_loss - admission.after.equity_floor_stress_loss,
+        dec(20)
     );
-    assert!(
-        service
-            .reservation_records()
-            .expect("reservation records should remain readable")
-            .is_empty(),
-        "rejected SafetyActions must not mint a risk reservation"
+    assert_eq!(
+        admission.before.governor_realized_loss - admission.after.governor_realized_loss,
+        dec(20)
+    );
+    assert_eq!(admission.after.equity_floor_stress_loss, Decimal::ZERO);
+    assert_eq!(admission.after.governor_realized_loss, Decimal::ZERO);
+}
+
+#[test]
+fn f1_unknown_named_safety_action_target_fails_closed_without_commit() {
+    let (service, owner, _store) = reconciled_risk_context("pool-f1-unknown", "owner-f1-unknown");
+    let source_version = owner
+        .policy_epoch_snapshot()
+        .expect("source version should be readable")
+        .risk_state_version;
+
+    let error = service
+        .admit_safety_action(reduce_only_safety_action_request(
+            "safety-action-f1-unknown",
+            "missing-position",
+            unlatched_safety(source_version),
+            4,
+        ))
+        .expect_err("unknown named SafetyAction target must fail closed");
+
+    assert_eq!(error, SafetyActionAdmissionError::UnknownSafetyActionTarget);
+    assert_eq!(
+        owner
+            .policy_epoch_snapshot()
+            .expect("version should remain readable after rejection")
+            .risk_state_version,
+        source_version,
+        "unknown target must not commit a SafetyAction mutation"
     );
 }
 
 #[test]
-fn s5_asymmetric_safety_action_increase_reports_exact_increased_metric() {
-    let (service, _owner, _store) =
-        reconciled_risk_context("pool-s5-disguised", "owner-s5-disguised");
-    let safety_bucket = bucket("risk_class", "safety");
-    let view = published_view_with_positions(
-        RiskStateVersion::zero(),
-        "pool-s5-disguised",
-        "affected-instrument",
-        safety_bucket.clone(),
-        dec(100),
-        dec(100),
-        vec![exposure(
-            "affected-instrument",
-            [safety_bucket.clone()],
-            10,
-            20,
-            5,
-        )],
-    );
-    let frozen = BoundReusableSafetyState {
-        risk_state_version: RiskStateVersion::zero(),
-        kill_switch_latched: true,
-        loss_governor_halted: true,
-    };
-    let request = reduce_only_safety_action_request(
-        "safety-action-disguised",
-        "position-disguised",
-        RiskStateVersion::zero(),
-        frozen,
-        vec![exposure(
-            "affected-instrument",
-            [bucket("risk_class", "safety")],
-            9,
-            21,
-            5,
-        )],
-        4,
-    );
+fn f1_safety_action_request_has_no_caller_after_field() {
+    let source = include_str!("../src/bolt_v3_risk_reservation_substrate/admission_service.rs");
+    let request = source
+        .split("pub struct SafetyActionAdmissionRequest")
+        .nth(1)
+        .and_then(|tail| tail.split("pub struct SafetyActionProofDomain").next())
+        .expect("SafetyActionAdmissionRequest source block should be present");
 
-    let error = service
-        .admit_safety_action(&view, request)
-        .expect_err("a one-metric increase must still fail closed");
-
-    assert_eq!(
-        error,
-        SafetyActionAdmissionError::AfterExposureNotReduction {
-            new_exposure_count: 0,
-            increased_exposure_count: 1,
-            increased_metrics: BTreeSet::from([SafetyActionMetric::GovernorRealizedLoss]),
-            before_equity_floor_stress_loss: dec(5),
-            after_equity_floor_stress_loss: dec(4),
-            before_governor_realized_loss: dec(15),
-            after_governor_realized_loss: dec(16),
-        }
-    );
     assert!(
-        service
-            .reservation_records()
-            .expect("reservation records should remain readable")
-            .is_empty(),
-        "rejected SafetyActions must not mint a risk reservation"
+        !request.contains("after:"),
+        "caller-supplied after exposure must be structurally absent from SafetyActionAdmissionRequest"
     );
 }
 
 #[test]
 fn s5_safety_action_reduction_proof_fails_closed_when_exposure_domain_exceeds_bound() {
-    let (service, _owner, _store) = reconciled_risk_context("pool-s5-bound", "owner-s5-bound");
-    let safety_bucket = bucket("risk_class", "safety");
-    let view = published_view_with_positions(
+    let (service, owner, _store) = reconciled_risk_context("pool-s5-bound", "owner-s5-bound");
+    let bucket = bucket("risk_class", "safety");
+    let view = published_view(
         RiskStateVersion::zero(),
         "pool-s5-bound",
         "affected-a",
-        safety_bucket.clone(),
+        bucket,
         dec(100),
         dec(100),
-        vec![
-            exposure("affected-a", [safety_bucket.clone()], 8, 9, 2),
-            exposure("affected-b", [safety_bucket], 7, 8, 2),
-        ],
     );
-    let request = reduce_only_safety_action_request(
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s5-bound",
+                "idempotency-s5-bound",
+                "pool-s5-bound",
+                "affected-a",
+                RiskStateVersion::zero(),
+                dec(20),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect("reservation should create bounded-domain source exposure");
+    let client_order_id = client_order_id("S5-BOUND-ORDER");
+    SubmissionAuthority::new(owner.clone())
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("submission should bind client order id to reservation");
+    let source_version = owner
+        .policy_epoch_snapshot()
+        .expect("source version should be readable")
+        .risk_state_version;
+    let request = cancel_order_safety_action_request(
         "safety-action-bound",
-        "position-bound",
-        RiskStateVersion::zero(),
-        unlatched_safety(RiskStateVersion::zero()),
-        vec![exposure(
-            "affected-a",
-            [bucket("risk_class", "safety")],
-            4,
-            5,
-            2,
-        )],
-        1,
+        "S5-BOUND-ORDER",
+        unlatched_safety(source_version),
+        0,
     );
 
     assert_eq!(
-        service.admit_safety_action(&view, request),
-        Err(SafetyActionAdmissionError::ProofDomainExceeded {
-            max_exposure_count: 1,
-            before_exposure_count: 2,
-            after_exposure_count: 1,
-        }),
+        service.admit_safety_action(request),
+        Err(SafetyActionAdmissionError::InvalidProofDomain),
         "SafetyAction proof must reject rather than scan beyond the configured bounded domain"
     );
 }
@@ -901,37 +909,27 @@ fn s7b_within_offered_load_envelope_admission_lifecycle_and_safety_action_succee
         )
         .expect("risk-increasing admission inside the envelope should reserve");
     assert_eq!(admission.admission_token.risk_state_version.get(), 1);
-
-    let safety_view = published_view_with_positions(
-        RiskStateVersion::new(1),
-        "pool-s7b-within",
-        "affected-instrument",
-        bucket.clone(),
-        dec(100),
-        dec(100),
-        vec![exposure("affected-instrument", [bucket.clone()], 12, 14, 2)],
-    );
+    let client_order_id = client_order_id("S7B-WITHIN-ORDER");
+    SubmissionAuthority::new(owner.clone())
+        .prepare_admitted_order(&admission, client_order_id, 1_100)
+        .expect("submission should bind client order id for derived SafetyAction");
+    let source_version = owner
+        .policy_epoch_snapshot()
+        .expect("source version should be readable")
+        .risk_state_version;
     let safety = service
-        .admit_safety_action(
-            &safety_view,
-            reduce_only_safety_action_request(
-                "safety-action-s7b-within",
-                "position-s7b-within",
-                RiskStateVersion::new(1),
-                unlatched_safety(RiskStateVersion::new(1)),
-                vec![exposure(
-                    "affected-instrument",
-                    [bucket("risk_class", "within")],
-                    6,
-                    7,
-                    2,
-                )],
-                4,
-            ),
-        )
+        .admit_safety_action(cancel_order_safety_action_request(
+            "safety-action-s7b-within",
+            "S7B-WITHIN-ORDER",
+            unlatched_safety(source_version),
+            4,
+        ))
         .expect("SafetyAction should bypass offered-load shedding inside the envelope");
-    assert_eq!(safety.source_risk_state_version, RiskStateVersion::new(1));
-    assert_eq!(safety.risk_state_version, RiskStateVersion::new(2));
+    assert_eq!(safety.source_risk_state_version, source_version);
+    assert_eq!(
+        safety.risk_state_version,
+        source_version.next().expect("test version should advance")
+    );
 }
 
 #[test]
@@ -1109,36 +1107,51 @@ fn s7b_lifecycle_and_safety_action_bypass_shed_gate_while_admission_load_is_over
     assert_eq!(lifecycle_version, RiskStateVersion::new(1));
 
     let priority_service = AdmissionService::new(successor.clone());
-    let safety_view = published_view_with_positions(
+    let priority_view = published_view(
         lifecycle_version,
         "pool-s7b-priority",
-        "affected-instrument",
+        "candidate-instrument",
         bucket.clone(),
         dec(100),
         dec(100),
-        vec![exposure("affected-instrument", [bucket.clone()], 12, 14, 2)],
     );
-    let safety = priority_service
-        .admit_safety_action(
-            &safety_view,
-            reduce_only_safety_action_request(
-                "safety-action-s7b-priority",
-                "position-s7b-priority",
+    let reservation = priority_service
+        .compare_and_reserve(
+            &priority_view,
+            admission_candidate(
+                "intent-s7b-priority-safety-source",
+                "idempotency-s7b-priority-safety-source",
+                "pool-s7b-priority",
+                "candidate-instrument",
                 lifecycle_version,
-                unlatched_safety(lifecycle_version),
-                vec![exposure(
-                    "affected-instrument",
-                    [bucket("risk_class", "priority")],
-                    6,
-                    7,
-                    2,
-                )],
-                4,
+                dec(20),
             ),
+            unlatched_safety(lifecycle_version),
+            None,
+            1_200,
         )
+        .expect("source reservation should be available before offered-load pressure");
+    let client_order_id = client_order_id("S7B-PRIORITY-ORDER");
+    SubmissionAuthority::new(successor.clone())
+        .prepare_admitted_order(&reservation, client_order_id, 1_210)
+        .expect("submission should bind client order id for derived SafetyAction");
+    let source_version = successor
+        .policy_epoch_snapshot()
+        .expect("source version should be readable")
+        .risk_state_version;
+    let safety = priority_service
+        .admit_safety_action(cancel_order_safety_action_request(
+            "safety-action-s7b-priority",
+            "S7B-PRIORITY-ORDER",
+            unlatched_safety(source_version),
+            4,
+        ))
         .expect("SafetyAction should bypass the shed gate while admissions are over envelope");
-    assert_eq!(safety.source_risk_state_version, lifecycle_version);
-    assert_eq!(safety.risk_state_version, RiskStateVersion::new(2));
+    assert_eq!(safety.source_risk_state_version, source_version);
+    assert_eq!(
+        safety.risk_state_version,
+        source_version.next().expect("test version should advance")
+    );
 
     assert_eq!(
         owner
@@ -3355,27 +3368,32 @@ fn unlatched_safety(risk_state_version: RiskStateVersion) -> BoundReusableSafety
 fn reduce_only_safety_action_request(
     action_id: &str,
     position_id: &str,
-    risk_state_version: RiskStateVersion,
     safety_state: BoundReusableSafetyState,
-    after: Vec<RiskExposure>,
     max_exposure_count: usize,
 ) -> SafetyActionAdmissionRequest {
-    let after_exposure_count = after.len();
     SafetyActionAdmissionRequest {
         action_id: action_id.to_string(),
         action: SafetyAction::ReduceOnlyCloseExistingPosition {
             position_id: position_id.to_string(),
         },
         safety_state,
-        after: RiskExposureSetInput {
-            risk_state_version,
-            exposures: after,
+        proof_domain: SafetyActionProofDomain { max_exposure_count },
+    }
+}
+
+fn cancel_order_safety_action_request(
+    action_id: &str,
+    client_order_id: &str,
+    safety_state: BoundReusableSafetyState,
+    max_exposure_count: usize,
+) -> SafetyActionAdmissionRequest {
+    SafetyActionAdmissionRequest {
+        action_id: action_id.to_string(),
+        action: SafetyAction::CancelExistingOrder {
+            client_order_id: client_order_id.to_string(),
         },
-        proof_domain: SafetyActionProofDomain {
-            max_exposure_count,
-            before_exposure_count: 0,
-            after_exposure_count,
-        },
+        safety_state,
+        proof_domain: SafetyActionProofDomain { max_exposure_count },
     }
 }
 

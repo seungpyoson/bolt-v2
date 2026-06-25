@@ -26,10 +26,12 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationPolicy,
         RiskDescriptorCanonicalAttributes,
     },
-    risk_kernel::{RiskExposure, RiskExposureSetInput, RiskPortfolioSnapshot},
+    risk_kernel::{RiskExposure, RiskPortfolioSnapshot},
     risk_view_publisher::{PublishedRiskView, RiskViewPublicationInput, RiskViewPublisher},
     state_owner::{FencedRiskStateStore, RiskMutationKind, RiskStateMutationError, RiskStateOwner},
+    submission_authority::SubmissionAuthority,
 };
+use nautilus_model::identifiers::ClientOrderId;
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
 
@@ -435,13 +437,41 @@ fn s6b_invalid_band_coverage_attestations_fail_closed_and_keep_active_epoch() {
 fn s6a_non_compliant_current_exposure_activates_no_new_risk_but_allows_safety_action() {
     let pool_id = "epoch-non-compliant-pool";
     let (_store, owner, manager) = epoch_context(pool_id, "epoch-non-compliant-owner");
+    let service = AdmissionService::new(owner.clone());
+    let setup_view = published_view_for_epoch(pool_id, RiskStateVersion::zero());
+    let mut setup_candidate = admission_candidate(pool_id, RiskStateVersion::zero(), "epoch-new");
+    setup_candidate.intent_id = "intent-safety-target".to_string();
+    setup_candidate.idempotency_key = "idempotency-safety-target".to_string();
+    setup_candidate.sizing_permit.permit_id = "permit-safety-target".to_string();
+    setup_candidate.sizing_permit.candidate_digest = "candidate-digest-safety-target".to_string();
+    let safety_target = service
+        .compare_and_reserve(
+            &setup_view,
+            setup_candidate,
+            BoundReusableSafetyState {
+                risk_state_version: RiskStateVersion::zero(),
+                kill_switch_latched: false,
+                loss_governor_halted: false,
+            },
+            None,
+            999,
+        )
+        .expect("setup reservation should create an authoritative SafetyAction target");
+    SubmissionAuthority::new(owner.clone())
+        .prepare_admitted_order(
+            &safety_target,
+            ClientOrderId::from("EPOCH-SAFETY-TARGET"),
+            1_000,
+        )
+        .expect("setup submission should bind the safety target to a client order");
+
     let envelope = envelope(pool_id, ["classifier-new"]);
     let new_epoch = epoch(pool_id, "epoch-new", "descriptor-new", "classifier-new", 10);
     let prepared = manager
         .prepare_policy_epoch(
             new_epoch,
             envelope,
-            1_000,
+            1_001,
             &mut RecordingDrain::default(),
             &mut RecordingRevaluator::non_compliant(),
         )
@@ -457,12 +487,18 @@ fn s6a_non_compliant_current_exposure_activates_no_new_risk_but_allows_safety_ac
     assert!(!snapshot.risk_increasing_admission_enabled);
     assert!(snapshot.safety_action_enabled);
 
-    let service = AdmissionService::new(owner.clone());
     let view = published_view_for_epoch(pool_id, snapshot.risk_state_version);
+    let mut rejected_candidate =
+        admission_candidate(pool_id, snapshot.risk_state_version, "epoch-new");
+    rejected_candidate.intent_id = "intent-disabled-after-cutover".to_string();
+    rejected_candidate.idempotency_key = "idempotency-disabled-after-cutover".to_string();
+    rejected_candidate.sizing_permit.permit_id = "permit-disabled-after-cutover".to_string();
+    rejected_candidate.sizing_permit.candidate_digest =
+        "candidate-digest-disabled-after-cutover".to_string();
     let reserve_error = service
         .compare_and_reserve(
             &view,
-            admission_candidate(pool_id, snapshot.risk_state_version, "epoch-new"),
+            rejected_candidate,
             BoundReusableSafetyState {
                 risk_state_version: snapshot.risk_state_version,
                 kill_switch_latched: false,
@@ -478,29 +514,20 @@ fn s6a_non_compliant_current_exposure_activates_no_new_risk_but_allows_safety_ac
     );
 
     let safety = service
-        .admit_safety_action(
-            &view,
-            SafetyActionAdmissionRequest {
-                action_id: "safety-action".to_string(),
-                action: SafetyAction::ReduceOnlyCloseExistingPosition {
-                    position_id: "position-to-reduce".to_string(),
-                },
-                safety_state: BoundReusableSafetyState {
-                    risk_state_version: snapshot.risk_state_version,
-                    kill_switch_latched: false,
-                    loss_governor_halted: false,
-                },
-                after: RiskExposureSetInput {
-                    risk_state_version: snapshot.risk_state_version,
-                    exposures: Vec::new(),
-                },
-                proof_domain: SafetyActionProofDomain {
-                    max_exposure_count: 1,
-                    before_exposure_count: 0,
-                    after_exposure_count: 0,
-                },
+        .admit_safety_action(SafetyActionAdmissionRequest {
+            action_id: "safety-action".to_string(),
+            action: SafetyAction::CancelExistingOrder {
+                client_order_id: "EPOCH-SAFETY-TARGET".to_string(),
             },
-        )
+            safety_state: BoundReusableSafetyState {
+                risk_state_version: snapshot.risk_state_version,
+                kill_switch_latched: false,
+                loss_governor_halted: false,
+            },
+            proof_domain: SafetyActionProofDomain {
+                max_exposure_count: 1,
+            },
+        })
         .expect("SafetyAction must remain enabled in no-new-risk state");
     assert_eq!(
         safety.source_risk_state_version,

@@ -6,6 +6,7 @@ pub use crate::bolt_v3_risk_reservation_substrate::reservation_ledger::{
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use nautilus_model::identifiers::ClientOrderId;
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_risk_reservation_substrate::{
@@ -42,7 +43,6 @@ pub struct SafetyActionAdmissionRequest {
     pub action_id: String,
     pub action: SafetyAction,
     pub safety_state: BoundReusableSafetyState,
-    pub after: RiskExposureSetInput,
     pub proof_domain: SafetyActionProofDomain,
 }
 
@@ -54,8 +54,6 @@ pub struct SafetyActionAdmissionRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SafetyActionProofDomain {
     pub max_exposure_count: usize,
-    pub before_exposure_count: usize,
-    pub after_exposure_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -83,15 +81,12 @@ pub enum SafetyActionAdmissionError {
         expected: RiskStateVersion,
         actual: RiskStateVersion,
     },
-    ProofVersionMismatch {
-        before: RiskStateVersion,
-        after: RiskStateVersion,
-    },
     ProofDomainExceeded {
         max_exposure_count: usize,
         before_exposure_count: usize,
         after_exposure_count: usize,
     },
+    UnknownSafetyActionTarget,
     Kernel(RiskKernelError),
     AfterExposureNotReduction {
         new_exposure_count: usize,
@@ -179,18 +174,24 @@ impl AdmissionService {
 
     pub fn admit_safety_action(
         &self,
-        view: &PublishedRiskView,
         request: SafetyActionAdmissionRequest,
     ) -> Result<SafetyActionAdmission, SafetyActionAdmissionError> {
-        let before_input = view.authoritative_exposure_set();
-        validate_safety_action_request(&before_input, &request)?;
+        validate_safety_action_identity(&request)?;
+        let source_risk_state_version = self
+            .owner
+            .policy_epoch_snapshot()
+            .map_err(SafetyActionAdmissionError::StateMutation)?
+            .risk_state_version;
+        let (before_input, after_input) =
+            self.derive_safety_action_exposure_sets(source_risk_state_version, &request.action)?;
+        validate_safety_action_request(&before_input, &after_input, &request)?;
 
         let before = RiskKernel::evaluate_exposure_set(&before_input)
             .map_err(SafetyActionAdmissionError::Kernel)?;
-        let after = RiskKernel::evaluate_exposure_set(&request.after)
+        let after = RiskKernel::evaluate_exposure_set(&after_input)
             .map_err(SafetyActionAdmissionError::Kernel)?;
         let increased_metrics = increased_safety_action_metrics(&before, &after);
-        let exposure_reduction = check_after_exposure_reduction(&before_input, &request.after)
+        let exposure_reduction = check_after_exposure_reduction(&before_input, &after_input)
             .map_err(SafetyActionAdmissionError::Kernel)?;
         if exposure_reduction.has_violation() {
             return Err(SafetyActionAdmissionError::AfterExposureNotReduction {
@@ -213,7 +214,6 @@ impl AdmissionService {
             });
         }
 
-        let source_risk_state_version = before_input.risk_state_version;
         let risk_state_version = self
             .owner
             .commit_safety_action(&request.action_id, source_risk_state_version)
@@ -228,15 +228,94 @@ impl AdmissionService {
             after,
             proof_domain: SafetyActionProofDomain {
                 max_exposure_count: request.proof_domain.max_exposure_count,
-                before_exposure_count: before_input.exposures.len(),
-                after_exposure_count: request.after.exposures.len(),
             },
         })
     }
+
+    fn derive_safety_action_exposure_sets(
+        &self,
+        risk_state_version: RiskStateVersion,
+        action: &SafetyAction,
+    ) -> Result<(RiskExposureSetInput, RiskExposureSetInput), SafetyActionAdmissionError> {
+        let pool_id = self.owner.lease().pool_id().clone();
+        let records = self
+            .owner
+            .reservation_records()
+            .map_err(SafetyActionAdmissionError::StateMutation)?;
+        let scoped_records = records
+            .iter()
+            .filter(|record| record.pool_id == pool_id)
+            .collect::<Vec<_>>();
+
+        let mut before_exposures = Vec::new();
+        let mut after_exposures = Vec::new();
+        let mut target_found = false;
+
+        match action {
+            SafetyAction::CancelExistingOrder { client_order_id } => {
+                let target_record = self
+                    .owner
+                    .reservation_record_for_client_order(ClientOrderId::from(
+                        client_order_id.as_str(),
+                    ))
+                    .map_err(SafetyActionAdmissionError::StateMutation)?
+                    .ok_or(SafetyActionAdmissionError::UnknownSafetyActionTarget)?;
+                if target_record.pool_id != pool_id || open_order_exposure(&target_record).is_none()
+                {
+                    return Err(SafetyActionAdmissionError::UnknownSafetyActionTarget);
+                }
+
+                for record in scoped_records {
+                    if let Some(exposure) = open_order_exposure(record) {
+                        before_exposures.push(exposure.clone());
+                        if record.admission_token == target_record.admission_token {
+                            target_found = true;
+                        } else {
+                            after_exposures.push(exposure);
+                        }
+                    }
+                    if let Some(exposure) = record.filled_position_exposure.clone() {
+                        before_exposures.push(exposure.clone());
+                        after_exposures.push(exposure);
+                    }
+                }
+            }
+            SafetyAction::ReduceOnlyCloseExistingPosition { position_id } => {
+                for record in scoped_records {
+                    if let Some(exposure) = open_order_exposure(record) {
+                        before_exposures.push(exposure.clone());
+                        after_exposures.push(exposure);
+                    }
+                    if let Some(exposure) = record.filled_position_exposure.clone() {
+                        before_exposures.push(exposure.clone());
+                        if !target_found && filled_position_matches(record, position_id) {
+                            target_found = true;
+                        } else {
+                            after_exposures.push(exposure);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !target_found {
+            return Err(SafetyActionAdmissionError::UnknownSafetyActionTarget);
+        }
+
+        Ok((
+            RiskExposureSetInput {
+                risk_state_version,
+                exposures: before_exposures,
+            },
+            RiskExposureSetInput {
+                risk_state_version,
+                exposures: after_exposures,
+            },
+        ))
+    }
 }
 
-fn validate_safety_action_request(
-    before: &RiskExposureSetInput,
+fn validate_safety_action_identity(
     request: &SafetyActionAdmissionRequest,
 ) -> Result<(), SafetyActionAdmissionError> {
     if !is_clean_runtime_value(&request.action_id) {
@@ -254,33 +333,51 @@ fn validate_safety_action_request(
             }
         }
     }
-    if before.risk_state_version != request.after.risk_state_version {
-        return Err(SafetyActionAdmissionError::ProofVersionMismatch {
-            before: before.risk_state_version,
-            after: request.after.risk_state_version,
-        });
-    }
+    Ok(())
+}
+
+fn validate_safety_action_request(
+    before: &RiskExposureSetInput,
+    after: &RiskExposureSetInput,
+    request: &SafetyActionAdmissionRequest,
+) -> Result<(), SafetyActionAdmissionError> {
     if request.safety_state.risk_state_version != before.risk_state_version {
         return Err(SafetyActionAdmissionError::SafetyStateVersionMismatch {
             expected: before.risk_state_version,
             actual: request.safety_state.risk_state_version,
         });
     }
-    if request.proof_domain.max_exposure_count == 0
-        || request.proof_domain.after_exposure_count != request.after.exposures.len()
-    {
+    if request.proof_domain.max_exposure_count == 0 {
         return Err(SafetyActionAdmissionError::InvalidProofDomain);
     }
     if before.exposures.len() > request.proof_domain.max_exposure_count
-        || request.after.exposures.len() > request.proof_domain.max_exposure_count
+        || after.exposures.len() > request.proof_domain.max_exposure_count
     {
         return Err(SafetyActionAdmissionError::ProofDomainExceeded {
             max_exposure_count: request.proof_domain.max_exposure_count,
             before_exposure_count: before.exposures.len(),
-            after_exposure_count: request.after.exposures.len(),
+            after_exposure_count: after.exposures.len(),
         });
     }
     Ok(())
+}
+
+fn open_order_exposure(record: &SubstrateReservationRecord) -> Option<RiskExposure> {
+    if record.remaining_fillable_quantity <= Decimal::ZERO {
+        return None;
+    }
+    Some(RiskExposure {
+        instrument_id: record.instrument_id.clone(),
+        buckets: record.buckets.clone(),
+        quantity: record.remaining_fillable_quantity,
+        conservative_liquidation_value: record.assessment.equity_floor_stress_loss,
+        governor_cost_basis: record.assessment.governor_realized_loss,
+        terminal_cash_flows: vec![Decimal::ZERO],
+    })
+}
+
+fn filled_position_matches(record: &SubstrateReservationRecord, position_id: &str) -> bool {
+    record.admission_token.reservation_id == position_id
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

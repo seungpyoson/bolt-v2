@@ -1,8 +1,12 @@
 use nautilus_model::identifiers::ClientOrderId;
+use rust_decimal::Decimal;
 
 use crate::bolt_v3_risk_reservation_substrate::{
-    contracts::{LiveSubmissionRecord, RiskStateVersion},
-    state_owner::{RiskStateMutationError, RiskStateOwner, RiskSubmissionMutationError},
+    contracts::{LiveSubmissionRecord, ReservationLifecycleState, RiskStateVersion},
+    state_owner::{
+        LifecycleMutationResult, RiskStateMutationError, RiskStateOwner,
+        RiskSubmissionMutationError,
+    },
     submission_authority::{LiveSubmitBoundary, SubmissionAuthority, SubmissionAuthorityError},
 };
 
@@ -15,14 +19,21 @@ pub struct LifecycleReconciler {
 pub struct NtExecutionTruth {
     pub order_status_reports: Vec<NtOrderStatusReportTruth>,
     pub fill_reports: Vec<NtFillReportTruth>,
+    pub settlement_reports: Vec<NtSettlementTruth>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NtOrderStatusReportTruth {
     pub client_order_id: ClientOrderId,
+    pub status: NtOrderStatusTruth,
     pub event_id: String,
     pub ts_event_unix_nanos: u64,
     pub ts_init_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtOrderStatusTruth {
+    Open,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +42,24 @@ pub struct NtFillReportTruth {
     pub event_id: String,
     pub ts_event_unix_nanos: u64,
     pub ts_init_unix_nanos: u64,
+    pub fill_quantity: Decimal,
+    pub remaining_fillable_quantity: Decimal,
+    pub actual_conservative_liquidation_value: Decimal,
+    pub actual_governor_cost_basis: Decimal,
+    pub terminal_cash_flows: Vec<Decimal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtSettlementTruth {
+    pub client_order_id: ClientOrderId,
+    pub event_id: String,
+    pub ts_event_unix_nanos: u64,
+    pub ts_init_unix_nanos: u64,
+    pub terminal_final: bool,
+    pub reconciliation_complete: bool,
+    pub conservative_liquidation_value: Decimal,
+    pub governor_cost_basis: Decimal,
+    pub terminal_cash_flows: Vec<Decimal>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +67,21 @@ pub struct ReconciliationSummary {
     pub live_order_count: usize,
     pub reservation_count: usize,
     pub risk_state_version: RiskStateVersion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LifecycleEventSummary {
+    pub risk_state_version: RiskStateVersion,
+    pub lifecycle_state: ReservationLifecycleState,
+}
+
+impl From<LifecycleMutationResult> for LifecycleEventSummary {
+    fn from(result: LifecycleMutationResult) -> Self {
+        Self {
+            risk_state_version: result.risk_state_version,
+            lifecycle_state: result.lifecycle_state,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +100,55 @@ impl From<RiskSubmissionMutationError> for LifecycleReconciliationError {
 impl LifecycleReconciler {
     pub fn new(owner: RiskStateOwner) -> Self {
         Self { owner }
+    }
+
+    pub fn apply_order_status_truth(
+        &self,
+        truth: NtOrderStatusReportTruth,
+    ) -> Result<LifecycleEventSummary, LifecycleReconciliationError> {
+        let target_state = match truth.status {
+            NtOrderStatusTruth::Open => ReservationLifecycleState::Open,
+        };
+        self.owner
+            .apply_order_lifecycle_state(truth.client_order_id, &truth.event_id, target_state)
+            .map(LifecycleEventSummary::from)
+            .map_err(LifecycleReconciliationError::State)
+    }
+
+    pub fn apply_fill_truth(
+        &self,
+        truth: NtFillReportTruth,
+    ) -> Result<LifecycleEventSummary, LifecycleReconciliationError> {
+        self.owner
+            .apply_authoritative_fill(
+                truth.client_order_id,
+                &truth.event_id,
+                truth.fill_quantity,
+                truth.remaining_fillable_quantity,
+                truth.actual_conservative_liquidation_value,
+                truth.actual_governor_cost_basis,
+                truth.terminal_cash_flows,
+            )
+            .map(LifecycleEventSummary::from)
+            .map_err(LifecycleReconciliationError::State)
+    }
+
+    pub fn apply_settlement_truth(
+        &self,
+        truth: NtSettlementTruth,
+    ) -> Result<LifecycleEventSummary, LifecycleReconciliationError> {
+        self.owner
+            .apply_settlement_truth(
+                truth.client_order_id,
+                &truth.event_id,
+                truth.terminal_final,
+                truth.reconciliation_complete,
+                truth.conservative_liquidation_value,
+                truth.governor_cost_basis,
+                truth.terminal_cash_flows,
+            )
+            .map(LifecycleEventSummary::from)
+            .map_err(LifecycleReconciliationError::State)
     }
 
     pub fn reconcile_restart<B>(
@@ -94,6 +187,16 @@ impl LifecycleReconciler {
                     .submit_durable_intent(&idempotency_key, boundary, now_unix_nanos)
                     .map_err(LifecycleReconciliationError::Submit)?;
             }
+        }
+
+        for report in truth.order_status_reports {
+            self.apply_order_status_truth(report)?;
+        }
+        for report in truth.fill_reports {
+            self.apply_fill_truth(report)?;
+        }
+        for report in truth.settlement_reports {
+            self.apply_settlement_truth(report)?;
         }
 
         let risk_state_version = self.owner.complete_reconciliation()?;

@@ -4,6 +4,7 @@ use std::{
 };
 
 use nautilus_model::identifiers::ClientOrderId;
+use rust_decimal::Decimal;
 
 use crate::bolt_v3_risk_reservation_substrate::contracts::{
     ConfiguredLeaseAuthority, DurableSubmissionIntent, FencingToken, LiveSubmissionRecord, OwnerId,
@@ -18,7 +19,7 @@ use crate::bolt_v3_risk_reservation_substrate::{
         build_admission_token, evaluate_stateful_caps,
     },
     risk_classifier::ConcentrationBucket,
-    risk_kernel::RiskKernel,
+    risk_kernel::{RiskExposure, RiskKernel, RiskKernelError},
 };
 
 #[derive(Debug, Clone)]
@@ -138,6 +139,12 @@ pub struct DurableRiskMutationRecord {
     pub fencing_token: FencingToken,
     pub mutation: DurableRiskMutation,
     pub risk_state_version: RiskStateVersion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LifecycleMutationResult {
+    pub risk_state_version: RiskStateVersion,
+    pub lifecycle_state: ReservationLifecycleState,
 }
 
 impl FencedRiskStateStore {
@@ -442,6 +449,21 @@ impl FencedRiskStateStore {
             .unwrap_or(rust_decimal::Decimal::ZERO))
     }
 
+    pub fn reserved_risk_totals(
+        &self,
+        pool_id: &PoolId,
+    ) -> Result<RiskReservationTotals, RiskStateMutationError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
+        Ok(inner
+            .reservation_totals
+            .get(pool_id)
+            .cloned()
+            .unwrap_or_else(RiskReservationTotals::empty))
+    }
+
     fn prepare_submission_intent(
         &self,
         lease: &PoolOwnershipLease,
@@ -622,6 +644,263 @@ impl FencedRiskStateStore {
         Ok(record)
     }
 
+    fn apply_order_lifecycle_state(
+        &self,
+        lease: &PoolOwnershipLease,
+        client_order_id: ClientOrderId,
+        mutation_id: &str,
+        target_state: ReservationLifecycleState,
+    ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+        let mut inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        validate_lifecycle_mutation_id(mutation_id)?;
+
+        let record_index =
+            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
+        let current_state = inner.reservation_records[record_index].lifecycle_state;
+        if current_state == target_state {
+            let risk_state_version = inner
+                .versions
+                .get(lease.pool_id())
+                .copied()
+                .unwrap_or_else(RiskStateVersion::zero);
+            return Ok(LifecycleMutationResult {
+                risk_state_version,
+                lifecycle_state: target_state,
+            });
+        }
+        if !order_status_transition_allowed(current_state, target_state) {
+            return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+        }
+
+        let version = next_pool_version(&mut inner, lease.pool_id())
+            .map_err(RiskSubmissionMutationError::State)?;
+        inner.reservation_records[record_index].lifecycle_state = target_state;
+        inner.mutations.push(DurableRiskMutationRecord {
+            pool_id: lease.pool_id().clone(),
+            fencing_token: lease.fencing_token(),
+            mutation: DurableRiskMutation::new(
+                mutation_id.to_string(),
+                RiskMutationKind::Lifecycle,
+            ),
+            risk_state_version: version,
+        });
+        Ok(LifecycleMutationResult {
+            risk_state_version: version,
+            lifecycle_state: target_state,
+        })
+    }
+
+    fn apply_authoritative_fill(
+        &self,
+        lease: &PoolOwnershipLease,
+        client_order_id: ClientOrderId,
+        mutation_id: &str,
+        fill_quantity: Decimal,
+        remaining_fillable_quantity: Decimal,
+        actual_conservative_liquidation_value: Decimal,
+        actual_governor_cost_basis: Decimal,
+        terminal_cash_flows: Vec<Decimal>,
+    ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+        let mut inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        validate_lifecycle_mutation_id(mutation_id)?;
+        validate_lifecycle_exposure_input(
+            fill_quantity,
+            remaining_fillable_quantity,
+            actual_conservative_liquidation_value,
+            actual_governor_cost_basis,
+            &terminal_cash_flows,
+        )?;
+
+        let record_index =
+            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
+        let record = &inner.reservation_records[record_index];
+        if !fill_transition_allowed(record.lifecycle_state) {
+            return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+        }
+        let old_equity_floor_stress_loss = record.filled_position_equity_floor_stress_loss;
+        let old_governor_realized_loss = record.filled_position_governor_realized_loss;
+        let mut filled_position_exposure =
+            record
+                .filled_position_exposure
+                .clone()
+                .unwrap_or_else(|| RiskExposure {
+                    instrument_id: record.instrument_id.clone(),
+                    buckets: record.buckets.clone(),
+                    quantity: Decimal::ZERO,
+                    conservative_liquidation_value: Decimal::ZERO,
+                    governor_cost_basis: Decimal::ZERO,
+                    terminal_cash_flows: terminal_cash_flows.clone(),
+                });
+        filled_position_exposure.quantity += fill_quantity;
+        filled_position_exposure.conservative_liquidation_value +=
+            actual_conservative_liquidation_value;
+        filled_position_exposure.governor_cost_basis += actual_governor_cost_basis;
+        filled_position_exposure.terminal_cash_flows = terminal_cash_flows;
+        let new_equity_floor_stress_loss = monotonic_risk_metric(
+            old_equity_floor_stress_loss,
+            equity_floor_stress_loss(&filled_position_exposure)?,
+        );
+        let new_governor_realized_loss = monotonic_risk_metric(
+            old_governor_realized_loss,
+            governor_realized_loss(&filled_position_exposure)?,
+        );
+        let target_state = if remaining_fillable_quantity == Decimal::ZERO {
+            ReservationLifecycleState::Filled
+        } else {
+            ReservationLifecycleState::PartiallyFilled
+        };
+        let buckets = record.buckets.clone();
+
+        let version = next_pool_version(&mut inner, lease.pool_id())
+            .map_err(RiskSubmissionMutationError::State)?;
+        let record = &mut inner.reservation_records[record_index];
+        record.lifecycle_state = target_state;
+        record.remaining_fillable_quantity = remaining_fillable_quantity;
+        record.filled_position_exposure = Some(filled_position_exposure);
+        record.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
+        record.filled_position_governor_realized_loss = new_governor_realized_loss;
+        inner
+            .reservation_totals
+            .entry(lease.pool_id().clone())
+            .or_insert_with(RiskReservationTotals::empty)
+            .apply_filled_position_risk_delta(
+                &buckets,
+                old_equity_floor_stress_loss,
+                old_governor_realized_loss,
+                new_equity_floor_stress_loss,
+                new_governor_realized_loss,
+            );
+        inner.mutations.push(DurableRiskMutationRecord {
+            pool_id: lease.pool_id().clone(),
+            fencing_token: lease.fencing_token(),
+            mutation: DurableRiskMutation::new(
+                mutation_id.to_string(),
+                RiskMutationKind::Lifecycle,
+            ),
+            risk_state_version: version,
+        });
+        Ok(LifecycleMutationResult {
+            risk_state_version: version,
+            lifecycle_state: target_state,
+        })
+    }
+
+    fn apply_settlement_truth(
+        &self,
+        lease: &PoolOwnershipLease,
+        client_order_id: ClientOrderId,
+        mutation_id: &str,
+        terminal_final: bool,
+        reconciliation_complete: bool,
+        conservative_liquidation_value: Decimal,
+        governor_cost_basis: Decimal,
+        terminal_cash_flows: Vec<Decimal>,
+    ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+        let mut inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        validate_lifecycle_mutation_id(mutation_id)?;
+        validate_settlement_exposure_input(
+            conservative_liquidation_value,
+            governor_cost_basis,
+            &terminal_cash_flows,
+        )?;
+
+        let record_index =
+            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
+        let record = &inner.reservation_records[record_index];
+        if record.lifecycle_state == ReservationLifecycleState::Settled {
+            let risk_state_version = inner
+                .versions
+                .get(lease.pool_id())
+                .copied()
+                .unwrap_or_else(RiskStateVersion::zero);
+            return Ok(LifecycleMutationResult {
+                risk_state_version,
+                lifecycle_state: ReservationLifecycleState::Settled,
+            });
+        }
+        if record.lifecycle_state != ReservationLifecycleState::Filled {
+            return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+        }
+        let Some(existing_exposure) = record.filled_position_exposure.clone() else {
+            return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+        };
+        let old_equity_floor_stress_loss = record.filled_position_equity_floor_stress_loss;
+        let old_governor_realized_loss = record.filled_position_governor_realized_loss;
+        let revised_exposure = RiskExposure {
+            conservative_liquidation_value,
+            governor_cost_basis,
+            terminal_cash_flows,
+            ..existing_exposure
+        };
+        let new_equity_floor_stress_loss = monotonic_risk_metric(
+            old_equity_floor_stress_loss,
+            equity_floor_stress_loss(&revised_exposure)?,
+        );
+        let new_governor_realized_loss = monotonic_risk_metric(
+            old_governor_realized_loss,
+            governor_realized_loss(&revised_exposure)?,
+        );
+        let target_state = if terminal_final && reconciliation_complete {
+            ReservationLifecycleState::Settled
+        } else {
+            ReservationLifecycleState::Filled
+        };
+        let buckets = record.buckets.clone();
+        let release_record = (target_state == ReservationLifecycleState::Settled).then(|| {
+            let mut released = record.clone();
+            released.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
+            released.filled_position_governor_realized_loss = new_governor_realized_loss;
+            released
+        });
+
+        let version = next_pool_version(&mut inner, lease.pool_id())
+            .map_err(RiskSubmissionMutationError::State)?;
+        let record = &mut inner.reservation_records[record_index];
+        record.lifecycle_state = target_state;
+        record.filled_position_exposure = Some(revised_exposure);
+        record.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
+        record.filled_position_governor_realized_loss = new_governor_realized_loss;
+        let totals = inner
+            .reservation_totals
+            .entry(lease.pool_id().clone())
+            .or_insert_with(RiskReservationTotals::empty);
+        totals.apply_filled_position_risk_delta(
+            &buckets,
+            old_equity_floor_stress_loss,
+            old_governor_realized_loss,
+            new_equity_floor_stress_loss,
+            new_governor_realized_loss,
+        );
+        if let Some(release_record) = release_record {
+            totals.release_settled_reservation(&release_record);
+        }
+        inner.mutations.push(DurableRiskMutationRecord {
+            pool_id: lease.pool_id().clone(),
+            fencing_token: lease.fencing_token(),
+            mutation: DurableRiskMutation::new(
+                mutation_id.to_string(),
+                RiskMutationKind::Lifecycle,
+            ),
+            risk_state_version: version,
+        });
+        Ok(LifecycleMutationResult {
+            risk_state_version: version,
+            lifecycle_state: target_state,
+        })
+    }
+
     fn complete_reconciliation(
         &self,
         lease: &PoolOwnershipLease,
@@ -769,9 +1048,15 @@ impl FencedRiskStateStore {
             pool_id: lease.pool_id().clone(),
             admission_token: token.clone(),
             instrument_id: transaction.candidate.instrument_id.clone(),
+            buckets: transaction.kernel_input.candidate.buckets.clone(),
             assessment: assessment.clone(),
             evaluated_dimensions: evaluation.evaluated_dimensions.clone(),
             lifecycle_state: ReservationLifecycleState::Reserved,
+            reserved_order_quantity: transaction.candidate.quantity,
+            remaining_fillable_quantity: transaction.candidate.quantity,
+            filled_position_exposure: None,
+            filled_position_equity_floor_stress_loss: Decimal::ZERO,
+            filled_position_governor_realized_loss: Decimal::ZERO,
         });
         let commit = RiskReservationCommit {
             admission_token: token,
@@ -898,6 +1183,10 @@ impl RiskStateOwner {
             .reserved_bucket_stress_loss(self.lease.pool_id(), bucket)
     }
 
+    pub fn reserved_risk_totals(&self) -> Result<RiskReservationTotals, RiskStateMutationError> {
+        self.store.reserved_risk_totals(self.lease.pool_id())
+    }
+
     pub fn prepare_submission_intent(
         &self,
         reservation: &RiskReservationCommit,
@@ -949,6 +1238,64 @@ impl RiskStateOwner {
             .record_live_submission(&self.lease, idempotency_key, record)
     }
 
+    pub fn apply_order_lifecycle_state(
+        &self,
+        client_order_id: ClientOrderId,
+        mutation_id: &str,
+        target_state: ReservationLifecycleState,
+    ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+        self.store.apply_order_lifecycle_state(
+            &self.lease,
+            client_order_id,
+            mutation_id,
+            target_state,
+        )
+    }
+
+    pub fn apply_authoritative_fill(
+        &self,
+        client_order_id: ClientOrderId,
+        mutation_id: &str,
+        fill_quantity: Decimal,
+        remaining_fillable_quantity: Decimal,
+        actual_conservative_liquidation_value: Decimal,
+        actual_governor_cost_basis: Decimal,
+        terminal_cash_flows: Vec<Decimal>,
+    ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+        self.store.apply_authoritative_fill(
+            &self.lease,
+            client_order_id,
+            mutation_id,
+            fill_quantity,
+            remaining_fillable_quantity,
+            actual_conservative_liquidation_value,
+            actual_governor_cost_basis,
+            terminal_cash_flows,
+        )
+    }
+
+    pub fn apply_settlement_truth(
+        &self,
+        client_order_id: ClientOrderId,
+        mutation_id: &str,
+        terminal_final: bool,
+        reconciliation_complete: bool,
+        conservative_liquidation_value: Decimal,
+        governor_cost_basis: Decimal,
+        terminal_cash_flows: Vec<Decimal>,
+    ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+        self.store.apply_settlement_truth(
+            &self.lease,
+            client_order_id,
+            mutation_id,
+            terminal_final,
+            reconciliation_complete,
+            conservative_liquidation_value,
+            governor_cost_basis,
+            terminal_cash_flows,
+        )
+    }
+
     pub fn complete_reconciliation(&self) -> Result<RiskStateVersion, RiskSubmissionMutationError> {
         self.store.complete_reconciliation(&self.lease)
     }
@@ -981,6 +1328,7 @@ impl DurableRiskMutation {
 pub enum RiskMutationKind {
     Reservation,
     Submission,
+    Lifecycle,
     Reconciliation,
     SafetyAction,
     PolicyEpoch,
@@ -1001,11 +1349,13 @@ pub enum RiskStateMutationError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RiskSubmissionMutationError {
     State(RiskStateMutationError),
+    RiskKernel(RiskKernelError),
     UnknownReservation,
     UnknownSubmissionIntent,
     AdmissionTokenMismatch,
     ReservationNotReserved,
     SubmissionIntentConflict,
+    InvalidLifecycleTransition,
 }
 
 fn validate_lease(
@@ -1110,4 +1460,114 @@ fn matching_reservation_record_index(
     records.iter().position(|record| {
         &record.pool_id == pool_id && record.admission_token.reservation_id == reservation_id
     })
+}
+
+fn matching_reservation_record_index_for_client_order(
+    inner: &FencedRiskStateStoreInner,
+    lease: &PoolOwnershipLease,
+    client_order_id: ClientOrderId,
+) -> Result<usize, RiskSubmissionMutationError> {
+    let intent = inner
+        .submission_intents
+        .iter()
+        .find_map(|((pool_id, _), intent)| {
+            (pool_id == lease.pool_id() && intent.client_order_id == client_order_id)
+                .then_some(intent)
+        })
+        .ok_or(RiskSubmissionMutationError::UnknownSubmissionIntent)?;
+    matching_reservation_record_index(
+        &inner.reservation_records,
+        lease.pool_id(),
+        &intent.admission_token.reservation_id,
+    )
+    .ok_or(RiskSubmissionMutationError::UnknownReservation)
+}
+
+fn validate_lifecycle_mutation_id(mutation_id: &str) -> Result<(), RiskSubmissionMutationError> {
+    if mutation_id.trim().is_empty() {
+        return Err(RiskSubmissionMutationError::State(
+            RiskStateMutationError::InvalidMutation,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lifecycle_exposure_input(
+    fill_quantity: Decimal,
+    remaining_fillable_quantity: Decimal,
+    conservative_liquidation_value: Decimal,
+    governor_cost_basis: Decimal,
+    terminal_cash_flows: &[Decimal],
+) -> Result<(), RiskSubmissionMutationError> {
+    if fill_quantity <= Decimal::ZERO
+        || remaining_fillable_quantity < Decimal::ZERO
+        || conservative_liquidation_value < Decimal::ZERO
+        || governor_cost_basis < Decimal::ZERO
+        || terminal_cash_flows.is_empty()
+    {
+        return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+    }
+    Ok(())
+}
+
+fn validate_settlement_exposure_input(
+    conservative_liquidation_value: Decimal,
+    governor_cost_basis: Decimal,
+    terminal_cash_flows: &[Decimal],
+) -> Result<(), RiskSubmissionMutationError> {
+    if conservative_liquidation_value < Decimal::ZERO
+        || governor_cost_basis < Decimal::ZERO
+        || terminal_cash_flows.is_empty()
+    {
+        return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+    }
+    Ok(())
+}
+
+fn order_status_transition_allowed(
+    current_state: ReservationLifecycleState,
+    target_state: ReservationLifecycleState,
+) -> bool {
+    matches!(
+        (current_state, target_state),
+        (
+            ReservationLifecycleState::Submitted,
+            ReservationLifecycleState::Open
+        ) | (
+            ReservationLifecycleState::SubmissionUnknown,
+            ReservationLifecycleState::Open
+        ) | (
+            ReservationLifecycleState::Open,
+            ReservationLifecycleState::Open
+        )
+    )
+}
+
+fn fill_transition_allowed(current_state: ReservationLifecycleState) -> bool {
+    matches!(
+        current_state,
+        ReservationLifecycleState::Submitted
+            | ReservationLifecycleState::Open
+            | ReservationLifecycleState::PartiallyFilled
+    )
+}
+
+fn equity_floor_stress_loss(
+    exposure: &RiskExposure,
+) -> Result<Decimal, RiskSubmissionMutationError> {
+    RiskKernel::equity_floor_stress_loss_for_exposure(exposure)
+        .map_err(RiskSubmissionMutationError::RiskKernel)
+}
+
+fn governor_realized_loss(exposure: &RiskExposure) -> Result<Decimal, RiskSubmissionMutationError> {
+    RiskKernel::governor_realized_loss_for_exposure(exposure)
+        .map_err(RiskSubmissionMutationError::RiskKernel)
+}
+
+fn monotonic_risk_metric(previous: Decimal, recomputed: Decimal) -> Decimal {
+    if recomputed > previous {
+        recomputed
+    } else {
+        previous
+    }
 }

@@ -477,6 +477,12 @@ pub enum ReservationLifecycleState {
     Reserved,
     Submitted,
     Open,
+    PartiallyFilled,
+    Filled,
+    Settled,
+    CancelRequested,
+    CancelConfirmed,
+    ExpiredConfirmed,
     SubmissionUnknown,
     ReconciliationRequired,
 }

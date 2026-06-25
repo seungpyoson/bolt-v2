@@ -10,7 +10,7 @@ use crate::{
             RiskReservationWorkBounds, RiskSizingView, RiskStateVersion,
         },
         risk_classifier::ConcentrationBucket,
-        risk_kernel::{RiskKernelError, RiskKernelInput},
+        risk_kernel::{RiskExposure, RiskKernelError, RiskKernelInput},
         state_owner::RiskStateMutationError,
     },
 };
@@ -157,9 +157,15 @@ pub struct SubstrateReservationRecord {
     pub pool_id: PoolId,
     pub admission_token: AdmissionToken,
     pub instrument_id: String,
+    pub buckets: BTreeSet<ConcentrationBucket>,
     pub assessment: RiskAssessment,
     pub evaluated_dimensions: BTreeSet<RiskCapDimension>,
     pub lifecycle_state: ReservationLifecycleState,
+    pub reserved_order_quantity: Decimal,
+    pub remaining_fillable_quantity: Decimal,
+    pub filled_position_exposure: Option<RiskExposure>,
+    pub filled_position_equity_floor_stress_loss: Decimal,
+    pub filled_position_governor_realized_loss: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,6 +206,22 @@ impl RiskReservationTotals {
             .unwrap_or(Decimal::ZERO)
     }
 
+    pub fn equity_floor_stress_loss(&self) -> Decimal {
+        self.equity_floor_stress_loss
+    }
+
+    pub fn governor_realized_loss(&self) -> Decimal {
+        self.governor_realized_loss
+    }
+
+    pub fn collateral_required(&self) -> Decimal {
+        self.collateral_required
+    }
+
+    pub fn position_quantity(&self) -> Decimal {
+        self.position_quantity
+    }
+
     pub fn apply(&mut self, transaction: &RiskReservationTransaction, assessment: &RiskAssessment) {
         self.collateral_required += assessment.collateral_required;
         self.equity_floor_stress_loss += assessment.equity_floor_stress_loss;
@@ -217,6 +239,63 @@ impl RiskReservationTotals {
 
     pub const fn open_order_count(&self) -> u64 {
         self.open_order_count
+    }
+
+    pub fn apply_filled_position_risk_delta(
+        &mut self,
+        buckets: &BTreeSet<ConcentrationBucket>,
+        old_equity_floor_stress_loss: Decimal,
+        old_governor_realized_loss: Decimal,
+        new_equity_floor_stress_loss: Decimal,
+        new_governor_realized_loss: Decimal,
+    ) {
+        let equity_floor_delta = new_equity_floor_stress_loss - old_equity_floor_stress_loss;
+        self.equity_floor_stress_loss +=
+            new_equity_floor_stress_loss - old_equity_floor_stress_loss;
+        self.governor_realized_loss += new_governor_realized_loss - old_governor_realized_loss;
+        self.global_stress_loss += equity_floor_delta;
+        for bucket in buckets {
+            *self
+                .bucket_stress_loss
+                .entry(bucket.clone())
+                .or_insert(Decimal::ZERO) += equity_floor_delta;
+        }
+    }
+
+    pub fn release_settled_reservation(&mut self, record: &SubstrateReservationRecord) {
+        let equity_floor_release = record.assessment.equity_floor_stress_loss
+            + record.filled_position_equity_floor_stress_loss;
+        self.collateral_required = subtract_floor_zero(
+            self.collateral_required,
+            record.assessment.collateral_required,
+        );
+        self.equity_floor_stress_loss =
+            subtract_floor_zero(self.equity_floor_stress_loss, equity_floor_release);
+        self.governor_realized_loss = subtract_floor_zero(
+            self.governor_realized_loss,
+            record.assessment.governor_realized_loss
+                + record.filled_position_governor_realized_loss,
+        );
+        self.global_stress_loss =
+            subtract_floor_zero(self.global_stress_loss, equity_floor_release);
+        for bucket in &record.buckets {
+            let remaining = subtract_floor_zero(
+                self.reserved_bucket_stress_loss(bucket),
+                equity_floor_release,
+            );
+            self.bucket_stress_loss.insert(bucket.clone(), remaining);
+        }
+        self.open_order_count = self.open_order_count.saturating_sub(1);
+        self.position_quantity =
+            subtract_floor_zero(self.position_quantity, record.reserved_order_quantity);
+    }
+}
+
+fn subtract_floor_zero(value: Decimal, amount: Decimal) -> Decimal {
+    if value > amount {
+        value - amount
+    } else {
+        Decimal::ZERO
     }
 }
 

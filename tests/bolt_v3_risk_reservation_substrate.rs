@@ -13,10 +13,11 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
     contracts::{
         ActiveDescriptorView, AdmissionCandidate, AdmissionToken, AdmittedOrder,
         ConfiguredLeaseAuthority, LeaseAuthorityBackend, ModelRiskEvaluationScope, PoolId,
-        PoolOwnershipLease, PreparedPolicyEpoch, RiskAssessment, RiskPreviewInput,
-        RiskReservationOfferedLoadEnvelope, RiskReservationOfferedLoadEnvelopeError,
-        RiskReservationSubstrateConfig, RiskReservationWorkBounds, RiskSizingView,
-        RiskStateVersion, SafetyAction, SafetyPolicyEnvelope, SizingDecisionPermit,
+        PoolOwnershipLease, PreparedPolicyEpoch, ReservationLifecycleState, RiskAssessment,
+        RiskPreviewInput, RiskReservationOfferedLoadEnvelope,
+        RiskReservationOfferedLoadEnvelopeError, RiskReservationSubstrateConfig,
+        RiskReservationWorkBounds, RiskSizingView, RiskStateVersion, SafetyAction,
+        SafetyPolicyEnvelope, SizingDecisionPermit,
     },
     instrument_risk_registry::{
         CertifiedActiveDescriptor, DescriptorActivationStatus, DescriptorCertificationDecision,
@@ -24,7 +25,11 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         DescriptorRegistryAdmissionError, DescriptorRegistryError, DescriptorTerminalStateEnvelope,
         InstrumentRiskDescriptor, InstrumentRiskRegistry, TerminalStateObservation,
     },
-    lifecycle_reconciler::{LifecycleReconciler, NtExecutionTruth, NtOrderStatusReportTruth},
+    lifecycle_reconciler::{
+        LifecycleReconciler, NtExecutionTruth, NtFillReportTruth, NtOrderStatusReportTruth,
+        NtOrderStatusTruth, NtSettlementTruth,
+    },
+    reservation_ledger::{RiskReservationCommit, SubstrateReservationRecord},
     risk_classifier::{
         ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationError,
         RiskClassificationPolicy, RiskClassifier, RiskDescriptorCanonicalAttributes,
@@ -2094,6 +2099,7 @@ fn s4_sc_004_restart_reconciles_durable_intent_to_one_live_order_and_one_reserva
             NtExecutionTruth {
                 order_status_reports: Vec::new(),
                 fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
             },
             &mut sink,
             1_200,
@@ -2172,11 +2178,13 @@ fn s4_reconnect_reconciliation_uses_nt_order_status_report_identity() {
             NtExecutionTruth {
                 order_status_reports: vec![NtOrderStatusReportTruth {
                     client_order_id,
+                    status: NtOrderStatusTruth::Open,
                     event_id: "nt-order-status-event".to_string(),
                     ts_event_unix_nanos: 1_150,
                     ts_init_unix_nanos: 1_151,
                 }],
                 fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
             },
             &mut sink,
             1_200,
@@ -2188,6 +2196,251 @@ fn s4_reconnect_reconciliation_uses_nt_order_status_report_identity() {
     assert!(
         sink.submitted_client_order_ids().is_empty(),
         "an NT OrderStatusReport for the ClientOrderId proves the order exists; no replay send needed"
+    );
+}
+
+#[test]
+fn s8a_partial_fill_moves_quantity_and_keeps_reserved_risk_monotonic() {
+    let (reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8a-partial",
+        "owner-s8a-partial",
+        "intent-s8a-partial",
+        "idempotency-s8a-partial",
+        "S8A-PARTIAL-ORDER",
+    );
+
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8a-open-status"))
+        .expect("authoritative NT open status should move the reservation to Open");
+    let pre_fill_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before fill");
+    let pre_fill_version = owner
+        .policy_epoch_snapshot()
+        .expect("policy snapshot should expose the current risk version")
+        .risk_state_version;
+
+    let fill = nt_fill(
+        client_order_id,
+        "s8a-partial-fill",
+        dec(1),
+        dec(1),
+        dec(24),
+        dec(26),
+        vec![dec(1), dec(99)],
+    );
+    let summary = reconciler
+        .apply_fill_truth(fill)
+        .expect("authoritative NT fill truth should be accepted");
+
+    assert_eq!(
+        summary.lifecycle_state,
+        ReservationLifecycleState::PartiallyFilled
+    );
+    assert_eq!(
+        summary.risk_state_version,
+        pre_fill_version
+            .next()
+            .expect("test version should advance once"),
+        "one authoritative fill event must advance the coherent risk version exactly once"
+    );
+    let post_fill_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after fill");
+    assert!(
+        post_fill_totals.equity_floor_stress_loss() >= pre_fill_totals.equity_floor_stress_loss(),
+        "equity-floor reserved risk must not fall merely because an order partially filled"
+    );
+    assert!(
+        post_fill_totals.governor_realized_loss() >= pre_fill_totals.governor_realized_loss(),
+        "governor reserved risk must not fall merely because an order partially filled"
+    );
+
+    let record = only_reservation_record(&owner);
+    assert_eq!(
+        record.admission_token, reservation.admission_token,
+        "the existing reservation ledger record must remain the state owner"
+    );
+    assert_eq!(
+        record.lifecycle_state,
+        ReservationLifecycleState::PartiallyFilled
+    );
+    assert_eq!(record.remaining_fillable_quantity, dec(1));
+    assert_eq!(
+        record
+            .filled_position_exposure
+            .expect("filled quantity should be represented as position exposure")
+            .quantity,
+        dec(1)
+    );
+    assert_eq!(
+        record.assessment.equity_floor_stress_loss,
+        pre_fill_totals.equity_floor_stress_loss(),
+        "the original conservative open-order reservation remains active for the remainder"
+    );
+}
+
+#[test]
+fn s8a_local_intent_without_authoritative_fill_truth_does_not_transition_or_revalue() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8a-local-intent",
+        "owner-s8a-local-intent",
+        "intent-s8a-local-intent",
+        "idempotency-s8a-local-intent",
+        "S8A-LOCAL-INTENT-ORDER",
+    );
+
+    let pre_reconcile_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before reconciliation");
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8a-local-open-status"))
+        .expect("local submit intent plus NT open truth may only move to Open");
+    let record = only_reservation_record(&owner);
+
+    assert_eq!(record.lifecycle_state, ReservationLifecycleState::Open);
+    assert!(
+        record.filled_position_exposure.is_none(),
+        "a local fill belief without NtFillReportTruth must not create filled exposure"
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should remain readable"),
+        pre_reconcile_totals,
+        "local intent cannot revalue or release reserved risk without authoritative fill truth"
+    );
+}
+
+#[test]
+fn s8a_settlement_revision_recomputes_without_releasing_reserved_risk() {
+    let (_reservation, owner, reconciler, client_order_id) = filled_reservation_context(
+        "pool-s8a-settlement-revision",
+        "owner-s8a-settlement-revision",
+        "intent-s8a-settlement-revision",
+        "idempotency-s8a-settlement-revision",
+        "S8A-SETTLEMENT-REVISION-ORDER",
+    );
+    let pre_revision_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before settlement revision");
+
+    let revision = nt_settlement(
+        client_order_id,
+        "s8a-settlement-revision",
+        false,
+        true,
+        dec(28),
+        dec(30),
+        vec![dec(-2), dec(99)],
+    );
+    let summary = reconciler
+        .apply_settlement_truth(revision)
+        .expect("authoritative settlement revision should recompute filled exposure");
+
+    assert_eq!(summary.lifecycle_state, ReservationLifecycleState::Filled);
+    let post_revision_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after settlement revision");
+    assert!(
+        post_revision_totals.equity_floor_stress_loss()
+            >= pre_revision_totals.equity_floor_stress_loss(),
+        "a settlement revision must not release equity-floor reservation before terminal finality"
+    );
+    assert!(
+        post_revision_totals.governor_realized_loss()
+            >= pre_revision_totals.governor_realized_loss(),
+        "a settlement revision must not release governor reservation before terminal finality"
+    );
+    let record = only_reservation_record(&owner);
+    let exposure = record
+        .filled_position_exposure
+        .expect("settlement revision should leave filled exposure active");
+    assert_eq!(exposure.conservative_liquidation_value, dec(28));
+    assert_eq!(exposure.governor_cost_basis, dec(30));
+    assert_eq!(exposure.terminal_cash_flows, vec![dec(-2), dec(99)]);
+}
+
+#[test]
+fn s8a_full_lifecycle_reaches_settled_only_after_terminal_final_reconciled_truth() {
+    let (reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8a-happy-path",
+        "owner-s8a-happy-path",
+        "intent-s8a-happy-path",
+        "idempotency-s8a-happy-path",
+        "S8A-HAPPY-PATH-ORDER",
+    );
+    assert_eq!(
+        only_reservation_record(&owner).lifecycle_state,
+        ReservationLifecycleState::Submitted
+    );
+
+    let open = reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8a-happy-open"))
+        .expect("authoritative NT open status should be accepted");
+    assert_eq!(open.lifecycle_state, ReservationLifecycleState::Open);
+
+    let partial = reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8a-happy-partial",
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("authoritative partial fill should be accepted");
+    assert_eq!(
+        partial.lifecycle_state,
+        ReservationLifecycleState::PartiallyFilled
+    );
+
+    let filled = reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8a-happy-final-fill",
+            dec(1),
+            dec(0),
+            dec(25),
+            dec(27),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("authoritative final fill should be accepted");
+    assert_eq!(filled.lifecycle_state, ReservationLifecycleState::Filled);
+
+    let not_reconciled = reconciler
+        .apply_settlement_truth(nt_settlement(
+            client_order_id,
+            "s8a-happy-final-not-reconciled",
+            true,
+            false,
+            dec(25),
+            dec(27),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("terminal truth without reconciliation must remain filled");
+    assert_eq!(
+        not_reconciled.lifecycle_state,
+        ReservationLifecycleState::Filled
+    );
+
+    let settled = reconciler
+        .apply_settlement_truth(nt_settlement(
+            client_order_id,
+            "s8a-happy-settled",
+            true,
+            true,
+            dec(25),
+            dec(27),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("terminal-final and reconciled settlement truth should settle the reservation");
+    assert_eq!(settled.lifecycle_state, ReservationLifecycleState::Settled);
+    assert_eq!(
+        only_reservation_record(&owner).admission_token,
+        reservation.admission_token,
+        "the full lifecycle must advance the original reservation record, not a parallel model"
     );
 }
 
@@ -2752,6 +3005,166 @@ fn admission_candidate_with_permit(
             max_cash_outlay,
         )
     }
+}
+
+fn submitted_reservation_context(
+    pool_id: &str,
+    owner_id: &str,
+    intent_id: &str,
+    idempotency_key: &str,
+    client_order_id_value: &str,
+) -> (
+    RiskReservationCommit,
+    RiskStateOwner,
+    LifecycleReconciler,
+    ClientOrderId,
+) {
+    let (service, owner, _store) = reconciled_risk_context(pool_id, owner_id);
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        pool_id,
+        "candidate-instrument",
+        bucket,
+        dec(100),
+        dec(100),
+    );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate_from_preview(
+                intent_id,
+                idempotency_key,
+                RiskPreviewInput {
+                    pool_id: PoolId::new(pool_id).expect("pool id should be valid"),
+                    instrument_id: "candidate-instrument".to_string(),
+                    model_risk_scope: ModelRiskEvaluationScope::CandidateInstrument {
+                        instrument_id: "candidate-instrument".to_string(),
+                    },
+                    side: "long".to_string(),
+                    quantity: dec(2),
+                    order_type: "limit".to_string(),
+                    time_in_force: "gtc".to_string(),
+                    max_unit_price: Some(dec(20)),
+                    max_cash_outlay: dec(20),
+                    source_view_version: RiskStateVersion::zero(),
+                    policy_epoch_id: "policy-epoch".to_string(),
+                },
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("reservation should issue an admission token");
+    let authority = SubmissionAuthority::new(owner.clone());
+    let client_order_id = client_order_id(client_order_id_value);
+    authority
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("submission authority should move the reservation to Submitted");
+    (
+        reservation,
+        owner.clone(),
+        LifecycleReconciler::new(owner),
+        client_order_id,
+    )
+}
+
+fn filled_reservation_context(
+    pool_id: &str,
+    owner_id: &str,
+    intent_id: &str,
+    idempotency_key: &str,
+    client_order_id_value: &str,
+) -> (
+    RiskReservationCommit,
+    RiskStateOwner,
+    LifecycleReconciler,
+    ClientOrderId,
+) {
+    let (reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        owner_id,
+        intent_id,
+        idempotency_key,
+        client_order_id_value,
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8a-filled-open"))
+        .expect("authoritative NT open status should move the reservation to Open");
+    reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8a-filled-fill",
+            dec(2),
+            dec(0),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("authoritative NT fill truth should move the reservation to Filled");
+    (reservation, owner, reconciler, client_order_id)
+}
+
+fn nt_open_status(client_order_id: ClientOrderId, event_id: &str) -> NtOrderStatusReportTruth {
+    NtOrderStatusReportTruth {
+        client_order_id,
+        status: NtOrderStatusTruth::Open,
+        event_id: event_id.to_string(),
+        ts_event_unix_nanos: 1_150,
+        ts_init_unix_nanos: 1_151,
+    }
+}
+
+fn nt_fill(
+    client_order_id: ClientOrderId,
+    event_id: &str,
+    fill_quantity: Decimal,
+    remaining_fillable_quantity: Decimal,
+    actual_conservative_liquidation_value: Decimal,
+    actual_governor_cost_basis: Decimal,
+    terminal_cash_flows: Vec<Decimal>,
+) -> NtFillReportTruth {
+    NtFillReportTruth {
+        client_order_id,
+        event_id: event_id.to_string(),
+        ts_event_unix_nanos: 1_160,
+        ts_init_unix_nanos: 1_161,
+        fill_quantity,
+        remaining_fillable_quantity,
+        actual_conservative_liquidation_value,
+        actual_governor_cost_basis,
+        terminal_cash_flows,
+    }
+}
+
+fn nt_settlement(
+    client_order_id: ClientOrderId,
+    event_id: &str,
+    terminal_final: bool,
+    reconciliation_complete: bool,
+    conservative_liquidation_value: Decimal,
+    governor_cost_basis: Decimal,
+    terminal_cash_flows: Vec<Decimal>,
+) -> NtSettlementTruth {
+    NtSettlementTruth {
+        client_order_id,
+        event_id: event_id.to_string(),
+        ts_event_unix_nanos: 1_300,
+        ts_init_unix_nanos: 1_301,
+        terminal_final,
+        reconciliation_complete,
+        conservative_liquidation_value,
+        governor_cost_basis,
+        terminal_cash_flows,
+    }
+}
+
+fn only_reservation_record(owner: &RiskStateOwner) -> SubstrateReservationRecord {
+    let records = owner
+        .reservation_records()
+        .expect("reservation records should be readable");
+    assert_eq!(records.len(), 1);
+    records[0].clone()
 }
 
 fn client_order_id(value: &str) -> ClientOrderId {

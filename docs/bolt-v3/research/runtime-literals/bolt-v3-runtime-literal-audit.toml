@@ -19341,6 +19341,14 @@ reason = "Each accepted compare-and-reserve transaction consumes exactly one ope
 [[allowed]]
 path = "src/bolt_v3_risk_reservation_substrate/reservation_ledger.rs"
 kind = "number"
+literal = "1"
+context = '''self.open_order_count = self.open_order_count.saturating_sub(1);'''
+classification = "risk_reservation_settled_order_counter_decrement"
+reason = "A terminal-final and reconciled settlement releases exactly one previously consumed open-order reservation slot in the substrate accumulator; the headroom remains config/view-owned, while this is the structural unit decrement for the settled reservation."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/reservation_ledger.rs"
+kind = "number"
 literal = "0"
 context = '''open_order_count: 0,'''
 classification = "risk_reservation_open_order_counter_identity"

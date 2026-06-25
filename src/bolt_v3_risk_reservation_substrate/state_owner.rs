@@ -3,8 +3,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use nautilus_model::identifiers::ClientOrderId;
+
 use crate::bolt_v3_risk_reservation_substrate::contracts::{
-    ConfiguredLeaseAuthority, FencingToken, OwnerId, PoolId, PoolOwnershipLease, RiskStateVersion,
+    ConfiguredLeaseAuthority, DurableSubmissionIntent, FencingToken, LiveSubmissionRecord, OwnerId,
+    PoolId, PoolOwnershipLease, ReservationLifecycleState, RiskStateVersion,
 };
 use crate::bolt_v3_risk_reservation_substrate::{
     reservation_ledger::{
@@ -30,6 +33,10 @@ struct FencedRiskStateStoreInner {
     mutations: Vec<DurableRiskMutationRecord>,
     reservation_totals: BTreeMap<PoolId, RiskReservationTotals>,
     reservation_records: Vec<SubstrateReservationRecord>,
+    idempotent_reservations: BTreeMap<(PoolId, String), IdempotentReservationRecord>,
+    consumed_permits: BTreeMap<String, String>,
+    submission_intents: BTreeMap<(PoolId, String), DurableSubmissionIntent>,
+    live_submission_records: BTreeMap<(PoolId, String), LiveSubmissionRecord>,
 }
 
 impl FencedRiskStateStoreInner {
@@ -41,8 +48,20 @@ impl FencedRiskStateStoreInner {
             mutations: Vec::new(),
             reservation_totals: BTreeMap::new(),
             reservation_records: Vec::new(),
+            idempotent_reservations: BTreeMap::new(),
+            consumed_permits: BTreeMap::new(),
+            submission_intents: BTreeMap::new(),
+            live_submission_records: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IdempotentReservationRecord {
+    commit: RiskReservationCommit,
+    permit_id: String,
+    candidate_digest: String,
+    intent_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +217,218 @@ impl FencedRiskStateStore {
             .unwrap_or(rust_decimal::Decimal::ZERO))
     }
 
+    fn prepare_submission_intent(
+        &self,
+        lease: &PoolOwnershipLease,
+        reservation: &RiskReservationCommit,
+        client_order_id: ClientOrderId,
+        now_unix_nanos: u64,
+    ) -> Result<DurableSubmissionIntent, RiskSubmissionMutationError> {
+        let mut inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        if !inner
+            .reconciled
+            .get(lease.pool_id())
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err(RiskSubmissionMutationError::State(
+                RiskStateMutationError::ReconciliationRequired,
+            ));
+        }
+
+        let idempotency_key = reservation.admission_token.token_id.clone();
+        let map_key = (lease.pool_id().clone(), idempotency_key.clone());
+        if let Some(existing) = inner.submission_intents.get(&map_key) {
+            if existing.admission_token == reservation.admission_token
+                && existing.client_order_id == client_order_id
+            {
+                return Ok(existing.clone());
+            }
+            return Err(RiskSubmissionMutationError::SubmissionIntentConflict);
+        }
+
+        let record_index = matching_reservation_record_index(
+            &inner.reservation_records,
+            lease.pool_id(),
+            &reservation.admission_token.reservation_id,
+        )
+        .ok_or(RiskSubmissionMutationError::UnknownReservation)?;
+        if inner.reservation_records[record_index].admission_token != reservation.admission_token {
+            return Err(RiskSubmissionMutationError::AdmissionTokenMismatch);
+        }
+        if inner.reservation_records[record_index].lifecycle_state
+            != ReservationLifecycleState::Reserved
+        {
+            return Err(RiskSubmissionMutationError::ReservationNotReserved);
+        }
+        let instrument_id = inner.reservation_records[record_index]
+            .instrument_id
+            .clone();
+
+        let submitted_version = inner
+            .versions
+            .get(lease.pool_id())
+            .copied()
+            .unwrap_or_else(RiskStateVersion::zero)
+            .next()
+            .map_err(|_| {
+                RiskSubmissionMutationError::State(RiskStateMutationError::VersionOverflow)
+            })?;
+        inner.reservation_records[record_index].lifecycle_state =
+            ReservationLifecycleState::Submitted;
+        inner
+            .versions
+            .insert(lease.pool_id().clone(), submitted_version);
+        inner.mutations.push(DurableRiskMutationRecord {
+            pool_id: lease.pool_id().clone(),
+            fencing_token: lease.fencing_token(),
+            mutation: DurableRiskMutation::new(
+                idempotency_key.clone(),
+                RiskMutationKind::Submission,
+            ),
+            risk_state_version: submitted_version,
+        });
+
+        let intent = DurableSubmissionIntent {
+            admission_token: reservation.admission_token.clone(),
+            client_order_id,
+            instrument_id,
+            persisted_at_unix_nanos: now_unix_nanos,
+            submitted_risk_state_version: submitted_version,
+        };
+        inner.submission_intents.insert(map_key, intent.clone());
+        Ok(intent)
+    }
+
+    fn durable_submission_intents(
+        &self,
+        lease: &PoolOwnershipLease,
+    ) -> Result<Vec<DurableSubmissionIntent>, RiskSubmissionMutationError> {
+        let inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        Ok(inner
+            .submission_intents
+            .iter()
+            .filter_map(|((pool_id, _), intent)| {
+                (pool_id == lease.pool_id()).then_some(intent.clone())
+            })
+            .collect())
+    }
+
+    fn durable_submission_intent(
+        &self,
+        lease: &PoolOwnershipLease,
+        idempotency_key: &str,
+    ) -> Result<DurableSubmissionIntent, RiskSubmissionMutationError> {
+        let inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        inner
+            .submission_intents
+            .get(&(lease.pool_id().clone(), idempotency_key.to_string()))
+            .cloned()
+            .ok_or(RiskSubmissionMutationError::UnknownSubmissionIntent)
+    }
+
+    fn live_submission_record(
+        &self,
+        lease: &PoolOwnershipLease,
+        idempotency_key: &str,
+    ) -> Result<Option<LiveSubmissionRecord>, RiskSubmissionMutationError> {
+        let inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        Ok(inner
+            .live_submission_records
+            .get(&(lease.pool_id().clone(), idempotency_key.to_string()))
+            .cloned())
+    }
+
+    fn live_submission_records(
+        &self,
+        lease: &PoolOwnershipLease,
+    ) -> Result<Vec<LiveSubmissionRecord>, RiskSubmissionMutationError> {
+        let inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        Ok(inner
+            .live_submission_records
+            .iter()
+            .filter_map(|((pool_id, _), record)| {
+                (pool_id == lease.pool_id()).then_some(record.clone())
+            })
+            .collect())
+    }
+
+    fn record_live_submission(
+        &self,
+        lease: &PoolOwnershipLease,
+        idempotency_key: &str,
+        record: LiveSubmissionRecord,
+    ) -> Result<LiveSubmissionRecord, RiskSubmissionMutationError> {
+        let mut inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        let map_key = (lease.pool_id().clone(), idempotency_key.to_string());
+        if let Some(existing) = inner.live_submission_records.get(&map_key) {
+            if *existing == record {
+                return Ok(existing.clone());
+            }
+            return Err(RiskSubmissionMutationError::SubmissionIntentConflict);
+        }
+        inner
+            .live_submission_records
+            .insert(map_key, record.clone());
+        Ok(record)
+    }
+
+    fn complete_reconciliation(
+        &self,
+        lease: &PoolOwnershipLease,
+    ) -> Result<RiskStateVersion, RiskSubmissionMutationError> {
+        let mut inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        let version = inner
+            .versions
+            .get(lease.pool_id())
+            .copied()
+            .unwrap_or_else(RiskStateVersion::zero)
+            .next()
+            .map_err(|_| {
+                RiskSubmissionMutationError::State(RiskStateMutationError::VersionOverflow)
+            })?;
+        inner.versions.insert(lease.pool_id().clone(), version);
+        inner.reconciled.insert(lease.pool_id().clone(), true);
+        inner.mutations.push(DurableRiskMutationRecord {
+            pool_id: lease.pool_id().clone(),
+            fencing_token: lease.fencing_token(),
+            mutation: DurableRiskMutation::new(
+                version.get().to_string(),
+                RiskMutationKind::Reconciliation,
+            ),
+            risk_state_version: version,
+        });
+        Ok(version)
+    }
+
     fn compare_and_reserve(
         &self,
         lease: &PoolOwnershipLease,
@@ -217,6 +448,28 @@ impl FencedRiskStateStore {
             return Err(RiskReservationError::StateMutation(
                 RiskStateMutationError::ReconciliationRequired,
             ));
+        }
+
+        if &transaction.candidate.pool_id != lease.pool_id() {
+            return Err(RiskReservationError::PoolMismatch);
+        }
+
+        let idempotency_key = transaction.candidate.idempotency_key.clone();
+        let permit_id = transaction.candidate.sizing_permit.permit_id.clone();
+        let candidate_digest = transaction.candidate.sizing_permit.candidate_digest.clone();
+        let intent_id = transaction.candidate.intent_id.clone();
+        let reservation_key = (lease.pool_id().clone(), idempotency_key.clone());
+        if let Some(existing) = inner.idempotent_reservations.get(&reservation_key) {
+            if existing.permit_id == permit_id
+                && existing.candidate_digest == candidate_digest
+                && existing.intent_id == intent_id
+            {
+                return Ok(existing.commit.clone());
+            }
+            return Err(RiskReservationError::IdempotencyConflict);
+        }
+        if inner.consumed_permits.contains_key(&permit_id) {
+            return Err(RiskReservationError::PermitAlreadyConsumed);
         }
 
         let current_version = *inner
@@ -261,16 +514,31 @@ impl FencedRiskStateStore {
         inner.reservation_records.push(SubstrateReservationRecord {
             pool_id: lease.pool_id().clone(),
             admission_token: token.clone(),
+            instrument_id: transaction.candidate.instrument_id.clone(),
             assessment: assessment.clone(),
             evaluated_dimensions: evaluation.evaluated_dimensions.clone(),
+            lifecycle_state: ReservationLifecycleState::Reserved,
         });
-
-        Ok(RiskReservationCommit {
+        let commit = RiskReservationCommit {
             admission_token: token,
             assessment,
             evaluated_dimensions: evaluation.evaluated_dimensions,
             diagnostic_mismatches: evaluation.diagnostic_mismatches,
-        })
+        };
+        inner
+            .consumed_permits
+            .insert(permit_id.clone(), idempotency_key.clone());
+        inner.idempotent_reservations.insert(
+            reservation_key,
+            IdempotentReservationRecord {
+                commit: commit.clone(),
+                permit_id,
+                candidate_digest,
+                intent_id,
+            },
+        );
+
+        Ok(commit)
     }
 }
 
@@ -329,6 +597,61 @@ impl RiskStateOwner {
         self.store
             .reserved_bucket_stress_loss(self.lease.pool_id(), bucket)
     }
+
+    pub fn prepare_submission_intent(
+        &self,
+        reservation: &RiskReservationCommit,
+        client_order_id: ClientOrderId,
+        now_unix_nanos: u64,
+    ) -> Result<DurableSubmissionIntent, RiskSubmissionMutationError> {
+        self.store.prepare_submission_intent(
+            &self.lease,
+            reservation,
+            client_order_id,
+            now_unix_nanos,
+        )
+    }
+
+    pub fn durable_submission_intents(
+        &self,
+    ) -> Result<Vec<DurableSubmissionIntent>, RiskSubmissionMutationError> {
+        self.store.durable_submission_intents(&self.lease)
+    }
+
+    pub fn durable_submission_intent(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<DurableSubmissionIntent, RiskSubmissionMutationError> {
+        self.store
+            .durable_submission_intent(&self.lease, idempotency_key)
+    }
+
+    pub fn live_submission_record(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<Option<LiveSubmissionRecord>, RiskSubmissionMutationError> {
+        self.store
+            .live_submission_record(&self.lease, idempotency_key)
+    }
+
+    pub fn live_submission_records(
+        &self,
+    ) -> Result<Vec<LiveSubmissionRecord>, RiskSubmissionMutationError> {
+        self.store.live_submission_records(&self.lease)
+    }
+
+    pub fn record_live_submission(
+        &self,
+        idempotency_key: &str,
+        record: LiveSubmissionRecord,
+    ) -> Result<LiveSubmissionRecord, RiskSubmissionMutationError> {
+        self.store
+            .record_live_submission(&self.lease, idempotency_key, record)
+    }
+
+    pub fn complete_reconciliation(&self) -> Result<RiskStateVersion, RiskSubmissionMutationError> {
+        self.store.complete_reconciliation(&self.lease)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +696,16 @@ pub enum RiskStateMutationError {
     VersionOverflow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskSubmissionMutationError {
+    State(RiskStateMutationError),
+    UnknownReservation,
+    UnknownSubmissionIntent,
+    AdmissionTokenMismatch,
+    ReservationNotReserved,
+    SubmissionIntentConflict,
+}
+
 fn validate_lease(
     inner: &FencedRiskStateStoreInner,
     lease: &PoolOwnershipLease,
@@ -388,4 +721,14 @@ fn validate_lease(
         return Err(RiskStateMutationError::StaleFencingToken);
     }
     Ok(())
+}
+
+fn matching_reservation_record_index(
+    records: &[SubstrateReservationRecord],
+    pool_id: &PoolId,
+    reservation_id: &str,
+) -> Option<usize> {
+    records.iter().position(|record| {
+        &record.pool_id == pool_id && record.admission_token.reservation_id == reservation_id
+    })
 }

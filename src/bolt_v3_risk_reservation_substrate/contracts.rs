@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, num::NonZeroU64};
 
+use nautilus_model::identifiers::ClientOrderId;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
@@ -286,11 +287,48 @@ pub struct AdmissionToken {
     pub expires_at_unix_nanos: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AdmittedOrder {
-    pub admission_token: AdmissionToken,
-    pub client_order_id: String,
-    pub instrument_id: String,
+    admission_token: AdmissionToken,
+    client_order_id: ClientOrderId,
+    instrument_id: String,
+    submitted_risk_state_version: RiskStateVersion,
+}
+
+impl AdmittedOrder {
+    pub(super) fn from_submitted_reservation(
+        admission_token: AdmissionToken,
+        client_order_id: ClientOrderId,
+        instrument_id: String,
+        submitted_risk_state_version: RiskStateVersion,
+    ) -> Self {
+        Self {
+            admission_token,
+            client_order_id,
+            instrument_id,
+            submitted_risk_state_version,
+        }
+    }
+
+    pub fn admission_token(&self) -> &AdmissionToken {
+        &self.admission_token
+    }
+
+    pub fn client_order_id(&self) -> ClientOrderId {
+        self.client_order_id
+    }
+
+    pub fn instrument_id(&self) -> &str {
+        &self.instrument_id
+    }
+
+    pub fn risk_state_version(&self) -> RiskStateVersion {
+        self.submitted_risk_state_version
+    }
+
+    pub fn idempotency_key(&self) -> &str {
+        &self.admission_token.token_id
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,6 +336,40 @@ pub struct SizingDecisionPermit {
     pub permit_id: String,
     pub source_view_version: RiskStateVersion,
     pub candidate_digest: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservationLifecycleState {
+    Reserved,
+    Submitted,
+    Open,
+    SubmissionUnknown,
+    ReconciliationRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableSubmissionIntent {
+    pub admission_token: AdmissionToken,
+    pub client_order_id: ClientOrderId,
+    pub instrument_id: String,
+    pub persisted_at_unix_nanos: u64,
+    pub submitted_risk_state_version: RiskStateVersion,
+}
+
+impl DurableSubmissionIntent {
+    pub fn idempotency_key(&self) -> &str {
+        &self.admission_token.token_id
+    }
+
+    pub fn client_order_id(&self) -> ClientOrderId {
+        self.client_order_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveSubmissionRecord {
+    pub client_order_id: ClientOrderId,
+    pub risk_state_version: RiskStateVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

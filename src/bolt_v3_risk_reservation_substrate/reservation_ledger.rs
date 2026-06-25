@@ -6,8 +6,8 @@ use crate::{
     bolt_v3_capital_reservation::ReservationLedger,
     bolt_v3_risk_reservation_substrate::{
         contracts::{
-            AdmissionCandidate, AdmissionToken, PoolId, RiskAssessment, RiskSizingView,
-            RiskStateVersion,
+            AdmissionCandidate, AdmissionToken, PoolId, ReservationLifecycleState, RiskAssessment,
+            RiskSizingView, RiskStateVersion,
         },
         risk_classifier::ConcentrationBucket,
         risk_kernel::{RiskKernelError, RiskKernelInput},
@@ -121,6 +121,8 @@ pub enum RiskReservationError {
     PoolMismatch,
     CandidateExpired,
     PermitVersionMismatch,
+    PermitAlreadyConsumed,
+    IdempotencyConflict,
     InvalidCandidate,
     Kernel(RiskKernelError),
     Rejected(RiskReservationRejection),
@@ -131,8 +133,10 @@ pub enum RiskReservationError {
 pub struct SubstrateReservationRecord {
     pub pool_id: PoolId,
     pub admission_token: AdmissionToken,
+    pub instrument_id: String,
     pub assessment: RiskAssessment,
     pub evaluated_dimensions: BTreeSet<RiskCapDimension>,
+    pub lifecycle_state: ReservationLifecycleState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +227,13 @@ impl RiskReservationTransaction {
             || self.candidate.idempotency_key.trim().is_empty()
             || self.candidate.instrument_id.trim().is_empty()
             || self.candidate.policy_epoch_id.trim().is_empty()
+            || self.candidate.sizing_permit.permit_id.trim().is_empty()
+            || self
+                .candidate
+                .sizing_permit
+                .candidate_digest
+                .trim()
+                .is_empty()
             || self.candidate.quantity <= Decimal::ZERO
             || self.candidate.max_cash_outlay < Decimal::ZERO
         {

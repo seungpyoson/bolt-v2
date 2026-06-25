@@ -21,6 +21,7 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         DescriptorRegistryAdmissionError, DescriptorRegistryError, DescriptorTerminalStateEnvelope,
         InstrumentRiskDescriptor, InstrumentRiskRegistry, TerminalStateObservation,
     },
+    lifecycle_reconciler::{LifecycleReconciler, NtExecutionTruth, NtOrderStatusReportTruth},
     risk_classifier::{
         ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationError,
         RiskClassificationPolicy, RiskClassifier, RiskDescriptorCanonicalAttributes,
@@ -34,7 +35,11 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         DurableRiskMutation, FencedRiskStateStore, RiskMutationKind, RiskStateMutationError,
         RiskStateOwner,
     },
+    submission_authority::{
+        LiveSubmitBoundary, LiveSubmitReceipt, SubmissionAuthority, SubmissionAuthorityError,
+    },
 };
+use nautilus_model::identifiers::ClientOrderId;
 use rust_decimal::Decimal;
 
 #[test]
@@ -996,6 +1001,395 @@ fn s3_unmapped_terminal_state_emits_unknown_envelope_and_halts_admission_without
     );
 }
 
+#[test]
+fn s4_permit_consumption_is_atomic_and_double_spend_fails_closed() {
+    let (service, _owner, _store) =
+        reconciled_risk_context("pool-permit-consume", "owner-permit-consume");
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-permit-consume",
+        "candidate-instrument",
+        bucket,
+        dec(20),
+        dec(20),
+    );
+    let permit = SizingDecisionPermit {
+        permit_id: "permit-single-use".to_string(),
+        source_view_version: RiskStateVersion::zero(),
+        candidate_digest: "candidate-digest-a".to_string(),
+    };
+
+    service
+        .compare_and_reserve(
+            &view,
+            admission_candidate_with_permit(
+                "intent-permit-first",
+                "idempotency-permit-first",
+                "pool-permit-consume",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(2),
+                permit.clone(),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("first permit consumption should reserve");
+
+    let error = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate_with_permit(
+                "intent-permit-second",
+                "idempotency-permit-second",
+                "pool-permit-consume",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(2),
+                permit,
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_011,
+        )
+        .expect_err("a consumed permit must fail closed instead of authorizing a second order");
+
+    assert_eq!(error, AdmissionReserveError::PermitAlreadyConsumed);
+    assert_eq!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable")
+            .len(),
+        1,
+        "permit double-spend must not add a second reservation"
+    );
+}
+
+#[test]
+fn s4_same_idempotency_key_replays_existing_reservation_without_second_live_order() {
+    let (service, owner, _store) =
+        reconciled_risk_context("pool-idempotent-reserve", "owner-idempotent-reserve");
+    let authority = SubmissionAuthority::new(owner);
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-idempotent-reserve",
+        "candidate-instrument",
+        bucket,
+        dec(20),
+        dec(20),
+    );
+    let candidate = admission_candidate(
+        "intent-idempotent",
+        "idempotency-idempotent",
+        "pool-idempotent-reserve",
+        "candidate-instrument",
+        RiskStateVersion::zero(),
+        dec(2),
+    );
+
+    let first = service
+        .compare_and_reserve(
+            &view,
+            candidate.clone(),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("first idempotency key use should reserve");
+    let replay = service
+        .compare_and_reserve(
+            &view,
+            candidate,
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_011,
+        )
+        .expect("same idempotency key must replay the existing reservation result");
+
+    assert_eq!(replay, first);
+    assert_eq!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable")
+            .len(),
+        1,
+        "idempotent reservation replay must not create a second reservation"
+    );
+
+    let mut sink = RecordingLiveSubmitBoundary::default();
+    let client_order_id = client_order_id("S4-IDEMPOTENT-ORDER");
+    let submit = authority
+        .submit_idempotently(&first, client_order_id, &mut sink, 1_100)
+        .expect("first admitted order should reach the live boundary");
+    let replay_submit = authority
+        .submit_idempotently(&first, client_order_id, &mut sink, 1_101)
+        .expect("submit replay should return the existing live result");
+
+    assert_eq!(replay_submit, submit);
+    assert_eq!(
+        sink.submitted_client_order_ids(),
+        vec![client_order_id],
+        "submit replay must not send a second live order"
+    );
+}
+
+#[test]
+fn s4_submission_intent_is_durable_before_first_live_send() {
+    let (service, owner, _store) =
+        reconciled_risk_context("pool-durable-submit", "owner-durable-submit");
+    let authority = SubmissionAuthority::new(owner);
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-durable-submit",
+        "candidate-instrument",
+        bucket,
+        dec(20),
+        dec(20),
+    );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-durable-submit",
+                "idempotency-durable-submit",
+                "pool-durable-submit",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(2),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("reservation should issue an admission token");
+    let client_order_id = client_order_id("S4-DURABLE-ORDER");
+    let mut sink = RecordingLiveSubmitBoundary::default();
+
+    let admitted = authority
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("submission authority must persist intent and construct AdmittedOrder");
+
+    let intents = authority
+        .durable_submission_intents()
+        .expect("durable intents should be readable");
+    assert_eq!(intents.len(), 1);
+    assert_eq!(intents[0].client_order_id(), client_order_id);
+    assert!(
+        sink.submitted_client_order_ids().is_empty(),
+        "durable intent must exist before the first live send"
+    );
+
+    authority
+        .submit_prepared(admitted, &mut sink, 1_101)
+        .expect("prepared admitted order should submit");
+    assert_eq!(sink.submitted_client_order_ids(), vec![client_order_id]);
+}
+
+#[test]
+fn s4_sc_004_restart_reconciles_durable_intent_to_one_live_order_and_one_reservation() {
+    let (service, owner, store) = reconciled_risk_context("pool-restart", "owner-before-crash");
+    let authority = SubmissionAuthority::new(owner);
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-restart",
+        "candidate-instrument",
+        bucket,
+        dec(20),
+        dec(20),
+    );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-restart",
+                "idempotency-restart",
+                "pool-restart",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(2),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("reservation should issue an admission token");
+    let client_order_id = client_order_id("S4-RESTART-ORDER");
+    authority
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("crash point: durable intent exists before send");
+
+    let restarted_owner = RiskStateOwner::acquire(
+        store,
+        PoolId::new("pool-restart").expect("pool id should be valid"),
+        "owner-after-crash",
+    )
+    .expect("successor owner should acquire the pool");
+    let restarted_authority = SubmissionAuthority::new(restarted_owner.clone());
+    let reconciler = LifecycleReconciler::new(restarted_owner);
+    let mut sink = RecordingLiveSubmitBoundary::default();
+
+    let summary = reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect("restart reconciliation should recover the durable intent");
+
+    assert_eq!(summary.live_order_count, 1);
+    assert_eq!(summary.reservation_count, 1);
+    assert!(
+        summary.risk_state_version > reservation.admission_token.risk_state_version,
+        "reconciliation must leave a coherent advanced risk-state version"
+    );
+    assert_eq!(
+        sink.submitted_client_order_ids(),
+        vec![client_order_id],
+        "crash recovery must create exactly one live order"
+    );
+
+    let replay = restarted_authority
+        .submit_durable_intent("idempotency-restart", &mut sink, 1_201)
+        .expect("replay of recovered intent should return existing result");
+    assert_eq!(replay.client_order_id, client_order_id);
+    assert_eq!(
+        sink.submitted_client_order_ids(),
+        vec![client_order_id],
+        "replay after reconciliation must not send a second live order"
+    );
+}
+
+#[test]
+fn s4_reconnect_reconciliation_uses_nt_order_status_report_identity() {
+    let (service, owner, store) =
+        reconciled_risk_context("pool-reconnect", "owner-before-reconnect");
+    let authority = SubmissionAuthority::new(owner);
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-reconnect",
+        "candidate-instrument",
+        bucket,
+        dec(20),
+        dec(20),
+    );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-reconnect",
+                "idempotency-reconnect",
+                "pool-reconnect",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(2),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("reservation should issue an admission token");
+    let client_order_id = client_order_id("S4-RECONNECT-ORDER");
+    authority
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("durable intent should exist before reconnect reconciliation");
+
+    let restarted_owner = RiskStateOwner::acquire(
+        store,
+        PoolId::new("pool-reconnect").expect("pool id should be valid"),
+        "owner-after-reconnect",
+    )
+    .expect("successor owner should acquire the pool");
+    let reconciler = LifecycleReconciler::new(restarted_owner);
+    let mut sink = RecordingLiveSubmitBoundary::default();
+
+    let summary = reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: vec![NtOrderStatusReportTruth {
+                    client_order_id,
+                    event_id: "nt-order-status-event".to_string(),
+                    ts_event_unix_nanos: 1_150,
+                    ts_init_unix_nanos: 1_151,
+                }],
+                fill_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect("NT OrderStatusReport identity should reconcile the durable intent");
+
+    assert_eq!(summary.live_order_count, 1);
+    assert_eq!(summary.reservation_count, 1);
+    assert!(
+        sink.submitted_client_order_ids().is_empty(),
+        "an NT OrderStatusReport for the ClientOrderId proves the order exists; no replay send needed"
+    );
+}
+
+#[test]
+fn s4_sc_012_submit_boundary_is_admitted_order_only_and_authority_owned() {
+    let contracts = include_str!("../src/bolt_v3_risk_reservation_substrate/contracts.rs");
+    assert!(
+        contracts.contains("pub struct AdmittedOrder {\n    admission_token: AdmissionToken,"),
+        "AdmittedOrder fields must stay private so external modules cannot construct it"
+    );
+    assert!(
+        !contracts.contains("pub client_order_id"),
+        "AdmittedOrder must not expose public struct-literal construction fields"
+    );
+
+    let authority_source =
+        include_str!("../src/bolt_v3_risk_reservation_substrate/submission_authority.rs");
+    assert!(
+        authority_source.contains("fn submit_admitted_order")
+            && authority_source.contains("order: AdmittedOrder"),
+        "the live submit trait must accept only AdmittedOrder"
+    );
+    assert!(
+        authority_source.contains("prepare_admitted_order")
+            && authority_source.contains("prepare_submission_intent"),
+        "submission authority must be the only public path that asks the state owner to move Reserved -> Submitted"
+    );
+    let state_owner_source =
+        include_str!("../src/bolt_v3_risk_reservation_substrate/state_owner.rs");
+    assert!(
+        state_owner_source.contains("ReservationLifecycleState::Reserved")
+            && state_owner_source.contains("ReservationLifecycleState::Submitted"),
+        "the store transition that backs AdmittedOrder construction must be Reserved -> Submitted"
+    );
+
+    let forbidden_constructor = "from_submitted_reservation(";
+    for (path, source) in [
+        (
+            "admission_service.rs",
+            include_str!("../src/bolt_v3_risk_reservation_substrate/admission_service.rs"),
+        ),
+        (
+            "lifecycle_reconciler.rs",
+            include_str!("../src/bolt_v3_risk_reservation_substrate/lifecycle_reconciler.rs"),
+        ),
+        (
+            "risk_view_publisher.rs",
+            include_str!("../src/bolt_v3_risk_reservation_substrate/risk_view_publisher.rs"),
+        ),
+        ("state_owner.rs", state_owner_source),
+    ] {
+        assert!(
+            !source.contains(forbidden_constructor),
+            "{path} must not construct AdmittedOrder; only submission_authority owns the boundary"
+        );
+    }
+}
+
 fn scoped_stress_fixture(evaluation_scope: RiskEvaluationScope) -> RiskKernelInput {
     RiskKernelInput {
         risk_state_version:
@@ -1080,6 +1474,14 @@ fn dec(value: i64) -> Decimal {
 }
 
 fn reconciled_admission_service(pool_id: &str, owner_id: &str) -> AdmissionService {
+    let (service, _owner, _store) = reconciled_risk_context(pool_id, owner_id);
+    service
+}
+
+fn reconciled_risk_context(
+    pool_id: &str,
+    owner_id: &str,
+) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
     let lease_authority = ConfiguredLeaseAuthority::new(
         LeaseAuthorityBackend::DynamoDbConditionalWrite,
         format!("{pool_id}-lease-authority"),
@@ -1095,7 +1497,7 @@ fn reconciled_admission_service(pool_id: &str, owner_id: &str) -> AdmissionServi
     owner
         .reconcile_before_new_risk()
         .expect("owner should reconcile before admission");
-    AdmissionService::new(owner)
+    (AdmissionService::new(owner.clone()), owner, store)
 }
 
 fn unlatched_safety(risk_state_version: RiskStateVersion) -> BoundReusableSafetyState {
@@ -1251,6 +1653,58 @@ fn admission_candidate_from_preview(
             candidate_digest: "candidate-digest".to_string(),
         },
         expires_at_unix_nanos: 2_000,
+    }
+}
+
+fn admission_candidate_with_permit(
+    intent_id: &str,
+    idempotency_key: &str,
+    pool_id: &str,
+    instrument_id: &str,
+    source_view_version: RiskStateVersion,
+    max_cash_outlay: Decimal,
+    sizing_permit: SizingDecisionPermit,
+) -> AdmissionCandidate {
+    AdmissionCandidate {
+        sizing_permit,
+        ..admission_candidate(
+            intent_id,
+            idempotency_key,
+            pool_id,
+            instrument_id,
+            source_view_version,
+            max_cash_outlay,
+        )
+    }
+}
+
+fn client_order_id(value: &str) -> ClientOrderId {
+    ClientOrderId::from(value)
+}
+
+#[derive(Default)]
+struct RecordingLiveSubmitBoundary {
+    submitted: Vec<ClientOrderId>,
+}
+
+impl RecordingLiveSubmitBoundary {
+    fn submitted_client_order_ids(&self) -> Vec<ClientOrderId> {
+        self.submitted.clone()
+    }
+}
+
+impl LiveSubmitBoundary for RecordingLiveSubmitBoundary {
+    type Error = SubmissionAuthorityError;
+
+    fn submit_admitted_order(
+        &mut self,
+        order: AdmittedOrder,
+    ) -> Result<LiveSubmitReceipt, Self::Error> {
+        self.submitted.push(order.client_order_id());
+        Ok(LiveSubmitReceipt {
+            client_order_id: order.client_order_id(),
+            risk_state_version: order.risk_state_version(),
+        })
     }
 }
 

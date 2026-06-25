@@ -1,3 +1,4 @@
+// Disposable CI archive timing probe: force root crate recompilation on this branch.
 pub mod bolt_v3_adapters;
 pub mod bolt_v3_archetypes;
 pub mod bolt_v3_atomic_io;

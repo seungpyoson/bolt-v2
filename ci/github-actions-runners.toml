@@ -16,6 +16,7 @@ variable = "CI_RUNNER_MANAGED_LIGHT"
 label = "ubicloud-standard-2"
 
 [workflows.ci]
+archive-timings = "managed_heavy"
 ci-policy = "github_hosted"
 detector = "github_hosted"
 host-health = "github_hosted"

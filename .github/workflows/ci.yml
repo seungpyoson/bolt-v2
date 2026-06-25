@@ -59,6 +59,10 @@ on:
         description: "Run full CI for the selected ref"
         required: false
         default: "false"
+      archive_timings:
+        description: "Run the disposable ARM nextest archive timings probe"
+        required: false
+        default: "false"
   # Merge queue lane: GitHub dispatches merge_group/checks_requested on the
   # temporary gh-readonly-queue ref carrying the exact to-be-merged commit.
   # Required checks MUST report on this event or the merge is blocked, and a
@@ -114,6 +118,62 @@ permissions:
   actions: read
 
 jobs:
+  archive-timings:
+    name: archive timings
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.archive_timings == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+          include-managed-target-dir: "true"
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: false
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-v1
+          save-if: false
+
+      - name: Restore archive build target cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Build test binaries with Cargo timings
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: just test-archive-timings
+
+      - name: List Cargo timings
+        run: ls -lh "${{ steps.setup.outputs.managed_target_dir }}/cargo-timings"
+
+      - name: Upload Cargo timings
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cargo-timings-arm-${{ github.run_attempt }}
+          path: ${{ steps.setup.outputs.managed_target_dir }}/cargo-timings/*.html
+          if-no-files-found: error
+          retention-days: 3
+
   ci-policy:
     name: ci-policy
     outputs:

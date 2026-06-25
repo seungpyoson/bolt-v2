@@ -273,6 +273,9 @@ test *args: check-workspace require-rust-verification-owner
 test-archive archive *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest archive --locked --archive-file "{{archive}}" {{args}}
 
+test-archive-timings *args: check-workspace require-rust-verification-owner
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --no-run --locked --timings {{args}}
+
 test-archive-run archive extract_root *args: check-workspace require-rust-verification-owner
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" {{args}}
 

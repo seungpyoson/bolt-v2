@@ -2445,6 +2445,396 @@ fn s8a_full_lifecycle_reaches_settled_only_after_terminal_final_reconciled_truth
 }
 
 #[test]
+fn s8b_local_cancel_timeout_and_expiry_mark_intent_without_releasing_reserved_risk() {
+    for (case_name, mutation_id, client_order_id_value) in [
+        (
+            "cancel-request",
+            "s8b-local-cancel-request",
+            "S8B-LOCAL-CANCEL-REQUEST",
+        ),
+        (
+            "cancel-timeout",
+            "s8b-local-cancel-timeout",
+            "S8B-LOCAL-CANCEL-TIMEOUT",
+        ),
+        ("local-expiry", "s8b-local-expiry", "S8B-LOCAL-EXPIRY"),
+    ] {
+        let pool_id = format!("pool-s8b-local-{case_name}");
+        let owner_id = format!("owner-s8b-local-{case_name}");
+        let intent_id = format!("intent-s8b-local-{case_name}");
+        let idempotency_key = format!("idempotency-s8b-local-{case_name}");
+        let (_reservation, owner, _reconciler, client_order_id) = submitted_reservation_context(
+            &pool_id,
+            &owner_id,
+            &intent_id,
+            &idempotency_key,
+            client_order_id_value,
+        );
+        let pre_cancel_totals = owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable before local cancel intent");
+
+        let summary = owner
+            .mark_cancel_requested(client_order_id, mutation_id)
+            .expect("local cancel-like intent should mark CancelRequested");
+
+        assert_eq!(
+            summary.lifecycle_state,
+            ReservationLifecycleState::CancelRequested
+        );
+        assert_eq!(
+            owner
+                .reserved_risk_totals()
+                .expect("reserved totals should be readable after local cancel intent"),
+            pre_cancel_totals,
+            "local {case_name} must not release any reserved risk"
+        );
+        let record = only_reservation_record(&owner);
+        assert_eq!(
+            record.lifecycle_state,
+            ReservationLifecycleState::CancelRequested
+        );
+        assert_eq!(record.remaining_fillable_quantity, dec(2));
+        assert!(
+            record.filled_position_exposure.is_none(),
+            "local cancel intent alone must not synthesize a fill"
+        );
+    }
+}
+
+#[test]
+fn s8b_cancel_confirmed_releases_open_remainder_but_retains_filled_position() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8b-cancel-confirmed",
+        "owner-s8b-cancel-confirmed",
+        "intent-s8b-cancel-confirmed",
+        "idempotency-s8b-cancel-confirmed",
+        "S8B-CANCEL-CONFIRMED",
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8b-cancel-open"))
+        .expect("authoritative open status should move the order to Open");
+    reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8b-cancel-partial-fill",
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("partial fill should establish filled-position reservation");
+    let pre_confirm_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before cancel confirmation");
+
+    let summary = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status(
+            client_order_id,
+            "s8b-cancel-confirmed",
+        ))
+        .expect("authoritative cancel confirmation should release the open remainder");
+
+    assert_eq!(
+        summary.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    let record = only_reservation_record(&owner);
+    assert_eq!(
+        record.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    assert_eq!(record.remaining_fillable_quantity, Decimal::ZERO);
+    let exposure = record
+        .filled_position_exposure
+        .expect("filled-position exposure must stay active after cancel confirmation");
+    assert_eq!(exposure.quantity, dec(1));
+    let post_confirm_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after cancel confirmation");
+    assert!(
+        post_confirm_totals.equity_floor_stress_loss()
+            < pre_confirm_totals.equity_floor_stress_loss(),
+        "cancel confirmation must remove the open-order assessment"
+    );
+    assert_eq!(
+        post_confirm_totals.equity_floor_stress_loss(),
+        record.filled_position_equity_floor_stress_loss
+    );
+    assert_eq!(
+        post_confirm_totals.governor_realized_loss(),
+        record.filled_position_governor_realized_loss
+    );
+    assert_eq!(post_confirm_totals.collateral_required(), Decimal::ZERO);
+    assert_eq!(post_confirm_totals.open_order_count(), 0);
+    assert_eq!(post_confirm_totals.position_quantity(), exposure.quantity);
+}
+
+#[test]
+fn s8b_late_fill_after_cancel_requested_still_applies_under_existing_reservation() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8b-late-fill",
+        "owner-s8b-late-fill",
+        "intent-s8b-late-fill",
+        "idempotency-s8b-late-fill",
+        "S8B-LATE-FILL",
+    );
+    let pre_cancel_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before cancel request");
+    owner
+        .mark_cancel_requested(client_order_id, "s8b-late-fill-cancel-requested")
+        .expect("local cancel request should only mark intent");
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after cancel request"),
+        pre_cancel_totals,
+        "CancelRequested must keep the original reservation covering late fills"
+    );
+
+    let summary = reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8b-late-fill-after-cancel",
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("authoritative late fill after CancelRequested should apply");
+
+    assert_eq!(
+        summary.lifecycle_state,
+        ReservationLifecycleState::PartiallyFilled
+    );
+    let record = only_reservation_record(&owner);
+    assert_eq!(
+        record.lifecycle_state,
+        ReservationLifecycleState::PartiallyFilled
+    );
+    assert_eq!(record.remaining_fillable_quantity, dec(1));
+    assert_eq!(
+        record
+            .filled_position_exposure
+            .expect("late fill should create filled exposure")
+            .quantity,
+        dec(1)
+    );
+    let post_fill_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after late fill");
+    assert!(
+        post_fill_totals.equity_floor_stress_loss() >= pre_cancel_totals.equity_floor_stress_loss(),
+        "late fill risk must be added while the original open reservation remains active"
+    );
+    assert_eq!(
+        post_fill_totals.open_order_count(),
+        pre_cancel_totals.open_order_count()
+    );
+}
+
+#[test]
+fn s8b_expired_confirmed_releases_unfilled_open_reservation() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8b-expired-confirmed",
+        "owner-s8b-expired-confirmed",
+        "intent-s8b-expired-confirmed",
+        "idempotency-s8b-expired-confirmed",
+        "S8B-EXPIRED-CONFIRMED",
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8b-expired-open"))
+        .expect("authoritative open status should move the order to Open");
+    let pre_confirm_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before expiry confirmation");
+    assert!(
+        pre_confirm_totals.equity_floor_stress_loss() > Decimal::ZERO,
+        "test setup must reserve open-order risk before expiry confirmation"
+    );
+
+    let summary = reconciler
+        .apply_order_status_truth(nt_expired_confirmed_status(
+            client_order_id,
+            "s8b-expired-confirmed",
+        ))
+        .expect("authoritative expiry confirmation should release unfilled open reservation");
+
+    assert_eq!(
+        summary.lifecycle_state,
+        ReservationLifecycleState::ExpiredConfirmed
+    );
+    let record = only_reservation_record(&owner);
+    assert_eq!(
+        record.lifecycle_state,
+        ReservationLifecycleState::ExpiredConfirmed
+    );
+    assert_eq!(record.remaining_fillable_quantity, Decimal::ZERO);
+    assert!(
+        record.filled_position_exposure.is_none(),
+        "unfilled expiry confirmation must not synthesize a filled position"
+    );
+    let post_confirm_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after expiry confirmation");
+    assert_eq!(post_confirm_totals.collateral_required(), Decimal::ZERO);
+    assert_eq!(
+        post_confirm_totals.equity_floor_stress_loss(),
+        Decimal::ZERO
+    );
+    assert_eq!(post_confirm_totals.governor_realized_loss(), Decimal::ZERO);
+    assert_eq!(post_confirm_totals.open_order_count(), 0);
+    assert_eq!(post_confirm_totals.position_quantity(), Decimal::ZERO);
+}
+
+#[test]
+fn s8b_replace_keeps_old_and_new_reserved_until_old_is_confirmed_non_fillable() {
+    let pool_id = "pool-s8b-replace";
+    let (service, owner, _store) = reconciled_risk_context(pool_id, "owner-s8b-replace");
+    let authority = SubmissionAuthority::new(owner.clone());
+    let bucket = bucket("risk_class", "alpha");
+    let old_view = published_view_with_open_order_headroom(
+        RiskStateVersion::zero(),
+        pool_id,
+        "candidate-instrument",
+        bucket.clone(),
+        dec(100),
+        dec(100),
+        2,
+    );
+    let old_reservation = service
+        .compare_and_reserve(
+            &old_view,
+            admission_candidate_from_preview(
+                "intent-s8b-replace-old",
+                "idempotency-s8b-replace-old",
+                RiskPreviewInput {
+                    pool_id: PoolId::new(pool_id).expect("pool id should be valid"),
+                    instrument_id: "candidate-instrument".to_string(),
+                    model_risk_scope: ModelRiskEvaluationScope::CandidateInstrument {
+                        instrument_id: "candidate-instrument".to_string(),
+                    },
+                    side: "long".to_string(),
+                    quantity: dec(2),
+                    order_type: "limit".to_string(),
+                    time_in_force: "gtc".to_string(),
+                    max_unit_price: Some(dec(20)),
+                    max_cash_outlay: dec(20),
+                    source_view_version: RiskStateVersion::zero(),
+                    policy_epoch_id: "policy-epoch".to_string(),
+                },
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("old reservation should be accepted");
+    let old_client_order_id = client_order_id("S8B-REPLACE-OLD");
+    authority
+        .prepare_admitted_order(&old_reservation, old_client_order_id, 1_100)
+        .expect("old reservation should move to Submitted");
+    let reconciler = LifecycleReconciler::new(owner.clone());
+    reconciler
+        .apply_order_status_truth(nt_open_status(old_client_order_id, "s8b-replace-old-open"))
+        .expect("old order should be open before replacement is reserved");
+    let old_only_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before replacement");
+    let replacement_view_version = owner
+        .policy_epoch_snapshot()
+        .expect("policy snapshot should expose replacement source version")
+        .risk_state_version;
+    let replacement_view = published_view_with_open_order_headroom(
+        replacement_view_version,
+        pool_id,
+        "candidate-instrument",
+        bucket,
+        dec(100),
+        dec(100),
+        2,
+    );
+    let replacement = service
+        .compare_and_reserve(
+            &replacement_view,
+            admission_candidate_with_permit(
+                "intent-s8b-replace-new",
+                "idempotency-s8b-replace-new",
+                pool_id,
+                "candidate-instrument",
+                replacement_view_version,
+                dec(20),
+                SizingDecisionPermit {
+                    permit_id: "permit-s8b-replace-new".to_string(),
+                    source_view_version: replacement_view_version,
+                    candidate_digest: "candidate-digest-s8b-replace-new".to_string(),
+                },
+            ),
+            unlatched_safety(replacement_view_version),
+            None,
+            1_200,
+        )
+        .expect("replacement reservation should be accepted while old remains live");
+    let replacement_client_order_id = client_order_id("S8B-REPLACE-NEW");
+    authority
+        .prepare_admitted_order(&replacement, replacement_client_order_id, 1_210)
+        .expect("replacement reservation should move to Submitted");
+    let combined_totals = owner
+        .reserved_risk_totals()
+        .expect("combined totals should be readable after replacement reserve");
+
+    assert_eq!(combined_totals.open_order_count(), 2);
+    assert!(
+        combined_totals.equity_floor_stress_loss() > old_only_totals.equity_floor_stress_loss(),
+        "old and replacement exposure must both be reserved before old non-fillability"
+    );
+
+    let summary = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status(
+            old_client_order_id,
+            "s8b-replace-old-cancel-confirmed",
+        ))
+        .expect("old non-fillability confirmation should release only the old open reservation");
+
+    assert_eq!(
+        summary.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    let old_record = reservation_record_for_commit(&owner, &old_reservation);
+    let replacement_record = reservation_record_for_commit(&owner, &replacement);
+    assert_eq!(
+        old_record.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    assert_eq!(
+        replacement_record.lifecycle_state,
+        ReservationLifecycleState::Submitted
+    );
+    let post_confirm_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after old cancel confirmation");
+    assert_eq!(post_confirm_totals.open_order_count(), 1);
+    assert_eq!(
+        post_confirm_totals.equity_floor_stress_loss(),
+        replacement_record.assessment.equity_floor_stress_loss
+    );
+    assert_eq!(
+        post_confirm_totals.governor_realized_loss(),
+        replacement_record.assessment.governor_realized_loss
+    );
+    assert_eq!(
+        post_confirm_totals.collateral_required(),
+        replacement_record.assessment.collateral_required
+    );
+    assert_eq!(
+        post_confirm_totals.position_quantity(),
+        replacement_record.reserved_order_quantity
+    );
+}
+
+#[test]
 fn s4_sc_012_submit_boundary_is_admitted_order_only_and_authority_owned() {
     let contracts = include_str!("../src/bolt_v3_risk_reservation_substrate/contracts.rs");
     assert!(
@@ -2797,6 +3187,52 @@ fn published_view_with_classification(
     terminal_cash_flows: Vec<Decimal>,
     positions: Vec<RiskExposure>,
 ) -> bolt_v2::bolt_v3_risk_reservation_substrate::risk_view_publisher::PublishedRiskView {
+    published_view_with_classification_and_open_order_headroom(
+        risk_state_version,
+        pool_id,
+        instrument_id,
+        buckets,
+        global_headroom,
+        bucket_headroom,
+        terminal_cash_flows,
+        positions,
+        1,
+    )
+}
+
+fn published_view_with_open_order_headroom(
+    risk_state_version: RiskStateVersion,
+    pool_id: &str,
+    instrument_id: &str,
+    bucket: ConcentrationBucket,
+    global_headroom: Decimal,
+    bucket_headroom: Decimal,
+    open_order_headroom: u64,
+) -> bolt_v2::bolt_v3_risk_reservation_substrate::risk_view_publisher::PublishedRiskView {
+    published_view_with_classification_and_open_order_headroom(
+        risk_state_version,
+        pool_id,
+        instrument_id,
+        vec![bucket],
+        global_headroom,
+        bucket_headroom,
+        vec![dec(0), dec(99)],
+        Vec::new(),
+        open_order_headroom,
+    )
+}
+
+fn published_view_with_classification_and_open_order_headroom(
+    risk_state_version: RiskStateVersion,
+    pool_id: &str,
+    instrument_id: &str,
+    buckets: Vec<ConcentrationBucket>,
+    global_headroom: Decimal,
+    bucket_headroom: Decimal,
+    terminal_cash_flows: Vec<Decimal>,
+    positions: Vec<RiskExposure>,
+    open_order_headroom: u64,
+) -> bolt_v2::bolt_v3_risk_reservation_substrate::risk_view_publisher::PublishedRiskView {
     let descriptor_attributes = BTreeMap::from_iter(buckets.iter().map(|bucket| {
         (
             format!("descriptor_{}", bucket.bucket_class()),
@@ -2825,7 +3261,7 @@ fn published_view_with_classification(
                     .cloned()
                     .map(|bucket| (bucket, bucket_headroom)),
             ),
-            open_order_headroom: 1,
+            open_order_headroom,
             position_quantity_headroom: dec(100),
         },
         active_descriptor: ActiveDescriptorView {
@@ -3115,6 +3551,32 @@ fn nt_open_status(client_order_id: ClientOrderId, event_id: &str) -> NtOrderStat
     }
 }
 
+fn nt_cancel_confirmed_status(
+    client_order_id: ClientOrderId,
+    event_id: &str,
+) -> NtOrderStatusReportTruth {
+    NtOrderStatusReportTruth {
+        client_order_id,
+        status: NtOrderStatusTruth::CancelConfirmed,
+        event_id: event_id.to_string(),
+        ts_event_unix_nanos: 1_170,
+        ts_init_unix_nanos: 1_171,
+    }
+}
+
+fn nt_expired_confirmed_status(
+    client_order_id: ClientOrderId,
+    event_id: &str,
+) -> NtOrderStatusReportTruth {
+    NtOrderStatusReportTruth {
+        client_order_id,
+        status: NtOrderStatusTruth::ExpiredConfirmed,
+        event_id: event_id.to_string(),
+        ts_event_unix_nanos: 1_180,
+        ts_init_unix_nanos: 1_181,
+    }
+}
+
 fn nt_fill(
     client_order_id: ClientOrderId,
     event_id: &str,
@@ -3165,6 +3627,18 @@ fn only_reservation_record(owner: &RiskStateOwner) -> SubstrateReservationRecord
         .expect("reservation records should be readable");
     assert_eq!(records.len(), 1);
     records[0].clone()
+}
+
+fn reservation_record_for_commit(
+    owner: &RiskStateOwner,
+    reservation: &RiskReservationCommit,
+) -> SubstrateReservationRecord {
+    owner
+        .reservation_records()
+        .expect("reservation records should be readable")
+        .into_iter()
+        .find(|record| record.admission_token == reservation.admission_token)
+        .expect("reservation record for commit should exist")
 }
 
 fn client_order_id(value: &str) -> ClientOrderId {

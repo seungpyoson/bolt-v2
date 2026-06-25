@@ -34,6 +34,8 @@ pub struct NtOrderStatusReportTruth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NtOrderStatusTruth {
     Open,
+    CancelConfirmed,
+    ExpiredConfirmed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +110,8 @@ impl LifecycleReconciler {
     ) -> Result<LifecycleEventSummary, LifecycleReconciliationError> {
         let target_state = match truth.status {
             NtOrderStatusTruth::Open => ReservationLifecycleState::Open,
+            NtOrderStatusTruth::CancelConfirmed => ReservationLifecycleState::CancelConfirmed,
+            NtOrderStatusTruth::ExpiredConfirmed => ReservationLifecycleState::ExpiredConfirmed,
         };
         self.owner
             .apply_order_lifecycle_state(truth.client_order_id, &truth.event_id, target_state)

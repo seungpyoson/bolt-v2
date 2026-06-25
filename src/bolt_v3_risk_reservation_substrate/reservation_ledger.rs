@@ -289,6 +289,35 @@ impl RiskReservationTotals {
         self.position_quantity =
             subtract_floor_zero(self.position_quantity, record.reserved_order_quantity);
     }
+
+    pub fn release_open_order_remainder(&mut self, record: &SubstrateReservationRecord) {
+        self.collateral_required = subtract_floor_zero(
+            self.collateral_required,
+            record.assessment.collateral_required,
+        );
+        self.equity_floor_stress_loss = subtract_floor_zero(
+            self.equity_floor_stress_loss,
+            record.assessment.equity_floor_stress_loss,
+        );
+        self.governor_realized_loss = subtract_floor_zero(
+            self.governor_realized_loss,
+            record.assessment.governor_realized_loss,
+        );
+        self.global_stress_loss = subtract_floor_zero(
+            self.global_stress_loss,
+            record.assessment.equity_floor_stress_loss,
+        );
+        for bucket in &record.buckets {
+            let remaining = subtract_floor_zero(
+                self.reserved_bucket_stress_loss(bucket),
+                record.assessment.equity_floor_stress_loss,
+            );
+            self.bucket_stress_loss.insert(bucket.clone(), remaining);
+        }
+        self.open_order_count = self.open_order_count.saturating_sub(1);
+        self.position_quantity =
+            subtract_floor_zero(self.position_quantity, record.remaining_fillable_quantity);
+    }
 }
 
 fn subtract_floor_zero(value: Decimal, amount: Decimal) -> Decimal {

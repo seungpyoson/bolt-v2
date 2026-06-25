@@ -675,10 +675,29 @@ impl FencedRiskStateStore {
         if !order_status_transition_allowed(current_state, target_state) {
             return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
         }
+        let release_open_remainder = open_remainder_release_state(target_state);
+        let release_record = release_open_remainder.then(|| {
+            let mut released = inner.reservation_records[record_index].clone();
+            released.lifecycle_state = target_state;
+            released
+        });
 
         let version = next_pool_version(&mut inner, lease.pool_id())
             .map_err(RiskSubmissionMutationError::State)?;
-        inner.reservation_records[record_index].lifecycle_state = target_state;
+        {
+            let record = &mut inner.reservation_records[record_index];
+            record.lifecycle_state = target_state;
+            if release_open_remainder {
+                record.remaining_fillable_quantity = Decimal::ZERO;
+            }
+        }
+        if let Some(release_record) = release_record {
+            inner
+                .reservation_totals
+                .entry(lease.pool_id().clone())
+                .or_insert_with(RiskReservationTotals::empty)
+                .release_open_order_remainder(&release_record);
+        }
         inner.mutations.push(DurableRiskMutationRecord {
             pool_id: lease.pool_id().clone(),
             fencing_token: lease.fencing_token(),
@@ -692,6 +711,20 @@ impl FencedRiskStateStore {
             risk_state_version: version,
             lifecycle_state: target_state,
         })
+    }
+
+    fn mark_cancel_requested(
+        &self,
+        lease: &PoolOwnershipLease,
+        client_order_id: ClientOrderId,
+        mutation_id: &str,
+    ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+        self.apply_order_lifecycle_state(
+            lease,
+            client_order_id,
+            mutation_id,
+            ReservationLifecycleState::CancelRequested,
+        )
     }
 
     fn apply_authoritative_fill(
@@ -1238,7 +1271,7 @@ impl RiskStateOwner {
             .record_live_submission(&self.lease, idempotency_key, record)
     }
 
-    pub fn apply_order_lifecycle_state(
+    pub(crate) fn apply_order_lifecycle_state(
         &self,
         client_order_id: ClientOrderId,
         mutation_id: &str,
@@ -1250,6 +1283,15 @@ impl RiskStateOwner {
             mutation_id,
             target_state,
         )
+    }
+
+    pub fn mark_cancel_requested(
+        &self,
+        client_order_id: ClientOrderId,
+        mutation_id: &str,
+    ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+        self.store
+            .mark_cancel_requested(&self.lease, client_order_id, mutation_id)
     }
 
     pub fn apply_authoritative_fill(
@@ -1540,6 +1582,36 @@ fn order_status_transition_allowed(
             ReservationLifecycleState::Open,
             ReservationLifecycleState::Open
         )
+    ) || (target_state == ReservationLifecycleState::CancelRequested
+        && cancel_request_source_state(current_state))
+        || (open_remainder_release_state(target_state)
+            && non_fillable_confirmation_source_state(current_state))
+}
+
+fn cancel_request_source_state(current_state: ReservationLifecycleState) -> bool {
+    matches!(
+        current_state,
+        ReservationLifecycleState::Submitted
+            | ReservationLifecycleState::Open
+            | ReservationLifecycleState::PartiallyFilled
+    )
+}
+
+fn non_fillable_confirmation_source_state(current_state: ReservationLifecycleState) -> bool {
+    matches!(
+        current_state,
+        ReservationLifecycleState::Submitted
+            | ReservationLifecycleState::Open
+            | ReservationLifecycleState::PartiallyFilled
+            | ReservationLifecycleState::CancelRequested
+            | ReservationLifecycleState::SubmissionUnknown
+    )
+}
+
+fn open_remainder_release_state(target_state: ReservationLifecycleState) -> bool {
+    matches!(
+        target_state,
+        ReservationLifecycleState::CancelConfirmed | ReservationLifecycleState::ExpiredConfirmed
     )
 }
 
@@ -1549,6 +1621,7 @@ fn fill_transition_allowed(current_state: ReservationLifecycleState) -> bool {
         ReservationLifecycleState::Submitted
             | ReservationLifecycleState::Open
             | ReservationLifecycleState::PartiallyFilled
+            | ReservationLifecycleState::CancelRequested
     )
 }
 

@@ -19355,6 +19355,14 @@ classification = "risk_reservation_open_order_counter_identity"
 reason = "A fresh risk-reservation accumulator starts with zero open-order reservations before accepted compare-and-reserve transactions consume slots; the configured headroom remains view-owned."
 
 [[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/state_owner.rs"
+kind = "number"
+literal = "1"
+context = '''event_sequence <= last_sequence || event_sequence > last_sequence.saturating_add(1)'''
+classification = "risk_reservation_lifecycle_event_sequence_contiguous_step"
+reason = "Authoritative per-order event sequences must advance by exactly one to prove no lifecycle event gap; venue-provided sequence values remain event-owned while this literal is the structural adjacent-sequence delta."
+
+[[allowed]]
 path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
 kind = "number"
 literal = "0"

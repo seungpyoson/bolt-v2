@@ -28,6 +28,7 @@ pub struct NtOrderStatusReportTruth {
     pub status: NtOrderStatusTruth,
     pub event_id: String,
     pub ts_event_unix_nanos: u64,
+    pub event_sequence: Option<u64>,
     pub ts_init_unix_nanos: u64,
 }
 
@@ -43,6 +44,7 @@ pub struct NtFillReportTruth {
     pub client_order_id: ClientOrderId,
     pub event_id: String,
     pub ts_event_unix_nanos: u64,
+    pub event_sequence: Option<u64>,
     pub ts_init_unix_nanos: u64,
     pub fill_quantity: Decimal,
     pub remaining_fillable_quantity: Decimal,
@@ -56,6 +58,7 @@ pub struct NtSettlementTruth {
     pub client_order_id: ClientOrderId,
     pub event_id: String,
     pub ts_event_unix_nanos: u64,
+    pub event_sequence: Option<u64>,
     pub ts_init_unix_nanos: u64,
     pub terminal_final: bool,
     pub reconciliation_complete: bool,
@@ -114,7 +117,13 @@ impl LifecycleReconciler {
             NtOrderStatusTruth::ExpiredConfirmed => ReservationLifecycleState::ExpiredConfirmed,
         };
         self.owner
-            .apply_order_lifecycle_state(truth.client_order_id, &truth.event_id, target_state)
+            .apply_order_lifecycle_state(
+                truth.client_order_id,
+                &truth.event_id,
+                truth.ts_event_unix_nanos,
+                truth.event_sequence,
+                target_state,
+            )
             .map(LifecycleEventSummary::from)
             .map_err(LifecycleReconciliationError::State)
     }
@@ -127,6 +136,8 @@ impl LifecycleReconciler {
             .apply_authoritative_fill(
                 truth.client_order_id,
                 &truth.event_id,
+                truth.ts_event_unix_nanos,
+                truth.event_sequence,
                 truth.fill_quantity,
                 truth.remaining_fillable_quantity,
                 truth.actual_conservative_liquidation_value,
@@ -145,6 +156,8 @@ impl LifecycleReconciler {
             .apply_settlement_truth(
                 truth.client_order_id,
                 &truth.event_id,
+                truth.ts_event_unix_nanos,
+                truth.event_sequence,
                 truth.terminal_final,
                 truth.reconciliation_complete,
                 truth.conservative_liquidation_value,

@@ -2181,6 +2181,7 @@ fn s4_reconnect_reconciliation_uses_nt_order_status_report_identity() {
                     status: NtOrderStatusTruth::Open,
                     event_id: "nt-order-status-event".to_string(),
                     ts_event_unix_nanos: 1_150,
+                    event_sequence: Some(1),
                     ts_init_unix_nanos: 1_151,
                 }],
                 fill_reports: Vec::new(),
@@ -2832,6 +2833,269 @@ fn s8b_replace_keeps_old_and_new_reserved_until_old_is_confirmed_non_fillable() 
         post_confirm_totals.position_quantity(),
         replacement_record.reserved_order_quantity
     );
+}
+
+#[test]
+fn s8c_duplicate_fill_event_id_is_idempotent() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8c-duplicate-fill",
+        "owner-s8c-duplicate-fill",
+        "intent-s8c-duplicate-fill",
+        "idempotency-s8c-duplicate-fill",
+        "S8C-DUPLICATE-FILL",
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8c-duplicate-fill-open"))
+        .expect("authoritative open status should establish ordering baseline");
+    let fill = nt_fill(
+        client_order_id,
+        "s8c-fill-event",
+        dec(1),
+        dec(1),
+        dec(24),
+        dec(26),
+        vec![dec(1), dec(99)],
+    );
+    let once = reconciler
+        .apply_fill_truth(fill.clone())
+        .expect("first authoritative fill should apply");
+    let record_after_once = only_reservation_record(&owner);
+    let totals_after_once = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after first fill");
+
+    let duplicate = reconciler
+        .apply_fill_truth(fill)
+        .expect("duplicate authoritative fill event_id should be a no-op");
+
+    assert_eq!(duplicate, once);
+    assert_eq!(
+        only_reservation_record(&owner),
+        record_after_once,
+        "duplicate fill event_id must not reapply quantity or lifecycle state"
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after duplicate fill"),
+        totals_after_once,
+        "duplicate fill event_id must not double-count filled-position risk"
+    );
+    assert_eq!(
+        owner
+            .policy_epoch_snapshot()
+            .expect("policy snapshot should expose duplicate-fill version")
+            .risk_state_version,
+        once.risk_state_version,
+        "duplicate fill event_id must not bump the coherent risk version"
+    );
+}
+
+#[test]
+fn s8c_duplicate_settlement_and_status_event_ids_are_idempotent() {
+    let (_reservation, owner, reconciler, client_order_id) = filled_reservation_context(
+        "pool-s8c-duplicate-settlement-status",
+        "owner-s8c-duplicate-settlement-status",
+        "intent-s8c-duplicate-settlement-status",
+        "idempotency-s8c-duplicate-settlement-status",
+        "S8C-DUPLICATE-SETTLEMENT-STATUS",
+    );
+    let settlement = nt_settlement(
+        client_order_id,
+        "s8c-settlement-event",
+        false,
+        true,
+        dec(28),
+        dec(30),
+        vec![dec(-2), dec(99)],
+    );
+    let settlement_once = reconciler
+        .apply_settlement_truth(settlement.clone())
+        .expect("first settlement revision should apply");
+    let record_after_settlement_once = only_reservation_record(&owner);
+    let totals_after_settlement_once = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after first settlement");
+
+    let settlement_duplicate = reconciler
+        .apply_settlement_truth(settlement)
+        .expect("duplicate settlement event_id should be a no-op");
+
+    assert_eq!(settlement_duplicate, settlement_once);
+    assert_eq!(
+        only_reservation_record(&owner),
+        record_after_settlement_once
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after duplicate settlement"),
+        totals_after_settlement_once
+    );
+    assert_eq!(
+        owner
+            .policy_epoch_snapshot()
+            .expect("policy snapshot should expose duplicate-settlement version")
+            .risk_state_version,
+        settlement_once.risk_state_version,
+        "duplicate settlement event_id must not bump the coherent risk version"
+    );
+
+    let (status_reservation, status_owner, status_reconciler, status_client_order_id) =
+        submitted_reservation_context(
+            "pool-s8c-duplicate-status",
+            "owner-s8c-duplicate-status",
+            "intent-s8c-duplicate-status",
+            "idempotency-s8c-duplicate-status",
+            "S8C-DUPLICATE-STATUS",
+        );
+    let open_status = nt_open_status(status_client_order_id, "s8c-status-event");
+    let status_once = status_reconciler
+        .apply_order_status_truth(open_status.clone())
+        .expect("first status event should apply");
+    let record_after_status_once = only_reservation_record(&status_owner);
+    let totals_after_status_once = status_owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after first status");
+
+    let status_duplicate = status_reconciler
+        .apply_order_status_truth(open_status)
+        .expect("duplicate status event_id should be a no-op");
+
+    assert_eq!(status_duplicate, status_once);
+    assert_eq!(
+        only_reservation_record(&status_owner),
+        record_after_status_once
+    );
+    assert_eq!(
+        status_owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after duplicate status"),
+        totals_after_status_once
+    );
+    assert_eq!(
+        status_owner
+            .policy_epoch_snapshot()
+            .expect("policy snapshot should expose duplicate-status version")
+            .risk_state_version,
+        status_once.risk_state_version,
+        "duplicate status event_id must not bump the coherent risk version"
+    );
+    assert_eq!(
+        reservation_record_for_commit(&status_owner, &status_reservation).lifecycle_state,
+        ReservationLifecycleState::Open
+    );
+}
+
+#[test]
+fn s8c_out_of_order_event_requires_reconciliation_and_blocks_new_risk() {
+    let pool_id = "pool-s8c-out-of-order";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-out-of-order",
+        "intent-s8c-out-of-order",
+        "idempotency-s8c-out-of-order",
+        "S8C-OUT-OF-ORDER",
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status(client_order_id, "s8c-out-of-order-open"))
+        .expect("first status event should apply");
+    let before_fault_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before ordering fault");
+
+    let fault = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-out-of-order-cancel",
+            1_140,
+            Some(2),
+        ))
+        .expect("older authoritative event should move the reservation to reconciliation");
+
+    assert_eq!(
+        fault.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    let faulted_record = only_reservation_record(&owner);
+    assert_eq!(
+        faulted_record.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    assert_eq!(
+        faulted_record.remaining_fillable_quantity,
+        dec(2),
+        "ambiguous out-of-order non-fillability must fail closed without releasing capacity"
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should remain readable after ordering fault"),
+        before_fault_totals,
+        "out-of-order events must not silently apply lifecycle release"
+    );
+    assert_new_risk_blocked_by_reconciliation(&owner, pool_id, "s8c-out-of-order-successor");
+}
+
+#[test]
+fn s8c_sequence_gap_requires_reconciliation_and_blocks_new_risk() {
+    let pool_id = "pool-s8c-sequence-gap";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-sequence-gap",
+        "intent-s8c-sequence-gap",
+        "idempotency-s8c-sequence-gap",
+        "S8C-SEQUENCE-GAP",
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-sequence-gap-open",
+            1_150,
+            Some(1),
+        ))
+        .expect("first status event should apply");
+    let before_fault_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before sequence gap");
+
+    let fault = reconciler
+        .apply_fill_truth(nt_fill_with_ordering(
+            client_order_id,
+            "s8c-sequence-gap-fill",
+            1_160,
+            Some(3),
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect(
+            "gapped authoritative event sequence should move the reservation to reconciliation",
+        );
+
+    assert_eq!(
+        fault.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    let faulted_record = only_reservation_record(&owner);
+    assert_eq!(
+        faulted_record.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    assert!(
+        faulted_record.filled_position_exposure.is_none(),
+        "ambiguous gapped fill must fail closed without creating filled exposure"
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should remain readable after sequence gap"),
+        before_fault_totals,
+        "gapped events must not silently apply fill deltas"
+    );
+    assert_new_risk_blocked_by_reconciliation(&owner, pool_id, "s8c-sequence-gap-successor");
 }
 
 #[test]
@@ -3541,13 +3805,64 @@ fn filled_reservation_context(
     (reservation, owner, reconciler, client_order_id)
 }
 
+fn assert_new_risk_blocked_by_reconciliation(
+    owner: &RiskStateOwner,
+    pool_id: &str,
+    successor_intent_id: &str,
+) {
+    let service = AdmissionService::new(owner.clone());
+    let source_version = owner
+        .policy_epoch_snapshot()
+        .expect("policy snapshot should expose post-fault version")
+        .risk_state_version;
+    let view = published_view_with_open_order_headroom(
+        source_version,
+        pool_id,
+        "candidate-instrument",
+        bucket("risk_class", "alpha"),
+        dec(100),
+        dec(100),
+        2,
+    );
+    let rejected = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                successor_intent_id,
+                &format!("{successor_intent_id}-idempotency"),
+                pool_id,
+                "candidate-instrument",
+                source_version,
+                dec(20),
+            ),
+            unlatched_safety(source_version),
+            None,
+            1_500,
+        )
+        .expect_err("risk-increasing admission must remain blocked until reconciliation");
+    assert!(matches!(
+        rejected,
+        AdmissionReserveError::StateMutation(RiskStateMutationError::ReconciliationRequired)
+    ));
+}
+
 fn nt_open_status(client_order_id: ClientOrderId, event_id: &str) -> NtOrderStatusReportTruth {
+    nt_open_status_with_ordering(client_order_id, event_id, 1_150, None)
+}
+
+fn nt_open_status_with_ordering(
+    client_order_id: ClientOrderId,
+    event_id: &str,
+    ts_event_unix_nanos: u64,
+    event_sequence: Option<u64>,
+) -> NtOrderStatusReportTruth {
     NtOrderStatusReportTruth {
         client_order_id,
         status: NtOrderStatusTruth::Open,
         event_id: event_id.to_string(),
-        ts_event_unix_nanos: 1_150,
-        ts_init_unix_nanos: 1_151,
+        ts_event_unix_nanos,
+        event_sequence,
+        ts_init_unix_nanos: ts_event_unix_nanos + 1,
     }
 }
 
@@ -3555,12 +3870,22 @@ fn nt_cancel_confirmed_status(
     client_order_id: ClientOrderId,
     event_id: &str,
 ) -> NtOrderStatusReportTruth {
+    nt_cancel_confirmed_status_with_ordering(client_order_id, event_id, 1_170, None)
+}
+
+fn nt_cancel_confirmed_status_with_ordering(
+    client_order_id: ClientOrderId,
+    event_id: &str,
+    ts_event_unix_nanos: u64,
+    event_sequence: Option<u64>,
+) -> NtOrderStatusReportTruth {
     NtOrderStatusReportTruth {
         client_order_id,
         status: NtOrderStatusTruth::CancelConfirmed,
         event_id: event_id.to_string(),
-        ts_event_unix_nanos: 1_170,
-        ts_init_unix_nanos: 1_171,
+        ts_event_unix_nanos,
+        event_sequence,
+        ts_init_unix_nanos: ts_event_unix_nanos + 1,
     }
 }
 
@@ -3573,6 +3898,7 @@ fn nt_expired_confirmed_status(
         status: NtOrderStatusTruth::ExpiredConfirmed,
         event_id: event_id.to_string(),
         ts_event_unix_nanos: 1_180,
+        event_sequence: None,
         ts_init_unix_nanos: 1_181,
     }
 }
@@ -3586,11 +3912,36 @@ fn nt_fill(
     actual_governor_cost_basis: Decimal,
     terminal_cash_flows: Vec<Decimal>,
 ) -> NtFillReportTruth {
+    nt_fill_with_ordering(
+        client_order_id,
+        event_id,
+        1_160,
+        None,
+        fill_quantity,
+        remaining_fillable_quantity,
+        actual_conservative_liquidation_value,
+        actual_governor_cost_basis,
+        terminal_cash_flows,
+    )
+}
+
+fn nt_fill_with_ordering(
+    client_order_id: ClientOrderId,
+    event_id: &str,
+    ts_event_unix_nanos: u64,
+    event_sequence: Option<u64>,
+    fill_quantity: Decimal,
+    remaining_fillable_quantity: Decimal,
+    actual_conservative_liquidation_value: Decimal,
+    actual_governor_cost_basis: Decimal,
+    terminal_cash_flows: Vec<Decimal>,
+) -> NtFillReportTruth {
     NtFillReportTruth {
         client_order_id,
         event_id: event_id.to_string(),
-        ts_event_unix_nanos: 1_160,
-        ts_init_unix_nanos: 1_161,
+        ts_event_unix_nanos,
+        event_sequence,
+        ts_init_unix_nanos: ts_event_unix_nanos + 1,
         fill_quantity,
         remaining_fillable_quantity,
         actual_conservative_liquidation_value,
@@ -3612,6 +3963,7 @@ fn nt_settlement(
         client_order_id,
         event_id: event_id.to_string(),
         ts_event_unix_nanos: 1_300,
+        event_sequence: None,
         ts_init_unix_nanos: 1_301,
         terminal_final,
         reconciliation_complete,

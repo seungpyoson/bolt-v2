@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
@@ -648,7 +648,9 @@ impl FencedRiskStateStore {
         &self,
         lease: &PoolOwnershipLease,
         client_order_id: ClientOrderId,
-        mutation_id: &str,
+        event_id: &str,
+        ts_event_unix_nanos: u64,
+        event_sequence: Option<u64>,
         target_state: ReservationLifecycleState,
     ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
         let mut inner = self.inner.lock().map_err(|_| {
@@ -656,26 +658,28 @@ impl FencedRiskStateStore {
         })?;
         validate_lease(&inner, lease, &self.lease_authority)
             .map_err(RiskSubmissionMutationError::State)?;
-        validate_lifecycle_mutation_id(mutation_id)?;
+        validate_lifecycle_mutation_id(event_id)?;
 
         let record_index =
             matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
-        let current_state = inner.reservation_records[record_index].lifecycle_state;
-        if current_state == target_state {
-            let risk_state_version = inner
-                .versions
-                .get(lease.pool_id())
-                .copied()
-                .unwrap_or_else(RiskStateVersion::zero);
-            return Ok(LifecycleMutationResult {
-                risk_state_version,
-                lifecycle_state: target_state,
-            });
+        if let Some(result) = lifecycle_event_preflight(
+            &mut inner,
+            lease,
+            record_index,
+            event_id,
+            ts_event_unix_nanos,
+            event_sequence,
+        )? {
+            return Ok(result);
         }
-        if !order_status_transition_allowed(current_state, target_state) {
+        let current_state = inner.reservation_records[record_index].lifecycle_state;
+        if current_state != target_state
+            && !order_status_transition_allowed(current_state, target_state)
+        {
             return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
         }
-        let release_open_remainder = open_remainder_release_state(target_state);
+        let state_changed = current_state != target_state;
+        let release_open_remainder = state_changed && open_remainder_release_state(target_state);
         let release_record = release_open_remainder.then(|| {
             let mut released = inner.reservation_records[record_index].clone();
             released.lifecycle_state = target_state;
@@ -690,6 +694,7 @@ impl FencedRiskStateStore {
             if release_open_remainder {
                 record.remaining_fillable_quantity = Decimal::ZERO;
             }
+            record_lifecycle_event_success(record, event_id, ts_event_unix_nanos, event_sequence);
         }
         if let Some(release_record) = release_record {
             inner
@@ -701,10 +706,7 @@ impl FencedRiskStateStore {
         inner.mutations.push(DurableRiskMutationRecord {
             pool_id: lease.pool_id().clone(),
             fencing_token: lease.fencing_token(),
-            mutation: DurableRiskMutation::new(
-                mutation_id.to_string(),
-                RiskMutationKind::Lifecycle,
-            ),
+            mutation: DurableRiskMutation::new(event_id.to_string(), RiskMutationKind::Lifecycle),
             risk_state_version: version,
         });
         Ok(LifecycleMutationResult {
@@ -719,19 +721,57 @@ impl FencedRiskStateStore {
         client_order_id: ClientOrderId,
         mutation_id: &str,
     ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
-        self.apply_order_lifecycle_state(
-            lease,
-            client_order_id,
-            mutation_id,
-            ReservationLifecycleState::CancelRequested,
-        )
+        let mut inner = self.inner.lock().map_err(|_| {
+            RiskSubmissionMutationError::State(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskSubmissionMutationError::State)?;
+        validate_lifecycle_mutation_id(mutation_id)?;
+
+        let record_index =
+            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
+        let current_state = inner.reservation_records[record_index].lifecycle_state;
+        if current_state == ReservationLifecycleState::CancelRequested {
+            let risk_state_version = inner
+                .versions
+                .get(lease.pool_id())
+                .copied()
+                .unwrap_or_else(RiskStateVersion::zero);
+            return Ok(LifecycleMutationResult {
+                risk_state_version,
+                lifecycle_state: ReservationLifecycleState::CancelRequested,
+            });
+        }
+        if !cancel_request_source_state(current_state) {
+            return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+        }
+
+        let version = next_pool_version(&mut inner, lease.pool_id())
+            .map_err(RiskSubmissionMutationError::State)?;
+        inner.reservation_records[record_index].lifecycle_state =
+            ReservationLifecycleState::CancelRequested;
+        inner.mutations.push(DurableRiskMutationRecord {
+            pool_id: lease.pool_id().clone(),
+            fencing_token: lease.fencing_token(),
+            mutation: DurableRiskMutation::new(
+                mutation_id.to_string(),
+                RiskMutationKind::Lifecycle,
+            ),
+            risk_state_version: version,
+        });
+        Ok(LifecycleMutationResult {
+            risk_state_version: version,
+            lifecycle_state: ReservationLifecycleState::CancelRequested,
+        })
     }
 
     fn apply_authoritative_fill(
         &self,
         lease: &PoolOwnershipLease,
         client_order_id: ClientOrderId,
-        mutation_id: &str,
+        event_id: &str,
+        ts_event_unix_nanos: u64,
+        event_sequence: Option<u64>,
         fill_quantity: Decimal,
         remaining_fillable_quantity: Decimal,
         actual_conservative_liquidation_value: Decimal,
@@ -743,7 +783,20 @@ impl FencedRiskStateStore {
         })?;
         validate_lease(&inner, lease, &self.lease_authority)
             .map_err(RiskSubmissionMutationError::State)?;
-        validate_lifecycle_mutation_id(mutation_id)?;
+        validate_lifecycle_mutation_id(event_id)?;
+
+        let record_index =
+            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
+        if let Some(result) = lifecycle_event_preflight(
+            &mut inner,
+            lease,
+            record_index,
+            event_id,
+            ts_event_unix_nanos,
+            event_sequence,
+        )? {
+            return Ok(result);
+        }
         validate_lifecycle_exposure_input(
             fill_quantity,
             remaining_fillable_quantity,
@@ -751,9 +804,6 @@ impl FencedRiskStateStore {
             actual_governor_cost_basis,
             &terminal_cash_flows,
         )?;
-
-        let record_index =
-            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
         let record = &inner.reservation_records[record_index];
         if !fill_transition_allowed(record.lifecycle_state) {
             return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
@@ -800,6 +850,7 @@ impl FencedRiskStateStore {
         record.filled_position_exposure = Some(filled_position_exposure);
         record.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
         record.filled_position_governor_realized_loss = new_governor_realized_loss;
+        record_lifecycle_event_success(record, event_id, ts_event_unix_nanos, event_sequence);
         inner
             .reservation_totals
             .entry(lease.pool_id().clone())
@@ -814,10 +865,7 @@ impl FencedRiskStateStore {
         inner.mutations.push(DurableRiskMutationRecord {
             pool_id: lease.pool_id().clone(),
             fencing_token: lease.fencing_token(),
-            mutation: DurableRiskMutation::new(
-                mutation_id.to_string(),
-                RiskMutationKind::Lifecycle,
-            ),
+            mutation: DurableRiskMutation::new(event_id.to_string(), RiskMutationKind::Lifecycle),
             risk_state_version: version,
         });
         Ok(LifecycleMutationResult {
@@ -830,7 +878,9 @@ impl FencedRiskStateStore {
         &self,
         lease: &PoolOwnershipLease,
         client_order_id: ClientOrderId,
-        mutation_id: &str,
+        event_id: &str,
+        ts_event_unix_nanos: u64,
+        event_sequence: Option<u64>,
         terminal_final: bool,
         reconciliation_complete: bool,
         conservative_liquidation_value: Decimal,
@@ -842,27 +892,26 @@ impl FencedRiskStateStore {
         })?;
         validate_lease(&inner, lease, &self.lease_authority)
             .map_err(RiskSubmissionMutationError::State)?;
-        validate_lifecycle_mutation_id(mutation_id)?;
+        validate_lifecycle_mutation_id(event_id)?;
+
+        let record_index =
+            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
+        if let Some(result) = lifecycle_event_preflight(
+            &mut inner,
+            lease,
+            record_index,
+            event_id,
+            ts_event_unix_nanos,
+            event_sequence,
+        )? {
+            return Ok(result);
+        }
         validate_settlement_exposure_input(
             conservative_liquidation_value,
             governor_cost_basis,
             &terminal_cash_flows,
         )?;
-
-        let record_index =
-            matching_reservation_record_index_for_client_order(&inner, lease, client_order_id)?;
         let record = &inner.reservation_records[record_index];
-        if record.lifecycle_state == ReservationLifecycleState::Settled {
-            let risk_state_version = inner
-                .versions
-                .get(lease.pool_id())
-                .copied()
-                .unwrap_or_else(RiskStateVersion::zero);
-            return Ok(LifecycleMutationResult {
-                risk_state_version,
-                lifecycle_state: ReservationLifecycleState::Settled,
-            });
-        }
         if record.lifecycle_state != ReservationLifecycleState::Filled {
             return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
         }
@@ -905,6 +954,7 @@ impl FencedRiskStateStore {
         record.filled_position_exposure = Some(revised_exposure);
         record.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
         record.filled_position_governor_realized_loss = new_governor_realized_loss;
+        record_lifecycle_event_success(record, event_id, ts_event_unix_nanos, event_sequence);
         let totals = inner
             .reservation_totals
             .entry(lease.pool_id().clone())
@@ -922,10 +972,7 @@ impl FencedRiskStateStore {
         inner.mutations.push(DurableRiskMutationRecord {
             pool_id: lease.pool_id().clone(),
             fencing_token: lease.fencing_token(),
-            mutation: DurableRiskMutation::new(
-                mutation_id.to_string(),
-                RiskMutationKind::Lifecycle,
-            ),
+            mutation: DurableRiskMutation::new(event_id.to_string(), RiskMutationKind::Lifecycle),
             risk_state_version: version,
         });
         Ok(LifecycleMutationResult {
@@ -1090,6 +1137,9 @@ impl FencedRiskStateStore {
             filled_position_exposure: None,
             filled_position_equity_floor_stress_loss: Decimal::ZERO,
             filled_position_governor_realized_loss: Decimal::ZERO,
+            applied_lifecycle_event_ids: BTreeSet::new(),
+            last_lifecycle_ts_event_unix_nanos: None,
+            last_lifecycle_event_sequence: None,
         });
         let commit = RiskReservationCommit {
             admission_token: token,
@@ -1274,13 +1324,17 @@ impl RiskStateOwner {
     pub(crate) fn apply_order_lifecycle_state(
         &self,
         client_order_id: ClientOrderId,
-        mutation_id: &str,
+        event_id: &str,
+        ts_event_unix_nanos: u64,
+        event_sequence: Option<u64>,
         target_state: ReservationLifecycleState,
     ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
         self.store.apply_order_lifecycle_state(
             &self.lease,
             client_order_id,
-            mutation_id,
+            event_id,
+            ts_event_unix_nanos,
+            event_sequence,
             target_state,
         )
     }
@@ -1297,7 +1351,9 @@ impl RiskStateOwner {
     pub fn apply_authoritative_fill(
         &self,
         client_order_id: ClientOrderId,
-        mutation_id: &str,
+        event_id: &str,
+        ts_event_unix_nanos: u64,
+        event_sequence: Option<u64>,
         fill_quantity: Decimal,
         remaining_fillable_quantity: Decimal,
         actual_conservative_liquidation_value: Decimal,
@@ -1307,7 +1363,9 @@ impl RiskStateOwner {
         self.store.apply_authoritative_fill(
             &self.lease,
             client_order_id,
-            mutation_id,
+            event_id,
+            ts_event_unix_nanos,
+            event_sequence,
             fill_quantity,
             remaining_fillable_quantity,
             actual_conservative_liquidation_value,
@@ -1319,7 +1377,9 @@ impl RiskStateOwner {
     pub fn apply_settlement_truth(
         &self,
         client_order_id: ClientOrderId,
-        mutation_id: &str,
+        event_id: &str,
+        ts_event_unix_nanos: u64,
+        event_sequence: Option<u64>,
         terminal_final: bool,
         reconciliation_complete: bool,
         conservative_liquidation_value: Decimal,
@@ -1329,7 +1389,9 @@ impl RiskStateOwner {
         self.store.apply_settlement_truth(
             &self.lease,
             client_order_id,
-            mutation_id,
+            event_id,
+            ts_event_unix_nanos,
+            event_sequence,
             terminal_final,
             reconciliation_complete,
             conservative_liquidation_value,
@@ -1532,6 +1594,99 @@ fn validate_lifecycle_mutation_id(mutation_id: &str) -> Result<(), RiskSubmissio
         ));
     }
     Ok(())
+}
+
+fn lifecycle_event_preflight(
+    inner: &mut FencedRiskStateStoreInner,
+    lease: &PoolOwnershipLease,
+    record_index: usize,
+    event_id: &str,
+    ts_event_unix_nanos: u64,
+    event_sequence: Option<u64>,
+) -> Result<Option<LifecycleMutationResult>, RiskSubmissionMutationError> {
+    let record = &inner.reservation_records[record_index];
+    if record.applied_lifecycle_event_ids.contains(event_id) {
+        return Ok(Some(LifecycleMutationResult {
+            risk_state_version: current_pool_version(inner, lease.pool_id()),
+            lifecycle_state: record.lifecycle_state,
+        }));
+    }
+    if lifecycle_event_ordering_fault(record, ts_event_unix_nanos, event_sequence) {
+        return mark_lifecycle_reconciliation_required(inner, lease, record_index, event_id)
+            .map(Some);
+    }
+    Ok(None)
+}
+
+fn lifecycle_event_ordering_fault(
+    record: &SubstrateReservationRecord,
+    ts_event_unix_nanos: u64,
+    event_sequence: Option<u64>,
+) -> bool {
+    if record
+        .last_lifecycle_ts_event_unix_nanos
+        .is_some_and(|last_ts| ts_event_unix_nanos < last_ts)
+    {
+        return true;
+    }
+    let Some(event_sequence) = event_sequence else {
+        return false;
+    };
+    let Some(last_sequence) = record.last_lifecycle_event_sequence else {
+        return false;
+    };
+    event_sequence <= last_sequence || event_sequence > last_sequence.saturating_add(1)
+}
+
+fn mark_lifecycle_reconciliation_required(
+    inner: &mut FencedRiskStateStoreInner,
+    lease: &PoolOwnershipLease,
+    record_index: usize,
+    event_id: &str,
+) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
+    let version =
+        next_pool_version(inner, lease.pool_id()).map_err(RiskSubmissionMutationError::State)?;
+    {
+        let record = &mut inner.reservation_records[record_index];
+        record.lifecycle_state = ReservationLifecycleState::ReconciliationRequired;
+        record
+            .applied_lifecycle_event_ids
+            .insert(event_id.to_string());
+    }
+    inner.reconciled.insert(lease.pool_id().clone(), false);
+    inner.mutations.push(DurableRiskMutationRecord {
+        pool_id: lease.pool_id().clone(),
+        fencing_token: lease.fencing_token(),
+        mutation: DurableRiskMutation::new(event_id.to_string(), RiskMutationKind::Lifecycle),
+        risk_state_version: version,
+    });
+    Ok(LifecycleMutationResult {
+        risk_state_version: version,
+        lifecycle_state: ReservationLifecycleState::ReconciliationRequired,
+    })
+}
+
+fn record_lifecycle_event_success(
+    record: &mut SubstrateReservationRecord,
+    event_id: &str,
+    ts_event_unix_nanos: u64,
+    event_sequence: Option<u64>,
+) {
+    record
+        .applied_lifecycle_event_ids
+        .insert(event_id.to_string());
+    record.last_lifecycle_ts_event_unix_nanos = Some(ts_event_unix_nanos);
+    if let Some(event_sequence) = event_sequence {
+        record.last_lifecycle_event_sequence = Some(event_sequence);
+    }
+}
+
+fn current_pool_version(inner: &FencedRiskStateStoreInner, pool_id: &PoolId) -> RiskStateVersion {
+    inner
+        .versions
+        .get(pool_id)
+        .copied()
+        .unwrap_or_else(RiskStateVersion::zero)
 }
 
 fn validate_lifecycle_exposure_input(

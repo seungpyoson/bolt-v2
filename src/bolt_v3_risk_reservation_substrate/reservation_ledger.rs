@@ -166,6 +166,9 @@ pub struct SubstrateReservationRecord {
     pub filled_position_exposure: Option<RiskExposure>,
     pub filled_position_equity_floor_stress_loss: Decimal,
     pub filled_position_governor_realized_loss: Decimal,
+    pub applied_lifecycle_event_ids: BTreeSet<String>,
+    pub last_lifecycle_ts_event_unix_nanos: Option<u64>,
+    pub last_lifecycle_event_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

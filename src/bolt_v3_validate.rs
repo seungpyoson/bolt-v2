@@ -105,7 +105,7 @@ impl std::fmt::Display for BoltV3ValidationError {
 
 impl std::error::Error for BoltV3ValidationError {}
 
-pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
+pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 2;
 pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
 const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";
 const CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD: &str = "endpoint_id";
@@ -1521,23 +1521,28 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
             ));
         }
         validate_venue_spendability_source_binding(pool, &label, &mut errors);
-        if let Some(min_remaining_pool_balance) =
-            pool.sizing_policy.min_remaining_pool_balance.as_ref()
+        if let Some(min_remaining_pool_balance) = pool
+            .capital_admission_policy
+            .min_remaining_pool_balance
+            .as_ref()
         {
             validate_positive_decimal(
-                &format!("{label}.sizing_policy.min_remaining_pool_balance"),
+                &format!("{label}.capital_admission_policy.min_remaining_pool_balance"),
                 min_remaining_pool_balance,
                 &mut errors,
             );
         }
         validate_positive_decimal(
-            &format!("{label}.sizing_policy.fee_slippage.max_fee_liability"),
-            &pool.sizing_policy.fee_slippage.max_fee_liability,
+            &format!("{label}.capital_admission_policy.fee_slippage.max_fee_liability"),
+            &pool.capital_admission_policy.fee_slippage.max_fee_liability,
             &mut errors,
         );
         validate_positive_decimal(
-            &format!("{label}.sizing_policy.fee_slippage.max_slippage_liability"),
-            &pool.sizing_policy.fee_slippage.max_slippage_liability,
+            &format!("{label}.capital_admission_policy.fee_slippage.max_slippage_liability"),
+            &pool
+                .capital_admission_policy
+                .fee_slippage
+                .max_slippage_liability,
             &mut errors,
         );
     }

@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 trader_id = "BOLT-001"
 
 strategy_files = [
@@ -161,10 +161,10 @@ yes_instrument_id = "condition-fixture-yes.POLYMARKET"
 no_instrument_id = "condition-fixture-no.POLYMARKET"
 collateral_coupled_group_id = "condition-fixture"
 
-[risk.capital_pools.sizing_policy]
+[risk.capital_pools.capital_admission_policy]
 min_remaining_pool_balance = "1.00"
 
-[risk.capital_pools.sizing_policy.fee_slippage]
+[risk.capital_pools.capital_admission_policy.fee_slippage]
 max_fee_liability = "0.10"
 max_slippage_liability = "0.20"
 

@@ -5473,20 +5473,20 @@ fn capital_admission_config_from_loaded(
 fn capital_admission_policy_from_pool(
     pool: &CapitalPoolBlock,
 ) -> Result<CapitalAdmissionPolicy, BoltV3LiveNodeError> {
-    let sizing = &pool.sizing_policy;
+    let policy = &pool.capital_admission_policy;
     Ok(CapitalAdmissionPolicy {
         min_remaining_pool_balance: optional_pool_decimal(
-            "risk.capital_pools.sizing_policy.min_remaining_pool_balance",
-            sizing.min_remaining_pool_balance.as_deref(),
+            "risk.capital_pools.capital_admission_policy.min_remaining_pool_balance",
+            policy.min_remaining_pool_balance.as_deref(),
         )?,
         fee_slippage_policy: Some(FeeSlippagePolicy {
             max_fee_liability: required_pool_decimal(
-                "risk.capital_pools.sizing_policy.fee_slippage.max_fee_liability",
-                &sizing.fee_slippage.max_fee_liability,
+                "risk.capital_pools.capital_admission_policy.fee_slippage.max_fee_liability",
+                &policy.fee_slippage.max_fee_liability,
             )?,
             max_slippage_liability: required_pool_decimal(
-                "risk.capital_pools.sizing_policy.fee_slippage.max_slippage_liability",
-                &sizing.fee_slippage.max_slippage_liability,
+                "risk.capital_pools.capital_admission_policy.fee_slippage.max_slippage_liability",
+                &policy.fee_slippage.max_slippage_liability,
             )?,
         }),
     })

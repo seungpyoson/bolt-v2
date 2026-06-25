@@ -240,7 +240,7 @@ pub struct CapitalPoolBlock {
     pub venue_spendability_source_sha256: Option<String>,
     pub venue_spendability_source_max_bytes: Option<u64>,
     pub prediction_market_binary: Option<PredictionMarketBinaryProductBlock>,
-    pub sizing_policy: CapitalPoolSizingPolicyBlock,
+    pub capital_admission_policy: CapitalAdmissionPolicyBlock,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -253,7 +253,7 @@ pub struct PredictionMarketBinaryProductBlock {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct CapitalPoolSizingPolicyBlock {
+pub struct CapitalAdmissionPolicyBlock {
     pub min_remaining_pool_balance: Option<String>,
     pub fee_slippage: FeeSlippagePolicyBlock,
 }

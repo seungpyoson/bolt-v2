@@ -1414,6 +1414,17 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     if let Some(capital_pools) = block.capital_pools.as_ref() {
         errors.extend(validate_capital_pools(capital_pools));
     }
+    if block
+        .risk_reservation_substrate
+        .as_ref()
+        .is_some_and(|substrate| substrate.enabled)
+        && block.capital_pools.as_ref().is_none_or(Vec::is_empty)
+    {
+        errors.push(
+            "risk.risk_reservation_substrate requires at least one configured capital pool when enabled"
+                .to_string(),
+        );
+    }
     let nt_risk_default = nautilus_live::config::LiveRiskEngineConfig::default();
     if block.nautilus.qsize != nt_risk_default.qsize {
         errors.push(format!(

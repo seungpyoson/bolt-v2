@@ -588,6 +588,7 @@ jobs:
           # Keep CI test binaries small enough for CI link/disk limits.
           # This disables test debuginfo only; assertions and test logic still run.
           CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
@@ -605,8 +606,25 @@ jobs:
           mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
           tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
 
+      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
+          if [[ "$sidecar_count" == "0" ]]; then
+            echo "no root binary sidecars found in $target_dir/debug"
+            exit 1
+          fi
+          (
+            cd "$target_dir"
+            find debug -maxdepth 1 -type f -perm -111 -print0 \
+              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
+          )
+
       - name: Build root binary sidecars
-        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           # Archived integration tests can embed CARGO_BIN_EXE_* paths; cache-hit

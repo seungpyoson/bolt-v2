@@ -25,6 +25,18 @@ FORBIDDEN_SAFE_EXCLUDES = (
     "scripts/nextest_fingerprint.py",
 )
 
+MANDATORY_TRACKED_INPUTS = (
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "build.rs",
+    "gated_source_roots.manifest",
+    "src/",
+    "tests/",
+    "ci/nextest-fingerprint.toml",
+    "scripts/nextest_fingerprint.py",
+)
+
 
 class FingerprintError(Exception):
     """Raised when fingerprint production must fail closed."""
@@ -41,6 +53,7 @@ class FingerprintConfig:
     schema: int
     profile: str
     shards: int
+    tracked_inputs: tuple[str, ...]
     safe_excludes: tuple[SafeExclude, ...]
 
 
@@ -121,12 +134,34 @@ def require_string(parent: dict[str, object], key: str, label: str) -> str:
     return value
 
 
+def require_string_list(parent: dict[str, object], key: str, label: str) -> tuple[str, ...]:
+    value = parent.get(key)
+    if not isinstance(value, list) or not value:
+        raise FingerprintError(f"{label}.{key} must be a non-empty string list")
+    strings: list[str] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, str) or not item:
+            raise FingerprintError(f"{label}.{key}[{index}] must be a non-empty string")
+        strings.append(item)
+    return tuple(strings)
+
+
 def load_fingerprint_config(path: pathlib.Path) -> FingerprintConfig:
     data = load_toml(path, "nextest fingerprint config")
     archive = require_table(data, "nextest_archive", "nextest fingerprint config")
     schema = require_positive_int(archive, "schema", "nextest_archive")
     profile = require_string(archive, "profile", "nextest_archive")
     shards = require_positive_int(archive, "shards", "nextest_archive")
+    tracked_inputs = tuple(
+        normalize_repo_path(raw, label="nextest_archive.tracked_inputs")
+        for raw in require_string_list(archive, "tracked_inputs", "nextest_archive")
+    )
+    if len(set(tracked_inputs)) != len(tracked_inputs):
+        raise FingerprintError("nextest_archive.tracked_inputs must not contain duplicates")
+    for mandatory in MANDATORY_TRACKED_INPUTS:
+        mandatory_path = normalize_repo_path(mandatory, label="mandatory tracked input")
+        if not any(paths_overlap(mandatory_path, tracked_input) for tracked_input in tracked_inputs):
+            raise FingerprintError(f"nextest_archive.tracked_inputs must include {mandatory}")
     raw_excludes = data.get("safe_excludes", [])
     if not isinstance(raw_excludes, list):
         raise FingerprintError("safe_excludes must be an array of tables")
@@ -148,11 +183,14 @@ def load_fingerprint_config(path: pathlib.Path) -> FingerprintConfig:
             forbidden_path = normalize_repo_path(forbidden, label="forbidden safe exclude")
             if paths_overlap(path, forbidden_path):
                 raise FingerprintError(f"safe-listed path is forbidden: {path}")
+        if any(paths_overlap(path, tracked_input) for tracked_input in tracked_inputs):
+            raise FingerprintError(f"safe-listed path overlaps tracked input: {path}")
         safe_excludes.append(SafeExclude(path=path, justification=justification))
     return FingerprintConfig(
         schema=schema,
         profile=profile,
         shards=shards,
+        tracked_inputs=tracked_inputs,
         safe_excludes=tuple(safe_excludes),
     )
 
@@ -247,8 +285,13 @@ def safe_excluded(path: str, safe_excludes: tuple[SafeExclude, ...]) -> bool:
     return any(path_matches_entry(path, safe_exclude.path) for safe_exclude in safe_excludes)
 
 
+def tracked_input_included(path: str, tracked_inputs: tuple[str, ...]) -> bool:
+    return any(path_matches_entry(path, tracked_input) for tracked_input in tracked_inputs)
+
+
 def tracked_tree_entries(
     repo_root: pathlib.Path,
+    tracked_inputs: tuple[str, ...],
     safe_excludes: tuple[SafeExclude, ...],
 ) -> list[tuple[bytes, bytes, bytes, bytes]]:
     result = run_git(repo_root, ["ls-tree", "-r", "-z", "HEAD"], text=False)
@@ -266,16 +309,26 @@ def tracked_tree_entries(
         except ValueError as exc:
             raise FingerprintError(f"unexpected git ls-tree record: {record!r}") from exc
         path = path_bytes.decode("utf-8", "surrogateescape")
+        if not tracked_input_included(path, tracked_inputs):
+            continue
         if safe_excluded(path, safe_excludes):
             continue
         entries.append((path_bytes, mode, object_type, object_id))
     return sorted(entries, key=lambda entry: entry[0])
 
 
-def tree_digest(repo_root: pathlib.Path, safe_excludes: tuple[SafeExclude, ...]) -> str:
+def tree_digest(
+    repo_root: pathlib.Path,
+    tracked_inputs: tuple[str, ...],
+    safe_excludes: tuple[SafeExclude, ...],
+) -> str:
     digest = hashlib.sha256()
-    digest.update(b"bolt-v2-nextest-tree-digest-v1\0")
-    for path, mode, object_type, object_id in tracked_tree_entries(repo_root, safe_excludes):
+    digest.update(b"bolt-v2-nextest-tree-digest-v2\0")
+    for path, mode, object_type, object_id in tracked_tree_entries(
+        repo_root,
+        tracked_inputs,
+        safe_excludes,
+    ):
         digest.update(mode)
         digest.update(b"\0")
         digest.update(object_type)
@@ -316,7 +369,7 @@ def produce_fingerprint(args: argparse.Namespace) -> None:
 
     runner_os = require_cli_value(args.runner_os, "runner-os")
     runner_arch = require_cli_value(args.runner_arch, "runner-arch")
-    digest = tree_digest(repo_root, config.safe_excludes)
+    digest = tree_digest(repo_root, config.tracked_inputs, config.safe_excludes)
     archive_prefix = artifact_prefix[: -len("fingerprint-")]
     fingerprint = (
         f"{archive_prefix}v{config.schema}-{runner_os}-{runner_arch}-"

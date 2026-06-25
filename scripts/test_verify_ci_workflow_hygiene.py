@@ -597,6 +597,9 @@ jobs:
           fallback: none
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
@@ -611,8 +614,23 @@ jobs:
         run: |
           mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
           tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
+      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
+          if [[ "$sidecar_count" == "0" ]]; then
+            echo "no root binary sidecars found in $target_dir/debug"
+            exit 1
+          fi
+          (
+            cd "$target_dir"
+            find debug -maxdepth 1 -type f -perm -111 -print0 \
+              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
+          )
       - name: Build root binary sidecars
-        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
@@ -8271,7 +8289,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Build root binary sidecars
-        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
@@ -8287,11 +8305,56 @@ def main() -> int:
         ),
     )
     assert_error(
+        "test-archive must pack root binary sidecars from archive builds on archive-cache miss",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
+          if [[ "$sidecar_count" == "0" ]]; then
+            echo "no root binary sidecars found in $target_dir/debug"
+            exit 1
+          fi
+          (
+            cd "$target_dir"
+            find debug -maxdepth 1 -type f -perm -111 -print0 \
+              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
+          )
+""",
+            "",
+        ),
+    )
+    sidecar_build_guard_regression_workflow = BASE_WORKFLOW
+    if (
+        "        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n"
+        in BASE_WORKFLOW
+    ):
+        sidecar_build_guard_regression_workflow = replace_once(
+            BASE_WORKFLOW,
+            "        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n",
+            "        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n",
+        )
+    assert_error(
+        "test-archive sidecar cargo build must run only on archive-cache hit and sidecar-cache miss",
+        sidecar_build_guard_regression_workflow,
+    )
+    assert_error(
         "test-archive sidecar build must use dev profile debug knob",
         replace_once(
             BASE_WORKFLOW,
-            '          CARGO_PROFILE_DEV_DEBUG: "0"',
-            '          CARGO_PROFILE_TEST_DEBUG: "0"',
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+""",
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+""",
         ),
     )
     assert_error(

@@ -532,8 +532,17 @@ TEST_ARCHIVE_SIDECAR_CACHE_KEY = (
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
 TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_SIDECAR_BUILD_GUARD = (
+    "if: steps.nextest-archive-cache.outputs.cache-hit == 'true' "
+    "&& steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+)
+TEST_ARCHIVE_SIDECAR_PACK_GUARD = (
+    "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' "
+    "&& steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+)
 TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}"
+TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
     'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins'
@@ -8995,17 +9004,28 @@ def verify_workflow(workflow_text: str) -> list[str]:
         archive_build_block = named_step_block(archive_lines, "Build nextest archive")
         if archive_build_block is None or TEST_ARCHIVE_CACHE_HIT_GUARD not in uncommented_text(archive_build_block):
             errors.append("test-archive build must be skipped on archive cache hit")
+        if archive_build_block is None or TEST_ARCHIVE_TEST_PROFILE_ENV not in uncommented_text(archive_build_block):
+            errors.append("test-archive build must use test profile debug knob")
+        if archive_build_block is None or TEST_ARCHIVE_SIDECAR_PROFILE_ENV not in uncommented_text(archive_build_block):
+            errors.append("test-archive build must use dev profile debug knob for sidecars")
         if (
             TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD not in archive_text
             or 'tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"' not in archive_text
         ):
             errors.append("test-archive must extract cached root binary sidecars")
+        sidecar_pack_block = named_step_block(archive_lines, "Pack root binary sidecars from archive build")
+        if sidecar_pack_block is None or TEST_ARCHIVE_SIDECAR_PACK_GUARD not in uncommented_text(sidecar_pack_block):
+            errors.append("test-archive must pack root binary sidecars from archive builds on archive-cache miss")
+        if sidecar_pack_block is None or "find debug -maxdepth 1 -type f -perm -111 -print0" not in uncommented_text(sidecar_pack_block):
+            errors.append("test-archive archive-miss sidecar pack must pack root binary sidecars")
         if (
             TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD not in archive_text
             or TEST_ARCHIVE_SIDECAR_BUILD_COMMAND not in archive_text
         ):
             errors.append("test-archive must build CARGO_BIN_EXE sidecars on sidecar cache miss")
         sidecar_block = named_step_block(archive_lines, "Build root binary sidecars")
+        if sidecar_block is None or TEST_ARCHIVE_SIDECAR_BUILD_GUARD not in uncommented_text(sidecar_block):
+            errors.append("test-archive sidecar cargo build must run only on archive-cache hit and sidecar-cache miss")
         if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PROFILE_ENV not in uncommented_text(sidecar_block):
             errors.append("test-archive sidecar build must use dev profile debug knob")
         if sidecar_block is None or "find debug -maxdepth 1 -type f -perm -111 -print0" not in uncommented_text(sidecar_block):

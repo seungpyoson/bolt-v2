@@ -1326,10 +1326,12 @@ def assert_ci_policy_gate_name_snapshot_matches_legacy_except_non_required_rollo
         is_ready_pr_iteration = (
             event_name == "pull_request"
             and not draft
-            and action != "ready_for_review"
-            and not (action == "reopened" or (action == "edited" and not base_changed))
+            and (
+                action == "ready_for_review"
+                or not (action == "reopened" or (action == "edited" and not base_changed))
+            )
         )
-        if is_ready_pr_iteration or (event_name == "pull_request" and action == "ready_for_review" and not draft):
+        if is_ready_pr_iteration:
             if (legacy_gate, legacy_backtester_gate) != ("gate", "backtester-gate"):
                 raise AssertionError(f"legacy ready PR snapshot must publish required gates: {case_label}")
             if (result.gate_name, result.backtester_gate_name) != (

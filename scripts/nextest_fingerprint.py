@@ -375,6 +375,23 @@ def rust_char_literal_end(text: str, index: int) -> int | None:
     return None
 
 
+def rust_whitespace_or_comment_end(text: str, index: int) -> int:
+    cursor = index
+    while cursor < len(text):
+        if text[cursor].isspace():
+            cursor += 1
+            continue
+        if text.startswith("//", cursor):
+            newline = text.find("\n", cursor + 2)
+            cursor = len(text) if newline == -1 else newline + 1
+            continue
+        if text.startswith("/*", cursor):
+            cursor = rust_block_comment_end(text, cursor)
+            continue
+        return cursor
+    return cursor
+
+
 def rust_include_literals(text: str) -> Iterable[str]:
     index = 0
     while index < len(text):
@@ -414,20 +431,17 @@ def rust_include_literals(text: str) -> Iterable[str]:
             continue
 
         cursor = macro_end
-        while cursor < len(text) and text[cursor].isspace():
-            cursor += 1
+        cursor = rust_whitespace_or_comment_end(text, cursor)
         if cursor >= len(text) or text[cursor] != "!":
             index += 1
             continue
         cursor += 1
-        while cursor < len(text) and text[cursor].isspace():
-            cursor += 1
-        if cursor >= len(text) or text[cursor] != "(":
+        cursor = rust_whitespace_or_comment_end(text, cursor)
+        if cursor >= len(text) or text[cursor] not in {"(", "[", "{"}:
             index += 1
             continue
         cursor += 1
-        while cursor < len(text) and text[cursor].isspace():
-            cursor += 1
+        cursor = rust_whitespace_or_comment_end(text, cursor)
         argument_literal = rust_string_literal_at(text, cursor)
         if argument_literal is None:
             index += 1

@@ -119,7 +119,10 @@ def plan_migrations(root: Path) -> list[PlannedFileMigration]:
 
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
-    stat = path.stat()
+    try:
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o600
     tmp_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as tmp:
@@ -127,7 +130,7 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
             tmp.write(payload)
             tmp.flush()
             os.fsync(tmp.fileno())
-        os.chmod(tmp_name, stat.st_mode & 0o777)
+        os.chmod(tmp_name, mode)
         os.replace(tmp_name, path)
         directory_fd = os.open(path.parent, os.O_RDONLY)
         try:
@@ -138,7 +141,7 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
         if tmp_name is not None:
             try:
                 os.unlink(tmp_name)
-            except FileNotFoundError:
+            except BaseException:
                 pass
         raise
 

@@ -255,5 +255,8 @@ def main() -> int:
 if __name__ == "__main__":
     import lane_governor
 
-    lane_governor.acquire()
-    raise SystemExit(main())
+    lock_handle = lane_governor.acquire()
+    try:
+        raise SystemExit(main())
+    finally:
+        lane_governor.release(lock_handle)

@@ -33,7 +33,7 @@ Copied from `AGENTS.md` (every task implicitly includes these):
 - **Remote-first Rust verification** — local non-compile gates only (`just fmt-check`, `just source-fence-static`, `just ci-lint-workflow`, Python verifiers/tests); Rust compile/test proof via `just verify-remote` exact-head CI on a draft PR. Do not run local compile-heavy cargo.
 - **Review Bar** — open the PR and request review from the GitHub account with node ID `U_kgDOEZMFhA`; do not merge without its approval; do not request external review until exact-head CI is green.
 - **Evidence per requirement** — refactor evidence = existing tests + static checks + structural-equivalence review; new code (migration tools, equivalence test) = behavior tests; persisted/config contract changes = fail-closed evidence for invalid/missing/legacy inputs + exact-head proof.
-- **Gating model** — per-task local gate is `just fmt-check` ONLY. `just source-fence-static` runs the runtime-literal audit + `verify_bolt_v3_naming.py` + status-map verifiers (justfile `source-fence-static-inner`), so it cannot pass mid-rename until the audit TOML + naming verifier are updated (Tasks 9–10). Run the full `just source-fence-static` ONCE on the integrated head in Task 11. Intermediate commits need not be fence-clean; the final head MUST be.
+- **Gating model** — the per-task local gate is `just fmt-check`, which (via `fmt-check-inner`, justfile:240) runs `verify_bolt_v3_runtime_literals.py` + `verify_bolt_v3_provider_leaks.py`. **The runtime-literal audit therefore gates EVERY task, not just the final head.** Its allowlist (`docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`, rows keyed `(path, kind, literal, context)`) is part of the rename surface: any task that moves a file or renames a symbol on a classified line MUST update that row's `path`/`context` **in the same commit**, or both the new path's literals (unclassified) and the old rows (stale) fail `fmt-check` (`main()` fails on `unclassified or stale`). Serialized `literal` VALUES change only in Task 5, which updates those rows' `literal` field. What is genuinely deferred to the integrated head (Task 11) are the verifiers that run ONLY in `source-fence-static-inner` and NOT in `fmt-check`: `verify_bolt_v3_naming.py` (Task 9), status-map, and schema-current — plus the audit-TOML `classification` metadata (not part of the scan key, so it never breaks `fmt-check`; batched in Task 10). Run the full `just source-fence-static` ONCE on the integrated head in Task 11; the final head MUST be fence-clean.
 
 ## Technical Context
 
@@ -161,7 +161,7 @@ fields `accepted_quantity` / `calculated_liability` / `reserved_liability`.
   `liability_before_sizing` → `calculated_liability`; `liability_after_sizing` → `reserved_liability`
   in `LiabilityQuote`, `CapitalAdmissionDecision`, `CapitalAdmissionEvidence` and all
   constructors/readers (verified: these structs carry no `Serialize` derive → internal-only).
-- [ ] **Step 4:** Local static gate. Run: `just fmt-check`. Expected: pass. (Full `just source-fence-static` deferred to the final gate — it runs the runtime-literal audit, which only passes after Task 10.)
+- [ ] **Step 4:** Local static gate. Run: `just fmt-check`. Expected: pass. (`fmt-check` runs the runtime-literal + provider-leak audits — in THIS commit update the `path` (and `context`, where a renamed symbol appears on the line) of every `bolt-v3-runtime-literal-audit.toml` row for the file(s)/line(s) this task moved or renamed; leave serialized `literal` VALUES for Task 5. The `source-fence-static`-only verifiers — `verify_bolt_v3_naming.py`, status-map, schema-current — are deferred to Task 11.)
 - [ ] **Step 5:** Commit. `git commit -m "refactor(711): rename position_sizer gate core -> capital_admission"`
 
 ## Task 2: Rename the runtime-feed module + identifiers + its test file
@@ -170,6 +170,11 @@ fields `accepted_quantity` / `calculated_liability` / `reserved_liability`.
 - Rename: `src/bolt_v3_position_sizer_runtime_feed.rs` → `src/bolt_v3_capital_admission_runtime_feed.rs`;
   `tests/bolt_v3_position_sizer_runtime_feed.rs` → `tests/bolt_v3_capital_admission_runtime_feed.rs`
 - Modify: `src/lib.rs`; referencing modules.
+- Modify: `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml` — set `path` →
+  `src/bolt_v3_capital_admission_runtime_feed.rs` on the ~11 rows for the moved file, and update
+  `context` on any row whose source line names a symbol renamed in this task (e.g. the
+  `POSITION_SIZER_ORDER_TERMINAL_SOURCE` const row). Do NOT change those rows' `literal` VALUES —
+  the serialized strings (`"nt_position_sizer_runtime_components"`, etc.) flip in Task 5.
 
 Anchor renames: `PositionSizerRuntimeFeed` → `CapitalAdmissionRuntimeFeed`;
 `PositionSizerRuntimeFeedConfig`/`...Subscription`/`...ComponentBuilder` → `CapitalAdmission*`;
@@ -180,7 +185,7 @@ const identifier `POSITION_SIZER_ORDER_TERMINAL_SOURCE` → `CAPITAL_ADMISSION_O
 literal for it.
 
 - [ ] **Step 1:** `git mv` both files; apply rule; update `src/lib.rs` and references.
-- [ ] **Step 2:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.)
+- [ ] **Step 2:** `just fmt-check` → pass. (`fmt-check` runs the runtime-literal + provider-leak audits — in THIS commit update the `path` (and `context`, where a renamed symbol appears on the line) of every `bolt-v3-runtime-literal-audit.toml` row for the file(s)/line(s) this task changed; leave serialized `literal` VALUES for Task 5. `source-fence-static`-only verifiers (naming fence, status-map, schema-current) are deferred to Task 11.)
 - [ ] **Step 3:** Commit. `git commit -m "refactor(711): rename position_sizer runtime feed (+test) -> capital_admission"`
 
 ## Task 3: Rename the input-state module + identifiers
@@ -198,7 +203,7 @@ Anchor renames: `NtDerivedSizingState` → `NtDerivedCapitalAdmissionState`;
 **Keep (FR-004):** `VenueSpendabilitySnapshot`, `ReservationLedgerSnapshot`.
 
 - [ ] **Step 1:** `git mv` the file; apply rule; update `src/lib.rs` and references.
-- [ ] **Step 2:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.)
+- [ ] **Step 2:** `just fmt-check` → pass. (`fmt-check` runs the runtime-literal + provider-leak audits — in THIS commit update the `path` (and `context`, where a renamed symbol appears on the line) of every `bolt-v3-runtime-literal-audit.toml` row for the file(s)/line(s) this task changed; leave serialized `literal` VALUES for Task 5. `source-fence-static`-only verifiers (naming fence, status-map, schema-current) are deferred to Task 11.)
 - [ ] **Step 3:** Commit. `git commit -m "refactor(711): rename sizing_state -> capital_admission_state"`
 
 ## Task 4: Rename embedding field + submit-admission / live-node / validate / strategies / tests identifiers
@@ -247,7 +252,7 @@ Anchor renames:
 - [ ] **Step 1 (FR-005):** Apply the renames above. Update every user-visible string tied to a renamed
   identifier in the same edit — `StartupCapitalAdmissionRebuild`'s `Display` text, `anyhow!`/`bail!`
   messages, log lines — since the compiler updates patterns but not string literals.
-- [ ] **Step 2:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.)
+- [ ] **Step 2:** `just fmt-check` → pass. (`fmt-check` runs the runtime-literal + provider-leak audits — in THIS commit update the `path` (and `context`, where a renamed symbol appears on the line) of every `bolt-v3-runtime-literal-audit.toml` row for the file(s)/line(s) this task changed; leave serialized `literal` VALUES for Task 5. `source-fence-static`-only verifiers (naming fence, status-map, schema-current) are deferred to Task 11.)
 - [ ] **Step 3:** Commit. `git commit -m "refactor(711): rename position_sizer references in submit-admission/live-node/validate/strategies/tests"`
 
 ## Task 5: Flip serialized string VALUES + bump decision-evidence schema + retain legacy skip literal
@@ -287,7 +292,7 @@ Anchor renames:
   schema-13 record with kind `"position_sizer_rebuild"` is classified skippable (non-recovery), and
   (b) a schema-13 `submit_reservation_metadata` record is NOT skippable (fails closed). This pins the
   FR-017 legacy-literal addition, which is an easy drop inside a ~768-hit rename.
-- [ ] **Step 6:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.) Commit.
+- [ ] **Step 6:** `just fmt-check` → pass. (This task changes serialized `literal` VALUES, so `fmt-check`'s runtime-literal audit will fail unless you update the matching `bolt-v3-runtime-literal-audit.toml` rows' `literal`/`context` to the new values — `"capital_admission_rebuild"`, `"bolt_v3.capital_admission_rebuild"`, `"nt_capital_admission_runtime_components"`, `"nt_capital_admission_state"` — in THIS commit. `source-fence-static`-only verifiers are deferred to Task 11.) Commit.
   `git commit -m "feat(711): flip serialized capital_admission values + bump evidence schema 13->14 + keep legacy audit-skip literal"`
 
 ## Task 6: Rename TOML key + type + bump root-config schema version
@@ -310,7 +315,7 @@ Anchor renames:
 - [ ] **Step 3:** Update every config under `config/` and `tests/fixtures/`:
   `[risk.capital_pools.sizing_policy]` → `[risk.capital_pools.capital_admission_policy]` and root
   `schema_version = 1` → `schema_version = 2`.
-- [ ] **Step 4:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.) Commit.
+- [ ] **Step 4:** `just fmt-check` → pass. (The config-path `format!`/string literals you change at `live_node.rs:5476,5481,5485` and `validate.rs:1528,1534,1539` may be classified rows — update their `literal`/`context` in `bolt-v3-runtime-literal-audit.toml` in THIS commit so the runtime-literal audit stays green. `source-fence-static`-only verifiers are deferred to Task 11.) Commit.
   `git commit -m "feat(711): rename sizing_policy TOML key/type + bump root-config schema 1->2"`
 
 ## Task 7: JSONL evidence migration tool + recovery-equivalence test (new code, TDD)
@@ -418,9 +423,11 @@ once the audit TOML's `position_sizer` references are updated by Task 10.
 `docs/bolt-v3/2026-04-25-bolt-v3-schema.md`, `scripts/verify_bolt_v3_schema_current.py`,
 `scripts/test_verify_bolt_v3_schema_current.py`.
 
-- [ ] **Step 1 (FR-016):** Update every audit entry whose `path` is a renamed module file, every
-  `classification` value `position_sizer_*` → `capital_admission_*`, and every `literal`/`context`
-  line whose identifier text or string **value** changed.
+- [ ] **Step 1 (FR-016):** `path`/`context`/`literal` rows are already kept in sync per-task (Tasks
+  1–6 — `fmt-check` gates them, so the audit cannot have drifted there). Here, update only the audit-TOML
+  metadata the per-task gate does NOT scan: every `classification` value `position_sizer_*` →
+  `capital_admission_*`. Then re-run the runtime-literal audit to confirm zero residual
+  `path`/`context`/`literal` drift remains.
 - [ ] **Step 2 (FR-016):** Update the schema doc to the new record kind + `schema_version` 14; update
   `verify_bolt_v3_schema_current.py` + `test_verify_bolt_v3_schema_current.py` so their literal
   kind/version strings (including the stale `schema_version = 10` fixture at
@@ -462,7 +469,7 @@ once the audit TOML's `position_sizer` references are updated by Task 10.
 | Fence silently misses SCREAMING_SNAKE / Pascal misnomer | Case-insensitive matcher folded into `verify_bolt_v3_naming.py` + legit-sizer keep-list + allowlist-required (FR-019) | Task 9 test: SCREAMING_SNAKE residual caught, legit sizer not flagged |
 | 5th serialized value (`nt_sizing_state`) left unmigrated | Renamed at variant/const/3 emit sites/decode (Task 5 Step 2b) + migrated (FR-013) + fence-caught | Task 5/7 tests + fence |
 | Root-config key rename silently accepted on old configs | Bump `SUPPORTED_ROOT_SCHEMA_VERSION` 1→2 + config migrator (Task 6/8); `deny_unknown_fields` is secondary | Task 6 config_parsing assertion + Task 8 migrator test (SC-005) |
-| Audit `path`/`context`/`classification` drift fails CI | Audit updated for paths+identifiers+values in one pass (Task 10) | runtime-literal audit recipe + schema verifier green (SC-003) |
+| Audit `path`/`context`/`literal` drift fails `fmt-check` mid-rename (the audit runs in `fmt-check`, every task) | Each rename commit updates the matching audit rows in lockstep (Global Constraints gating model); `classification` metadata batched in Task 10 | per-task `just fmt-check` green + Task 10 audit recipe (SC-003) |
 | Operator skips migration | Currently theoretical (no active deploy) but **not** weakened; fail-closed not silent; PR body documents the required steps | spec Assumptions + Edge Cases + Task 11 PR body |
 
 ## Self-Review (spec coverage)

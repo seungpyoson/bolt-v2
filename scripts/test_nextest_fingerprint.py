@@ -410,6 +410,55 @@ def assert_commented_compile_time_include_targets_are_ignored() -> None:
         fingerprint(repo)
 
 
+def assert_string_literal_include_text_is_ignored() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const DOC_EXAMPLE: &str = r#"\n'
+            'let _ = include_str!("../docs/extra/index.md");\n'
+            '"#;\n'
+            'pub const ESCAPED_EXAMPLE: &str = "include_bytes!(\\"../docs/extra/index.md\\")";\n'
+            'pub const ROOT: &str = include_str!("../tests/root.rs");\n',
+        )
+        commit_all(repo, "string literal include examples")
+        fingerprint(repo)
+
+
+def assert_compile_time_include_macro_syntax_variants_are_detected() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const COMMENT_AFTER_NAME: &str = include_str /* comment */ !("../docs/extra/index.md");\n'
+            'pub const COMMENT_AFTER_BANG: &str = include_str! /* comment */ ("../docs/extra/index.md");\n'
+            'pub const COMMENT_BEFORE_ARG: &[u8] = include_bytes!(/* comment */ "../docs/extra/index.md");\n'
+            'pub const BRACKET_DELIMITER: &str = include_str!["../docs/extra/index.md"];\n'
+            'pub const BRACE_DELIMITER: &str = include_str!{ "../docs/extra/index.md" };\n',
+        )
+        commit_all(repo, "include macro syntax variants")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include macro syntax variants must fail closed")
+        if "compile-time include target is outside nextest tracked inputs: docs/extra/index.md" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_compile_time_include_non_literal_arguments_fail_closed() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const CONCAT_DOC: &str = include_str!(concat!("../docs/extra/", "index.md"));\n',
+        )
+        commit_all(repo, "include concat expression")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include non-literal arguments must fail closed")
+        if "compile-time include argument must be a direct string literal" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
 def assert_compile_time_include_targets_must_be_tracked_files() -> None:
     with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
@@ -646,6 +695,9 @@ def main() -> int:
     assert_tracked_inputs_must_match_head_tree()
     assert_compile_time_include_targets_must_be_tracked()
     assert_commented_compile_time_include_targets_are_ignored()
+    assert_string_literal_include_text_is_ignored()
+    assert_compile_time_include_macro_syntax_variants_are_detected()
+    assert_compile_time_include_non_literal_arguments_fail_closed()
     assert_compile_time_include_targets_must_be_tracked_files()
     assert_safe_list_excludes_only_exact_backtester_prefix()
     assert_forbidden_safe_list_entries_fail_closed()

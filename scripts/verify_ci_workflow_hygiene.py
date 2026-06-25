@@ -1077,8 +1077,15 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
 MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
 
 
-def mergify_temp_pr_requires_full_ci(*, action: str, pull_request_base_changed: bool) -> bool:
-    return action in MERGIFY_TEMP_PR_FULL_ACTIONS or (action == "edited" and pull_request_base_changed)
+def bool_like(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() == "true"
+
+
+def mergify_temp_pr_requires_full_ci(*, action: str, pull_request_base_changed: bool | str) -> bool:
+    base_changed = bool_like(pull_request_base_changed)
+    return action in MERGIFY_TEMP_PR_FULL_ACTIONS or (action == "edited" and base_changed)
 
 
 def evaluate_ci_policy(
@@ -1134,6 +1141,8 @@ def evaluate_ci_policy(
             path = str(policy["mergify_temp_pr"])
             reason = "mergify_temp_pr"
         elif action == "ready_for_review":
+            if pull_request_draft:
+                raise ValueError("ready_for_review cannot be on a draft PR")
             path = str(policy["ready_for_review"])
             reason = "ready_for_review"
         elif not pull_request_draft and action == "edited" and not pull_request_base_changed:

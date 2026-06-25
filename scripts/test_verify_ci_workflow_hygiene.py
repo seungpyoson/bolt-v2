@@ -1505,7 +1505,7 @@ def assert_ci_policy_matrix() -> None:
         ("pull_request", "edited", False, False, "", "refs/pull/1/merge", "noop"),
         ("pull_request", "edited", False, True, "", "refs/pull/1/merge", "full"),
         ("pull_request", "reopened", False, False, "", "refs/pull/1/merge", "noop"),
-        ("pull_request", "ready_for_review", True, False, "", "refs/pull/1/merge", "full"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge", "full"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch", "full"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch", "iteration"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch", "iteration"),
@@ -1536,6 +1536,24 @@ def assert_ci_policy_matrix() -> None:
         if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
             if result.gate_name != "gate-dispatch" or result.backtester_gate_name != "backtester-gate-dispatch":
                 raise AssertionError(f"workflow_dispatch full CI must publish non-required gate names: {result}")
+
+    try:
+        verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action="ready_for_review",
+            pull_request_draft=True,
+            pull_request_base_changed=False,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            ref="refs/pull/1/merge",
+        )
+    except ValueError as exc:
+        if "ready_for_review cannot be on a draft PR" not in str(exc):
+            raise AssertionError(f"unexpected ready_for_review draft error: {exc}") from exc
+    else:
+        raise AssertionError("ready_for_review draft event must fail closed")
 
     mergify_result = verifier.evaluate_ci_policy(
         policy,
@@ -1649,7 +1667,7 @@ def assert_ci_policy_resolvers_agree() -> None:
         ("pull_request", "edited", False, False, "", "refs/pull/1/merge"),
         ("pull_request", "edited", False, True, "", "refs/pull/1/merge"),
         ("pull_request", "reopened", False, False, "", "refs/pull/1/merge"),
-        ("pull_request", "ready_for_review", True, False, "", "refs/pull/1/merge"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch"),
@@ -1898,6 +1916,85 @@ def assert_ci_policy_resolvers_agree() -> None:
         "draft_pr_edited",
     ):
         raise AssertionError(f"Mergify temp PR metadata edits must not publish required gates: {ver_tuple}")
+    for string_base_changed, expected in [
+        (
+            "false",
+            (
+                "defer",
+                False,
+                True,
+                "gate-deferred",
+                "backtester-gate-deferred",
+                "defer",
+                True,
+                "draft_pr_edited",
+            ),
+        ),
+        (
+            "true",
+            (
+                "full",
+                True,
+                False,
+                "gate",
+                "backtester-gate",
+                "full",
+                True,
+                "mergify_temp_pr",
+            ),
+        ),
+    ]:
+        ver = verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action="edited",
+            pull_request_draft=True,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=string_base_changed,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            ref="refs/pull/965/merge",
+        )
+        prov = provenance.evaluate_ci_policy(
+            prov_config,
+            event_name="pull_request",
+            event_action="edited",
+            pull_request_draft=True,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=string_base_changed,
+            workflow_dispatch_full_ci="",
+            ref="refs/pull/965/merge",
+        )
+        ver_tuple = (
+            ver.ci_policy_path,
+            ver.full_ci_required,
+            ver.full_ci_deferred,
+            ver.gate_name,
+            ver.backtester_gate_name,
+            ver.expected_event_class,
+            ver.is_mergify_temp_pr,
+            ver.reason,
+        )
+        prov_tuple = (
+            prov.ci_policy_path,
+            prov.full_ci_required,
+            prov.full_ci_deferred,
+            prov.gate_name,
+            prov.backtester_gate_name,
+            prov.expected_event_class,
+            prov.is_mergify_temp_pr,
+            prov.reason,
+        )
+        if ver_tuple != prov_tuple:
+            raise AssertionError(
+                f"ci_policy resolver drift for string base_changed={string_base_changed!r}: "
+                f"verifier={ver_tuple} provenance={prov_tuple}"
+            )
+        if ver_tuple != expected:
+            raise AssertionError(
+                f"Mergify temp PR string base_changed={string_base_changed!r} resolved incorrectly: {ver_tuple}"
+            )
 
 
 def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:

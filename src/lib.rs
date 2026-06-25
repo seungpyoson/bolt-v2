@@ -1,3 +1,4 @@
+// CI jobs probe touch: force a root test-archive rebuild for measurement.
 pub mod bolt_v3_adapters;
 pub mod bolt_v3_archetypes;
 pub mod bolt_v3_atomic_io;

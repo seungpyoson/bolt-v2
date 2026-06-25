@@ -528,7 +528,7 @@ def expected_event_class_for(reason: str, path: str) -> str:
         "converted_to_draft",
     }:
         return "defer"
-    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"}:
+    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"} and path == "noop":
         return "noop"
     if reason == "workflow_dispatch":
         return "iteration"
@@ -717,9 +717,21 @@ def evaluate_ci_gate_verdict(
     if reuse_found:
         require_job_result(
             job_results,
+            "nextest-fingerprint",
+            "success",
+            "nextest fingerprint did not succeed before reuse",
+        )
+        require_job_result(
+            job_results,
             "nextest-fingerprint-reuse",
             "success",
             "nextest fingerprint reuse resolver did not succeed",
+        )
+        require_job_result(
+            job_results,
+            "test-archive",
+            "skipped",
+            "test-archive unexpectedly ran during nextest fingerprint reuse",
         )
         require_job_result(
             job_results,

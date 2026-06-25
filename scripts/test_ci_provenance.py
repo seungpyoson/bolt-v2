@@ -1137,6 +1137,46 @@ def assert_ci_policy_outputs_matrix() -> None:
             raise AssertionError(f"force_full_ci must publish full event class, got {output}")
 
 
+def assert_ready_noop_rows_emit_full_event_class_when_configured_full() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace('ready_pr_edited_no_base = "noop"', 'ready_pr_edited_no_base = "full"').replace(
+                'ready_pr_reopened = "noop"', 'ready_pr_reopened = "full"'
+            ),
+        )
+        for action, reason in (
+            ("edited", "ready_pr_edited_no_base"),
+            ("reopened", "ready_pr_reopened"),
+        ):
+            code, stdout, stderr = run_cli(
+                [
+                    "ci-policy",
+                    "--config",
+                    str(config),
+                    "--event-name",
+                    "pull_request",
+                    "--event-action",
+                    action,
+                    "--pull-request-draft",
+                    "false",
+                    "--pull-request-base-changed",
+                    "false",
+                    "--ref",
+                    "refs/pull/1/merge",
+                ]
+            )
+            if code != 0:
+                raise AssertionError(f"ci-policy failed for configured full {reason}: {stderr}")
+            output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+            if output.get("reason") != reason:
+                raise AssertionError(f"ci-policy must expose reason {reason}: {output}")
+            if output.get("ci_policy_path") != "full":
+                raise AssertionError(f"ci-policy must honor configured full for {reason}: {output}")
+            if output.get("expected_event_class") != "full":
+                raise AssertionError(f"ci-policy must expose full event class for configured full {reason}: {output}")
+
+
 def legacy_workflow_gate_names(
     *,
     event_name: str,
@@ -2340,7 +2380,7 @@ def assert_ci_gate_positive_reuse_tag_iteration_and_optional_build_paths() -> No
         reuse_found=True,
         job_results=ci_gate_jobs(
             **{
-                "nextest-fingerprint": "skipped",
+                "nextest-fingerprint": "success",
                 "test-archive": "skipped",
                 "nextest-fingerprint-reuse": "success",
                 "ci-provenance-emit": "skipped",
@@ -2389,6 +2429,42 @@ def assert_ci_gate_positive_reuse_tag_iteration_and_optional_build_paths() -> No
         reuse_found=False,
         job_results=ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "skipped"}),
         build_required=False,
+    )
+
+
+def assert_ci_gate_reuse_requires_fingerprint_and_skipped_archive() -> None:
+    module = load_script()
+    reuse_jobs = ci_gate_jobs(
+        **{
+            "nextest-fingerprint": "success",
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "success",
+            "ci-provenance-emit": "skipped",
+        }
+    )
+    assert_raises(
+        "nextest fingerprint did not succeed before reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            job_results={**reuse_jobs, "nextest-fingerprint": "failure"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "test-archive unexpectedly ran during nextest fingerprint reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            job_results={**reuse_jobs, "test-archive": "failure"},
+            build_required=True,
+        ),
     )
 
 
@@ -2514,6 +2590,7 @@ def main() -> int:
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
+    assert_ready_noop_rows_emit_full_event_class_when_configured_full()
     assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
@@ -2556,6 +2633,7 @@ def main() -> int:
     assert_duplicate_job_results_fail_closed()
     assert_missing_skipped_lane_reports_missing()
     assert_ci_gate_positive_reuse_tag_iteration_and_optional_build_paths()
+    assert_ci_gate_reuse_requires_fingerprint_and_skipped_archive()
     assert_ci_gate_full_requires_archive_proof_when_not_reused()
     assert_backtester_gate_full_rejects_required_job_failures()
     assert_backtester_gate_excludes_post_gate_issue_789_diagnostic()

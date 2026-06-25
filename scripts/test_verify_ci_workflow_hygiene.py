@@ -7186,6 +7186,10 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 
 def assert_cache_as_same_run_transport_is_banned() -> None:
     verifier = load_verifier()
+    fail_on_miss_message = verifier.CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE
+    def has_fail_on_miss_message(errors: list[str]) -> bool:
+        return any(fail_on_miss_message in error for error in errors)
+
     bad_hand_rolled = """jobs:
   test:
     steps:
@@ -7259,7 +7263,55 @@ def assert_cache_as_same_run_transport_is_banned() -> None:
     errors = verifier.verify_repo_automation_texts(
         {".github/workflows/example-ci.yml": bad_builtin_bool_tag}
     )
-    assert any("fail-closed same-run transport" in error for error in errors), errors
+    assert has_fail_on_miss_message(errors), errors
+
+    bad_folded_true = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: >-
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_folded_true}
+    )
+    assert has_fail_on_miss_message(errors), errors
+
+    bad_block_literal_true = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: |
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_block_literal_true}
+    )
+    assert has_fail_on_miss_message(errors), errors
+
+    ok_folded_false = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: >-
+            false
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_folded_false}
+    )
+    assert not has_fail_on_miss_message(errors), errors
 
     for variant in ("yes", "on"):
         bad_builtin_truthy = f"""jobs:

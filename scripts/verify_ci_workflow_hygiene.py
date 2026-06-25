@@ -9825,18 +9825,24 @@ CACHE_MISS_IF_RE = re.compile(r"\bcache-hit\b\s*(?:!=\s*[\"']?true[\"']?|==\s*[\
 EXIT_ONE_RE = re.compile(
     r"(?m)(?:^exit\s+1\b|\|\|\s*exit\s+1\b|&&\s*exit\s+1\b|;\s*exit\s+1\b)"
 )
-# `fail-on-cache-miss: <truthy>` in any YAML form: block- or flow-style
+# `fail-on-cache-miss: <truthy>` in same-line YAML forms, including flow-style
 # (`with: { fail-on-cache-miss: true }`), optional `!!bool` tag, optional quotes,
-# flexible spacing, case-insensitive truthy value. Not anchored to the whole
-# line, so flow-style maps are caught; a negative lookbehind avoids matching a
-# longer key such as `my-fail-on-cache-miss`. The caller strips comments before
-# matching. `true`/`!!bool true` enable the directive; `yes`/`on` are rejected
-# loudly by actions/cache's boolean input parser — either way it is not a silent
-# same-run transport and must not ship.
+# flexible spacing, case-insensitive truthy value. Folded/block scalars are
+# handled by a continuation-line peek below. Not anchored to the whole line, so
+# flow-style maps are caught; a negative lookbehind avoids matching a longer key
+# such as `my-fail-on-cache-miss`. The caller strips comments before matching.
+# `true`/`!!bool true` enable the directive; `yes`/`on` are rejected loudly by
+# actions/cache's boolean input parser — either way it is not a silent same-run
+# transport and must not ship.
 FAIL_ON_CACHE_MISS_TRUE_RE = re.compile(
     r"(?<![\w-])fail-on-cache-miss:\s*(?:!!bool\s+)?[\"']?(?:true|yes|on)\b",
     re.IGNORECASE,
 )
+FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE = re.compile(
+    r"(?<![\w-])fail-on-cache-miss:\s*(?:!!\S+\s+)?[>|][-+0-9]*\s*(?:#.*)?$",
+    re.IGNORECASE,
+)
+FAIL_ON_CACHE_MISS_BLOCK_TRUTHY_RE = re.compile(r"^[\"']?(?:true|yes|on)[\"']?$", re.IGNORECASE)
 
 
 def is_workflow_yaml(file_name: str) -> bool:
@@ -9852,14 +9858,29 @@ def step_has_cache_miss_guard(block: list[str]) -> bool:
     return False
 
 
+def has_fail_on_cache_miss_true(text: str) -> bool:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if FAIL_ON_CACHE_MISS_TRUE_RE.search(strip_comment(line)):
+            return True
+        if not FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE.search(line):
+            continue
+        key_indent = len(line) - len(line.lstrip(" "))
+        for continuation in lines[index + 1:]:
+            continuation_indent = len(continuation) - len(continuation.lstrip(" "))
+            if continuation_indent <= key_indent:
+                break
+            continuation_value = strip_comment(continuation).strip()
+            if FAIL_ON_CACHE_MISS_BLOCK_TRUTHY_RE.fullmatch(continuation_value):
+                return True
+    return False
+
+
 def cache_same_run_transport_errors(file_name: str, text: str) -> list[str]:
     if not is_workflow_yaml(file_name):
         return []
     errors: list[str] = []
-    if any(
-        FAIL_ON_CACHE_MISS_TRUE_RE.search(strip_comment(line))
-        for line in text.splitlines()
-    ):
+    if has_fail_on_cache_miss_true(text):
         errors.append(CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE)
     if any(
         step_has_cache_miss_guard(block) and EXIT_ONE_RE.search(block_run_body(block))

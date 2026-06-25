@@ -535,6 +535,13 @@ jobs:
     needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.result == 'success' && needs.nextest-fingerprint.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    outputs:
+      nextest_archive_cache_key: ${{ steps.cache-audit-keys.outputs.nextest_archive_cache_key }}
+      root_bin_sidecars_cache_key: ${{ steps.cache-audit-keys.outputs.root_bin_sidecars_cache_key }}
+      archive_build_target_cache_key: ${{ steps.cache-audit-keys.outputs.archive_build_target_cache_key }}
+      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}
+      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}
+      archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}
     env:
       CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
@@ -549,6 +556,16 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+
+      - name: Emit cache persistence audit keys
+        id: cache-audit-keys
+        shell: bash
+        run: |
+          {
+            echo "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore nextest archive
         id: nextest-archive-cache
@@ -670,6 +687,43 @@ jobs:
             echo "::endgroup::"
           done
           exit "$status"
+
+  cache-persistence-audit:
+    name: cache persistence audit
+    needs: [ci-policy, nextest-fingerprint-reuse, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Probe saved cache keys
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci_storage_audit.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
+            --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
+            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \
+            | tee "$RUNNER_TEMP/cache-persistence-audit.txt"
+
+          {
+            echo "### Cache persistence audit"
+            echo
+            echo "- nextest archive restore hit: \`${{ needs.test-archive.outputs.nextest_archive_cache_hit }}\`"
+            echo "- root binary sidecars restore hit: \`${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}\`"
+            echo "- archive build target restore hit: \`${{ needs.test-archive.outputs.archive_build_target_cache_hit }}\`"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/cache-persistence-audit.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if grep -q ': missing;' "$RUNNER_TEMP/cache-persistence-audit.txt"; then
+            echo "::warning::one or more saved/restored root nextest cache keys are missing from the Actions cache inventory"
+          fi
 
   test:
     name: test

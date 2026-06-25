@@ -22,7 +22,7 @@ import json
 import subprocess
 import sys
 import urllib.parse
-from typing import Any
+from typing import Any, NamedTuple
 
 
 class AuditError(RuntimeError):
@@ -34,6 +34,11 @@ class GhApiError(AuditError):
         self.path = path
         self.message = message
         super().__init__(f"{path}: {message}")
+
+
+class CacheKeyProbeRequest(NamedTuple):
+    label: str
+    key: str
 
 
 class GhClient:
@@ -175,6 +180,16 @@ def count_with_source(payload: dict[str, Any], *, fallback: int) -> tuple[int, s
     return fallback, "enumerated_count_fallback"
 
 
+def cache_entry_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "cache_id": raw.get("id"),
+        "ref": optional_text(raw.get("ref")),
+        "key": optional_text(raw.get("key")),
+        "last_accessed_at": optional_text(raw.get("last_accessed_at")),
+        "size_bytes": nonnegative_int(raw.get("size_in_bytes")),
+    }
+
+
 def fetch_cache(client: GhClient) -> dict[str, Any]:
     payload = require_object(
         client.api("actions/caches", params={"per_page": "100"}, paginate=True),
@@ -188,15 +203,7 @@ def fetch_cache(client: GhClient) -> dict[str, Any]:
             continue
         size_bytes = nonnegative_int(raw.get("size_in_bytes"))
         total_bytes += size_bytes
-        entries.append(
-            {
-                "cache_id": raw.get("id"),
-                "ref": optional_text(raw.get("ref")),
-                "key": optional_text(raw.get("key")),
-                "last_accessed_at": optional_text(raw.get("last_accessed_at")),
-                "size_bytes": size_bytes,
-            }
-        )
+        entries.append(cache_entry_from_raw(raw))
 
     count, count_source = count_with_source(payload, fallback=len(entries))
     return {
@@ -207,6 +214,41 @@ def fetch_cache(client: GhClient) -> dict[str, Any]:
         "enumeration_consistency": "live_churn_possible",
         "entries": entries,
     }
+
+
+def fetch_cache_key_probes(
+    client: GhClient,
+    requests: list[CacheKeyProbeRequest],
+) -> list[dict[str, Any]]:
+    probes: list[dict[str, Any]] = []
+    for request in requests:
+        payload = require_object(
+            client.api(
+                "actions/caches",
+                params={"key": request.key, "per_page": "100"},
+                paginate=True,
+            ),
+            "actions/caches",
+        )
+        raw_entries = list_field(payload, "actions_caches", "actions/caches")
+        entries = [
+            cache_entry_from_raw(raw)
+            for raw in raw_entries
+            if isinstance(raw, dict)
+        ]
+        count, count_source = count_with_source(payload, fallback=len(entries))
+        probes.append(
+            {
+                "label": request.label,
+                "key": request.key,
+                "present": bool(entries),
+                "count": count,
+                "count_source": count_source,
+                "enumerated_count": len(entries),
+                "entries": entries,
+            }
+        )
+    return probes
 
 
 def fetch_artifacts(client: GhClient) -> dict[str, Any]:
@@ -397,10 +439,74 @@ def render_text(snapshot: dict[str, Any], *, artifact_name_limit: int = 10) -> s
     return "\n".join(lines)
 
 
+def parse_cache_key_probe(raw: str) -> CacheKeyProbeRequest:
+    if "=" not in raw:
+        raise AuditError("--cache-key must be LABEL=KEY")
+    label, key = raw.split("=", 1)
+    label = label.strip()
+    key = key.strip()
+    if not label:
+        raise AuditError("--cache-key label must not be empty")
+    if not key:
+        raise AuditError("--cache-key key must not be empty")
+    return CacheKeyProbeRequest(label=label, key=key)
+
+
+def build_cache_key_probe_snapshot(
+    client: GhClient,
+    *,
+    repo: str,
+    snapshot_utc: str,
+    requests: list[CacheKeyProbeRequest],
+) -> dict[str, Any]:
+    return {
+        "snapshot_utc": snapshot_utc,
+        "repo": repo,
+        "cache_key_probes": fetch_cache_key_probes(client, requests),
+    }
+
+
+def render_cache_key_probe_text(snapshot: dict[str, Any]) -> str:
+    probes = list_field(snapshot, "cache_key_probes", "cache_key_probes")
+    lines = [
+        f"CI cache key persistence audit for {snapshot['repo']}",
+        f"Snapshot: {snapshot['snapshot_utc']}",
+        "",
+        "Cache key probes:",
+    ]
+    for raw in probes:
+        if not isinstance(raw, dict):
+            continue
+        status = "present" if raw.get("present") else "missing"
+        lines.append(
+            f"  - {raw.get('label')}: {status}; "
+            f"count={raw.get('count')} enumerated={raw.get('enumerated_count')} "
+            f"key={raw.get('key')}"
+        )
+        entries = raw.get("entries")
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                lines.append(
+                    f"      id={entry.get('cache_id')} ref={entry.get('ref')} "
+                    f"size={human_bytes(nonnegative_int(entry.get('size_bytes')))} "
+                    f"last_accessed_at={entry.get('last_accessed_at')}"
+                )
+    return "\n".join(lines)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", help="GitHub repository as OWNER/REPO. Defaults to gh repo view.")
     parser.add_argument("--branch", help="Branch for required-check lookup. Defaults to the repo default branch.")
+    parser.add_argument(
+        "--cache-key",
+        action="append",
+        default=[],
+        metavar="LABEL=KEY",
+        help="Probe an exact Actions cache key. Repeat to probe multiple keys.",
+    )
     parser.add_argument("--json", action="store_true", help="Print the stable JSON contract only.")
     return parser.parse_args(argv)
 
@@ -408,13 +514,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     repo = args.repo or infer_repo()
-    branch = args.branch or infer_default_branch()
     client = GhClient(repo)
+    snapshot_utc = isoformat_utc(dt.datetime.now(dt.UTC))
+    if args.cache_key:
+        snapshot = build_cache_key_probe_snapshot(
+            client,
+            repo=repo,
+            snapshot_utc=snapshot_utc,
+            requests=[parse_cache_key_probe(raw) for raw in args.cache_key],
+        )
+        if args.json:
+            print(json.dumps(snapshot, indent=2, sort_keys=True))
+        else:
+            print(render_cache_key_probe_text(snapshot))
+        return 0
+
+    branch = args.branch or infer_default_branch()
     snapshot = build_snapshot(
         client,
         repo=repo,
         branch=branch,
-        snapshot_utc=isoformat_utc(dt.datetime.now(dt.UTC)),
+        snapshot_utc=snapshot_utc,
     )
     if args.json:
         print(json.dumps(snapshot, indent=2, sort_keys=True))

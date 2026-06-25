@@ -558,6 +558,13 @@ jobs:
     needs: [ci-policy, detector, nextest-fingerprint, nextest-fingerprint-reuse]
     if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detector.result == 'success' && needs.nextest-fingerprint.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      nextest_archive_cache_key: ${{ steps.cache-audit-keys.outputs.nextest_archive_cache_key }}
+      root_bin_sidecars_cache_key: ${{ steps.cache-audit-keys.outputs.root_bin_sidecars_cache_key }}
+      archive_build_target_cache_key: ${{ steps.cache-audit-keys.outputs.archive_build_target_cache_key }}
+      nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}
+      root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}
+      archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
       ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
@@ -568,6 +575,15 @@ jobs:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
           include-managed-target-dir: "true"
+      - name: Emit cache persistence audit keys
+        id: cache-audit-keys
+        shell: bash
+        run: |
+          {
+            echo "nextest_archive_cache_key=${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+            echo "archive_build_target_cache_key=managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}"
+          } >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -670,6 +686,40 @@ jobs:
             echo "::endgroup::"
           done
           exit "$status"
+
+  cache-persistence-audit:
+    name: cache persistence audit
+    needs: [ci-policy, nextest-fingerprint-reuse, test-archive]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.test-archive.result == 'success' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@example
+      - name: Probe saved cache keys
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci_storage_audit.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}" \
+            --cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}" \
+            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \
+            | tee "$RUNNER_TEMP/cache-persistence-audit.txt"
+          {
+            echo "### Cache persistence audit"
+            echo
+            echo "- nextest archive restore hit: `${{ needs.test-archive.outputs.nextest_archive_cache_hit }}`"
+            echo "- root binary sidecars restore hit: `${{ needs.test-archive.outputs.root_bin_sidecars_cache_hit }}`"
+            echo "- archive build target restore hit: `${{ needs.test-archive.outputs.archive_build_target_cache_hit }}`"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/cache-persistence-audit.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if grep -q ': missing;' "$RUNNER_TEMP/cache-persistence-audit.txt"; then
+            echo "::warning::one or more saved/restored root nextest cache keys are missing from the Actions cache inventory"
+          fi
 
   test:
     name: test
@@ -3072,6 +3122,77 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
 
 
+def assert_cache_persistence_audit_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    cases = [
+        (
+            "test-archive must expose cache persistence audit outputs",
+            replace_once(
+                workflow,
+                "      nextest_archive_cache_key: ${{ steps.cache-audit-keys.outputs.nextest_archive_cache_key }}\n",
+                "",
+            ),
+        ),
+        (
+            "test-archive must emit cache persistence audit keys",
+            replace_once(workflow, "        id: cache-audit-keys\n", "        id: cache-keys\n"),
+        ),
+        (
+            "test-archive cache persistence audit keys must mirror cache action keys",
+            replace_once(
+                workflow,
+                "root_bin_sidecars_cache_key=root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}",
+                "root_bin_sidecars_cache_key=root-bin-sidecars-bad-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}",
+            ),
+        ),
+        (
+            "cache-persistence-audit job is required",
+            replace_once(workflow, "  cache-persistence-audit:\n", "  cache-persistence-audit-disabled:\n"),
+        ),
+        (
+            "cache-persistence-audit needs test-archive",
+            replace_once(
+                workflow,
+                "    needs: [ci-policy, nextest-fingerprint-reuse, test-archive]",
+                "    needs: [ci-policy, nextest-fingerprint-reuse]",
+            ),
+        ),
+        (
+            "cache-persistence-audit must run ci_storage_audit exact-key probes",
+            replace_once(workflow, "          python3 scripts/ci_storage_audit.py \\\n", "          python3 scripts/ci_storage_audit_probe.py \\\n"),
+        ),
+        (
+            "cache-persistence-audit probe must be non-blocking",
+            replace_once(workflow, "        continue-on-error: true\n", ""),
+        ),
+        (
+            "cache-persistence-audit must probe all root nextest cache keys",
+            replace_once(
+                workflow,
+                '            --cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}" \\\n',
+                "",
+            ),
+        ),
+        (
+            "cache-persistence-audit must write probe results to the job summary",
+            replace_once(workflow, '          } >> "$GITHUB_STEP_SUMMARY"\n', "          } > /dev/null\n"),
+        ),
+        (
+            "cache-persistence-audit must warn when cache keys are missing",
+            replace_once(
+                workflow,
+                "            echo \"::warning::one or more saved/restored root nextest cache keys are missing from the Actions cache inventory\"\n",
+                "",
+            ),
+        ),
+    ]
+    for expected, mutated_workflow in cases:
+        errors = verifier.verify_workflow(mutated_workflow)
+        if not any(expected in error for error in errors):
+            raise AssertionError(f"expected verifier error containing {expected!r}, got: {errors}")
+
+
 def assert_gate_policy_truth_table_gaps_are_reported() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
@@ -4126,11 +4247,17 @@ ci-lint-workflow:
 
 ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
+    python3 scripts/test_ci_storage_audit.py
     python3 scripts/test_root_bin_sidecars.py
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
+
+    missing_storage_audit_test = justfile_text.replace("    python3 scripts/test_ci_storage_audit.py\n", "")
+    missing_storage_audit_test_errors = verifier.verify_local_verification_gate_recipes(missing_storage_audit_test)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_ci_storage_audit.py" in error for error in missing_storage_audit_test_errors):
+        raise AssertionError(f"ci storage audit test wiring drift was silent, got: {missing_storage_audit_test_errors}")
 
     missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
     missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)
@@ -8364,11 +8491,19 @@ def main() -> int:
         "test-archive must opt into managed target dir",
         replace_once(
             BASE_WORKFLOW,
-            '          include-nextest-version: "true"\n'
-            '          include-managed-target-dir: "true"\n'
-            "      - uses: Swatinem/rust-cache@example",
-            '          include-nextest-version: "true"\n'
-            "      - uses: Swatinem/rust-cache@example",
+            """      - uses: ./.github/actions/setup-environment
+        id: setup
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+          include-managed-target-dir: "true"
+      - name: Emit cache persistence audit keys""",
+            """      - uses: ./.github/actions/setup-environment
+        id: setup
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+      - name: Emit cache persistence audit keys""",
         ),
     )
     assert_error(
@@ -8906,7 +9041,11 @@ def main() -> int:
     )
     assert_error(
         "test must check needs.test-archive.result",
-        replace_once(BASE_WORKFLOW, "needs.test-archive.result", "omitted.test-archive.result"),
+        replace_once(
+            BASE_WORKFLOW,
+            'if [[ "${{ needs.test-archive.result }}" != "success" ]]; then',
+            'if [[ "${{ omitted.test-archive.result }}" != "success" ]]; then',
+        ),
     )
     assert_error(
         "test must use always()",
@@ -10301,6 +10440,7 @@ def main() -> int:
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()
+    assert_cache_persistence_audit_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()
     assert_mergify_proof_pr_concurrency_gaps_are_reported()

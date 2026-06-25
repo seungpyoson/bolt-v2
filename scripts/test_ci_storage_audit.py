@@ -24,7 +24,10 @@ class FakeClient:
 
     def api(self, path: str, *, params: dict[str, str] | None = None, paginate: bool = False) -> Any:
         self.calls.append((path, params, paginate))
-        value = self.responses[path]
+        response_key = (path, tuple(sorted((params or {}).items())))
+        value = self.responses.get(response_key, self.responses.get(path))
+        if value is None:
+            raise KeyError(response_key)
         if isinstance(value, Exception):
             raise value
         if paginate:
@@ -206,6 +209,81 @@ class CiStorageAuditTests(unittest.TestCase):
                 self.assertEqual(artifacts["count"], 1)
                 self.assertEqual(artifacts["count_source"], "enumerated_count_fallback")
                 self.assertEqual(artifacts["enumerated_count"], 1)
+
+    def test_cache_key_probes_query_exact_keys_and_report_presence(self) -> None:
+        client = FakeClient(
+            {
+                (
+                    "actions/caches",
+                    (("key", "nextest-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 1,
+                    "actions_caches": [
+                        {
+                            "id": 301,
+                            "ref": "refs/heads/main",
+                            "key": "nextest-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_in_bytes": 1024,
+                        }
+                    ],
+                },
+                (
+                    "actions/caches",
+                    (("key", "sidecar-key"), ("per_page", "100")),
+                ): {
+                    "total_count": 0,
+                    "actions_caches": [],
+                },
+            }
+        )
+
+        probes = ci_storage_audit.fetch_cache_key_probes(
+            client,
+            [
+                ci_storage_audit.CacheKeyProbeRequest("nextest-archive", "nextest-key"),
+                ci_storage_audit.CacheKeyProbeRequest("root-bin-sidecars", "sidecar-key"),
+            ],
+        )
+
+        self.assertEqual(
+            probes,
+            [
+                {
+                    "label": "nextest-archive",
+                    "key": "nextest-key",
+                    "present": True,
+                    "count": 1,
+                    "count_source": "github_total_count",
+                    "enumerated_count": 1,
+                    "entries": [
+                        {
+                            "cache_id": 301,
+                            "ref": "refs/heads/main",
+                            "key": "nextest-key",
+                            "last_accessed_at": "2026-06-25T10:00:00Z",
+                            "size_bytes": 1024,
+                        }
+                    ],
+                },
+                {
+                    "label": "root-bin-sidecars",
+                    "key": "sidecar-key",
+                    "present": False,
+                    "count": 0,
+                    "count_source": "github_total_count",
+                    "enumerated_count": 0,
+                    "entries": [],
+                },
+            ],
+        )
+        self.assertEqual(
+            client.calls,
+            [
+                ("actions/caches", {"key": "nextest-key", "per_page": "100"}, True),
+                ("actions/caches", {"key": "sidecar-key", "per_page": "100"}, True),
+            ],
+        )
 
     def test_merge_paginated_payload_merges_real_slurp_shape(self) -> None:
         payload = [

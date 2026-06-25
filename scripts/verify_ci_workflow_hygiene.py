@@ -546,6 +546,36 @@ TEST_ARCHIVE_SIDECAR_PACK_GUARD = (
 )
 TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
 TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}"
+TEST_ARCHIVE_TARGET_CACHE_KEY = (
+    "managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ "
+    "hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', "
+    "'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', "
+    "'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', "
+    "'.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', "
+    "'src/**', 'tests/**') }}"
+)
+TEST_ARCHIVE_CACHE_AUDIT_STEP = "Emit cache persistence audit keys"
+TEST_ARCHIVE_CACHE_AUDIT_STEP_ID = "id: cache-audit-keys"
+TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS = (
+    "nextest_archive_cache_key: ${{ steps.cache-audit-keys.outputs.nextest_archive_cache_key }}",
+    "root_bin_sidecars_cache_key: ${{ steps.cache-audit-keys.outputs.root_bin_sidecars_cache_key }}",
+    "archive_build_target_cache_key: ${{ steps.cache-audit-keys.outputs.archive_build_target_cache_key }}",
+    "nextest_archive_cache_hit: ${{ steps.nextest-archive-cache.outputs.cache-hit }}",
+    "root_bin_sidecars_cache_hit: ${{ steps.root-bin-sidecars-cache.outputs.cache-hit }}",
+    "archive_build_target_cache_hit: ${{ steps.test-target-cache.outputs.cache-hit }}",
+)
+TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS = (
+    "nextest_archive_cache_key=",
+    "root_bin_sidecars_cache_key=",
+    "archive_build_target_cache_key=",
+)
+CACHE_PERSISTENCE_AUDIT_COMMAND = "python3 scripts/ci_storage_audit.py"
+CACHE_PERSISTENCE_AUDIT_NEEDS = ("ci-policy", "nextest-fingerprint-reuse", "test-archive")
+CACHE_PERSISTENCE_AUDIT_CACHE_KEYS = (
+    '--cache-key "nextest-archive=${{ needs.test-archive.outputs.nextest_archive_cache_key }}"',
+    '--cache-key "root-bin-sidecars=${{ needs.test-archive.outputs.root_bin_sidecars_cache_key }}"',
+    '--cache-key "archive-build-target=${{ needs.test-archive.outputs.archive_build_target_cache_key }}"',
+)
 TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
@@ -5096,6 +5126,7 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
     "ci-lint-workflow",
 )
 CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
+    "python3 scripts/test_ci_storage_audit.py",
     "python3 scripts/test_root_bin_sidecars.py",
 )
 
@@ -9110,6 +9141,20 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
+        for output in TEST_ARCHIVE_CACHE_AUDIT_OUTPUTS:
+            if output not in archive_text:
+                errors.append("test-archive must expose cache persistence audit outputs")
+                break
+        cache_audit_step = named_step_block(archive_lines, TEST_ARCHIVE_CACHE_AUDIT_STEP)
+        if cache_audit_step is None or TEST_ARCHIVE_CACHE_AUDIT_STEP_ID not in uncommented_text(cache_audit_step):
+            errors.append("test-archive must emit cache persistence audit keys")
+        elif (
+            TEST_ARCHIVE_CACHE_KEY not in uncommented_text(cache_audit_step)
+            or TEST_ARCHIVE_SIDECAR_CACHE_KEY not in uncommented_text(cache_audit_step)
+            or TEST_ARCHIVE_TARGET_CACHE_KEY not in uncommented_text(cache_audit_step)
+            or not all(output in uncommented_text(cache_audit_step) for output in TEST_ARCHIVE_CACHE_AUDIT_KEY_OUTPUTS)
+        ):
+            errors.append("test-archive cache persistence audit keys must mirror cache action keys")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
             errors.append("test-archive must not download nextest archive artifact")
         if TEST_ARCHIVE_SHARDS_ASSIGNMENT not in archive_text or TEST_ARCHIVE_SHARDS_ASSERT not in archive_text:
@@ -9133,6 +9178,39 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if fragment not in archive_text:
                 errors.append("test-archive must aggregate partition failures")
                 break
+
+    if "test-archive" in jobs and "cache-persistence-audit" not in jobs:
+        errors.append("cache-persistence-audit job is required")
+
+    if "cache-persistence-audit" in jobs:
+        audit_lines = jobs["cache-persistence-audit"]
+        audit_text = uncommented_text(audit_lines)
+        audit_needs = extract_needs(audit_lines)
+        for need in CACHE_PERSISTENCE_AUDIT_NEEDS:
+            if need not in audit_needs:
+                errors.append(f"cache-persistence-audit needs {need}")
+        if not job_if_uses_always(audit_lines):
+            errors.append("cache-persistence-audit must use always()")
+        if not job_gates_on_full_ci_required(audit_lines):
+            errors.append("cache-persistence-audit must gate on full_ci_required")
+        if "needs.test-archive.result == 'success'" not in audit_text:
+            errors.append("cache-persistence-audit must require test-archive success")
+        if NEXTEST_REUSE_MISS_EXPR not in audit_text:
+            errors.append("cache-persistence-audit must skip on validated nextest fingerprint reuse")
+        if 'GH_TOKEN: ${{ github.token }}' not in audit_text:
+            errors.append("cache-persistence-audit must use the workflow token for cache API reads")
+        if CACHE_PERSISTENCE_AUDIT_COMMAND not in audit_text:
+            errors.append("cache-persistence-audit must run ci_storage_audit exact-key probes")
+        if "continue-on-error: true" not in audit_text:
+            errors.append("cache-persistence-audit probe must be non-blocking")
+        for cache_key in CACHE_PERSISTENCE_AUDIT_CACHE_KEYS:
+            if cache_key not in audit_text:
+                errors.append("cache-persistence-audit must probe all root nextest cache keys")
+                break
+        if "$GITHUB_STEP_SUMMARY" not in audit_text:
+            errors.append("cache-persistence-audit must write probe results to the job summary")
+        if "::warning::one or more saved/restored root nextest cache keys are missing" not in audit_text:
+            errors.append("cache-persistence-audit must warn when cache keys are missing")
 
     if "nextest-fingerprint-reuse" in jobs:
         reuse_lines = jobs["nextest-fingerprint-reuse"]

@@ -837,7 +837,7 @@ jobs:
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
         run: |
           git check-ref-format "refs/heads/$base_branch"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml .github/workflows/ci.yml
           echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
           echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
       - name: Emit CI provenance

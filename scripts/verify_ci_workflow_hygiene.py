@@ -7937,7 +7937,7 @@ def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
         "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
         "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
         'git check-ref-format "refs/heads/$base_branch"',
-        "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+        "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml .github/workflows/ci.yml",
         "steps.provenance_base.outputs.script",
         "steps.provenance_base.outputs.config",
         'ci_policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"',

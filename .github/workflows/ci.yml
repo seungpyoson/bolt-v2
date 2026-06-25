@@ -882,7 +882,7 @@ jobs:
           git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
           base_tree="$RUNNER_TEMP/ci-provenance-base-tree"
           mkdir -p "$base_tree"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml .github/workflows/ci.yml | tar -x -C "$base_tree"
           echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
           echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
 

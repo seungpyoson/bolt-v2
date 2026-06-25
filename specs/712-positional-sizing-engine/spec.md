@@ -2,7 +2,7 @@
 
 **Feature Branch**: `712-positional-sizing-engine`
 **Created**: 2026-06-25 (replaces the round-2 draft after the review-driven split)
-**Status**: Draft — under round-6 external review
+**Status**: Draft — under review (consolidated three-module review: #973 substrate, #712 sizer, #724 calibration)
 **Tracking**: #712. Depends on #711 (rename) and the risk-reservation substrate (`specs/973-risk-reservation-substrate/spec.md`); armed live by #688.
 **Input**: A real positional sizer that decides *how much* to trade from a calibrated edge and a bankroll, then turns that target into an admitted order through the shared substrate. The atomic risk-reservation machinery is NOT here — it is the substrate. This spec is the sizing math plus the one coordinator that turns a target into an action.
 
@@ -10,7 +10,7 @@
 
 Today there is no real sizer: `bolt_v3_sizing.rs::choose_robust_size` scales a fixed dollar notional by an EV ratio (not bankroll-proportional), and the admission component only validates an already-chosen quantity. This spec adds a sizing engine that:
 
-1. Computes a **target terminal exposure** from a selectable sizing model — **fixed fraction of equity** (the launch default) or **risk-constrained Kelly** (opt-in, gated). The "safe" model is a selectable model, not a separate code path. ONE path. NO DUAL PATHS.
+1. Computes a **target terminal exposure** from a selectable sizing model on **one seam** (config-selected, no separate code path): **risk-constrained Kelly** — the target growth model that scales to the edge, armed only once calibration (#724) provides a trustworthy edge — and **fixed fraction of equity** — the calibration-free safe mode that caps capital per trade and needs no edge-accuracy input. Fixed-fraction is what launches (calibration isn't built yet) and the permanent fallback whenever calibration is unavailable; Kelly is the goal. ONE path. NO DUAL PATHS.
 2. Sizes the **complete target position** (existing exposure + the change), then emits the **delta** — never per-order-delta sizing.
 3. Projects the target to an exact candidate using the substrate's shared evaluator and advisory view, **mints unforgeable provenance**, submits to the substrate's atomic gate, and runs a bounded retry + reduction protocol via the **one coordinator** that owns target→action.
 4. Is a **shared, family/venue/instrument-agnostic module**: one sizer serves many strategies across multiple instances, venues, and instruments. Binary/taker is simply the **first** registered adapter, not a special case — its payoff structure (and any family's) lives only in a sealed, registered adapter that derives terminal cash flows from the active descriptor. Nothing venue-, instrument-, or strategy-specific lives in the sizer core.
@@ -19,11 +19,11 @@ The sizer **consumes** an edge and a coverage band; it NEVER measures calibratio
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Fixed-fraction-of-equity launch model (Priority: P1, the launch default)
+### User Story 1 - Fixed-fraction-of-equity: the calibration-free safe mode (Priority: P1, launch + fallback)
 
 The engine sizes a target as an appetite fraction of reference growth wealth, then lets the substrate enforce every hard headroom. Fixed dollar notional is gone (fixed dollars = hidden rising leverage after a drawdown). The model is off by default and selected by one config dial.
 
-**Why this priority**: A bankroll-proportional default is the minimum bar for a real sizer and is safe without estimation-heavy machinery. It is the launch model; Kelly is opt-in on top.
+**Why this priority**: It is safe without any edge-accuracy input, so it is what launches (calibration #724 isn't built) and the permanent fallback whenever calibration is unavailable. Kelly is the target growth model on top, gated on calibration.
 
 **Independent Test**: With a known equity and appetite fraction, assert the target equals the appetite allowance projected to feasibility, and that after a simulated drawdown the dollar size falls (no rising leverage).
 
@@ -71,9 +71,9 @@ The core consumes a generic `TargetPosition` and opaque, adapter-supplied canoni
 1. **Given** the binary/taker adapter, **When** the core sizes and admits, **Then** no core component branches on a family/venue/symbol name; binary structure is confined to the registered adapter.
 2. **Given** a modeled state s, **When** the adapter computes its net P&L Πₛ, **Then** Πₛ is derived from the exact active descriptor version bound to the sizing decision — there is no second cash-flow source.
 
-### User Story 5 - Risk-constrained Kelly on the worst-case edge (Priority: P2, opt-in and gated)
+### User Story 5 - Risk-constrained Kelly on the worst-case edge: the target growth model (Priority: P1, gated on calibration #724)
 
-An opt-in model sizes by risk-constrained Kelly on the conservative (worst-case) band end. It evaluates the moment constraint on **post-trade target wealth**, requires strictly positive wealth ratios, and arms only behind an external band-coverage attestation plus a named model-risk cap; on attestation failure the default is no-trade.
+The target growth model sizes by risk-constrained Kelly on the conservative (worst-case) band end. It evaluates the moment constraint on **post-trade target wealth**, requires strictly positive wealth ratios, and arms only behind a config-loaded band-coverage attestation (produced offline by the calibration scoreboard #724) plus a named model-risk cap. When calibration is unavailable or the attestation fails, the default is no-trade; the only alternative is a configured, approved fallback to the fixed-fraction safe mode — Kelly never runs on an unverified edge.
 
 **Why this priority**: RCK on the worst-case edge is best-in-class for the single bet (sizing at the worst-case band end is already the box-DRO solution at fraction 1 — a separate ¼–½ multiplier double-counts). But band MISSPECIFICATION is a distinct risk that must be guarded separately, not by re-adding a folklore fraction.
 
@@ -111,7 +111,7 @@ The maker (P2) reuses the same substrate, coordinator, evaluator, and token path
 
 **Sizing models**
 
-- **FR-001**: The engine MUST provide selectable sizing models behind one seam — fixed-fraction-of-equity (launch default) and risk-constrained Kelly (opt-in) — chosen by config. The "safe" model MUST be a selectable model, not a separate code path. ONE path.
+- **FR-001**: The engine MUST provide selectable sizing models behind one seam — fixed-fraction-of-equity (the calibration-free safe mode; launch + fallback) and risk-constrained Kelly (the target growth model, gated on calibration #724) — chosen by config. Both are first-class on the one seam; the safe model MUST be a selectable model, not a separate code path. ONE path.
 - **FR-002**: A sizing model MUST compute only a model allowance from probability/payoff, reference growth wealth, and model controls (e.g. `model_stress_allowance = ρ · reference_growth_wealth`). It MUST NOT consume equity-floor, governor, collateral, bucket, order, or position headrooms, and MUST NOT multiply any hard headroom by an appetite factor. Feasibility is the substrate's job.
 - **FR-003**: The engine MUST size the COMPLETE target terminal position (existing filled exposure + reachable pending exposure + the change) and emit the delta. Per-order-delta sizing is prohibited. Before increasing risk, the engine MUST either evaluate the target against the conservative reachable pending-exposure envelope or require conflicting same-instrument pendings cancelled and reconciled first; the admission quantity is target minus reconciled effective exposure.
 - **FR-004**: Launch default MUST be fixed fraction of equity (NOT fixed notional). Fixed dollar sizing is prohibited as a default because it hides rising leverage after a drawdown.
@@ -137,7 +137,7 @@ The maker (P2) reuses the same substrate, coordinator, evaluator, and token path
 
 **Execution hygiene and scope**
 
-- **FR-040**: The engine MUST use a fee/slippage-adjusted all-in cost; break-even MUST be at that cost; it MUST zero-size on sub-edge, sub-min-lot, or stale snapshot. Orders MUST be limit-price / max-cost bounded — no market orders.
+- **FR-040**: The engine MUST use a fee/slippage-adjusted all-in cost; break-even MUST be at that cost; it MUST zero-size on sub-edge, sub-min-lot, or stale snapshot. Orders MUST be limit-price / max-cost bounded — no market orders. Launch uses a scalar per-unit cost (the per-trade capital cap bounds book-walk impact); the cost MUST be expressed behind a curve-shaped interface (cost as a function of size) so an impact-aware (depth-walking) cost can replace the scalar later without changing the models or the seam.
 - **FR-041** (one job): The engine MUST NOT measure calibration accuracy; it consumes a calibrated edge and coverage band and never scores market accuracy. Calibration is #724/#723.
 - **FR-042** (no hardcodes): Every model parameter, appetite fraction, ceiling, and threshold MUST be runtime config (TOML), fail-closed when missing or outside the substrate's policy envelope.
 - **FR-043** (off by default): The engine MUST default to off; live arming is gated by #688. Maker (P2) MUST reuse the same substrate/coordinator/evaluator/token path with only a different registered adapter.
@@ -146,10 +146,10 @@ The maker (P2) reuses the same substrate, coordinator, evaluator, and token path
 
 - **TargetPosition**: the generic, family-agnostic target terminal exposure the core sizes to; carries no family/venue/symbol identity.
 - **SizingIntent**: what strategy/adapter code may construct; never a risk-increasing candidate.
-- **SizingModel**: the selectable seam — fixed-fraction-of-equity (default) and risk-constrained Kelly (opt-in).
+- **SizingModel**: the selectable seam — fixed-fraction-of-equity (calibration-free safe mode; launch + fallback) and risk-constrained Kelly (target growth model, gated on calibration #724).
 - **RegisteredPayoffAdapter**: the sealed, registered family adapter; owns S_model/probabilities, derives Πₛ from the active descriptor.
 - **SizingAdmissionCoordinator**: the one target→action authority; mints provenance, runs bounded retry + reduction.
-- **BandCoverageAttestation**: external (#724) input gating Kelly arming; absence ⇒ no-trade.
+- **BandCoverageAttestation**: a config artifact produced offline by the calibration scoreboard #724, gating Kelly arming; absence ⇒ no-trade (or the configured fixed-fraction fallback). Not a live dependency.
 - **ModelRiskCap**: the separately named cap guarding band misspecification.
 - **SizingDecisionPermit**: the unforgeable provenance the coordinator mints for the substrate (defined by the substrate spec; minted here).
 
@@ -171,7 +171,7 @@ The maker (P2) reuses the same substrate, coordinator, evaluator, and token path
 
 - The risk-reservation substrate (`specs/973-risk-reservation-substrate/spec.md`) exists and owns the atomic gate, the descriptor authority, the advisory view, provenance verification, and the SafetyAction path. This engine depends on it and does not re-implement any of it.
 - #711 has renamed the legacy admission component to the `capital_admission` gate, freeing the `position_sizer` name for this real sizer.
-- Band-coverage attestations are produced by #724/#723; this engine consumes them and never measures calibration.
+- Band-coverage attestations are produced **offline** by #724/#723 and promoted to config; this engine consumes them as config (not a live call) and never measures calibration. Until #724 is built, Kelly cannot arm and the engine runs the fixed-fraction safe mode.
 - The binary/taker adapter is implemented first; the maker adapter is P2 on the same harness.
 - `bolt_v3_sizing.rs::choose_robust_size` (fixed-notional × EV) is retired by this engine; there is no dual sizing path.
 
@@ -180,4 +180,4 @@ The maker (P2) reuses the same substrate, coordinator, evaluator, and token path
 - `specs/973-risk-reservation-substrate/spec.md` — the substrate this engine submits to (job 2 of the split).
 - Risk-constrained Kelly: Busseti, Ryu, Boyd, "Risk-Constrained Kelly Gambling" (arXiv:1603.06183).
 - Code anchors (at `main`): `bolt_v3_sizing.rs::choose_robust_size` (retired), `bolt_v3_position_sizer.rs::evaluate_position_sizing` (renamed by #711), `bolt_v3_sizing_state.rs::NtDerivedSizingState`, signal sources `bolt_v3_taker_updown_signal.rs`, `bolt_v3_binary_outcome_edge.rs`, `bolt_v3_taker_pricing.rs`.
-- Dependency chain: #711 → substrate → #712; #688 arms live. Calibration: #724/#723.
+- Dependency chain: #711 → #973 substrate → #712; #688 arms live. Kelly (the target model) is gated on calibration #724/#723 (offline → config).

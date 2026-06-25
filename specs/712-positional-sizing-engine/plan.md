@@ -5,7 +5,7 @@
 
 ## Summary
 
-Build the real positional sizer: a selectable sizing model (fixed-fraction-of-equity launch default; risk-constrained Kelly opt-in) that sizes the **complete target terminal position** and emits the delta, behind one `SizingAdmissionCoordinator` that projects the target to an exact candidate via the substrate's shared evaluator, mints unforgeable provenance, submits to the substrate's atomic gate, and runs bounded retry + reduction. The core is family/venue/instrument-agnostic; binary/taker payoff lives only in a registered, sealed adapter that derives terminal cash flows from the active descriptor. The engine consumes a calibrated edge + coverage band and never measures calibration. It retires the fixed-notional `choose_robust_size`; there is no dual sizing path.
+Build the real positional sizer: a selectable sizing model on one seam (fixed-fraction-of-equity — the calibration-free safe mode that launches; risk-constrained Kelly — the target growth model, gated on calibration #724) that sizes the **complete target terminal position** and emits the delta, behind one `SizingAdmissionCoordinator` that projects the target to an exact candidate via the substrate's shared evaluator, mints unforgeable provenance, submits to the substrate's atomic gate, and runs bounded retry + reduction. The core is family/venue/instrument-agnostic; binary/taker payoff lives only in a registered, sealed adapter that derives terminal cash flows from the active descriptor. The engine consumes a calibrated edge + coverage band and never measures calibration. It retires the fixed-notional `choose_robust_size`; there is no dual sizing path.
 
 ## Technical Context
 
@@ -32,7 +32,7 @@ Build the real positional sizer: a selectable sizing model (fixed-fraction-of-eq
 
 ## Architecture — agnostic core, one coordinator, sealed adapter
 
-- **Generic core**: `TargetPosition` + `SizingModel` seam (fixed-fraction-of-equity default, RCK opt-in). Models compute an allowance only (FR-002); the substrate enforces feasibility.
+- **Generic core**: `TargetPosition` + `SizingModel` seam (fixed-fraction-of-equity = calibration-free safe mode; RCK = target growth model gated on calibration #724). Models compute an allowance only (FR-002); the substrate enforces feasibility.
 - **One coordinator**: `SizingAdmissionCoordinator` projects target→candidate via the shared evaluator, mints provenance, submits, runs bounded retry + reduction; risk-reducing closes route to the substrate SafetyAction path (FR-020..FR-022).
 - **Sealed registered adapter**: binary/taker `RegisteredPayoffAdapter` owns S_model/probabilities and derives Πₛ from the active descriptor (FR-031); data-driven selection (FR-032). Maker is a second adapter (P2).
 
@@ -55,10 +55,10 @@ New sizing modules sit alongside the existing `bolt_v3_` strategy modules (exact
 ## Workstreams (dependency-ordered; each fails closed; evidence class per slice)
 
 - **W0 — Foundation & seams.** Retire `choose_robust_size`; define `TargetPosition`, `SizingIntent`, the `SizingModel` seam, and the sealed `RegisteredPayoffAdapter` trait; coordinator skeleton. Off by default. Depends on substrate S0–S2 contracts. *Evidence: review/grep (agnostic seam, single path, choose_robust_size removed) + `cargo test` skeleton; fmt/clippy/deny.*
-- **W1 — Fixed-fraction-of-equity model (launch default).** Allowance ρ·W (no headroom in the model); stateful target sizing (size the position, emit the delta). *Evidence: SC-001 (model consumes no headrooms) + SC-002 (delta-to-aggregate, not full-size) + SC-008 (size falls after drawdown).*
+- **W1 — Fixed-fraction-of-equity model (the calibration-free safe mode; launches first).** Allowance ρ·W (no headroom in the model); stateful target sizing (size the position, emit the delta). *Evidence: SC-001 (model consumes no headrooms) + SC-002 (delta-to-aggregate, not full-size) + SC-008 (size falls after drawdown).*
 - **W2 — Coordinator.** Target→candidate projection via the shared evaluator; provenance minting (compile-time single authority); bounded retry + reduction protocol; risk-reducing close → substrate SafetyAction. Depends substrate S2/S4/S5. *Evidence: SC-007 (close not blocked by edge gate) + SC-009 (one path/one authority) + bounded-retry no-trade test + compile-fail test for forged candidate.*
 - **W3 — Binary/taker sealed adapter.** S_model/probabilities; Πₛ derived from the active descriptor; fee/slippage all-in cost; zero-size on sub-edge/sub-min-lot/stale. *Evidence: SC-005 (Πₛ from descriptor; no second cash-flow source) + SC-006 (no family/venue/symbol branch in core).*
-- **W4 — RCK model (opt-in, gated).** κ = ln β/ln α; constraint on post-target wealth; strictly-positive ratios + C(q)<W precondition (no NaN); S_model vs S_stress; side-aware band end; BandCoverageAttestation gate (#724) + named model-risk cap; no-trade default. *Evidence: SC-003 (post-target-wealth + precondition reject) + SC-004 (no attestation → no-trade).*
+- **W4 — RCK model (the target growth model; gated on calibration #724).** κ = ln β/ln α; constraint on post-target wealth; strictly-positive ratios + C(q)<W precondition (no NaN); S_model vs S_stress; side-aware band end; arms only behind the config-loaded BandCoverageAttestation produced offline by #724 + named model-risk cap; no-trade (or the fixed-fraction fallback) when calibration is absent. **Depends on #724 being built.** *Evidence: SC-003 (post-target-wealth + precondition reject) + SC-004 (no attestation → no-trade).*
 - **W5 — Maker adapter (P2).** Register the maker payoff adapter on the same coordinator/substrate/token path; only the adapter differs. *Evidence: review (same harness, adapter-only difference) + adapter unit tests.*
 
 Live arming (enforce on, exact-head proof) is out of scope here and tracked by #688.

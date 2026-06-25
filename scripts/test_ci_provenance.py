@@ -153,8 +153,12 @@ workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
+mergify_temp_pr = "full"
 tag = "tag_reuse"
 unknown_event = "full"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.policy.override]
 force_full_ci = false
@@ -174,6 +178,7 @@ force_full_ci = false
 [ci_provenance.policy]
 unknown_event = "full"
 tag = "tag_reuse"
+mergify_temp_pr = "full"
 merge_group = "full"
 main_push = "full"
 workflow_dispatch_full_ci = "full"
@@ -188,6 +193,9 @@ draft_pr_edited = "defer"
 draft_pr_reopened = "defer"
 draft_pr_opened = "defer"
 draft_pr_synchronize = "defer"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.artifacts]
 retention_days = 30
@@ -1079,6 +1087,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             "workflow_dispatch_full_ci": "full",
             "main_push": "full",
             "merge_group": "full",
+            "mergify_temp_pr": "full",
             "tag": "tag_reuse",
             "unknown_event": "full",
         }
@@ -1105,7 +1114,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("pull_request", "edited", "false", "false", "", "refs/pull/1/merge", "true", "noop", "ready_pr_edited_no_base"),
             ("pull_request", "edited", "false", "true", "", "refs/pull/1/merge", "true", "docs", "docs"),
             ("pull_request", "reopened", "false", "false", "", "refs/pull/1/merge", "false", "noop", "ready_pr_reopened"),
-            ("pull_request", "ready_for_review", "true", "false", "", "refs/pull/1/merge", "true", "docs", "docs"),
+            ("pull_request", "ready_for_review", "false", "false", "", "refs/pull/1/merge", "true", "docs", "docs"),
             ("workflow_dispatch", "", "true", "false", "true", "refs/heads/codex/branch", "true", "full", "workflow_dispatch_full_ci"),
             ("workflow_dispatch", "", "true", "false", "false", "refs/heads/codex/branch", "true", "iteration", "workflow_dispatch"),
             ("workflow_dispatch", "", "true", "false", "", "refs/heads/codex/branch", "true", "iteration", "workflow_dispatch"),
@@ -1128,6 +1137,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                     action,
                     "--pull-request-draft",
                     draft,
+                    "--pull-request-head-ref",
+                    "",
                     "--pull-request-base-changed",
                     base_changed,
                     "--workflow-dispatch-full-ci",
@@ -1162,6 +1173,67 @@ def assert_ci_policy_outputs_matrix() -> None:
             if output.get("ignore_emit_failure") != "false":
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
 
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "opened",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "mergify/merge-queue/83d4b0be7e",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--docs-only",
+                "false",
+                "--ref",
+                "refs/pull/965/merge",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"Mergify ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if (
+            output.get("ci_policy_path") != "full"
+            or output.get("gate_name") != "gate"
+            or output.get("backtester_gate_name") != "backtester-gate"
+            or output.get("expected_event_class") != "full"
+            or output.get("reason") != "mergify_temp_pr"
+        ):
+            raise AssertionError(f"Mergify temp PR must resolve to required full CI: {output}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "ready_for_review",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--docs-only",
+                "true",
+                "--ref",
+                "refs/pull/1/merge",
+            ]
+        )
+        if code == 0 or "ready_for_review cannot be on a draft PR" not in stderr:
+            raise AssertionError(f"ready_for_review draft event must fail closed, got {code=} {stdout=} {stderr=}")
+
         force_config = write_config(
             pathlib.Path(tmp),
             CONFIG_TOML.replace("force_full_ci = false", "force_full_ci = true"),
@@ -1178,6 +1250,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "synchronize",
                 "--pull-request-draft",
                 "true",
+                "--pull-request-head-ref",
+                "",
                 "--pull-request-base-changed",
                 "false",
                 "--workflow-dispatch-full-ci",
@@ -1197,6 +1271,52 @@ def assert_ci_policy_outputs_matrix() -> None:
             raise AssertionError(f"force_full_ci must publish required gate names, got {output}")
         if output.get("expected_event_class") != "full":
             raise AssertionError(f"force_full_ci must publish full event class, got {output}")
+
+
+def assert_ready_noop_rows_emit_full_event_class_when_configured_full() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace('ready_pr_edited_no_base = "noop"', 'ready_pr_edited_no_base = "full"').replace(
+                'ready_pr_reopened = "noop"', 'ready_pr_reopened = "full"'
+            ),
+        )
+        for action, reason in (
+            ("edited", "ready_pr_edited_no_base"),
+            ("reopened", "ready_pr_reopened"),
+        ):
+            code, stdout, stderr = run_cli(
+                [
+                    "ci-policy",
+                    "--config",
+                    str(config),
+                    "--event-name",
+                    "pull_request",
+                    "--event-action",
+                    action,
+                    "--pull-request-draft",
+                    "false",
+                    "--pull-request-head-ref",
+                    "",
+                    "--pull-request-base-changed",
+                    "false",
+                    "--workflow-dispatch-full-ci",
+                    "",
+                    "--docs-only",
+                    "false",
+                    "--ref",
+                    "refs/pull/1/merge",
+                ]
+            )
+            if code != 0:
+                raise AssertionError(f"ci-policy failed for configured full {reason}: {stderr}")
+            output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+            if output.get("reason") != reason:
+                raise AssertionError(f"ci-policy must expose reason {reason}: {output}")
+            if output.get("ci_policy_path") != "full":
+                raise AssertionError(f"ci-policy must honor configured full for {reason}: {output}")
+            if output.get("expected_event_class") != "full":
+                raise AssertionError(f"configured full {reason} must emit full event class: {output}")
 
 
 def assert_ci_policy_gate_names_are_event_based() -> None:
@@ -1227,11 +1347,27 @@ def assert_ci_policy_gate_names_are_event_based() -> None:
 
     saw_dispatch_full = saw_dispatch_iteration = saw_pr_defer = saw_pr_noop = False
     for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref in cases:
+        if event_name == "pull_request" and action == "ready_for_review" and draft:
+            assert_raises(
+                "ready_for_review cannot be on a draft PR",
+                lambda: module.evaluate_ci_policy(
+                    config,
+                    event_name=event_name,
+                    event_action=action,
+                    pull_request_draft=draft,
+                    pull_request_head_ref="",
+                    pull_request_base_changed=base_changed,
+                    workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+                    ref=ref,
+                ),
+            )
+            continue
         result = module.evaluate_ci_policy(
             config,
             event_name=event_name,
             event_action=action,
             pull_request_draft=draft,
+            pull_request_head_ref="",
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
             ref=ref,
@@ -1357,8 +1493,8 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
             'docs = "full"',
         ),
         "ci_provenance.policy has unexpected keys": CONFIG_TOML.replace(
-            "[ci_provenance.policy.override]",
-            'synthetic_new = "full"\n\n[ci_provenance.policy.override]',
+            "\n[ci_provenance.mergify]",
+            '\nsynthetic_new = "full"\n\n[ci_provenance.mergify]',
         ),
     }
     for fragment, config_text in cases.items():
@@ -2202,6 +2338,151 @@ def assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof() -> None:
     )
 
 
+def assert_ci_gate_verdict_hardens_full_and_reuse_proof() -> None:
+    module = load_script()
+    full_jobs = base_ci_gate_jobs()
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        carry_forward_verified=False,
+        job_results=full_jobs,
+        build_required=True,
+    )
+    assert_raises(
+        "test-archive did not succeed",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results={**full_jobs, "test-archive": "skipped"},
+            build_required=True,
+        ),
+    )
+    reuse_jobs = base_ci_gate_jobs(
+        **{
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "success",
+            "ci-provenance-emit": "skipped",
+        }
+    )
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=True,
+        carry_forward_verified=False,
+        job_results=reuse_jobs,
+        build_required=True,
+    )
+    assert_raises(
+        "nextest fingerprint did not succeed during reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            carry_forward_verified=False,
+            job_results={**reuse_jobs, "nextest-fingerprint": "failure"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "test-archive unexpectedly ran during nextest fingerprint reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            carry_forward_verified=False,
+            job_results={**reuse_jobs, "test-archive": "success"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "ignore_emit_failure cannot satisfy the required gate",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=True,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results={**full_jobs, "ci-provenance-emit": "failure"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "full CI policy outside resolver-permitted event class",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="iteration",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=full_jobs,
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "full_ci_deferred must match policy_path",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=True,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=full_jobs,
+            build_required=True,
+        ),
+    )
+    tag_jobs = base_ci_gate_jobs(
+        deny="skipped",
+        clippy="skipped",
+        **{
+            "source-fence": "skipped",
+            "nextest-fingerprint": "skipped",
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "skipped",
+            "test": "skipped",
+            "build": "skipped",
+            "ci-provenance-emit": "skipped",
+            "same-sha-main-evidence": "success",
+        },
+    )
+    assert_raises(
+        "tag reuse CI policy outside resolver-permitted event class",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="tag_reuse",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=tag_jobs,
+            build_required=False,
+        ),
+    )
+    assert_raises(
+        "duplicate --job result for test",
+        lambda: module.parse_job_result_values(["test=success", "test=failure"]),
+    )
+    assert_raises(
+        "missing-lane missing or not skipped during test path",
+        lambda: module.require_jobs_skipped({}, ("missing-lane",), "test path"),
+    )
+
+
 def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes() -> None:
     module = load_script()
     skipped_jobs = {
@@ -2213,12 +2494,23 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         "test": "skipped",
     }
     module.evaluate_backtester_gate_verdict(
-        policy_path="defer",
-        expected_event_class="defer",
-        full_ci_deferred=True,
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
         carry_forward_verified=False,
         job_results=skipped_jobs,
         bvs_changed=False,
+    )
+    assert_raises(
+        "backtester no-crate path requires policy_path",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="defer",
+            expected_event_class="defer",
+            full_ci_deferred=True,
+            carry_forward_verified=False,
+            job_results=skipped_jobs,
+            bvs_changed=False,
+        ),
     )
 
     proof_jobs = {
@@ -2279,6 +2571,7 @@ def main() -> int:
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
+    assert_ready_noop_rows_emit_full_event_class_when_configured_full()
     assert_ci_policy_gate_names_are_event_based()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
@@ -2314,6 +2607,7 @@ def main() -> int:
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_failed()
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress()
     assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()
+    assert_ci_gate_verdict_hardens_full_and_reuse_proof()
     assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
     print("OK: CI provenance self-tests passed.")
     return 0

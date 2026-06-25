@@ -56,6 +56,7 @@ POLICY_ROWS = (
     "workflow_dispatch_full_ci",
     "main_push",
     "merge_group",
+    "mergify_temp_pr",
     "tag",
     "unknown_event",
 )
@@ -72,6 +73,7 @@ POLICY_REQUIRED_VALUES = {
     "workflow_dispatch_full_ci": "full",
     "main_push": "full",
     "merge_group": "full",
+    "mergify_temp_pr": "full",
     "tag": "tag_reuse",
     "unknown_event": "full",
 }
@@ -144,6 +146,7 @@ class ProvenanceConfig:
     artifact_retention_days: int
     policy: dict[str, str]
     gate_names: dict[str, str]
+    mergify_temp_pr_head_ref_prefix: str
     docs_safe_paths: tuple[str, ...]
     docs_forbidden_ignored_build_paths: tuple[str, ...]
     docs_non_heavy_required_jobs: tuple[str, ...]
@@ -427,6 +430,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
     gate_names_table = require_table(ci_provenance, "gate_names", "ci_provenance")
     docs_table = require_table(ci_provenance, "docs", "ci_provenance")
+    mergify = require_table(ci_provenance, "mergify", "ci_provenance")
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
     policy_table = require_table(ci_provenance, "policy", "ci_provenance")
@@ -538,6 +542,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         artifact_retention_days=retention_days,
         policy=policy,
         gate_names=gate_names,
+        mergify_temp_pr_head_ref_prefix=require_string(
+            mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify"
+        ),
         docs_safe_paths=docs_safe_paths,
         docs_forbidden_ignored_build_paths=docs_forbidden_ignored_build_paths,
         docs_non_heavy_required_jobs=docs_non_heavy_required_jobs,
@@ -580,12 +587,11 @@ def require_job_result_in(
 
 def require_jobs_skipped(job_results: dict[str, str], jobs: tuple[str, ...], label: str) -> None:
     for job in jobs:
-        require_job_result(
-            job_results,
-            job,
-            "skipped",
-            f"{job} unexpectedly ran during {label}",
-        )
+        actual = job_results.get(job)
+        if actual != "skipped":
+            if actual is None:
+                raise ProvenanceError(f"{job} missing or not skipped during {label}: {actual}")
+            raise ProvenanceError(f"{job} unexpectedly ran during {label}: {actual}")
 
 
 CI_HEAVY_JOBS = (
@@ -619,8 +625,14 @@ def evaluate_ci_gate_verdict(
 ) -> str:
     require_job_result(job_results, "ci-policy", "success", "ci-policy did not succeed")
     require_job_result(job_results, "detector", "success", "detector did not succeed")
+    if full_ci_deferred != (policy_path == "defer"):
+        raise ProvenanceError("full_ci_deferred must match policy_path == 'defer'")
+    if ignore_emit_failure:
+        raise ProvenanceError("ignore_emit_failure cannot satisfy the required gate")
 
     if policy_path == "tag_reuse":
+        if expected_event_class != "tag_reuse":
+            raise ProvenanceError(f"tag reuse CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_job_result(job_results, "same-sha-main-evidence", "success", "same-sha-main-evidence did not succeed")
         require_jobs_skipped(
             job_results,
@@ -676,13 +688,27 @@ def evaluate_ci_gate_verdict(
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown CI policy path {policy_path!r}")
+    if expected_event_class != "full":
+        raise ProvenanceError(f"full CI policy outside resolver-permitted event class {expected_event_class!r}")
 
     if reuse_found:
+        require_job_result(
+            job_results,
+            "nextest-fingerprint",
+            "success",
+            "nextest fingerprint did not succeed during reuse",
+        )
         require_job_result(
             job_results,
             "nextest-fingerprint-reuse",
             "success",
             "nextest fingerprint reuse resolver did not succeed",
+        )
+        require_job_result(
+            job_results,
+            "test-archive",
+            "skipped",
+            "test-archive unexpectedly ran during nextest fingerprint reuse",
         )
         require_job_result(
             job_results,
@@ -694,6 +720,13 @@ def evaluate_ci_gate_verdict(
         emit_result = job_results.get("ci-provenance-emit")
         if emit_result != "success" and not ignore_emit_failure:
             raise ProvenanceError("ci-provenance-emit did not succeed")
+        require_job_result(
+            job_results,
+            "nextest-fingerprint",
+            "success",
+            "nextest fingerprint did not succeed",
+        )
+        require_job_result(job_results, "test-archive", "success", "test-archive did not succeed")
 
     for job in ("deny", "clippy", "check-aarch64", "source-fence", "test"):
         require_job_result(job_results, job, "success", f"{job} did not succeed")
@@ -720,6 +753,8 @@ def evaluate_backtester_gate_verdict(
 ) -> str:
     require_job_result(job_results, "ci-policy", "success", "bvs-ci-policy did not succeed")
     require_job_result(job_results, "detect", "success", "bvs-detect did not succeed")
+    if full_ci_deferred != (policy_path == "defer"):
+        raise ProvenanceError("backtester full_ci_deferred must match policy_path == 'defer'")
 
     if policy_path == "iteration":
         if expected_event_class != "iteration":
@@ -729,6 +764,12 @@ def evaluate_backtester_gate_verdict(
         return "backtester iteration CI policy; no required full proof published by this run"
 
     if not bvs_changed:
+        if policy_path != "full":
+            raise ProvenanceError(f"backtester no-crate path requires policy_path='full', got {policy_path!r}")
+        if expected_event_class != "full":
+            raise ProvenanceError(
+                f"backtester no-crate path requires resolver-permitted event class 'full', got {expected_event_class!r}"
+            )
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
         require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester no-crate")
         return "backtester no-crate proof passed"
@@ -759,6 +800,8 @@ def evaluate_backtester_gate_verdict(
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown backtester CI policy path {policy_path!r}")
+    if expected_event_class != "full":
+        raise ProvenanceError(f"backtester full CI policy outside resolver-permitted event class {expected_event_class!r}")
     for job, label in (
         ("fmt", "bvs-fmt"),
         ("clippy", "bvs-clippy"),
@@ -780,7 +823,7 @@ def expected_event_class_for(reason: str, path: str) -> str:
         "converted_to_draft",
     }:
         return "defer"
-    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"}:
+    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"} and path == "noop":
         return "noop"
     if reason == "workflow_dispatch":
         return "iteration"
@@ -800,17 +843,57 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
         return "required"
     raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
 
+
+def mergify_temp_pr_matches(
+    *,
+    event_name: str,
+    pull_request_draft: bool,
+    pull_request_head_ref: str,
+    temp_pr_head_ref_prefix: str,
+) -> bool:
+    return (
+        event_name == "pull_request"
+        and pull_request_draft
+        and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+    )
+
+
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+
+
+def bool_like(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() == "true"
+
+
+def mergify_temp_pr_requires_full_ci(
+    *,
+    event_action: str,
+    pull_request_base_changed: bool | str,
+) -> bool:
+    base_changed = bool_like(pull_request_base_changed)
+    return event_action in MERGIFY_TEMP_PR_FULL_ACTIONS or (event_action == "edited" and base_changed)
+
+
 def evaluate_ci_policy(
     config: ProvenanceConfig,
     *,
     event_name: str,
     event_action: str,
     pull_request_draft: bool,
+    pull_request_head_ref: str = "",
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
     docs_only: bool = False,
     ref: str,
 ) -> CiPolicyResult:
+    mergify_temp_pr = mergify_temp_pr_matches(
+        event_name=event_name,
+        pull_request_draft=pull_request_draft,
+        pull_request_head_ref=pull_request_head_ref,
+        temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
+    )
     if event_name == "merge_group":
         # The merge queue validates the exact to-be-merged commit on a temporary
         # gh-readonly-queue ref. Resolve on event_name alone so the queue ref
@@ -834,7 +917,15 @@ def evaluate_ci_policy(
         if config.force_full_ci:
             path = "full"
             reason = "force_full_ci"
+        elif mergify_temp_pr and mergify_temp_pr_requires_full_ci(
+            event_action=event_action,
+            pull_request_base_changed=pull_request_base_changed,
+        ):
+            path = config.policy["mergify_temp_pr"]
+            reason = "mergify_temp_pr"
         elif event_action == "ready_for_review":
+            if pull_request_draft:
+                raise ProvenanceError("ready_for_review cannot be on a draft PR")
             path = config.policy["ready_for_review"]
             reason = "ready_for_review"
         elif not pull_request_draft and event_action == "edited" and not pull_request_base_changed:
@@ -2074,14 +2165,19 @@ def parse_key_value(value: str) -> tuple[str, str]:
 
 
 def parse_job_result_values(values: list[str]) -> dict[str, str]:
-    results = dict(parse_key_value(value) for value in values)
+    results: dict[str, str] = {}
+    for value in values:
+        key, parsed_value = parse_key_value(value)
+        if key in results:
+            raise ProvenanceError(f"duplicate --job result for {key}")
+        results[key] = parsed_value
     if not results:
         raise ProvenanceError("at least one --job result is required")
     return results
 
 
 def parse_bool(value: str) -> bool:
-    lowered = value.lower()
+    lowered = value.strip().lower()
     if lowered == "true":
         return True
     if lowered == "false":
@@ -2231,6 +2327,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--event-name", required=True)
         parser.add_argument("--event-action", default="")
         parser.add_argument("--pull-request-draft", default="false")
+        parser.add_argument("--pull-request-head-ref", default="")
         parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--workflow-dispatch-full-ci", default="")
         parser.add_argument("--docs-only", default="false")
@@ -2303,6 +2400,7 @@ def main(argv: list[str] | None = None) -> int:
                 event_name=args.event_name,
                 event_action=args.event_action,
                 pull_request_draft=parse_bool(args.pull_request_draft),
+                pull_request_head_ref=args.pull_request_head_ref,
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 docs_only=parse_bool(args.docs_only),

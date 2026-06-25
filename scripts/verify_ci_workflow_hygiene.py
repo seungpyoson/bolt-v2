@@ -21,6 +21,7 @@ from ci_provenance import (
     GATE_NAME_KEYS,
     POLICY_ROWS,
     POLICY_VALUES,
+    ProvenanceError,
     gate_name_collision_errors,
     github_actions_output_safe_check_name,
     policy_contract_errors,
@@ -196,6 +197,7 @@ CI_POLICY_ROW_SEMANTICS = {
     "workflow_dispatch_full_ci": PolicyRowSemantics(changes_required_context=True, mergeable_without_queue=False),
     "main_push": PolicyRowSemantics(changes_head_sha=True, changes_target=True),
     "merge_group": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_queue_origin=True),
+    "mergify_temp_pr": PolicyRowSemantics(changes_head_sha=True, changes_queue_origin=True),
     "tag": PolicyRowSemantics(changes_target=True),
     "unknown_event": PolicyRowSemantics(changes_head_sha=True, changes_base=True, changes_target=True),
 }
@@ -730,11 +732,19 @@ def _normalize_concurrency_text(text: str) -> str:
     return " ".join(text.split())
 
 
+MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = "startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')"
+MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
+MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
+
+
 MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/ci.yml — merge_group arm format('mq-{0}', github.ref)
     # wins under merge_group (the PR/workflow_dispatch arms are false then), before
     # the per-ref/sha fallback; PR-draft-deferral arms are gated off merge_group.
-    "group: >- ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true "
+    "group: >- ${{ github.event_name == 'pull_request' "
+    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
     "&& format('pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
     "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
@@ -747,12 +757,18 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "&& format('mq-{0}', github.ref) || format('{0}-{1}', github.ref_name, github.sha) }}",
     # .github/workflows/actionlint.yml — simpler prefixed shape, same merge_group
     # arm before the per-ref/sha fallback.
-    "group: >- actionlint-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
+    "group: >- actionlint-${{ github.event_name == 'pull_request' "
+    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "|| github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
     "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
     "|| format('{0}-{1}', github.ref_name, github.sha) }}",
     # .github/workflows/backtester-ci.yml — same draft/full PR split as ci.yml
     # with a backtester-prefixed merge_group arm before the per-ref/sha fallback.
-    "group: >- ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true "
+    "group: >- ${{ github.event_name == 'pull_request' "
+    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
     "&& format('bvs-pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
     "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
@@ -778,7 +794,14 @@ KNOWN_SAFE_CANCEL_FORMS = frozenset(
     {
         "${{ github.event_name == 'pull_request' && !(github.event.pull_request.draft == false "
         "&& (github.event.action == 'reopened' || (github.event.action == 'edited' "
-        "&& !(github.event.changes.base.ref.from != '')))) || github.event_name == 'workflow_dispatch' }}"
+        "&& !(github.event.changes.base.ref.from != '')))) || github.event_name == 'workflow_dispatch' }}",
+        "${{ github.event_name == 'pull_request' "
+        "&& !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
+        "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))) "
+        "|| github.event_name == 'workflow_dispatch' }}",
+        "${{ github.event_name == 'pull_request' "
+        "&& !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}",
     }
 )
 
@@ -878,6 +901,21 @@ def merge_group_concurrency_errors(group_text: str, cancel_text: str) -> list[st
     return errors
 
 
+def mergify_proof_pr_concurrency_errors(group_text: str, cancel_text: str) -> list[str]:
+    errors: list[str] = []
+    normalized_group = _normalize_concurrency_text(group_text)
+    normalized_cancel = _normalize_concurrency_text(cancel_text)
+    if (
+        MERGIFY_PROOF_PR_HEAD_REF_PREDICATE not in normalized_group
+        or MERGIFY_PROOF_PR_GROUP_TOKEN not in normalized_group
+        or "github.run_id" not in normalized_group
+    ):
+        errors.append("concurrency group must isolate Mergify proof PR runs")
+    if MERGIFY_PROOF_PR_CANCEL_GUARD not in normalized_cancel:
+        errors.append("cancel-in-progress must not cancel Mergify proof PR validations")
+    return errors
+
+
 def jobs_with_job_level_concurrency(workflow_text: str) -> list[str]:
     """Job ids that define a job-level `concurrency:` key. GitHub evaluates
     job-level concurrency in addition to the workflow-level block, so a required
@@ -959,6 +997,7 @@ def verify_merge_group_concurrency(workflow_text: str) -> list[str]:
         return ["workflow must define concurrency for merge_group isolation"]
     group_text, cancel_text = split
     errors = merge_group_concurrency_errors(group_text, cancel_text)
+    errors.extend(mergify_proof_pr_concurrency_errors(group_text, cancel_text))
     errors.extend(merge_group_concurrency_workflow_errors(workflow_text))
     return errors
 
@@ -1009,6 +1048,7 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     ):
         errors.append("cancel-in-progress must not cancel push, tag, or deploy flows")
     errors.extend(merge_group_concurrency_errors(group_text, cancel_text))
+    errors.extend(mergify_proof_pr_concurrency_errors(group_text, cancel_text))
     errors.extend(merge_group_concurrency_workflow_errors(workflow_text))
     return errors
 
@@ -1034,8 +1074,10 @@ def evaluate_ci_policy(
     event_name: str,
     action: str,
     pull_request_draft: bool,
+    pull_request_head_ref: str = "",
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
+    mergify_temp_pr_head_ref_prefix: str = "",
     ref: str,
 ) -> CiPolicyResult:
     override = policy.get("override")
@@ -1046,19 +1088,24 @@ def evaluate_ci_policy(
         {
             "policy": {key: str(value) for key, value in policy.items() if key != "override"},
             "gate_names": dict(gate_names),
+            "mergify_temp_pr_head_ref_prefix": mergify_temp_pr_head_ref_prefix,
             "force_full_ci": force_full_ci,
         },
     )()
-    result = provenance_evaluate_ci_policy(
-        config,
-        event_name=event_name,
-        event_action=action,
-        pull_request_draft=pull_request_draft,
-        pull_request_base_changed=pull_request_base_changed,
-        workflow_dispatch_full_ci=workflow_dispatch_full_ci,
-        docs_only=False,
-        ref=ref,
-    )
+    try:
+        result = provenance_evaluate_ci_policy(
+            config,
+            event_name=event_name,
+            event_action=action,
+            pull_request_draft=pull_request_draft,
+            pull_request_head_ref=pull_request_head_ref,
+            pull_request_base_changed=pull_request_base_changed,
+            workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+            docs_only=False,
+            ref=ref,
+        )
+    except ProvenanceError as exc:
+        raise ValueError(str(exc)) from exc
     return CiPolicyResult(
         ci_policy_path=result.ci_policy_path,
         full_ci_required=result.full_ci_required,
@@ -1217,6 +1264,10 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass github.event.action")
     if '--pull-request-draft "${{ github.event.pull_request.draft || false }}"' not in text:
         errors.append("ci-policy must pass pull_request draft state")
+    if "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}" not in text:
+        errors.append("ci-policy must pass pull_request head ref through an env var")
+    if '--pull-request-head-ref "$PR_HEAD_REF"' not in text:
+        errors.append("ci-policy must pass pull_request head ref")
     if f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"' not in text:
         errors.append("ci-policy must pass pull_request base-change state")
     if '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"' not in text:
@@ -9601,6 +9652,8 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '--event-name "${{ github.event_name }}"',
             '--event-action "${{ github.event.action || \'\' }}"',
             '--pull-request-draft "${{ github.event.pull_request.draft || false }}"',
+            "PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}",
+            '--pull-request-head-ref "$PR_HEAD_REF"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"',
             '--ref "${{ github.ref }}"',
@@ -10078,6 +10131,10 @@ def validate_ci_provenance_config(data: dict[str, object]) -> dict[str, object]:
         raise ValueError(
             "ci_provenance.policy.override.ignore_emit_failure must default to false"
         )
+
+    mergify = require_config_table(ci_provenance, "mergify", "ci_provenance")
+    if require_config_string(mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify") != "mergify/merge-queue/":
+        raise ValueError("ci_provenance.mergify.temp_pr_head_ref_prefix must be mergify/merge-queue/")
 
     return ci_provenance
 

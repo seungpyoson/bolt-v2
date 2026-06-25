@@ -1539,7 +1539,6 @@ def assert_ci_policy_matrix() -> None:
         mergify_result.ci_policy_path != "full"
         or mergify_result.gate_name != "gate"
         or mergify_result.backtester_gate_name != "backtester-gate"
-        or not mergify_result.is_mergify_temp_pr
         or mergify_result.reason != "mergify_temp_pr"
     ):
         raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
@@ -1560,7 +1559,6 @@ def assert_ci_policy_matrix() -> None:
         mergify_sync_result.ci_policy_path != "full"
         or mergify_sync_result.gate_name != "gate"
         or mergify_sync_result.backtester_gate_name != "backtester-gate"
-        or not mergify_sync_result.is_mergify_temp_pr
         or mergify_sync_result.reason != "mergify_temp_pr"
     ):
         raise AssertionError(f"Mergify temp PR synchronize must resolve to required full CI: {mergify_sync_result}")
@@ -1581,7 +1579,6 @@ def assert_ci_policy_matrix() -> None:
         mergify_edited_result.ci_policy_path != "defer"
         or mergify_edited_result.gate_name != "gate-deferred"
         or mergify_edited_result.backtester_gate_name != "backtester-gate-deferred"
-        or not mergify_edited_result.is_mergify_temp_pr
         or mergify_edited_result.reason != "draft_pr_edited"
     ):
         raise AssertionError(
@@ -1807,7 +1804,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         ver.gate_name,
         ver.backtester_gate_name,
         ver.expected_event_class,
-        ver.is_mergify_temp_pr,
         ver.reason,
     )
     prov_tuple = (
@@ -1817,7 +1813,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         prov.gate_name,
         prov.backtester_gate_name,
         prov.expected_event_class,
-        prov.is_mergify_temp_pr,
         prov.reason,
     )
     if ver_tuple != prov_tuple:
@@ -1852,7 +1847,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         ver.gate_name,
         ver.backtester_gate_name,
         ver.expected_event_class,
-        ver.is_mergify_temp_pr,
         ver.reason,
     )
     prov_tuple = (
@@ -1862,7 +1856,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         prov.gate_name,
         prov.backtester_gate_name,
         prov.expected_event_class,
-        prov.is_mergify_temp_pr,
         prov.reason,
     )
     if ver_tuple != prov_tuple:
@@ -1876,7 +1869,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         "gate-deferred",
         "backtester-gate-deferred",
         "defer",
-        True,
         "draft_pr_edited",
     ):
         raise AssertionError(f"Mergify temp PR metadata edits must not publish required gates: {ver_tuple}")
@@ -1890,7 +1882,6 @@ def assert_ci_policy_resolvers_agree() -> None:
                 "gate-deferred",
                 "backtester-gate-deferred",
                 "defer",
-                True,
                 "draft_pr_edited",
             ),
         ),
@@ -1903,7 +1894,6 @@ def assert_ci_policy_resolvers_agree() -> None:
                 "gate",
                 "backtester-gate",
                 "full",
-                True,
                 "mergify_temp_pr",
             ),
         ),
@@ -1937,7 +1927,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             ver.gate_name,
             ver.backtester_gate_name,
             ver.expected_event_class,
-            ver.is_mergify_temp_pr,
             ver.reason,
         )
         prov_tuple = (
@@ -1947,7 +1936,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             prov.gate_name,
             prov.backtester_gate_name,
             prov.expected_event_class,
-            prov.is_mergify_temp_pr,
             prov.reason,
         )
         if ver_tuple != prov_tuple:

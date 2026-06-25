@@ -3183,7 +3183,7 @@ impl BoltV3LiveNodeRuntime {
             };
             let Some(reservation) = self
                 .submit_admission
-                .admission_evidence_open_order_reservation_from_known_metadata(evidence, recovered)
+                .capital_admission_open_order_reservation_from_known_metadata(evidence, recovered)
             else {
                 all_open_orders_attributed = false;
                 break;

@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 use crate::bolt_v3_risk_reservation_substrate::{
     contracts::{
         ActiveDescriptorView, PolicyApproval, PreparedEpochAttestation, PreparedEpochDescriptor,
-        PreparedPolicyEpoch, SafetyEnvelopeInvariant, SafetyPolicyEnvelope,
+        PreparedPolicyEpoch, RiskStateVersion, SafetyEnvelopeInvariant, SafetyPolicyEnvelope,
     },
     risk_classifier::{RiskClassificationError, RiskClassifier},
     state_owner::{PolicyEpochSnapshot, RiskStateMutationError, RiskStateOwner},
@@ -21,6 +21,7 @@ pub struct PreparedEpochCutover {
     prepared_epoch: PreparedPolicyEpoch,
     envelope: SafetyPolicyEnvelope,
     drain_report: VenueEventDrainReport,
+    source_risk_state_version: RiskStateVersion,
     post_cutover_admission_state: PostCutoverAdmissionState,
 }
 
@@ -35,6 +36,10 @@ impl PreparedEpochCutover {
 
     pub const fn drain_report(&self) -> VenueEventDrainReport {
         self.drain_report
+    }
+
+    pub const fn source_risk_state_version(&self) -> RiskStateVersion {
+        self.source_risk_state_version
     }
 
     pub const fn post_cutover_admission_state(&self) -> PostCutoverAdmissionState {
@@ -171,6 +176,7 @@ impl EpochManager {
             .owner
             .policy_epoch_snapshot()
             .map_err(PolicyEpochPrepareError::StateMutation)?;
+        let source_risk_state_version = current_policy_state.risk_state_version;
         let revaluation_input = PreparedEpochRevaluationInput {
             prepared_epoch: &prepared_epoch,
             envelope: &envelope,
@@ -195,6 +201,7 @@ impl EpochManager {
             prepared_epoch,
             envelope,
             drain_report,
+            source_risk_state_version,
             post_cutover_admission_state,
         })
     }
@@ -217,6 +224,7 @@ impl EpochManager {
             .owner
             .commit_policy_epoch_cutover(
                 prepared.prepared_epoch.clone(),
+                prepared.source_risk_state_version,
                 risk_increasing_admission_enabled,
                 safety_action_enabled,
             )

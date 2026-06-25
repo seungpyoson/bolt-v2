@@ -312,6 +312,7 @@ impl FencedRiskStateStore {
         &self,
         lease: &PoolOwnershipLease,
         active_epoch: PreparedPolicyEpoch,
+        expected_version: RiskStateVersion,
         risk_increasing_admission_enabled: bool,
         safety_action_enabled: bool,
     ) -> Result<PolicyEpochSnapshot, RiskStateMutationError> {
@@ -328,8 +329,19 @@ impl FencedRiskStateStore {
         {
             return Err(RiskStateMutationError::ReconciliationRequired);
         }
+        let current_version = inner
+            .versions
+            .get(lease.pool_id())
+            .copied()
+            .unwrap_or_else(RiskStateVersion::zero);
+        if current_version != expected_version {
+            return Err(RiskStateMutationError::StaleRiskStateVersion);
+        }
 
-        let version = next_pool_version(&mut inner, lease.pool_id())?;
+        let version = current_version
+            .next()
+            .map_err(|_| RiskStateMutationError::VersionOverflow)?;
+        inner.versions.insert(lease.pool_id().clone(), version);
         let state = ActivePolicyEpochState {
             active_epoch: Some(active_epoch.clone()),
             risk_increasing_admission_enabled,
@@ -801,12 +813,14 @@ impl RiskStateOwner {
     pub fn commit_policy_epoch_cutover(
         &self,
         active_epoch: PreparedPolicyEpoch,
+        expected_version: RiskStateVersion,
         risk_increasing_admission_enabled: bool,
         safety_action_enabled: bool,
     ) -> Result<PolicyEpochSnapshot, RiskStateMutationError> {
         self.store.commit_policy_epoch_cutover(
             &self.lease,
             active_epoch,
+            expected_version,
             risk_increasing_admission_enabled,
             safety_action_enabled,
         )

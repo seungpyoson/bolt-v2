@@ -13,10 +13,10 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         SafetyPolicyEnvelopeRanges, SizingDecisionPermit,
     },
     epoch_manager::{
-        EpochManager, PolicyEpochAlertReason, PolicyEpochPrepareError, PolicyEpochRevaluationError,
-        PostCutoverAdmissionState, PreparedEpochRevaluationInput, PreparedEpochRevaluator,
-        SafetyPolicyEnvelopeViolation, VenueEventDrain, VenueEventDrainError,
-        VenueEventDrainReport,
+        EpochManager, PolicyEpochActivationError, PolicyEpochAlertReason, PolicyEpochPrepareError,
+        PolicyEpochRevaluationError, PostCutoverAdmissionState, PreparedEpochRevaluationInput,
+        PreparedEpochRevaluator, SafetyPolicyEnvelopeViolation, VenueEventDrain,
+        VenueEventDrainError, VenueEventDrainReport,
     },
     risk_classifier::{
         ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationPolicy,
@@ -24,7 +24,7 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
     },
     risk_kernel::{RiskExposure, RiskExposureSetInput, RiskPortfolioSnapshot},
     risk_view_publisher::{PublishedRiskView, RiskViewPublicationInput, RiskViewPublisher},
-    state_owner::{FencedRiskStateStore, RiskMutationKind, RiskStateOwner},
+    state_owner::{FencedRiskStateStore, RiskMutationKind, RiskStateMutationError, RiskStateOwner},
 };
 use rust_decimal::Decimal;
 
@@ -102,6 +102,111 @@ fn s6a_cutover_is_observed_all_old_then_all_new_without_mixed_epoch_state() {
             .count(),
         2,
         "each activation must be one versioned policy-epoch mutation"
+    );
+}
+
+#[test]
+fn s6a_stale_prepared_epoch_activation_rejects_and_keeps_active_epoch() {
+    let pool_id = "epoch-stale-cutover-pool";
+    let (_store, owner, manager) = epoch_context(pool_id, "epoch-stale-cutover-owner");
+    let envelope = envelope(pool_id, ["classifier-old", "classifier-new"]);
+    let old_epoch = epoch(pool_id, "epoch-old", "descriptor-old", "classifier-old", 10);
+    let new_epoch = epoch(pool_id, "epoch-new", "descriptor-new", "classifier-new", 12);
+
+    manager
+        .activate_prepared_epoch(
+            manager
+                .prepare_policy_epoch(
+                    old_epoch,
+                    envelope.clone(),
+                    1_000,
+                    &mut RecordingDrain::default(),
+                    &mut RecordingRevaluator::compliant(),
+                )
+                .expect("old epoch should prepare"),
+        )
+        .expect("old epoch should activate");
+
+    let prepared_new = manager
+        .prepare_policy_epoch(
+            new_epoch,
+            envelope,
+            1_001,
+            &mut RecordingDrain::default(),
+            &mut RecordingRevaluator::compliant(),
+        )
+        .expect("new epoch should prepare against current risk-state version");
+    let prepared_source_snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable after prepare");
+    assert_epoch_snapshot(
+        &prepared_source_snapshot,
+        "epoch-old",
+        "classifier-old",
+        "descriptor-old",
+    );
+
+    let service = AdmissionService::new(owner.clone());
+    let old_epoch_view = published_view_for_epoch_descriptor(
+        pool_id,
+        prepared_source_snapshot.risk_state_version,
+        "epoch-old",
+        "descriptor-old",
+    );
+    let mut intervening_candidate = admission_candidate(
+        pool_id,
+        prepared_source_snapshot.risk_state_version,
+        "epoch-old",
+    );
+    intervening_candidate.expected_descriptor_version = "descriptor-old".to_string();
+    service
+        .compare_and_reserve(
+            &old_epoch_view,
+            intervening_candidate,
+            BoundReusableSafetyState {
+                risk_state_version: prepared_source_snapshot.risk_state_version,
+                kill_switch_latched: false,
+                loss_governor_halted: false,
+            },
+            None,
+            1_002,
+        )
+        .expect("intervening reserve should advance the same risk-state version domain");
+
+    let advanced_snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable after intervening reserve");
+    assert_epoch_snapshot(
+        &advanced_snapshot,
+        "epoch-old",
+        "classifier-old",
+        "descriptor-old",
+    );
+    assert_ne!(
+        advanced_snapshot.risk_state_version, prepared_source_snapshot.risk_state_version,
+        "intervening owner mutation must advance the risk-state version"
+    );
+
+    let activation_error = manager
+        .activate_prepared_epoch(prepared_new)
+        .expect_err("stale prepared cutover must fail closed");
+    assert_eq!(
+        activation_error,
+        PolicyEpochActivationError::StateMutation(RiskStateMutationError::StaleRiskStateVersion)
+    );
+
+    let retained_snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable after stale activation rejection");
+    assert_eq!(
+        retained_snapshot.risk_state_version, advanced_snapshot.risk_state_version,
+        "rejected stale activation must not advance or install"
+    );
+    assert_epoch_snapshot(
+        &retained_snapshot,
+        "epoch-old",
+        "classifier-old",
+        "descriptor-old",
     );
 }
 
@@ -495,6 +600,15 @@ fn published_view_for_epoch(
     pool_id: &str,
     risk_state_version: RiskStateVersion,
 ) -> PublishedRiskView {
+    published_view_for_epoch_descriptor(pool_id, risk_state_version, "epoch-new", "descriptor-new")
+}
+
+fn published_view_for_epoch_descriptor(
+    pool_id: &str,
+    risk_state_version: RiskStateVersion,
+    policy_epoch_id: &str,
+    descriptor_version: &str,
+) -> PublishedRiskView {
     let bucket = bucket();
     RiskViewPublisher::publish(RiskViewPublicationInput {
         sizing_view: RiskSizingView {
@@ -512,8 +626,8 @@ fn published_view_for_epoch(
         },
         active_descriptor: ActiveDescriptorView {
             instrument_id: "candidate-instrument".to_string(),
-            descriptor_version: "descriptor-new".to_string(),
-            policy_epoch_id: "epoch-new".to_string(),
+            descriptor_version: descriptor_version.to_string(),
+            policy_epoch_id: policy_epoch_id.to_string(),
             terminal_state_ids: vec!["terminal-loss".to_string(), "terminal-gain".to_string()],
             terminal_cash_flows: vec![dec(10), dec(99)],
         },

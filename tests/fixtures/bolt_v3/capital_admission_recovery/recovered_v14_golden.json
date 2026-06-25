@@ -1,0 +1,33 @@
+{
+  "reservations": [
+    {
+      "client_order_id": "client-order-pool-a-live",
+      "submit_reservation_id": "client-order-pool-a-live#1000",
+      "capital_pool_id": "pool-a",
+      "collateral_group_id": "condition-a",
+      "instrument_id": "condition-a-yes.POLYMARKET",
+      "side": "buy",
+      "submitted_quantity": "10",
+      "reserved_liability": "4.3",
+      "metadata_source": "submit_admission",
+      "fill_trade_ids": [
+        "trade-a-complete",
+        "trade-a-partial"
+      ]
+    },
+    {
+      "client_order_id": "client-order-pool-b-residual",
+      "submit_reservation_id": "client-order-pool-b-residual#2000",
+      "capital_pool_id": "pool-b",
+      "collateral_group_id": "condition-b",
+      "instrument_id": "condition-b-no.POLYMARKET",
+      "side": "sell",
+      "submitted_quantity": "5",
+      "reserved_liability": "0.2",
+      "metadata_source": "submit_admission",
+      "fill_trade_ids": [
+        "trade-b-partial"
+      ]
+    }
+  ]
+}

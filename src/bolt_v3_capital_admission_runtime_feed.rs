@@ -16,14 +16,16 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::{
-    bolt_v3_observed_dedupe::prune_observed_dedupe_entries,
-    bolt_v3_position_sizer::ProductSizingSnapshot,
-    bolt_v3_sizing_state::{
-        OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
+    bolt_v3_capital_admission::ProductAdmissionSnapshot,
+    bolt_v3_capital_admission_state::{
+        OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
+        VenueSpendabilitySnapshot,
     },
+    bolt_v3_observed_dedupe::prune_observed_dedupe_entries,
     bolt_v3_submit_admission::{
-        BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizingFillUpdate,
-        BoltV3SubmitPositionSizingLifecycleDecision, BoltV3SubmitPositionSizingNtComponents,
+        BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState,
+        BoltV3SubmitCapitalAdmissionFillUpdate, BoltV3SubmitCapitalAdmissionLifecycleDecision,
+        BoltV3SubmitCapitalAdmissionNtComponents,
     },
     nt_runtime_capture::{
         account_states_pattern, order_events_pattern, portfolio_snapshots_pattern,
@@ -31,7 +33,7 @@ use crate::{
     },
 };
 
-const POSITION_SIZER_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_terminal_event);
+const CAPITAL_ADMISSION_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_terminal_event);
 const NT_ACCOUNT_STATE_PORTFOLIO_SOURCE: &str = stringify!(nt_account_state);
 const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";
 const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
@@ -43,27 +45,27 @@ struct PositionFillTradeKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PositionSizerRuntimeFeedConfig {
+pub struct CapitalAdmissionRuntimeFeedConfig {
     pub venue_id: String,
     pub account_id: AccountId,
     pub collateral_currency: String,
-    pub product_state: ProductSizingSnapshot,
+    pub product_state: ProductAdmissionSnapshot,
     pub startup_observed_at_ns: u64,
     pub dedupe_retention_ns: u64,
 }
 
 #[derive(Debug)]
-pub struct PositionSizerRuntimeFeed {
-    config: PositionSizerRuntimeFeedConfig,
+pub struct CapitalAdmissionRuntimeFeed {
+    config: CapitalAdmissionRuntimeFeedConfig,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    component_builder: PositionSizerRuntimeComponentBuilder,
+    component_builder: CapitalAdmissionRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
     seen_known_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
     seen_external_position_fill_trade_ids: BTreeMap<PositionFillTradeKey, u64>,
     external_position_fill_trade_id_retention_exhausted: bool,
 }
 
-pub struct PositionSizerRuntimeFeedSubscription {
+pub struct CapitalAdmissionRuntimeFeedSubscription {
     order_events: Option<TypedHandler<OrderEventAny>>,
     position_events: Option<TypedHandler<PositionEvent>>,
     account_states: Option<TypedHandler<AccountState>>,
@@ -71,20 +73,20 @@ pub struct PositionSizerRuntimeFeedSubscription {
 }
 
 #[derive(Debug, Clone)]
-struct PositionSizerRuntimeComponentBuilder {
+struct CapitalAdmissionRuntimeComponentBuilder {
     latest_account_free_collateral: Option<(Decimal, u64)>,
-    latest_portfolio: Option<PortfolioSizingSnapshot>,
+    latest_portfolio: Option<PortfolioCapitalAdmissionSnapshot>,
     latest_venue_spendability: Option<VenueSpendabilitySnapshot>,
     live_order_attribution: BTreeMap<String, bool>,
     terminal_order_ids_seen: BTreeMap<String, u64>,
-    order_lifecycle: OrderLifecycleSizingSnapshot,
-    product_state: ProductSizingSnapshot,
+    order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot,
+    product_state: ProductAdmissionSnapshot,
 }
 
 #[must_use]
-pub fn subscribe_position_sizer_runtime_feed(
-    feed: Arc<Mutex<PositionSizerRuntimeFeed>>,
-) -> PositionSizerRuntimeFeedSubscription {
+pub fn subscribe_capital_admission_runtime_feed(
+    feed: Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+) -> CapitalAdmissionRuntimeFeedSubscription {
     let order_feed = Arc::clone(&feed);
     let order_events = TypedHandler::from(move |event: &OrderEventAny| {
         order_feed
@@ -122,7 +124,7 @@ pub fn subscribe_position_sizer_runtime_feed(
         None,
     );
 
-    PositionSizerRuntimeFeedSubscription {
+    CapitalAdmissionRuntimeFeedSubscription {
         order_events: Some(order_events),
         position_events: Some(position_events),
         account_states: Some(account_states),
@@ -130,7 +132,7 @@ pub fn subscribe_position_sizer_runtime_feed(
     }
 }
 
-impl PositionSizerRuntimeFeedSubscription {
+impl CapitalAdmissionRuntimeFeedSubscription {
     pub fn unsubscribe_all(&mut self) {
         if let Some(order_events) = self.order_events.take() {
             unsubscribe_order_events(order_events_pattern(), &order_events);
@@ -147,19 +149,19 @@ impl PositionSizerRuntimeFeedSubscription {
     }
 }
 
-impl Drop for PositionSizerRuntimeFeedSubscription {
+impl Drop for CapitalAdmissionRuntimeFeedSubscription {
     fn drop(&mut self) {
         self.unsubscribe_all();
     }
 }
 
-impl PositionSizerRuntimeFeed {
+impl CapitalAdmissionRuntimeFeed {
     #[must_use]
     pub fn new(
-        config: PositionSizerRuntimeFeedConfig,
+        config: CapitalAdmissionRuntimeFeedConfig,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
     ) -> Self {
-        let component_builder = PositionSizerRuntimeComponentBuilder::new(&config);
+        let component_builder = CapitalAdmissionRuntimeComponentBuilder::new(&config);
         Self {
             config,
             submit_admission,
@@ -174,7 +176,7 @@ impl PositionSizerRuntimeFeed {
     pub fn on_account_state(
         &mut self,
         account_state: &AccountState,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         if account_state.account_id != self.config.account_id {
             return None;
         }
@@ -203,7 +205,7 @@ impl PositionSizerRuntimeFeed {
     pub fn on_portfolio_snapshot(
         &mut self,
         portfolio_snapshot: &PortfolioSnapshot,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         if portfolio_snapshot.account_id != self.config.account_id {
             return None;
         }
@@ -212,7 +214,7 @@ impl PositionSizerRuntimeFeed {
             .iter()
             .find(|money| money.currency.code.as_str() == self.config.collateral_currency)
             .map(|money| money.as_decimal())?;
-        self.component_builder.latest_portfolio = Some(PortfolioSizingSnapshot {
+        self.component_builder.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
             source: "nt_portfolio_snapshot".to_string(),
             observed_at_ns: portfolio_snapshot.ts_event.as_u64(),
             venue_id: self.config.venue_id.clone(),
@@ -227,7 +229,7 @@ impl PositionSizerRuntimeFeed {
     pub fn on_venue_spendability_snapshot(
         &mut self,
         snapshot: VenueSpendabilitySnapshot,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         self.component_builder
             .record_venue_spendability(&self.config, snapshot);
         self.publish_components_if_ready()
@@ -250,7 +252,7 @@ impl PositionSizerRuntimeFeed {
         &mut self,
         client_order_ids: I,
         observed_at_ns: u64,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents>
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents>
     where
         I: IntoIterator<Item = String>,
     {
@@ -268,7 +270,7 @@ impl PositionSizerRuntimeFeed {
         yes_position: Decimal,
         no_position: Decimal,
         observed_at_ns: u64,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents>
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents>
     where
         I: IntoIterator<Item = String>,
     {
@@ -290,7 +292,7 @@ impl PositionSizerRuntimeFeed {
         free_collateral: Decimal,
         total_equity: Decimal,
         observed_at_ns: u64,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         self.component_builder.seed_account_portfolio_snapshot(
             &self.config,
             free_collateral,
@@ -303,7 +305,7 @@ impl PositionSizerRuntimeFeed {
     #[must_use]
     pub fn configured_binary_instrument_ids(&self) -> Option<(String, String)> {
         match &self.config.product_state {
-            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => Some((
+            ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => Some((
                 snapshot.yes_instrument_id.clone(),
                 snapshot.no_instrument_id.clone(),
             )),
@@ -313,7 +315,7 @@ impl PositionSizerRuntimeFeed {
     pub fn on_order_event(
         &mut self,
         event: &OrderEventAny,
-    ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionLifecycleDecision> {
         if let OrderEventAny::Filled(fill) = event {
             return self.on_fill_event(fill);
         }
@@ -325,7 +327,7 @@ impl PositionSizerRuntimeFeed {
             let client_order_id = event.client_order_id().to_string();
             let submit_owned = self
                 .submit_admission
-                .position_sizer_has_live_reservation(&client_order_id);
+                .capital_admission_has_live_reservation(&client_order_id);
             self.component_builder.record_live_order_event(
                 client_order_id,
                 submit_owned,
@@ -356,10 +358,10 @@ impl PositionSizerRuntimeFeed {
         self.publish_components_if_ready();
         let decision = self
             .submit_admission
-            .apply_position_sizing_terminal_order_event(
+            .apply_capital_admission_terminal_order_event(
                 event.client_order_id().to_string(),
                 observed_at_ns,
-                POSITION_SIZER_ORDER_TERMINAL_SOURCE.to_string(),
+                CAPITAL_ADMISSION_ORDER_TERMINAL_SOURCE.to_string(),
             );
         if decision.unknown_reservation {
             return None;
@@ -371,7 +373,7 @@ impl PositionSizerRuntimeFeed {
     fn on_fill_event(
         &mut self,
         fill: &OrderFilled,
-    ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionLifecycleDecision> {
         if fill.account_id != self.config.account_id {
             return None;
         }
@@ -390,14 +392,14 @@ impl PositionSizerRuntimeFeed {
         let trade_id = fill.trade_id.to_string();
         let submit_owned = self
             .submit_admission
-            .position_sizer_has_live_reservation(&client_order_id);
+            .capital_admission_has_live_reservation(&client_order_id);
         let fill_quantity = fill.last_qty.as_decimal();
         let fill_trade_key = PositionFillTradeKey {
             instrument_id: instrument_id.clone(),
             trade_id: trade_id.clone(),
         };
-        let decision = self.submit_admission.apply_position_sizing_fill_update(
-            BoltV3SubmitPositionSizingFillUpdate {
+        let decision = self.submit_admission.apply_capital_admission_fill_update(
+            BoltV3SubmitCapitalAdmissionFillUpdate {
                 client_order_id: client_order_id.clone(),
                 trade_id: trade_id.clone(),
                 instrument_id: instrument_id.clone(),
@@ -412,8 +414,8 @@ impl PositionSizerRuntimeFeed {
         let fill_changes_position = decision.accepted
             && matches!(
                 decision.action,
-                crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Revalued
-                    | crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
+                crate::bolt_v3_capital_admission::CapitalAdmissionLifecycleAction::Revalued
+                    | crate::bolt_v3_capital_admission::CapitalAdmissionLifecycleAction::Released
             );
         if decision.accepted
             && !decision.unknown_reservation
@@ -440,7 +442,8 @@ impl PositionSizerRuntimeFeed {
                 observed_at_ns,
             );
         }
-        if decision.action == crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
+        if decision.action
+            == crate::bolt_v3_capital_admission::CapitalAdmissionLifecycleAction::Released
         {
             self.component_builder.record_terminal_order_event(
                 client_order_id,
@@ -528,28 +531,28 @@ impl PositionSizerRuntimeFeed {
         }
     }
 
-    fn publish_components_if_ready(&mut self) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    fn publish_components_if_ready(&mut self) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         let submit_admission = Arc::clone(&self.submit_admission);
         self.component_builder
             .refresh_live_order_attribution(|client_order_id| {
-                submit_admission.position_sizer_has_live_reservation(client_order_id)
+                submit_admission.capital_admission_has_live_reservation(client_order_id)
             });
         let components = self.component_builder.components(&self.config)?;
         self.submit_admission
-            .update_position_sizing_nt_components(components.clone());
+            .update_capital_admission_nt_components(components.clone());
         Some(components)
     }
 }
 
-impl PositionSizerRuntimeComponentBuilder {
-    fn new(config: &PositionSizerRuntimeFeedConfig) -> Self {
+impl CapitalAdmissionRuntimeComponentBuilder {
+    fn new(config: &CapitalAdmissionRuntimeFeedConfig) -> Self {
         Self {
             latest_account_free_collateral: None,
             latest_portfolio: None,
             latest_venue_spendability: None,
             live_order_attribution: BTreeMap::new(),
             terminal_order_ids_seen: BTreeMap::new(),
-            order_lifecycle: OrderLifecycleSizingSnapshot {
+            order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
                 source: "nt_order_lifecycle_seed".to_string(),
                 observed_at_ns: config.startup_observed_at_ns,
                 open_order_count: 0,
@@ -596,14 +599,14 @@ impl PositionSizerRuntimeComponentBuilder {
                 (client_order_id.clone(), attributed)
             })
             .collect();
-        self.order_lifecycle = OrderLifecycleSizingSnapshot {
+        self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
             source: "nt_open_order_cache".to_string(),
             observed_at_ns,
             open_order_count: self.live_order_attribution.len(),
             all_open_orders_attributed: self.all_live_orders_attributed(),
         };
         match &mut self.product_state {
-            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+            ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
                 snapshot.source = "nt_position_cache".to_string();
                 snapshot.observed_at_ns = observed_at_ns;
                 snapshot.yes_position = yes_position;
@@ -614,13 +617,13 @@ impl PositionSizerRuntimeComponentBuilder {
 
     fn seed_account_portfolio_snapshot(
         &mut self,
-        config: &PositionSizerRuntimeFeedConfig,
+        config: &CapitalAdmissionRuntimeFeedConfig,
         free_collateral: Decimal,
         total_equity: Decimal,
         observed_at_ns: u64,
     ) {
         self.latest_account_free_collateral = Some((free_collateral, observed_at_ns));
-        self.latest_portfolio = Some(PortfolioSizingSnapshot {
+        self.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
             source: NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE.to_string(),
             observed_at_ns,
             venue_id: config.venue_id.clone(),
@@ -634,7 +637,7 @@ impl PositionSizerRuntimeComponentBuilder {
 
     fn record_account_state_portfolio(
         &mut self,
-        config: &PositionSizerRuntimeFeedConfig,
+        config: &CapitalAdmissionRuntimeFeedConfig,
         free_collateral: Decimal,
         total_equity: Decimal,
         observed_at_ns: u64,
@@ -649,7 +652,7 @@ impl PositionSizerRuntimeComponentBuilder {
                 current.total_equity = total_equity;
             }
             None => {
-                self.latest_portfolio = Some(PortfolioSizingSnapshot {
+                self.latest_portfolio = Some(PortfolioCapitalAdmissionSnapshot {
                     source: NT_ACCOUNT_STATE_PORTFOLIO_SOURCE.to_string(),
                     observed_at_ns,
                     venue_id: config.venue_id.clone(),
@@ -664,7 +667,7 @@ impl PositionSizerRuntimeComponentBuilder {
 
     fn record_venue_spendability(
         &mut self,
-        config: &PositionSizerRuntimeFeedConfig,
+        config: &CapitalAdmissionRuntimeFeedConfig,
         snapshot: VenueSpendabilitySnapshot,
     ) {
         let matches_config = snapshot.venue_id == config.venue_id
@@ -685,7 +688,7 @@ impl PositionSizerRuntimeComponentBuilder {
 
     fn record_nt_account_spendability(
         &mut self,
-        config: &PositionSizerRuntimeFeedConfig,
+        config: &CapitalAdmissionRuntimeFeedConfig,
         free_collateral: Decimal,
         observed_at_ns: u64,
     ) {
@@ -766,7 +769,7 @@ impl PositionSizerRuntimeComponentBuilder {
     }
 
     fn refresh_order_lifecycle_from_event(&mut self, observed_at_ns: u64) {
-        self.order_lifecycle = OrderLifecycleSizingSnapshot {
+        self.order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
             source: "nt_order_event".to_string(),
             observed_at_ns,
             open_order_count: self.live_order_attribution.len(),
@@ -787,7 +790,7 @@ impl PositionSizerRuntimeComponentBuilder {
         fill_quantity: Decimal,
         observed_at_ns: u64,
     ) {
-        let ProductSizingSnapshot::PredictionMarketBinary(snapshot) = &mut self.product_state;
+        let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = &mut self.product_state;
         let outcome_position = if instrument_id == snapshot.yes_instrument_id {
             &mut snapshot.yes_position
         } else if instrument_id == snapshot.no_instrument_id {
@@ -818,7 +821,7 @@ impl PositionSizerRuntimeComponentBuilder {
 
     fn product_observed_at_ns(&self) -> Option<u64> {
         match &self.product_state {
-            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+            ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
                 Some(snapshot.observed_at_ns)
             }
         }
@@ -826,15 +829,15 @@ impl PositionSizerRuntimeComponentBuilder {
 
     fn components(
         &self,
-        _config: &PositionSizerRuntimeFeedConfig,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        _config: &CapitalAdmissionRuntimeFeedConfig,
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         let (free_collateral, account_observed_at_ns) = self.latest_account_free_collateral?;
         let mut portfolio = self.latest_portfolio.clone()?;
         let venue_spendability = self.latest_venue_spendability.clone()?;
         portfolio.free_collateral = free_collateral;
         let mut product_state = self.product_state.clone();
         let product_observed_at_ns = match &mut product_state {
-            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+            ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
                 // NT free collateral, venue spendability, and transfer allowance are independent constraints.
                 snapshot.collateral_allowance = free_collateral
                     .min(venue_spendability.spendable_collateral)
@@ -851,8 +854,8 @@ impl PositionSizerRuntimeComponentBuilder {
             .max(venue_spendability.observed_at_ns)
             .max(self.order_lifecycle.observed_at_ns)
             .max(product_observed_at_ns);
-        Some(BoltV3SubmitPositionSizingNtComponents {
-            source: "nt_position_sizer_runtime_components".to_string(),
+        Some(BoltV3SubmitCapitalAdmissionNtComponents {
+            source: "nt_capital_admission_runtime_components".to_string(),
             observed_at_ns,
             portfolio,
             venue_spendability,

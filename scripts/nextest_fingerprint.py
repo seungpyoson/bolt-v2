@@ -444,8 +444,9 @@ def rust_include_literals(text: str) -> Iterable[str]:
         cursor = rust_whitespace_or_comment_end(text, cursor)
         argument_literal = rust_string_literal_at(text, cursor)
         if argument_literal is None:
-            index += 1
-            continue
+            raise FingerprintError(
+                f"compile-time include argument must be a direct string literal: {macro_name}"
+            )
         literal, end = argument_literal
         yield literal
         index = end

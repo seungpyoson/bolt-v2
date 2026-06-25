@@ -444,6 +444,21 @@ def assert_compile_time_include_macro_syntax_variants_are_detected() -> None:
             raise AssertionError(result.stderr)
 
 
+def assert_compile_time_include_non_literal_arguments_fail_closed() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const CONCAT_DOC: &str = include_str!(concat!("../docs/extra/", "index.md"));\n',
+        )
+        commit_all(repo, "include concat expression")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include non-literal arguments must fail closed")
+        if "compile-time include argument must be a direct string literal" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
 def assert_compile_time_include_targets_must_be_tracked_files() -> None:
     with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
@@ -682,6 +697,7 @@ def main() -> int:
     assert_commented_compile_time_include_targets_are_ignored()
     assert_string_literal_include_text_is_ignored()
     assert_compile_time_include_macro_syntax_variants_are_detected()
+    assert_compile_time_include_non_literal_arguments_fail_closed()
     assert_compile_time_include_targets_must_be_tracked_files()
     assert_safe_list_excludes_only_exact_backtester_prefix()
     assert_forbidden_safe_list_entries_fail_closed()

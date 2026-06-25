@@ -19,7 +19,9 @@
 //!   - `name_tag` is informational only (basic IMDSv2 metadata does not expose
 //!     instance tags), so it never gates the outcome in this slice.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -69,11 +71,21 @@ pub struct TargetBinding {
 
 impl TargetBinding {
     /// A binding gates launch only if at least one of the observable identity
-    /// fields (region / availability_zone / instance_id) is set. `name_tag`
-    /// alone is informational and does not arm verification.
+    /// fields (region / availability_zone / instance_id) is set to a non-blank
+    /// value. `name_tag` alone is informational and does not arm verification.
     fn has_gating_field(&self) -> bool {
-        self.region.is_some() || self.availability_zone.is_some() || self.instance_id.is_some()
+        [
+            self.region.as_deref(),
+            self.availability_zone.as_deref(),
+            self.instance_id.as_deref(),
+        ]
+        .into_iter()
+        .any(|value| configured_identity_value(value).is_some())
     }
+}
+
+fn configured_identity_value(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.trim().is_empty())
 }
 
 /// Host facts observed from the running instance. Each field is optional
@@ -225,19 +237,19 @@ pub fn verify_deploy_target(
     let mut mismatches = Vec::new();
     compare_field(
         stringify!(region),
-        binding.region.as_deref(),
+        configured_identity_value(binding.region.as_deref()),
         observed.region.as_deref(),
         &mut mismatches,
     );
     compare_field(
         stringify!(availability_zone),
-        binding.availability_zone.as_deref(),
+        configured_identity_value(binding.availability_zone.as_deref()),
         observed.availability_zone.as_deref(),
         &mut mismatches,
     );
     compare_field(
         stringify!(instance_id),
-        binding.instance_id.as_deref(),
+        configured_identity_value(binding.instance_id.as_deref()),
         observed.instance_id.as_deref(),
         &mut mismatches,
     );
@@ -329,20 +341,44 @@ impl HostFactsSource for Imdsv2HostFactsSource {
                 .read_timeout(IMDS_FETCH_TIMEOUT)
                 .operation_timeout(IMDS_FETCH_TIMEOUT)
                 .build();
+            let leaf_source = AwsImdsMetadataLeafSource { client };
 
-            let (instance_id, availability_zone, region) = tokio::try_join!(
-                fetch_metadata(&client, IMDS_INSTANCE_ID_PATH),
-                fetch_metadata(&client, IMDS_AVAILABILITY_ZONE_PATH),
-                fetch_metadata(&client, IMDS_REGION_PATH),
-            )?;
-
-            Ok(ObservedHostFacts {
-                region,
-                availability_zone,
-                instance_id,
-            })
+            observe_imdsv2_host_facts(&leaf_source).await
         })
     }
+}
+
+type ImdsMetadataFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<String>, DeployTargetError>> + 'a>>;
+
+trait ImdsMetadataLeafSource {
+    fn fetch_metadata<'a>(&'a self, path: &'static str) -> ImdsMetadataFuture<'a>;
+}
+
+struct AwsImdsMetadataLeafSource {
+    client: aws_config::imds::Client,
+}
+
+impl ImdsMetadataLeafSource for AwsImdsMetadataLeafSource {
+    fn fetch_metadata<'a>(&'a self, path: &'static str) -> ImdsMetadataFuture<'a> {
+        Box::pin(fetch_metadata(&self.client, path))
+    }
+}
+
+async fn observe_imdsv2_host_facts(
+    source: &dyn ImdsMetadataLeafSource,
+) -> Result<ObservedHostFacts, DeployTargetError> {
+    let (instance_id, availability_zone, region) = tokio::try_join!(
+        source.fetch_metadata(IMDS_INSTANCE_ID_PATH),
+        source.fetch_metadata(IMDS_AVAILABILITY_ZONE_PATH),
+        source.fetch_metadata(IMDS_REGION_PATH),
+    )?;
+
+    Ok(ObservedHostFacts {
+        region,
+        availability_zone,
+        instance_id,
+    })
 }
 
 /// Fetch one IMDS metadata leaf. On success returns the trimmed value as
@@ -442,6 +478,48 @@ mod tests {
             TargetVerifyOutcome::NoTargetConfigured
         );
         assert_eq!(verification.observed_host_facts, None);
+    }
+
+    #[test]
+    fn blank_observable_fields_are_not_gating() {
+        let config = DeployTargetConfig {
+            target: Some(TargetBinding {
+                region: Some(String::new()),
+                availability_zone: Some("   ".to_string()),
+                instance_id: None,
+                name_tag: None,
+            }),
+        };
+        let source = FakeHostFactsSource::erroring();
+
+        let verification = verify_deploy_target(&config, &source)
+            .expect("blank observable fields must not arm host-facts observation");
+
+        assert_eq!(
+            verification.outcome,
+            TargetVerifyOutcome::NoTargetConfigured
+        );
+        assert_eq!(verification.observed_host_facts, None);
+    }
+
+    #[test]
+    fn blank_observable_fields_are_not_compared_when_another_field_gates() {
+        let config = DeployTargetConfig {
+            target: Some(TargetBinding {
+                region: Some(String::new()),
+                availability_zone: Some("   ".to_string()),
+                instance_id: Some("instance-target".to_string()),
+                name_tag: None,
+            }),
+        };
+        let observed = facts("region-other", "region-other-zone-b", "instance-target");
+        let source = FakeHostFactsSource::facts(observed.clone());
+
+        let verification =
+            verify_deploy_target(&config, &source).expect("non-blank instance_id must verify");
+
+        assert_eq!(verification.outcome, TargetVerifyOutcome::Matched);
+        assert_eq!(verification.observed_host_facts, Some(observed));
     }
 
     #[test]
@@ -563,6 +641,65 @@ mod tests {
             err.to_string().contains("active Tokio runtime"),
             "guard error must name the nested-runtime cause; got: {err}"
         );
+    }
+
+    struct FakeImdsMetadataLeafSource {
+        calls: std::cell::RefCell<Vec<&'static str>>,
+    }
+
+    impl FakeImdsMetadataLeafSource {
+        fn new() -> Self {
+            Self {
+                calls: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ImdsMetadataLeafSource for FakeImdsMetadataLeafSource {
+        fn fetch_metadata<'a>(&'a self, path: &'static str) -> ImdsMetadataFuture<'a> {
+            Box::pin(async move {
+                self.calls.borrow_mut().push(path);
+                match path {
+                    IMDS_INSTANCE_ID_PATH => Ok(Some("instance-target".to_string())),
+                    IMDS_AVAILABILITY_ZONE_PATH => Ok(Some("region-x-zone-a".to_string())),
+                    IMDS_REGION_PATH => Ok(Some("region-x".to_string())),
+                    other => Err(DeployTargetError::Observe(format!(
+                        "unexpected IMDS metadata path requested by test fake: {other}"
+                    ))),
+                }
+            })
+        }
+    }
+
+    #[test]
+    fn imdsv2_leaf_seam_maps_metadata_leaves_to_observed_host_facts() {
+        let source = FakeImdsMetadataLeafSource::new();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime must build for leaf-seam test");
+
+        let facts = runtime
+            .block_on(observe_imdsv2_host_facts(&source))
+            .expect("fake IMDS leaves must map into observed host facts");
+
+        assert_eq!(
+            facts,
+            ObservedHostFacts {
+                region: Some("region-x".to_string()),
+                availability_zone: Some("region-x-zone-a".to_string()),
+                instance_id: Some("instance-target".to_string()),
+            }
+        );
+        let mut calls = source.calls.borrow().clone();
+        calls.sort_unstable();
+        let mut expected = vec![
+            IMDS_AVAILABILITY_ZONE_PATH,
+            IMDS_INSTANCE_ID_PATH,
+            IMDS_REGION_PATH,
+        ];
+        expected.sort_unstable();
+        assert_eq!(calls, expected);
     }
 
     #[test]

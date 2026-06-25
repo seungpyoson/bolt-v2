@@ -7183,6 +7183,39 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
 
+    weakened_archive_guard = good.replace(
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true',
+        1,
+    )
+    weakened_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": weakened_archive_guard}
+    )
+    assert any("not fail-closed" in error and 'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true' in error for error in weakened_errors), weakened_errors
+
+    missing_archive_guard = good.replace(
+        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
+        "",
+        1,
+    )
+    missing_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_archive_guard}
+    )
+    assert any(
+        "backtester consumer must fail closed if the downloaded archive is missing or empty" in error
+        for error in missing_errors
+    ), missing_errors
+
+    exit_one_archive_guard = good.replace(
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1',
+        1,
+    )
+    exit_one_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": exit_one_archive_guard}
+    )
+    assert not [error for error in exit_one_errors if "backtester consumer" in error], exit_one_errors
+
 
 def assert_cache_as_same_run_transport_is_banned() -> None:
     verifier = load_verifier()
@@ -7296,6 +7329,39 @@ def assert_cache_as_same_run_transport_is_banned() -> None:
         {".github/workflows/example-ci.yml": bad_block_literal_true}
     )
     assert has_fail_on_miss_message(errors), errors
+
+    ok_commented_block_scalar_key = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          # fail-on-cache-miss: >-
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_commented_block_scalar_key}
+    )
+    assert not has_fail_on_miss_message(errors), errors
+
+    ok_block_multiline_string = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: |
+            some line
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_block_multiline_string}
+    )
+    assert not has_fail_on_miss_message(errors), errors
 
     ok_folded_false = """jobs:
   test:

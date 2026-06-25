@@ -9709,14 +9709,6 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "name: bvs-test-payload",
         ),
         (
-            "backtester bvs-test shards must fail closed if the downloaded archive is missing or empty",
-            'test -s "$BVS_NEXTEST_ARCHIVE_PATH" ||',
-        ),
-        (
-            "backtester bvs-test shards must fail closed if the downloaded sidecars are missing or empty",
-            'test -s "$BVS_BIN_SIDECARS_PATH" ||',
-        ),
-        (
             "backtester bvs-test shards must extract binary sidecars",
             'tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"',
         ),
@@ -9762,14 +9754,6 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "name: bvs-test-payload",
         ),
         (
-            "backtester bvs-test issue-789 must fail closed if the downloaded archive is missing or empty",
-            'test -s "$BVS_NEXTEST_ARCHIVE_PATH" ||',
-        ),
-        (
-            "backtester bvs-test issue-789 must fail closed if the downloaded sidecars are missing or empty",
-            'test -s "$BVS_BIN_SIDECARS_PATH" ||',
-        ),
-        (
             "backtester bvs-test issue-789 must extract binary sidecars",
             'tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"',
         ),
@@ -9796,6 +9780,30 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     for message, fragment in test_fragments:
         if fragment not in job_text:
             errors.append(message)
+    for scope_name, scope_text in (("bvs-test shards", job_text), ("bvs-test issue-789", issue_text)):
+        if not scope_text:
+            continue
+        for var_name, payload_name in (
+            ("BVS_NEXTEST_ARCHIVE_PATH", "archive"),
+            ("BVS_BIN_SIDECARS_PATH", "sidecars"),
+        ):
+            guard_lines = [
+                line.strip()
+                for line in scope_text.splitlines()
+                if f'test -s "${var_name}"' in strip_comment(line)
+            ]
+            if not guard_lines:
+                errors.append(
+                    f"backtester consumer must fail closed if the downloaded {payload_name} "
+                    f"is missing or empty ({scope_name})"
+                )
+                continue
+            for guard_line in guard_lines:
+                if not EXIT_ONE_RE.search(guard_line):
+                    errors.append(
+                        f"backtester consumer guard is not fail-closed for downloaded "
+                        f"{payload_name} ({scope_name}): {guard_line}"
+                    )
     if issue_job is not None:
         for message, fragment in issue_fragments:
             if fragment not in issue_text:
@@ -9863,7 +9871,7 @@ def has_fail_on_cache_miss_true(text: str) -> bool:
     for index, line in enumerate(lines):
         if FAIL_ON_CACHE_MISS_TRUE_RE.search(strip_comment(line)):
             return True
-        if not FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE.search(line):
+        if not FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE.search(strip_comment(line)):
             continue
         key_indent = len(line) - len(line.lstrip(" "))
         for continuation in lines[index + 1:]:
@@ -9871,8 +9879,11 @@ def has_fail_on_cache_miss_true(text: str) -> bool:
             if continuation_indent <= key_indent:
                 break
             continuation_value = strip_comment(continuation).strip()
+            if not continuation_value:
+                continue
             if FAIL_ON_CACHE_MISS_BLOCK_TRUTHY_RE.fullmatch(continuation_value):
                 return True
+            break
     return False
 
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import hashlib
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -35,6 +36,12 @@ MANDATORY_TRACKED_INPUTS = (
     "tests/",
     "ci/nextest-fingerprint.toml",
     "scripts/nextest_fingerprint.py",
+    "scripts/root_bin_sidecars.py",
+)
+
+COMPILE_TIME_INCLUDE_RE = re.compile(
+    r"""include_(?:str|bytes)!\s*\(\s*(?P<literal>(?:br|rb|b|r)?(?P<hashes>\#*)\"(?:\\.|[^"\\])*\"(?P=hashes))""",
+    re.MULTILINE,
 )
 
 
@@ -70,6 +77,18 @@ def run_git(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=text,
+    )
+
+
+def git_tree_paths(repo_root: pathlib.Path) -> tuple[str, ...]:
+    result = run_git(repo_root, ["ls-tree", "-r", "-z", "--name-only", "HEAD"], text=False)
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", "replace")
+        raise FingerprintError(f"could not list HEAD tree paths: {stderr.strip()}")
+    return tuple(
+        record.decode("utf-8", "surrogateescape")
+        for record in result.stdout.split(b"\0")
+        if record
     )
 
 
@@ -273,6 +292,100 @@ def validate_safe_excludes(repo_root: pathlib.Path, config: FingerprintConfig) -
             )
 
 
+def validate_tracked_inputs_match_tree(repo_root: pathlib.Path, config: FingerprintConfig) -> None:
+    tree_paths = git_tree_paths(repo_root)
+    for tracked_input in config.tracked_inputs:
+        if not any(path_matches_entry(path, tracked_input) for path in tree_paths):
+            raise FingerprintError(
+                "nextest_archive.tracked_inputs entry matches no tracked files: "
+                f"{tracked_input}"
+            )
+
+
+def strip_rust_comments(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    block_depth = 0
+    while index < len(text):
+        char = text[index]
+        next_char = text[index + 1] if index + 1 < len(text) else ""
+        if block_depth:
+            if char == "/" and next_char == "*":
+                block_depth += 1
+                output.extend("  ")
+                index += 2
+            elif char == "*" and next_char == "/":
+                block_depth -= 1
+                output.extend("  ")
+                index += 2
+            else:
+                output.append("\n" if char == "\n" else " ")
+                index += 1
+            continue
+        if char == "/" and next_char == "/":
+            while index < len(text) and text[index] != "\n":
+                output.append(" ")
+                index += 1
+            continue
+        if char == "/" and next_char == "*":
+            block_depth = 1
+            output.extend("  ")
+            index += 2
+            continue
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def rust_string_literal_value(literal: str) -> str:
+    prefix = ""
+    while literal and literal[0] in {"b", "r"}:
+        prefix += literal[0]
+        literal = literal[1:]
+    if "r" in prefix:
+        hashes = len(literal) - len(literal.lstrip("#"))
+        start = hashes + 1
+        end = -(hashes + 1)
+        return literal[start:end]
+    body = literal[1:-1]
+    return bytes(body, "utf-8").decode("unicode_escape")
+
+
+def compile_time_include_targets(repo_root: pathlib.Path, config: FingerprintConfig) -> Iterable[tuple[str, str]]:
+    tree_paths = set(git_tree_paths(repo_root))
+    for path in tree_paths:
+        if not path.endswith(".rs"):
+            continue
+        if not tracked_input_included(path, config.tracked_inputs) or safe_excluded(path, config.safe_excludes):
+            continue
+        source_path = repo_root / path
+        try:
+            text = source_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise FingerprintError(f"could not read Rust source as UTF-8: {path}") from exc
+        for match in COMPILE_TIME_INCLUDE_RE.finditer(strip_rust_comments(text)):
+            literal = match.group("literal")
+            target = (source_path.parent / rust_string_literal_value(literal)).resolve()
+            try:
+                relative_target = target.relative_to(repo_root.resolve()).as_posix()
+            except ValueError as exc:
+                raise FingerprintError(f"compile-time include target escapes repo: {path}") from exc
+            if not target.exists():
+                raise FingerprintError(f"compile-time include target missing: {relative_target}")
+            if relative_target not in tree_paths:
+                raise FingerprintError(f"compile-time include target is not tracked in HEAD: {relative_target}")
+            yield path, normalize_repo_path(relative_target, label="compile-time include target")
+
+
+def validate_compile_time_includes(repo_root: pathlib.Path, config: FingerprintConfig) -> None:
+    for source, target in compile_time_include_targets(repo_root, config):
+        if not tracked_input_included(target, config.tracked_inputs) or safe_excluded(target, config.safe_excludes):
+            raise FingerprintError(
+                "compile-time include target is outside nextest tracked inputs: "
+                f"{target} (referenced by {source})"
+            )
+
+
 def ensure_clean_tracked_worktree(repo_root: pathlib.Path) -> None:
     result = run_git(repo_root, ["diff", "--quiet", "HEAD", "--"])
     if result.returncode == 1:
@@ -366,6 +479,8 @@ def produce_fingerprint(args: argparse.Namespace) -> None:
     artifact_prefix = load_artifact_prefix(pathlib.Path(args.runners_config).resolve())
     validate_safe_excludes(repo_root, config)
     ensure_clean_tracked_worktree(repo_root)
+    validate_tracked_inputs_match_tree(repo_root, config)
+    validate_compile_time_includes(repo_root, config)
 
     runner_os = require_cli_value(args.runner_os, "runner-os")
     runner_arch = require_cli_value(args.runner_arch, "runner-arch")

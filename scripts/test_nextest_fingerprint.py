@@ -39,6 +39,7 @@ tracked_inputs = [
     "ci/nextest-fingerprint.toml",
     "ci/rust-verification.toml",
     "scripts/nextest_fingerprint.py",
+    "scripts/root_bin_sidecars.py",
     "scripts/rust_verification.py",
     "scripts/command_understanding.py",
     ".github/actions/setup-environment/action.yml",
@@ -168,7 +169,9 @@ edition = "2021"
     write(repo / "rust-toolchain.toml", "[toolchain]\nchannel = \"stable\"\n")
     write(repo / ".cargo" / "config.toml", "[build]\n")
     write(repo / ".config" / "nextest.toml", "[profile.default]\n")
+    write(repo / ".github" / "actions" / "setup-environment" / "action.yml", "name: setup\n")
     write(repo / ".github" / "workflows" / "ci.yml", "name: ci\n")
+    write(repo / "ci" / "rust-verification.toml", "[local_compile_policy]\n")
     write(repo / "justfile", "default:\n    @true\n")
     write(repo / "gated_source_roots.manifest", "src\n")
     write(repo / "deploy" / "install.sh", "#!/usr/bin/env bash\necho install\n")
@@ -178,10 +181,16 @@ edition = "2021"
     write(repo / "benches" / "root.rs", "fn main() {}\n")
     write(repo / "examples" / "root.rs", "fn main() {}\n")
     write(repo / "scripts" / "nextest_fingerprint.py", "# tracked producer placeholder\n")
+    write(repo / "scripts" / "root_bin_sidecars.py", "# tracked sidecar helper placeholder\n")
     write(repo / "scripts" / "rust_verification.py", "# tracked verifier placeholder\n")
+    write(repo / "scripts" / "command_understanding.py", "# tracked command parser placeholder\n")
     write(repo / "config" / "root.toml", "[root]\n")
     write(repo / "contracts" / "root.md", "# contract\n")
     write(repo / "docs" / "bolt-v3" / "index.md", "# bolt-v3\n")
+    write(
+        repo / "docs" / "bolt-v3" / "2026-04-25-bolt-v3-runtime-contracts.md",
+        "# runtime contracts\n",
+    )
     write(repo / "docs" / "extra" / "index.md", "# extra docs\n")
     write(repo / "specs" / "root.md", "# spec\n")
     write(repo / "crates" / "backtesting-vertical-slice" / "src" / "lib.rs", "pub fn bvs() {}\n")
@@ -354,6 +363,68 @@ def assert_self_governance_changes_affect_digest() -> None:
         script_changed, _ = fingerprint(repo)
         if script_changed == config_changed:
             raise AssertionError("fingerprint producer changes must change the digest")
+
+
+def assert_tracked_inputs_must_match_head_tree() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "ci" / "nextest-fingerprint.toml",
+            FINGERPRINT_CONFIG_TEXT.replace(
+                '    "src/",\n',
+                '    "missing-build-input/",\n    "src/",\n',
+            ),
+        )
+        commit_all(repo, "add stale tracked input")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("tracked_inputs entries that match no tracked files must fail closed")
+        if "nextest_archive.tracked_inputs entry matches no tracked files" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_compile_time_include_targets_must_be_tracked() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const EXTRA_DOC: &str = include_str!("../docs/extra/index.md");\n',
+        )
+        commit_all(repo, "include untracked docs")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include targets outside tracked_inputs must fail closed")
+        if "compile-time include target is outside nextest tracked inputs: docs/extra/index.md" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_commented_compile_time_include_targets_are_ignored() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            '// include_str!("../docs/extra/index.md")\n'
+            'pub const ROOT: &str = include_str!("../tests/root.rs");\n',
+        )
+        commit_all(repo, "commented include")
+        fingerprint(repo)
+
+
+def assert_compile_time_include_targets_must_be_tracked_files() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const UNTRACKED_FIXTURE: &str = include_str!("../tests/fixtures/untracked.txt");\n',
+        )
+        git(repo, "add", "src/lib.rs")
+        git(repo, "commit", "-m", "include untracked fixture")
+        write(repo / "tests" / "fixtures" / "untracked.txt", "not in git\n")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include targets absent from HEAD must fail closed")
+        if "compile-time include target is not tracked in HEAD: tests/fixtures/untracked.txt" not in result.stderr:
+            raise AssertionError(result.stderr)
 
 
 def assert_safe_list_excludes_only_exact_backtester_prefix() -> None:
@@ -572,6 +643,10 @@ def main() -> int:
     assert_fingerprint_outputs_have_provenance_shape()
     assert_tree_digest_covers_runtime_inputs_and_mode_bits()
     assert_self_governance_changes_affect_digest()
+    assert_tracked_inputs_must_match_head_tree()
+    assert_compile_time_include_targets_must_be_tracked()
+    assert_commented_compile_time_include_targets_are_ignored()
+    assert_compile_time_include_targets_must_be_tracked_files()
     assert_safe_list_excludes_only_exact_backtester_prefix()
     assert_forbidden_safe_list_entries_fail_closed()
     assert_root_inputs_cannot_be_safe_listed()

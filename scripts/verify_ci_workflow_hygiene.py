@@ -547,6 +547,7 @@ TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
     'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins'
 )
+TEST_ARCHIVE_SIDECAR_PACK_COMMAND = "python3 scripts/root_bin_sidecars.py pack"
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
@@ -9058,8 +9059,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         sidecar_pack_block = named_step_block(archive_lines, "Pack root binary sidecars from archive build")
         if sidecar_pack_block is None or TEST_ARCHIVE_SIDECAR_PACK_GUARD not in uncommented_text(sidecar_pack_block):
             errors.append("test-archive must pack root binary sidecars from archive builds on archive-cache miss")
-        if sidecar_pack_block is None or "find debug -maxdepth 1 -type f -perm -111 -print0" not in uncommented_text(sidecar_pack_block):
-            errors.append("test-archive archive-miss sidecar pack must pack root binary sidecars")
+        if sidecar_pack_block is None or TEST_ARCHIVE_SIDECAR_PACK_COMMAND not in uncommented_text(sidecar_pack_block):
+            errors.append("test-archive archive-miss sidecar pack must use tracked root binary sidecar helper")
         if (
             TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD not in archive_text
             or TEST_ARCHIVE_SIDECAR_BUILD_COMMAND not in archive_text
@@ -9070,8 +9071,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive sidecar cargo build must run only on archive-cache hit and sidecar-cache miss")
         if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PROFILE_ENV not in uncommented_text(sidecar_block):
             errors.append("test-archive sidecar build must use dev profile debug knob")
-        if sidecar_block is None or "find debug -maxdepth 1 -type f -perm -111 -print0" not in uncommented_text(sidecar_block):
-            errors.append("test-archive sidecar build must pack root binary sidecars")
+        if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PACK_COMMAND not in uncommented_text(sidecar_block):
+            errors.append("test-archive sidecar build must use tracked root binary sidecar helper")
         if not sidecar_restore_blocks:
             errors.append("test-archive must restore root binary sidecar cache")
         if not sidecar_save_blocks:

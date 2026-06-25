@@ -589,8 +589,8 @@ jobs:
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         env:
-          # Keep CI test binaries small enough for CI link/disk limits.
-          # This disables test debuginfo only; assertions and test logic still run.
+          # Keep CI test and CARGO_BIN_EXE sidecar binaries small enough for CI
+          # link/disk limits; assertions and test logic still run.
           CARGO_PROFILE_TEST_DEBUG: "0"
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
@@ -614,18 +614,11 @@ jobs:
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
           target_dir="${{ steps.setup.outputs.managed_target_dir }}"
-          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
-          if [[ "$sidecar_count" == "0" ]]; then
-            echo "no root binary sidecars found in $target_dir/debug"
-            exit 1
-          fi
-          (
-            cd "$target_dir"
-            find debug -maxdepth 1 -type f -perm -111 -print0 \
-              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
-          )
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
 
       - name: Build root binary sidecars
         if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
@@ -636,18 +629,11 @@ jobs:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
-          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
           target_dir="${{ steps.setup.outputs.managed_target_dir }}"
-          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
-          if [[ "$sidecar_count" == "0" ]]; then
-            echo "no root binary sidecars found in $target_dir/debug"
-            exit 1
-          fi
-          (
-            cd "$target_dir"
-            find debug -maxdepth 1 -type f -perm -111 -print0 \
-              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
-          )
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
 
       - name: Save root binary sidecars
         if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'

@@ -621,18 +621,11 @@ jobs:
       - name: Pack root binary sidecars from archive build
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
           target_dir="${{ steps.setup.outputs.managed_target_dir }}"
-          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
-          if [[ "$sidecar_count" == "0" ]]; then
-            echo "no root binary sidecars found in $target_dir/debug"
-            exit 1
-          fi
-          (
-            cd "$target_dir"
-            find debug -maxdepth 1 -type f -perm -111 -print0 \
-              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
-          )
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
       - name: Build root binary sidecars
         if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         env:
@@ -640,11 +633,10 @@ jobs:
         run: |
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
           target_dir="${{ steps.setup.outputs.managed_target_dir }}"
-          (
-            cd "$target_dir"
-            find debug -maxdepth 1 -type f -perm -111 -print0 \
-              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
-          )
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
       - name: Save root binary sidecars
         if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
@@ -8407,11 +8399,10 @@ def main() -> int:
         run: |
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
           target_dir="${{ steps.setup.outputs.managed_target_dir }}"
-          (
-            cd "$target_dir"
-            find debug -maxdepth 1 -type f -perm -111 -print0 \
-              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
-          )
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
 """,
             "",
         ),
@@ -8423,20 +8414,34 @@ def main() -> int:
             """      - name: Pack root binary sidecars from archive build
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         run: |
-          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
           target_dir="${{ steps.setup.outputs.managed_target_dir }}"
-          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
-          if [[ "$sidecar_count" == "0" ]]; then
-            echo "no root binary sidecars found in $target_dir/debug"
-            exit 1
-          fi
-          (
-            cd "$target_dir"
-            find debug -maxdepth 1 -type f -perm -111 -print0 \
-              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
-          )
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
 """,
             "",
+        ),
+    )
+    assert_error(
+        "test-archive archive-miss sidecar pack must use tracked root binary sidecar helper",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          find "$target_dir/debug" -maxdepth 1 -type f -perm -111 -print0
+""",
         ),
     )
     sidecar_build_guard_regression_workflow = BASE_WORKFLOW
@@ -8466,6 +8471,33 @@ def main() -> int:
         if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         env:
           CARGO_PROFILE_TEST_DEBUG: "0"
+""",
+        ),
+    )
+    assert_error(
+        "test-archive sidecar build must use tracked root binary sidecar helper",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          find "$target_dir/debug" -maxdepth 1 -type f -perm -111 -print0
 """,
         ),
     )

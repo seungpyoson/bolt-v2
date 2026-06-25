@@ -9625,8 +9625,12 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "name: bvs-test-payload",
         ),
         (
-            "backtester bvs-test archive must upload hidden .nextest-archive contents",
+            "backtester bvs-test archive payload upload must include hidden files (.nextest-archive dot-dir)",
             "include-hidden-files: true",
+        ),
+        (
+            "backtester bvs-test archive payload upload must fail closed when the payload is empty",
+            "if-no-files-found: error",
         ),
         (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
@@ -9706,11 +9710,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test shards must fail closed if the downloaded archive is missing or empty",
-            'test -s "$BVS_NEXTEST_ARCHIVE_PATH"',
+            'test -s "$BVS_NEXTEST_ARCHIVE_PATH" ||',
         ),
         (
             "backtester bvs-test shards must fail closed if the downloaded sidecars are missing or empty",
-            'test -s "$BVS_BIN_SIDECARS_PATH"',
+            'test -s "$BVS_BIN_SIDECARS_PATH" ||',
         ),
         (
             "backtester bvs-test shards must extract binary sidecars",
@@ -9759,11 +9763,11 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ),
         (
             "backtester bvs-test issue-789 must fail closed if the downloaded archive is missing or empty",
-            'test -s "$BVS_NEXTEST_ARCHIVE_PATH"',
+            'test -s "$BVS_NEXTEST_ARCHIVE_PATH" ||',
         ),
         (
             "backtester bvs-test issue-789 must fail closed if the downloaded sidecars are missing or empty",
-            'test -s "$BVS_BIN_SIDECARS_PATH"',
+            'test -s "$BVS_BIN_SIDECARS_PATH" ||',
         ),
         (
             "backtester bvs-test issue-789 must extract binary sidecars",
@@ -9808,15 +9812,30 @@ CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE = (
     "best-effort and may be evicted before the consumer runs — use upload/download-artifact "
     "for same-run cross-job handoff"
 )
-CACHE_MISS_IF_RE = re.compile(r"\bcache-hit\b\s*(?:!=\s*'true'|==\s*'false')")
-# A cache-miss-guarded build step may contain nested validation failures. The
-# banned same-run transport shape is a top-level fail-closed `exit 1` step.
-EXIT_ONE_RE = re.compile(r"(?m)^exit\s+1\b")
-# `fail-on-cache-miss: true` in any YAML form: optional quotes, flexible spacing,
-# case-insensitive value — a quoted (`'true'`) or `True` variant is the same
-# fail-closed directive and must not evade the ban.
+CACHE_MISS_IF_RE = re.compile(r"\bcache-hit\b\s*(?:!=\s*[\"']?true[\"']?|==\s*[\"']?false[\"']?)")
+# A cache-miss-guarded build step may contain nested validation failures (e.g.
+# the producer's `if [ count -eq 0 ]; then ... exit 1; fi`), which are NOT the
+# banned shape. The banned same-run transport shape is a fail-closed `exit 1`
+# reached unconditionally: at top level, or chained after a command via `||`,
+# `&&`, or `;` (covering `test -s x || exit 1` and `... || { ...; exit 1; }`).
+# The producer's nested `exit 1` is indented and not operator-chained, so it is
+# correctly excluded. A cache-miss guard expressed inside the run body (rather
+# than the step `if:`) or delegated to a separate script is outside this line
+# scanner's scope; see cache_same_run_transport_errors.
+EXIT_ONE_RE = re.compile(
+    r"(?m)(?:^exit\s+1\b|\|\|\s*exit\s+1\b|&&\s*exit\s+1\b|;\s*exit\s+1\b)"
+)
+# `fail-on-cache-miss: <truthy>` in any YAML form: block- or flow-style
+# (`with: { fail-on-cache-miss: true }`), optional `!!bool` tag, optional quotes,
+# flexible spacing, case-insensitive truthy value. Not anchored to the whole
+# line, so flow-style maps are caught; a negative lookbehind avoids matching a
+# longer key such as `my-fail-on-cache-miss`. The caller strips comments before
+# matching. `true`/`!!bool true` enable the directive; `yes`/`on` are rejected
+# loudly by actions/cache's boolean input parser — either way it is not a silent
+# same-run transport and must not ship.
 FAIL_ON_CACHE_MISS_TRUE_RE = re.compile(
-    r"^\s*fail-on-cache-miss:\s*[\"']?true[\"']?\s*$", re.IGNORECASE
+    r"(?<![\w-])fail-on-cache-miss:\s*(?:!!bool\s+)?[\"']?(?:true|yes|on)\b",
+    re.IGNORECASE,
 )
 
 
@@ -9838,7 +9857,7 @@ def cache_same_run_transport_errors(file_name: str, text: str) -> list[str]:
         return []
     errors: list[str] = []
     if any(
-        FAIL_ON_CACHE_MISS_TRUE_RE.match(strip_comment(line))
+        FAIL_ON_CACHE_MISS_TRUE_RE.search(strip_comment(line))
         for line in text.splitlines()
     ):
         errors.append(CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE)

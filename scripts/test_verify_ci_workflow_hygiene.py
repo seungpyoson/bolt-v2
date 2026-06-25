@@ -7121,6 +7121,7 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           name: bvs-test-payload
           path: .nextest-archive
           include-hidden-files: true
+          if-no-files-found: error
   test:
     name: bvs-test ${{ matrix.shard }} of 4
     needs: [ci-policy, detect, fmt, test-archive]
@@ -7141,8 +7142,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           path: .nextest-archive
       - name: Require BVS test payload
         run: |
-          test -s "$BVS_NEXTEST_ARCHIVE_PATH"
-          test -s "$BVS_BIN_SIDECARS_PATH"
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: test
@@ -7165,8 +7166,8 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
           path: .nextest-archive
       - name: Require BVS test payload
         run: |
-          test -s "$BVS_NEXTEST_ARCHIVE_PATH"
-          test -s "$BVS_BIN_SIDECARS_PATH"
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: test issue-789
@@ -7233,6 +7234,73 @@ def assert_cache_as_same_run_transport_is_banned() -> None:
             "fail-closed same-run transport" in error for error in variant_errors
         ), (variant, variant_errors)
 
+    bad_builtin_flow = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with: { path: payload, key: payload-key, fail-on-cache-miss: true }
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_builtin_flow}
+    )
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+
+    bad_builtin_bool_tag = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: !!bool true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_builtin_bool_tag}
+    )
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+
+    for variant in ("yes", "on"):
+        bad_builtin_truthy = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: {variant}
+"""
+        truthy_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_builtin_truthy}
+        )
+        assert any(
+            "fail-closed same-run transport" in error for error in truthy_errors
+        ), (variant, truthy_errors)
+
+    for run_body in (
+        "test -s payload || exit 1",
+        "test -s payload && exit 1",
+        "test -s payload || { echo m; exit 1; }",
+    ):
+        bad_guarded_chain = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: {run_body}
+"""
+        chain_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_guarded_chain}
+        )
+        assert any(
+            "must not fail a job on a cache miss" in error for error in chain_errors
+        ), (run_body, chain_errors)
+
     good = """jobs:
   test:
     steps:
@@ -7251,6 +7319,62 @@ def assert_cache_as_same_run_transport_is_banned() -> None:
     assert not [
         error for error in errors if "cache" in error and "same-run" in error
     ], errors
+
+    producer_nested_exit = """jobs:
+  test:
+    steps:
+      - name: Build payload on miss
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: |
+          if [[ "$n" == "0" ]]; then
+            echo none
+            exit 1
+          fi
+          echo ok
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": producer_nested_exit}
+    )
+    assert not [
+        error for error in errors if "cache" in error and "same-run" in error
+    ], errors
+
+    bad_both_arms = """jobs:
+  test:
+    steps:
+      - name: Restore builtin payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: true
+      - name: Restore hand rolled payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require hand rolled payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: exit 1
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_both_arms}
+    )
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
+
+    bad_double_quoted_false_guard = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit == "false"
+        run: exit 1
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_double_quoted_false_guard}
+    )
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
 
     # The guard's if-matcher must tolerate zero leading whitespace; the old
     # anchor required at least one leading space and would miss a stripped or

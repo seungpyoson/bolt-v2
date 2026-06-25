@@ -1759,6 +1759,44 @@ mod tests {
     }
 
     #[test]
+    fn binary_price_feed_frame_for_active_subscription_emits_custom_reference_update() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
+            subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+            subscription("BTC", "polyresearch_primary", "BTC/USD"),
+        )])));
+        let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handler = polyresearch_reference_message_handler(
+            subscriptions,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            2_000,
+            data_sender,
+        );
+
+        handler(Message::binary(
+            r#"{"type":"price_feed","feed":"BTC/USD","timestamp":1774672588,"data":{"feed":"BTC/USD","price":66300.25,"bid":66299.5,"ask":66301.0,"timestamp":1774672588}}"#,
+        ));
+
+        let event = data_receiver
+            .try_recv()
+            .expect("matched binary PRR price_feed frame should emit one data event");
+        let DataEvent::Data(Data::Custom(custom)) = event else {
+            panic!("matched binary PRR price_feed frame should emit custom data, got {event:?}");
+        };
+        let update = ReferencePriceUpdate::from_custom_data(&custom)
+            .expect("custom data should contain a reference price update");
+
+        assert_eq!(update.asset(), "BTC");
+        assert_eq!(update.source_id(), "polyresearch_primary");
+        assert_eq!(update.provider(), REFERENCE_PRICE_PROVIDER_KEY);
+        assert_eq!(update.provider_instrument(), "BTC/USD");
+        assert_eq!(update.price(), 66300.25);
+        assert_eq!(update.observed_ts_ms(), 1774672588000);
+    }
+
+    #[test]
     fn price_feed_frame_for_unsubscribed_symbol_emits_no_custom_data() {
         let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
             subscription_key("BTC", "polyresearch_primary", "BTC/USD"),

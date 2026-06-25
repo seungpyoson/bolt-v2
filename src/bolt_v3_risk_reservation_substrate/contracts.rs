@@ -159,6 +159,79 @@ impl<'de> Deserialize<'de> for ConfiguredLeaseAuthority {
 pub struct RiskReservationSubstrateConfig {
     pub enabled: bool,
     pub pool_lease_authority: ConfiguredLeaseAuthority,
+    pub work_bounds: RiskReservationWorkBounds,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RiskReservationWorkBounds {
+    max_current_position_count: usize,
+    max_buckets_per_exposure: usize,
+    max_terminal_cash_flow_count_per_exposure: usize,
+}
+
+impl RiskReservationWorkBounds {
+    pub fn new(
+        max_current_position_count: usize,
+        max_buckets_per_exposure: usize,
+        max_terminal_cash_flow_count_per_exposure: usize,
+    ) -> Result<Self, RiskReservationWorkBoundsError> {
+        if max_current_position_count == 0 {
+            return Err(RiskReservationWorkBoundsError::ZeroCurrentPositionCount);
+        }
+        if max_buckets_per_exposure == 0 {
+            return Err(RiskReservationWorkBoundsError::ZeroBucketsPerExposure);
+        }
+        if max_terminal_cash_flow_count_per_exposure == 0 {
+            return Err(RiskReservationWorkBoundsError::ZeroTerminalCashFlowCountPerExposure);
+        }
+        Ok(Self {
+            max_current_position_count,
+            max_buckets_per_exposure,
+            max_terminal_cash_flow_count_per_exposure,
+        })
+    }
+
+    pub const fn max_current_position_count(self) -> usize {
+        self.max_current_position_count
+    }
+
+    pub const fn max_buckets_per_exposure(self) -> usize {
+        self.max_buckets_per_exposure
+    }
+
+    pub const fn max_terminal_cash_flow_count_per_exposure(self) -> usize {
+        self.max_terminal_cash_flow_count_per_exposure
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskReservationWorkBoundsError {
+    ZeroCurrentPositionCount,
+    ZeroBucketsPerExposure,
+    ZeroTerminalCashFlowCountPerExposure,
+}
+
+impl<'de> Deserialize<'de> for RiskReservationWorkBounds {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            max_current_position_count: usize,
+            max_buckets_per_exposure: usize,
+            max_terminal_cash_flow_count_per_exposure: usize,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(
+            wire.max_current_position_count,
+            wire.max_buckets_per_exposure,
+            wire.max_terminal_cash_flow_count_per_exposure,
+        )
+        .map_err(|error| serde::de::Error::custom(format!("{error:?}")))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

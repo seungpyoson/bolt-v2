@@ -1,6 +1,7 @@
 pub use crate::bolt_v3_risk_reservation_substrate::reservation_ledger::{
     BoundReusableSafetyState, CallerRiskDiagnostics, RiskCapDimension,
     RiskReservationCommit as AdmissionReservation, RiskReservationError as AdmissionReserveError,
+    RiskReservationWorkDimension,
 };
 
 use std::collections::{BTreeMap, BTreeSet};

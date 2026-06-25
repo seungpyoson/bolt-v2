@@ -7,7 +7,8 @@ use nautilus_model::identifiers::ClientOrderId;
 
 use crate::bolt_v3_risk_reservation_substrate::contracts::{
     ConfiguredLeaseAuthority, DurableSubmissionIntent, FencingToken, LiveSubmissionRecord, OwnerId,
-    PoolId, PoolOwnershipLease, PreparedPolicyEpoch, ReservationLifecycleState, RiskStateVersion,
+    PoolId, PoolOwnershipLease, PreparedPolicyEpoch, ReservationLifecycleState,
+    RiskReservationSubstrateConfig, RiskReservationWorkBounds, RiskStateVersion,
 };
 use crate::bolt_v3_risk_reservation_substrate::{
     reservation_ledger::{
@@ -23,6 +24,7 @@ use crate::bolt_v3_risk_reservation_substrate::{
 pub struct FencedRiskStateStore {
     inner: Arc<Mutex<FencedRiskStateStoreInner>>,
     lease_authority: ConfiguredLeaseAuthority,
+    work_bounds: RiskReservationWorkBounds,
 }
 
 #[derive(Debug)]
@@ -136,10 +138,11 @@ pub struct DurableRiskMutationRecord {
 }
 
 impl FencedRiskStateStore {
-    pub fn new(lease_authority: ConfiguredLeaseAuthority) -> Self {
+    pub fn new(config: RiskReservationSubstrateConfig) -> Self {
         Self {
             inner: Arc::new(Mutex::new(FencedRiskStateStoreInner::new())),
-            lease_authority,
+            lease_authority: config.pool_lease_authority,
+            work_bounds: config.work_bounds,
         }
     }
 
@@ -647,6 +650,20 @@ impl FencedRiskStateStore {
         Ok(version)
     }
 
+    /// Runs the whole FR-001 compare-and-reserve transaction under the pool
+    /// state mutex.
+    ///
+    /// Worst-case complexity: with `P` current positions, at most `B`
+    /// configured buckets per exposure, at most `T` configured terminal
+    /// cash-flow states per exposure, and `R` indexed live reservation keys,
+    /// this critical section runs in `O(P * (B + T) + B + log R)` time. It
+    /// performs no external I/O, acquires no nested mutable lock, uses only
+    /// pre-resolved immutable descriptor/policy/fee/classifier data carried by
+    /// the transaction, and allocates only bounded token/record/index data plus
+    /// bounded `B`-sized dimension sets. The configured maximum position,
+    /// bucket, and terminal-scenario sizes are enforced before idempotent token
+    /// replay and again after the coherent `risk_state_version` check before
+    /// the kernel evaluation, so an over-bound transaction reserves nothing.
     fn compare_and_reserve(
         &self,
         lease: &PoolOwnershipLease,
@@ -671,6 +688,7 @@ impl FencedRiskStateStore {
         if &transaction.candidate.pool_id != lease.pool_id() {
             return Err(RiskReservationError::PoolMismatch);
         }
+        transaction.enforce_work_bounds(&self.work_bounds)?;
 
         let idempotency_key = transaction.candidate.idempotency_key.clone();
         let permit_id = transaction.candidate.sizing_permit.permit_id.clone();
@@ -699,6 +717,7 @@ impl FencedRiskStateStore {
             &transaction.candidate.policy_epoch_id,
         )?;
         transaction.validate_static(lease.pool_id(), current_version)?;
+        transaction.enforce_work_bounds(&self.work_bounds)?;
 
         let assessment = RiskKernel::evaluate(&transaction.kernel_input)
             .map_err(RiskReservationError::Kernel)?;

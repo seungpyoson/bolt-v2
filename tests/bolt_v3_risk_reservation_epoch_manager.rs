@@ -10,7 +10,8 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         BandCoverageAttestationCellEvidence, BandCoverageAttestationDecision,
         BandCoverageAttestationEvidence, ConfiguredLeaseAuthority, LeaseAuthorityBackend,
         ModelRiskEvaluationScope, PolicyApproval, PoolId, PreparedEpochAttestation,
-        PreparedEpochDescriptor, PreparedPolicyEpoch, RiskPreviewInput, RiskSizingView,
+        PreparedEpochDescriptor, PreparedPolicyEpoch, RiskPreviewInput,
+        RiskReservationSubstrateConfig, RiskReservationWorkBounds, RiskSizingView,
         RiskStateVersion, SafetyAction, SafetyEnvelopeInvariant, SafetyPolicyEnvelope,
         SafetyPolicyEnvelopeRanges, SizingDecisionPermit,
     },
@@ -584,7 +585,12 @@ fn epoch_context(
         format!("{pool_id}-lease-authority"),
     )
     .expect("lease authority dependency should be valid");
-    let store = FencedRiskStateStore::new(lease_authority);
+    let store = FencedRiskStateStore::new(RiskReservationSubstrateConfig {
+        enabled: true,
+        pool_lease_authority: lease_authority,
+        work_bounds: RiskReservationWorkBounds::new(8, 8, 8)
+            .expect("epoch test work bounds should be valid"),
+    });
     let owner = RiskStateOwner::acquire(
         store.clone(),
         PoolId::new(pool_id).expect("pool id should be valid"),

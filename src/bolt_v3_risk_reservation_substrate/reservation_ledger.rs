@@ -7,7 +7,7 @@ use crate::{
     bolt_v3_risk_reservation_substrate::{
         contracts::{
             AdmissionCandidate, AdmissionToken, PoolId, ReservationLifecycleState, RiskAssessment,
-            RiskSizingView, RiskStateVersion,
+            RiskReservationWorkBounds, RiskSizingView, RiskStateVersion,
         },
         risk_classifier::ConcentrationBucket,
         risk_kernel::{RiskKernelError, RiskKernelInput},
@@ -128,10 +128,24 @@ pub enum RiskReservationError {
         active_policy_epoch_id: String,
         candidate_policy_epoch_id: String,
     },
+    WorkBoundExceeded {
+        dimension: RiskReservationWorkDimension,
+        max_count: usize,
+        actual_count: usize,
+    },
     InvalidCandidate,
     Kernel(RiskKernelError),
     Rejected(RiskReservationRejection),
     StateMutation(RiskStateMutationError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RiskReservationWorkDimension {
+    CurrentPositionCount,
+    CurrentPositionBucketCount,
+    CurrentPositionTerminalCashFlowCount,
+    CandidateBucketCount,
+    CandidateTerminalCashFlowCount,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +260,55 @@ impl RiskReservationTransaction {
         }
         Ok(())
     }
+
+    pub fn enforce_work_bounds(
+        &self,
+        bounds: &RiskReservationWorkBounds,
+    ) -> Result<(), RiskReservationError> {
+        reject_count_over_bound(
+            RiskReservationWorkDimension::CurrentPositionCount,
+            bounds.max_current_position_count(),
+            self.kernel_input.portfolio.positions.len(),
+        )?;
+        reject_count_over_bound(
+            RiskReservationWorkDimension::CandidateBucketCount,
+            bounds.max_buckets_per_exposure(),
+            self.kernel_input.candidate.buckets.len(),
+        )?;
+        reject_count_over_bound(
+            RiskReservationWorkDimension::CandidateTerminalCashFlowCount,
+            bounds.max_terminal_cash_flow_count_per_exposure(),
+            self.kernel_input.candidate.terminal_cash_flows.len(),
+        )?;
+        for position in &self.kernel_input.portfolio.positions {
+            reject_count_over_bound(
+                RiskReservationWorkDimension::CurrentPositionBucketCount,
+                bounds.max_buckets_per_exposure(),
+                position.buckets.len(),
+            )?;
+            reject_count_over_bound(
+                RiskReservationWorkDimension::CurrentPositionTerminalCashFlowCount,
+                bounds.max_terminal_cash_flow_count_per_exposure(),
+                position.terminal_cash_flows.len(),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn reject_count_over_bound(
+    dimension: RiskReservationWorkDimension,
+    max_count: usize,
+    actual_count: usize,
+) -> Result<(), RiskReservationError> {
+    if actual_count > max_count {
+        return Err(RiskReservationError::WorkBoundExceeded {
+            dimension,
+            max_count,
+            actual_count,
+        });
+    }
+    Ok(())
 }
 
 pub fn evaluate_stateful_caps(

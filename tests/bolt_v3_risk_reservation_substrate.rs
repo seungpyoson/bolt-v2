@@ -7,13 +7,14 @@ use std::{
 use bolt_v2::bolt_v3_risk_reservation_substrate::{
     admission_service::{
         AdmissionReserveError, AdmissionService, BoundReusableSafetyState, CallerRiskDiagnostics,
-        RiskCapDimension, SafetyActionAdmissionError, SafetyActionAdmissionRequest,
-        SafetyActionMetric, SafetyActionProofDomain,
+        RiskCapDimension, RiskReservationWorkDimension, SafetyActionAdmissionError,
+        SafetyActionAdmissionRequest, SafetyActionMetric, SafetyActionProofDomain,
     },
     contracts::{
         ActiveDescriptorView, AdmissionCandidate, AdmissionToken, AdmittedOrder,
         ConfiguredLeaseAuthority, LeaseAuthorityBackend, ModelRiskEvaluationScope, PoolId,
-        PoolOwnershipLease, PreparedPolicyEpoch, RiskAssessment, RiskPreviewInput, RiskSizingView,
+        PoolOwnershipLease, PreparedPolicyEpoch, RiskAssessment, RiskPreviewInput,
+        RiskReservationSubstrateConfig, RiskReservationWorkBounds, RiskSizingView,
         RiskStateVersion, SafetyAction, SafetyPolicyEnvelope, SizingDecisionPermit,
     },
     instrument_risk_registry::{
@@ -355,7 +356,7 @@ fn sc_014_shared_store_rejects_paused_owner_after_pool_ownership_transfers() {
     )
     .expect("lease authority dependency must be explicitly configured");
     let pool_id = PoolId::new("capital-pool-a").expect("pool id should be valid");
-    let store = FencedRiskStateStore::new(lease_authority);
+    let store = FencedRiskStateStore::new(substrate_config(lease_authority, roomy_work_bounds()));
 
     let first_owner = RiskStateOwner::acquire(store.clone(), pool_id.clone(), "owner-a")
         .expect("first owner should acquire the pool");
@@ -438,7 +439,7 @@ fn shared_store_rejects_lease_from_unconfigured_authority() {
     )
     .expect("alternate dependency name should parse");
     let pool_id = PoolId::new("capital-pool-b").expect("pool id should be valid");
-    let store = FencedRiskStateStore::new(lease_authority);
+    let store = FencedRiskStateStore::new(substrate_config(lease_authority, roomy_work_bounds()));
 
     let owner = RiskStateOwner::acquire(store.clone(), pool_id.clone(), "owner-a")
         .expect("owner should acquire the pool");
@@ -637,6 +638,220 @@ fn s1_kernel_documents_bounded_io_free_complexity() {
     assert!(source.contains("Worst-case complexity"));
     assert!(source.contains("O(P * (B + T))"));
     assert!(source.contains("no I/O"));
+    assert!(!source.contains("std::fs"));
+    assert!(!source.contains("std::net"));
+}
+
+#[test]
+fn s7a_compare_and_reserve_fails_closed_when_current_positions_exceed_configured_bound() {
+    let bounds = configured_work_bounds(1, 1, 2);
+    let (service, owner, _store) = reconciled_risk_context_with_work_bounds(
+        "pool-s7a-positions",
+        "owner-s7a-positions",
+        bounds,
+    );
+    let risk_bucket = bucket("risk_class", "alpha");
+    let actual_count = bounds.max_current_position_count() + 1;
+    let view = published_view_with_positions(
+        RiskStateVersion::zero(),
+        "pool-s7a-positions",
+        "candidate-instrument",
+        risk_bucket.clone(),
+        dec(100),
+        dec(100),
+        exposures_with_count(actual_count, risk_bucket),
+    );
+    let before_version = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable before reserve")
+        .risk_state_version;
+
+    let error = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s7a-positions",
+                "idempotency-s7a-positions",
+                "pool-s7a-positions",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect_err("over-bound current position set must fail closed before reservation");
+
+    assert_eq!(
+        error,
+        AdmissionReserveError::WorkBoundExceeded {
+            dimension: RiskReservationWorkDimension::CurrentPositionCount,
+            max_count: bounds.max_current_position_count(),
+            actual_count,
+        }
+    );
+    assert_no_reservation_effect(&service, &owner, before_version);
+}
+
+#[test]
+fn s7a_compare_and_reserve_fails_closed_when_candidate_bucket_count_exceeds_configured_bound() {
+    let bounds = configured_work_bounds(1, 1, 2);
+    let (service, owner, _store) =
+        reconciled_risk_context_with_work_bounds("pool-s7a-buckets", "owner-s7a-buckets", bounds);
+    let buckets = vec![
+        bucket("risk_class_alpha", "alpha"),
+        bucket("risk_class_beta", "beta"),
+    ];
+    let actual_count = buckets.len();
+    let view = published_view_with_classification(
+        RiskStateVersion::zero(),
+        "pool-s7a-buckets",
+        "candidate-instrument",
+        buckets,
+        dec(100),
+        dec(100),
+        vec![dec(0), dec(99)],
+        Vec::new(),
+    );
+    let before_version = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable before reserve")
+        .risk_state_version;
+
+    let error = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s7a-buckets",
+                "idempotency-s7a-buckets",
+                "pool-s7a-buckets",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect_err("over-bound candidate bucket set must fail closed before reservation");
+
+    assert_eq!(
+        error,
+        AdmissionReserveError::WorkBoundExceeded {
+            dimension: RiskReservationWorkDimension::CandidateBucketCount,
+            max_count: bounds.max_buckets_per_exposure(),
+            actual_count,
+        }
+    );
+    assert_no_reservation_effect(&service, &owner, before_version);
+}
+
+#[test]
+fn s7a_compare_and_reserve_fails_closed_when_candidate_scenario_count_exceeds_configured_bound() {
+    let bounds = configured_work_bounds(1, 1, 2);
+    let (service, owner, _store) = reconciled_risk_context_with_work_bounds(
+        "pool-s7a-scenarios",
+        "owner-s7a-scenarios",
+        bounds,
+    );
+    let actual_count = bounds.max_terminal_cash_flow_count_per_exposure() + 1;
+    let view = published_view_with_classification(
+        RiskStateVersion::zero(),
+        "pool-s7a-scenarios",
+        "candidate-instrument",
+        vec![bucket("risk_class", "alpha")],
+        dec(100),
+        dec(100),
+        terminal_cash_flows_with_count(actual_count),
+        Vec::new(),
+    );
+    let before_version = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable before reserve")
+        .risk_state_version;
+
+    let error = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s7a-scenarios",
+                "idempotency-s7a-scenarios",
+                "pool-s7a-scenarios",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect_err("over-bound candidate scenario set must fail closed before reservation");
+
+    assert_eq!(
+        error,
+        AdmissionReserveError::WorkBoundExceeded {
+            dimension: RiskReservationWorkDimension::CandidateTerminalCashFlowCount,
+            max_count: bounds.max_terminal_cash_flow_count_per_exposure(),
+            actual_count,
+        }
+    );
+    assert_no_reservation_effect(&service, &owner, before_version);
+}
+
+#[test]
+fn s7a_compare_and_reserve_accepts_within_configured_work_bounds() {
+    let bounds = configured_work_bounds(1, 1, 2);
+    let (service, _owner, _store) =
+        reconciled_risk_context_with_work_bounds("pool-s7a-positive", "owner-s7a-positive", bounds);
+    let risk_bucket = bucket("risk_class", "alpha");
+    let view = published_view_with_positions(
+        RiskStateVersion::zero(),
+        "pool-s7a-positive",
+        "candidate-instrument",
+        risk_bucket.clone(),
+        dec(100),
+        dec(100),
+        exposures_with_count(bounds.max_current_position_count(), risk_bucket),
+    );
+
+    let admission = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s7a-positive",
+                "idempotency-s7a-positive",
+                "pool-s7a-positive",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect("within-bound candidate should reserve normally");
+
+    assert_eq!(admission.admission_token.risk_state_version.get(), 1);
+    assert_eq!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn s7a_compare_and_reserve_documents_bounded_critical_section_complexity() {
+    let source = include_str!("../src/bolt_v3_risk_reservation_substrate/state_owner.rs");
+
+    assert!(source.contains("Worst-case complexity"));
+    assert!(source.contains("O(P * (B + T) + B + log R)"));
+    assert!(source.contains("no external I/O"));
+    assert!(source.contains("no nested mutable lock"));
+    assert!(source.contains("pre-resolved immutable descriptor/policy/fee/classifier data"));
+    assert!(source.contains("configured maximum"));
     assert!(!source.contains("std::fs"));
     assert!(!source.contains("std::net"));
 }
@@ -1776,7 +1991,16 @@ fn reconciled_risk_context(
     pool_id: &str,
     owner_id: &str,
 ) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
-    let (service, owner, store) = unreconciled_risk_context(pool_id, owner_id);
+    reconciled_risk_context_with_work_bounds(pool_id, owner_id, roomy_work_bounds())
+}
+
+fn reconciled_risk_context_with_work_bounds(
+    pool_id: &str,
+    owner_id: &str,
+    work_bounds: RiskReservationWorkBounds,
+) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
+    let (service, owner, store) =
+        unreconciled_risk_context_with_work_bounds(pool_id, owner_id, work_bounds);
     owner
         .reconcile_before_new_risk()
         .expect("owner should reconcile before admission");
@@ -1787,12 +2011,20 @@ fn unreconciled_risk_context(
     pool_id: &str,
     owner_id: &str,
 ) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
+    unreconciled_risk_context_with_work_bounds(pool_id, owner_id, roomy_work_bounds())
+}
+
+fn unreconciled_risk_context_with_work_bounds(
+    pool_id: &str,
+    owner_id: &str,
+    work_bounds: RiskReservationWorkBounds,
+) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
     let lease_authority = ConfiguredLeaseAuthority::new(
         LeaseAuthorityBackend::DynamoDbConditionalWrite,
         format!("{pool_id}-lease-authority"),
     )
     .expect("lease authority dependency should be valid");
-    let store = FencedRiskStateStore::new(lease_authority);
+    let store = FencedRiskStateStore::new(substrate_config(lease_authority, work_bounds));
     let owner = RiskStateOwner::acquire(
         store.clone(),
         PoolId::new(pool_id).expect("pool id should be valid"),
@@ -1800,6 +2032,34 @@ fn unreconciled_risk_context(
     )
     .expect("risk state owner should acquire the pool");
     (AdmissionService::new(owner.clone()), owner, store)
+}
+
+fn substrate_config(
+    lease_authority: ConfiguredLeaseAuthority,
+    work_bounds: RiskReservationWorkBounds,
+) -> RiskReservationSubstrateConfig {
+    RiskReservationSubstrateConfig {
+        enabled: true,
+        pool_lease_authority: lease_authority,
+        work_bounds,
+    }
+}
+
+fn roomy_work_bounds() -> RiskReservationWorkBounds {
+    configured_work_bounds(8, 8, 8)
+}
+
+fn configured_work_bounds(
+    max_current_position_count: usize,
+    max_buckets_per_exposure: usize,
+    max_terminal_cash_flow_count_per_exposure: usize,
+) -> RiskReservationWorkBounds {
+    RiskReservationWorkBounds::new(
+        max_current_position_count,
+        max_buckets_per_exposure,
+        max_terminal_cash_flow_count_per_exposure,
+    )
+    .expect("configured work bounds should be valid")
 }
 
 fn unlatched_safety(risk_state_version: RiskStateVersion) -> BoundReusableSafetyState {
@@ -1887,7 +2147,40 @@ fn published_view_with_positions(
     bucket_headroom: Decimal,
     positions: Vec<RiskExposure>,
 ) -> bolt_v2::bolt_v3_risk_reservation_substrate::risk_view_publisher::PublishedRiskView {
-    let bucket_attribute = "descriptor_risk_class";
+    published_view_with_classification(
+        risk_state_version,
+        pool_id,
+        instrument_id,
+        vec![bucket],
+        global_headroom,
+        bucket_headroom,
+        vec![dec(0), dec(99)],
+        positions,
+    )
+}
+
+fn published_view_with_classification(
+    risk_state_version: RiskStateVersion,
+    pool_id: &str,
+    instrument_id: &str,
+    buckets: Vec<ConcentrationBucket>,
+    global_headroom: Decimal,
+    bucket_headroom: Decimal,
+    terminal_cash_flows: Vec<Decimal>,
+    positions: Vec<RiskExposure>,
+) -> bolt_v2::bolt_v3_risk_reservation_substrate::risk_view_publisher::PublishedRiskView {
+    let descriptor_attributes = BTreeMap::from_iter(buckets.iter().map(|bucket| {
+        (
+            format!("descriptor_{}", bucket.bucket_class()),
+            bucket.bucket_value().to_string(),
+        )
+    }));
+    let classification_dimensions = buckets.iter().map(|bucket| {
+        dimension(
+            bucket.bucket_class(),
+            &format!("descriptor_{}", bucket.bucket_class()),
+        )
+    });
     RiskViewPublisher::publish(RiskViewPublicationInput {
         sizing_view: RiskSizingView {
             risk_state_version,
@@ -1898,7 +2191,12 @@ fn published_view_with_positions(
             equity_floor_headroom: global_headroom,
             governor_headroom: global_headroom,
             global_stress_loss_headroom: global_headroom,
-            bucket_stress_loss_headrooms: BTreeMap::from([(bucket.clone(), bucket_headroom)]),
+            bucket_stress_loss_headrooms: BTreeMap::from_iter(
+                buckets
+                    .iter()
+                    .cloned()
+                    .map(|bucket| (bucket, bucket_headroom)),
+            ),
             open_order_headroom: 1,
             position_quantity_headroom: dec(100),
         },
@@ -1906,23 +2204,57 @@ fn published_view_with_positions(
             instrument_id: instrument_id.to_string(),
             descriptor_version: "descriptor-version".to_string(),
             policy_epoch_id: "policy-epoch".to_string(),
-            terminal_state_ids: vec!["terminal-loss".to_string(), "terminal-gain".to_string()],
-            terminal_cash_flows: vec![dec(0), dec(99)],
+            terminal_state_ids: terminal_state_ids_with_count(terminal_cash_flows.len()),
+            terminal_cash_flows,
         },
-        descriptor_attributes: RiskDescriptorCanonicalAttributes::new(BTreeMap::from([(
-            bucket_attribute.to_string(),
-            bucket.bucket_value().to_string(),
-        )]))
-        .expect("descriptor attributes should classify"),
-        classification_policy: classification_policy([dimension(
-            bucket.bucket_class(),
-            bucket_attribute,
-        )]),
+        descriptor_attributes: RiskDescriptorCanonicalAttributes::new(descriptor_attributes)
+            .expect("descriptor attributes should classify"),
+        classification_policy: classification_policy(classification_dimensions),
         caller_declared_buckets: Vec::new(),
         portfolio: RiskPortfolioSnapshot { positions },
         portfolio_scope_id: pool_id.to_string(),
     })
     .expect("published view should resolve active descriptor and classification")
+}
+
+fn exposures_with_count(count: usize, risk_bucket: ConcentrationBucket) -> Vec<RiskExposure> {
+    (0..count)
+        .map(|index| exposure(&format!("position-{index}"), [risk_bucket.clone()], 2, 3, 1))
+        .collect()
+}
+
+fn terminal_cash_flows_with_count(count: usize) -> Vec<Decimal> {
+    (0..count)
+        .map(|index| if index == 0 { dec(0) } else { dec(99) })
+        .collect()
+}
+
+fn terminal_state_ids_with_count(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|index| format!("terminal-state-{index}"))
+        .collect()
+}
+
+fn assert_no_reservation_effect(
+    service: &AdmissionService,
+    owner: &RiskStateOwner,
+    before_version: RiskStateVersion,
+) {
+    assert_eq!(
+        owner
+            .policy_epoch_snapshot()
+            .expect("policy state should be readable after rejected reserve")
+            .risk_state_version,
+        before_version,
+        "over-bound reserve must not advance the risk state version"
+    );
+    assert!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable after rejected reserve")
+            .is_empty(),
+        "over-bound reserve must not write a reservation record"
+    );
 }
 
 fn published_view_from_certified(

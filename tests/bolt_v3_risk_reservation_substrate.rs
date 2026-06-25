@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use bolt_v2::bolt_v3_risk_reservation_substrate::{
     contracts::{
         ActiveDescriptorView, AdmissionCandidate, AdmissionToken, AdmittedOrder,
@@ -5,11 +7,20 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         PoolOwnershipLease, PreparedPolicyEpoch, RiskAssessment, RiskPreviewInput, RiskSizingView,
         SafetyAction, SafetyPolicyEnvelope, SizingDecisionPermit,
     },
+    risk_classifier::{
+        ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationError,
+        RiskClassificationPolicy, RiskClassifier, RiskDescriptorCanonicalAttributes,
+    },
+    risk_kernel::{
+        RiskCandidate, RiskEvaluationScope, RiskExposure, RiskKernel, RiskKernelError,
+        RiskKernelInput, RiskPortfolioSnapshot,
+    },
     state_owner::{
         DurableRiskMutation, FencedRiskStateStore, RiskMutationKind, RiskStateMutationError,
         RiskStateOwner,
     },
 };
+use rust_decimal::Decimal;
 
 #[test]
 fn sc_014_shared_store_rejects_paused_owner_after_pool_ownership_transfers() {
@@ -142,4 +153,248 @@ fn s0_contracts_are_public_single_source_for_sizing_imports() {
     assert_send_sync::<SafetyAction>();
     assert_send_sync::<PreparedPolicyEpoch>();
     assert_send_sync::<SafetyPolicyEnvelope>();
+}
+
+#[test]
+fn s1_classifier_derives_complete_buckets_from_canonical_descriptor_not_caller_claims() {
+    let policy = classification_policy([
+        dimension("payoff_class", "descriptor_payoff_class"),
+        dimension("settlement_group", "descriptor_settlement_group"),
+    ]);
+    let descriptor = RiskDescriptorCanonicalAttributes::new(BTreeMap::from([
+        (
+            "descriptor_payoff_class".to_string(),
+            "class-alpha".to_string(),
+        ),
+        (
+            "descriptor_settlement_group".to_string(),
+            "group-alpha".to_string(),
+        ),
+    ]))
+    .expect("descriptor attributes are canonical and complete");
+    let caller_claims = vec![bucket("caller_only", "wrong")];
+
+    let classification = RiskClassifier::classify(&descriptor, &policy, &caller_claims)
+        .expect("complete canonical descriptor should classify");
+
+    assert_eq!(
+        classification.buckets(),
+        &BTreeSet::from([
+            bucket("payoff_class", "class-alpha"),
+            bucket("settlement_group", "group-alpha")
+        ])
+    );
+    assert_eq!(
+        classification.diagnostic_caller_declared_buckets(),
+        caller_claims.as_slice(),
+        "caller-declared buckets are retained only as diagnostics"
+    );
+}
+
+#[test]
+fn s1_classifier_missing_canonical_attribute_fails_closed() {
+    let policy = classification_policy([
+        dimension("payoff_class", "descriptor_payoff_class"),
+        dimension("settlement_group", "descriptor_settlement_group"),
+    ]);
+    let descriptor = RiskDescriptorCanonicalAttributes::new(BTreeMap::from([(
+        "descriptor_payoff_class".to_string(),
+        "class-alpha".to_string(),
+    )]))
+    .expect("one canonical attribute is intentionally absent");
+
+    let error = RiskClassifier::classify(&descriptor, &policy, &[])
+        .expect_err("missing canonical bucket attribute must fail closed");
+
+    assert_eq!(
+        error,
+        RiskClassificationError::MissingCanonicalAttribute {
+            attribute: "descriptor_settlement_group".to_string()
+        }
+    );
+}
+
+#[test]
+fn s1_kernel_keeps_equity_stress_loss_distinct_from_governor_realized_loss() {
+    let input = RiskKernelInput {
+        risk_state_version:
+            bolt_v2::bolt_v3_risk_reservation_substrate::contracts::RiskStateVersion::new(7),
+        portfolio: RiskPortfolioSnapshot {
+            positions: Vec::new(),
+        },
+        candidate: candidate(
+            "candidate-instrument",
+            [bucket("risk_class", "alpha")],
+            6,
+            10,
+            0,
+        ),
+        evaluation_scope: RiskEvaluationScope::CandidateInstrument {
+            instrument_id: "candidate-instrument".to_string(),
+        },
+        portfolio_scope_id: "portfolio-scope".to_string(),
+    };
+
+    let assessment = RiskKernel::evaluate(&input).expect("recognized instrument scope");
+
+    assert_eq!(assessment.equity_floor_stress_loss, dec(6));
+    assert_eq!(assessment.governor_realized_loss, dec(10));
+    assert_ne!(
+        assessment.equity_floor_stress_loss, assessment.governor_realized_loss,
+        "the stress-loss metric and governor realized-loss metric must not collapse into one scalar"
+    );
+}
+
+#[test]
+fn s1_kernel_returns_current_and_post_candidate_stress_for_candidate_instrument_scope() {
+    let input = scoped_stress_fixture(RiskEvaluationScope::CandidateInstrument {
+        instrument_id: "candidate-instrument".to_string(),
+    });
+
+    let assessment =
+        RiskKernel::evaluate(&input).expect("candidate instrument scope is recognized");
+
+    assert_eq!(assessment.current_scope_equity_floor_stress_loss, dec(5));
+    assert_eq!(
+        assessment.post_candidate_scope_equity_floor_stress_loss,
+        dec(8)
+    );
+}
+
+#[test]
+fn s1_kernel_returns_current_and_post_candidate_stress_for_bucket_scope() {
+    let input = scoped_stress_fixture(RiskEvaluationScope::ConcentrationBucket(bucket(
+        "risk_class",
+        "alpha",
+    )));
+
+    let assessment = RiskKernel::evaluate(&input).expect("candidate bucket scope is recognized");
+
+    assert_eq!(assessment.current_scope_equity_floor_stress_loss, dec(8));
+    assert_eq!(
+        assessment.post_candidate_scope_equity_floor_stress_loss,
+        dec(11)
+    );
+}
+
+#[test]
+fn s1_kernel_returns_current_and_post_candidate_stress_for_portfolio_scope() {
+    let input = scoped_stress_fixture(RiskEvaluationScope::Portfolio {
+        scope_id: "portfolio-scope".to_string(),
+    });
+
+    let assessment = RiskKernel::evaluate(&input).expect("portfolio scope is recognized");
+
+    assert_eq!(assessment.current_scope_equity_floor_stress_loss, dec(19));
+    assert_eq!(
+        assessment.post_candidate_scope_equity_floor_stress_loss,
+        dec(22)
+    );
+}
+
+#[test]
+fn s1_kernel_unrecognized_scope_fails_closed() {
+    let input = scoped_stress_fixture(RiskEvaluationScope::ConcentrationBucket(bucket(
+        "risk_class",
+        "unknown",
+    )));
+
+    let error = RiskKernel::evaluate(&input)
+        .expect_err("unrecognized caller-declared scope must fail closed");
+
+    assert_eq!(error, RiskKernelError::UnrecognizedEvaluationScope);
+}
+
+#[test]
+fn s1_kernel_documents_bounded_io_free_complexity() {
+    let source = include_str!("../src/bolt_v3_risk_reservation_substrate/risk_kernel.rs");
+
+    assert!(source.contains("Worst-case complexity"));
+    assert!(source.contains("O(P * (B + T))"));
+    assert!(source.contains("no I/O"));
+    assert!(!source.contains("std::fs"));
+    assert!(!source.contains("std::net"));
+}
+
+fn scoped_stress_fixture(evaluation_scope: RiskEvaluationScope) -> RiskKernelInput {
+    RiskKernelInput {
+        risk_state_version:
+            bolt_v2::bolt_v3_risk_reservation_substrate::contracts::RiskStateVersion::new(9),
+        portfolio: RiskPortfolioSnapshot {
+            positions: vec![
+                exposure(
+                    "candidate-instrument",
+                    [bucket("risk_class", "alpha")],
+                    7,
+                    8,
+                    2,
+                ),
+                exposure("other-alpha", [bucket("risk_class", "alpha")], 4, 5, 1),
+                exposure("other-beta", [bucket("risk_class", "beta")], 13, 15, 2),
+            ],
+        },
+        candidate: candidate(
+            "candidate-instrument",
+            [bucket("risk_class", "alpha")],
+            4,
+            6,
+            1,
+        ),
+        evaluation_scope,
+        portfolio_scope_id: "portfolio-scope".to_string(),
+    }
+}
+
+fn classification_policy(
+    dimensions: impl IntoIterator<Item = ConcentrationBucketDimension>,
+) -> RiskClassificationPolicy {
+    RiskClassificationPolicy::new(dimensions.into_iter().collect())
+        .expect("classification policy should be valid")
+}
+
+fn dimension(bucket_class: &str, canonical_attribute: &str) -> ConcentrationBucketDimension {
+    ConcentrationBucketDimension::new(bucket_class, canonical_attribute)
+        .expect("bucket dimension should be valid")
+}
+
+fn bucket(bucket_class: &str, bucket_value: &str) -> ConcentrationBucket {
+    ConcentrationBucket::new(bucket_class, bucket_value).expect("bucket should be valid")
+}
+
+fn candidate(
+    instrument_id: &str,
+    buckets: impl IntoIterator<Item = ConcentrationBucket>,
+    conservative_liquidation_value: i64,
+    governor_cost_basis: i64,
+    worst_terminal_cash_flow: i64,
+) -> RiskCandidate {
+    RiskCandidate {
+        instrument_id: instrument_id.to_string(),
+        buckets: BTreeSet::from_iter(buckets),
+        quantity: dec(1),
+        conservative_liquidation_value: dec(conservative_liquidation_value),
+        governor_cost_basis: dec(governor_cost_basis),
+        terminal_cash_flows: vec![dec(worst_terminal_cash_flow), dec(99)],
+    }
+}
+
+fn exposure(
+    instrument_id: &str,
+    buckets: impl IntoIterator<Item = ConcentrationBucket>,
+    conservative_liquidation_value: i64,
+    governor_cost_basis: i64,
+    worst_terminal_cash_flow: i64,
+) -> RiskExposure {
+    RiskExposure {
+        instrument_id: instrument_id.to_string(),
+        buckets: BTreeSet::from_iter(buckets),
+        quantity: dec(1),
+        conservative_liquidation_value: dec(conservative_liquidation_value),
+        governor_cost_basis: dec(governor_cost_basis),
+        terminal_cash_flows: vec![dec(worst_terminal_cash_flow), dec(99)],
+    }
+}
+
+fn dec(value: i64) -> Decimal {
+    Decimal::new(value, 0)
 }

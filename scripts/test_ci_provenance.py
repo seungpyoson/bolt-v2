@@ -1012,7 +1012,7 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("pull_request", "edited", "false", "false", "", "refs/pull/1/merge", "noop", "ready_pr_edited_no_base"),
             ("pull_request", "edited", "false", "true", "", "refs/pull/1/merge", "full", "ready_pr"),
             ("pull_request", "reopened", "false", "false", "", "refs/pull/1/merge", "noop", "ready_pr_reopened"),
-            ("pull_request", "ready_for_review", "true", "false", "", "refs/pull/1/merge", "full", "ready_for_review"),
+            ("pull_request", "ready_for_review", "false", "false", "", "refs/pull/1/merge", "full", "ready_for_review"),
             ("workflow_dispatch", "", "true", "false", "true", "refs/heads/codex/branch", "full", "workflow_dispatch_full_ci"),
             ("workflow_dispatch", "", "true", "false", "false", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
             ("workflow_dispatch", "", "true", "false", "", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
@@ -1137,6 +1137,46 @@ def assert_ci_policy_outputs_matrix() -> None:
             raise AssertionError(f"force_full_ci must publish full event class, got {output}")
 
 
+def assert_ready_noop_rows_emit_full_event_class_when_configured_full() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace('ready_pr_edited_no_base = "noop"', 'ready_pr_edited_no_base = "full"').replace(
+                'ready_pr_reopened = "noop"', 'ready_pr_reopened = "full"'
+            ),
+        )
+        for action, reason in (
+            ("edited", "ready_pr_edited_no_base"),
+            ("reopened", "ready_pr_reopened"),
+        ):
+            code, stdout, stderr = run_cli(
+                [
+                    "ci-policy",
+                    "--config",
+                    str(config),
+                    "--event-name",
+                    "pull_request",
+                    "--event-action",
+                    action,
+                    "--pull-request-draft",
+                    "false",
+                    "--pull-request-base-changed",
+                    "false",
+                    "--ref",
+                    "refs/pull/1/merge",
+                ]
+            )
+            if code != 0:
+                raise AssertionError(f"ci-policy failed for configured full {reason}: {stderr}")
+            output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+            if output.get("reason") != reason:
+                raise AssertionError(f"ci-policy must expose reason {reason}: {output}")
+            if output.get("ci_policy_path") != "full":
+                raise AssertionError(f"ci-policy must honor configured full for {reason}: {output}")
+            if output.get("expected_event_class") != "full":
+                raise AssertionError(f"ci-policy must expose full event class for configured full {reason}: {output}")
+
+
 def legacy_workflow_gate_names(
     *,
     event_name: str,
@@ -1186,6 +1226,8 @@ def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() ->
     ):
         for draft in (False, True):
             for base_changed in (False, True):
+                if action == "ready_for_review" and draft:
+                    continue
                 cases.append(("pull_request", action, draft, base_changed, "", "refs/pull/1/merge"))
 
     saw_intentional_dispatch_flip = False
@@ -1934,6 +1976,600 @@ def assert_test_archive_and_build_rules() -> None:
         )
 
 
+def ci_gate_jobs(**overrides: str) -> dict[str, str]:
+    jobs = {
+        "ci-policy": "success",
+        "detector": "success",
+        "same-sha-main-evidence": "skipped",
+        "deny": "success",
+        "clippy": "success",
+        "check-aarch64": "success",
+        "source-fence": "success",
+        "nextest-fingerprint": "success",
+        "test-archive": "success",
+        "nextest-fingerprint-reuse": "skipped",
+        "test": "success",
+        "build": "success",
+        "ci-provenance-emit": "success",
+    }
+    jobs.update(overrides)
+    return jobs
+
+
+def bvs_gate_jobs(**overrides: str) -> dict[str, str]:
+    jobs = {
+        "ci-policy": "success",
+        "detect": "success",
+        "fmt": "success",
+        "clippy": "success",
+        "test-archive": "success",
+        "test": "success",
+    }
+    jobs.update(overrides)
+    return jobs
+
+
+def job_args(jobs: dict[str, str]) -> list[str]:
+    args: list[str] = []
+    for job, result in jobs.items():
+        args.extend(["--job", f"{job}={result}"])
+    return args
+
+
+def assert_ci_gate_job_constants_match_config() -> None:
+    module = load_script()
+    config = module.load_config(module.DEFAULT_CONFIG)
+    required_without_detector = set(config.required_jobs) - {"detector"}
+    gate_required = set(module.CI_FULL_REQUIRED_JOBS) | set(module.CI_ARCHIVE_REQUIRED_JOBS)
+    if gate_required != required_without_detector:
+        raise AssertionError(
+            f"CI gate required job constants drifted from config: "
+            f"constants={sorted(gate_required)} config={sorted(required_without_detector)}"
+        )
+    expected_heavy = required_without_detector | set(config.conditional_jobs) | {"nextest-fingerprint-reuse"}
+    if set(module.CI_HEAVY_JOBS) != expected_heavy:
+        raise AssertionError(
+            f"CI heavy job constants drifted from config topology: "
+            f"constants={sorted(module.CI_HEAVY_JOBS)} config={sorted(expected_heavy)}"
+        )
+    overlap = set(module.CI_FULL_REQUIRED_JOBS) & set(module.CI_ARCHIVE_REQUIRED_JOBS)
+    if overlap:
+        raise AssertionError(f"CI full and archive proof constants overlap: {sorted(overlap)}")
+
+
+def assert_backtester_gate_job_constants_match_config() -> None:
+    module = load_script()
+    config = module.tomllib.loads(module.DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    workflow_jobs = set(config["workflows"]["backtester_ci"])
+    non_proof_jobs = {"ci-policy", "detect", "issue_789", "gate"}
+    expected_proof_jobs = workflow_jobs - non_proof_jobs
+    required_proof_jobs = {job for job, _label in module.BACKTESTER_REQUIRED_PROOF_JOBS}
+    if required_proof_jobs != expected_proof_jobs:
+        raise AssertionError(
+            f"backtester required proof constants drifted from workflow topology: "
+            f"constants={sorted(required_proof_jobs)} config={sorted(expected_proof_jobs)}"
+        )
+    skipped_proof_jobs = set(module.BACKTESTER_SKIPPED_PROOF_JOBS)
+    expected_skipped_jobs = expected_proof_jobs - {"fmt"}
+    if skipped_proof_jobs != expected_skipped_jobs:
+        raise AssertionError(
+            f"backtester skipped proof constants drifted from workflow topology: "
+            f"constants={sorted(skipped_proof_jobs)} config={sorted(expected_skipped_jobs)}"
+        )
+
+
+def assert_ready_for_review_requires_non_draft() -> None:
+    assert_fails(
+        "ready_for_review cannot be on a draft PR",
+        [
+            "ci-policy",
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "ready_for_review",
+            "--pull-request-draft",
+            "true",
+            "--ref",
+            "refs/pull/1/merge",
+        ],
+    )
+
+
+def assert_gate_verdict_rejects_inconsistent_deferred_flag() -> None:
+    module = load_script()
+    assert_raises(
+        "full_ci_deferred=true is only valid when policy_path is 'defer'",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=True,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=ci_gate_jobs(),
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "full_ci_deferred=true is only valid when policy_path is 'defer'",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=True,
+            job_results=bvs_gate_jobs(),
+            bvs_changed=True,
+        ),
+    )
+
+
+def assert_gate_verdict_rejects_event_class_mismatches() -> None:
+    module = load_script()
+    skipped_heavy = {job: "skipped" for job in module.CI_HEAVY_JOBS}
+    skipped_ci_jobs = ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "skipped"})
+    docs_jobs = ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "success"})
+    for policy_path, expected_fragment, full_ci_deferred, jobs in (
+        (
+            "iteration",
+            "iteration CI policy outside resolver-permitted event class 'full'",
+            False,
+            skipped_ci_jobs,
+        ),
+        (
+            "defer",
+            "deferred CI policy outside resolver-permitted event class 'full'",
+            True,
+            skipped_ci_jobs,
+        ),
+        (
+            "noop",
+            "noop CI policy outside resolver-permitted event class 'full'",
+            False,
+            skipped_ci_jobs,
+        ),
+        (
+            "docs",
+            "docs CI policy outside resolver-permitted event class 'full'",
+            False,
+            docs_jobs,
+        ),
+    ):
+        assert_raises(
+            expected_fragment,
+            lambda policy_path=policy_path, full_ci_deferred=full_ci_deferred, jobs=jobs: module.evaluate_ci_gate_verdict(
+                policy_path=policy_path,
+                expected_event_class="full",
+                full_ci_deferred=full_ci_deferred,
+                ignore_emit_failure=False,
+                reuse_found=False,
+                job_results=jobs,
+                build_required=False,
+            ),
+        )
+    assert_raises(
+        "full CI policy outside resolver-permitted event class 'iteration'",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="iteration",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=ci_gate_jobs(),
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "tag reuse CI policy outside resolver-permitted event class 'full'",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="tag_reuse",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=ci_gate_jobs(),
+            build_required=False,
+        ),
+    )
+    skipped_bvs_jobs = bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"})
+    for policy_path, expected_fragment, full_ci_deferred in (
+        (
+            "iteration",
+            "backtester iteration CI policy outside resolver-permitted event class 'full'",
+            False,
+        ),
+        (
+            "noop",
+            "backtester noop CI policy outside resolver-permitted event class 'full'",
+            False,
+        ),
+        (
+            "defer",
+            "backtester deferred CI policy outside resolver-permitted event class 'full'",
+            True,
+        ),
+    ):
+        assert_raises(
+            expected_fragment,
+            lambda policy_path=policy_path, full_ci_deferred=full_ci_deferred: module.evaluate_backtester_gate_verdict(
+                policy_path=policy_path,
+                expected_event_class="full",
+                full_ci_deferred=full_ci_deferred,
+                job_results=skipped_bvs_jobs,
+                bvs_changed=True,
+            ),
+        )
+    assert_raises(
+        "backtester full CI policy outside resolver-permitted event class 'iteration'",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="full",
+            expected_event_class="iteration",
+            full_ci_deferred=False,
+            job_results=bvs_gate_jobs(),
+            bvs_changed=True,
+        ),
+    )
+    assert_raises(
+        "unknown backtester CI policy path 'tag_reuse'",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="tag_reuse",
+            expected_event_class="tag_reuse",
+            full_ci_deferred=False,
+            job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"}),
+            bvs_changed=False,
+        ),
+    )
+
+
+def assert_ci_gate_unrolled_paths_fail_closed() -> None:
+    module = load_script()
+    skipped_heavy = {job: "skipped" for job in module.CI_HEAVY_JOBS}
+    deferred_jobs = ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "skipped"})
+    docs_jobs = ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "success"})
+    assert_raises(
+        "deferred CI policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="defer",
+            expected_event_class="defer",
+            full_ci_deferred=True,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=deferred_jobs,
+            build_required=False,
+        ),
+    )
+    assert_raises(
+        "no-code CI policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="noop",
+            expected_event_class="noop",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=deferred_jobs,
+            build_required=False,
+        ),
+    )
+    assert_raises(
+        "docs CI policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="docs",
+            expected_event_class="docs",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=docs_jobs,
+            build_required=False,
+        ),
+    )
+
+
+def assert_ci_gate_rejects_emit_failure_override() -> None:
+    module = load_script()
+    assert_raises(
+        "ignore_emit_failure=true requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=True,
+            reuse_found=False,
+            job_results=ci_gate_jobs(**{"ci-provenance-emit": "failure"}),
+            build_required=True,
+        ),
+    )
+
+
+def assert_gate_cli_modes_cover_dispatch_surface() -> None:
+    code, stdout, stderr = run_cli(
+        [
+            "check-ci-gate",
+            "--policy-path",
+            "full",
+            "--expected-event-class",
+            "full",
+            "--build-required",
+            "true",
+            *job_args(ci_gate_jobs()),
+        ]
+    )
+    if code != 0 or "full CI proof passed" not in stdout:
+        raise AssertionError(f"check-ci-gate CLI full proof failed: code={code} stdout={stdout!r} stderr={stderr!r}")
+
+    code, stdout, stderr = run_cli(
+        [
+            "check-backtester-gate",
+            "--policy-path",
+            "full",
+            "--expected-event-class",
+            "full",
+            "--bvs-changed",
+            "true",
+            *job_args(bvs_gate_jobs()),
+        ]
+    )
+    if code != 0 or "backtester full proof passed" not in stdout:
+        raise AssertionError(
+            f"check-backtester-gate CLI full proof failed: code={code} stdout={stdout!r} stderr={stderr!r}"
+        )
+
+    assert_fails(
+        "duplicate --job result for 'test'",
+        [
+            "check-ci-gate",
+            "--policy-path",
+            "full",
+            "--expected-event-class",
+            "full",
+            "--job",
+            "test=success",
+            "--job",
+            "test=failure",
+        ],
+    )
+    assert_fails(
+        "docs-only policy requires the merge-readiness workflow rollout",
+        [
+            "ci-policy",
+            "--event-name",
+            "pull_request",
+            "--event-action",
+            "opened",
+            "--pull-request-draft",
+            "false",
+            "--docs-only",
+            "true",
+            "--ref",
+            "refs/pull/1/merge",
+        ],
+    )
+    assert_fails(
+        "gate carry-forward requires the merge-readiness workflow rollout",
+        [
+            "resolve-gate-carry-forward",
+            "--sha",
+            SHA,
+            "--gate-name",
+            "gate",
+            "--workflow-path",
+            ".github/workflows/ci.yml",
+        ],
+    )
+
+
+def assert_duplicate_job_results_fail_closed() -> None:
+    module = load_script()
+    assert_raises(
+        "duplicate --job result for 'test'",
+        lambda: module.parse_job_result_values(["test=success", "test=failure"]),
+    )
+
+
+def assert_missing_skipped_lane_reports_missing() -> None:
+    module = load_script()
+    assert_raises(
+        "missing-lane missing during test path; expected skipped",
+        lambda: module.require_jobs_skipped({}, ("missing-lane",), "test path"),
+    )
+
+
+def assert_ci_gate_positive_reuse_tag_iteration_and_optional_build_paths() -> None:
+    module = load_script()
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=True,
+        job_results=ci_gate_jobs(
+            **{
+                "nextest-fingerprint": "success",
+                "test-archive": "skipped",
+                "nextest-fingerprint-reuse": "success",
+                "ci-provenance-emit": "skipped",
+            }
+        ),
+        build_required=True,
+    )
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        job_results=ci_gate_jobs(build="skipped"),
+        build_required=False,
+    )
+    tag_reuse_jobs = ci_gate_jobs(
+        **{
+            "same-sha-main-evidence": "success",
+            "deny": "skipped",
+            "clippy": "skipped",
+            "source-fence": "skipped",
+            "nextest-fingerprint": "skipped",
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "skipped",
+            "test": "skipped",
+            "build": "skipped",
+            "ci-provenance-emit": "skipped",
+        }
+    )
+    module.evaluate_ci_gate_verdict(
+        policy_path="tag_reuse",
+        expected_event_class="tag_reuse",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        job_results=tag_reuse_jobs,
+        build_required=False,
+    )
+    skipped_heavy = {job: "skipped" for job in module.CI_HEAVY_JOBS}
+    module.evaluate_ci_gate_verdict(
+        policy_path="iteration",
+        expected_event_class="iteration",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        job_results=ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "skipped"}),
+        build_required=False,
+    )
+
+
+def assert_ci_gate_reuse_requires_fingerprint_and_skipped_archive() -> None:
+    module = load_script()
+    reuse_jobs = ci_gate_jobs(
+        **{
+            "nextest-fingerprint": "success",
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "success",
+            "ci-provenance-emit": "skipped",
+        }
+    )
+    assert_raises(
+        "nextest fingerprint did not succeed before reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            job_results={**reuse_jobs, "nextest-fingerprint": "failure"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "test-archive unexpectedly ran during nextest fingerprint reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            job_results={**reuse_jobs, "test-archive": "failure"},
+            build_required=True,
+        ),
+    )
+
+
+def assert_ci_gate_full_requires_archive_proof_when_not_reused() -> None:
+    module = load_script()
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        job_results=ci_gate_jobs(),
+        build_required=True,
+    )
+    assert_raises(
+        "nextest-fingerprint did not succeed",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=ci_gate_jobs(**{"nextest-fingerprint": "skipped"}),
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "test-archive did not succeed",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            job_results=ci_gate_jobs(**{"test-archive": "skipped"}),
+            build_required=True,
+        ),
+    )
+
+
+def assert_backtester_gate_full_rejects_required_job_failures() -> None:
+    module = load_script()
+    for job, label in module.BACKTESTER_REQUIRED_PROOF_JOBS:
+        assert_raises(
+            f"{label} did not succeed",
+            lambda job=job: module.evaluate_backtester_gate_verdict(
+                policy_path="full",
+                expected_event_class="full",
+                full_ci_deferred=False,
+                job_results=bvs_gate_jobs(**{job: "failure"}),
+                bvs_changed=True,
+            ),
+        )
+
+
+def assert_backtester_gate_excludes_post_gate_issue_789_diagnostic() -> None:
+    module = load_script()
+    module.evaluate_backtester_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        job_results=bvs_gate_jobs(issue_789="failure"),
+        bvs_changed=True,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="iteration",
+        expected_event_class="iteration",
+        full_ci_deferred=False,
+        job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped", "issue_789": "failure"}),
+        bvs_changed=True,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        job_results=bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped", "issue_789": "failure"}),
+        bvs_changed=False,
+    )
+
+
+def assert_backtester_gate_unrolled_paths_fail_closed_with_skipped_proof_jobs() -> None:
+    module = load_script()
+    skipped_heavy_jobs = bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"})
+    assert_raises(
+        "backtester no-code policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="noop",
+            expected_event_class="noop",
+            full_ci_deferred=False,
+            job_results=skipped_heavy_jobs,
+            bvs_changed=True,
+        ),
+    )
+    assert_raises(
+        "backtester deferred policy gate proof requires the merge-readiness workflow rollout",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="defer",
+            expected_event_class="defer",
+            full_ci_deferred=True,
+            job_results=skipped_heavy_jobs,
+            bvs_changed=True,
+        ),
+    )
+
+
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
@@ -1954,6 +2590,7 @@ def main() -> int:
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
+    assert_ready_noop_rows_emit_full_event_class_when_configured_full()
     assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
@@ -1985,6 +2622,22 @@ def main() -> int:
     assert_job_evidence_success_passes()
     assert_nextest_archive_job_failures_rejected()
     assert_test_archive_and_build_rules()
+    assert_ci_gate_job_constants_match_config()
+    assert_backtester_gate_job_constants_match_config()
+    assert_ready_for_review_requires_non_draft()
+    assert_gate_verdict_rejects_inconsistent_deferred_flag()
+    assert_gate_verdict_rejects_event_class_mismatches()
+    assert_ci_gate_unrolled_paths_fail_closed()
+    assert_ci_gate_rejects_emit_failure_override()
+    assert_gate_cli_modes_cover_dispatch_surface()
+    assert_duplicate_job_results_fail_closed()
+    assert_missing_skipped_lane_reports_missing()
+    assert_ci_gate_positive_reuse_tag_iteration_and_optional_build_paths()
+    assert_ci_gate_reuse_requires_fingerprint_and_skipped_archive()
+    assert_ci_gate_full_requires_archive_proof_when_not_reused()
+    assert_backtester_gate_full_rejects_required_job_failures()
+    assert_backtester_gate_excludes_post_gate_issue_789_diagnostic()
+    assert_backtester_gate_unrolled_paths_fail_closed_with_skipped_proof_jobs()
     print("OK: CI provenance self-tests passed.")
     return 0
 

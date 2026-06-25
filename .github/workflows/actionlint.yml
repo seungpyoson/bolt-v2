@@ -36,13 +36,18 @@ on:
 concurrency:
   group: >-
     actionlint-${{ github.event_name == 'pull_request'
+      && startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+      && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+      || github.event_name == 'pull_request'
       && format('pr-{0}', github.event.number)
       || github.event_name == 'merge_group'
       && format('mq-{0}', github.ref)
       || format('{0}-{1}', github.ref_name, github.sha) }}
-  # cancel-in-progress is true only for PR runs; merge_group queue validations
-  # must never be cancelled, so they fall through to the default (false).
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # cancel-in-progress is true only for ordinary PR runs; merge_group and Mergify
+  # proof PR validations must never be cancelled.
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}
 
 permissions:
   contents: read

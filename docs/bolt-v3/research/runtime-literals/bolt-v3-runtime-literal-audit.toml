@@ -14519,7 +14519,7 @@ kind = "string"
 literal = '''"bolt_reservation_ledger"'''
 context = '''"bolt_reservation_ledger".to_string(),'''
 classification = "capital_admission_evidence_source_label"
-reason = "Evidence label for the Bolt-owned reservation ledger snapshot composed into position-sizer state."
+reason = "Evidence label for the Bolt-owned reservation ledger snapshot composed into capital-admission state."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

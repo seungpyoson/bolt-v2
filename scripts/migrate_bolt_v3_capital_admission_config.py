@@ -20,8 +20,8 @@ ROOT_SCHEMA_RE = re.compile(rb'^(\s*schema_version\s*=\s*)1(\s*(?:#.*)?)$')
 POOL_CONTEXTS = {
     ("risk", "capital_pools"),
 }
-POOL_SIZING_HEADER_PREFIX = ("risk", "capital_pools", "sizing_policy")
-POOL_POLICY_KEY_RE = re.compile(rb"^(\s*)sizing_policy(?=\s*(?:[.=]))")
+OLD_POOL_POLICY_HEADER_PREFIX = ("risk", "capital_pools", "sizing_policy")
+OLD_POOL_POLICY_KEY_RE = re.compile(rb"^(\s*)sizing_policy(?=\s*(?:[.=]))")
 
 
 class MigrationError(RuntimeError):
@@ -90,7 +90,7 @@ def rewritten_header_line(line_body: bytes) -> tuple[bytes, tuple[str, ...]] | N
     if parsed is None:
         return None
     segments, leading, stripped = parsed
-    if segments[:3] != POOL_SIZING_HEADER_PREFIX:
+    if segments[:3] != OLD_POOL_POLICY_HEADER_PREFIX:
         return line_body, segments
 
     if stripped.startswith(b"[["):
@@ -146,7 +146,9 @@ def migrate_toml_bytes(payload: bytes) -> bytes:
         elif before_first_table:
             line_body = ROOT_SCHEMA_RE.sub(rb"\g<1>2\2", line_body, count=1)
         elif current_context in POOL_CONTEXTS:
-            line_body = POOL_POLICY_KEY_RE.sub(rb"\1capital_admission_policy", line_body, count=1)
+            line_body = OLD_POOL_POLICY_KEY_RE.sub(
+                rb"\1capital_admission_policy", line_body, count=1
+            )
 
         migrated.append(line_body + line_ending)
     return b"".join(migrated)

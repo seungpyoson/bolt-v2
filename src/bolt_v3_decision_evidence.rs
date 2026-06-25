@@ -3179,7 +3179,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_schema_13_position_sizer_audit_skips_but_reservations_fail_closed() {
+    fn legacy_schema_13_rebuild_audit_skips_but_reservations_fail_closed() {
         let legacy_audit = DecisionEvidenceEnvelopeHeader {
             schema_version: 13,
             recorded_at_utc_ns: 1,
@@ -3189,7 +3189,7 @@ mod tests {
         };
         assert!(
             decision_evidence_header_is_below_current_schema_non_recovery_record(&legacy_audit),
-            "legacy schema-13 audit-only position_sizer_rebuild records must remain skippable"
+            "legacy schema-13 audit-only rebuild records must remain skippable"
         );
 
         let legacy_reservation = DecisionEvidenceEnvelopeHeader {

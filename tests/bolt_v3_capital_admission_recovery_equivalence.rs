@@ -39,11 +39,7 @@ fn migrated_v13_evidence_recovers_capital_admission_reservations_equivalently() 
     assert_eq!(actual, expected);
 
     assert_unmigrated_v13_reservation_records_fail_closed(temp.path(), &original_lines);
-    assert_legacy_v13_position_sizer_audit_record_skips(
-        temp.path(),
-        &original_lines,
-        &migrated_path,
-    );
+    assert_legacy_v13_rebuild_audit_record_skips(temp.path(), &original_lines, &migrated_path);
 }
 
 fn repo_root() -> PathBuf {
@@ -179,7 +175,7 @@ fn assert_unmigrated_v13_reservation_records_fail_closed(
     );
 }
 
-fn assert_legacy_v13_position_sizer_audit_record_skips(
+fn assert_legacy_v13_rebuild_audit_record_skips(
     temp_root: &Path,
     original_lines: &[String],
     migrated_path: &Path,
@@ -200,7 +196,7 @@ fn assert_legacy_v13_position_sizer_audit_record_skips(
     .expect("legacy audit skip fixture writes");
 
     let recovery = read_submit_reservation_recovery_evidence(&path, 100_000)
-        .expect("legacy v13 position_sizer_rebuild audit line must skip");
+        .expect("legacy v13 rebuild audit line must skip");
     assert!(
         recovery
             .metadata_by_client_order_id

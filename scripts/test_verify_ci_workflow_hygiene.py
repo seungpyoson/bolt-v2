@@ -242,6 +242,9 @@ on:
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
+        && startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+        || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
@@ -262,6 +265,7 @@ concurrency:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -2146,9 +2150,13 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # actionlint cancel-in-progress must never cancel merge_group queue runs.
     actionlint_cancel_merge_group = replace_once(
         actionlint_workflow,
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request'"
-        " || github.event_name == 'merge_group' }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "      || github.event_name == 'merge_group' }}",
     )
     if actionlint_cancel_merge_group == actionlint_workflow:
         raise AssertionError("actionlint cancel-in-progress fixture fragment not found")
@@ -2168,7 +2176,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # fail-open class: GPT/GLM.) The positive allowlist must reject it.
     actionlint_cancel_true = replace_once(
         actionlint_workflow,
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}",
         "  cancel-in-progress: true",
     )
     if actionlint_cancel_true == actionlint_workflow:
@@ -2188,7 +2198,9 @@ def assert_merge_group_support_gaps_are_reported() -> None:
     # no event literally — also fail-open under a substring deny-list.
     actionlint_cancel_negation = replace_once(
         actionlint_workflow,
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}",
         "  cancel-in-progress: ${{ github.event_name != 'push' }}",
     )
     if actionlint_cancel_negation == actionlint_workflow:
@@ -2465,16 +2477,26 @@ def assert_merge_group_support_gaps_are_reported() -> None:
         actionlint_workflow,
         "  group: >-\n"
         "    actionlint-${{ github.event_name == 'pull_request'\n"
+        "      && startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "      && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)\n"
+        "      || github.event_name == 'pull_request'\n"
         "      && format('pr-{0}', github.event.number)\n"
         "      || github.event_name == 'merge_group'\n"
         "      && format('mq-{0}', github.ref)\n"
         "      || format('{0}-{1}', github.ref_name, github.sha) }}\n"
-        "  # cancel-in-progress is true only for PR runs; merge_group queue validations\n"
-        "  # must never be cancelled, so they fall through to the default (false).\n"
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n"
+        "  # cancel-in-progress is true only for ordinary PR runs; merge_group and Mergify\n"
+        "  # proof PR validations must never be cancelled.\n"
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}",
+        "  cancel-in-progress: >-\n"
+        "    ${{ github.event_name == 'pull_request'\n"
+        "      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}\n"
         "  group: >-\n"
         "    actionlint-${{ github.event_name == 'pull_request'\n"
+        "      && startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n"
+        "      && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)\n"
+        "      || github.event_name == 'pull_request'\n"
         "      && format('pr-{0}', github.event.number)\n"
         "      || github.event_name == 'merge_group'\n"
         "      && format('mq-{0}', github.ref)\n"
@@ -2931,6 +2953,7 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
     workflow = repo_workflow_text(".github/workflows/ci.yml")
     cancel_in_progress_for_pr_and_dispatch = """  cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -2938,6 +2961,7 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
 """
     cancel_in_progress_for_draft_pr_and_dispatch = """  cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         || github.event_name == 'workflow_dispatch' }}
@@ -3008,6 +3032,55 @@ def assert_ci_concurrency_split_gaps_are_reported() -> None:
         errors = verifier.verify_workflow(mutated_workflow)
         if not any(fragment in error for error in errors):
             raise AssertionError(f"expected verifier error containing {fragment!r}, got: {errors}")
+
+
+def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
+    verifier = load_verifier()
+    cases = [
+        (
+            ".github/workflows/ci.yml",
+            "format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n",
+            "concurrency group must isolate Mergify proof PR runs",
+        ),
+        (
+            ".github/workflows/backtester-ci.yml",
+            "format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n",
+            "concurrency group must isolate Mergify proof PR runs",
+        ),
+        (
+            ".github/workflows/actionlint.yml",
+            "format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}\n",
+            "concurrency group must isolate Mergify proof PR runs",
+        ),
+    ]
+    for workflow_name, group_fragment, cancel_guard, expected_error in cases:
+        workflow = repo_workflow_text(workflow_name)
+        if group_fragment not in workflow:
+            raise AssertionError(f"{workflow_name} must isolate Mergify proof PR runs")
+        missing_group = replace_once(workflow, group_fragment, "format('pr-{0}-deferred', github.event.number)")
+        group_errors = (
+            verifier.verify_workflow(missing_group)
+            if workflow_name.endswith("/ci.yml")
+            else verifier.verify_repo_automation_texts({workflow_name: missing_group})
+        )
+        if not any(expected_error in error for error in group_errors):
+            raise AssertionError(f"{workflow_name} must reject missing Mergify proof PR group, got: {group_errors}")
+
+        missing_cancel_guard = replace_once(
+            workflow,
+            cancel_guard,
+            "",
+        )
+        cancel_errors = (
+            verifier.verify_workflow(missing_cancel_guard)
+            if workflow_name.endswith("/ci.yml")
+            else verifier.verify_repo_automation_texts({workflow_name: missing_cancel_guard})
+        )
+        if not any("cancel-in-progress must not cancel Mergify proof PR validations" in error for error in cancel_errors):
+            raise AssertionError(f"{workflow_name} must reject cancelling Mergify proof PRs, got: {cancel_errors}")
 
 
 def assert_dispatch_cancel_watchdog_gaps_are_reported() -> None:
@@ -3862,6 +3935,9 @@ def without_pr_concurrency(workflow: str) -> str:
         """concurrency:
   group: >-
     ${{ github.event_name == 'pull_request'
+        && startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+        || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
@@ -3882,6 +3958,7 @@ def without_pr_concurrency(workflow: str) -> str:
         || format('{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -7633,6 +7710,7 @@ def main() -> int:
             BASE_WORKFLOW,
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -7646,6 +7724,7 @@ def main() -> int:
             BASE_WORKFLOW,
             """cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -7663,6 +7742,9 @@ def main() -> int:
             BASE_WORKFLOW,
             """  group: >-
     ${{ github.event_name == 'pull_request'
+        && startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+        && format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+        || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('pr-{0}-deferred', github.event.number)
@@ -9776,6 +9858,7 @@ def main() -> int:
     assert_ci_policy_heavy_lane_gaps_are_reported()
     assert_gate_policy_truth_table_gaps_are_reported()
     assert_ci_concurrency_split_gaps_are_reported()
+    assert_mergify_proof_pr_concurrency_gaps_are_reported()
     assert_dispatch_cancel_watchdog_gaps_are_reported()
 
     verifier = load_verifier()

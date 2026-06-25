@@ -772,11 +772,21 @@ def _normalize_concurrency_text(text: str) -> str:
     return " ".join(text.split())
 
 
+MERGIFY_PROOF_PR_HEAD_REF_PREDICATE = "startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')"
+MERGIFY_PROOF_PR_CANCEL_GUARD = f"!{MERGIFY_PROOF_PR_HEAD_REF_PREDICATE}"
+MERGIFY_PROOF_PR_GROUP_TOKEN = "mergify-proof"
+
+
 MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     # .github/workflows/ci.yml — merge_group arm format('mq-{0}', github.ref)
     # wins under merge_group (the PR/workflow_dispatch arms are false then), before
     # the per-ref/sha fallback; PR-draft-deferral arms are gated off merge_group.
-    "group: >- ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true "
+    # The Mergify proof PR arm is run_id-keyed and non-cancelling because Mergify
+    # can emit duplicate draft-PR events for one proof context.
+    "group: >- ${{ github.event_name == 'pull_request' "
+    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
     "&& format('pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
     "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
@@ -785,16 +795,22 @@ MERGE_GROUP_SAFE_GROUP_FORMS = frozenset({
     "&& format('pr-{0}-full', github.event.number) || github.event_name == 'workflow_dispatch' "
     "&& github.event.inputs.full_ci == 'true' && format('{0}-dispatch-full', github.ref_name) "
     "|| github.event_name == 'workflow_dispatch' && format('{0}-dispatch-iteration', github.ref_name) "
-    "|| github.event_name == 'merge_group' "
-    "&& format('mq-{0}', github.ref) || format('{0}-{1}', github.ref_name, github.sha) }}",
+    "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
+    "|| format('{0}-{1}', github.ref_name, github.sha) }}",
     # .github/workflows/actionlint.yml — simpler prefixed shape, same merge_group
     # arm before the per-ref/sha fallback.
-    "group: >- actionlint-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
+    "group: >- actionlint-${{ github.event_name == 'pull_request' "
+    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "|| github.event_name == 'pull_request' && format('pr-{0}', github.event.number) "
     "|| github.event_name == 'merge_group' && format('mq-{0}', github.ref) "
     "|| format('{0}-{1}', github.ref_name, github.sha) }}",
     # .github/workflows/backtester-ci.yml — same draft/full PR split as ci.yml
     # with a backtester-prefixed merge_group arm before the per-ref/sha fallback.
-    "group: >- ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true "
+    "group: >- ${{ github.event_name == 'pull_request' "
+    "&& startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+    "&& format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id) "
+    "|| github.event_name == 'pull_request' && github.event.pull_request.draft == true "
     "&& contains(fromJSON('[\"opened\",\"synchronize\",\"reopened\",\"converted_to_draft\",\"edited\"]'), github.event.action) "
     "&& format('bvs-pr-{0}-deferred', github.event.number) || github.event_name == 'pull_request' "
     "&& github.event.pull_request.draft == false && (github.event.action == 'reopened' "
@@ -820,7 +836,14 @@ KNOWN_SAFE_CANCEL_FORMS = frozenset(
     {
         "${{ github.event_name == 'pull_request' && !(github.event.pull_request.draft == false "
         "&& (github.event.action == 'reopened' || (github.event.action == 'edited' "
-        "&& !(github.event.changes.base.ref.from != '')))) || github.event_name == 'workflow_dispatch' }}"
+        "&& !(github.event.changes.base.ref.from != '')))) || github.event_name == 'workflow_dispatch' }}",
+        "${{ github.event_name == 'pull_request' "
+        "&& !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') "
+        "&& !(github.event.pull_request.draft == false && (github.event.action == 'reopened' "
+        "|| (github.event.action == 'edited' && !(github.event.changes.base.ref.from != '')))) "
+        "|| github.event_name == 'workflow_dispatch' }}",
+        "${{ github.event_name == 'pull_request' "
+        "&& !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}",
     }
 )
 
@@ -920,6 +943,21 @@ def merge_group_concurrency_errors(group_text: str, cancel_text: str) -> list[st
     return errors
 
 
+def mergify_proof_pr_concurrency_errors(group_text: str, cancel_text: str) -> list[str]:
+    errors: list[str] = []
+    normalized_group = _normalize_concurrency_text(group_text)
+    normalized_cancel = _normalize_concurrency_text(cancel_text)
+    if (
+        MERGIFY_PROOF_PR_HEAD_REF_PREDICATE not in normalized_group
+        or MERGIFY_PROOF_PR_GROUP_TOKEN not in normalized_group
+        or "github.run_id" not in normalized_group
+    ):
+        errors.append("concurrency group must isolate Mergify proof PR runs")
+    if MERGIFY_PROOF_PR_CANCEL_GUARD not in normalized_cancel:
+        errors.append("cancel-in-progress must not cancel Mergify proof PR validations")
+    return errors
+
+
 def jobs_with_job_level_concurrency(workflow_text: str) -> list[str]:
     """Job ids that define a job-level `concurrency:` key. GitHub evaluates
     job-level concurrency in addition to the workflow-level block, so a required
@@ -1001,6 +1039,7 @@ def verify_merge_group_concurrency(workflow_text: str) -> list[str]:
         return ["workflow must define concurrency for merge_group isolation"]
     group_text, cancel_text = split
     errors = merge_group_concurrency_errors(group_text, cancel_text)
+    errors.extend(mergify_proof_pr_concurrency_errors(group_text, cancel_text))
     errors.extend(merge_group_concurrency_workflow_errors(workflow_text))
     return errors
 
@@ -1051,6 +1090,7 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     ):
         errors.append("cancel-in-progress must not cancel push, tag, or deploy flows")
     errors.extend(merge_group_concurrency_errors(group_text, cancel_text))
+    errors.extend(mergify_proof_pr_concurrency_errors(group_text, cancel_text))
     errors.extend(merge_group_concurrency_workflow_errors(workflow_text))
     return errors
 
@@ -1105,6 +1145,8 @@ def evaluate_ci_policy(
             path = str(policy["mergify_temp_pr"])
             reason = "mergify_temp_pr"
         elif action == "ready_for_review":
+            if pull_request_draft:
+                raise ValueError("ready_for_review cannot be on a draft PR")
             path = str(policy["ready_for_review"])
             reason = "ready_for_review"
         elif not pull_request_draft and action == "edited" and not pull_request_base_changed:

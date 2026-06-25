@@ -564,6 +564,15 @@ def is_mergify_temp_pr(
     )
 
 
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+
+
+def mergify_temp_pr_requires_full_ci(*, event_action: str, pull_request_base_changed: bool) -> bool:
+    return event_action in MERGIFY_TEMP_PR_FULL_ACTIONS or (
+        event_action == "edited" and pull_request_base_changed
+    )
+
+
 def evaluate_ci_policy(
     config: ProvenanceConfig,
     *,
@@ -604,7 +613,10 @@ def evaluate_ci_policy(
         if config.force_full_ci:
             path = "full"
             reason = "force_full_ci"
-        elif mergify_temp_pr:
+        elif mergify_temp_pr and mergify_temp_pr_requires_full_ci(
+            event_action=event_action,
+            pull_request_base_changed=pull_request_base_changed,
+        ):
             path = config.policy["mergify_temp_pr"]
             reason = "mergify_temp_pr"
         elif event_action == "ready_for_review":

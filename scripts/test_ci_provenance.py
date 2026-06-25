@@ -1102,6 +1102,68 @@ def assert_ci_policy_outputs_matrix() -> None:
         if output.get("is_mergify_temp_pr") != "true":
             raise AssertionError(f"Mergify temp PR must be detected: {output}")
 
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "synchronize",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "mergify/merge-queue/83d4b0be7e",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--ref",
+                "refs/pull/965/merge",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"Mergify temp PR synchronize ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ci_policy_path") != "full":
+            raise AssertionError(f"Mergify temp PR synchronize must resolve to full CI: {output}")
+        if output.get("gate_name") != "gate" or output.get("backtester_gate_name") != "backtester-gate":
+            raise AssertionError(f"Mergify temp PR synchronize must publish required gates: {output}")
+        if output.get("reason") != "mergify_temp_pr" or output.get("is_mergify_temp_pr") != "true":
+            raise AssertionError(f"Mergify temp PR synchronize must expose the queue signal: {output}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "edited",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "mergify/merge-queue/83d4b0be7e",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--ref",
+                "refs/pull/965/merge",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"Mergify temp PR edited ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ci_policy_path") != "defer":
+            raise AssertionError(f"Mergify temp PR metadata edits must not run full CI: {output}")
+        if output.get("gate_name") != "gate-deferred" or output.get("backtester_gate_name") != "backtester-gate-deferred":
+            raise AssertionError(f"Mergify temp PR metadata edits must publish non-required gates: {output}")
+        if output.get("reason") != "draft_pr_edited" or output.get("is_mergify_temp_pr") != "true":
+            raise AssertionError(f"Mergify temp PR metadata edits must remain observable but deferred: {output}")
+
         force_config = write_config(
             pathlib.Path(tmp),
             CONFIG_TOML.replace("force_full_ci = false", "force_full_ci = true"),
@@ -1239,6 +1301,25 @@ def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() ->
         raise AssertionError(f"Mergify temp PR must intentionally publish required gates: {mergify_result}")
     if mergify_result.reason != "mergify_temp_pr" or not mergify_result.is_mergify_temp_pr:
         raise AssertionError(f"Mergify temp PR must expose the live queue signal: {mergify_result}")
+    mergify_edited_result = module.evaluate_ci_policy(
+        config,
+        event_name="pull_request",
+        event_action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        ref="refs/pull/965/merge",
+    )
+    if (mergify_edited_result.gate_name, mergify_edited_result.backtester_gate_name) != (
+        "gate-deferred",
+        "backtester-gate-deferred",
+    ):
+        raise AssertionError(
+            f"Mergify temp PR metadata edits must not republish required gates: {mergify_edited_result}"
+        )
+    if mergify_edited_result.reason != "draft_pr_edited" or not mergify_edited_result.is_mergify_temp_pr:
+        raise AssertionError(f"Mergify temp PR metadata edits must remain observable: {mergify_edited_result}")
     if not saw_intentional_dispatch_flip:
         raise AssertionError("differential snapshot must exercise workflow_dispatch full_ci=true")
 

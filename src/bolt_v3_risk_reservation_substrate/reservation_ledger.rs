@@ -123,6 +123,7 @@ pub enum RiskReservationError {
     PermitVersionMismatch,
     PermitAlreadyConsumed,
     IdempotencyConflict,
+    NoActivePolicyEpoch,
     RiskIncreasingAdmissionDisabled,
     ActivePolicyEpochMismatch {
         active_policy_epoch_id: String,

@@ -328,6 +328,66 @@ impl FencedRiskStateStore {
             .snapshot(risk_state_version))
     }
 
+    fn bind_initial_policy_epoch(
+        &self,
+        lease: &PoolOwnershipLease,
+        active_epoch: PreparedPolicyEpoch,
+        expected_version: RiskStateVersion,
+        bound_band_coverage_attestation_digests: Vec<String>,
+        risk_increasing_admission_enabled: bool,
+        safety_action_enabled: bool,
+    ) -> Result<PolicyEpochSnapshot, RiskStateMutationError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
+        validate_lease(&inner, lease, &self.lease_authority)?;
+        if &active_epoch.pool_id != lease.pool_id() {
+            return Err(RiskStateMutationError::InvalidMutation);
+        }
+        let current_version = inner
+            .versions
+            .get(lease.pool_id())
+            .copied()
+            .unwrap_or_else(RiskStateVersion::zero);
+        if current_version != expected_version {
+            return Err(RiskStateMutationError::StaleRiskStateVersion);
+        }
+        if inner
+            .policy_epoch_states
+            .get(lease.pool_id())
+            .is_some_and(|state| state.active_epoch.is_some())
+        {
+            return Err(RiskStateMutationError::InvalidMutation);
+        }
+        if inner
+            .mutations
+            .iter()
+            .any(|record| &record.pool_id == lease.pool_id())
+            || inner
+                .reservation_records
+                .iter()
+                .any(|record| &record.pool_id == lease.pool_id())
+        {
+            return Err(RiskStateMutationError::InvalidMutation);
+        }
+
+        let state = ActivePolicyEpochState {
+            active_epoch: Some(active_epoch),
+            bound_band_coverage_attestation_digests,
+            risk_increasing_admission_enabled,
+            safety_action_enabled,
+            alerts: inner
+                .policy_epoch_states
+                .get(lease.pool_id())
+                .map_or_else(Vec::new, |state| state.alerts.clone()),
+        };
+        inner
+            .policy_epoch_states
+            .insert(lease.pool_id().clone(), state.clone());
+        Ok(state.snapshot(current_version))
+    }
+
     fn commit_policy_epoch_cutover(
         &self,
         lease: &PoolOwnershipLease,
@@ -1235,6 +1295,24 @@ impl RiskStateOwner {
         self.store.policy_epoch_snapshot(&self.lease)
     }
 
+    pub fn bind_initial_policy_epoch(
+        &self,
+        active_epoch: PreparedPolicyEpoch,
+        expected_version: RiskStateVersion,
+        bound_band_coverage_attestation_digests: Vec<String>,
+        risk_increasing_admission_enabled: bool,
+        safety_action_enabled: bool,
+    ) -> Result<PolicyEpochSnapshot, RiskStateMutationError> {
+        self.store.bind_initial_policy_epoch(
+            &self.lease,
+            active_epoch,
+            expected_version,
+            bound_band_coverage_attestation_digests,
+            risk_increasing_admission_enabled,
+            safety_action_enabled,
+        )
+    }
+
     pub fn commit_policy_epoch_cutover(
         &self,
         active_epoch: PreparedPolicyEpoch,
@@ -1564,13 +1642,13 @@ fn validate_risk_increasing_policy_epoch(
     candidate_policy_epoch_id: &str,
 ) -> Result<(), RiskReservationError> {
     let Some(state) = state else {
-        return Ok(());
+        return Err(RiskReservationError::NoActivePolicyEpoch);
     };
     if !state.risk_increasing_admission_enabled {
         return Err(RiskReservationError::RiskIncreasingAdmissionDisabled);
     }
     let Some(active_epoch) = &state.active_epoch else {
-        return Ok(());
+        return Err(RiskReservationError::NoActivePolicyEpoch);
     };
     if active_epoch.epoch_id.as_str() != candidate_policy_epoch_id {
         return Err(RiskReservationError::ActivePolicyEpochMismatch {

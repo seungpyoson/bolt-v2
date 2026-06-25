@@ -438,8 +438,33 @@ fn s6a_non_compliant_current_exposure_activates_no_new_risk_but_allows_safety_ac
     let pool_id = "epoch-non-compliant-pool";
     let (_store, owner, manager) = epoch_context(pool_id, "epoch-non-compliant-owner");
     let service = AdmissionService::new(owner.clone());
-    let setup_view = published_view_for_epoch(pool_id, RiskStateVersion::zero());
-    let mut setup_candidate = admission_candidate(pool_id, RiskStateVersion::zero(), "epoch-new");
+    let envelope = envelope(pool_id, ["classifier-old", "classifier-new"]);
+    let old_epoch = epoch(pool_id, "epoch-old", "descriptor-old", "classifier-old", 10);
+    manager
+        .activate_prepared_epoch(
+            manager
+                .prepare_policy_epoch(
+                    old_epoch,
+                    envelope.clone(),
+                    1_000,
+                    &mut RecordingDrain::default(),
+                    &mut RecordingRevaluator::compliant(),
+                )
+                .expect("old epoch should prepare"),
+        )
+        .expect("old epoch should activate before setup admission");
+    let setup_snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable after setup epoch activation");
+    let setup_view = published_view_for_epoch_descriptor(
+        pool_id,
+        setup_snapshot.risk_state_version,
+        "epoch-old",
+        "descriptor-old",
+    );
+    let mut setup_candidate =
+        admission_candidate(pool_id, setup_snapshot.risk_state_version, "epoch-old");
+    setup_candidate.expected_descriptor_version = "descriptor-old".to_string();
     setup_candidate.intent_id = "intent-safety-target".to_string();
     setup_candidate.idempotency_key = "idempotency-safety-target".to_string();
     setup_candidate.sizing_permit.permit_id = "permit-safety-target".to_string();
@@ -449,7 +474,7 @@ fn s6a_non_compliant_current_exposure_activates_no_new_risk_but_allows_safety_ac
             &setup_view,
             setup_candidate,
             BoundReusableSafetyState {
-                risk_state_version: RiskStateVersion::zero(),
+                risk_state_version: setup_snapshot.risk_state_version,
                 kill_switch_latched: false,
                 loss_governor_halted: false,
             },
@@ -465,7 +490,6 @@ fn s6a_non_compliant_current_exposure_activates_no_new_risk_but_allows_safety_ac
         )
         .expect("setup submission should bind the safety target to a client order");
 
-    let envelope = envelope(pool_id, ["classifier-new"]);
     let new_epoch = epoch(pool_id, "epoch-new", "descriptor-new", "classifier-new", 10);
     let prepared = manager
         .prepare_policy_epoch(

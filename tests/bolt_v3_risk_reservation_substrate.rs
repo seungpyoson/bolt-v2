@@ -12,12 +12,12 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
     },
     contracts::{
         ActiveDescriptorView, AdmissionCandidate, AdmissionToken, AdmittedOrder,
-        ConfiguredLeaseAuthority, LeaseAuthorityBackend, ModelRiskEvaluationScope, PoolId,
-        PoolOwnershipLease, PreparedPolicyEpoch, ReservationLifecycleState, RiskAssessment,
-        RiskPreviewInput, RiskReservationOfferedLoadEnvelope,
-        RiskReservationOfferedLoadEnvelopeError, RiskReservationSubstrateConfig,
-        RiskReservationWorkBounds, RiskSizingView, RiskStateVersion, SafetyAction,
-        SafetyPolicyEnvelope, SizingDecisionPermit,
+        ConfiguredLeaseAuthority, LeaseAuthorityBackend, ModelRiskEvaluationScope, PolicyApproval,
+        PoolId, PoolOwnershipLease, PreparedEpochDescriptor, PreparedPolicyEpoch,
+        ReservationLifecycleState, RiskAssessment, RiskPreviewInput,
+        RiskReservationOfferedLoadEnvelope, RiskReservationOfferedLoadEnvelopeError,
+        RiskReservationSubstrateConfig, RiskReservationWorkBounds, RiskSizingView,
+        RiskStateVersion, SafetyAction, SafetyPolicyEnvelope, SizingDecisionPermit,
     },
     instrument_risk_registry::{
         CertifiedActiveDescriptor, DescriptorActivationStatus, DescriptorCertificationDecision,
@@ -1406,6 +1406,51 @@ fn s2_stale_view_reserve_is_rejected() {
         1,
         "stale reserve attempts must not add a second reservation"
     );
+}
+
+#[test]
+fn s6a_no_active_policy_epoch_rejects_risk_increasing_admission_without_mutation() {
+    let (service, owner, _store) =
+        risk_context_without_policy_epoch("pool-no-active-epoch", "owner-no-active-epoch");
+    owner
+        .reconcile_before_new_risk()
+        .expect("owner should be reconciled so policy epoch validation is reached");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-no-active-epoch",
+        "candidate-instrument",
+        bucket("risk_class", "alpha"),
+        dec(100),
+        dec(100),
+    );
+    let before_snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable before rejected reserve");
+    assert_eq!(before_snapshot.risk_state_version, RiskStateVersion::zero());
+    assert!(
+        before_snapshot.active_epoch.is_none(),
+        "test setup must not bind a policy epoch"
+    );
+
+    let error = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-no-active-epoch",
+                "idempotency-no-active-epoch",
+                "pool-no-active-epoch",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect_err("risk-increasing admission must fail closed without an active policy epoch");
+
+    assert_eq!(error, AdmissionReserveError::NoActivePolicyEpoch);
+    assert_no_reservation_effect(&service, &owner, before_snapshot.risk_state_version);
 }
 
 #[test]
@@ -3288,6 +3333,24 @@ fn unreconciled_risk_context_with_work_bounds(
     owner_id: &str,
     work_bounds: RiskReservationWorkBounds,
 ) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
+    let (service, owner, store) =
+        risk_context_without_policy_epoch_with_work_bounds(pool_id, owner_id, work_bounds);
+    bind_default_policy_epoch(&owner, pool_id);
+    (service, owner, store)
+}
+
+fn risk_context_without_policy_epoch(
+    pool_id: &str,
+    owner_id: &str,
+) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
+    risk_context_without_policy_epoch_with_work_bounds(pool_id, owner_id, roomy_work_bounds())
+}
+
+fn risk_context_without_policy_epoch_with_work_bounds(
+    pool_id: &str,
+    owner_id: &str,
+    work_bounds: RiskReservationWorkBounds,
+) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
     let lease_authority = ConfiguredLeaseAuthority::new(
         LeaseAuthorityBackend::DynamoDbConditionalWrite,
         format!("{pool_id}-lease-authority"),
@@ -3325,7 +3388,68 @@ fn unreconciled_risk_context_with_offered_load_envelope(
         owner_id,
     )
     .expect("risk state owner should acquire the pool");
+    bind_default_policy_epoch(&owner, pool_id);
     (AdmissionService::new(owner.clone()), owner, store)
+}
+
+fn bind_default_policy_epoch(owner: &RiskStateOwner, pool_id: &str) {
+    owner
+        .bind_initial_policy_epoch(
+            default_policy_epoch(pool_id),
+            RiskStateVersion::zero(),
+            Vec::new(),
+            true,
+            true,
+        )
+        .expect("default enabled policy epoch should bind for admission fixtures");
+}
+
+fn default_policy_epoch(pool_id: &str) -> PreparedPolicyEpoch {
+    let bucket = bucket("risk_class", "alpha");
+    PreparedPolicyEpoch {
+        epoch_id: "policy-epoch".to_string(),
+        environment: "test-environment".to_string(),
+        pool_id: PoolId::new(pool_id).expect("pool id should be valid"),
+        policy_digest: "policy-digest".to_string(),
+        descriptor_map_digest: "descriptor-map-digest".to_string(),
+        descriptor_map: BTreeMap::from([(
+            "candidate-instrument".to_string(),
+            PreparedEpochDescriptor {
+                active_descriptor: ActiveDescriptorView {
+                    instrument_id: "candidate-instrument".to_string(),
+                    descriptor_version: "descriptor-version".to_string(),
+                    policy_epoch_id: "policy-epoch".to_string(),
+                    terminal_state_ids: vec![
+                        "terminal-state-0".to_string(),
+                        "terminal-state-1".to_string(),
+                    ],
+                    terminal_cash_flows: vec![dec(0), dec(99)],
+                },
+                descriptor_attributes: RiskDescriptorCanonicalAttributes::new(BTreeMap::from([(
+                    "descriptor_risk_class".to_string(),
+                    bucket.bucket_value().to_string(),
+                )]))
+                .expect("descriptor attributes should be valid"),
+            },
+        )]),
+        classifier_version: "classifier-version".to_string(),
+        classification_policy: classification_policy([dimension(
+            "risk_class",
+            "descriptor_risk_class",
+        )]),
+        model_version: "model-version".to_string(),
+        fallback_model_version: "fallback-version".to_string(),
+        fee_model_version: "fee-version".to_string(),
+        sizing_policy_versions: vec!["sizing-version".to_string()],
+        approvals: vec![PolicyApproval {
+            approval_id: "approval".to_string(),
+            approver_id: "approver".to_string(),
+            approved_at_unix_nanos: 900,
+        }],
+        approval_digest: "approval-digest".to_string(),
+        declared_attestations: Vec::new(),
+        activation_not_after_unix_nanos: 1_050,
+    }
 }
 
 fn substrate_config(

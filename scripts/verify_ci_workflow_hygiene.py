@@ -1074,6 +1074,20 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     return errors
 
 
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+
+
+def bool_like(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() == "true"
+
+
+def mergify_temp_pr_requires_full_ci(*, action: str, pull_request_base_changed: bool | str) -> bool:
+    base_changed = bool_like(pull_request_base_changed)
+    return action in MERGIFY_TEMP_PR_FULL_ACTIONS or (action == "edited" and base_changed)
+
+
 def evaluate_ci_policy(
     policy: dict[str, object],
     gate_names: dict[str, str],
@@ -1120,7 +1134,10 @@ def evaluate_ci_policy(
         if force_full_ci:
             path = "full"
             reason = "force_full_ci"
-        elif is_mergify_temp_pr:
+        elif is_mergify_temp_pr and mergify_temp_pr_requires_full_ci(
+            action=action,
+            pull_request_base_changed=pull_request_base_changed,
+        ):
             path = str(policy["mergify_temp_pr"])
             reason = "mergify_temp_pr"
         elif action == "ready_for_review":

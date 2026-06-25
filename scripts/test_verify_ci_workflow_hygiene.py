@@ -3040,27 +3040,38 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
         (
             ".github/workflows/ci.yml",
             "format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "format('pr-{0}-deferred', github.event.number)",
             "        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n",
+            "",
             "concurrency group must isolate Mergify proof PR runs",
         ),
         (
             ".github/workflows/backtester-ci.yml",
             "format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "format('bvs-pr-{0}-deferred', github.event.number)",
             "        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')\n",
+            "",
             "concurrency group must isolate Mergify proof PR runs",
         ),
         (
             ".github/workflows/actionlint.yml",
             "format('pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)",
+            "format('pr-{0}-deferred', github.event.number)",
             "      && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/') }}\n",
+            " }}\n",
             "concurrency group must isolate Mergify proof PR runs",
         ),
     ]
-    for workflow_name, group_fragment, cancel_guard, expected_error in cases:
+    for workflow_name, group_fragment, group_replacement, cancel_guard, cancel_replacement, expected_error in cases:
         workflow = repo_workflow_text(workflow_name)
         if group_fragment not in workflow:
             raise AssertionError(f"{workflow_name} must isolate Mergify proof PR runs")
-        missing_group = replace_once(workflow, group_fragment, "format('pr-{0}-deferred', github.event.number)")
+        missing_group = replace_once_after(
+            workflow,
+            "concurrency:",
+            group_fragment,
+            group_replacement,
+        )
         group_errors = (
             verifier.verify_workflow(missing_group)
             if workflow_name.endswith("/ci.yml")
@@ -3069,10 +3080,11 @@ def assert_mergify_proof_pr_concurrency_gaps_are_reported() -> None:
         if not any(expected_error in error for error in group_errors):
             raise AssertionError(f"{workflow_name} must reject missing Mergify proof PR group, got: {group_errors}")
 
-        missing_cancel_guard = replace_once(
+        missing_cancel_guard = replace_once_after(
             workflow,
+            "cancel-in-progress:",
             cancel_guard,
-            "",
+            cancel_replacement,
         )
         cancel_errors = (
             verifier.verify_workflow(missing_cancel_guard)

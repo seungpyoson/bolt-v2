@@ -590,6 +590,7 @@ fn epoch_context(
         pool_lease_authority: lease_authority,
         work_bounds: RiskReservationWorkBounds::new(8, 8, 8)
             .expect("epoch test work bounds should be valid"),
+        offered_load_envelope: None,
     });
     let owner = RiskStateOwner::acquire(
         store.clone(),

@@ -160,6 +160,60 @@ pub struct RiskReservationSubstrateConfig {
     pub enabled: bool,
     pub pool_lease_authority: ConfiguredLeaseAuthority,
     pub work_bounds: RiskReservationWorkBounds,
+    pub offered_load_envelope: Option<RiskReservationOfferedLoadEnvelope>,
+}
+
+/// Optional substrate-owned overload envelope for risk-increasing admissions.
+///
+/// When configured, the substrate enforces the maximum number of in-flight
+/// risk-increasing admissions inside the same compare-and-reserve mutex that
+/// owns risk-state versioning. The async runtime owns the bounded queue and
+/// fairness policy; this substrate boundary only owns the fail-closed admission
+/// decision, priority invariant, and operational alert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RiskReservationOfferedLoadEnvelope {
+    max_supported_in_flight_risk_increasing_admissions: u64,
+}
+
+impl RiskReservationOfferedLoadEnvelope {
+    pub fn new(
+        max_supported_in_flight_risk_increasing_admissions: u64,
+    ) -> Result<Self, RiskReservationOfferedLoadEnvelopeError> {
+        if max_supported_in_flight_risk_increasing_admissions == 0 {
+            return Err(
+                RiskReservationOfferedLoadEnvelopeError::ZeroMaxSupportedInFlightRiskIncreasingAdmissions,
+            );
+        }
+        Ok(Self {
+            max_supported_in_flight_risk_increasing_admissions,
+        })
+    }
+
+    pub const fn max_supported_in_flight_risk_increasing_admissions(self) -> u64 {
+        self.max_supported_in_flight_risk_increasing_admissions
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskReservationOfferedLoadEnvelopeError {
+    ZeroMaxSupportedInFlightRiskIncreasingAdmissions,
+}
+
+impl<'de> Deserialize<'de> for RiskReservationOfferedLoadEnvelope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            max_supported_in_flight_risk_increasing_admissions: u64,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.max_supported_in_flight_risk_increasing_admissions)
+            .map_err(|error| serde::de::Error::custom(format!("{error:?}")))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

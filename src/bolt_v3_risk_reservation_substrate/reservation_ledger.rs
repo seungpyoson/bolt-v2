@@ -128,6 +128,10 @@ pub enum RiskReservationError {
         active_policy_epoch_id: String,
         candidate_policy_epoch_id: String,
     },
+    AdmissionShed {
+        max_supported_in_flight_risk_increasing_admissions: u64,
+        offered_in_flight_risk_increasing_admissions: u64,
+    },
     WorkBoundExceeded {
         dimension: RiskReservationWorkDimension,
         max_count: usize,
@@ -209,6 +213,10 @@ impl RiskReservationTotals {
         }
         self.open_order_count = self.open_order_count.saturating_add(1);
         self.position_quantity += transaction.candidate.quantity;
+    }
+
+    pub const fn open_order_count(&self) -> u64 {
+        self.open_order_count
     }
 }
 

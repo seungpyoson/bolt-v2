@@ -14,6 +14,7 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         ActiveDescriptorView, AdmissionCandidate, AdmissionToken, AdmittedOrder,
         ConfiguredLeaseAuthority, LeaseAuthorityBackend, ModelRiskEvaluationScope, PoolId,
         PoolOwnershipLease, PreparedPolicyEpoch, RiskAssessment, RiskPreviewInput,
+        RiskReservationOfferedLoadEnvelope, RiskReservationOfferedLoadEnvelopeError,
         RiskReservationSubstrateConfig, RiskReservationWorkBounds, RiskSizingView,
         RiskStateVersion, SafetyAction, SafetyPolicyEnvelope, SizingDecisionPermit,
     },
@@ -34,8 +35,8 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
     },
     risk_view_publisher::{RiskViewPublicationInput, RiskViewPublisher},
     state_owner::{
-        DurableRiskMutation, FencedRiskStateStore, RiskMutationKind, RiskStateMutationError,
-        RiskStateOwner,
+        DurableRiskMutation, FencedRiskStateStore, PolicyEpochAlertReason, RiskMutationKind,
+        RiskStateMutationError, RiskStateOwner,
     },
     submission_authority::{
         LiveSubmitBoundary, LiveSubmitReceipt, SubmissionAuthority, SubmissionAuthorityError,
@@ -854,6 +855,341 @@ fn s7a_compare_and_reserve_documents_bounded_critical_section_complexity() {
     assert!(source.contains("configured maximum"));
     assert!(!source.contains("std::fs"));
     assert!(!source.contains("std::net"));
+}
+
+#[test]
+fn s7b_within_offered_load_envelope_admission_lifecycle_and_safety_action_succeed() {
+    let envelope = RiskReservationOfferedLoadEnvelope::new(2)
+        .expect("configured offered-load envelope should be valid");
+    let (service, owner, _store) = unreconciled_risk_context_with_offered_load_envelope(
+        "pool-s7b-within",
+        "owner-s7b-within",
+        envelope,
+    );
+    owner
+        .reconcile_before_new_risk()
+        .expect("lifecycle reconciliation should bypass offered-load shedding");
+    let bucket = bucket("risk_class", "within");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-s7b-within",
+        "candidate-instrument",
+        bucket.clone(),
+        dec(100),
+        dec(100),
+    );
+
+    let admission = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s7b-within",
+                "idempotency-s7b-within",
+                "pool-s7b-within",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect("risk-increasing admission inside the envelope should reserve");
+    assert_eq!(admission.admission_token.risk_state_version.get(), 1);
+
+    let safety_view = published_view_with_positions(
+        RiskStateVersion::new(1),
+        "pool-s7b-within",
+        "affected-instrument",
+        bucket.clone(),
+        dec(100),
+        dec(100),
+        vec![exposure("affected-instrument", [bucket.clone()], 12, 14, 2)],
+    );
+    let safety = service
+        .admit_safety_action(
+            &safety_view,
+            reduce_only_safety_action_request(
+                "safety-action-s7b-within",
+                "position-s7b-within",
+                RiskStateVersion::new(1),
+                unlatched_safety(RiskStateVersion::new(1)),
+                vec![exposure(
+                    "affected-instrument",
+                    [bucket("risk_class", "within")],
+                    6,
+                    7,
+                    2,
+                )],
+                4,
+            ),
+        )
+        .expect("SafetyAction should bypass offered-load shedding inside the envelope");
+    assert_eq!(safety.source_risk_state_version, RiskStateVersion::new(1));
+    assert_eq!(safety.risk_state_version, RiskStateVersion::new(2));
+}
+
+#[test]
+fn s7b_above_offered_load_envelope_sheds_alerts_and_reserves_nothing() {
+    let envelope = RiskReservationOfferedLoadEnvelope::new(1)
+        .expect("configured offered-load envelope should be valid");
+    let (service, owner, _store) = reconciled_risk_context_with_offered_load_envelope(
+        "pool-s7b-shed",
+        "owner-s7b-shed",
+        envelope,
+    );
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-s7b-shed",
+        "candidate-instrument",
+        bucket("risk_class", "shed"),
+        dec(100),
+        dec(100),
+    );
+    service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s7b-first",
+                "idempotency-s7b-first",
+                "pool-s7b-shed",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect("first admission should fill the one-admission envelope");
+    let before_snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable before shed");
+    assert_eq!(before_snapshot.risk_state_version, RiskStateVersion::new(1));
+    assert_eq!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable before shed")
+            .len(),
+        1
+    );
+    let over_envelope_view = published_view(
+        RiskStateVersion::new(1),
+        "pool-s7b-shed",
+        "candidate-instrument",
+        bucket("risk_class", "shed"),
+        dec(100),
+        dec(100),
+    );
+
+    let error = service
+        .compare_and_reserve(
+            &over_envelope_view,
+            admission_candidate(
+                "intent-s7b-shed",
+                "idempotency-s7b-shed",
+                "pool-s7b-shed",
+                "candidate-instrument",
+                RiskStateVersion::new(1),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::new(1)),
+            None,
+            1_001,
+        )
+        .expect_err("next risk-increasing admission above the envelope must shed");
+
+    assert_eq!(
+        error,
+        AdmissionReserveError::AdmissionShed {
+            max_supported_in_flight_risk_increasing_admissions: 1,
+            offered_in_flight_risk_increasing_admissions: 1,
+        }
+    );
+    let after_snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable after shed");
+    assert_eq!(
+        after_snapshot.risk_state_version, before_snapshot.risk_state_version,
+        "shed admission must not advance the risk state version"
+    );
+    assert_eq!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable after shed")
+            .len(),
+        1,
+        "shed admission must not write a reservation record"
+    );
+    assert_eq!(
+        after_snapshot.alerts.last().map(|alert| alert.reason),
+        Some(PolicyEpochAlertReason::AdmissionShed),
+        "shed admission must record the operational alert through the policy alert source"
+    );
+}
+
+#[test]
+fn s7b_lifecycle_and_safety_action_bypass_shed_gate_while_admission_load_is_over_envelope() {
+    let envelope = RiskReservationOfferedLoadEnvelope::new(1)
+        .expect("configured offered-load envelope should be valid");
+    let (service, owner, store) = reconciled_risk_context_with_offered_load_envelope(
+        "pool-s7b-priority",
+        "owner-s7b-priority-a",
+        envelope,
+    );
+    let bucket = bucket("risk_class", "priority");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-s7b-priority",
+        "candidate-instrument",
+        bucket.clone(),
+        dec(100),
+        dec(100),
+    );
+    service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-s7b-priority-first",
+                "idempotency-s7b-priority-first",
+                "pool-s7b-priority",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(4),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect("first admission should fill the one-admission envelope");
+    assert_eq!(
+        service
+            .compare_and_reserve(
+                &published_view(
+                    RiskStateVersion::new(1),
+                    "pool-s7b-priority",
+                    "candidate-instrument",
+                    bucket.clone(),
+                    dec(100),
+                    dec(100),
+                ),
+                admission_candidate(
+                    "intent-s7b-priority-shed",
+                    "idempotency-s7b-priority-shed",
+                    "pool-s7b-priority",
+                    "candidate-instrument",
+                    RiskStateVersion::new(1),
+                    dec(4),
+                ),
+                unlatched_safety(RiskStateVersion::new(1)),
+                None,
+                1_001,
+            )
+            .expect_err("test setup should place risk-increasing admissions over the envelope"),
+        AdmissionReserveError::AdmissionShed {
+            max_supported_in_flight_risk_increasing_admissions: 1,
+            offered_in_flight_risk_increasing_admissions: 1,
+        }
+    );
+
+    let successor = RiskStateOwner::acquire(
+        store.clone(),
+        PoolId::new("pool-s7b-priority").expect("pool id should be valid"),
+        "owner-s7b-priority-b",
+    )
+    .expect("successor owner should acquire the pool for lifecycle reconciliation");
+    let lifecycle_version = successor
+        .reconcile_before_new_risk()
+        .expect("lifecycle reconciliation should bypass the shed gate while over envelope");
+    assert_eq!(lifecycle_version, RiskStateVersion::new(1));
+
+    let priority_service = AdmissionService::new(successor.clone());
+    let safety_view = published_view_with_positions(
+        lifecycle_version,
+        "pool-s7b-priority",
+        "affected-instrument",
+        bucket.clone(),
+        dec(100),
+        dec(100),
+        vec![exposure("affected-instrument", [bucket.clone()], 12, 14, 2)],
+    );
+    let safety = priority_service
+        .admit_safety_action(
+            &safety_view,
+            reduce_only_safety_action_request(
+                "safety-action-s7b-priority",
+                "position-s7b-priority",
+                lifecycle_version,
+                unlatched_safety(lifecycle_version),
+                vec![exposure(
+                    "affected-instrument",
+                    [bucket("risk_class", "priority")],
+                    6,
+                    7,
+                    2,
+                )],
+                4,
+            ),
+        )
+        .expect("SafetyAction should bypass the shed gate while admissions are over envelope");
+    assert_eq!(safety.source_risk_state_version, lifecycle_version);
+    assert_eq!(safety.risk_state_version, RiskStateVersion::new(2));
+
+    assert_eq!(
+        owner
+            .commit_durable_mutation(DurableRiskMutation::new(
+                "stale-owner-after-priority-reconcile",
+                RiskMutationKind::Reservation,
+            ))
+            .expect_err("old owner should remain fenced after lifecycle handoff"),
+        RiskStateMutationError::StaleFencingToken
+    );
+}
+
+#[test]
+fn s7b_zero_offered_load_envelope_fails_closed_at_construction() {
+    assert_eq!(
+        RiskReservationOfferedLoadEnvelope::new(0),
+        Err(RiskReservationOfferedLoadEnvelopeError::ZeroMaxSupportedInFlightRiskIncreasingAdmissions)
+    );
+}
+
+#[test]
+fn s7b_zero_configured_offered_load_envelope_fails_closed_when_deserialized() {
+    let error = toml::from_str::<RiskReservationSubstrateConfig>(
+        r#"
+enabled = true
+
+[pool_lease_authority]
+backend = "dynamo_db_conditional_write"
+dependency_name = "risk-reservation-pool-leases"
+
+[work_bounds]
+max_current_position_count = 8
+max_buckets_per_exposure = 8
+max_terminal_cash_flow_count_per_exposure = 8
+
+[offered_load_envelope]
+max_supported_in_flight_risk_increasing_admissions = 0
+"#,
+    )
+    .expect_err("zero configured envelope must fail closed while parsing config");
+
+    assert!(
+        error
+            .to_string()
+            .contains("ZeroMaxSupportedInFlightRiskIncreasingAdmissions")
+    );
+}
+
+#[test]
+fn s7b_documents_substrate_runtime_offered_load_boundary() {
+    let contracts = include_str!("../src/bolt_v3_risk_reservation_substrate/contracts.rs");
+    let state_owner = include_str!("../src/bolt_v3_risk_reservation_substrate/state_owner.rs");
+
+    assert!(contracts.contains("runtime owns the bounded queue and fairness policy"));
+    assert!(state_owner.contains("shed gate runs only on risk-increasing compare-and-reserve"));
+    assert!(state_owner.contains("before kernel evaluation"));
 }
 
 #[test]
@@ -2007,6 +2343,19 @@ fn reconciled_risk_context_with_work_bounds(
     (service, owner, store)
 }
 
+fn reconciled_risk_context_with_offered_load_envelope(
+    pool_id: &str,
+    owner_id: &str,
+    envelope: RiskReservationOfferedLoadEnvelope,
+) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
+    let (service, owner, store) =
+        unreconciled_risk_context_with_offered_load_envelope(pool_id, owner_id, envelope);
+    owner
+        .reconcile_before_new_risk()
+        .expect("owner should reconcile before admission");
+    (service, owner, store)
+}
+
 fn unreconciled_risk_context(
     pool_id: &str,
     owner_id: &str,
@@ -2034,6 +2383,31 @@ fn unreconciled_risk_context_with_work_bounds(
     (AdmissionService::new(owner.clone()), owner, store)
 }
 
+fn unreconciled_risk_context_with_offered_load_envelope(
+    pool_id: &str,
+    owner_id: &str,
+    envelope: RiskReservationOfferedLoadEnvelope,
+) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
+    let lease_authority = ConfiguredLeaseAuthority::new(
+        LeaseAuthorityBackend::DynamoDbConditionalWrite,
+        format!("{pool_id}-lease-authority"),
+    )
+    .expect("lease authority dependency should be valid");
+    let store = FencedRiskStateStore::new(RiskReservationSubstrateConfig {
+        enabled: true,
+        pool_lease_authority: lease_authority,
+        work_bounds: roomy_work_bounds(),
+        offered_load_envelope: Some(envelope),
+    });
+    let owner = RiskStateOwner::acquire(
+        store.clone(),
+        PoolId::new(pool_id).expect("pool id should be valid"),
+        owner_id,
+    )
+    .expect("risk state owner should acquire the pool");
+    (AdmissionService::new(owner.clone()), owner, store)
+}
+
 fn substrate_config(
     lease_authority: ConfiguredLeaseAuthority,
     work_bounds: RiskReservationWorkBounds,
@@ -2042,6 +2416,7 @@ fn substrate_config(
         enabled: true,
         pool_lease_authority: lease_authority,
         work_bounds,
+        offered_load_envelope: None,
     }
 }
 

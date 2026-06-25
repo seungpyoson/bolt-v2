@@ -8,7 +8,8 @@ use nautilus_model::identifiers::ClientOrderId;
 use crate::bolt_v3_risk_reservation_substrate::contracts::{
     ConfiguredLeaseAuthority, DurableSubmissionIntent, FencingToken, LiveSubmissionRecord, OwnerId,
     PoolId, PoolOwnershipLease, PreparedPolicyEpoch, ReservationLifecycleState,
-    RiskReservationSubstrateConfig, RiskReservationWorkBounds, RiskStateVersion,
+    RiskReservationOfferedLoadEnvelope, RiskReservationSubstrateConfig, RiskReservationWorkBounds,
+    RiskStateVersion,
 };
 use crate::bolt_v3_risk_reservation_substrate::{
     reservation_ledger::{
@@ -25,6 +26,7 @@ pub struct FencedRiskStateStore {
     inner: Arc<Mutex<FencedRiskStateStoreInner>>,
     lease_authority: ConfiguredLeaseAuthority,
     work_bounds: RiskReservationWorkBounds,
+    offered_load_envelope: Option<RiskReservationOfferedLoadEnvelope>,
 }
 
 #[derive(Debug)]
@@ -113,6 +115,7 @@ pub struct PolicyEpochAlert {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyEpochAlertReason {
     PartialRevaluationFailure,
+    AdmissionShed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,6 +146,7 @@ impl FencedRiskStateStore {
             inner: Arc::new(Mutex::new(FencedRiskStateStoreInner::new())),
             lease_authority: config.pool_lease_authority,
             work_bounds: config.work_bounds,
+            offered_load_envelope: config.offered_load_envelope,
         }
     }
 
@@ -664,6 +668,12 @@ impl FencedRiskStateStore {
     /// bucket, and terminal-scenario sizes are enforced before idempotent token
     /// replay and again after the coherent `risk_state_version` check before
     /// the kernel evaluation, so an over-bound transaction reserves nothing.
+    /// The offered-load shed gate runs only on risk-increasing
+    /// compare-and-reserve, uses the substrate-owned scalar in-flight
+    /// reservation count, records through the existing policy alert source, and
+    /// fails closed before kernel evaluation. The runtime owns the bounded
+    /// event queue, fair-queue scheduling, and wall-clock latency policy; this
+    /// substrate does not spawn threads, timers, or a second serialization path.
     fn compare_and_reserve(
         &self,
         lease: &PoolOwnershipLease,
@@ -706,6 +716,9 @@ impl FencedRiskStateStore {
         }
         if inner.consumed_permits.contains_key(&permit_id) {
             return Err(RiskReservationError::PermitAlreadyConsumed);
+        }
+        if let Some(envelope) = self.offered_load_envelope {
+            enforce_offered_load_envelope(&mut inner, lease, &transaction, envelope)?;
         }
 
         let current_version = *inner
@@ -1025,6 +1038,46 @@ fn next_pool_version(
         .map_err(|_| RiskStateMutationError::VersionOverflow)?;
     inner.versions.insert(pool_id.clone(), version);
     Ok(version)
+}
+
+fn enforce_offered_load_envelope(
+    inner: &mut FencedRiskStateStoreInner,
+    lease: &PoolOwnershipLease,
+    transaction: &RiskReservationTransaction,
+    envelope: RiskReservationOfferedLoadEnvelope,
+) -> Result<(), RiskReservationError> {
+    let max_supported = envelope.max_supported_in_flight_risk_increasing_admissions();
+    let offered_load = inner.reservation_totals.get(lease.pool_id()).map_or_else(
+        || RiskReservationTotals::empty().open_order_count(),
+        RiskReservationTotals::open_order_count,
+    );
+    if offered_load < max_supported {
+        return Ok(());
+    }
+
+    let mut state = inner
+        .policy_epoch_states
+        .get(lease.pool_id())
+        .cloned()
+        .unwrap_or_else(ActivePolicyEpochState::no_policy_loaded);
+    if !state
+        .alerts
+        .iter()
+        .any(|alert| alert.reason == PolicyEpochAlertReason::AdmissionShed)
+    {
+        state.alerts.push(PolicyEpochAlert {
+            reason: PolicyEpochAlertReason::AdmissionShed,
+            epoch_id: transaction.candidate.policy_epoch_id.clone(),
+        });
+    }
+    inner
+        .policy_epoch_states
+        .insert(lease.pool_id().clone(), state);
+
+    Err(RiskReservationError::AdmissionShed {
+        max_supported_in_flight_risk_increasing_admissions: max_supported,
+        offered_in_flight_risk_increasing_admissions: offered_load,
+    })
 }
 
 fn validate_risk_increasing_policy_epoch(

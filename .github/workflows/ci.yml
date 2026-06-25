@@ -850,26 +850,72 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Prepare trusted base provenance tree
+        id: provenance_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_ref="refs/remotes/origin/ci-provenance-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/ci-provenance-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
+          git check-ref-format "refs/heads/$base_branch"
+          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          base_tree="$RUNNER_TEMP/ci-provenance-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
+
       - name: Emit CI provenance
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
-        run: >
-          python3 scripts/ci_provenance.py emit-full-ci
-          --ci-policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"
-          --output ci-provenance.json
-          --required-job detector=${{ needs.detector.result }}
-          --required-job deny=${{ needs.deny.result }}
-          --required-job clippy=${{ needs.clippy.result }}
-          --required-job check-aarch64=${{ needs.check-aarch64.result }}
-          --required-job source-fence=${{ needs.source-fence.result }}
-          --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}
-          --required-job test-archive=${{ needs.test-archive.result }}
-          --required-job test=${{ needs.test.result }}
-          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
-          --conditional-job build.result=${{ needs.build.result }}
-          --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+        run: |
+          provenance_script="${{ steps.provenance_base.outputs.script }}"
+          if [[ -z "$provenance_script" ]]; then
+            provenance_script="scripts/ci_provenance.py"
+          fi
+          provenance_config="${{ steps.provenance_base.outputs.config }}"
+          if [[ -z "$provenance_config" ]]; then
+            provenance_config="ci/github-actions-runners.toml"
+          fi
+          python3 "$provenance_script" emit-full-ci \
+            --config "$provenance_config" \
+            --ci-policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
+            --output ci-provenance.json \
+            --required-job detector=${{ needs.detector.result }} \
+            --required-job deny=${{ needs.deny.result }} \
+            --required-job clippy=${{ needs.clippy.result }} \
+            --required-job check-aarch64=${{ needs.check-aarch64.result }} \
+            --required-job source-fence=${{ needs.source-fence.result }} \
+            --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+            --required-job test-archive=${{ needs.test-archive.result }} \
+            --required-job test=${{ needs.test.result }} \
+            --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
+            --conditional-job build.result=${{ needs.build.result }} \
+            --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
 
       - name: Upload CI provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

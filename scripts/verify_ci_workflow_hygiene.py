@@ -7933,7 +7933,18 @@ def test_accepts_fingerprint_reuse(job_lines: list[str]) -> bool:
 
 def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
     text = uncommented_text(job_lines)
-    return "python3 scripts/ci_provenance.py emit-full-ci" in text and "--output ci-provenance.json" in text
+    required = (
+        "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+        "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
+        'git check-ref-format "refs/heads/$base_branch"',
+        "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
+        "steps.provenance_base.outputs.script",
+        "steps.provenance_base.outputs.config",
+        'python3 "$provenance_script" emit-full-ci',
+        '--config "$provenance_config"',
+        "--output ci-provenance.json",
+    )
+    return all(item in text for item in required)
 
 
 def ci_provenance_emit_checks_needs(job_lines: list[str], needs: tuple[str, ...]) -> list[str]:

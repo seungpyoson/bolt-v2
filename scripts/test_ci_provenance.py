@@ -1216,6 +1216,35 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "--event-name",
                 "pull_request",
                 "--event-action",
+                "synchronize",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "mergify/merge-queue/83d4b0be7e",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--docs-only",
+                "true",
+                "--ref",
+                "refs/pull/965/merge",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"Mergify docs-only ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ci_policy_path") != "full" or output.get("reason") != "mergify_temp_pr":
+            raise AssertionError(f"Mergify temp PR docs-only hint must not bypass full CI: {output}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
                 "ready_for_review",
                 "--pull-request-draft",
                 "true",
@@ -2258,7 +2287,10 @@ def assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress() -> 
 def assert_gate_carry_forward_uses_newest_success_with_provenance() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
-        config = write_config(pathlib.Path(tmp))
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 1"),
+        )
         record = pull_request_record(module, config, base_sha="1" * 40)
         older_provenance_success = run_payload(
             id=RUN_ID,
@@ -2291,7 +2323,7 @@ def assert_gate_carry_forward_uses_newest_success_with_provenance() -> None:
             updated_at="2026-06-13T00:20:00Z",
         )
         fake = FakeGitHub(
-            runs_pages=[[newer_carry_forward_success, intervening_older_failure, older_provenance_success]],
+            runs_pages=[[newer_carry_forward_success], [intervening_older_failure, older_provenance_success]],
             jobs_by_run_id={
                 RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]},
                 RUN_ID + 2: {"jobs": [job_payload("gate")]},
@@ -2560,7 +2592,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         policy_path="full",
         expected_event_class="full",
         full_ci_deferred=False,
-        carry_forward_verified=False,
         job_results=skipped_jobs,
         bvs_changed=False,
     )
@@ -2568,7 +2599,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         policy_path="defer",
         expected_event_class="defer",
         full_ci_deferred=True,
-        carry_forward_verified=False,
         job_results=skipped_jobs,
         bvs_changed=False,
     )
@@ -2576,7 +2606,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         policy_path="noop",
         expected_event_class="noop",
         full_ci_deferred=False,
-        carry_forward_verified=False,
         job_results=skipped_jobs,
         bvs_changed=False,
     )
@@ -2586,7 +2615,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
             policy_path="noop",
             expected_event_class="noop",
             full_ci_deferred=False,
-            carry_forward_verified=False,
             job_results={**skipped_jobs, "clippy": "success"},
             bvs_changed=False,
         ),
@@ -2604,7 +2632,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         policy_path="defer",
         expected_event_class="defer",
         full_ci_deferred=True,
-        carry_forward_verified=False,
         job_results=proof_jobs,
         bvs_changed=True,
     )
@@ -2612,7 +2639,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         policy_path="noop",
         expected_event_class="noop",
         full_ci_deferred=False,
-        carry_forward_verified=False,
         job_results=proof_jobs,
         bvs_changed=True,
     )
@@ -2622,7 +2648,6 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
             policy_path="defer",
             expected_event_class="defer",
             full_ci_deferred=True,
-            carry_forward_verified=False,
             job_results={**proof_jobs, "clippy": "skipped"},
             bvs_changed=True,
         ),

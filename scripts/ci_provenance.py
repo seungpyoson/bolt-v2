@@ -747,7 +747,6 @@ def evaluate_backtester_gate_verdict(
     policy_path: str,
     expected_event_class: str,
     full_ci_deferred: bool,
-    carry_forward_verified: bool,
     job_results: dict[str, str],
     bvs_changed: bool,
 ) -> str:
@@ -961,7 +960,10 @@ def evaluate_ci_policy(
         path = config.policy["unknown_event"]
         reason = "unknown_event"
 
-    if event_name == "pull_request" and docs_only and path == "full" and reason != "force_full_ci":
+    if event_name == "pull_request" and docs_only and path == "full" and reason not in {
+        "force_full_ci",
+        "mergify_temp_pr",
+    }:
         path = config.policy["docs"]
         reason = "docs"
 
@@ -1800,6 +1802,7 @@ def resolve_gate_carry_forward(
     cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
     last_error = f"no prior successful {gate_name} check found for exact SHA {requested_sha}"
 
+    saw_successful_gate_without_provenance = False
     for page in range(1, config.max_lookback_pages + 1):
         runs_payload = api_json(
             repo,
@@ -1846,7 +1849,6 @@ def resolve_gate_carry_forward(
             ),
             reverse=True,
         )
-        saw_successful_gate_without_provenance = False
         for run in candidates:
             run_id = positive_int_value(run.get("id"), "workflow run id")
             status = as_text(run.get("status"))
@@ -2358,7 +2360,6 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--policy-path", required=True)
         parser.add_argument("--expected-event-class", required=True)
         parser.add_argument("--full-ci-deferred", default="false")
-        parser.add_argument("--carry-forward-verified", default="false")
         parser.add_argument("--bvs-changed", default="false")
         parser.add_argument("--job", action="append", default=[])
     if mode == "resolve-gate-carry-forward":
@@ -2446,7 +2447,6 @@ def main(argv: list[str] | None = None) -> int:
                     policy_path=args.policy_path,
                     expected_event_class=args.expected_event_class,
                     full_ci_deferred=parse_bool(args.full_ci_deferred),
-                    carry_forward_verified=parse_bool(args.carry_forward_verified),
                     job_results=parse_job_result_values(args.job),
                     bvs_changed=parse_bool(args.bvs_changed),
                 )

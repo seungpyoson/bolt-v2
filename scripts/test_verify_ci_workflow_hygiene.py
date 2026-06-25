@@ -830,22 +830,35 @@ jobs:
     if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Prepare trusted base provenance tree
+        id: provenance_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          git check-ref-format "refs/heads/$base_branch"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
       - name: Emit CI provenance
-        run: >
-          python3 scripts/ci_provenance.py emit-full-ci
-          --ci-policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"
-          --output ci-provenance.json
-          --required-job detector=${{ needs.detector.result }}
-          --required-job deny=${{ needs.deny.result }}
-          --required-job clippy=${{ needs.clippy.result }}
-          --required-job check-aarch64=${{ needs.check-aarch64.result }}
-          --required-job source-fence=${{ needs.source-fence.result }}
-          --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}
-          --required-job test-archive=${{ needs.test-archive.result }}
-          --required-job test=${{ needs.test.result }}
-          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
-          --conditional-job build.result=${{ needs.build.result }}
-          --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+        run: |
+          provenance_script="${{ steps.provenance_base.outputs.script }}"
+          provenance_config="${{ steps.provenance_base.outputs.config }}"
+          python3 "$provenance_script" emit-full-ci \
+            --config "$provenance_config" \
+            --ci-policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
+            --output ci-provenance.json \
+            --required-job detector=${{ needs.detector.result }} \
+            --required-job deny=${{ needs.deny.result }} \
+            --required-job clippy=${{ needs.clippy.result }} \
+            --required-job check-aarch64=${{ needs.check-aarch64.result }} \
+            --required-job source-fence=${{ needs.source-fence.result }} \
+            --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+            --required-job test-archive=${{ needs.test-archive.result }} \
+            --required-job test=${{ needs.test.result }} \
+            --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
+            --conditional-job build.result=${{ needs.build.result }} \
+            --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
       - name: Upload CI provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -8834,6 +8847,14 @@ def main() -> int:
             BASE_WORKFLOW,
             "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
             "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must run provenance emitter",
+        replace_once(
+            BASE_WORKFLOW,
+            'python3 "$provenance_script" emit-full-ci',
+            "python3 scripts/ci_provenance.py emit-full-ci",
         ),
     )
     assert_error(

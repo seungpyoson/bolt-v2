@@ -1805,6 +1805,34 @@ mod tests {
     }
 
     #[test]
+    fn invalid_utf8_binary_frame_emits_no_custom_data() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
+            subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+            subscription("BTC", "polyresearch_primary", "BTC/USD"),
+        )])));
+        let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handler = polyresearch_reference_message_handler(
+            subscriptions,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            2_000,
+            data_sender,
+        );
+
+        handler(Message::binary(vec![0xff, 0xfe, 0xfd]));
+
+        let error = data_receiver
+            .try_recv()
+            .expect_err("invalid UTF-8 binary PRR frame must not emit data");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "invalid UTF-8 binary PRR frame should leave the data channel open and empty, got {error:?}"
+        );
+    }
+
+    #[test]
     fn price_feed_frame_for_unsubscribed_symbol_emits_no_custom_data() {
         let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
             subscription_key("BTC", "polyresearch_primary", "BTC/USD"),

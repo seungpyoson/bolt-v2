@@ -5,7 +5,8 @@ use std::{
 
 use nautilus_model::identifiers::ClientOrderId;
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::bolt_v3_risk_reservation_substrate::risk_classifier::{
     ConcentrationBucket, RiskClassificationPolicy, RiskDescriptorCanonicalAttributes,
@@ -419,7 +420,172 @@ pub struct PolicyApproval {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreparedEpochAttestation {
-    BandCoverageAttestation { attestation_digest: String },
+    BandCoverageAttestation {
+        attestation_digest: String,
+        artifact: Option<BandCoverageAttestation>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BandCoverageAttestation {
+    pub content_digest: String,
+    pub producer_identity: String,
+    pub certifier_identity: String,
+    pub decision: BandCoverageAttestationDecision,
+    pub evidence: BandCoverageAttestationEvidence,
+    pub valid_from_unix_nanos: u64,
+    pub valid_until_unix_nanos: u64,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum BandCoverageAttestationDecision {
+    Approved,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BandCoverageAttestationEvidence {
+    pub evidence_digest: String,
+    pub model_version: String,
+    pub band_method_version: String,
+    pub market_segment_id: String,
+    pub side: String,
+    pub decision_horizon: String,
+    pub evaluation_cutoff_unix_nanos: u64,
+    pub dataset_digest: String,
+    pub certified_property: String,
+    pub certified_bound_end: String,
+    pub confidence_method: String,
+    pub multiplicity_method: String,
+    pub eligibility_policy_version: String,
+    pub eligibility_passed: bool,
+    pub outcome_space_id: String,
+    pub outcome_space_version: String,
+    pub outcome_definition_id: String,
+    pub outcome_definition_version: String,
+    pub forecast_record_schema_version: String,
+    pub evaluation_implementation_version: String,
+    pub dependence_inference_method_version: String,
+    pub attestation_schema_version: String,
+    pub cells: Vec<BandCoverageAttestationCellEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BandCoverageAttestationCellEvidence {
+    pub cell_id: String,
+    pub observed_mean_residual: Decimal,
+    pub lower_confidence_bound: Decimal,
+    pub effective_event_count: u64,
+    pub minimum_effective_event_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BandCoverageAttestationDigestError {
+    CanonicalDigestUnavailable,
+}
+
+impl BandCoverageAttestation {
+    pub fn canonical_digest(&self) -> Result<String, BandCoverageAttestationDigestError> {
+        let input = BandCoverageAttestationDigestInput {
+            content_digest: &self.content_digest,
+            producer_identity: &self.producer_identity,
+            certifier_identity: &self.certifier_identity,
+            decision: self.decision,
+            evidence: BandCoverageAttestationEvidenceDigestInput {
+                evidence_digest: &self.evidence.evidence_digest,
+                model_version: &self.evidence.model_version,
+                band_method_version: &self.evidence.band_method_version,
+                market_segment_id: &self.evidence.market_segment_id,
+                side: &self.evidence.side,
+                decision_horizon: &self.evidence.decision_horizon,
+                evaluation_cutoff_unix_nanos: self.evidence.evaluation_cutoff_unix_nanos,
+                dataset_digest: &self.evidence.dataset_digest,
+                certified_property: &self.evidence.certified_property,
+                certified_bound_end: &self.evidence.certified_bound_end,
+                confidence_method: &self.evidence.confidence_method,
+                multiplicity_method: &self.evidence.multiplicity_method,
+                eligibility_policy_version: &self.evidence.eligibility_policy_version,
+                eligibility_passed: self.evidence.eligibility_passed,
+                outcome_space_id: &self.evidence.outcome_space_id,
+                outcome_space_version: &self.evidence.outcome_space_version,
+                outcome_definition_id: &self.evidence.outcome_definition_id,
+                outcome_definition_version: &self.evidence.outcome_definition_version,
+                forecast_record_schema_version: &self.evidence.forecast_record_schema_version,
+                evaluation_implementation_version: &self.evidence.evaluation_implementation_version,
+                dependence_inference_method_version: &self
+                    .evidence
+                    .dependence_inference_method_version,
+                attestation_schema_version: &self.evidence.attestation_schema_version,
+                cells: self
+                    .evidence
+                    .cells
+                    .iter()
+                    .map(|cell| BandCoverageAttestationCellDigestInput {
+                        cell_id: &cell.cell_id,
+                        observed_mean_residual: cell.observed_mean_residual.to_string(),
+                        lower_confidence_bound: cell.lower_confidence_bound.to_string(),
+                        effective_event_count: cell.effective_event_count,
+                        minimum_effective_event_count: cell.minimum_effective_event_count,
+                    })
+                    .collect(),
+            },
+            valid_from_unix_nanos: self.valid_from_unix_nanos,
+            valid_until_unix_nanos: self.valid_until_unix_nanos,
+            revoked: self.revoked,
+        };
+        let bytes = serde_json::to_vec(&input)
+            .map_err(|_| BandCoverageAttestationDigestError::CanonicalDigestUnavailable)?;
+        Ok(hex::encode(Sha256::digest(bytes)))
+    }
+}
+
+#[derive(Serialize)]
+struct BandCoverageAttestationDigestInput<'a> {
+    content_digest: &'a str,
+    producer_identity: &'a str,
+    certifier_identity: &'a str,
+    decision: BandCoverageAttestationDecision,
+    evidence: BandCoverageAttestationEvidenceDigestInput<'a>,
+    valid_from_unix_nanos: u64,
+    valid_until_unix_nanos: u64,
+    revoked: bool,
+}
+
+#[derive(Serialize)]
+struct BandCoverageAttestationEvidenceDigestInput<'a> {
+    evidence_digest: &'a str,
+    model_version: &'a str,
+    band_method_version: &'a str,
+    market_segment_id: &'a str,
+    side: &'a str,
+    decision_horizon: &'a str,
+    evaluation_cutoff_unix_nanos: u64,
+    dataset_digest: &'a str,
+    certified_property: &'a str,
+    certified_bound_end: &'a str,
+    confidence_method: &'a str,
+    multiplicity_method: &'a str,
+    eligibility_policy_version: &'a str,
+    eligibility_passed: bool,
+    outcome_space_id: &'a str,
+    outcome_space_version: &'a str,
+    outcome_definition_id: &'a str,
+    outcome_definition_version: &'a str,
+    forecast_record_schema_version: &'a str,
+    evaluation_implementation_version: &'a str,
+    dependence_inference_method_version: &'a str,
+    attestation_schema_version: &'a str,
+    cells: Vec<BandCoverageAttestationCellDigestInput<'a>>,
+}
+
+#[derive(Serialize)]
+struct BandCoverageAttestationCellDigestInput<'a> {
+    cell_id: &'a str,
+    observed_mean_residual: String,
+    lower_confidence_bound: String,
+    effective_event_count: u64,
+    minimum_effective_event_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

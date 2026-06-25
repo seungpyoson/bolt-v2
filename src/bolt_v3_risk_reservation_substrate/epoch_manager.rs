@@ -1,12 +1,17 @@
 use rust_decimal::Decimal;
 
-use crate::bolt_v3_risk_reservation_substrate::{
-    contracts::{
-        ActiveDescriptorView, PolicyApproval, PreparedEpochAttestation, PreparedEpochDescriptor,
-        PreparedPolicyEpoch, RiskStateVersion, SafetyEnvelopeInvariant, SafetyPolicyEnvelope,
+use crate::{
+    bolt_v3_numeric::is_sha256_hex_digest,
+    bolt_v3_risk_reservation_substrate::{
+        contracts::{
+            ActiveDescriptorView, BandCoverageAttestation, BandCoverageAttestationDecision,
+            BandCoverageAttestationEvidence, PolicyApproval, PreparedEpochAttestation,
+            PreparedEpochDescriptor, PreparedPolicyEpoch, RiskStateVersion,
+            SafetyEnvelopeInvariant, SafetyPolicyEnvelope,
+        },
+        risk_classifier::{RiskClassificationError, RiskClassifier},
+        state_owner::{PolicyEpochSnapshot, RiskStateMutationError, RiskStateOwner},
     },
-    risk_classifier::{RiskClassificationError, RiskClassifier},
-    state_owner::{PolicyEpochSnapshot, RiskStateMutationError, RiskStateOwner},
 };
 
 pub use crate::bolt_v3_risk_reservation_substrate::state_owner::PolicyEpochAlertReason;
@@ -22,6 +27,7 @@ pub struct PreparedEpochCutover {
     envelope: SafetyPolicyEnvelope,
     drain_report: VenueEventDrainReport,
     source_risk_state_version: RiskStateVersion,
+    bound_band_coverage_attestation_digests: Vec<String>,
     post_cutover_admission_state: PostCutoverAdmissionState,
 }
 
@@ -40,6 +46,10 @@ impl PreparedEpochCutover {
 
     pub const fn source_risk_state_version(&self) -> RiskStateVersion {
         self.source_risk_state_version
+    }
+
+    pub fn bound_band_coverage_attestation_digests(&self) -> &[String] {
+        &self.bound_band_coverage_attestation_digests
     }
 
     pub const fn post_cutover_admission_state(&self) -> PostCutoverAdmissionState {
@@ -95,10 +105,26 @@ pub enum PolicyEpochPrepareError {
     InvalidBundle,
     Classification(RiskClassificationError),
     EnvelopeViolation(SafetyPolicyEnvelopeViolation),
-    AttestationVerificationUnavailable,
+    BandCoverageAttestation(BandCoverageAttestationError),
     VenueEventDrain(VenueEventDrainError),
     RevaluationFailed(PolicyEpochRevaluationError),
     StateMutation(RiskStateMutationError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BandCoverageAttestationError {
+    MissingArtifact,
+    InvalidDigest,
+    DecisionNotApproved,
+    Revoked,
+    InvalidValidityWindow,
+    Expired,
+    InvalidIdentity,
+    ProducerCertifierIdentityCollision,
+    MissingEvidenceField,
+    EligibilityRejected,
+    DigestMismatch,
+    CanonicalDigestUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,7 +192,8 @@ impl EpochManager {
         venue_event_drain: &mut impl VenueEventDrain,
         revaluator: &mut impl PreparedEpochRevaluator,
     ) -> Result<PreparedEpochCutover, PolicyEpochPrepareError> {
-        validate_prepared_epoch(&prepared_epoch)?;
+        let bound_band_coverage_attestation_digests =
+            validate_prepared_epoch(&prepared_epoch, requested_at_unix_nanos)?;
         validate_safety_envelope(&prepared_epoch, &envelope, requested_at_unix_nanos)?;
 
         let drain_report = venue_event_drain
@@ -202,6 +229,7 @@ impl EpochManager {
             envelope,
             drain_report,
             source_risk_state_version,
+            bound_band_coverage_attestation_digests,
             post_cutover_admission_state,
         })
     }
@@ -225,6 +253,7 @@ impl EpochManager {
             .commit_policy_epoch_cutover(
                 prepared.prepared_epoch.clone(),
                 prepared.source_risk_state_version,
+                prepared.bound_band_coverage_attestation_digests.clone(),
                 risk_increasing_admission_enabled,
                 safety_action_enabled,
             )
@@ -242,7 +271,8 @@ impl EpochManager {
 
 fn validate_prepared_epoch(
     prepared_epoch: &PreparedPolicyEpoch,
-) -> Result<(), PolicyEpochPrepareError> {
+    requested_at_unix_nanos: u64,
+) -> Result<Vec<String>, PolicyEpochPrepareError> {
     if !is_clean_runtime_value(&prepared_epoch.epoch_id)
         || !is_clean_runtime_value(&prepared_epoch.environment)
         || !is_clean_runtime_value(&prepared_epoch.policy_digest)
@@ -267,15 +297,20 @@ fn validate_prepared_epoch(
     for approval in &prepared_epoch.approvals {
         validate_approval(approval)?;
     }
+    let mut bound_band_coverage_attestation_digests = Vec::new();
     for attestation in &prepared_epoch.declared_attestations {
         match attestation {
-            PreparedEpochAttestation::BandCoverageAttestation { attestation_digest } => {
-                if !is_clean_runtime_value(attestation_digest) {
-                    return Err(PolicyEpochPrepareError::InvalidBundle);
-                }
-                // S6b handoff: replace this fail-closed stub with canonical-artifact
-                // verification and digest binding for BandCoverageAttestation.
-                return Err(PolicyEpochPrepareError::AttestationVerificationUnavailable);
+            PreparedEpochAttestation::BandCoverageAttestation {
+                attestation_digest,
+                artifact,
+            } => {
+                let bound_digest = validate_band_coverage_attestation(
+                    attestation_digest,
+                    artifact.as_ref(),
+                    requested_at_unix_nanos,
+                )
+                .map_err(PolicyEpochPrepareError::BandCoverageAttestation)?;
+                bound_band_coverage_attestation_digests.push(bound_digest);
             }
         }
     }
@@ -288,6 +323,90 @@ fn validate_prepared_epoch(
             &[],
         )
         .map_err(PolicyEpochPrepareError::Classification)?;
+    }
+    Ok(bound_band_coverage_attestation_digests)
+}
+
+fn validate_band_coverage_attestation(
+    declared_digest: &str,
+    attestation: Option<&BandCoverageAttestation>,
+    now_unix_nanos: u64,
+) -> Result<String, BandCoverageAttestationError> {
+    if !is_sha256_hex_digest(declared_digest) {
+        return Err(BandCoverageAttestationError::InvalidDigest);
+    }
+    let attestation = attestation.ok_or(BandCoverageAttestationError::MissingArtifact)?;
+    if attestation.decision != BandCoverageAttestationDecision::Approved {
+        return Err(BandCoverageAttestationError::DecisionNotApproved);
+    }
+    if attestation.revoked {
+        return Err(BandCoverageAttestationError::Revoked);
+    }
+    if attestation.valid_from_unix_nanos >= attestation.valid_until_unix_nanos {
+        return Err(BandCoverageAttestationError::InvalidValidityWindow);
+    }
+    if now_unix_nanos < attestation.valid_from_unix_nanos
+        || now_unix_nanos >= attestation.valid_until_unix_nanos
+    {
+        return Err(BandCoverageAttestationError::Expired);
+    }
+    if !is_sha256_hex_digest(&attestation.content_digest)
+        || !is_sha256_hex_digest(&attestation.evidence.evidence_digest)
+        || !is_sha256_hex_digest(&attestation.evidence.dataset_digest)
+    {
+        return Err(BandCoverageAttestationError::InvalidDigest);
+    }
+    if !is_clean_runtime_value(&attestation.producer_identity)
+        || !is_clean_runtime_value(&attestation.certifier_identity)
+    {
+        return Err(BandCoverageAttestationError::InvalidIdentity);
+    }
+    if attestation.producer_identity == attestation.certifier_identity {
+        return Err(BandCoverageAttestationError::ProducerCertifierIdentityCollision);
+    }
+    validate_band_coverage_evidence(&attestation.evidence)?;
+    let recomputed_digest = attestation
+        .canonical_digest()
+        .map_err(|_| BandCoverageAttestationError::CanonicalDigestUnavailable)?;
+    if recomputed_digest != declared_digest {
+        return Err(BandCoverageAttestationError::DigestMismatch);
+    }
+    Ok(recomputed_digest)
+}
+
+fn validate_band_coverage_evidence(
+    evidence: &BandCoverageAttestationEvidence,
+) -> Result<(), BandCoverageAttestationError> {
+    if !evidence.eligibility_passed {
+        return Err(BandCoverageAttestationError::EligibilityRejected);
+    }
+    if !is_clean_runtime_value(&evidence.model_version)
+        || !is_clean_runtime_value(&evidence.band_method_version)
+        || !is_clean_runtime_value(&evidence.market_segment_id)
+        || !is_clean_runtime_value(&evidence.side)
+        || !is_clean_runtime_value(&evidence.decision_horizon)
+        || !is_clean_runtime_value(&evidence.certified_property)
+        || !is_clean_runtime_value(&evidence.certified_bound_end)
+        || !is_clean_runtime_value(&evidence.confidence_method)
+        || !is_clean_runtime_value(&evidence.multiplicity_method)
+        || !is_clean_runtime_value(&evidence.eligibility_policy_version)
+        || !is_clean_runtime_value(&evidence.outcome_space_id)
+        || !is_clean_runtime_value(&evidence.outcome_space_version)
+        || !is_clean_runtime_value(&evidence.outcome_definition_id)
+        || !is_clean_runtime_value(&evidence.outcome_definition_version)
+        || !is_clean_runtime_value(&evidence.forecast_record_schema_version)
+        || !is_clean_runtime_value(&evidence.evaluation_implementation_version)
+        || !is_clean_runtime_value(&evidence.dependence_inference_method_version)
+        || !is_clean_runtime_value(&evidence.attestation_schema_version)
+        || evidence.cells.is_empty()
+        || evidence.cells.iter().any(|cell| {
+            !is_clean_runtime_value(&cell.cell_id)
+                || cell.effective_event_count == u64::MIN
+                || cell.minimum_effective_event_count == u64::MIN
+                || cell.effective_event_count < cell.minimum_effective_event_count
+        })
+    {
+        return Err(BandCoverageAttestationError::MissingEvidenceField);
     }
     Ok(())
 }

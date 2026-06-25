@@ -61,6 +61,7 @@ impl FencedRiskStateStoreInner {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActivePolicyEpochState {
     active_epoch: Option<PreparedPolicyEpoch>,
+    bound_band_coverage_attestation_digests: Vec<String>,
     risk_increasing_admission_enabled: bool,
     safety_action_enabled: bool,
     alerts: Vec<PolicyEpochAlert>,
@@ -70,6 +71,7 @@ impl ActivePolicyEpochState {
     fn no_policy_loaded() -> Self {
         Self {
             active_epoch: None,
+            bound_band_coverage_attestation_digests: Vec::new(),
             risk_increasing_admission_enabled: true,
             safety_action_enabled: true,
             alerts: Vec::new(),
@@ -80,6 +82,9 @@ impl ActivePolicyEpochState {
         PolicyEpochSnapshot {
             risk_state_version,
             active_epoch: self.active_epoch.clone(),
+            bound_band_coverage_attestation_digests: self
+                .bound_band_coverage_attestation_digests
+                .clone(),
             risk_increasing_admission_enabled: self.risk_increasing_admission_enabled,
             safety_action_enabled: self.safety_action_enabled,
             alerts: self.alerts.clone(),
@@ -91,6 +96,7 @@ impl ActivePolicyEpochState {
 pub struct PolicyEpochSnapshot {
     pub risk_state_version: RiskStateVersion,
     pub active_epoch: Option<PreparedPolicyEpoch>,
+    pub bound_band_coverage_attestation_digests: Vec<String>,
     pub risk_increasing_admission_enabled: bool,
     pub safety_action_enabled: bool,
     pub alerts: Vec<PolicyEpochAlert>,
@@ -313,6 +319,7 @@ impl FencedRiskStateStore {
         lease: &PoolOwnershipLease,
         active_epoch: PreparedPolicyEpoch,
         expected_version: RiskStateVersion,
+        bound_band_coverage_attestation_digests: Vec<String>,
         risk_increasing_admission_enabled: bool,
         safety_action_enabled: bool,
     ) -> Result<PolicyEpochSnapshot, RiskStateMutationError> {
@@ -344,6 +351,7 @@ impl FencedRiskStateStore {
         inner.versions.insert(lease.pool_id().clone(), version);
         let state = ActivePolicyEpochState {
             active_epoch: Some(active_epoch.clone()),
+            bound_band_coverage_attestation_digests,
             risk_increasing_admission_enabled,
             safety_action_enabled,
             alerts: inner
@@ -814,6 +822,7 @@ impl RiskStateOwner {
         &self,
         active_epoch: PreparedPolicyEpoch,
         expected_version: RiskStateVersion,
+        bound_band_coverage_attestation_digests: Vec<String>,
         risk_increasing_admission_enabled: bool,
         safety_action_enabled: bool,
     ) -> Result<PolicyEpochSnapshot, RiskStateMutationError> {
@@ -821,6 +830,7 @@ impl RiskStateOwner {
             &self.lease,
             active_epoch,
             expected_version,
+            bound_band_coverage_attestation_digests,
             risk_increasing_admission_enabled,
             safety_action_enabled,
         )

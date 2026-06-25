@@ -6,17 +6,20 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         SafetyActionAdmissionRequest, SafetyActionProofDomain,
     },
     contracts::{
-        ActiveDescriptorView, AdmissionCandidate, ConfiguredLeaseAuthority, LeaseAuthorityBackend,
+        ActiveDescriptorView, AdmissionCandidate, BandCoverageAttestation,
+        BandCoverageAttestationCellEvidence, BandCoverageAttestationDecision,
+        BandCoverageAttestationEvidence, ConfiguredLeaseAuthority, LeaseAuthorityBackend,
         ModelRiskEvaluationScope, PolicyApproval, PoolId, PreparedEpochAttestation,
         PreparedEpochDescriptor, PreparedPolicyEpoch, RiskPreviewInput, RiskSizingView,
         RiskStateVersion, SafetyAction, SafetyEnvelopeInvariant, SafetyPolicyEnvelope,
         SafetyPolicyEnvelopeRanges, SizingDecisionPermit,
     },
     epoch_manager::{
-        EpochManager, PolicyEpochActivationError, PolicyEpochAlertReason, PolicyEpochPrepareError,
-        PolicyEpochRevaluationError, PostCutoverAdmissionState, PreparedEpochRevaluationInput,
-        PreparedEpochRevaluator, SafetyPolicyEnvelopeViolation, VenueEventDrain,
-        VenueEventDrainError, VenueEventDrainReport,
+        BandCoverageAttestationError, EpochManager, PolicyEpochActivationError,
+        PolicyEpochAlertReason, PolicyEpochPrepareError, PolicyEpochRevaluationError,
+        PostCutoverAdmissionState, PreparedEpochRevaluationInput, PreparedEpochRevaluator,
+        SafetyPolicyEnvelopeViolation, VenueEventDrain, VenueEventDrainError,
+        VenueEventDrainReport,
     },
     risk_classifier::{
         ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationPolicy,
@@ -27,6 +30,7 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
     state_owner::{FencedRiskStateStore, RiskMutationKind, RiskStateMutationError, RiskStateOwner},
 };
 use rust_decimal::Decimal;
+use sha2::{Digest, Sha256};
 
 #[test]
 fn s6a_cutover_is_observed_all_old_then_all_new_without_mixed_epoch_state() {
@@ -299,9 +303,9 @@ fn s6a_catastrophic_but_valid_epoch_outside_envelope_fails_before_activation() {
 }
 
 #[test]
-fn s6a_band_coverage_attestation_fails_closed_until_s6b_verifier_exists() {
+fn s6b_valid_band_coverage_attestation_prepares_activates_and_binds_digest() {
     let pool_id = "epoch-attestation-pool";
-    let (_store, _owner, manager) = epoch_context(pool_id, "epoch-attestation-owner");
+    let (_store, owner, manager) = epoch_context(pool_id, "epoch-attestation-owner");
     let envelope = envelope(pool_id, ["classifier-attested"]);
     let mut attested_epoch = epoch(
         pool_id,
@@ -310,13 +314,15 @@ fn s6a_band_coverage_attestation_fails_closed_until_s6b_verifier_exists() {
         "classifier-attested",
         10,
     );
+    let (attestation, attestation_digest) = band_coverage_attestation();
     attested_epoch
         .declared_attestations
         .push(PreparedEpochAttestation::BandCoverageAttestation {
-            attestation_digest: "attestation-digest".to_string(),
+            attestation_digest: attestation_digest.clone(),
+            artifact: Some(attestation),
         });
 
-    let error = manager
+    let prepared = manager
         .prepare_policy_epoch(
             attested_epoch,
             envelope,
@@ -324,11 +330,103 @@ fn s6a_band_coverage_attestation_fails_closed_until_s6b_verifier_exists() {
             &mut RecordingDrain::default(),
             &mut RecordingRevaluator::compliant(),
         )
-        .expect_err("S6a must not pass unverified band coverage attestations");
+        .expect("complete valid attestation should prepare");
 
     assert_eq!(
-        error,
-        PolicyEpochPrepareError::AttestationVerificationUnavailable
+        prepared.bound_band_coverage_attestation_digests(),
+        &[attestation_digest.clone()]
+    );
+    manager
+        .activate_prepared_epoch(prepared)
+        .expect("complete valid attestation should activate");
+    let snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable");
+    assert_epoch_snapshot(
+        &snapshot,
+        "epoch-attested",
+        "classifier-attested",
+        "descriptor-attested",
+    );
+    assert_eq!(
+        snapshot.bound_band_coverage_attestation_digests,
+        vec![attestation_digest]
+    );
+}
+
+#[test]
+fn s6b_invalid_band_coverage_attestations_fail_closed_and_keep_active_epoch() {
+    let cases: Vec<(
+        &str,
+        fn(&mut BandCoverageAttestation, &mut String),
+        BandCoverageAttestationError,
+    )> = vec![
+        (
+            "revoked",
+            |artifact, _declared_digest| {
+                artifact.revoked = true;
+            },
+            BandCoverageAttestationError::Revoked,
+        ),
+        (
+            "expired",
+            |artifact, _declared_digest| {
+                artifact.valid_until_unix_nanos = 1_000;
+            },
+            BandCoverageAttestationError::Expired,
+        ),
+        (
+            "not-approved",
+            |artifact, _declared_digest| {
+                artifact.decision = BandCoverageAttestationDecision::Rejected;
+            },
+            BandCoverageAttestationError::DecisionNotApproved,
+        ),
+        (
+            "digest-mismatch",
+            |artifact, declared_digest| {
+                artifact.evidence.dataset_digest = hash("tampered-dataset");
+                *declared_digest = hash("stale-attestation-digest");
+            },
+            BandCoverageAttestationError::DigestMismatch,
+        ),
+        (
+            "missing-field",
+            |artifact, _declared_digest| {
+                artifact.evidence.model_version.clear();
+            },
+            BandCoverageAttestationError::MissingEvidenceField,
+        ),
+        (
+            "same-producer-and-certifier",
+            |artifact, _declared_digest| {
+                artifact.certifier_identity = artifact.producer_identity.clone();
+            },
+            BandCoverageAttestationError::ProducerCertifierIdentityCollision,
+        ),
+    ];
+
+    for (case_name, mutate, expected_error) in cases {
+        let (mut artifact, mut declared_digest) = band_coverage_attestation();
+        mutate(&mut artifact, &mut declared_digest);
+        assert_band_coverage_prepare_rejection_retains_old_epoch(
+            case_name,
+            PreparedEpochAttestation::BandCoverageAttestation {
+                attestation_digest: declared_digest,
+                artifact: Some(artifact),
+            },
+            expected_error,
+        );
+    }
+
+    let (_artifact, declared_digest) = band_coverage_attestation();
+    assert_band_coverage_prepare_rejection_retains_old_epoch(
+        "digest-only",
+        PreparedEpochAttestation::BandCoverageAttestation {
+            attestation_digest: declared_digest,
+            artifact: None,
+        },
+        BandCoverageAttestationError::MissingArtifact,
     );
 }
 
@@ -573,6 +671,118 @@ fn epoch(
         declared_attestations: Vec::new(),
         activation_not_after_unix_nanos: 1_050,
     }
+}
+
+fn assert_band_coverage_prepare_rejection_retains_old_epoch(
+    case_name: &str,
+    attestation: PreparedEpochAttestation,
+    expected_error: BandCoverageAttestationError,
+) {
+    let pool_id = format!("epoch-attestation-reject-{case_name}");
+    let (_store, owner, manager) = epoch_context(&pool_id, "epoch-attestation-reject-owner");
+    let envelope = envelope(&pool_id, ["classifier-old", "classifier-new"]);
+    manager
+        .activate_prepared_epoch(
+            manager
+                .prepare_policy_epoch(
+                    epoch(
+                        &pool_id,
+                        "epoch-old",
+                        "descriptor-old",
+                        "classifier-old",
+                        10,
+                    ),
+                    envelope.clone(),
+                    1_000,
+                    &mut RecordingDrain::default(),
+                    &mut RecordingRevaluator::compliant(),
+                )
+                .expect("old epoch should prepare"),
+        )
+        .expect("old epoch should activate");
+
+    let mut rejected_epoch = epoch(
+        &pool_id,
+        "epoch-new",
+        "descriptor-new",
+        "classifier-new",
+        10,
+    );
+    rejected_epoch.declared_attestations.push(attestation);
+    let error = manager
+        .prepare_policy_epoch(
+            rejected_epoch,
+            envelope,
+            1_000,
+            &mut RecordingDrain::default(),
+            &mut RecordingRevaluator::compliant(),
+        )
+        .expect_err("invalid attestation should fail closed before activation");
+
+    assert_eq!(
+        error,
+        PolicyEpochPrepareError::BandCoverageAttestation(expected_error),
+        "{case_name}"
+    );
+    let snapshot = owner
+        .policy_epoch_snapshot()
+        .expect("policy state should be readable after rejection");
+    assert_epoch_snapshot(&snapshot, "epoch-old", "classifier-old", "descriptor-old");
+    assert!(
+        snapshot.bound_band_coverage_attestation_digests.is_empty(),
+        "rejected attestation must not bind into the active epoch"
+    );
+}
+
+fn band_coverage_attestation() -> (BandCoverageAttestation, String) {
+    let artifact = BandCoverageAttestation {
+        content_digest: hash("band-coverage-content"),
+        producer_identity: "attestation-producer".to_string(),
+        certifier_identity: "attestation-certifier".to_string(),
+        decision: BandCoverageAttestationDecision::Approved,
+        evidence: BandCoverageAttestationEvidence {
+            evidence_digest: hash("band-coverage-evidence"),
+            model_version: "model-version".to_string(),
+            band_method_version: "band-method-version".to_string(),
+            market_segment_id: "market-segment".to_string(),
+            side: "long".to_string(),
+            decision_horizon: "decision-horizon".to_string(),
+            evaluation_cutoff_unix_nanos: 900,
+            dataset_digest: hash("band-coverage-dataset"),
+            certified_property: "lower-bound-conservatism".to_string(),
+            certified_bound_end: "lower".to_string(),
+            confidence_method: "empirical-bernstein".to_string(),
+            multiplicity_method: "holm".to_string(),
+            eligibility_policy_version: "eligibility-policy-version".to_string(),
+            eligibility_passed: true,
+            outcome_space_id: "outcome-space".to_string(),
+            outcome_space_version: "outcome-space-version".to_string(),
+            outcome_definition_id: "outcome-definition".to_string(),
+            outcome_definition_version: "outcome-definition-version".to_string(),
+            forecast_record_schema_version: "forecast-record-schema-version".to_string(),
+            evaluation_implementation_version: "evaluation-implementation-version".to_string(),
+            dependence_inference_method_version: "dependence-inference-method-version".to_string(),
+            attestation_schema_version: "attestation-schema-version".to_string(),
+            cells: vec![BandCoverageAttestationCellEvidence {
+                cell_id: "cell-alpha".to_string(),
+                observed_mean_residual: dec(2),
+                lower_confidence_bound: dec(1),
+                effective_event_count: 20,
+                minimum_effective_event_count: 10,
+            }],
+        },
+        valid_from_unix_nanos: 900,
+        valid_until_unix_nanos: 1_100,
+        revoked: false,
+    };
+    let digest = artifact
+        .canonical_digest()
+        .expect("valid attestation should have a canonical digest");
+    (artifact, digest)
+}
+
+fn hash(value: &str) -> String {
+    hex::encode(Sha256::digest(value.as_bytes()))
 }
 
 fn assert_epoch_snapshot(

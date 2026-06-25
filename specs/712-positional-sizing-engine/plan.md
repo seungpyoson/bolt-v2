@@ -1,0 +1,72 @@
+# Implementation Plan: Positional Sizing Engine (#712)
+
+**Branch**: `712-positional-sizing-engine` | **Date**: 2026-06-25 | **Spec**: `specs/712-positional-sizing-engine/spec.md`
+**Input**: Feature specification from `specs/712-positional-sizing-engine/spec.md`. Tracking: #712. Depends on #711 and the risk-reservation substrate (`specs/973-risk-reservation-substrate/spec.md`); armed live by #688.
+
+## Summary
+
+Build the real positional sizer: a selectable sizing model (fixed-fraction-of-equity launch default; risk-constrained Kelly opt-in) that sizes the **complete target terminal position** and emits the delta, behind one `SizingAdmissionCoordinator` that projects the target to an exact candidate via the substrate's shared evaluator, mints unforgeable provenance, submits to the substrate's atomic gate, and runs bounded retry + reduction. The core is family/venue/instrument-agnostic; binary/taker payoff lives only in a registered, sealed adapter that derives terminal cash flows from the active descriptor. The engine consumes a calibrated edge + coverage band and never measures calibration. It retires the fixed-notional `choose_robust_size`; there is no dual sizing path.
+
+## Technical Context
+
+**Language/Version**: Rust (edition per workspace).
+**Primary Dependencies**: NautilusTrader Rust crates at the rev **pinned in `Cargo.toml`**. The risk-reservation substrate (this repo) owns the atomic gate, descriptor authority, advisory view, provenance verification, and SafetyAction path — #712 depends on it and re-implements none of it. Bankroll surface: `bolt_v3_sizing_state.rs::NtDerivedSizingState`.
+**Storage**: None of its own; the substrate owns risk state + the reservation ledger. The engine is stateless between decisions except for reading the substrate's advisory view.
+**Testing**: `cargo test` (unit + property), including a stateful-sizing test, an RCK post-target-wealth + precondition test, a band-attestation no-trade test, and review/grep for the agnostic core + single cash-flow authority + single path; `cargo fmt`/`clippy`/`deny` clean. Evidence class per slice below; exact-head proof via `just verify-remote` before done. Off by default; live arming is #688 with fail-closed + exact-head evidence.
+**Target Platform**: Linux (EC2 LiveNode) + offline tests.
+**Project Type**: Single Rust project (NT thin-layer strategy sizing).
+**Constraints**: NO HARDCODES (TOML, fail-closed), PURE RUST, NO DUAL PATHS (one sizing path; the safe model is a selectable model; one coordinator), SSM-only secrets, GROUP BY CHANGE, OFF BY DEFAULT. NO STRATEGY/VENUE/SYMBOL HARDCODING in the core.
+**Scale/Scope**: Taker (P1) first; maker (P2) reuses the same harness with only a different registered adapter.
+
+## Constitution Check
+
+*GATE: must pass before implementation; re-check after each slice.*
+
+- **I. NT-First Thin Layer** — PASS. The engine is bolt's strategy decision policy + pre-submit sizing; it reserves through the substrate (which consumes NT truth) and adds no order-lifecycle/reconciliation machinery.
+- **II. Generic Core, Concrete Edges** — PASS, and load-bearing here. The core (models, coordinator) is venue/family/strategy-agnostic; binary/taker structure lives only in a registered, sealed adapter selected by config (FR-030..FR-032; SC-005/006). A concrete venue/symbol/family branch in the core fails the gate.
+- **III. Single Path And Config-Controlled Runtime** — PASS. The "safe" model is a selectable model, not a separate path; one coordinator owns target→action; off by default; every parameter is TOML behind the substrate's policy envelope (SC-009).
+- **IV. Evidence-Driven Verification Gates** — PASS. Off until #688; live requires fail-closed + exact-head proof. Kelly arms only behind a band-coverage attestation; no-trade default (FR-013; SC-004).
+- **V. Evidence Before Claims** — PASS. Each slice maps to a named test or review/grep artifact at the exact head.
+- **VI. Minimal Slice Discipline** — PASS. W0–W5 are independently shippable; each fails closed (zero-size / no-trade).
+- **VII. Research/Analytics NT-First** — N/A; calibration measurement is explicitly out of scope (#724/#723), keeping this engine a single-job consumer of edge + band.
+
+## Architecture — agnostic core, one coordinator, sealed adapter
+
+- **Generic core**: `TargetPosition` + `SizingModel` seam (fixed-fraction-of-equity default, RCK opt-in). Models compute an allowance only (FR-002); the substrate enforces feasibility.
+- **One coordinator**: `SizingAdmissionCoordinator` projects target→candidate via the shared evaluator, mints provenance, submits, runs bounded retry + reduction; risk-reducing closes route to the substrate SafetyAction path (FR-020..FR-022).
+- **Sealed registered adapter**: binary/taker `RegisteredPayoffAdapter` owns S_model/probabilities and derives Πₛ from the active descriptor (FR-031); data-driven selection (FR-032). Maker is a second adapter (P2).
+
+## Project Structure
+
+### Documentation (this feature)
+
+```text
+specs/712-positional-sizing-engine/
+├── spec.md   # the sizing spec
+└── plan.md   # this file
+```
+
+### Source Code (new sizing modules; retires choose_robust_size)
+
+New sizing modules sit alongside the existing `bolt_v3_` strategy modules (exact paths confirmed at implementation; `position_sizer` name freed by #711). The agnostic core (target, model seam, coordinator) and the sealed binary/taker adapter are separate modules. The legacy `bolt_v3_sizing.rs::choose_robust_size` (fixed-notional × EV) is removed — no dual sizing path. Provenance/candidate/token contracts are imported from the substrate contracts module (single source of truth), not redefined.
+
+**Structure Decision**: One agnostic sizing core + one coordinator + one sealed registered adapter; reuse the substrate's contracts and evaluator. Retire the fixed-notional sizer. The maker adapter (P2) plugs into the same harness.
+
+## Workstreams (dependency-ordered; each fails closed; evidence class per slice)
+
+- **W0 — Foundation & seams.** Retire `choose_robust_size`; define `TargetPosition`, `SizingIntent`, the `SizingModel` seam, and the sealed `RegisteredPayoffAdapter` trait; coordinator skeleton. Off by default. Depends on substrate S0–S2 contracts. *Evidence: review/grep (agnostic seam, single path, choose_robust_size removed) + `cargo test` skeleton; fmt/clippy/deny.*
+- **W1 — Fixed-fraction-of-equity model (launch default).** Allowance ρ·W (no headroom in the model); stateful target sizing (size the position, emit the delta). *Evidence: SC-001 (model consumes no headrooms) + SC-002 (delta-to-aggregate, not full-size) + SC-008 (size falls after drawdown).*
+- **W2 — Coordinator.** Target→candidate projection via the shared evaluator; provenance minting (compile-time single authority); bounded retry + reduction protocol; risk-reducing close → substrate SafetyAction. Depends substrate S2/S4/S5. *Evidence: SC-007 (close not blocked by edge gate) + SC-009 (one path/one authority) + bounded-retry no-trade test + compile-fail test for forged candidate.*
+- **W3 — Binary/taker sealed adapter.** S_model/probabilities; Πₛ derived from the active descriptor; fee/slippage all-in cost; zero-size on sub-edge/sub-min-lot/stale. *Evidence: SC-005 (Πₛ from descriptor; no second cash-flow source) + SC-006 (no family/venue/symbol branch in core).*
+- **W4 — RCK model (opt-in, gated).** κ = ln β/ln α; constraint on post-target wealth; strictly-positive ratios + C(q)<W precondition (no NaN); S_model vs S_stress; side-aware band end; BandCoverageAttestation gate (#724) + named model-risk cap; no-trade default. *Evidence: SC-003 (post-target-wealth + precondition reject) + SC-004 (no attestation → no-trade).*
+- **W5 — Maker adapter (P2).** Register the maker payoff adapter on the same coordinator/substrate/token path; only the adapter differs. *Evidence: review (same harness, adapter-only difference) + adapter unit tests.*
+
+Live arming (enforce on, exact-head proof) is out of scope here and tracked by #688.
+
+## Complexity Tracking
+
+| Decision | Why needed | Simpler alternative rejected because |
+|----------|------------|--------------------------------------|
+| Sealed registered adapter (not a typed binary input) | Keeps the core strategy/venue/symbol-agnostic per the user's hard constraint and Constitution II | A typed binary input (point/band probabilities, true/false payoffs) encodes binary structure in the core, blocking maker/future-family reuse |
+| RCK on post-trade target wealth | Existing same-instrument exposure must bind the constraint or per-decision sizing returns | Order-delta P&L lets each slice look safe while the aggregate breaches the drawdown constraint |
+| Worst-case-edge sizing without a fractional multiplier | Worst-case band end is already box-DRO at fraction 1; a separate ¼–½ multiplier double-counts the same risk | Re-adding fractional Kelly mis-budgets; band misspecification is a distinct risk guarded by attestation + a named model-risk cap |

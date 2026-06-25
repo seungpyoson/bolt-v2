@@ -1997,6 +1997,27 @@ def assert_ci_gate_job_constants_match_config() -> None:
         raise AssertionError(f"CI full and archive proof constants overlap: {sorted(overlap)}")
 
 
+def assert_backtester_gate_job_constants_match_config() -> None:
+    module = load_script()
+    config = module.tomllib.loads(module.DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    workflow_jobs = set(config["workflows"]["backtester_ci"])
+    non_proof_jobs = {"ci-policy", "detect", "issue_789", "gate"}
+    expected_proof_jobs = workflow_jobs - non_proof_jobs
+    required_proof_jobs = {job for job, _label in module.BACKTESTER_REQUIRED_PROOF_JOBS}
+    if required_proof_jobs != expected_proof_jobs:
+        raise AssertionError(
+            f"backtester required proof constants drifted from workflow topology: "
+            f"constants={sorted(required_proof_jobs)} config={sorted(expected_proof_jobs)}"
+        )
+    skipped_proof_jobs = set(module.BACKTESTER_SKIPPED_PROOF_JOBS)
+    expected_skipped_jobs = expected_proof_jobs - {"fmt"}
+    if skipped_proof_jobs != expected_skipped_jobs:
+        raise AssertionError(
+            f"backtester skipped proof constants drifted from workflow topology: "
+            f"constants={sorted(skipped_proof_jobs)} config={sorted(expected_skipped_jobs)}"
+        )
+
+
 def assert_ready_for_review_requires_non_draft() -> None:
     assert_fails(
         "ready_for_review cannot be on a draft PR",
@@ -2042,6 +2063,47 @@ def assert_gate_verdict_rejects_inconsistent_deferred_flag() -> None:
 
 def assert_gate_verdict_rejects_event_class_mismatches() -> None:
     module = load_script()
+    skipped_heavy = {job: "skipped" for job in module.CI_HEAVY_JOBS}
+    skipped_ci_jobs = ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "skipped"})
+    docs_jobs = ci_gate_jobs(**skipped_heavy, **{"ci-provenance-emit": "success"})
+    for policy_path, expected_fragment, full_ci_deferred, jobs in (
+        (
+            "iteration",
+            "iteration CI policy outside resolver-permitted event class 'full'",
+            False,
+            skipped_ci_jobs,
+        ),
+        (
+            "defer",
+            "deferred CI policy outside resolver-permitted event class 'full'",
+            True,
+            skipped_ci_jobs,
+        ),
+        (
+            "noop",
+            "noop CI policy outside resolver-permitted event class 'full'",
+            False,
+            skipped_ci_jobs,
+        ),
+        (
+            "docs",
+            "docs CI policy outside resolver-permitted event class 'full'",
+            False,
+            docs_jobs,
+        ),
+    ):
+        assert_raises(
+            expected_fragment,
+            lambda policy_path=policy_path, full_ci_deferred=full_ci_deferred, jobs=jobs: module.evaluate_ci_gate_verdict(
+                policy_path=policy_path,
+                expected_event_class="full",
+                full_ci_deferred=full_ci_deferred,
+                ignore_emit_failure=False,
+                reuse_found=False,
+                job_results=jobs,
+                build_required=False,
+            ),
+        )
     assert_raises(
         "full CI policy outside resolver-permitted event class 'iteration'",
         lambda: module.evaluate_ci_gate_verdict(
@@ -2066,6 +2128,34 @@ def assert_gate_verdict_rejects_event_class_mismatches() -> None:
             build_required=False,
         ),
     )
+    skipped_bvs_jobs = bvs_gate_jobs(clippy="skipped", **{"test-archive": "skipped", "test": "skipped"})
+    for policy_path, expected_fragment, full_ci_deferred in (
+        (
+            "iteration",
+            "backtester iteration CI policy outside resolver-permitted event class 'full'",
+            False,
+        ),
+        (
+            "noop",
+            "backtester noop CI policy outside resolver-permitted event class 'full'",
+            False,
+        ),
+        (
+            "defer",
+            "backtester deferred CI policy outside resolver-permitted event class 'full'",
+            True,
+        ),
+    ):
+        assert_raises(
+            expected_fragment,
+            lambda policy_path=policy_path, full_ci_deferred=full_ci_deferred: module.evaluate_backtester_gate_verdict(
+                policy_path=policy_path,
+                expected_event_class="full",
+                full_ci_deferred=full_ci_deferred,
+                job_results=skipped_bvs_jobs,
+                bvs_changed=True,
+            ),
+        )
     assert_raises(
         "backtester full CI policy outside resolver-permitted event class 'iteration'",
         lambda: module.evaluate_backtester_gate_verdict(
@@ -2456,6 +2546,7 @@ def main() -> int:
     assert_nextest_archive_job_failures_rejected()
     assert_test_archive_and_build_rules()
     assert_ci_gate_job_constants_match_config()
+    assert_backtester_gate_job_constants_match_config()
     assert_ready_for_review_requires_non_draft()
     assert_gate_verdict_rejects_inconsistent_deferred_flag()
     assert_gate_verdict_rejects_event_class_mismatches()

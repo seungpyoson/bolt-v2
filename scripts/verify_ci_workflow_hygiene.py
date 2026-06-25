@@ -9812,6 +9812,12 @@ CACHE_MISS_IF_RE = re.compile(r"\bcache-hit\b\s*(?:!=\s*'true'|==\s*'false')")
 # A cache-miss-guarded build step may contain nested validation failures. The
 # banned same-run transport shape is a top-level fail-closed `exit 1` step.
 EXIT_ONE_RE = re.compile(r"(?m)^exit\s+1\b")
+# `fail-on-cache-miss: true` in any YAML form: optional quotes, flexible spacing,
+# case-insensitive value — a quoted (`'true'`) or `True` variant is the same
+# fail-closed directive and must not evade the ban.
+FAIL_ON_CACHE_MISS_TRUE_RE = re.compile(
+    r"^\s*fail-on-cache-miss:\s*[\"']?true[\"']?\s*$", re.IGNORECASE
+)
 
 
 def is_workflow_yaml(file_name: str) -> bool:
@@ -9822,7 +9828,7 @@ def is_workflow_yaml(file_name: str) -> bool:
 def step_has_cache_miss_guard(block: list[str]) -> bool:
     for line in block:
         clean = strip_comment(line).rstrip()
-        if re.match(r"^\s+(?:-\s*)?if:\s*", clean) and CACHE_MISS_IF_RE.search(clean):
+        if re.match(r"^\s*(?:-\s*)?if:\s*", clean) and CACHE_MISS_IF_RE.search(clean):
             return True
     return False
 
@@ -9831,13 +9837,17 @@ def cache_same_run_transport_errors(file_name: str, text: str) -> list[str]:
     if not is_workflow_yaml(file_name):
         return []
     errors: list[str] = []
-    if "fail-on-cache-miss: true" in uncommented_text(text.splitlines()):
+    if any(
+        FAIL_ON_CACHE_MISS_TRUE_RE.match(strip_comment(line))
+        for line in text.splitlines()
+    ):
         errors.append(CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE)
-    for job_lines in parse_jobs(text).values():
-        for block in step_blocks(job_lines):
-            if step_has_cache_miss_guard(block) and EXIT_ONE_RE.search(block_run_body(block)):
-                errors.append(CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE)
-                return errors
+    if any(
+        step_has_cache_miss_guard(block) and EXIT_ONE_RE.search(block_run_body(block))
+        for job_lines in parse_jobs(text).values()
+        for block in step_blocks(job_lines)
+    ):
+        errors.append(CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE)
     return errors
 
 

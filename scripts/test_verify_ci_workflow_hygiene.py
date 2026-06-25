@@ -7213,6 +7213,26 @@ def assert_cache_as_same_run_transport_is_banned() -> None:
     errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": bad_builtin})
     assert any("fail-closed same-run transport" in error for error in errors), errors
 
+    # Quoted/case variants are the same fail-closed directive; the old exact
+    # substring check missed `'true'`, so the ban must catch these too.
+    for variant in ("'true'", '"true"', "True"):
+        bad_builtin_variant = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: {variant}
+"""
+        variant_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_builtin_variant}
+        )
+        assert any(
+            "fail-closed same-run transport" in error for error in variant_errors
+        ), (variant, variant_errors)
+
     good = """jobs:
   test:
     steps:
@@ -7231,6 +7251,13 @@ def assert_cache_as_same_run_transport_is_banned() -> None:
     assert not [
         error for error in errors if "cache" in error and "same-run" in error
     ], errors
+
+    # The guard's if-matcher must tolerate zero leading whitespace; the old
+    # anchor required at least one leading space and would miss a stripped or
+    # pre-processed line.
+    assert verifier.step_has_cache_miss_guard(
+        ["if: steps.x.outputs.cache-hit != 'true'"]
+    ), "zero-indent cache-miss guard must be detected"
 
 
 def assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths() -> None:

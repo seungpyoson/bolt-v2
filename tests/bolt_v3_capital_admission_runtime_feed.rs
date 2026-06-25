@@ -1561,7 +1561,7 @@ fn covered_sell_open_order_recovery_uses_additive_liability_only() {
     admission.update_capital_admission_nt_components(fresh_components(900));
 
     let reservation = admission
-        .admission_evidence_open_order_reservation_from_evidence(
+        .capital_admission_open_order_reservation_from_evidence(
             BoltV3SubmitCapitalAdmissionOpenOrderEvidence {
                 client_order_id: "client-order-1".to_string(),
                 instrument_id: "instrument-yes.VENUE-A".to_string(),

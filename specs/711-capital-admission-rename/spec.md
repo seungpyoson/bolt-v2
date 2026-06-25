@@ -294,10 +294,13 @@ may add them fresh.
     hash) so operators can audit exactly what changed before committing.
 - **FR-014**: A one-time config migration tool MUST rewrite, in operator TOML, both the
   `sizing_policy` key under **every** `[[risk.capital_pools]]` block → `capital_admission_policy` AND
-  the root `schema_version` `1` → `2`. It MUST use a **comment-and-order-preserving** TOML editor
-  (e.g. `tomlkit`), scoped to the `risk.capital_pools` table context, so that: multiple capital-pool
-  blocks are each migrated; comments are preserved; and an occurrence of the word `sizing_policy` in a
-  comment or in an unrelated table is NOT rewritten. A naive regex MUST NOT be used. Provide a
+  the root `schema_version` `1` → `2`. It MUST use the **Python stdlib only (no third-party
+  dependency** — the repo has no Python manifest, and a one-time operator field migration cannot assume
+  `tomlkit` is installed): a **line-anchored, table-context-scoped rewriter** that edits only the
+  targeted tokens so comments/order/formatting are preserved **byte-for-byte**, scoped to the
+  `risk.capital_pools` table context, so that: multiple capital-pool blocks are each migrated; comments
+  are preserved; and an occurrence of the word `sizing_policy` in a comment or in an unrelated table is
+  NOT rewritten. A naive (unscoped) global regex MUST NOT be used. Provide a
   `--dry-run` mode. Tests MUST cover: multiple pools, a comment containing `sizing_policy`, and a
   `sizing_policy` token outside `risk.capital_pools`.
 - **FR-015**: The running binary MUST accept only the new schema/names — **no** dual-path runtime

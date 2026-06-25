@@ -379,8 +379,23 @@ other version. Emit a changed-file manifest (path + before/after hash).
   blocks → every `sizing_policy` migrated; (c) a comment containing the word `sizing_policy` → NOT
   rewritten; (d) a `sizing_policy` token in an unrelated table outside `risk.capital_pools` → NOT
   rewritten. Run: `python3.12 -m pytest scripts/test_migrate_bolt_v3_capital_admission_config.py -v` → FAIL.
-- [ ] **Step 2:** Implement with a **comment/order-preserving TOML editor (`tomlkit`)**, scoped to the
-  `risk.capital_pools` table context (NOT a naive regex). Provide `--dry-run`.
+- [ ] **Step 2:** Implement with the **Python stdlib only — NO third-party dependency.** The repo has
+  no Python manifest and pins deps only via hash-locked `.github/requirements/*.txt` for CI; `tomlkit`
+  is unavailable to operators running a one-time field migration, so it is rejected. Use a
+  **line-anchored, table-context-scoped rewriter** — the same no-round-trip discipline as the Task 7
+  JSONL migrator — which preserves comments/order/formatting **byte-for-byte** by editing only the
+  targeted tokens:
+  1. Bump the **root-scope** `schema_version = 1` → `2`: the `schema_version` key that appears before
+     the first `[table]` header. Never touch `report_schema_version` or any nested `schema_version`.
+  2. While scanning lines, **track the current table context** (the most recent `[…]` / `[[…]]` header)
+     and rename the `sizing_policy` segment → `capital_admission_policy` ONLY when it is a path segment
+     of a `[risk.capital_pools.sizing_policy…]` header, OR a bare/dotted/inline `sizing_policy` key while
+     the active context is `[[risk.capital_pools]]` / `[risk.capital_pools]`. Leave any `sizing_policy`
+     in a comment, a value, or an unrelated table untouched (covers test cases c, d).
+
+  Provide `--dry-run` (print the unified diff / manifest; write nothing). This validates against
+  `tests/fixtures/bolt_v3/root.toml`'s real shape: root `schema_version` on line 1, headers
+  `[risk.capital_pools.sizing_policy]` + `[risk.capital_pools.sizing_policy.fee_slippage]`.
 - [ ] **Step 3:** Run tests → PASS. Commit.
   `git commit -m "feat(711): one-time sizing_policy->capital_admission_policy + root schema 1->2 config migrator"`
 
@@ -479,7 +494,7 @@ once the audit TOML's `position_sizer` references are updated by Task 10.
   FR-006/007/009 → Task 5 Step 2. FR-009b (`nt_sizing_state`, 5th value) → Task 5 Step 2b + Task 7.
   FR-008 (two sites) → Task 5 Step 1. FR-010 → Task 5 Step 4.
   FR-011 (key + type + config-path strings) → Task 6 Steps 1/3. FR-012 (root version, ≠ strategy) →
-  Task 6 Step 2. FR-013 (key-scoped migrator) → Task 7. FR-014 (tomlkit) → Task 8.
+  Task 6 Step 2. FR-013 (key-scoped migrator) → Task 7. FR-014 (stdlib config migrator) → Task 8.
   FR-015 (no dual path) → Tasks 5/6 (single reader) + 7/8 (offline migration). FR-016 → Task 10.
   FR-017 (invariants + keep-list + legacy skip literal + terminal-source value) → Tasks 1/3 scope +
   Task 5 Step 3 + Task 2 note. FR-018 → Task 0 Step 1. FR-019 (repo-wide fence) → Task 9.

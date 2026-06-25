@@ -1,10 +1,15 @@
-use std::{collections::BTreeMap, num::NonZeroU64};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroU64,
+};
 
 use nautilus_model::identifiers::ClientOrderId;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
-use crate::bolt_v3_risk_reservation_substrate::risk_classifier::ConcentrationBucket;
+use crate::bolt_v3_risk_reservation_substrate::risk_classifier::{
+    ConcentrationBucket, RiskClassificationPolicy, RiskDescriptorCanonicalAttributes,
+};
 
 const INITIAL_RISK_STATE_VERSION_VALUE: u64 = u64::MIN;
 const MONOTONIC_COUNTER_STEP: u64 = NonZeroU64::MIN.get();
@@ -283,6 +288,7 @@ pub struct AdmissionToken {
     pub token_id: String,
     pub pool_id: PoolId,
     pub risk_state_version: RiskStateVersion,
+    pub policy_epoch_id: String,
     pub reservation_id: String,
     pub expires_at_unix_nanos: u64,
 }
@@ -381,21 +387,71 @@ pub enum SafetyAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedPolicyEpoch {
     pub epoch_id: String,
+    pub environment: String,
+    pub pool_id: PoolId,
+    pub policy_digest: String,
     pub descriptor_map_digest: String,
+    pub descriptor_map: BTreeMap<String, PreparedEpochDescriptor>,
     pub classifier_version: String,
+    pub classification_policy: RiskClassificationPolicy,
+    pub model_version: String,
+    pub fallback_model_version: String,
     pub fee_model_version: String,
     pub sizing_policy_versions: Vec<String>,
+    pub approvals: Vec<PolicyApproval>,
     pub approval_digest: String,
-    pub attestation_digests: Vec<String>,
+    pub declared_attestations: Vec<PreparedEpochAttestation>,
+    pub activation_not_after_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedEpochDescriptor {
+    pub active_descriptor: ActiveDescriptorView,
+    pub descriptor_attributes: RiskDescriptorCanonicalAttributes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyApproval {
+    pub approval_id: String,
+    pub approver_id: String,
+    pub approved_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreparedEpochAttestation {
+    BandCoverageAttestation { attestation_digest: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SafetyPolicyEnvelope {
     pub envelope_id: String,
+    pub envelope_version: String,
     pub environment: String,
     pub pool_id: PoolId,
-    pub allowed_range_digest: String,
+    pub ranges: SafetyPolicyEnvelopeRanges,
+    pub permitted_model_versions: BTreeSet<String>,
+    pub permitted_fallback_model_versions: BTreeSet<String>,
+    pub permitted_classifier_versions: BTreeSet<String>,
+    pub permitted_fee_model_versions: BTreeSet<String>,
+    pub permitted_sizing_policy_versions: BTreeSet<String>,
+    pub required_approval_ids: BTreeSet<String>,
     pub required_approval_digest: String,
+    pub invariants: BTreeSet<SafetyEnvelopeInvariant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SafetyPolicyEnvelopeRanges {
+    pub max_descriptor_count: usize,
+    pub max_terminal_states_per_descriptor: usize,
+    pub min_terminal_cash_flow: Decimal,
+    pub max_terminal_cash_flow: Decimal,
+    pub max_sizing_policy_versions: usize,
+    pub max_activation_horizon_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SafetyEnvelopeInvariant {
+    DescriptorPolicyEpochMatchesBundle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

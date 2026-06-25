@@ -123,6 +123,11 @@ pub enum RiskReservationError {
     PermitVersionMismatch,
     PermitAlreadyConsumed,
     IdempotencyConflict,
+    RiskIncreasingAdmissionDisabled,
+    ActivePolicyEpochMismatch {
+        active_policy_epoch_id: String,
+        candidate_policy_epoch_id: String,
+    },
     InvalidCandidate,
     Kernel(RiskKernelError),
     Rejected(RiskReservationRejection),
@@ -335,6 +340,7 @@ pub fn build_admission_token(
         token_id: transaction.candidate.idempotency_key.clone(),
         pool_id: transaction.candidate.pool_id.clone(),
         risk_state_version,
+        policy_epoch_id: transaction.candidate.policy_epoch_id.clone(),
         reservation_id: transaction.candidate.intent_id.clone(),
         expires_at_unix_nanos: transaction.candidate.expires_at_unix_nanos,
     }

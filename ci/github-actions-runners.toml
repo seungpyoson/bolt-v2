@@ -203,8 +203,12 @@ workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
+mergify_temp_pr = "full"
 tag = "tag_reuse"
 unknown_event = "full"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.policy.override]
 force_full_ci = false

@@ -13,7 +13,7 @@ Today there is no real sizer: `bolt_v3_sizing.rs::choose_robust_size` scales a f
 1. Computes a **target terminal exposure** from a selectable sizing model — **fixed fraction of equity** (the launch default) or **risk-constrained Kelly** (opt-in, gated). The "safe" model is a selectable model, not a separate code path. ONE path. NO DUAL PATHS.
 2. Sizes the **complete target position** (existing exposure + the change), then emits the **delta** — never per-order-delta sizing.
 3. Projects the target to an exact candidate using the substrate's shared evaluator and advisory view, **mints unforgeable provenance**, submits to the substrate's atomic gate, and runs a bounded retry + reduction protocol via the **one coordinator** that owns target→action.
-4. Is **family/venue/instrument-agnostic** in its core: binary/taker payoff structure lives only in a registered, sealed adapter that derives terminal cash flows from the active descriptor.
+4. Is a **shared, family/venue/instrument-agnostic module**: one sizer serves many strategies across multiple instances, venues, and instruments. Binary/taker is simply the **first** registered adapter, not a special case — its payoff structure (and any family's) lives only in a sealed, registered adapter that derives terminal cash flows from the active descriptor. Nothing venue-, instrument-, or strategy-specific lives in the sizer core.
 
 The sizer **consumes** an edge and a coverage band; it NEVER measures calibration accuracy (owned by #724/#723). Each module does ONE job.
 

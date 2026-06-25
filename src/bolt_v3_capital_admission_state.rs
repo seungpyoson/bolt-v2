@@ -3,8 +3,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{fs::File, io::Read, path::Path};
 
+use crate::bolt_v3_capital_admission::ProductAdmissionSnapshot;
 use crate::bolt_v3_loss_governor::LossSnapshot;
-use crate::bolt_v3_position_sizer::ProductSizingSnapshot;
 
 pub const VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION: u32 = 1;
 pub const VENUE_SPENDABILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.venue_spendability_source.v1";
@@ -34,7 +34,7 @@ pub struct NtDerivedCapitalAdmissionState {
     pub portfolio: PortfolioCapitalAdmissionSnapshot,
     pub venue_spendability: VenueSpendabilitySnapshot,
     pub order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot,
-    pub product_state: ProductSizingSnapshot,
+    pub product_state: ProductAdmissionSnapshot,
     pub reservation_snapshot: ReservationLedgerSnapshot,
     pub loss_snapshot: Option<LossSnapshot>,
 }
@@ -290,7 +290,7 @@ pub fn validate_nt_derived_capital_admission_state(
     }
 
     let (product_source, product_observed_at_ns) = match &state.product_state {
-        ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+        ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
             (snapshot.source.as_str(), snapshot.observed_at_ns)
         }
     };
@@ -365,7 +365,7 @@ fn evidence_sources(
     state: &NtDerivedCapitalAdmissionState,
 ) -> Vec<CapitalAdmissionStateEvidenceSource> {
     let (product_source, product_observed_at_ns) = match &state.product_state {
-        ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+        ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
             (snapshot.source.clone(), snapshot.observed_at_ns)
         }
     };
@@ -416,8 +416,10 @@ mod tests {
     use rust_decimal::Decimal;
     use sha2::{Digest, Sha256};
 
+    use crate::bolt_v3_capital_admission::{
+        PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot,
+    };
     use crate::bolt_v3_loss_governor::{LossSnapshot, LossSourceObservationTimestamps};
-    use crate::bolt_v3_position_sizer::{PredictionMarketSizingSnapshot, ProductSizingSnapshot};
 
     use super::{
         CapitalAdmissionStateError, CapitalAdmissionStateEvidenceKind,
@@ -464,8 +466,8 @@ mod tests {
                 open_order_count: 1,
                 all_open_orders_attributed: true,
             },
-            product_state: ProductSizingSnapshot::PredictionMarketBinary(
-                PredictionMarketSizingSnapshot {
+            product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+                PredictionMarketAdmissionSnapshot {
                     source: "nt_prediction_market_snapshot".to_string(),
                     observed_at_ns: 1_000,
                     yes_instrument_id: "instrument-1".to_string(),
@@ -516,7 +518,7 @@ mod tests {
                 candidate.order_lifecycle.observed_at_ns = observed_at_ns;
             }
             CapitalAdmissionStateEvidenceKind::ProductState => {
-                let ProductSizingSnapshot::PredictionMarketBinary(snapshot) =
+                let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) =
                     &mut candidate.product_state;
                 snapshot.observed_at_ns = observed_at_ns;
             }
@@ -599,7 +601,7 @@ mod tests {
             },
             {
                 let mut candidate = state();
-                let ProductSizingSnapshot::PredictionMarketBinary(snapshot) =
+                let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) =
                     &mut candidate.product_state;
                 snapshot.source.clear();
                 (candidate, CapitalAdmissionStateEvidenceKind::ProductState)

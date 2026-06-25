@@ -23,8 +23,9 @@ use crate::{
     },
     bolt_v3_observed_dedupe::prune_observed_dedupe_entries,
     bolt_v3_submit_admission::{
-        BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizingFillUpdate,
-        BoltV3SubmitPositionSizingLifecycleDecision, BoltV3SubmitPositionSizingNtComponents,
+        BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState,
+        BoltV3SubmitCapitalAdmissionFillUpdate, BoltV3SubmitCapitalAdmissionLifecycleDecision,
+        BoltV3SubmitCapitalAdmissionNtComponents,
     },
     nt_runtime_capture::{
         account_states_pattern, order_events_pattern, portfolio_snapshots_pattern,
@@ -175,7 +176,7 @@ impl CapitalAdmissionRuntimeFeed {
     pub fn on_account_state(
         &mut self,
         account_state: &AccountState,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         if account_state.account_id != self.config.account_id {
             return None;
         }
@@ -204,7 +205,7 @@ impl CapitalAdmissionRuntimeFeed {
     pub fn on_portfolio_snapshot(
         &mut self,
         portfolio_snapshot: &PortfolioSnapshot,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         if portfolio_snapshot.account_id != self.config.account_id {
             return None;
         }
@@ -228,7 +229,7 @@ impl CapitalAdmissionRuntimeFeed {
     pub fn on_venue_spendability_snapshot(
         &mut self,
         snapshot: VenueSpendabilitySnapshot,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         self.component_builder
             .record_venue_spendability(&self.config, snapshot);
         self.publish_components_if_ready()
@@ -251,7 +252,7 @@ impl CapitalAdmissionRuntimeFeed {
         &mut self,
         client_order_ids: I,
         observed_at_ns: u64,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents>
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents>
     where
         I: IntoIterator<Item = String>,
     {
@@ -269,7 +270,7 @@ impl CapitalAdmissionRuntimeFeed {
         yes_position: Decimal,
         no_position: Decimal,
         observed_at_ns: u64,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents>
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents>
     where
         I: IntoIterator<Item = String>,
     {
@@ -291,7 +292,7 @@ impl CapitalAdmissionRuntimeFeed {
         free_collateral: Decimal,
         total_equity: Decimal,
         observed_at_ns: u64,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         self.component_builder.seed_account_portfolio_snapshot(
             &self.config,
             free_collateral,
@@ -314,7 +315,7 @@ impl CapitalAdmissionRuntimeFeed {
     pub fn on_order_event(
         &mut self,
         event: &OrderEventAny,
-    ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionLifecycleDecision> {
         if let OrderEventAny::Filled(fill) = event {
             return self.on_fill_event(fill);
         }
@@ -326,7 +327,7 @@ impl CapitalAdmissionRuntimeFeed {
             let client_order_id = event.client_order_id().to_string();
             let submit_owned = self
                 .submit_admission
-                .position_sizer_has_live_reservation(&client_order_id);
+                .capital_admission_has_live_reservation(&client_order_id);
             self.component_builder.record_live_order_event(
                 client_order_id,
                 submit_owned,
@@ -357,7 +358,7 @@ impl CapitalAdmissionRuntimeFeed {
         self.publish_components_if_ready();
         let decision = self
             .submit_admission
-            .apply_position_sizing_terminal_order_event(
+            .apply_capital_admission_terminal_order_event(
                 event.client_order_id().to_string(),
                 observed_at_ns,
                 CAPITAL_ADMISSION_ORDER_TERMINAL_SOURCE.to_string(),
@@ -372,7 +373,7 @@ impl CapitalAdmissionRuntimeFeed {
     fn on_fill_event(
         &mut self,
         fill: &OrderFilled,
-    ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionLifecycleDecision> {
         if fill.account_id != self.config.account_id {
             return None;
         }
@@ -391,14 +392,14 @@ impl CapitalAdmissionRuntimeFeed {
         let trade_id = fill.trade_id.to_string();
         let submit_owned = self
             .submit_admission
-            .position_sizer_has_live_reservation(&client_order_id);
+            .capital_admission_has_live_reservation(&client_order_id);
         let fill_quantity = fill.last_qty.as_decimal();
         let fill_trade_key = PositionFillTradeKey {
             instrument_id: instrument_id.clone(),
             trade_id: trade_id.clone(),
         };
-        let decision = self.submit_admission.apply_position_sizing_fill_update(
-            BoltV3SubmitPositionSizingFillUpdate {
+        let decision = self.submit_admission.apply_capital_admission_fill_update(
+            BoltV3SubmitCapitalAdmissionFillUpdate {
                 client_order_id: client_order_id.clone(),
                 trade_id: trade_id.clone(),
                 instrument_id: instrument_id.clone(),
@@ -530,15 +531,15 @@ impl CapitalAdmissionRuntimeFeed {
         }
     }
 
-    fn publish_components_if_ready(&mut self) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    fn publish_components_if_ready(&mut self) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         let submit_admission = Arc::clone(&self.submit_admission);
         self.component_builder
             .refresh_live_order_attribution(|client_order_id| {
-                submit_admission.position_sizer_has_live_reservation(client_order_id)
+                submit_admission.capital_admission_has_live_reservation(client_order_id)
             });
         let components = self.component_builder.components(&self.config)?;
         self.submit_admission
-            .update_position_sizing_nt_components(components.clone());
+            .update_capital_admission_nt_components(components.clone());
         Some(components)
     }
 }
@@ -829,7 +830,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
     fn components(
         &self,
         _config: &CapitalAdmissionRuntimeFeedConfig,
-    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+    ) -> Option<BoltV3SubmitCapitalAdmissionNtComponents> {
         let (free_collateral, account_observed_at_ns) = self.latest_account_free_collateral?;
         let mut portfolio = self.latest_portfolio.clone()?;
         let venue_spendability = self.latest_venue_spendability.clone()?;
@@ -853,7 +854,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             .max(venue_spendability.observed_at_ns)
             .max(self.order_lifecycle.observed_at_ns)
             .max(product_observed_at_ns);
-        Some(BoltV3SubmitPositionSizingNtComponents {
+        Some(BoltV3SubmitCapitalAdmissionNtComponents {
             source: "nt_position_sizer_runtime_components".to_string(),
             observed_at_ns,
             portfolio,

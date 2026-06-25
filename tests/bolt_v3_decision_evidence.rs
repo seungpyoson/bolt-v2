@@ -14,14 +14,14 @@ use bolt_v2::{
         BOLT_V3_REQUOTE_THROTTLE_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason,
-        BoltV3EntrySkipEvidence, BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence,
-        BoltV3ExitDecisionOutcome, BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult,
-        BoltV3ExitRvSnapshotBlocker, BoltV3ExitTriggerSource, BoltV3ForcedFlatReason,
-        BoltV3LossGovernorHaltEvidence, BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3OrderRejectEvidence,
-        BoltV3OrderRejectReason, BoltV3OutcomeSide, BoltV3PositionSizerRebuildAuditEvidence,
-        BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
+        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
+        BoltV3EntryBlockReason, BoltV3EntryPricingBlockReason, BoltV3EntrySkipEvidence,
+        BoltV3EntrySkipReasonCategory, BoltV3ExitDecisionEvidence, BoltV3ExitDecisionOutcome,
+        BoltV3ExitEvaluationEvidence, BoltV3ExitRvGateResult, BoltV3ExitRvSnapshotBlocker,
+        BoltV3ExitTriggerSource, BoltV3ForcedFlatReason, BoltV3LossGovernorHaltEvidence,
+        BoltV3LossSnapshotSource, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+        BoltV3OrderIntentOrderFields, BoltV3OrderRejectEvidence, BoltV3OrderRejectReason,
+        BoltV3OutcomeSide, BoltV3RealizedVolatilitySourceDiagnosticEvidence, BoltV3RejectSource,
         BoltV3RequoteActionCostClass, BoltV3RequoteThrottleBlockReason, BoltV3RequoteThrottleBound,
         BoltV3RequoteThrottleEvidence, BoltV3RvGateResult, BoltV3StaleLossReason,
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
@@ -57,7 +57,7 @@ impl FeeProvider for NoopFeeProvider {
 }
 
 #[test]
-fn decision_evidence_schema_version_tracks_reference_price_and_position_sizer_records() {
+fn decision_evidence_schema_version_tracks_reference_price_and_capital_admission_records() {
     assert_eq!(
         BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         EXPECTED_POSITION_SIZER_RECOVERY_SCHEMA_VERSION
@@ -1446,9 +1446,9 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> Result<()> {
         Ok(())
     }

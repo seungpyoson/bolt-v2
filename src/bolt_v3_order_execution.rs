@@ -735,6 +735,10 @@ mod tests {
         BoltV3SubmitRoutingRequest, route_maker_order_command_with_runtime,
     };
     use crate::{
+        bolt_v3_capital_admission::{
+            CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
+            ProductAdmissionSnapshot, ProductKind,
+        },
         bolt_v3_capital_admission_state::{
             OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
             VenueSpendabilitySnapshot,
@@ -742,28 +746,24 @@ mod tests {
         bolt_v3_capital_reservation::CapitalPoolSnapshot,
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-            BoltV3BasketAdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter,
-            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
-            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-            BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+            BoltV3BasketAdmissionDecisionEvidence, BoltV3CapitalAdmissionRebuildAuditEvidence,
+            BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
+            BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
+            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderRejectEvidence,
             BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
             BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
         bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
         bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
-        bolt_v3_position_sizer::{
-            FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
-            SizingPolicy,
-        },
         bolt_v3_quote_lifecycle::Leg,
         bolt_v3_submit_admission::{
-            BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
-            BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind,
+            BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
+            BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide, BoltV3CompiledProductKind,
             BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionRequest,
-            BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-            BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingNtComponents,
-            PredictionMarketOutcomeSide,
+            BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
+            BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitIntentKind,
+            BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
         },
     };
 
@@ -1029,9 +1029,9 @@ mod tests {
             Ok(())
         }
 
-        fn record_position_sizer_rebuild_audit(
+        fn record_capital_admission_rebuild_audit(
             &self,
-            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
         ) -> Result<()> {
             Ok(())
         }
@@ -1179,14 +1179,14 @@ mod tests {
     }
 
     #[test]
-    fn live_submit_failure_rolls_back_position_sizer_reservation() {
+    fn live_submit_failure_rolls_back_capital_admission_reservation() {
         let writer = Arc::new(RecordingDecisionEvidenceWriter::default());
-        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_position_sizer(
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_capital_admission(
             writer.clone(),
-            position_sizer_config(),
+            capital_admission_config(),
         ));
-        admission.update_position_sizing_nt_components(position_sizing_components());
-        let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1);
+        admission.update_capital_admission_nt_components(capital_admission_components());
+        let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1);
         assert!(rebuild.accepted);
 
         let mut sink = RecordingVenueMutationSink {
@@ -1195,7 +1195,7 @@ mod tests {
         };
         let order = limit_order("O-19700101-000000-001-ROLLBACK-1");
         let intent = intent_for_order(&order);
-        let request = sized_submit_request_for_order(&order);
+        let request = admission_evidence_submit_request_for_order(&order);
         let policy = BoltV3OrderExecutionPolicy::from_mode(BoltV3OrderExecutionMode::Live);
 
         let result = policy.route_submit_with_sink(
@@ -1208,11 +1208,13 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(sink.submit_calls, 1);
         assert_eq!(
-            admission.position_sizer_live_reserved_liability(),
+            admission.capital_admission_live_reserved_liability(),
             Some(Decimal::ZERO)
         );
         assert_eq!(admission.admitted_order_count(), 0);
-        assert!(!admission.position_sizer_has_live_reservation("O-19700101-000000-001-ROLLBACK-1"));
+        assert!(
+            !admission.capital_admission_has_live_reservation("O-19700101-000000-001-ROLLBACK-1")
+        );
     }
 
     #[test]
@@ -1458,13 +1460,15 @@ mod tests {
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
             risk_reducing_exit_proof: None,
             kill_switch_forced_reduction: None,
-            position_sizing: None,
+            admission_evidence: None,
         }
     }
 
-    fn sized_submit_request_for_order(order: &OrderAny) -> BoltV3SubmitAdmissionRequest {
+    fn admission_evidence_submit_request_for_order(
+        order: &OrderAny,
+    ) -> BoltV3SubmitAdmissionRequest {
         let mut request = submit_request_for_order(order, Decimal::new(4, 0));
-        request.position_sizing = Some(BoltV3CompiledOrderSizingEvidence {
+        request.admission_evidence = Some(BoltV3CompiledOrderAdmissionEvidence {
             venue_id: "VENUE-A".to_string(),
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
@@ -1519,8 +1523,8 @@ mod tests {
         }
     }
 
-    fn position_sizer_config() -> BoltV3SubmitPositionSizerConfig {
-        BoltV3SubmitPositionSizerConfig {
+    fn capital_admission_config() -> BoltV3SubmitCapitalAdmissionConfig {
+        BoltV3SubmitCapitalAdmissionConfig {
             venue_id: "VENUE-A".to_string(),
             account_id: "ACCOUNT-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
@@ -1533,7 +1537,7 @@ mod tests {
                 committed_liability: Decimal::ZERO,
                 max_snapshot_age_ns: u64::MAX,
             },
-            policy: SizingPolicy {
+            policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
                 fee_slippage_policy: Some(FeeSlippagePolicy {
                     max_fee_liability: Decimal::new(10, 2),
@@ -1544,8 +1548,8 @@ mod tests {
         }
     }
 
-    fn position_sizing_components() -> BoltV3SubmitPositionSizingNtComponents {
-        BoltV3SubmitPositionSizingNtComponents {
+    fn capital_admission_components() -> BoltV3SubmitCapitalAdmissionNtComponents {
+        BoltV3SubmitCapitalAdmissionNtComponents {
             source: "nt_sizing_state".to_string(),
             observed_at_ns: 0,
             portfolio: PortfolioCapitalAdmissionSnapshot {
@@ -1572,8 +1576,8 @@ mod tests {
                 open_order_count: 0,
                 all_open_orders_attributed: true,
             },
-            product_state: ProductSizingSnapshot::PredictionMarketBinary(
-                PredictionMarketSizingSnapshot {
+            product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+                PredictionMarketAdmissionSnapshot {
                     source: "nt_prediction_market_snapshot".to_string(),
                     observed_at_ns: 0,
                     yes_instrument_id: "instrument-yes.VENUE-A".to_string(),

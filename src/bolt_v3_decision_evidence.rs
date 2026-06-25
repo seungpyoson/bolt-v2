@@ -23,7 +23,7 @@ use crate::bolt_v3_realized_volatility::{
 pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 13;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
-pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
+pub const BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
 pub const BOLT_V3_ENTRY_SKIP_GATE_ID: &str = "bolt_v3.entry_skip";
@@ -39,7 +39,7 @@ pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";
 const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_decision";
-const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
+const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
 const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
 const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
 const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";
@@ -103,9 +103,9 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
         &self,
         decision: &BoltV3BasketAdmissionDecisionEvidence,
     ) -> Result<()>;
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> Result<()>;
     fn record_submit_reservation_metadata(
         &self,
@@ -1003,7 +1003,7 @@ pub struct BoltV3AdmissionDecisionEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BoltV3PositionSizerRebuildAuditEvidence {
+pub struct BoltV3CapitalAdmissionRebuildAuditEvidence {
     pub observed_at_ns: u64,
     pub source: String,
     pub observed_open_order_count: usize,
@@ -1284,11 +1284,11 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         self.append_line(&line)
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> Result<()> {
-        let line = encode_position_sizer_rebuild_audit_line(audit)?;
+        let line = encode_capital_admission_rebuild_audit_line(audit)?;
         self.append_line(&line)
     }
 
@@ -1509,19 +1509,19 @@ pub fn read_latest_entry_decision_evidence_chain(
             }
             "position_sizer_rebuild" => {
                 header.validate(
-                    BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
-                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
+                    BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
                     index,
                 )?;
-                let decoded: PositionSizerRebuildAuditLineOwned = serde_json::from_slice(line)
+                let decoded: CapitalAdmissionRebuildAuditLineOwned = serde_json::from_slice(line)
                     .with_context(|| {
                         format!(
-                            "failed to parse bolt-v3 position sizer rebuild audit line at index {index}"
+                            "failed to parse bolt-v3 capital admission rebuild audit line at index {index}"
                         )
                     })?;
                 decoded.validate_header(
-                    BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
-                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
+                    BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
                     index,
                 )?;
             }
@@ -1783,19 +1783,19 @@ pub fn read_submit_reservation_recovery_evidence(
             }
             "position_sizer_rebuild" => {
                 header.validate(
-                    BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
-                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
+                    BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
                     index,
                 )?;
-                let decoded: PositionSizerRebuildAuditLineOwned = serde_json::from_slice(line)
+                let decoded: CapitalAdmissionRebuildAuditLineOwned = serde_json::from_slice(line)
                     .with_context(|| {
                         format!(
-                            "failed to parse bolt-v3 position sizer rebuild audit line at index {index}"
+                            "failed to parse bolt-v3 capital admission rebuild audit line at index {index}"
                         )
                     })?;
                 decoded.validate_header(
-                    BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
-                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
+                    BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
                     index,
                 )?;
             }
@@ -2002,7 +2002,7 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
                 | BOLT_V3_ORDER_INTENT_RECORD_KIND
                 | BOLT_V3_ADMISSION_DECISION_RECORD_KIND
                 | BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND
-                | BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND
+                | BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND
                 | BOLT_V3_ENTRY_SKIP_RECORD_KIND
                 | BOLT_V3_EXIT_DECISION_RECORD_KIND
                 | BOLT_V3_EXIT_EVALUATION_RECORD_KIND
@@ -2361,10 +2361,10 @@ struct BasketAdmissionDecisionLineOwned {
 }
 
 #[derive(Deserialize)]
-struct PositionSizerRebuildAuditLineOwned {
+struct CapitalAdmissionRebuildAuditLineOwned {
     #[serde(flatten)]
     header: DecisionEvidenceEnvelopeHeader,
-    audit: BoltV3PositionSizerRebuildAuditEvidence,
+    audit: BoltV3CapitalAdmissionRebuildAuditEvidence,
 }
 
 #[derive(Deserialize)]
@@ -2425,7 +2425,7 @@ impl BasketAdmissionDecisionLineOwned {
     }
 }
 
-impl PositionSizerRebuildAuditLineOwned {
+impl CapitalAdmissionRebuildAuditLineOwned {
     fn validate_header(
         &self,
         expected_kind: &str,
@@ -2538,13 +2538,13 @@ struct BasketAdmissionDecisionLine<'a> {
 }
 
 #[derive(Serialize)]
-struct PositionSizerRebuildAuditLine<'a> {
+struct CapitalAdmissionRebuildAuditLine<'a> {
     schema_version: u32,
     recorded_at_utc_ns: i64,
     gate_id: &'static str,
     gate_version: &'static str,
     kind: &'static str,
-    audit: &'a BoltV3PositionSizerRebuildAuditEvidence,
+    audit: &'a BoltV3CapitalAdmissionRebuildAuditEvidence,
 }
 
 #[derive(Serialize)]
@@ -2667,19 +2667,19 @@ fn encode_basket_admission_decision_line(
     Ok(line)
 }
 
-fn encode_position_sizer_rebuild_audit_line(
-    audit: &BoltV3PositionSizerRebuildAuditEvidence,
+fn encode_capital_admission_rebuild_audit_line(
+    audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
 ) -> Result<Vec<u8>> {
-    let envelope = PositionSizerRebuildAuditLine {
+    let envelope = CapitalAdmissionRebuildAuditLine {
         schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         recorded_at_utc_ns: current_utc_ns(),
-        gate_id: BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+        gate_id: BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
         gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
-        kind: BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND,
+        kind: BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
         audit,
     };
     let mut line = serde_json::to_vec(&envelope)
-        .context("failed to serialize position sizer rebuild audit evidence")?;
+        .context("failed to serialize capital admission rebuild audit evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }

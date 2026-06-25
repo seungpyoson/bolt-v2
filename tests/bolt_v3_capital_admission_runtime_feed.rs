@@ -16,12 +16,13 @@ use bolt_v2::bolt_v3_capital_admission_state::{
 };
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_submit_admission::{
+    BoltV3CapitalAdmissionRejectReason, BoltV3CompiledOrderAdmissionEvidence,
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
-    BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3PositionSizerRejectReason,
-    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
-    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
-    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderEvidence,
-    BoltV3SubmitPositionSizingOpenOrderReservation, PredictionMarketOutcomeSide,
+    BoltV3CompiledProductKind, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
+    BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
+    BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
+    BoltV3SubmitCapitalAdmissionOpenOrderReservation, BoltV3SubmitIntentKind,
+    BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -81,7 +82,7 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
 
 #[test]
 fn subscribed_account_and_portfolio_events_publish_account_spendability() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
         runtime_feed_config(),
         admission.clone(),
@@ -99,7 +100,7 @@ fn subscribed_account_and_portfolio_events_publish_account_spendability() {
     subscription.unsubscribe_all();
 
     let snapshot = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("account and portfolio events should publish account-derived spendability");
     assert_eq!(snapshot.observed_at_ns, 1_100);
     assert_eq!(
@@ -110,17 +111,20 @@ fn subscribed_account_and_portfolio_events_publish_account_spendability() {
         snapshot.venue_spendability.spendable_collateral,
         Decimal::new(4500, 2)
     );
-    assert_eq!(admission.position_sizer_state_observed_at_ns(), Some(1_100));
+    assert_eq!(
+        admission.capital_admission_state_observed_at_ns(),
+        Some(1_100)
+    );
 }
 
 #[test]
 fn capital_admission_runtime_subscription_drop_unsubscribes_all_handlers() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
-    admission.update_position_sizing_nt_components(fresh_components(900));
-    rebuild_empty_position_sizer(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
@@ -148,9 +152,12 @@ fn capital_admission_runtime_subscription_drop_unsubscribes_all_handlers() {
         &OrderEventAny::Canceled(order_canceled_event("client-order-1", 2_300)),
     );
 
-    assert_eq!(admission.position_sizer_state_observed_at_ns(), Some(1_000));
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_state_observed_at_ns(),
+        Some(1_000)
+    );
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
     assert_eq!(
@@ -163,7 +170,7 @@ fn capital_admission_runtime_subscription_drop_unsubscribes_all_handlers() {
 
 #[test]
 fn feed_waits_for_matching_account_identity_before_publish() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
@@ -175,9 +182,9 @@ fn feed_waits_for_matching_account_identity_before_publish() {
         ))
         .is_some()
     );
-    assert!(admission.position_sizer_state_snapshot().is_some());
+    assert!(admission.capital_admission_state_snapshot().is_some());
 
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
@@ -188,9 +195,9 @@ fn feed_waits_for_matching_account_identity_before_publish() {
         ))
         .is_none()
     );
-    assert_eq!(admission.position_sizer_state_snapshot(), None);
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
 
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
         feed.on_account_state(&account_state(
@@ -201,9 +208,9 @@ fn feed_waits_for_matching_account_identity_before_publish() {
         ))
         .is_none()
     );
-    assert_eq!(admission.position_sizer_state_snapshot(), None);
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
 
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
         feed.on_account_state(&account_state(
@@ -214,9 +221,9 @@ fn feed_waits_for_matching_account_identity_before_publish() {
         ))
         .is_some()
     );
-    assert!(admission.position_sizer_state_snapshot().is_some());
+    assert!(admission.capital_admission_state_snapshot().is_some());
 
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
@@ -227,12 +234,12 @@ fn feed_waits_for_matching_account_identity_before_publish() {
         ))
         .is_none()
     );
-    assert_eq!(admission.position_sizer_state_snapshot(), None);
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
 }
 
 #[test]
 fn feed_derives_default_venue_spendability_from_nt_account_free_collateral() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let components = feed
@@ -262,7 +269,7 @@ fn feed_derives_default_venue_spendability_from_nt_account_free_collateral() {
 
 #[test]
 fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
@@ -282,7 +289,7 @@ fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
     assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("published components should update admission sizing state");
     assert_eq!(
         state.venue_spendability.spendable_collateral,
@@ -296,7 +303,7 @@ fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
 
 #[test]
 fn account_update_does_not_make_external_venue_spendability_fresh() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission);
 
     assert!(
@@ -320,7 +327,7 @@ fn account_update_does_not_make_external_venue_spendability_fresh() {
 
 #[test]
 fn recomputed_product_allowance_carries_fresh_component_timestamp() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut config = runtime_feed_config();
     config.startup_observed_at_ns = 0;
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
@@ -350,7 +357,7 @@ fn recomputed_product_allowance_carries_fresh_component_timestamp() {
 
 #[test]
 fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
@@ -372,7 +379,7 @@ fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
 
 #[test]
 fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
@@ -414,7 +421,7 @@ fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives()
 
 #[test]
 fn feed_ignores_older_spendability_snapshot_after_newer_one() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
@@ -440,7 +447,7 @@ fn feed_ignores_older_spendability_snapshot_after_newer_one() {
 
 #[test]
 fn feed_ignores_account_state_for_other_collateral_currency() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
@@ -461,12 +468,12 @@ fn feed_ignores_account_state_for_other_collateral_currency() {
         ))
         .is_none()
     );
-    assert_eq!(admission.position_sizer_state_snapshot(), None);
+    assert_eq!(admission.capital_admission_state_snapshot(), None);
 }
 
 #[test]
-fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
-    let admission = Arc::new(position_sized_admission());
+fn capital_admission_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let _ = feed.on_account_state(&account_state(
@@ -490,12 +497,12 @@ fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
             .is_some()
     );
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_200);
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_200);
 
     assert!(rebuild.accepted);
-    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("cache seed should publish sizing components");
     assert_eq!(state.order_lifecycle.source, "nt_open_order_cache");
     assert_eq!(state.order_lifecycle.observed_at_ns, 1_200);
@@ -505,7 +512,7 @@ fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
 
 #[test]
 fn account_state_after_empty_startup_cache_reconciles_empty_gate_without_portfolio_snapshot() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     seed_venue_spendability(&mut feed, 950);
@@ -513,9 +520,9 @@ fn account_state_after_empty_startup_cache_reconciles_empty_gate_without_portfol
         feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
             .is_none()
     );
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
     assert!(!rebuild.accepted);
-    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
 
     assert!(
         feed.on_account_state(&account_state(
@@ -527,22 +534,22 @@ fn account_state_after_empty_startup_cache_reconciles_empty_gate_without_portfol
         .is_some()
     );
 
-    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("account state should publish sizing state");
     assert_eq!(state.portfolio.source, "nt_account_state");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
     assert!(state.order_lifecycle.all_open_orders_attributed);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_150)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_150)
         .expect("empty startup cache plus account state should admit")
         .commit_submitted();
 }
 
 #[test]
 fn account_state_after_unattributed_live_order_keeps_gate_unreconciled() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     seed_venue_spendability(&mut feed, 950);
@@ -562,25 +569,25 @@ fn account_state_after_unattributed_live_order_keeps_gate_unreconciled() {
         .is_some()
     );
 
-    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("account state should publish unreconciled sizing state");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
     assert!(!state.order_lifecycle.all_open_orders_attributed);
     assert_eq!(
         admission
-            .admit_at(&sized_submit_request("client-order-1"), 1_150)
+            .admit_at(&capital_admission_submit_request("client-order-1"), 1_150)
             .expect_err("unattributed live order must keep submit admission closed"),
-        BoltV3SubmitAdmissionError::PositionSizingRejected {
-            reason: BoltV3PositionSizerRejectReason::ReconciliationRequired,
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::ReconciliationRequired,
         }
     );
 }
 
 #[test]
 fn unattributed_live_order_after_empty_reconcile_recloses_gate() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     seed_venue_spendability(&mut feed, 950);
@@ -588,9 +595,9 @@ fn unattributed_live_order_after_empty_reconcile_recloses_gate() {
         feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
             .is_none()
     );
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
     assert!(!rebuild.accepted);
-    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
 
     assert!(
         feed.on_account_state(&account_state(
@@ -601,7 +608,7 @@ fn unattributed_live_order_after_empty_reconcile_recloses_gate() {
         ))
         .is_some()
     );
-    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
 
     let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
         "external-client-order",
@@ -609,25 +616,25 @@ fn unattributed_live_order_after_empty_reconcile_recloses_gate() {
         AccountId::from("ACCOUNT-001"),
     )));
 
-    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("unattributed live order should publish unreconciled sizing state");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
     assert!(!state.order_lifecycle.all_open_orders_attributed);
     assert_eq!(
         admission
-            .admit_at(&sized_submit_request("client-order-1"), 1_250)
+            .admit_at(&capital_admission_submit_request("client-order-1"), 1_250)
             .expect_err("unattributed live order must re-close submit admission"),
-        BoltV3SubmitAdmissionError::PositionSizingRejected {
-            reason: BoltV3PositionSizerRejectReason::ReconciliationRequired,
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::ReconciliationRequired,
         }
     );
 }
 
 #[test]
 fn terminal_event_after_unattributed_live_order_reopens_empty_gate() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     seed_venue_spendability(&mut feed, 950);
@@ -635,9 +642,9 @@ fn terminal_event_after_unattributed_live_order_reopens_empty_gate() {
         feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
             .is_none()
     );
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
     assert!(!rebuild.accepted);
-    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
 
     assert!(
         feed.on_account_state(&account_state(
@@ -648,35 +655,35 @@ fn terminal_event_after_unattributed_live_order_reopens_empty_gate() {
         ))
         .is_some()
     );
-    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
 
     let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
         "external-client-order",
         1_200,
         AccountId::from("ACCOUNT-001"),
     )));
-    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
 
     let _ = feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
         "external-client-order",
         1_300,
     )));
 
-    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("terminal event should publish reconciled empty lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
     assert!(state.order_lifecycle.all_open_orders_attributed);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_350)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_350)
         .expect("empty terminal lifecycle should reopen submit admission")
         .commit_submitted();
 }
 
 #[test]
-fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
-    let admission = Arc::new(position_sized_admission());
+fn capital_admission_cache_seed_updates_configured_yes_no_inventory() {
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let _ = feed.on_account_state(&account_state(
@@ -706,7 +713,7 @@ fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("cache seed should publish configured product inventory");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_position_cache");
@@ -717,7 +724,7 @@ fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
 
 #[test]
 fn cache_seed_and_concurrent_order_event_do_not_double_count() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let _ = feed.on_account_state(&account_state(
@@ -743,7 +750,7 @@ fn cache_seed_and_concurrent_order_event_do_not_double_count() {
         AccountId::from("ACCOUNT-001"),
     )));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("live order event should publish lifecycle state");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
 
@@ -752,7 +759,7 @@ fn cache_seed_and_concurrent_order_event_do_not_double_count() {
             .is_some()
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("cache seed should keep lifecycle state");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
 
@@ -761,7 +768,7 @@ fn cache_seed_and_concurrent_order_event_do_not_double_count() {
         1_400,
     )));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("terminal event should publish lifecycle state");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
 
@@ -770,14 +777,14 @@ fn cache_seed_and_concurrent_order_event_do_not_double_count() {
             .is_some()
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("stale cache seed should not resurrect terminal order");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
 }
 
 #[test]
 fn account_bound_live_order_events_update_open_order_count() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
@@ -801,15 +808,15 @@ fn account_bound_live_order_events_update_open_order_count() {
         feed.seed_open_order_cache(Vec::<String>::new(), 1_120)
             .is_some()
     );
-    rebuild_empty_position_sizer(&admission);
-    let mut request = sized_submit_request("client-order-1");
+    rebuild_empty_capital_admission(&admission);
+    let mut request = capital_admission_submit_request("client-order-1");
     request.instrument_id = "instrument-yes.VENUE-A".to_string();
     admission
         .admit_at(&request, 1_150)
         .expect("fresh sizing state should admit")
         .commit_submitted();
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
 
@@ -819,7 +826,7 @@ fn account_bound_live_order_events_update_open_order_count() {
         AccountId::from("ACCOUNT-001"),
     )));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("submitted event should publish lifecycle state");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
 
@@ -833,18 +840,18 @@ fn account_bound_live_order_events_update_open_order_count() {
     assert!(decision.accepted);
     assert!(!decision.unknown_reservation);
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("terminal event should publish lifecycle state");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
 }
 
 #[test]
 fn live_order_event_for_submit_owned_reservation_keeps_second_submit_open() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
@@ -868,10 +875,10 @@ fn live_order_event_for_submit_owned_reservation_keeps_second_submit_open() {
         feed.seed_open_order_cache(Vec::<String>::new(), 1_120)
             .is_some()
     );
-    rebuild_empty_position_sizer(&admission);
+    rebuild_empty_capital_admission(&admission);
 
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_150)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_150)
         .expect("first fresh submit should admit")
         .commit_submitted();
     let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
@@ -881,18 +888,18 @@ fn live_order_event_for_submit_owned_reservation_keeps_second_submit_open() {
     )));
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("submitted event should publish lifecycle state");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
     assert!(state.order_lifecycle.all_open_orders_attributed);
 
     admission
-        .admit_at(&sized_submit_request("client-order-2"), 1_250)
+        .admit_at(&capital_admission_submit_request("client-order-2"), 1_250)
         .expect("submit-owned live order must not close admission for the next order")
         .commit_submitted();
 
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(86, 1))
     );
 }
@@ -906,7 +913,7 @@ fn partial_fill_event_revalues_residual_reservation() {
         AccountId::from("ACCOUNT-001"),
     )));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("accepted order should publish lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
 
@@ -925,11 +932,11 @@ fn partial_fill_event_revalues_residual_reservation() {
     assert!(decision.accepted);
     assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Revalued);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(27, 1))
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("partial fill should keep live lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
@@ -943,7 +950,7 @@ fn partial_fill_event_revalues_residual_reservation() {
 fn unknown_external_fill_updates_product_position_once_without_reservation_lifecycle() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
 
@@ -961,11 +968,11 @@ fn unknown_external_fill_updates_product_position_once_without_reservation_lifec
     );
 
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("unknown external fill should still publish observed product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_order_fill");
@@ -986,7 +993,7 @@ fn unknown_external_fill_updates_product_position_once_without_reservation_lifec
         .is_none()
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("duplicate external trade id should not mutate product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
@@ -1024,7 +1031,7 @@ fn external_fill_replay_after_dedupe_retention_expires_does_not_double_count_pro
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("post-retention duplicate external fill should leave product state intact");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
@@ -1034,7 +1041,7 @@ fn external_fill_replay_after_dedupe_retention_expires_does_not_double_count_pro
 
 #[test]
 fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
@@ -1057,7 +1064,7 @@ fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() 
         feed.seed_cache_snapshot(Vec::<String>::new(), Decimal::ZERO, Decimal::ZERO, 1_000)
             .is_some()
     );
-    rebuild_empty_position_sizer(&admission);
+    rebuild_empty_capital_admission(&admission);
 
     assert!(
         feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
@@ -1096,7 +1103,7 @@ fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() 
         .is_none()
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("latched external fill should preserve pre-reseed product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
@@ -1120,7 +1127,7 @@ fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() 
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("authoritative reseed should re-arm external fill accounting");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 2_000);
@@ -1161,7 +1168,7 @@ fn known_fill_retention_expiry_does_not_block_distinct_external_fill() {
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("distinct external fill should update after known-fill retention expiry");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_700);
@@ -1203,7 +1210,7 @@ fn known_fill_replay_after_dedupe_retention_expires_does_not_apply_external_delt
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("post-retention known duplicate should preserve product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
@@ -1241,7 +1248,7 @@ fn external_fill_dedupe_keys_by_instrument_and_trade_id() {
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("same venue trade id on a different instrument should still publish");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_200);
@@ -1252,7 +1259,7 @@ fn external_fill_dedupe_keys_by_instrument_and_trade_id() {
 
 #[test]
 fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
@@ -1280,7 +1287,7 @@ fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
         )
         .is_some()
     );
-    rebuild_empty_position_sizer(&admission);
+    rebuild_empty_capital_admission(&admission);
 
     assert!(
         feed.on_order_event(&OrderEventAny::Filled(
@@ -1299,7 +1306,7 @@ fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("reconciliation fill should preserve seeded product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_ne!(product.source, "nt_order_fill");
@@ -1316,7 +1323,7 @@ fn full_fill_event_releases_reservation_and_closes_live_order_count() {
         AccountId::from("ACCOUNT-001"),
     )));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("accepted order should publish lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
 
@@ -1335,11 +1342,11 @@ fn full_fill_event_releases_reservation_and_closes_live_order_count() {
     assert!(decision.accepted);
     assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("full fill should publish lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
     assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
@@ -1379,7 +1386,7 @@ fn duplicate_known_full_fill_trade_id_does_not_apply_external_delta_after_releas
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("duplicate known trade id should not mutate product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
@@ -1432,7 +1439,7 @@ fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
         .is_none()
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("post-terminal duplicate fill should not mutate product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
@@ -1451,7 +1458,7 @@ fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
         .is_none()
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("distinct post-terminal fill should publish product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_order_fill");
@@ -1462,7 +1469,7 @@ fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
 
 #[test]
 fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut config = runtime_feed_config();
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
@@ -1493,14 +1500,17 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
         )
         .is_some()
     );
-    rebuild_empty_position_sizer(&admission);
+    rebuild_empty_capital_admission(&admission);
 
     admission
-        .admit_at(&sized_sell_submit_request("client-order-1"), 1_010)
+        .admit_at(
+            &capital_admission_sell_submit_request("client-order-1"),
+            1_010,
+        )
         .expect("sell within seeded YES inventory should admit")
         .commit_submitted();
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(30, 2))
     );
     feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
@@ -1522,7 +1532,7 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
     assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("sell fill should publish updated inventory");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_order_fill");
@@ -1531,25 +1541,28 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
     assert_eq!(product.conditional_token_allowance, Decimal::ZERO);
 
     let second = admission
-        .admit_at(&sized_sell_submit_request("client-order-2"), 1_150)
+        .admit_at(
+            &capital_admission_sell_submit_request("client-order-2"),
+            1_150,
+        )
         .expect_err("sell above post-fill inventory should reject");
     assert_eq!(
         second,
-        BoltV3SubmitAdmissionError::PositionSizingRejected {
-            reason: BoltV3PositionSizerRejectReason::SizingRejected,
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::CapitalAdmissionRejected,
         }
     );
 }
 
 #[test]
 fn covered_sell_open_order_recovery_uses_additive_liability_only() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
-    admission.update_position_sizing_nt_components(fresh_components(900));
+    admission.update_capital_admission_nt_components(fresh_components(900));
 
     let reservation = admission
-        .position_sizing_open_order_reservation_from_evidence(
-            BoltV3SubmitPositionSizingOpenOrderEvidence {
+        .admission_evidence_open_order_reservation_from_evidence(
+            BoltV3SubmitCapitalAdmissionOpenOrderEvidence {
                 client_order_id: "client-order-1".to_string(),
                 instrument_id: "instrument-yes.VENUE-A".to_string(),
                 side: BoltV3CompiledOrderSide::Sell,
@@ -1594,14 +1607,14 @@ fn fill_event_account_or_instrument_mismatch_is_non_mutating() {
         .is_none()
     );
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
 }
 
 #[test]
 fn fill_event_for_rebuilt_reservation_revalues_residual() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
@@ -1620,7 +1633,7 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
         ))
         .is_some()
     );
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1644,7 +1657,7 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
     assert!(decision.accepted);
     assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Revalued);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(27, 1))
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), None);
@@ -1652,7 +1665,7 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
 
 #[test]
 fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
@@ -1678,7 +1691,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
     );
     reservation.recovered_from_startup = true;
     let rebuild =
-        admission.rebuild_position_sizing_open_order_reservations(vec![reservation], 1_000);
+        admission.rebuild_capital_admission_open_order_reservations(vec![reservation], 1_000);
     assert!(rebuild.accepted);
 
     let reconciliation = feed
@@ -1698,7 +1711,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
     assert!(reconciliation.accepted);
     assert_eq!(reconciliation.action, CapitalAdmissionLifecycleAction::None);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
 
@@ -1716,7 +1729,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
     assert!(duplicate.accepted);
     assert_eq!(duplicate.action, CapitalAdmissionLifecycleAction::None);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
 
@@ -1729,7 +1742,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
     assert!(terminal.accepted);
     assert_eq!(terminal.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
 
@@ -1746,7 +1759,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
         .is_none()
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("post-terminal duplicate reconciliation fill should not mutate product state");
     let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_ne!(product.source, "nt_order_fill");
@@ -1755,7 +1768,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
 
 #[test]
 fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
@@ -1779,7 +1792,7 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
             .is_some()
     );
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1790,24 +1803,24 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
     assert!(rebuild.accepted);
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("attributed rebuild should retain NT state");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
     assert!(state.order_lifecycle.all_open_orders_attributed);
 
     admission
-        .admit_at(&sized_submit_request("client-order-2"), 1_100)
+        .admit_at(&capital_admission_submit_request("client-order-2"), 1_100)
         .expect("attributed startup order should not close later submits")
         .commit_submitted();
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(86, 1))
     );
 }
 
 #[test]
 fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attribution() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
@@ -1831,7 +1844,7 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
             .is_some()
     );
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1852,13 +1865,13 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
     );
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("account refresh should preserve rebuilt NT state");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
     assert!(state.order_lifecycle.all_open_orders_attributed);
 
     admission
-        .admit_at(&sized_submit_request("client-order-2"), 1_100)
+        .admit_at(&capital_admission_submit_request("client-order-2"), 1_100)
         .expect("account refresh should not erase attributed startup rebuild")
         .commit_submitted();
     let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
@@ -1868,32 +1881,32 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
     )));
 
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("second submit event should preserve rebuilt NT state");
     assert_eq!(state.order_lifecycle.open_order_count, 2);
     assert!(state.order_lifecycle.all_open_orders_attributed);
 
-    let mut third_request = sized_submit_request("client-order-3");
+    let mut third_request = capital_admission_submit_request("client-order-3");
     third_request.notional = Decimal::new(4, 1);
     third_request.order_quantity = Decimal::new(1, 0);
     third_request
-        .position_sizing
+        .admission_evidence
         .as_mut()
-        .expect("third request should carry sizing evidence")
+        .expect("third request should carry admission evidence")
         .quantity = Decimal::new(1, 0);
     admission
         .admit_at(&third_request, 1_200)
         .expect("submitted event should not erase attributed startup rebuild")
         .commit_submitted();
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(930, 2))
     );
 }
 
 #[test]
 fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
@@ -1916,7 +1929,7 @@ fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count(
         feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
             .is_some()
     );
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1941,12 +1954,12 @@ fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count(
     assert!(decision.accepted);
     assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("fill release should publish updated lifecycle state");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
     assert!(state.order_lifecycle.all_open_orders_attributed);
@@ -1980,7 +1993,7 @@ fn duplicate_fill_trade_id_with_different_runtime_instrument_is_non_mutating() {
         .is_none()
     );
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(27, 1))
     );
 }
@@ -2015,27 +2028,27 @@ fn terminal_event_after_partial_fill_releases_residual_reservation() {
 
     assert_eq!(terminal.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     let state = admission
-        .position_sizer_state_snapshot()
+        .capital_admission_state_snapshot()
         .expect("terminal should publish lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
 }
 
 #[test]
 fn terminal_nt_order_event_releases_committed_submit_reservation() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
-    admission.update_position_sizing_nt_components(fresh_components(900));
-    rebuild_empty_position_sizer(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
 
@@ -2050,7 +2063,7 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
     assert!(decision.accepted);
     assert!(!decision.unknown_reservation);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     assert_eq!(
@@ -2062,33 +2075,33 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
 
 #[test]
 fn configured_submit_sizer_rejects_stale_venue_spendability_before_nt_submit() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut components = fresh_components(900);
     components.venue_spendability.observed_at_ns = 100;
-    admission.update_position_sizing_nt_components(components);
-    rebuild_empty_position_sizer(&admission);
+    admission.update_capital_admission_nt_components(components);
+    rebuild_empty_capital_admission(&admission);
 
     let error = admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
         .expect_err("stale venue spendability evidence must reject");
 
     assert!(matches!(
         error,
-        BoltV3SubmitAdmissionError::PositionSizingRejected {
-            reason: BoltV3PositionSizerRejectReason::StaleNtState
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: BoltV3CapitalAdmissionRejectReason::StaleNtState
         }
     ));
 }
 
 #[test]
 fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
-    admission.update_position_sizing_nt_components(fresh_components(900));
-    rebuild_empty_position_sizer(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
@@ -2105,7 +2118,7 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
     subscription.unsubscribe_all();
 
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     assert_eq!(
@@ -2118,12 +2131,12 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
 
 #[test]
 fn denied_nt_order_event_without_account_releases_matching_committed_submit_reservation() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
-    admission.update_position_sizing_nt_components(fresh_components(900));
-    rebuild_empty_position_sizer(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
@@ -2138,7 +2151,7 @@ fn denied_nt_order_event_without_account_releases_matching_committed_submit_rese
     assert!(decision.accepted);
     assert!(!decision.unknown_reservation);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
@@ -2166,12 +2179,12 @@ fn rejected_and_expired_nt_order_events_release_matching_committed_submit_reserv
 
 #[test]
 fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
-    admission.update_position_sizing_nt_components(fresh_components(900));
-    rebuild_empty_position_sizer(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
@@ -2186,7 +2199,7 @@ fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
         .is_none()
     );
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), None);
@@ -2194,12 +2207,12 @@ fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
 
 #[test]
 fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
-    admission.update_position_sizing_nt_components(fresh_components(900));
-    rebuild_empty_position_sizer(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
@@ -2214,19 +2227,19 @@ fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
         .is_none()
     );
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), None);
 }
 
 fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
-    admission.update_position_sizing_nt_components(fresh_components(900));
-    rebuild_empty_position_sizer(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&sized_submit_request(client_order_id), 1_000)
+        .admit_at(&capital_admission_submit_request(client_order_id), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
@@ -2239,7 +2252,7 @@ fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
     assert!(decision.accepted);
     assert!(!decision.unknown_reservation);
     assert_eq!(
-        admission.position_sizer_live_reserved_liability(),
+        admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), Some(observed_at_ns));
@@ -2338,10 +2351,10 @@ fn test_currency(currency_code: &str) -> Currency {
     Currency::from(currency_code)
 }
 
-fn position_sized_admission() -> BoltV3SubmitAdmissionState {
-    BoltV3SubmitAdmissionState::new_with_position_sizer(
+fn capital_admission_configured_admission() -> BoltV3SubmitAdmissionState {
+    BoltV3SubmitAdmissionState::new_with_capital_admission(
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
-        BoltV3SubmitPositionSizerConfig {
+        BoltV3SubmitCapitalAdmissionConfig {
             venue_id: "VENUE-A".to_string(),
             account_id: "ACCOUNT-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
@@ -2368,21 +2381,21 @@ fn position_sized_admission() -> BoltV3SubmitAdmissionState {
 
 fn arm_default(_admission: &BoltV3SubmitAdmissionState) {}
 
-fn rebuild_empty_position_sizer(admission: &BoltV3SubmitAdmissionState) {
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+fn rebuild_empty_capital_admission(admission: &BoltV3SubmitAdmissionState) {
+    let rebuild = admission.rebuild_capital_admission_open_order_reservations(Vec::new(), 1_000);
     assert!(
         rebuild.accepted,
         "test startup rebuild should open submit admission"
     );
-    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+    assert_eq!(admission.capital_admission_reconciled(), Some(true));
 }
 
 fn open_order_reservation(
     client_order_id: &str,
     submit_reservation_id: &str,
     liability: Decimal,
-) -> BoltV3SubmitPositionSizingOpenOrderReservation {
-    BoltV3SubmitPositionSizingOpenOrderReservation {
+) -> BoltV3SubmitCapitalAdmissionOpenOrderReservation {
+    BoltV3SubmitCapitalAdmissionOpenOrderReservation {
         client_order_id: client_order_id.to_string(),
         submit_reservation_id: submit_reservation_id.to_string(),
         collateral_group_id: "group-1".to_string(),
@@ -2403,7 +2416,7 @@ fn open_order_reservation(
 
 fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, CapitalAdmissionRuntimeFeed)
 {
-    let admission = Arc::new(position_sized_admission());
+    let admission = Arc::new(capital_admission_configured_admission());
     arm_default(&admission);
     let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
@@ -2426,15 +2439,15 @@ fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, CapitalA
         feed.seed_open_order_cache(Vec::<String>::new(), 1_000)
             .is_some()
     );
-    rebuild_empty_position_sizer(&admission);
+    rebuild_empty_capital_admission(&admission);
     admission
-        .admit_at(&sized_submit_request("client-order-1"), 1_000)
-        .expect("fresh sizing state and capacity should admit")
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
+        .expect("fresh capital admission state and capacity should admit")
         .commit_submitted();
     (admission, feed)
 }
 
-fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
+fn capital_admission_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
         execution_client_id: "execution-client-a".to_string(),
@@ -2447,7 +2460,7 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
-        position_sizing: Some(BoltV3CompiledOrderSizingEvidence {
+        admission_evidence: Some(BoltV3CompiledOrderAdmissionEvidence {
             venue_id: "VENUE-A".to_string(),
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
@@ -2461,13 +2474,13 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     }
 }
 
-fn sized_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
-    let mut request = sized_submit_request(client_order_id);
+fn capital_admission_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
+    let mut request = capital_admission_submit_request(client_order_id);
     request.order_side = OrderSide::Sell;
     request
-        .position_sizing
+        .admission_evidence
         .as_mut()
-        .expect("sized request should carry evidence")
+        .expect("capital admission request should carry evidence")
         .side = BoltV3CompiledOrderSide::Sell;
     request
 }
@@ -2514,9 +2527,9 @@ fn fresh_capital_admission_state(observed_at_ns: u64) -> NtDerivedCapitalAdmissi
     }
 }
 
-fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitPositionSizingNtComponents {
+fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitCapitalAdmissionNtComponents {
     let state = fresh_capital_admission_state(observed_at_ns);
-    BoltV3SubmitPositionSizingNtComponents {
+    BoltV3SubmitCapitalAdmissionNtComponents {
         source: state.source,
         observed_at_ns: state.observed_at_ns,
         portfolio: state.portfolio,

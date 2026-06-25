@@ -187,7 +187,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(crate::bolt_v3_providers::validate_reference_live_probe_block(root));
-    errors.extend(validate_position_sizer_recovery_evidence(root));
+    errors.extend(validate_capital_admission_recovery_evidence(root));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(root));
     errors.extend(validate_realized_volatility_surfaces(root));
@@ -2144,7 +2144,7 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
     errors
 }
 
-fn validate_position_sizer_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
+fn validate_capital_admission_recovery_evidence(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
     let enforced_submit_admission = root
         .risk

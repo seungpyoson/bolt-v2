@@ -13917,7 +13917,7 @@ reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remai
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"bolt_v3.position_sizer_rebuild"'''
-context = '''pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";'''
+context = '''pub const BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";'''
 classification = "decision_evidence_gate_id"
 reason = "Stable gate identifier stamped on position-sizer rebuild audit records; it is part of the evidence contract, not an operator runtime value."
 
@@ -13925,7 +13925,7 @@ reason = "Stable gate identifier stamped on position-sizer rebuild audit records
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"position_sizer_rebuild"'''
-context = '''const BOLT_V3_POSITION_SIZER_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";'''
+context = '''const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";'''
 classification = "decision_evidence_envelope_kind"
 reason = "JSONL envelope discriminator for position-sizer rebuild audit records; it is a schema tag, not an operator runtime value."
 
@@ -14429,7 +14429,7 @@ reason = "Empty live-order count used to reconcile an empty startup reservation 
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
-context = '''position_sizer.next_sequence += 1;'''
+context = '''capital_admission.next_sequence += 1;'''
 classification = "position_sizer_reservation_sequence_increment"
 reason = "Single-reservation counter increment used to produce unique reservation ids under the configured pool."
 
@@ -14628,8 +14628,8 @@ reason = "Evidence source label for configured binary product metadata used to s
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
-literal = '''"position sizer venue spendability source configured without runtime feed"'''
-context = '''"position sizer venue spendability source configured without runtime feed"'''
+literal = '''"capital admission venue spendability source configured without runtime feed"'''
+context = '''"capital admission venue spendability source configured without runtime feed"'''
 classification = "position_sizer_source_diagnostic"
 reason = "Fail-closed diagnostic when a TOML-configured venue spendability source has no runtime feed; it does not configure trading behavior."
 

@@ -13,6 +13,10 @@ use bolt_v2::{
         BoltV3BasketAdmissionReleaseReason, BoltV3BasketAdmissionRequest,
         BoltV3BasketAdmissionState,
     },
+    bolt_v3_capital_admission::{
+        CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
+        ProductAdmissionSnapshot, ProductKind,
+    },
     bolt_v3_capital_admission_state::{
         OrderLifecycleCapitalAdmissionSnapshot, PortfolioCapitalAdmissionSnapshot,
         VenueSpendabilitySnapshot,
@@ -21,9 +25,9 @@ use bolt_v2::{
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3BasketAdmissionDecisionEvidence, BoltV3BasketAdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
-        BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-        BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
+        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
         BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
     },
@@ -39,17 +43,13 @@ use bolt_v2::{
         derive_standard_payout_matrix, expected_metadata_fingerprint,
         payout_vector_attestation_sha256, role_binding_attestation_sha256,
     },
-    bolt_v3_position_sizer::{
-        FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
-        SizingPolicy,
-    },
     bolt_v3_submit_admission::{
-        BoltV3BasketSubmitSlotClaim, BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity,
-        BoltV3CompiledOrderSide, BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind,
+        BoltV3BasketSubmitSlotClaim, BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
+        BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide, BoltV3CompiledProductKind,
         BoltV3LiveSubmitApprovalLimits, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
-        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
-        BoltV3SubmitPositionSizingNtComponents, PredictionMarketOutcomeSide,
+        BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+        BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
+        BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, PredictionMarketOutcomeSide,
         live_submit_count_cap_outcome,
     },
 };
@@ -452,33 +452,33 @@ fn basket_submit_slots_share_single_order_gate_and_count_cap_arithmetic() {
 }
 
 #[test]
-fn basket_submit_slots_carry_position_sizing_evidence_into_shared_gate() {
+fn basket_submit_slots_carry_capital_admission_evidence_into_shared_gate() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
     let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_gate = position_sized_submit_state(writer.clone());
+    let submit_gate = capital_admission_submit_state(writer.clone());
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
     let mut claims = entry_claims(&group, dec!(0.9));
-    attach_position_sizing(&mut claims);
-    seed_position_sizer_for_claims(&submit_gate, &claims);
+    attach_capital_admission(&mut claims);
+    seed_capital_admission_for_claims(&submit_gate, &claims);
 
     let mut permit = basket_state
         .admit(
-            &basket_request("position-sized-basket", &group, &scan, claims.clone()),
+            &basket_request("capital-admission-basket", &group, &scan, claims.clone()),
             &submit_gate,
         )
-        .expect("position-sized basket claims should pass through the shared submit gate");
+        .expect("capital-admission basket claims should pass through the shared submit gate");
     permit.commit_submitted();
 
     assert_eq!(submit_gate.admitted_order_count(), 2);
     assert_eq!(
-        submit_gate.position_sizer_live_reserved_liability(),
+        submit_gate.capital_admission_live_reserved_liability(),
         Some(dec!(2.4)),
-        "both committed basket legs must retain their position-sizer reservations"
+        "both committed basket legs must retain their capital-admission reservations"
     );
     for claim in &claims {
         assert!(
-            submit_gate.position_sizer_has_live_reservation(&claim.client_order_id),
+            submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
             "basket leg {} must retain its submit reservation",
             claim.client_order_id
         );
@@ -497,12 +497,12 @@ fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
         ..Default::default()
     });
     let basket_state = BoltV3BasketAdmissionState::new(writer.clone(), admission_limits());
-    let submit_gate = position_sized_submit_state(writer.clone());
+    let submit_gate = capital_admission_submit_state(writer.clone());
     let group = fixture_group();
     let scan = scan_evidence(&group, dec!(1.8), dec!(0.2), dec!(1000), 1_000);
     let mut claims = entry_claims(&group, dec!(0.9));
-    attach_position_sizing(&mut claims);
-    seed_position_sizer_for_claims(&submit_gate, &claims);
+    attach_capital_admission(&mut claims);
+    seed_capital_admission_for_claims(&submit_gate, &claims);
 
     let error = basket_state
         .admit(
@@ -519,7 +519,7 @@ fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
     ));
     assert_eq!(submit_gate.admitted_order_count(), 0);
     assert_eq!(
-        submit_gate.position_sizer_live_reserved_liability(),
+        submit_gate.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     assert!(
@@ -528,7 +528,7 @@ fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
     );
     for claim in &claims {
         assert!(
-            !submit_gate.position_sizer_has_live_reservation(&claim.client_order_id),
+            !submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
             "failed metadata write must roll back {}",
             claim.client_order_id
         );
@@ -538,8 +538,8 @@ fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
         .fail_submit_reservation_metadata
         .store(false, Ordering::SeqCst);
     let mut retry_claims = entry_claims(&group, dec!(0.9));
-    attach_position_sizing(&mut retry_claims);
-    seed_position_sizer_for_claims(&submit_gate, &retry_claims);
+    attach_capital_admission(&mut retry_claims);
+    seed_capital_admission_for_claims(&submit_gate, &retry_claims);
     let mut plain_permit = basket_state
         .admit(
             &basket_request("metadata-failure-basket", &group, &scan, retry_claims),
@@ -550,17 +550,17 @@ fn basket_admission_rolls_back_submit_slots_when_metadata_evidence_fails() {
 }
 
 #[test]
-fn basket_submit_slots_reject_position_sizing_that_does_not_match_order_shape() {
+fn basket_submit_slots_reject_capital_admission_that_does_not_match_order_shape() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = position_sized_submit_state(writer);
+    let submit_gate = capital_admission_submit_state(writer);
     let group = fixture_group();
     let mut claims = entry_claims(&group, dec!(0.9));
-    attach_position_sizing(&mut claims);
-    seed_position_sizer_for_claims(&submit_gate, &claims);
+    attach_capital_admission(&mut claims);
+    seed_capital_admission_for_claims(&submit_gate, &claims);
     claims[0]
-        .position_sizing
+        .admission_evidence
         .as_mut()
-        .expect("fixture should carry position sizing")
+        .expect("fixture should carry capital admission")
         .quantity = dec!(0.5);
 
     let rejected = submit_gate
@@ -569,22 +569,22 @@ fn basket_submit_slots_reject_position_sizing_that_does_not_match_order_shape() 
             &claims,
             &basket_slot_evidence("shape-mismatch", &group),
         )
-        .expect_err("position-sizing evidence must bind to submitted order shape");
+        .expect_err("capital admission evidence must bind to submitted order shape");
 
     assert_eq!(
         rejected,
-        BoltV3SubmitAdmissionError::PositionSizingRejected {
-            reason: bolt_v2::bolt_v3_submit_admission::BoltV3PositionSizerRejectReason::OrderShapeMismatch,
+        BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
+            reason: bolt_v2::bolt_v3_submit_admission::BoltV3CapitalAdmissionRejectReason::OrderShapeMismatch,
         }
     );
     assert_eq!(submit_gate.admitted_order_count(), 0);
     assert_eq!(
-        submit_gate.position_sizer_live_reserved_liability(),
+        submit_gate.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     for claim in &claims {
         assert!(
-            !submit_gate.position_sizer_has_live_reservation(&claim.client_order_id),
+            !submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
             "rejected basket leg {} must not retain a reservation",
             claim.client_order_id
         );
@@ -592,24 +592,24 @@ fn basket_submit_slots_reject_position_sizing_that_does_not_match_order_shape() 
 }
 
 #[test]
-fn dropped_position_sized_basket_submit_permit_rolls_back_all_leg_reservations() {
+fn dropped_capital_admission_basket_submit_permit_rolls_back_all_leg_reservations() {
     let writer = Arc::new(RecordingBasketDecisionWriter::default());
-    let submit_gate = position_sized_submit_state(writer.clone());
+    let submit_gate = capital_admission_submit_state(writer.clone());
     let group = fixture_group();
     let mut claims = entry_claims(&group, dec!(0.9));
-    attach_position_sizing(&mut claims);
-    seed_position_sizer_for_claims(&submit_gate, &claims);
+    attach_capital_admission(&mut claims);
+    seed_capital_admission_for_claims(&submit_gate, &claims);
 
     let permit = submit_gate
         .reserve_basket_submit_slots(
             "polymarket_main",
             &claims,
-            &basket_slot_evidence("rollback-position-sized", &group),
+            &basket_slot_evidence("rollback-capital-admission", &group),
         )
-        .expect("position-sized basket should reserve before caller submits");
+        .expect("capital-admission basket should reserve before caller submits");
     assert_eq!(submit_gate.admitted_order_count(), 2);
     assert_eq!(
-        submit_gate.position_sizer_live_reserved_liability(),
+        submit_gate.capital_admission_live_reserved_liability(),
         Some(dec!(2.4))
     );
 
@@ -617,12 +617,12 @@ fn dropped_position_sized_basket_submit_permit_rolls_back_all_leg_reservations()
 
     assert_eq!(submit_gate.admitted_order_count(), 0);
     assert_eq!(
-        submit_gate.position_sizer_live_reserved_liability(),
+        submit_gate.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
     for claim in &claims {
         assert!(
-            !submit_gate.position_sizer_has_live_reservation(&claim.client_order_id),
+            !submit_gate.capital_admission_has_live_reservation(&claim.client_order_id),
             "dropping the basket permit must release {}",
             claim.client_order_id
         );
@@ -786,9 +786,9 @@ impl BoltV3DecisionEvidenceWriter for RecordingBasketDecisionWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -876,13 +876,13 @@ fn submit_state(
     )
 }
 
-fn position_sized_submit_state(
+fn capital_admission_submit_state(
     writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
 ) -> BoltV3SubmitAdmissionState {
-    let observed_at_ns = position_sizing_fixture_observed_at_ns();
-    BoltV3SubmitAdmissionState::new_with_position_sizer(
+    let observed_at_ns = capital_admission_fixture_observed_at_ns();
+    BoltV3SubmitAdmissionState::new_with_capital_admission(
         writer,
-        BoltV3SubmitPositionSizerConfig {
+        BoltV3SubmitCapitalAdmissionConfig {
             venue_id: "POLYMARKET".to_string(),
             account_id: "POLYMARKET-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
@@ -893,9 +893,9 @@ fn position_sized_submit_state(
                 pool_id: "polymarket-pool".to_string(),
                 max_pool_liability: dec!(10),
                 committed_liability: Decimal::ZERO,
-                max_snapshot_age_ns: position_sizing_fixture_max_snapshot_age_ns(),
+                max_snapshot_age_ns: capital_admission_fixture_max_snapshot_age_ns(),
             },
-            policy: SizingPolicy {
+            policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
                 fee_slippage_policy: Some(FeeSlippagePolicy {
                     max_fee_liability: dec!(0.1),
@@ -907,23 +907,25 @@ fn position_sized_submit_state(
     )
 }
 
-fn seed_position_sizer_for_claims(
+fn seed_capital_admission_for_claims(
     submit_gate: &BoltV3SubmitAdmissionState,
     claims: &[BoltV3BasketSubmitSlotClaim],
 ) {
-    let observed_at_ns = position_sizing_fixture_observed_at_ns();
-    submit_gate
-        .update_position_sizing_nt_components(position_sizing_components(claims, observed_at_ns));
+    let observed_at_ns = capital_admission_fixture_observed_at_ns();
+    submit_gate.update_capital_admission_nt_components(capital_admission_components(
+        claims,
+        observed_at_ns,
+    ));
     let rebuild =
-        submit_gate.rebuild_position_sizing_open_order_reservations(Vec::new(), observed_at_ns);
+        submit_gate.rebuild_capital_admission_open_order_reservations(Vec::new(), observed_at_ns);
     assert!(
         rebuild.accepted,
-        "empty open-order rebuild should reconcile the test position sizer"
+        "empty open-order rebuild should reconcile the test capital admission"
     );
-    assert_eq!(submit_gate.position_sizer_reconciled(), Some(true));
+    assert_eq!(submit_gate.capital_admission_reconciled(), Some(true));
 }
 
-fn position_sizing_fixture_observed_at_ns() -> u64 {
+fn capital_admission_fixture_observed_at_ns() -> u64 {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("test system time should be after UNIX_EPOCH")
@@ -931,7 +933,7 @@ fn position_sizing_fixture_observed_at_ns() -> u64 {
     u64::try_from(nanos).expect("test UNIX timestamp should fit in u64")
 }
 
-fn position_sizing_fixture_max_snapshot_age_ns() -> u64 {
+fn capital_admission_fixture_max_snapshot_age_ns() -> u64 {
     u64::try_from(Duration::from_secs(60).as_nanos())
         .expect("fixture freshness horizon should fit in u64")
 }
@@ -990,7 +992,7 @@ fn entry_claims(group: &OutcomeGroup, notional: Decimal) -> Vec<BoltV3BasketSubm
             intent_kind: BoltV3SubmitIntentKind::Entry,
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
             risk_reducing_exit_proof: None,
-            position_sizing: None,
+            admission_evidence: None,
         })
         .collect()
 }
@@ -1008,13 +1010,13 @@ fn risk_reducing_claim(
         intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: Some(proof),
-        position_sizing: None,
+        admission_evidence: None,
     }
 }
 
-fn attach_position_sizing(claims: &mut [BoltV3BasketSubmitSlotClaim]) {
+fn attach_capital_admission(claims: &mut [BoltV3BasketSubmitSlotClaim]) {
     for (index, claim) in claims.iter_mut().enumerate() {
-        claim.position_sizing = Some(BoltV3CompiledOrderSizingEvidence {
+        claim.admission_evidence = Some(BoltV3CompiledOrderAdmissionEvidence {
             venue_id: "POLYMARKET".to_string(),
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
@@ -1032,21 +1034,21 @@ fn attach_position_sizing(claims: &mut [BoltV3BasketSubmitSlotClaim]) {
     }
 }
 
-fn position_sizing_components(
+fn capital_admission_components(
     claims: &[BoltV3BasketSubmitSlotClaim],
     observed_at_ns: u64,
-) -> BoltV3SubmitPositionSizingNtComponents {
+) -> BoltV3SubmitCapitalAdmissionNtComponents {
     let yes_instrument_id = claims
         .first()
-        .expect("position-sized basket fixture needs a yes claim")
+        .expect("capital-admission basket fixture needs a yes claim")
         .instrument_id
         .clone();
     let no_instrument_id = claims
         .get(1)
-        .expect("position-sized basket fixture needs a no claim")
+        .expect("capital-admission basket fixture needs a no claim")
         .instrument_id
         .clone();
-    BoltV3SubmitPositionSizingNtComponents {
+    BoltV3SubmitCapitalAdmissionNtComponents {
         source: "basket-admission-test-state".to_string(),
         observed_at_ns,
         portfolio: PortfolioCapitalAdmissionSnapshot {
@@ -1073,8 +1075,8 @@ fn position_sizing_components(
             open_order_count: 0,
             all_open_orders_attributed: true,
         },
-        product_state: ProductSizingSnapshot::PredictionMarketBinary(
-            PredictionMarketSizingSnapshot {
+        product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+            PredictionMarketAdmissionSnapshot {
                 source: "basket-admission-test-product".to_string(),
                 observed_at_ns,
                 yes_instrument_id,
@@ -1114,7 +1116,7 @@ fn single_order_request(client_order_id: &str, notional: Decimal) -> BoltV3Submi
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
-        position_sizing: None,
+        admission_evidence: None,
     }
 }
 

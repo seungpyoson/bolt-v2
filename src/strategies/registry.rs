@@ -408,9 +408,9 @@ mod tests {
             Ok(())
         }
 
-        fn record_position_sizer_rebuild_audit(
+        fn record_capital_admission_rebuild_audit(
             &self,
-            _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+            _audit: &crate::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
         ) -> Result<()> {
             Ok(())
         }

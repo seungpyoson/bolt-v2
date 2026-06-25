@@ -345,6 +345,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_bolt_v3_status_map_current.py
     python3 scripts/test_verify_bolt_v3_schema_current.py
     python3 scripts/verify_bolt_v3_schema_current.py
+    python3 scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py
+    python3 scripts/test_migrate_bolt_v3_capital_admission_config.py
     python3 scripts/test_verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/verify_bolt_v3_pure_rust_runtime.py
     python3 scripts/test_verify_ra_single_engine_import_boundary.py
@@ -508,6 +510,9 @@ ci-lint-workflow-inner: require-local-verification-gate check-workspace require-
         failed=1
     fi
     if ! python3 scripts/test_nextest_fingerprint.py; then
+        failed=1
+    fi
+    if ! python3 scripts/test_root_bin_sidecars.py; then
         failed=1
     fi
     if ! python3 scripts/test_find_same_sha_main_evidence.py; then

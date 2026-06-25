@@ -1288,7 +1288,7 @@ fn sample_submit_request() -> BoltV3SubmitAdmissionRequest {
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
         risk_reducing_exit_proof: None,
         kill_switch_forced_reduction: None,
-        position_sizing: None,
+        admission_evidence: None,
     }
 }
 
@@ -1348,9 +1348,9 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }

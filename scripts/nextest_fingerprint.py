@@ -9,7 +9,6 @@ from dataclasses import dataclass
 import hashlib
 import os
 import pathlib
-import re
 import subprocess
 import sys
 import tomllib
@@ -38,12 +37,6 @@ MANDATORY_TRACKED_INPUTS = (
     "scripts/nextest_fingerprint.py",
     "scripts/root_bin_sidecars.py",
 )
-
-COMPILE_TIME_INCLUDE_RE = re.compile(
-    r"""include_(?:str|bytes)!\s*\(\s*(?P<literal>(?:br|rb|b|r)?(?P<hashes>\#*)\"(?:\\.|[^"\\])*\"(?P=hashes))""",
-    re.MULTILINE,
-)
-
 
 class FingerprintError(Exception):
     """Raised when fingerprint production must fail closed."""
@@ -302,39 +295,161 @@ def validate_tracked_inputs_match_tree(repo_root: pathlib.Path, config: Fingerpr
             )
 
 
-def strip_rust_comments(text: str) -> str:
-    output: list[str] = []
-    index = 0
+def rust_identifier_char(char: str) -> bool:
+    return char == "_" or char.isalnum()
+
+
+def rust_string_literal_at(text: str, index: int) -> tuple[str, int] | None:
+    start = index
+    prefix = ""
+    if text.startswith(("br", "rb"), index):
+        prefix = text[index : index + 2]
+        index += 2
+    elif index < len(text) and text[index] in {"b", "r"}:
+        prefix = text[index]
+        index += 1
+
+    if "r" in prefix:
+        hashes = 0
+        while index < len(text) and text[index] == "#":
+            hashes += 1
+            index += 1
+        if index >= len(text) or text[index] != '"':
+            return None
+        terminator = '"' + ("#" * hashes)
+        end = text.find(terminator, index + 1)
+        if end == -1:
+            return None
+        end += len(terminator)
+        return text[start:end], end
+
+    if index >= len(text) or text[index] != '"':
+        return None
+    index += 1
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == '"':
+            return text[start : index + 1], index + 1
+        index += 1
+    return None
+
+
+def rust_block_comment_end(text: str, index: int) -> int:
     block_depth = 0
+    while index < len(text) - 1:
+        char = text[index]
+        next_char = text[index + 1]
+        if char == "/" and next_char == "*":
+            block_depth += 1
+            index += 2
+            continue
+        if char == "*" and next_char == "/":
+            block_depth -= 1
+            index += 2
+            if block_depth == 0:
+                return index
+            continue
+        index += 1
+    return len(text)
+
+
+def rust_char_literal_end(text: str, index: int) -> int | None:
+    if index + 2 >= len(text) or text[index] != "'":
+        return None
+    cursor = index + 1
+    if text[cursor] == "\\":
+        cursor += 2
+    else:
+        cursor += 1
+    if cursor < len(text) and text[cursor] == "'":
+        return cursor + 1
+    return None
+
+
+def rust_whitespace_or_comment_end(text: str, index: int) -> int:
+    cursor = index
+    while cursor < len(text):
+        if text[cursor].isspace():
+            cursor += 1
+            continue
+        if text.startswith("//", cursor):
+            newline = text.find("\n", cursor + 2)
+            cursor = len(text) if newline == -1 else newline + 1
+            continue
+        if text.startswith("/*", cursor):
+            cursor = rust_block_comment_end(text, cursor)
+            continue
+        return cursor
+    return cursor
+
+
+def rust_include_literals(text: str) -> Iterable[str]:
+    index = 0
     while index < len(text):
         char = text[index]
         next_char = text[index + 1] if index + 1 < len(text) else ""
-        if block_depth:
-            if char == "/" and next_char == "*":
-                block_depth += 1
-                output.extend("  ")
-                index += 2
-            elif char == "*" and next_char == "/":
-                block_depth -= 1
-                output.extend("  ")
-                index += 2
-            else:
-                output.append("\n" if char == "\n" else " ")
-                index += 1
+        string_literal = rust_string_literal_at(text, index)
+        if string_literal is not None:
+            _literal, end = string_literal
+            index = end
+            continue
+        char_literal_end = rust_char_literal_end(text, index)
+        if char_literal_end is not None:
+            index = char_literal_end
             continue
         if char == "/" and next_char == "/":
-            while index < len(text) and text[index] != "\n":
-                output.append(" ")
-                index += 1
+            newline = text.find("\n", index + 2)
+            index = len(text) if newline == -1 else newline + 1
             continue
         if char == "/" and next_char == "*":
-            block_depth = 1
-            output.extend("  ")
-            index += 2
+            index = rust_block_comment_end(text, index)
             continue
-        output.append(char)
-        index += 1
-    return "".join(output)
+
+        macro_name = ""
+        if text.startswith("include_str", index):
+            macro_name = "include_str"
+        elif text.startswith("include_bytes", index):
+            macro_name = "include_bytes"
+        if not macro_name:
+            index += 1
+            continue
+
+        macro_end = index + len(macro_name)
+        before = text[index - 1] if index > 0 else ""
+        after = text[macro_end] if macro_end < len(text) else ""
+        if rust_identifier_char(before) or rust_identifier_char(after):
+            index += 1
+            continue
+
+        cursor = macro_end
+        cursor = rust_whitespace_or_comment_end(text, cursor)
+        if cursor >= len(text) or text[cursor] != "!":
+            index += 1
+            continue
+        cursor += 1
+        cursor = rust_whitespace_or_comment_end(text, cursor)
+        if cursor >= len(text) or text[cursor] not in {"(", "[", "{"}:
+            index += 1
+            continue
+        cursor += 1
+        cursor = rust_whitespace_or_comment_end(text, cursor)
+        argument_literal = rust_string_literal_at(text, cursor)
+        if argument_literal is None:
+            raise FingerprintError(
+                f"compile-time include argument must be a direct string literal: {macro_name}"
+            )
+        literal, end = argument_literal
+        yield literal
+        index = end
 
 
 def rust_string_literal_value(literal: str) -> str:
@@ -363,8 +478,7 @@ def compile_time_include_targets(repo_root: pathlib.Path, config: FingerprintCon
             text = source_path.read_text(encoding="utf-8")
         except UnicodeDecodeError as exc:
             raise FingerprintError(f"could not read Rust source as UTF-8: {path}") from exc
-        for match in COMPILE_TIME_INCLUDE_RE.finditer(strip_rust_comments(text)):
-            literal = match.group("literal")
+        for literal in rust_include_literals(text):
             target = (source_path.parent / rust_string_literal_value(literal)).resolve()
             try:
                 relative_target = target.relative_to(repo_root.resolve()).as_posix()

@@ -59,6 +59,18 @@ on:
         description: "Run full CI for the selected ref"
         required: false
         default: "false"
+      cross_build_proof:
+        description: "Run the root x64-to-ARM64 nextest archive proof"
+        required: false
+        default: "false"
+      cross_build_expected_sha:
+        description: "Exact Git SHA required by the cross-build proof"
+        required: false
+        default: ""
+      cross_build_shards:
+        description: "Number of cross-built nextest archive partitions to run"
+        required: false
+        default: "4"
   # Merge queue lane: GitHub dispatches merge_group/checks_requested on the
   # temporary gh-readonly-queue ref carrying the exact to-be-merged commit.
   # Required checks MUST report on this event or the merge is blocked, and a
@@ -607,6 +619,173 @@ jobs:
             fi
             echo "::endgroup::"
           done
+          exit "$status"
+
+  root-cross-build-proof-producer:
+    name: root-cross-build-proof-producer
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cross_build_proof == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "4"
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
+      EXPECTED_SHA: ${{ github.event.inputs.cross_build_expected_sha || '' }}
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+      AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify exact checkout
+        shell: bash
+        run: |
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "cross_build_expected_sha is required when cross_build_proof=true"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_SHA" ]; then
+            echo "expected $EXPECTED_SHA, got $actual"
+            exit 1
+          fi
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-build-values: "true"
+          include-nextest-version: "true"
+          use-default-target: "true"
+          include-managed-target-dir: "true"
+
+      - name: Install aarch64 cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Build aarch64 nextest archive on x64
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
+          start="$(date +%s)"
+          just test-archive "$NEXTEST_ARCHIVE_PATH" --target "${{ steps.setup.outputs.target }}"
+          end="$(date +%s)"
+          echo "cross_archive_seconds=$((end - start))" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pack root binary sidecars
+        run: |
+          sidecar_dir="${{ steps.setup.outputs.managed_target_dir }}/${{ steps.setup.outputs.target }}/debug"
+          if [ ! -x "$sidecar_dir/bolt-v2" ]; then
+            echo "missing expected sidecar binary: $sidecar_dir/bolt-v2"
+            exit 1
+          fi
+          tar -C "$sidecar_dir" -czf "$ROOT_BIN_SIDECARS_PATH" bolt-v2
+
+      - name: Upload cross-built archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: root-cross-nextest-archive-${{ github.sha }}
+          path: |
+            ${{ env.NEXTEST_ARCHIVE_PATH }}
+            ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          if-no-files-found: error
+          retention-days: 1
+
+  root-cross-build-proof-consumer:
+    name: root-cross-build-proof-consumer
+    needs: [root-cross-build-proof-producer]
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.cross_build_proof == 'true' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    timeout-minutes: 30
+    env:
+      NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
+      EXPECTED_SHA: ${{ github.event.inputs.cross_build_expected_sha || '' }}
+      PROOF_SHARDS: ${{ github.event.inputs.cross_build_shards || '4' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify exact checkout
+        shell: bash
+        run: |
+          if [ -z "$EXPECTED_SHA" ]; then
+            echo "cross_build_expected_sha is required when cross_build_proof=true"
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$EXPECTED_SHA" ]; then
+            echo "expected $EXPECTED_SHA, got $actual"
+            exit 1
+          fi
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-build-values: "true"
+          include-nextest-version: "true"
+          use-default-target: "true"
+          include-managed-target-dir: "true"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Download cross-built archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: root-cross-nextest-archive-${{ github.sha }}
+          path: .nextest-archive
+
+      - name: Extract root binary sidecars
+        run: |
+          sidecar_dir="${{ steps.setup.outputs.managed_target_dir }}/${{ steps.setup.outputs.target }}/debug"
+          mkdir -p "$sidecar_dir"
+          tar -C "$sidecar_dir" -xzf "$ROOT_BIN_SIDECARS_PATH"
+          if [ ! -x "$sidecar_dir/bolt-v2" ]; then
+            echo "missing extracted sidecar binary: $sidecar_dir/bolt-v2"
+            exit 1
+          fi
+
+      - name: Run cross-built nextest archive partitions
+        shell: bash
+        run: |
+          shards="$PROOF_SHARDS"
+          if [[ ! "$shards" =~ ^[1-9][0-9]*$ ]]; then
+            echo "invalid nextest shard count: ${shards}"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/nextest-archive-extract"
+          start="$(date +%s)"
+          status=0
+          for shard in $(seq 1 "$shards"); do
+            echo "::group::cross-built nextest archive partition ${shard}/${shards}"
+            if ! just test-archive-run "$NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/nextest-archive-extract" --partition "count:${shard}/${shards}"; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          end="$(date +%s)"
+          echo "arm_archive_run_seconds=$((end - start))" >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
   test:

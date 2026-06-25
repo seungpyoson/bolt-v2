@@ -837,13 +837,20 @@ jobs:
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
         run: |
           git check-ref-format "refs/heads/$base_branch"
-          git archive "$base_ref" scripts/ ci/github-actions-runners.toml .github/workflows/ci.yml
-          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
-          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml
+          tested_workflow="$GITHUB_WORKSPACE/.github/workflows/ci.yml"
+          echo "tested workflow file is missing or not a regular file"
+          cp "$tested_workflow" "$base_tree/.github/workflows/ci.yml"
+          {
+            echo "script=$base_tree/scripts/ci_provenance.py"
+            echo "config=$base_tree/ci/github-actions-runners.toml"
+            echo "workflow=$base_tree/.github/workflows/ci.yml"
+          } >> "$GITHUB_OUTPUT"
       - name: Emit CI provenance
         run: |
           provenance_script="${{ steps.provenance_base.outputs.script }}"
           provenance_config="${{ steps.provenance_base.outputs.config }}"
+          provenance_workflow="${{ steps.provenance_base.outputs.workflow }}"
           ci_policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
           policy_args=()
           if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--ci-policy-path"; then
@@ -852,9 +859,14 @@ jobs:
             echo "trusted base provenance emitter does not support ci_policy_path=$ci_policy_path" >&2
             exit 1
           fi
+          workflow_args=()
+          if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--workflow-file"; then
+            workflow_args+=(--workflow-file "$provenance_workflow")
+          fi
           python3 "$provenance_script" emit-full-ci \
             --config "$provenance_config" \
             "${policy_args[@]}" \
+            "${workflow_args[@]}" \
             --output ci-provenance.json \
             --required-job detector=${{ needs.detector.result }} \
             --required-job deny=${{ needs.deny.result }} \

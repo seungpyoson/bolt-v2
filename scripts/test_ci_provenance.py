@@ -629,6 +629,52 @@ def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
             raise AssertionError(record)
 
 
+def assert_emit_full_ci_hashes_explicit_tested_workflow() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        tested_workflow = tmp_path / "tested-ci.yml"
+        tested_workflow.write_text("name: tested workflow\n", encoding="utf-8")
+        expected_digest = hashlib.sha256(tested_workflow.read_bytes()).hexdigest()
+
+        def fake_api_json(repo: str, token: str, path: str, query: dict[str, str] | None = None) -> dict[str, object]:
+            if path == f"actions/runs/{RUN_ID}":
+                return run_payload()
+            raise AssertionError((repo, token, path, query))
+
+        with patched_env(
+            {
+                "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+                "GITHUB_TOKEN": "token",
+                "GITHUB_RUN_ID": str(RUN_ID),
+                "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_SHA": SHA,
+                "GITHUB_EVENT_NAME": "push",
+            }
+        ):
+            record = module.emit_full_ci_record(
+                config=module.load_config(config),
+                config_path=config,
+                workflow_file=tested_workflow,
+                required_job_values=[
+                    "detector=success",
+                    "deny=success",
+                    "clippy=success",
+                    "check-aarch64=success",
+                    "source-fence=success",
+                    "nextest-fingerprint=success",
+                    "test-archive=success",
+                    "test=success",
+                ],
+                conditional_job_values=["build.required=true", "build.result=success"],
+                nextest_fingerprint=NEXTEST_FINGERPRINT,
+                api_json=fake_api_json,
+            )
+        if record["workflow_digest"] != expected_digest:
+            raise AssertionError(record)
+
+
 def assert_emit_docs_ci_record_requires_skipped_heavy_jobs() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -2350,6 +2396,83 @@ def assert_gate_carry_forward_uses_newest_success_with_provenance() -> None:
             raise AssertionError(result)
 
 
+def assert_gate_carry_forward_newest_failure_blocks_across_pages() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 1"),
+        )
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        older_provenance_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:00:00Z",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        newer_updated_failure_on_later_page = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            created_at="2026-06-13T00:01:00Z",
+            updated_at="2026-06-13T00:30:00Z",
+        )
+        newer_created_success_without_provenance = run_payload(
+            id=RUN_ID + 2,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:02:00Z",
+            updated_at="2026-06-13T00:20:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[
+                [newer_created_success_without_provenance],
+                [newer_updated_failure_on_later_page],
+                [older_provenance_success],
+            ],
+            jobs_by_run_id={
+                RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]},
+                RUN_ID + 2: {"jobs": [*required_job_payloads(), job_payload("gate")]},
+            },
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [provenance_artifact(run_id=RUN_ID)]},
+                RUN_ID + 2: {"artifacts": []},
+            },
+            records_by_artifact_id={123: record},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 3,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:40:00Z"),
+            ),
+        )
+
+
 def base_ci_gate_jobs(**overrides: str) -> dict[str, str]:
     jobs = {
         "ci-policy": "success",
@@ -2658,6 +2781,7 @@ def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_emit_full_ci_records_nextest_fingerprint_argument()
+    assert_emit_full_ci_hashes_explicit_tested_workflow()
     assert_emit_docs_ci_record_requires_skipped_heavy_jobs()
     assert_unknown_record_schema_fails()
     assert_fingerprint_reuse_prior_green_returns_reuse()
@@ -2711,6 +2835,7 @@ def main() -> int:
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_failed()
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress()
     assert_gate_carry_forward_uses_newest_success_with_provenance()
+    assert_gate_carry_forward_newest_failure_blocks_across_pages()
     assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()
     assert_ci_gate_verdict_hardens_full_and_reuse_proof()
     assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()

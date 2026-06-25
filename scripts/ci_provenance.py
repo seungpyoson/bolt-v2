@@ -1143,6 +1143,8 @@ def require_complete_first_page(
 
 
 def sha256_file(path: pathlib.Path) -> str:
+    if path.is_symlink():
+        raise ProvenanceError(f"file must not be a symlink for digest: {path}")
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except FileNotFoundError as exc:
@@ -1151,8 +1153,10 @@ def sha256_file(path: pathlib.Path) -> str:
         raise ProvenanceError(f"file could not be read for digest: {path}: {exc}") from exc
 
 
-def workflow_file_digest(config: ProvenanceConfig) -> str:
-    return sha256_file(REPO_ROOT / config.workflow_path)
+def workflow_file_digest(config: ProvenanceConfig, workflow_file: pathlib.Path | None = None) -> str:
+    if workflow_file is None:
+        workflow_file = REPO_ROOT / config.workflow_path
+    return sha256_file(workflow_file)
 
 
 def require_record_string(record: dict[str, object], key: str) -> str:
@@ -1802,7 +1806,7 @@ def resolve_gate_carry_forward(
     cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
     last_error = f"no prior successful {gate_name} check found for exact SHA {requested_sha}"
 
-    saw_successful_gate_without_provenance = False
+    candidates: list[dict[str, object]] = []
     for page in range(1, config.max_lookback_pages + 1):
         runs_payload = api_json(
             repo,
@@ -1824,7 +1828,6 @@ def resolve_gate_carry_forward(
             break
         page_has_fresh_run = False
         page_has_old_run = False
-        candidates: list[dict[str, object]] = []
         for run in runs:
             if not isinstance(run, dict):
                 raise ProvenanceError("workflow runs payload is malformed")
@@ -1842,81 +1845,83 @@ def resolve_gate_carry_forward(
                 workflow_path=workflow_path,
             ):
                 candidates.append(run)
-        candidates.sort(
-            key=lambda run: (
-                as_text(run.get("updated_at")),
-                positive_int_value(run.get("id"), "workflow run id"),
-            ),
-            reverse=True,
-        )
-        for run in candidates:
-            run_id = positive_int_value(run.get("id"), "workflow run id")
-            status = as_text(run.get("status"))
-            conclusion = as_text(run.get("conclusion"))
-            if status != "completed" or conclusion != "success":
-                if saw_successful_gate_without_provenance:
-                    last_error = f"older same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
-                    continue
-                raise ProvenanceError(
-                    f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
-                )
-            jobs_payload = api_json(
-                repo,
-                token,
-                f"actions/runs/{run_id}/jobs",
-                {"per_page": str(config.run_jobs_per_page)},
-            )
-            jobs = jobs_payload.get("jobs")
-            if not isinstance(jobs, list):
-                raise ProvenanceError(f"source run {run_id} jobs payload is malformed")
-            require_complete_first_page(
-                jobs_payload,
-                jobs,
-                per_page=config.run_jobs_per_page,
-                label=f"source run {run_id} jobs",
-            )
-            try:
-                require_job_success(jobs_by_name(jobs_payload), gate_name)
-            except ProvenanceError as exc:
-                if saw_successful_gate_without_provenance:
-                    last_error = f"older same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
-                    continue
-                raise ProvenanceError(
-                    f"newest same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
-                ) from exc
-            if require_provenance_base:
-                try:
-                    validate_gate_carry_forward_provenance(
-                        repo=repo,
-                        token=token,
-                        run=run,
-                        requested_sha=requested_sha,
-                        base_sha=base_sha,
-                        config=config,
-                        config_path=config_path,
-                        api_json=api_json,
-                        api_bytes=api_bytes,
-                    )
-                except ProvenanceError as exc:
-                    if missing_gate_carry_forward_provenance_error(exc, run_id):
-                        saw_successful_gate_without_provenance = True
-                        last_error = str(exc)
-                        continue
-                    if saw_successful_gate_without_provenance:
-                        last_error = str(exc)
-                        continue
-                    raise
-            return GateCarryForwardResolution(
-                carry_forward_verified=True,
-                source_run_id=str(run_id),
-                source_sha=requested_sha,
-                gate_name=gate_name,
-                reason=f"matched prior {gate_name} run {run_id}",
-            )
         if page_has_old_run and not page_has_fresh_run:
             break
         if len(runs) < config.workflow_runs_per_page:
             break
+
+    candidates.sort(
+        key=lambda run: (
+            as_text(run.get("updated_at")),
+            positive_int_value(run.get("id"), "workflow run id"),
+        ),
+        reverse=True,
+    )
+    saw_successful_gate_without_provenance = False
+    for run in candidates:
+        run_id = positive_int_value(run.get("id"), "workflow run id")
+        status = as_text(run.get("status"))
+        conclusion = as_text(run.get("conclusion"))
+        if status != "completed" or conclusion != "success":
+            if saw_successful_gate_without_provenance:
+                last_error = f"older same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
+                continue
+            raise ProvenanceError(
+                f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
+            )
+        jobs_payload = api_json(
+            repo,
+            token,
+            f"actions/runs/{run_id}/jobs",
+            {"per_page": str(config.run_jobs_per_page)},
+        )
+        jobs = jobs_payload.get("jobs")
+        if not isinstance(jobs, list):
+            raise ProvenanceError(f"source run {run_id} jobs payload is malformed")
+        require_complete_first_page(
+            jobs_payload,
+            jobs,
+            per_page=config.run_jobs_per_page,
+            label=f"source run {run_id} jobs",
+        )
+        try:
+            require_job_success(jobs_by_name(jobs_payload), gate_name)
+        except ProvenanceError as exc:
+            if saw_successful_gate_without_provenance:
+                last_error = f"older same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
+                continue
+            raise ProvenanceError(
+                f"newest same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
+            ) from exc
+        if require_provenance_base:
+            try:
+                validate_gate_carry_forward_provenance(
+                    repo=repo,
+                    token=token,
+                    run=run,
+                    requested_sha=requested_sha,
+                    base_sha=base_sha,
+                    config=config,
+                    config_path=config_path,
+                    api_json=api_json,
+                    api_bytes=api_bytes,
+                )
+            except ProvenanceError as exc:
+                if missing_gate_carry_forward_provenance_error(exc, run_id):
+                    saw_successful_gate_without_provenance = True
+                    last_error = str(exc)
+                    continue
+                if saw_successful_gate_without_provenance:
+                    last_error = str(exc)
+                    continue
+                raise
+        return GateCarryForwardResolution(
+            carry_forward_verified=True,
+            source_run_id=str(run_id),
+            source_sha=requested_sha,
+            gate_name=gate_name,
+            reason=f"matched prior {gate_name} run {run_id}",
+        )
 
     raise ProvenanceError(last_error)
 
@@ -2275,6 +2280,7 @@ def emit_full_ci_record(
     config: ProvenanceConfig,
     config_path: pathlib.Path,
     ci_policy_path: str = "full",
+    workflow_file: pathlib.Path | None = None,
     required_job_values: list[str],
     conditional_job_values: list[str],
     nextest_fingerprint: str | None,
@@ -2302,13 +2308,14 @@ def emit_full_ci_record(
         nextest_fingerprint = None
     if nextest_fingerprint is not None:
         nextest_fingerprint = parse_nextest_fingerprint(nextest_fingerprint, label="current")
+    workflow_digest = workflow_file_digest(config, workflow_file)
 
     record = {
         "schema_version": config.schema_version,
         "kind": "docs-ci" if ci_policy_path == "docs" else "full-ci",
         "repository": repo,
         "workflow_path": config.workflow_path,
-        "workflow_digest": workflow_file_digest(config),
+        "workflow_digest": workflow_digest,
         "provenance_config_digest": provenance_config_digest(config_path),
         "head_sha": head_sha,
         "tested_sha": tested_sha,
@@ -2331,7 +2338,12 @@ def emit_full_ci_record(
         "nextest_fingerprint": nextest_fingerprint,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
     }
-    validate_record_schema(record, config, config_path=config_path)
+    validate_record_schema(
+        record,
+        config,
+        config_path=config_path,
+        expected_workflow_digest=workflow_digest,
+    )
     return record
 
 
@@ -2374,6 +2386,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
     if mode == "emit-full-ci":
         parser.add_argument("--output", type=pathlib.Path)
         parser.add_argument("--ci-policy-path", default="full")
+        parser.add_argument("--workflow-file", type=pathlib.Path)
         parser.add_argument("--required-job", action="append", default=[])
         parser.add_argument("--conditional-job", action="append", default=[])
         parser.add_argument("--nextest-fingerprint")
@@ -2474,6 +2487,7 @@ def main(argv: list[str] | None = None) -> int:
                 config=config,
                 config_path=args.config,
                 ci_policy_path=args.ci_policy_path,
+                workflow_file=args.workflow_file,
                 required_job_values=args.required_job,
                 conditional_job_values=args.conditional_job,
                 nextest_fingerprint=args.nextest_fingerprint,

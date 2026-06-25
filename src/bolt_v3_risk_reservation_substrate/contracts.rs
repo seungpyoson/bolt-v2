@@ -1,5 +1,11 @@
+use std::num::NonZeroU64;
+
 use rust_decimal::Decimal;
 use serde::Deserialize;
+
+const INITIAL_RISK_STATE_VERSION_VALUE: u64 = u64::MIN;
+const MONOTONIC_COUNTER_STEP: u64 = NonZeroU64::MIN.get();
+const INITIAL_FENCING_TOKEN_VALUE: u64 = NonZeroU64::MIN.get();
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolId(String);
@@ -40,7 +46,7 @@ pub struct RiskStateVersion(u64);
 
 impl RiskStateVersion {
     pub const fn zero() -> Self {
-        Self(0)
+        Self(INITIAL_RISK_STATE_VERSION_VALUE)
     }
 
     pub const fn new(value: u64) -> Self {
@@ -53,7 +59,7 @@ impl RiskStateVersion {
 
     pub fn next(self) -> Result<Self, RiskStateVersionError> {
         self.0
-            .checked_add(1)
+            .checked_add(MONOTONIC_COUNTER_STEP)
             .map(Self)
             .ok_or(RiskStateVersionError::Overflow)
     }
@@ -63,6 +69,10 @@ impl RiskStateVersion {
 pub struct FencingToken(u64);
 
 impl FencingToken {
+    pub const fn initial() -> Self {
+        Self(INITIAL_FENCING_TOKEN_VALUE)
+    }
+
     pub fn new(value: u64) -> Result<Self, FencingTokenError> {
         if value == 0 {
             return Err(FencingTokenError::Zero);
@@ -76,7 +86,7 @@ impl FencingToken {
 
     pub fn next(self) -> Result<Self, FencingTokenError> {
         self.0
-            .checked_add(1)
+            .checked_add(MONOTONIC_COUNTER_STEP)
             .ok_or(FencingTokenError::Overflow)
             .and_then(Self::new)
     }

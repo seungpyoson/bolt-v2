@@ -13,12 +13,23 @@ pub struct FencedRiskStateStore {
     lease_authority: ConfiguredLeaseAuthority,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct FencedRiskStateStoreInner {
     leases: BTreeMap<PoolId, LeaseRecord>,
     versions: BTreeMap<PoolId, RiskStateVersion>,
     reconciled: BTreeMap<PoolId, bool>,
     mutations: Vec<DurableRiskMutationRecord>,
+}
+
+impl FencedRiskStateStoreInner {
+    fn new() -> Self {
+        Self {
+            leases: BTreeMap::new(),
+            versions: BTreeMap::new(),
+            reconciled: BTreeMap::new(),
+            mutations: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +49,7 @@ pub struct DurableRiskMutationRecord {
 impl FencedRiskStateStore {
     pub fn new(lease_authority: ConfiguredLeaseAuthority) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(FencedRiskStateStoreInner::default())),
+            inner: Arc::new(Mutex::new(FencedRiskStateStoreInner::new())),
             lease_authority,
         }
     }
@@ -56,7 +67,10 @@ impl FencedRiskStateStore {
         let fencing_token = inner
             .leases
             .get(&pool_id)
-            .map_or_else(|| FencingToken::new(1), |lease| lease.fencing_token.next())
+            .map_or_else(
+                || Ok(FencingToken::initial()),
+                |lease| lease.fencing_token.next(),
+            )
             .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
 
         inner.leases.insert(

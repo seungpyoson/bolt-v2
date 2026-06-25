@@ -1252,6 +1252,9 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
     if 'tee -a "$GITHUB_OUTPUT"' not in text:
         errors.append("ci-policy must write script output to GITHUB_OUTPUT")
     for required in (
+        "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+        "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
+        'git check-ref-format "refs/heads/$base_branch"',
         "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
         "steps.policy_base.outputs.script",
         'python3 "$policy_script" ci-policy',
@@ -8151,6 +8154,9 @@ def gate_policy_truth_table_errors(gate_text: str) -> list[str]:
     if GATE_NAME_OUTPUT not in gate_text:
         errors.append("gate name must come from ci-policy gate_name output")
     for required in (
+        "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+        "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
+        'git check-ref-format "refs/heads/$base_branch"',
         "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
         "steps.verdict_base.outputs.script",
         'python3 "$verdict_script" check-ci-gate',
@@ -9650,6 +9656,9 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             "gate_name: ${{ steps.policy.outputs.gate_name }}",
             "backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}",
             "expected_event_class: ${{ steps.policy.outputs.expected_event_class }}",
+            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+            "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
+            'git check-ref-format "refs/heads/$base_branch"',
             "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
             "steps.policy_base.outputs.script",
             'python3 "$policy_script" ci-policy',
@@ -9685,6 +9694,9 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
         if "ci-policy" not in extract_needs(gate):
             errors.append("backtester draft deferral gate must need ci-policy")
         for required in (
+            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+            "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
+            'git check-ref-format "refs/heads/$base_branch"',
             "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
             "steps.verdict_base.outputs.script",
             'python3 "$verdict_script" check-backtester-gate',

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-tests for CI path-filter docs and pass-stub verifier."""
+"""Self-tests for CI path-filter docs and policy verifier."""
 
 from __future__ import annotations
 

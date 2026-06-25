@@ -300,11 +300,14 @@ jobs:
           python-version: "3.12"
       - name: Prepare trusted base policy tree
         id: policy_base
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
         run: |
           base_ref="refs/remotes/origin/ci-policy-base-${{ github.event.pull_request.number }}"
           git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          git check-ref-format "refs/heads/$base_branch"
           base_tree="$RUNNER_TEMP/ci-policy-base-tree"
           mkdir -p "$base_tree"
           git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
@@ -824,11 +827,14 @@ jobs:
     steps:
       - name: Prepare trusted base verdict tree
         id: verdict_base
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         shell: bash
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
         run: |
           base_ref="refs/remotes/origin/ci-gate-base-${{ github.event.pull_request.number }}"
           git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          git check-ref-format "refs/heads/$base_branch"
           base_tree="$RUNNER_TEMP/ci-gate-base-tree"
           mkdir -p "$base_tree"
           git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"

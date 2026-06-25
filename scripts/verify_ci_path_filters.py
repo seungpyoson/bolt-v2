@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify CI path-filter docs and docs-only pass-stub wiring."""
+"""Verify CI path-filter docs and docs-only policy wiring."""
 
 from __future__ import annotations
 

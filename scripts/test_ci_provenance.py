@@ -2255,6 +2255,69 @@ def assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress() -> 
         )
 
 
+def assert_gate_carry_forward_uses_newest_success_with_provenance() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        older_provenance_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        intervening_older_failure = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:15:00Z",
+        )
+        newer_carry_forward_success = run_payload(
+            id=RUN_ID + 2,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:20:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[newer_carry_forward_success, intervening_older_failure, older_provenance_success]],
+            jobs_by_run_id={
+                RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]},
+                RUN_ID + 2: {"jobs": [job_payload("gate")]},
+            },
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        result = module.resolve_gate_carry_forward(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            requested_sha=SHA,
+            base_sha="1" * 40,
+            current_run_id=RUN_ID + 3,
+            gate_name="gate",
+            workflow_path=".github/workflows/ci.yml",
+            config=module.load_config(config),
+            config_path=config,
+            require_provenance_base=True,
+            api_json=fake.json,
+            api_bytes=fake.bytes,
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        )
+        if result.source_run_id != str(RUN_ID) or not result.carry_forward_verified:
+            raise AssertionError(result)
+
+
 def base_ci_gate_jobs(**overrides: str) -> dict[str, str]:
     jobs = {
         "ci-policy": "success",
@@ -2501,14 +2564,30 @@ def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
         job_results=skipped_jobs,
         bvs_changed=False,
     )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="defer",
+        expected_event_class="defer",
+        full_ci_deferred=True,
+        carry_forward_verified=False,
+        job_results=skipped_jobs,
+        bvs_changed=False,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="noop",
+        expected_event_class="noop",
+        full_ci_deferred=False,
+        carry_forward_verified=False,
+        job_results=skipped_jobs,
+        bvs_changed=False,
+    )
     assert_raises(
-        "backtester no-crate path requires policy_path",
+        "clippy unexpectedly ran during backtester no-crate",
         lambda: module.evaluate_backtester_gate_verdict(
-            policy_path="defer",
-            expected_event_class="defer",
-            full_ci_deferred=True,
+            policy_path="noop",
+            expected_event_class="noop",
+            full_ci_deferred=False,
             carry_forward_verified=False,
-            job_results=skipped_jobs,
+            job_results={**skipped_jobs, "clippy": "success"},
             bvs_changed=False,
         ),
     )
@@ -2606,6 +2685,7 @@ def main() -> int:
     assert_gate_carry_forward_requires_same_base_pr_provenance()
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_failed()
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress()
+    assert_gate_carry_forward_uses_newest_success_with_provenance()
     assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()
     assert_ci_gate_verdict_hardens_full_and_reuse_proof()
     assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()

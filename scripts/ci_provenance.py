@@ -764,11 +764,13 @@ def evaluate_backtester_gate_verdict(
         return "backtester iteration CI policy; no required full proof published by this run"
 
     if not bvs_changed:
-        if policy_path != "full":
-            raise ProvenanceError(f"backtester no-crate path requires policy_path='full', got {policy_path!r}")
-        if expected_event_class != "full":
+        allowed_no_crate_paths = frozenset({"full", "noop", "defer"})
+        if policy_path not in allowed_no_crate_paths:
+            raise ProvenanceError(f"backtester no-crate path does not support policy_path {policy_path!r}")
+        if expected_event_class != policy_path:
             raise ProvenanceError(
-                f"backtester no-crate path requires resolver-permitted event class 'full', got {expected_event_class!r}"
+                "backtester no-crate path requires expected_event_class to match "
+                f"policy_path {policy_path!r}, got {expected_event_class!r}"
             )
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
         require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester no-crate")
@@ -1769,6 +1771,10 @@ def validate_gate_carry_forward_provenance(
         raise ProvenanceError("base_sha does not match current PR base")
 
 
+def missing_gate_carry_forward_provenance_error(exc: ProvenanceError, run_id: int) -> bool:
+    return str(exc) == f"source run {run_id} has no provenance artifact"
+
+
 def resolve_gate_carry_forward(
     *,
     repo: str,
@@ -1840,12 +1846,15 @@ def resolve_gate_carry_forward(
             ),
             reverse=True,
         )
-        if candidates:
-            run = candidates[0]
+        saw_successful_gate_without_provenance = False
+        for run in candidates:
             run_id = positive_int_value(run.get("id"), "workflow run id")
             status = as_text(run.get("status"))
             conclusion = as_text(run.get("conclusion"))
             if status != "completed" or conclusion != "success":
+                if saw_successful_gate_without_provenance:
+                    last_error = f"older same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
+                    continue
                 raise ProvenanceError(
                     f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
                 )
@@ -1867,21 +1876,34 @@ def resolve_gate_carry_forward(
             try:
                 require_job_success(jobs_by_name(jobs_payload), gate_name)
             except ProvenanceError as exc:
+                if saw_successful_gate_without_provenance:
+                    last_error = f"older same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
+                    continue
                 raise ProvenanceError(
                     f"newest same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
                 ) from exc
             if require_provenance_base:
-                validate_gate_carry_forward_provenance(
-                    repo=repo,
-                    token=token,
-                    run=run,
-                    requested_sha=requested_sha,
-                    base_sha=base_sha,
-                    config=config,
-                    config_path=config_path,
-                    api_json=api_json,
-                    api_bytes=api_bytes,
-                )
+                try:
+                    validate_gate_carry_forward_provenance(
+                        repo=repo,
+                        token=token,
+                        run=run,
+                        requested_sha=requested_sha,
+                        base_sha=base_sha,
+                        config=config,
+                        config_path=config_path,
+                        api_json=api_json,
+                        api_bytes=api_bytes,
+                    )
+                except ProvenanceError as exc:
+                    if missing_gate_carry_forward_provenance_error(exc, run_id):
+                        saw_successful_gate_without_provenance = True
+                        last_error = str(exc)
+                        continue
+                    if saw_successful_gate_without_provenance:
+                        last_error = str(exc)
+                        continue
+                    raise
             return GateCarryForwardResolution(
                 carry_forward_verified=True,
                 source_run_id=str(run_id),
@@ -2174,15 +2196,6 @@ def parse_job_result_values(values: list[str]) -> dict[str, str]:
     if not results:
         raise ProvenanceError("at least one --job result is required")
     return results
-
-
-def parse_bool(value: str) -> bool:
-    lowered = value.strip().lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    raise ProvenanceError(f"expected boolean true/false, got {value!r}")
 
 
 def parse_required_job_results(

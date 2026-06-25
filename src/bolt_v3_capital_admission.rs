@@ -12,7 +12,7 @@ use crate::bolt_v3_sizing_state::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SizingPolicy {
+pub struct CapitalAdmissionPolicy {
     pub min_remaining_pool_balance: Option<Decimal>,
     pub fee_slippage_policy: Option<FeeSlippagePolicy>,
 }
@@ -24,7 +24,7 @@ pub struct FeeSlippagePolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PositionSizingRequest {
+pub struct CapitalAdmissionRequest {
     pub intent_id: String,
     pub strategy_id: String,
     pub instrument_id: String,
@@ -62,12 +62,12 @@ pub enum ProductKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProductSizingSnapshot {
-    PredictionMarketBinary(PredictionMarketSizingSnapshot),
+pub enum ProductAdmissionSnapshot {
+    PredictionMarketBinary(PredictionMarketAdmissionSnapshot),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PredictionMarketSizingSnapshot {
+pub struct PredictionMarketAdmissionSnapshot {
     pub source: String,
     pub observed_at_ns: u64,
     pub yes_instrument_id: String,
@@ -82,9 +82,9 @@ pub struct PredictionMarketSizingSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiabilityQuote {
     pub original_quantity: Decimal,
-    pub sized_quantity: Decimal,
-    pub liability_before_sizing: Decimal,
-    pub liability_after_sizing: Decimal,
+    pub accepted_quantity: Decimal,
+    pub calculated_liability: Decimal,
+    pub reserved_liability: Decimal,
     pub evidence_label: String,
 }
 
@@ -104,52 +104,52 @@ pub enum LiabilityError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PredictionMarketBinaryLiabilityCalculator;
 
-pub struct PositionSizingInputs<'a> {
-    pub request: &'a PositionSizingRequest,
+pub struct CapitalAdmissionInputs<'a> {
+    pub request: &'a CapitalAdmissionRequest,
     pub state: Option<&'a NtDerivedSizingState>,
-    pub policy: &'a SizingPolicy,
+    pub policy: &'a CapitalAdmissionPolicy,
     pub loss_policy: Option<&'a LossGovernorPolicy>,
     pub capital_pool: &'a CapitalPoolSnapshot,
     pub reservation_ledger: &'a mut ReservationLedger,
 }
 
-pub struct PositionSizingGateInputs<'a> {
-    pub request: &'a PositionSizingRequest,
+pub struct CapitalAdmissionGateInputs<'a> {
+    pub request: &'a CapitalAdmissionRequest,
     pub state: Option<&'a NtDerivedSizingState>,
-    pub policy: &'a SizingPolicy,
+    pub policy: &'a CapitalAdmissionPolicy,
     pub loss_policy: Option<&'a LossGovernorPolicy>,
     pub capital_pool: &'a CapitalPoolSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PositionSizingLifecycleUpdate {
+pub struct CapitalAdmissionLifecycleUpdate {
     pub intent_id: String,
     pub pool_id: String,
     pub collateral_group_id: String,
     pub remaining_liability: Decimal,
     pub observed_at_ns: u64,
     pub evidence_label: String,
-    pub kind: PositionSizingLifecycleKind,
+    pub kind: CapitalAdmissionLifecycleKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PositionSizingLifecycleKind {
+pub enum CapitalAdmissionLifecycleKind {
     LiveResidual,
     Terminal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PositionSizingLifecycleAction {
+pub enum CapitalAdmissionLifecycleAction {
     Revalued,
     Released,
     None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PositionSizingLifecycleDecision {
+pub struct CapitalAdmissionLifecycleDecision {
     pub accepted: bool,
-    pub kind: PositionSizingLifecycleKind,
-    pub action: PositionSizingLifecycleAction,
+    pub kind: CapitalAdmissionLifecycleKind,
+    pub action: CapitalAdmissionLifecycleAction,
     pub reason: Option<ReservationRejectionReason>,
     pub previous_liability: Option<Decimal>,
     pub revalued_liability: Option<Decimal>,
@@ -157,7 +157,7 @@ pub struct PositionSizingLifecycleDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PositionSizingRebuildDecision {
+pub struct CapitalAdmissionRebuildDecision {
     pub accepted: bool,
     pub reason: Option<ReservationRejectionReason>,
     pub attempted_reservation_count: usize,
@@ -167,11 +167,11 @@ pub struct PositionSizingRebuildDecision {
 
 /// Serialize access to this gate behind one actor, mutex, or exclusive borrow.
 #[derive(Debug)]
-pub struct PositionSizingAdmissionGate {
+pub struct CapitalAdmissionGate {
     reservation_ledger: ReservationLedger,
 }
 
-impl PositionSizingAdmissionGate {
+impl CapitalAdmissionGate {
     pub fn unreconciled() -> Self {
         Self {
             reservation_ledger: ReservationLedger::unreconciled(),
@@ -194,7 +194,7 @@ impl PositionSizingAdmissionGate {
         open_order_reservations: &[ReservationRequest],
         now_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
-    ) -> PositionSizingRebuildDecision {
+    ) -> CapitalAdmissionRebuildDecision {
         // Restart replay is a replacement operation: fail closed unless every recovered order
         // reservation can be rebuilt from current NT-derived evidence.
         self.reservation_ledger = ReservationLedger::unreconciled();
@@ -202,7 +202,7 @@ impl PositionSizingAdmissionGate {
         for (index, reservation) in open_order_reservations.iter().enumerate() {
             if pool.pool_id != reservation.pool_id {
                 let attempted_reservation_count = open_order_reservations[..=index].len();
-                return PositionSizingRebuildDecision {
+                return CapitalAdmissionRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::PoolMismatch),
                     attempted_reservation_count,
@@ -215,7 +215,7 @@ impl PositionSizingAdmissionGate {
                 rebuilt_ledger.reserve(pool, reservation, now_ns, min_remaining_pool_balance);
             if !decision.accepted {
                 let attempted_reservation_count = open_order_reservations[..=index].len();
-                return PositionSizingRebuildDecision {
+                return CapitalAdmissionRebuildDecision {
                     accepted: false,
                     reason: decision.reason,
                     attempted_reservation_count,
@@ -226,7 +226,7 @@ impl PositionSizingAdmissionGate {
         }
 
         self.reservation_ledger = rebuilt_ledger;
-        PositionSizingRebuildDecision {
+        CapitalAdmissionRebuildDecision {
             accepted: true,
             reason: None,
             attempted_reservation_count: open_order_reservations.len(),
@@ -237,9 +237,9 @@ impl PositionSizingAdmissionGate {
 
     pub fn evaluate_and_reserve(
         &mut self,
-        inputs: PositionSizingGateInputs<'_>,
-    ) -> SizedAdmissionDecision {
-        evaluate_position_sizing(PositionSizingInputs {
+        inputs: CapitalAdmissionGateInputs<'_>,
+    ) -> CapitalAdmissionDecision {
+        evaluate_capital_admission(CapitalAdmissionInputs {
             request: inputs.request,
             state: inputs.state,
             policy: inputs.policy,
@@ -273,12 +273,12 @@ impl PositionSizingAdmissionGate {
     pub fn apply_lifecycle_update(
         &mut self,
         pool: &CapitalPoolSnapshot,
-        update: &PositionSizingLifecycleUpdate,
+        update: &CapitalAdmissionLifecycleUpdate,
         now_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
-    ) -> PositionSizingLifecycleDecision {
+    ) -> CapitalAdmissionLifecycleDecision {
         match update.kind {
-            PositionSizingLifecycleKind::Terminal => {
+            CapitalAdmissionLifecycleKind::Terminal => {
                 if update.remaining_liability != Decimal::ZERO {
                     return rejected_lifecycle(
                         update.kind,
@@ -293,13 +293,13 @@ impl PositionSizingAdmissionGate {
                     evidence_label: update.evidence_label.clone(),
                 };
                 let decision = self.release_pending_reservation(pool, &request, now_ns);
-                PositionSizingLifecycleDecision {
+                CapitalAdmissionLifecycleDecision {
                     accepted: decision.accepted,
                     kind: update.kind,
                     action: if decision.accepted {
-                        PositionSizingLifecycleAction::Released
+                        CapitalAdmissionLifecycleAction::Released
                     } else {
-                        PositionSizingLifecycleAction::None
+                        CapitalAdmissionLifecycleAction::None
                     },
                     reason: decision.reason,
                     previous_liability: None,
@@ -307,7 +307,7 @@ impl PositionSizingAdmissionGate {
                     released_liability: decision.released_liability,
                 }
             }
-            PositionSizingLifecycleKind::LiveResidual => {
+            CapitalAdmissionLifecycleKind::LiveResidual => {
                 if update.remaining_liability <= Decimal::ZERO {
                     return rejected_lifecycle(
                         update.kind,
@@ -328,13 +328,13 @@ impl PositionSizingAdmissionGate {
                     now_ns,
                     min_remaining_pool_balance,
                 );
-                PositionSizingLifecycleDecision {
+                CapitalAdmissionLifecycleDecision {
                     accepted: decision.accepted,
                     kind: update.kind,
                     action: if decision.accepted {
-                        PositionSizingLifecycleAction::Revalued
+                        CapitalAdmissionLifecycleAction::Revalued
                     } else {
-                        PositionSizingLifecycleAction::None
+                        CapitalAdmissionLifecycleAction::None
                     },
                     reason: decision.reason,
                     previous_liability: decision.previous_liability,
@@ -360,13 +360,13 @@ impl PositionSizingAdmissionGate {
 }
 
 fn rejected_lifecycle(
-    kind: PositionSizingLifecycleKind,
+    kind: CapitalAdmissionLifecycleKind,
     reason: ReservationRejectionReason,
-) -> PositionSizingLifecycleDecision {
-    PositionSizingLifecycleDecision {
+) -> CapitalAdmissionLifecycleDecision {
+    CapitalAdmissionLifecycleDecision {
         accepted: false,
         kind,
-        action: PositionSizingLifecycleAction::None,
+        action: CapitalAdmissionLifecycleAction::None,
         reason: Some(reason),
         previous_liability: None,
         revalued_liability: None,
@@ -375,7 +375,7 @@ fn rejected_lifecycle(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SizedAdmissionReason {
+pub enum CapitalAdmissionReason {
     Loss(LossHaltReason),
     Reservation(ReservationRejectionReason),
     Liability(LiabilityError),
@@ -385,19 +385,19 @@ pub enum SizedAdmissionReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SizedAdmissionDecision {
+pub struct CapitalAdmissionDecision {
     pub accepted: bool,
     pub original_quantity: Decimal,
-    pub sized_quantity: Option<Decimal>,
-    pub liability_before_sizing: Option<Decimal>,
-    pub liability_after_sizing: Option<Decimal>,
+    pub accepted_quantity: Option<Decimal>,
+    pub calculated_liability: Option<Decimal>,
+    pub reserved_liability: Option<Decimal>,
     pub pool_id: String,
-    pub evidence: SizedAdmissionEvidence,
-    pub reasons: Vec<SizedAdmissionReason>,
+    pub evidence: CapitalAdmissionEvidence,
+    pub reasons: Vec<CapitalAdmissionReason>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SizingEvidenceKind {
+pub enum CapitalAdmissionEvidenceKind {
     Portfolio,
     VenueSpendability,
     OrderLifecycle,
@@ -408,41 +408,41 @@ pub enum SizingEvidenceKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SizingEvidenceSource {
-    pub kind: SizingEvidenceKind,
+pub struct CapitalAdmissionEvidenceSource {
+    pub kind: CapitalAdmissionEvidenceKind,
     pub source: String,
     pub observed_at_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SizedAdmissionEvidence {
-    pub sources: Vec<SizingEvidenceSource>,
+pub struct CapitalAdmissionEvidence {
+    pub sources: Vec<CapitalAdmissionEvidenceSource>,
     pub original_quantity: Decimal,
-    pub sized_quantity: Option<Decimal>,
-    pub liability_before_sizing: Option<Decimal>,
-    pub liability_after_sizing: Option<Decimal>,
+    pub accepted_quantity: Option<Decimal>,
+    pub calculated_liability: Option<Decimal>,
+    pub reserved_liability: Option<Decimal>,
 }
 
-pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmissionDecision {
+pub fn evaluate_capital_admission(inputs: CapitalAdmissionInputs<'_>) -> CapitalAdmissionDecision {
     let original_quantity = inputs.request.quantity;
     let pool_id = inputs.request.pool_id.clone();
     let max_snapshot_age_ns = inputs.capital_pool.max_snapshot_age_ns;
 
     if inputs.capital_pool.pool_id != pool_id {
-        return rejected_sizing(
+        return rejected_capital_admission(
             original_quantity,
             pool_id,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::PoolMismatch,
             )],
         );
     }
 
     let Some(state) = inputs.state else {
-        return rejected_sizing(
+        return rejected_capital_admission(
             original_quantity,
             pool_id,
-            vec![SizedAdmissionReason::MissingNtState],
+            vec![CapitalAdmissionReason::MissingNtState],
         );
     };
 
@@ -453,7 +453,11 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
     ) {
         Ok(state_evidence) => state_evidence,
         Err(error) => {
-            return rejected_sizing(original_quantity, pool_id, vec![state_error_reason(error)]);
+            return rejected_capital_admission(
+                original_quantity,
+                pool_id,
+                vec![state_error_reason(error)],
+            );
         }
     };
 
@@ -464,13 +468,13 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
             inputs.request.now_ns,
         );
         if !loss_decision.accepted {
-            return rejected_sizing(
+            return rejected_capital_admission(
                 original_quantity,
                 pool_id,
                 loss_decision
                     .halt_reasons
                     .into_iter()
-                    .map(SizedAdmissionReason::Loss)
+                    .map(CapitalAdmissionReason::Loss)
                     .collect(),
             );
         }
@@ -484,10 +488,10 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
     ) {
         Ok(liability_quote) => liability_quote,
         Err(error) => {
-            return rejected_sizing(
+            return rejected_capital_admission(
                 original_quantity,
                 pool_id,
-                vec![SizedAdmissionReason::Liability(error)],
+                vec![CapitalAdmissionReason::Liability(error)],
             );
         }
     };
@@ -496,7 +500,7 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
         request_id: inputs.request.intent_id.clone(),
         pool_id: inputs.request.pool_id.clone(),
         collateral_group_id: collateral_group_id(&state.product_state),
-        liability: liability_quote.liability_after_sizing,
+        liability: liability_quote.reserved_liability,
         observed_at_ns: inputs.request.now_ns,
         evidence_label: liability_quote.evidence_label.clone(),
     };
@@ -507,13 +511,13 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
         inputs.policy.min_remaining_pool_balance,
     );
     if !reservation_decision.accepted {
-        return rejected_sizing_with_liability(
+        return rejected_capital_admission_with_liability(
             original_quantity,
             pool_id,
-            liability_quote.liability_before_sizing,
-            liability_quote.liability_after_sizing,
+            liability_quote.calculated_liability,
+            liability_quote.reserved_liability,
             admission_evidence(&state_evidence, inputs.request.now_ns, &liability_quote),
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 reservation_decision
                     .reason
                     .unwrap_or(ReservationRejectionReason::InvalidRequest),
@@ -521,62 +525,62 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
         );
     }
 
-    SizedAdmissionDecision {
+    CapitalAdmissionDecision {
         accepted: true,
         original_quantity,
-        sized_quantity: Some(liability_quote.sized_quantity),
-        liability_before_sizing: Some(liability_quote.liability_before_sizing),
-        liability_after_sizing: Some(liability_quote.liability_after_sizing),
+        accepted_quantity: Some(liability_quote.accepted_quantity),
+        calculated_liability: Some(liability_quote.calculated_liability),
+        reserved_liability: Some(liability_quote.reserved_liability),
         pool_id,
         evidence: admission_evidence(&state_evidence, inputs.request.now_ns, &liability_quote),
         reasons: Vec::new(),
     }
 }
 
-fn rejected_sizing(
+fn rejected_capital_admission(
     original_quantity: Decimal,
     pool_id: String,
-    reasons: Vec<SizedAdmissionReason>,
-) -> SizedAdmissionDecision {
-    SizedAdmissionDecision {
+    reasons: Vec<CapitalAdmissionReason>,
+) -> CapitalAdmissionDecision {
+    CapitalAdmissionDecision {
         accepted: false,
         original_quantity,
-        sized_quantity: None,
-        liability_before_sizing: None,
-        liability_after_sizing: None,
+        accepted_quantity: None,
+        calculated_liability: None,
+        reserved_liability: None,
         pool_id,
         evidence: empty_evidence(original_quantity),
         reasons,
     }
 }
 
-fn rejected_sizing_with_liability(
+fn rejected_capital_admission_with_liability(
     original_quantity: Decimal,
     pool_id: String,
-    liability_before_sizing: Decimal,
-    liability_after_sizing: Decimal,
-    evidence: SizedAdmissionEvidence,
-    reasons: Vec<SizedAdmissionReason>,
-) -> SizedAdmissionDecision {
-    SizedAdmissionDecision {
+    calculated_liability: Decimal,
+    reserved_liability: Decimal,
+    evidence: CapitalAdmissionEvidence,
+    reasons: Vec<CapitalAdmissionReason>,
+) -> CapitalAdmissionDecision {
+    CapitalAdmissionDecision {
         accepted: false,
         original_quantity,
-        sized_quantity: None,
-        liability_before_sizing: Some(liability_before_sizing),
-        liability_after_sizing: Some(liability_after_sizing),
+        accepted_quantity: None,
+        calculated_liability: Some(calculated_liability),
+        reserved_liability: Some(reserved_liability),
         pool_id,
         evidence,
         reasons,
     }
 }
 
-fn empty_evidence(original_quantity: Decimal) -> SizedAdmissionEvidence {
-    SizedAdmissionEvidence {
+fn empty_evidence(original_quantity: Decimal) -> CapitalAdmissionEvidence {
+    CapitalAdmissionEvidence {
         sources: Vec::new(),
         original_quantity,
-        sized_quantity: None,
-        liability_before_sizing: None,
-        liability_after_sizing: None,
+        accepted_quantity: None,
+        calculated_liability: None,
+        reserved_liability: None,
     }
 }
 
@@ -584,58 +588,66 @@ fn admission_evidence(
     state_evidence: &SizingStateEvidence,
     liability_observed_at_ns: u64,
     liability_quote: &LiabilityQuote,
-) -> SizedAdmissionEvidence {
+) -> CapitalAdmissionEvidence {
     let mut sources = state_evidence
         .sources
         .iter()
         .filter_map(|source| {
-            Some(SizingEvidenceSource {
-                kind: sizing_evidence_kind(source.kind)?,
+            Some(CapitalAdmissionEvidenceSource {
+                kind: capital_admission_evidence_kind(source.kind)?,
                 source: source.source.clone(),
                 observed_at_ns: source.observed_at_ns,
             })
         })
         .collect::<Vec<_>>();
-    sources.push(SizingEvidenceSource {
-        kind: SizingEvidenceKind::LiabilityCalculator,
+    sources.push(CapitalAdmissionEvidenceSource {
+        kind: CapitalAdmissionEvidenceKind::LiabilityCalculator,
         source: liability_quote.evidence_label.clone(),
         observed_at_ns: liability_observed_at_ns,
     });
 
-    SizedAdmissionEvidence {
+    CapitalAdmissionEvidence {
         sources,
         original_quantity: liability_quote.original_quantity,
-        sized_quantity: Some(liability_quote.sized_quantity),
-        liability_before_sizing: Some(liability_quote.liability_before_sizing),
-        liability_after_sizing: Some(liability_quote.liability_after_sizing),
+        accepted_quantity: Some(liability_quote.accepted_quantity),
+        calculated_liability: Some(liability_quote.calculated_liability),
+        reserved_liability: Some(liability_quote.reserved_liability),
     }
 }
 
-fn sizing_evidence_kind(kind: SizingStateEvidenceKind) -> Option<SizingEvidenceKind> {
+fn capital_admission_evidence_kind(
+    kind: SizingStateEvidenceKind,
+) -> Option<CapitalAdmissionEvidenceKind> {
     match kind {
         SizingStateEvidenceKind::State => None,
-        SizingStateEvidenceKind::Portfolio => Some(SizingEvidenceKind::Portfolio),
-        SizingStateEvidenceKind::VenueSpendability => Some(SizingEvidenceKind::VenueSpendability),
-        SizingStateEvidenceKind::OrderLifecycle => Some(SizingEvidenceKind::OrderLifecycle),
-        SizingStateEvidenceKind::ProductState => Some(SizingEvidenceKind::ProductState),
-        SizingStateEvidenceKind::ReservationLedger => Some(SizingEvidenceKind::ReservationLedger),
-        SizingStateEvidenceKind::LossSnapshot => Some(SizingEvidenceKind::LossSnapshot),
+        SizingStateEvidenceKind::Portfolio => Some(CapitalAdmissionEvidenceKind::Portfolio),
+        SizingStateEvidenceKind::VenueSpendability => {
+            Some(CapitalAdmissionEvidenceKind::VenueSpendability)
+        }
+        SizingStateEvidenceKind::OrderLifecycle => {
+            Some(CapitalAdmissionEvidenceKind::OrderLifecycle)
+        }
+        SizingStateEvidenceKind::ProductState => Some(CapitalAdmissionEvidenceKind::ProductState),
+        SizingStateEvidenceKind::ReservationLedger => {
+            Some(CapitalAdmissionEvidenceKind::ReservationLedger)
+        }
+        SizingStateEvidenceKind::LossSnapshot => Some(CapitalAdmissionEvidenceKind::LossSnapshot),
     }
 }
 
-fn state_error_reason(error: SizingStateError) -> SizedAdmissionReason {
+fn state_error_reason(error: SizingStateError) -> CapitalAdmissionReason {
     match error {
-        SizingStateError::MissingNtState => SizedAdmissionReason::MissingNtState,
-        SizingStateError::StaleNtState(kind) => SizedAdmissionReason::StaleNtState(kind),
+        SizingStateError::MissingNtState => CapitalAdmissionReason::MissingNtState,
+        SizingStateError::StaleNtState(kind) => CapitalAdmissionReason::StaleNtState(kind),
         SizingStateError::UnattributedState(kind) => {
-            SizedAdmissionReason::UnattributedNtState(kind)
+            CapitalAdmissionReason::UnattributedNtState(kind)
         }
     }
 }
 
-fn collateral_group_id(state: &ProductSizingSnapshot) -> String {
+fn collateral_group_id(state: &ProductAdmissionSnapshot) -> String {
     match state {
-        ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+        ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
             snapshot.collateral_coupled_group_id.clone()
         }
     }
@@ -644,11 +656,11 @@ fn collateral_group_id(state: &ProductSizingSnapshot) -> String {
 impl PredictionMarketBinaryLiabilityCalculator {
     pub fn worst_case_liability(
         &self,
-        request: &PositionSizingRequest,
-        state: &ProductSizingSnapshot,
-        policy: &SizingPolicy,
+        request: &CapitalAdmissionRequest,
+        state: &ProductAdmissionSnapshot,
+        policy: &CapitalAdmissionPolicy,
     ) -> Result<LiabilityQuote, LiabilityError> {
-        let ProductSizingSnapshot::PredictionMarketBinary(snapshot) = state;
+        let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = state;
         validate_request(request)?;
         validate_liquidity(request)?;
         let fee_policy = policy
@@ -694,15 +706,15 @@ impl PredictionMarketBinaryLiabilityCalculator {
 
         Ok(LiabilityQuote {
             original_quantity: request.quantity,
-            sized_quantity: request.quantity,
-            liability_before_sizing: liability,
-            liability_after_sizing: liability,
+            accepted_quantity: request.quantity,
+            calculated_liability: liability,
+            reserved_liability: liability,
             evidence_label: snapshot.source.clone(),
         })
     }
 }
 
-fn validate_request(request: &PositionSizingRequest) -> Result<(), LiabilityError> {
+fn validate_request(request: &CapitalAdmissionRequest) -> Result<(), LiabilityError> {
     if request.quantity <= Decimal::ZERO {
         return Err(LiabilityError::InvalidIntentQuantity);
     }
@@ -712,7 +724,7 @@ fn validate_request(request: &PositionSizingRequest) -> Result<(), LiabilityErro
     Ok(())
 }
 
-fn validate_liquidity(request: &PositionSizingRequest) -> Result<(), LiabilityError> {
+fn validate_liquidity(request: &CapitalAdmissionRequest) -> Result<(), LiabilityError> {
     if request.liquidity == IntentLiquidity::RestingMaker
         && request.quote_set_id.as_deref().is_none_or(str::is_empty)
     {
@@ -748,16 +760,17 @@ mod tests {
     };
 
     use super::{
-        FeeSlippagePolicy, IntentLiquidity, IntentOrderKind, IntentSide, LiabilityError,
-        PositionSizingAdmissionGate, PositionSizingGateInputs, PositionSizingInputs,
-        PositionSizingLifecycleAction, PositionSizingLifecycleKind, PositionSizingLifecycleUpdate,
-        PositionSizingRequest, PredictionMarketBinaryLiabilityCalculator,
-        PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot, SizedAdmissionReason,
-        SizingEvidenceKind, SizingPolicy, evaluate_position_sizing,
+        CapitalAdmissionEvidenceKind, CapitalAdmissionGate, CapitalAdmissionGateInputs,
+        CapitalAdmissionInputs, CapitalAdmissionLifecycleAction, CapitalAdmissionLifecycleKind,
+        CapitalAdmissionLifecycleUpdate, CapitalAdmissionPolicy, CapitalAdmissionReason,
+        CapitalAdmissionRequest, FeeSlippagePolicy, IntentLiquidity, IntentOrderKind, IntentSide,
+        LiabilityError, PredictionMarketAdmissionSnapshot,
+        PredictionMarketBinaryLiabilityCalculator, ProductAdmissionSnapshot, ProductKind,
+        evaluate_capital_admission,
     };
 
-    fn policy() -> SizingPolicy {
-        SizingPolicy {
+    fn policy() -> CapitalAdmissionPolicy {
+        CapitalAdmissionPolicy {
             min_remaining_pool_balance: None,
             fee_slippage_policy: Some(FeeSlippagePolicy {
                 max_fee_liability: Decimal::new(10, 2),
@@ -766,8 +779,8 @@ mod tests {
         }
     }
 
-    fn request(side: IntentSide, liquidity: IntentLiquidity) -> PositionSizingRequest {
-        PositionSizingRequest {
+    fn request(side: IntentSide, liquidity: IntentLiquidity) -> CapitalAdmissionRequest {
+        CapitalAdmissionRequest {
             intent_id: "intent-1".to_string(),
             strategy_id: "strategy-1".to_string(),
             instrument_id: "instrument-1".to_string(),
@@ -783,8 +796,8 @@ mod tests {
         }
     }
 
-    fn state() -> ProductSizingSnapshot {
-        ProductSizingSnapshot::PredictionMarketBinary(PredictionMarketSizingSnapshot {
+    fn state() -> ProductAdmissionSnapshot {
+        ProductAdmissionSnapshot::PredictionMarketBinary(PredictionMarketAdmissionSnapshot {
             source: "nt_account_and_position_snapshot".to_string(),
             observed_at_ns: 900,
             yes_instrument_id: "instrument-1".to_string(),
@@ -863,8 +876,8 @@ mod tests {
         }
     }
 
-    fn request_with_intent(intent_id: &str) -> PositionSizingRequest {
-        PositionSizingRequest {
+    fn request_with_intent(intent_id: &str) -> CapitalAdmissionRequest {
+        CapitalAdmissionRequest {
             intent_id: intent_id.to_string(),
             ..request(IntentSide::Buy, IntentLiquidity::Taker)
         }
@@ -923,15 +936,15 @@ mod tests {
     fn terminal_lifecycle_update(
         intent_id: &str,
         observed_at_ns: u64,
-    ) -> PositionSizingLifecycleUpdate {
-        PositionSizingLifecycleUpdate {
+    ) -> CapitalAdmissionLifecycleUpdate {
+        CapitalAdmissionLifecycleUpdate {
             intent_id: intent_id.to_string(),
             pool_id: "pool-1".to_string(),
             collateral_group_id: "group-1".to_string(),
             remaining_liability: Decimal::ZERO,
             observed_at_ns,
             evidence_label: "nt_order_terminal".to_string(),
-            kind: PositionSizingLifecycleKind::Terminal,
+            kind: CapitalAdmissionLifecycleKind::Terminal,
         }
     }
 
@@ -939,15 +952,15 @@ mod tests {
         intent_id: &str,
         liability: Decimal,
         observed_at_ns: u64,
-    ) -> PositionSizingLifecycleUpdate {
-        PositionSizingLifecycleUpdate {
+    ) -> CapitalAdmissionLifecycleUpdate {
+        CapitalAdmissionLifecycleUpdate {
             intent_id: intent_id.to_string(),
             pool_id: "pool-1".to_string(),
             collateral_group_id: "group-1".to_string(),
             remaining_liability: liability,
             observed_at_ns,
             evidence_label: "nt_order_live_residual".to_string(),
-            kind: PositionSizingLifecycleKind::LiveResidual,
+            kind: CapitalAdmissionLifecycleKind::LiveResidual,
         }
     }
 
@@ -962,8 +975,8 @@ mod tests {
                 &policy(),
             )
             .expect("fresh buy state should price liability");
-        assert_eq!(buy.liability_before_sizing, Decimal::new(430, 2));
-        assert_eq!(buy.liability_after_sizing, Decimal::new(430, 2));
+        assert_eq!(buy.calculated_liability, Decimal::new(430, 2));
+        assert_eq!(buy.reserved_liability, Decimal::new(430, 2));
 
         let sell = calculator
             .worst_case_liability(
@@ -972,10 +985,10 @@ mod tests {
                 &policy(),
             )
             .expect("fresh sell state should price liability");
-        assert_eq!(sell.liability_before_sizing, Decimal::new(30, 2));
-        assert_eq!(sell.liability_after_sizing, Decimal::new(30, 2));
+        assert_eq!(sell.calculated_liability, Decimal::new(30, 2));
+        assert_eq!(sell.reserved_liability, Decimal::new(30, 2));
 
-        let missing_fee_policy = SizingPolicy {
+        let missing_fee_policy = CapitalAdmissionPolicy {
             fee_slippage_policy: None,
             ..policy()
         };
@@ -1011,7 +1024,7 @@ mod tests {
             max_slippage_liability: Decimal::ZERO,
         });
         let mut overflow_state = state();
-        let ProductSizingSnapshot::PredictionMarketBinary(snapshot) = &mut overflow_state;
+        let ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) = &mut overflow_state;
         snapshot.collateral_allowance = Decimal::MAX;
 
         assert_eq!(
@@ -1041,7 +1054,7 @@ mod tests {
         let state = nt_state(Some(loss_snapshot));
         let mut ledger = ReservationLedger::reconciled();
 
-        let decision = evaluate_position_sizing(PositionSizingInputs {
+        let decision = evaluate_capital_admission(CapitalAdmissionInputs {
             request: &request(IntentSide::Buy, IntentLiquidity::Taker),
             state: Some(&state),
             policy: &policy(),
@@ -1053,11 +1066,11 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Loss(
+            vec![CapitalAdmissionReason::Loss(
                 LossHaltReason::PerTradeLossLimit
             )]
         );
-        assert_eq!(decision.sized_quantity, None);
+        assert_eq!(decision.accepted_quantity, None);
         assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::ZERO);
     }
 
@@ -1076,7 +1089,7 @@ mod tests {
         let state = nt_state(Some(loss_snapshot));
         let mut ledger = ReservationLedger::reconciled();
 
-        let decision = evaluate_position_sizing(PositionSizingInputs {
+        let decision = evaluate_capital_admission(CapitalAdmissionInputs {
             request: &request(IntentSide::Buy, IntentLiquidity::Taker),
             state: Some(&state),
             policy: &policy(),
@@ -1088,12 +1101,12 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::OverBudget
             )]
         );
-        assert_eq!(decision.liability_before_sizing, Some(Decimal::new(430, 2)));
-        assert_eq!(decision.liability_after_sizing, Some(Decimal::new(430, 2)));
+        assert_eq!(decision.calculated_liability, Some(Decimal::new(430, 2)));
+        assert_eq!(decision.reserved_liability, Some(Decimal::new(430, 2)));
         assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::ZERO);
     }
 
@@ -1112,7 +1125,7 @@ mod tests {
         let state = nt_state(Some(loss_snapshot));
         let mut ledger = ReservationLedger::reconciled();
 
-        let decision = evaluate_position_sizing(PositionSizingInputs {
+        let decision = evaluate_capital_admission(CapitalAdmissionInputs {
             request: &request(IntentSide::Buy, IntentLiquidity::Taker),
             state: Some(&state),
             policy: &policy(),
@@ -1124,9 +1137,9 @@ mod tests {
         assert!(decision.accepted);
         assert!(decision.reasons.is_empty());
         assert_eq!(decision.original_quantity, Decimal::new(10, 0));
-        assert_eq!(decision.sized_quantity, Some(Decimal::new(10, 0)));
-        assert_eq!(decision.liability_before_sizing, Some(Decimal::new(430, 2)));
-        assert_eq!(decision.liability_after_sizing, Some(Decimal::new(430, 2)));
+        assert_eq!(decision.accepted_quantity, Some(Decimal::new(10, 0)));
+        assert_eq!(decision.calculated_liability, Some(Decimal::new(430, 2)));
+        assert_eq!(decision.reserved_liability, Some(Decimal::new(430, 2)));
         assert_eq!(
             decision
                 .evidence
@@ -1135,13 +1148,13 @@ mod tests {
                 .map(|source| source.kind)
                 .collect::<Vec<_>>(),
             vec![
-                SizingEvidenceKind::Portfolio,
-                SizingEvidenceKind::VenueSpendability,
-                SizingEvidenceKind::OrderLifecycle,
-                SizingEvidenceKind::ProductState,
-                SizingEvidenceKind::ReservationLedger,
-                SizingEvidenceKind::LossSnapshot,
-                SizingEvidenceKind::LiabilityCalculator,
+                CapitalAdmissionEvidenceKind::Portfolio,
+                CapitalAdmissionEvidenceKind::VenueSpendability,
+                CapitalAdmissionEvidenceKind::OrderLifecycle,
+                CapitalAdmissionEvidenceKind::ProductState,
+                CapitalAdmissionEvidenceKind::ReservationLedger,
+                CapitalAdmissionEvidenceKind::LossSnapshot,
+                CapitalAdmissionEvidenceKind::LiabilityCalculator,
             ]
         );
         assert_eq!(
@@ -1156,7 +1169,7 @@ mod tests {
         state.portfolio.observed_at_ns = 899;
         let mut ledger = ReservationLedger::reconciled();
 
-        let decision = evaluate_position_sizing(PositionSizingInputs {
+        let decision = evaluate_capital_admission(CapitalAdmissionInputs {
             request: &request(IntentSide::Buy, IntentLiquidity::Taker),
             state: Some(&state),
             policy: &policy(),
@@ -1168,7 +1181,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::StaleNtState(
+            vec![CapitalAdmissionReason::StaleNtState(
                 SizingStateEvidenceKind::Portfolio
             )]
         );
@@ -1192,7 +1205,7 @@ mod tests {
         floor_policy.min_remaining_pool_balance = Some(Decimal::new(96, 0));
         let mut ledger = ReservationLedger::reconciled();
 
-        let decision = evaluate_position_sizing(PositionSizingInputs {
+        let decision = evaluate_capital_admission(CapitalAdmissionInputs {
             request: &request(IntentSide::Buy, IntentLiquidity::Taker),
             state: Some(&state),
             policy: &floor_policy,
@@ -1204,11 +1217,11 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::OverBudget
             )]
         );
-        assert_eq!(decision.liability_after_sizing, Some(Decimal::new(430, 2)));
+        assert_eq!(decision.reserved_liability, Some(Decimal::new(430, 2)));
         assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::ZERO);
     }
 
@@ -1218,7 +1231,7 @@ mod tests {
         foreign_pool_request.pool_id = "pool-2".to_string();
         let mut ledger = ReservationLedger::reconciled();
 
-        let decision = evaluate_position_sizing(PositionSizingInputs {
+        let decision = evaluate_capital_admission(CapitalAdmissionInputs {
             request: &foreign_pool_request,
             state: None,
             policy: &policy(),
@@ -1230,7 +1243,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::PoolMismatch
             )]
         );
@@ -1253,7 +1266,7 @@ mod tests {
         let state = nt_state(Some(loss_snapshot));
         let mut unreconciled_ledger = ReservationLedger::unreconciled();
 
-        let decision = evaluate_position_sizing(PositionSizingInputs {
+        let decision = evaluate_capital_admission(CapitalAdmissionInputs {
             request: &request(IntentSide::Buy, IntentLiquidity::Taker),
             state: Some(&state),
             policy: &policy(),
@@ -1265,7 +1278,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::ReconciliationRequired
             )]
         );
@@ -1292,16 +1305,16 @@ mod tests {
         let capital_pool = single_order_capital_pool();
         let first_request = request_with_intent("intent-1");
         let second_request = request_with_intent("intent-2");
-        let mut gate = PositionSizingAdmissionGate::reconciled();
+        let mut gate = CapitalAdmissionGate::reconciled();
 
-        let first = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let first = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &first_request,
             state: Some(&state),
             policy: &policy,
             loss_policy: Some(&loss_policy()),
             capital_pool: &capital_pool,
         });
-        let second = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let second = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &second_request,
             state: Some(&state),
             policy: &policy,
@@ -1313,7 +1326,7 @@ mod tests {
         assert!(!second.accepted);
         assert_eq!(
             second.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::OverBudget
             )]
         );
@@ -1328,7 +1341,7 @@ mod tests {
         assert_eq!(release.released_liability, Some(Decimal::new(430, 2)));
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
 
-        let retry = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let retry = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &second_request,
             state: Some(&state),
             policy: &policy,
@@ -1345,7 +1358,7 @@ mod tests {
         let capital_pool = capital_pool();
         let mut foreign_reservation = rebuilt_open_order_reservation("intent-foreign");
         foreign_reservation.pool_id = "pool-2".to_string();
-        let mut gate = PositionSizingAdmissionGate::reconciled();
+        let mut gate = CapitalAdmissionGate::reconciled();
 
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
@@ -1370,7 +1383,7 @@ mod tests {
     #[test]
     fn admission_gate_revalues_live_reservation_from_order_lifecycle_evidence() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1395,7 +1408,7 @@ mod tests {
     #[test]
     fn admission_gate_rejects_stale_revalue_without_mutating_live_reservation() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1428,7 +1441,7 @@ mod tests {
     #[test]
     fn admission_gate_forwards_min_remaining_balance_to_revalue() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1453,7 +1466,7 @@ mod tests {
     #[test]
     fn lifecycle_terminal_zero_liability_releases_live_reservation() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1470,8 +1483,8 @@ mod tests {
         );
 
         assert!(decision.accepted);
-        assert_eq!(decision.kind, PositionSizingLifecycleKind::Terminal);
-        assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+        assert_eq!(decision.kind, CapitalAdmissionLifecycleKind::Terminal);
+        assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
         assert_eq!(decision.released_liability, Some(Decimal::new(430, 2)));
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
     }
@@ -1479,7 +1492,7 @@ mod tests {
     #[test]
     fn lifecycle_live_residual_revalues_live_reservation() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1496,8 +1509,8 @@ mod tests {
         );
 
         assert!(decision.accepted);
-        assert_eq!(decision.kind, PositionSizingLifecycleKind::LiveResidual);
-        assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+        assert_eq!(decision.kind, CapitalAdmissionLifecycleKind::LiveResidual);
+        assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Revalued);
         assert_eq!(decision.previous_liability, Some(Decimal::new(430, 2)));
         assert_eq!(decision.revalued_liability, Some(Decimal::new(250, 2)));
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(250, 2));
@@ -1506,7 +1519,7 @@ mod tests {
     #[test]
     fn lifecycle_terminal_rejects_unreconciled_gate_without_mutation() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
 
         let decision = gate.apply_lifecycle_update(
             &capital_pool,
@@ -1516,8 +1529,8 @@ mod tests {
         );
 
         assert!(!decision.accepted);
-        assert_eq!(decision.kind, PositionSizingLifecycleKind::Terminal);
-        assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+        assert_eq!(decision.kind, CapitalAdmissionLifecycleKind::Terminal);
+        assert_eq!(decision.action, CapitalAdmissionLifecycleAction::None);
         assert_eq!(
             decision.reason,
             Some(ReservationRejectionReason::ReconciliationRequired)
@@ -1529,7 +1542,7 @@ mod tests {
     #[test]
     fn lifecycle_terminal_stale_or_equal_timestamp_rejects_without_mutation() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1554,7 +1567,7 @@ mod tests {
     #[test]
     fn lifecycle_live_residual_min_remaining_balance_rejects_without_mutation() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1571,8 +1584,8 @@ mod tests {
         );
 
         assert!(!decision.accepted);
-        assert_eq!(decision.kind, PositionSizingLifecycleKind::LiveResidual);
-        assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+        assert_eq!(decision.kind, CapitalAdmissionLifecycleKind::LiveResidual);
+        assert_eq!(decision.action, CapitalAdmissionLifecycleAction::None);
         assert_eq!(
             decision.reason,
             Some(ReservationRejectionReason::OverBudget)
@@ -1584,7 +1597,7 @@ mod tests {
     #[test]
     fn lifecycle_invalid_residual_shapes_reject_before_mutation() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1596,11 +1609,11 @@ mod tests {
         let cases = [
             live_residual_lifecycle_update("intent-open", Decimal::ZERO, 1_050),
             live_residual_lifecycle_update("intent-open", Decimal::new(-1, 0), 1_050),
-            PositionSizingLifecycleUpdate {
+            CapitalAdmissionLifecycleUpdate {
                 remaining_liability: Decimal::new(1, 0),
                 ..terminal_lifecycle_update("intent-open", 1_050)
             },
-            PositionSizingLifecycleUpdate {
+            CapitalAdmissionLifecycleUpdate {
                 remaining_liability: Decimal::new(-1, 0),
                 ..terminal_lifecycle_update("intent-open", 1_050)
             },
@@ -1609,7 +1622,7 @@ mod tests {
         for update in cases {
             let decision = gate.apply_lifecycle_update(&capital_pool, &update, 1_060, None);
             assert!(!decision.accepted);
-            assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+            assert_eq!(decision.action, CapitalAdmissionLifecycleAction::None);
             assert_eq!(
                 decision.reason,
                 Some(ReservationRejectionReason::InvalidRequest)
@@ -1621,7 +1634,7 @@ mod tests {
     #[test]
     fn lifecycle_terminal_then_live_residual_rejects_unknown_without_mutation() {
         let capital_pool = single_order_capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
             &[rebuilt_open_order_reservation("intent-open")],
@@ -1668,9 +1681,9 @@ mod tests {
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();
         let request = request_with_intent("intent-1");
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
 
-        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let decision = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &request,
             state: Some(&state),
             policy: &policy,
@@ -1681,7 +1694,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::ReconciliationRequired
             )]
         );
@@ -1716,7 +1729,7 @@ mod tests {
         let policy = policy();
         let capital_pool = single_order_capital_pool();
         let open_reservation = rebuilt_open_order_reservation("intent-open");
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
 
         let rebuild =
             gate.rebuild_open_order_reservations(&capital_pool, &[open_reservation], 1_000, None);
@@ -1725,7 +1738,7 @@ mod tests {
         assert_eq!(rebuild.rebuilt_reservation_count, 1);
         assert_eq!(rebuild.live_reserved_liability, Decimal::new(430, 2));
 
-        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let decision = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &request_with_intent("intent-new"),
             state: Some(&state),
             policy: &policy,
@@ -1736,7 +1749,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::OverBudget
             )]
         );
@@ -1758,7 +1771,7 @@ mod tests {
         let state = nt_state(Some(loss_snapshot));
         let policy = policy();
         let capital_pool = capital_pool();
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
 
         let rebuild = gate.rebuild_open_order_reservations(&capital_pool, &[], 1_000, None);
 
@@ -1767,7 +1780,7 @@ mod tests {
         assert_eq!(rebuild.rebuilt_reservation_count, 0);
         assert_eq!(rebuild.live_reserved_liability, Decimal::ZERO);
 
-        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let decision = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &request_with_intent("intent-new"),
             state: Some(&state),
             policy: &policy,
@@ -1795,7 +1808,7 @@ mod tests {
         let policy = policy();
         let capital_pool = single_order_capital_pool();
         let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-open");
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
 
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
@@ -1813,7 +1826,7 @@ mod tests {
         assert_eq!(rebuild.rebuilt_reservation_count, 0);
         assert_eq!(rebuild.live_reserved_liability, Decimal::ZERO);
 
-        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let decision = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &request_with_intent("intent-new"),
             state: Some(&state),
             policy: &policy,
@@ -1824,7 +1837,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::ReconciliationRequired
             )]
         );
@@ -1848,7 +1861,7 @@ mod tests {
         let capital_pool = single_order_capital_pool();
         let open_reservation = rebuilt_open_order_reservation("intent-open");
         let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-invalid");
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
 
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
@@ -1866,7 +1879,7 @@ mod tests {
         assert_eq!(rebuild.rebuilt_reservation_count, 1);
         assert_eq!(rebuild.live_reserved_liability, Decimal::ZERO);
 
-        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let decision = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &request_with_intent("intent-new"),
             state: Some(&state),
             policy: &policy,
@@ -1877,7 +1890,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::ReconciliationRequired
             )]
         );
@@ -1901,7 +1914,7 @@ mod tests {
         let capital_pool = single_order_capital_pool();
         let open_reservation = rebuilt_open_order_reservation("intent-open");
         let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-invalid");
-        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let mut gate = CapitalAdmissionGate::unreconciled();
 
         let initial_rebuild =
             gate.rebuild_open_order_reservations(&capital_pool, &[open_reservation], 1_000, None);
@@ -1922,7 +1935,7 @@ mod tests {
         );
         assert_eq!(failed_rebuild.live_reserved_liability, Decimal::ZERO);
 
-        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+        let decision = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &request_with_intent("intent-new"),
             state: Some(&state),
             policy: &policy,
@@ -1933,7 +1946,7 @@ mod tests {
         assert!(!decision.accepted);
         assert_eq!(
             decision.reasons,
-            vec![SizedAdmissionReason::Reservation(
+            vec![CapitalAdmissionReason::Reservation(
                 ReservationRejectionReason::ReconciliationRequired
             )]
         );

@@ -1124,6 +1124,8 @@ def evaluate_ci_policy(
             path = str(policy["mergify_temp_pr"])
             reason = "mergify_temp_pr"
         elif action == "ready_for_review":
+            if pull_request_draft:
+                raise ValueError("ready_for_review cannot be on a draft PR")
             path = str(policy["ready_for_review"])
             reason = "ready_for_review"
         elif not pull_request_draft and action == "edited" and not pull_request_base_changed:

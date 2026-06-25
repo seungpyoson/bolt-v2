@@ -1501,7 +1501,7 @@ def assert_ci_policy_matrix() -> None:
         ("pull_request", "edited", False, False, "", "refs/pull/1/merge", "noop"),
         ("pull_request", "edited", False, True, "", "refs/pull/1/merge", "full"),
         ("pull_request", "reopened", False, False, "", "refs/pull/1/merge", "noop"),
-        ("pull_request", "ready_for_review", True, False, "", "refs/pull/1/merge", "full"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge", "full"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch", "full"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch", "iteration"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch", "iteration"),
@@ -1532,6 +1532,24 @@ def assert_ci_policy_matrix() -> None:
         if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
             if result.gate_name != "gate-dispatch" or result.backtester_gate_name != "backtester-gate-dispatch":
                 raise AssertionError(f"workflow_dispatch full CI must publish non-required gate names: {result}")
+
+    try:
+        verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action="ready_for_review",
+            pull_request_draft=True,
+            pull_request_base_changed=False,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            ref="refs/pull/1/merge",
+        )
+    except ValueError as exc:
+        if "ready_for_review cannot be on a draft PR" not in str(exc):
+            raise AssertionError(f"unexpected ready_for_review draft error: {exc}") from exc
+    else:
+        raise AssertionError("ready_for_review draft event must fail closed")
 
     mergify_result = verifier.evaluate_ci_policy(
         policy,
@@ -1601,7 +1619,7 @@ def assert_ci_policy_resolvers_agree() -> None:
         ("pull_request", "edited", False, False, "", "refs/pull/1/merge"),
         ("pull_request", "edited", False, True, "", "refs/pull/1/merge"),
         ("pull_request", "reopened", False, False, "", "refs/pull/1/merge"),
-        ("pull_request", "ready_for_review", True, False, "", "refs/pull/1/merge"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch"),

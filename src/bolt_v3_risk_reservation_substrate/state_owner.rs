@@ -6,6 +6,15 @@ use std::{
 use crate::bolt_v3_risk_reservation_substrate::contracts::{
     ConfiguredLeaseAuthority, FencingToken, OwnerId, PoolId, PoolOwnershipLease, RiskStateVersion,
 };
+use crate::bolt_v3_risk_reservation_substrate::{
+    reservation_ledger::{
+        RiskReservationCommit, RiskReservationError, RiskReservationRejection,
+        RiskReservationTotals, RiskReservationTransaction, SubstrateReservationRecord,
+        build_admission_token, evaluate_stateful_caps,
+    },
+    risk_classifier::ConcentrationBucket,
+    risk_kernel::RiskKernel,
+};
 
 #[derive(Debug, Clone)]
 pub struct FencedRiskStateStore {
@@ -19,6 +28,8 @@ struct FencedRiskStateStoreInner {
     versions: BTreeMap<PoolId, RiskStateVersion>,
     reconciled: BTreeMap<PoolId, bool>,
     mutations: Vec<DurableRiskMutationRecord>,
+    reservation_totals: BTreeMap<PoolId, RiskReservationTotals>,
+    reservation_records: Vec<SubstrateReservationRecord>,
 }
 
 impl FencedRiskStateStoreInner {
@@ -28,6 +39,8 @@ impl FencedRiskStateStoreInner {
             versions: BTreeMap::new(),
             reconciled: BTreeMap::new(),
             mutations: Vec::new(),
+            reservation_totals: BTreeMap::new(),
+            reservation_records: Vec::new(),
         }
     }
 }
@@ -158,6 +171,107 @@ impl FencedRiskStateStore {
             .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
         Ok(inner.mutations.clone())
     }
+
+    pub fn reservation_records(
+        &self,
+    ) -> Result<Vec<SubstrateReservationRecord>, RiskStateMutationError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
+        Ok(inner.reservation_records.clone())
+    }
+
+    pub fn reserved_bucket_stress_loss(
+        &self,
+        pool_id: &PoolId,
+        bucket: &ConcentrationBucket,
+    ) -> Result<rust_decimal::Decimal, RiskStateMutationError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
+        Ok(inner
+            .reservation_totals
+            .get(pool_id)
+            .map(|totals| totals.reserved_bucket_stress_loss(bucket))
+            .unwrap_or(rust_decimal::Decimal::ZERO))
+    }
+
+    fn compare_and_reserve(
+        &self,
+        lease: &PoolOwnershipLease,
+        transaction: RiskReservationTransaction,
+    ) -> Result<RiskReservationCommit, RiskReservationError> {
+        let mut inner = self.inner.lock().map_err(|_| {
+            RiskReservationError::StateMutation(RiskStateMutationError::AmbiguousLeaseState)
+        })?;
+        validate_lease(&inner, lease, &self.lease_authority)
+            .map_err(RiskReservationError::StateMutation)?;
+        if !inner
+            .reconciled
+            .get(lease.pool_id())
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err(RiskReservationError::StateMutation(
+                RiskStateMutationError::ReconciliationRequired,
+            ));
+        }
+
+        let current_version = *inner
+            .versions
+            .entry(lease.pool_id().clone())
+            .or_insert(RiskStateVersion::zero());
+        transaction.validate_static(lease.pool_id(), current_version)?;
+
+        let assessment = RiskKernel::evaluate(&transaction.kernel_input)
+            .map_err(RiskReservationError::Kernel)?;
+        let totals = inner
+            .reservation_totals
+            .entry(lease.pool_id().clone())
+            .or_insert_with(RiskReservationTotals::empty);
+        let evaluation = evaluate_stateful_caps(totals, &transaction, &assessment);
+        if !evaluation.breached_dimensions.is_empty() {
+            return Err(RiskReservationError::Rejected(RiskReservationRejection {
+                evaluated_dimensions: evaluation.evaluated_dimensions,
+                breached_dimensions: evaluation.breached_dimensions,
+                diagnostic_mismatches: evaluation.diagnostic_mismatches,
+                token_issued: None,
+            }));
+        }
+
+        let committed_version = current_version.next().map_err(|_| {
+            RiskReservationError::StateMutation(RiskStateMutationError::VersionOverflow)
+        })?;
+        let token = build_admission_token(&transaction, committed_version);
+        totals.apply(&transaction, &assessment);
+        inner
+            .versions
+            .insert(lease.pool_id().clone(), committed_version);
+        inner.mutations.push(DurableRiskMutationRecord {
+            pool_id: lease.pool_id().clone(),
+            fencing_token: lease.fencing_token(),
+            mutation: DurableRiskMutation::new(
+                transaction.candidate.idempotency_key.clone(),
+                RiskMutationKind::Reservation,
+            ),
+            risk_state_version: committed_version,
+        });
+        inner.reservation_records.push(SubstrateReservationRecord {
+            pool_id: lease.pool_id().clone(),
+            admission_token: token.clone(),
+            assessment: assessment.clone(),
+            evaluated_dimensions: evaluation.evaluated_dimensions.clone(),
+        });
+
+        Ok(RiskReservationCommit {
+            admission_token: token,
+            assessment,
+            evaluated_dimensions: evaluation.evaluated_dimensions,
+            diagnostic_mismatches: evaluation.diagnostic_mismatches,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +303,27 @@ impl RiskStateOwner {
         mutation: DurableRiskMutation,
     ) -> Result<RiskStateVersion, RiskStateMutationError> {
         self.store.commit_durable_mutation(&self.lease, mutation)
+    }
+
+    pub fn compare_and_reserve(
+        &self,
+        transaction: RiskReservationTransaction,
+    ) -> Result<RiskReservationCommit, RiskReservationError> {
+        self.store.compare_and_reserve(&self.lease, transaction)
+    }
+
+    pub fn reservation_records(
+        &self,
+    ) -> Result<Vec<SubstrateReservationRecord>, RiskStateMutationError> {
+        self.store.reservation_records()
+    }
+
+    pub fn reserved_bucket_stress_loss(
+        &self,
+        bucket: &ConcentrationBucket,
+    ) -> Result<rust_decimal::Decimal, RiskStateMutationError> {
+        self.store
+            .reserved_bucket_stress_loss(self.lease.pool_id(), bucket)
     }
 }
 

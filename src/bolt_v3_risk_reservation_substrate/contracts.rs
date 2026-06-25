@@ -1,7 +1,9 @@
-use std::num::NonZeroU64;
+use std::{collections::BTreeMap, num::NonZeroU64};
 
 use rust_decimal::Decimal;
 use serde::Deserialize;
+
+use crate::bolt_v3_risk_reservation_substrate::risk_classifier::ConcentrationBucket;
 
 const INITIAL_RISK_STATE_VERSION_VALUE: u64 = u64::MIN;
 const MONOTONIC_COUNTER_STEP: u64 = NonZeroU64::MIN.get();
@@ -227,12 +229,16 @@ pub struct RiskSizingView {
     pub equity_floor_headroom: Decimal,
     pub governor_headroom: Decimal,
     pub global_stress_loss_headroom: Decimal,
+    pub bucket_stress_loss_headrooms: BTreeMap<ConcentrationBucket, Decimal>,
+    pub open_order_headroom: u64,
+    pub position_quantity_headroom: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelRiskEvaluationScope {
-    pub scope_id: String,
-    pub scope_kind: String,
+pub enum ModelRiskEvaluationScope {
+    CandidateInstrument { instrument_id: String },
+    ConcentrationBucket(ConcentrationBucket),
+    Portfolio { scope_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

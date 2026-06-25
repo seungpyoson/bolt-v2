@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_risk_reservation_substrate::{
-    contracts::{RiskAssessment, RiskStateVersion},
+    contracts::{ModelRiskEvaluationScope, RiskAssessment, RiskStateVersion},
     risk_classifier::ConcentrationBucket,
 };
 
@@ -49,6 +49,24 @@ pub enum RiskEvaluationScope {
     CandidateInstrument { instrument_id: String },
     ConcentrationBucket(ConcentrationBucket),
     Portfolio { scope_id: String },
+}
+
+impl From<&ModelRiskEvaluationScope> for RiskEvaluationScope {
+    fn from(scope: &ModelRiskEvaluationScope) -> Self {
+        match scope {
+            ModelRiskEvaluationScope::CandidateInstrument { instrument_id } => {
+                Self::CandidateInstrument {
+                    instrument_id: instrument_id.clone(),
+                }
+            }
+            ModelRiskEvaluationScope::ConcentrationBucket(bucket) => {
+                Self::ConcentrationBucket(bucket.clone())
+            }
+            ModelRiskEvaluationScope::Portfolio { scope_id } => Self::Portfolio {
+                scope_id: scope_id.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

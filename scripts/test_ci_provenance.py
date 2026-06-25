@@ -127,10 +127,10 @@ draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
 draft_pr_edited = "defer"
 converted_to_draft = "defer"
-ready_pr = "full"
+ready_pr = "iteration"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
-ready_for_review = "full"
+ready_for_review = "iteration"
 workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
@@ -165,10 +165,10 @@ merge_group = "full"
 main_push = "full"
 workflow_dispatch_full_ci = "full"
 workflow_dispatch = "iteration"
-ready_for_review = "full"
+ready_for_review = "iteration"
 ready_pr_reopened = "noop"
 ready_pr_edited_no_base = "noop"
-ready_pr = "full"
+ready_pr = "iteration"
 converted_to_draft = "defer"
 draft_pr_edited = "defer"
 draft_pr_reopened = "defer"
@@ -979,10 +979,10 @@ def assert_ci_policy_outputs_matrix() -> None:
             "draft_pr_reopened": "defer",
             "draft_pr_edited": "defer",
             "converted_to_draft": "defer",
-            "ready_pr": "full",
+            "ready_pr": "iteration",
             "ready_pr_edited_no_base": "noop",
             "ready_pr_reopened": "noop",
-            "ready_for_review": "full",
+            "ready_for_review": "iteration",
             "workflow_dispatch": "iteration",
             "workflow_dispatch_full_ci": "full",
             "main_push": "full",
@@ -1008,11 +1008,11 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("pull_request", "reopened", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_reopened"),
             ("pull_request", "edited", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_edited"),
             ("pull_request", "converted_to_draft", "true", "false", "", "refs/pull/1/merge", "defer", "converted_to_draft"),
-            ("pull_request", "opened", "false", "false", "", "refs/pull/1/merge", "full", "ready_pr"),
+            ("pull_request", "opened", "false", "false", "", "refs/pull/1/merge", "iteration", "ready_pr"),
             ("pull_request", "edited", "false", "false", "", "refs/pull/1/merge", "noop", "ready_pr_edited_no_base"),
-            ("pull_request", "edited", "false", "true", "", "refs/pull/1/merge", "full", "ready_pr"),
+            ("pull_request", "edited", "false", "true", "", "refs/pull/1/merge", "iteration", "ready_pr"),
             ("pull_request", "reopened", "false", "false", "", "refs/pull/1/merge", "noop", "ready_pr_reopened"),
-            ("pull_request", "ready_for_review", "false", "false", "", "refs/pull/1/merge", "full", "ready_for_review"),
+            ("pull_request", "ready_for_review", "false", "false", "", "refs/pull/1/merge", "iteration", "ready_for_review"),
             ("workflow_dispatch", "", "true", "false", "true", "refs/heads/codex/branch", "full", "workflow_dispatch_full_ci"),
             ("workflow_dispatch", "", "true", "false", "false", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
             ("workflow_dispatch", "", "true", "false", "", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
@@ -1264,7 +1264,7 @@ def legacy_workflow_gate_names(
     return "gate", "backtester-gate"
 
 
-def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() -> None:
+def assert_ci_policy_gate_name_snapshot_matches_legacy_except_non_required_rollout_paths() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
@@ -1293,6 +1293,8 @@ def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() ->
                 cases.append(("pull_request", action, draft, base_changed, "", "refs/pull/1/merge"))
 
     saw_intentional_dispatch_flip = False
+    saw_ready_pr_iteration_flip = False
+    saw_ready_for_review_iteration_flip = False
     for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref in cases:
         result = module.evaluate_ci_policy(
             config,
@@ -1321,9 +1323,28 @@ def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() ->
             ):
                 raise AssertionError(f"dispatch full must flip to non-required gate names: {case_label} {result}")
             continue
+        is_ready_pr_iteration = (
+            event_name == "pull_request"
+            and not draft
+            and action != "ready_for_review"
+            and not (action == "reopened" or (action == "edited" and not base_changed))
+        )
+        if is_ready_pr_iteration or (event_name == "pull_request" and action == "ready_for_review" and not draft):
+            if (legacy_gate, legacy_backtester_gate) != ("gate", "backtester-gate"):
+                raise AssertionError(f"legacy ready PR snapshot must publish required gates: {case_label}")
+            if (result.gate_name, result.backtester_gate_name) != (
+                "gate-iteration",
+                "backtester-gate-iteration",
+            ):
+                raise AssertionError(f"ready PR rollout path must publish iteration gates: {case_label} {result}")
+            if action == "ready_for_review":
+                saw_ready_for_review_iteration_flip = True
+            else:
+                saw_ready_pr_iteration_flip = True
+            continue
         if (result.gate_name, result.backtester_gate_name) != (legacy_gate, legacy_backtester_gate):
             raise AssertionError(
-                f"resolver gate names drifted outside the intentional dispatch-full flip: "
+                f"resolver gate names drifted outside intentional non-required rollout paths: "
                 f"{case_label} legacy={(legacy_gate, legacy_backtester_gate)} result={result}"
             )
     mergify_result = module.evaluate_ci_policy(
@@ -1400,6 +1421,10 @@ def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() ->
         )
     if not saw_intentional_dispatch_flip:
         raise AssertionError("differential snapshot must exercise workflow_dispatch full_ci=true")
+    if not saw_ready_pr_iteration_flip:
+        raise AssertionError("differential snapshot must exercise ready_pr iteration flip")
+    if not saw_ready_for_review_iteration_flip:
+        raise AssertionError("differential snapshot must exercise ready_for_review iteration flip")
 
 
 def assert_dispatch_run_names_come_from_config() -> None:
@@ -1492,9 +1517,13 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
             'converted_to_draft = "defer"',
             'converted_to_draft = "full"',
         ),
-        "ci_provenance.policy.ready_pr must be full": CONFIG_TOML.replace(
-            'ready_pr = "full"',
+        "ci_provenance.policy.ready_pr must be iteration": CONFIG_TOML.replace(
             'ready_pr = "iteration"',
+            'ready_pr = "full"',
+        ),
+        "ci_provenance.policy.ready_for_review must be iteration": CONFIG_TOML.replace(
+            'ready_for_review = "iteration"',
+            'ready_for_review = "full"',
         ),
         "ci_provenance.policy.mergify_temp_pr must be full": CONFIG_TOML.replace(
             'mergify_temp_pr = "full"',
@@ -2708,7 +2737,7 @@ def main() -> int:
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
     assert_ready_noop_rows_emit_full_event_class_when_configured_full()
-    assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full()
+    assert_ci_policy_gate_name_snapshot_matches_legacy_except_non_required_rollout_paths()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
     assert_gate_names_reject_collisions()

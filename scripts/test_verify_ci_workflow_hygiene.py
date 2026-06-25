@@ -857,13 +857,18 @@ jobs:
           if [[ -z "$verdict_script" ]]; then
             verdict_script="scripts/ci_provenance.py"
           fi
+          carry_forward_args=()
+          carry_forward_verified="${{ steps.carry_forward.outputs.carry_forward_verified }}"
+          if [[ -n "$carry_forward_verified" ]]; then
+            carry_forward_args+=(--carry-forward-verified "$carry_forward_verified")
+          fi
           python3 "$verdict_script" check-ci-gate \
             --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
             --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
             --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}" \
             --ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}" \
             --reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}" \
-            --carry-forward-verified "${{ steps.carry_forward.outputs.carry_forward_verified || 'false' }}" \
+            "${carry_forward_args[@]}" \
             --build-required "${{ needs.detector.outputs.build_required || 'false' }}" \
             --job ci-policy=${{ needs.ci-policy.result }} \
             --job detector=${{ needs.detector.result }} \
@@ -3034,11 +3039,11 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
             ),
         ),
         (
-            "gate shared verdict call must include --carry-forward-verified",
+            "gate shared verdict call must include carry_forward_args=()",
             replace_once(
                 workflow,
-                '--carry-forward-verified "${{ steps.carry_forward.outputs.carry_forward_verified || \'false\' }}"',
-                '--carry-forward-verified "false"',
+                "carry_forward_args=()",
+                "carry_forward_args=(--carry-forward-verified false)",
             ),
         ),
         (
@@ -7713,11 +7718,11 @@ def main() -> int:
         ),
     )
     assert_error(
-        "gate shared verdict call must include --carry-forward-verified",
+        "gate shared verdict call must include carry_forward_args=()",
         replace_once(
             BASE_WORKFLOW,
-            '--carry-forward-verified "${{ steps.carry_forward.outputs.carry_forward_verified || \'false\' }}"',
-            '--carry-forward-verified "false"',
+            "carry_forward_args=()",
+            "carry_forward_args=(--carry-forward-verified false)",
         ),
     )
     assert_error(

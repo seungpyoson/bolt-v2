@@ -1576,6 +1576,50 @@ def assert_ci_policy_matrix() -> None:
     ):
         raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
 
+    mergify_sync_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="synchronize",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_sync_result.ci_policy_path != "full"
+        or mergify_sync_result.gate_name != "gate"
+        or mergify_sync_result.backtester_gate_name != "backtester-gate"
+        or not mergify_sync_result.is_mergify_temp_pr
+        or mergify_sync_result.reason != "mergify_temp_pr"
+    ):
+        raise AssertionError(f"Mergify temp PR synchronize must resolve to required full CI: {mergify_sync_result}")
+
+    mergify_edited_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_edited_result.ci_policy_path != "defer"
+        or mergify_edited_result.gate_name != "gate-deferred"
+        or mergify_edited_result.backtester_gate_name != "backtester-gate-deferred"
+        or not mergify_edited_result.is_mergify_temp_pr
+        or mergify_edited_result.reason != "draft_pr_edited"
+    ):
+        raise AssertionError(
+            f"Mergify temp PR metadata edits must remain observable but non-required: {mergify_edited_result}"
+        )
+
     forced = dict(policy)
     forced["override"] = dict(policy["override"])
     forced["override"]["force_full_ci"] = True
@@ -1814,6 +1858,143 @@ def assert_ci_policy_resolvers_agree() -> None:
     )
     if ver_tuple != prov_tuple:
         raise AssertionError(f"ci_policy resolver drift for Mergify temp PR: verifier={ver_tuple} provenance={prov_tuple}")
+
+    ver = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        ref="refs/pull/965/merge",
+    )
+    prov = provenance.evaluate_ci_policy(
+        prov_config,
+        event_name="pull_request",
+        event_action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        ref="refs/pull/965/merge",
+    )
+    ver_tuple = (
+        ver.ci_policy_path,
+        ver.full_ci_required,
+        ver.full_ci_deferred,
+        ver.gate_name,
+        ver.backtester_gate_name,
+        ver.expected_event_class,
+        ver.is_mergify_temp_pr,
+        ver.reason,
+    )
+    prov_tuple = (
+        prov.ci_policy_path,
+        prov.full_ci_required,
+        prov.full_ci_deferred,
+        prov.gate_name,
+        prov.backtester_gate_name,
+        prov.expected_event_class,
+        prov.is_mergify_temp_pr,
+        prov.reason,
+    )
+    if ver_tuple != prov_tuple:
+        raise AssertionError(
+            f"ci_policy resolver drift for Mergify temp PR metadata edit: verifier={ver_tuple} provenance={prov_tuple}"
+        )
+    if ver_tuple != (
+        "defer",
+        False,
+        True,
+        "gate-deferred",
+        "backtester-gate-deferred",
+        "defer",
+        True,
+        "draft_pr_edited",
+    ):
+        raise AssertionError(f"Mergify temp PR metadata edits must not publish required gates: {ver_tuple}")
+    for string_base_changed, expected in [
+        (
+            "false",
+            (
+                "defer",
+                False,
+                True,
+                "gate-deferred",
+                "backtester-gate-deferred",
+                "defer",
+                True,
+                "draft_pr_edited",
+            ),
+        ),
+        (
+            "true",
+            (
+                "full",
+                True,
+                False,
+                "gate",
+                "backtester-gate",
+                "full",
+                True,
+                "mergify_temp_pr",
+            ),
+        ),
+    ]:
+        ver = verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action="edited",
+            pull_request_draft=True,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=string_base_changed,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            ref="refs/pull/965/merge",
+        )
+        prov = provenance.evaluate_ci_policy(
+            prov_config,
+            event_name="pull_request",
+            event_action="edited",
+            pull_request_draft=True,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=string_base_changed,
+            workflow_dispatch_full_ci="",
+            ref="refs/pull/965/merge",
+        )
+        ver_tuple = (
+            ver.ci_policy_path,
+            ver.full_ci_required,
+            ver.full_ci_deferred,
+            ver.gate_name,
+            ver.backtester_gate_name,
+            ver.expected_event_class,
+            ver.is_mergify_temp_pr,
+            ver.reason,
+        )
+        prov_tuple = (
+            prov.ci_policy_path,
+            prov.full_ci_required,
+            prov.full_ci_deferred,
+            prov.gate_name,
+            prov.backtester_gate_name,
+            prov.expected_event_class,
+            prov.is_mergify_temp_pr,
+            prov.reason,
+        )
+        if ver_tuple != prov_tuple:
+            raise AssertionError(
+                f"ci_policy resolver drift for string base_changed={string_base_changed!r}: "
+                f"verifier={ver_tuple} provenance={prov_tuple}"
+            )
+        if ver_tuple != expected:
+            raise AssertionError(
+                f"Mergify temp PR string base_changed={string_base_changed!r} resolved incorrectly: {ver_tuple}"
+            )
 
 
 def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:

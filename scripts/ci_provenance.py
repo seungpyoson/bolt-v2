@@ -567,6 +567,24 @@ def is_mergify_temp_pr(
     )
 
 
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+
+
+def bool_like(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() == "true"
+
+
+def mergify_temp_pr_requires_full_ci(
+    *, event_action: str, pull_request_base_changed: bool | str
+) -> bool:
+    base_changed = bool_like(pull_request_base_changed)
+    return event_action in MERGIFY_TEMP_PR_FULL_ACTIONS or (
+        event_action == "edited" and base_changed
+    )
+
+
 def require_job_result(
     job_results: dict[str, str],
     job: str,
@@ -810,7 +828,6 @@ def evaluate_backtester_gate_verdict(
         require_job_result(job_results, job, "success", f"{label} did not succeed")
     return "backtester full proof passed"
 
-
 def evaluate_ci_policy(
     config: ProvenanceConfig,
     *,
@@ -851,7 +868,10 @@ def evaluate_ci_policy(
         if config.force_full_ci:
             path = "full"
             reason = "force_full_ci"
-        elif mergify_temp_pr:
+        elif mergify_temp_pr and mergify_temp_pr_requires_full_ci(
+            event_action=event_action,
+            pull_request_base_changed=pull_request_base_changed,
+        ):
             path = config.policy["mergify_temp_pr"]
             reason = "mergify_temp_pr"
         elif event_action == "ready_for_review":

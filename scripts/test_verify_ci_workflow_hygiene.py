@@ -143,10 +143,10 @@ draft_pr_opened = "defer"
 draft_pr_reopened = "defer"
 draft_pr_edited = "defer"
 converted_to_draft = "defer"
-ready_pr = "full"
+ready_pr = "iteration"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
-ready_for_review = "full"
+ready_for_review = "iteration"
 workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
@@ -1413,11 +1413,11 @@ check_name = "test"
         ),
         (
             "ci_provenance.policy.ready_pr is proof-affecting",
-            valid.replace('ready_pr = "full"', 'ready_pr = "defer"'),
+            valid.replace('ready_pr = "iteration"', 'ready_pr = "defer"'),
         ),
         (
             "ci_provenance.policy.ready_for_review is proof-affecting",
-            valid.replace('ready_for_review = "full"', 'ready_for_review = "defer"'),
+            valid.replace('ready_for_review = "iteration"', 'ready_for_review = "defer"'),
         ),
         (
             "ci_provenance.policy.main_push is proof-affecting",
@@ -1464,8 +1464,12 @@ check_name = "test"
             valid.replace('converted_to_draft = "defer"', 'converted_to_draft = "full"'),
         ),
         (
-            "ci_provenance.policy.ready_pr must be full",
-            valid.replace('ready_pr = "full"', 'ready_pr = "iteration"'),
+            "ci_provenance.policy.ready_pr must be iteration",
+            valid.replace('ready_pr = "iteration"', 'ready_pr = "full"'),
+        ),
+        (
+            "ci_provenance.policy.ready_for_review must be iteration",
+            valid.replace('ready_for_review = "iteration"', 'ready_for_review = "full"'),
         ),
         (
             "ci_provenance.policy has unexpected keys",
@@ -1509,8 +1513,8 @@ check_name = "test"
     queue_covered_errors = verifier.policy_proof_invariant_errors(queue_covered_policy)
     if queue_covered_errors:
         raise AssertionError(
-            "proof invariant must keep the future queue-covered iteration carve-out "
-            f"isolated from the active Design 0 contract, got: {queue_covered_errors}"
+            "proof invariant must accept the active queue-covered iteration contract, "
+            f"got: {queue_covered_errors}"
         )
 
     original_rows = verifier.CI_PROVENANCE_POLICY_ROWS
@@ -1551,11 +1555,11 @@ def assert_ci_policy_matrix() -> None:
         ("pull_request", "reopened", True, False, "", "refs/pull/1/merge", "defer"),
         ("pull_request", "edited", True, False, "", "refs/pull/1/merge", "defer"),
         ("pull_request", "converted_to_draft", True, False, "", "refs/pull/1/merge", "defer"),
-        ("pull_request", "opened", False, False, "", "refs/pull/1/merge", "full"),
+        ("pull_request", "opened", False, False, "", "refs/pull/1/merge", "iteration"),
         ("pull_request", "edited", False, False, "", "refs/pull/1/merge", "noop"),
-        ("pull_request", "edited", False, True, "", "refs/pull/1/merge", "full"),
+        ("pull_request", "edited", False, True, "", "refs/pull/1/merge", "iteration"),
         ("pull_request", "reopened", False, False, "", "refs/pull/1/merge", "noop"),
-        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge", "full"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge", "iteration"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch", "full"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch", "iteration"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch", "iteration"),

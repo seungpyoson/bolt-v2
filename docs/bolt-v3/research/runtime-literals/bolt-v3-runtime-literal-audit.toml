@@ -13916,26 +13916,34 @@ reason = "Stable HIP-4 normalizer canonical evidence label; runtime values remai
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
-literal = '''"bolt_v3.position_sizer_rebuild"'''
-context = '''pub const BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";'''
+literal = '''"bolt_v3.capital_admission_rebuild"'''
+context = '''pub const BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID: &str = "bolt_v3.capital_admission_rebuild";'''
 classification = "decision_evidence_gate_id"
-reason = "Stable gate identifier stamped on position-sizer rebuild audit records; it is part of the evidence contract, not an operator runtime value."
+reason = "Stable gate identifier stamped on capital-admission rebuild audit records; it is part of the evidence contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"capital_admission_rebuild"'''
+context = '''const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "capital_admission_rebuild";'''
+classification = "decision_evidence_envelope_kind"
+reason = "JSONL envelope discriminator for capital-admission rebuild audit records; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"capital_admission_rebuild"'''
+context = '''"capital_admission_rebuild" => {'''
+classification = "decision_evidence_envelope_kind"
+reason = "Replay discriminator for capital-admission rebuild audit records; it is a schema tag, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"position_sizer_rebuild"'''
-context = '''const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";'''
-classification = "decision_evidence_envelope_kind"
-reason = "JSONL envelope discriminator for position-sizer rebuild audit records; it is a schema tag, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "string"
-literal = '''"position_sizer_rebuild"'''
-context = '''"position_sizer_rebuild" => {'''
-classification = "decision_evidence_envelope_kind"
-reason = "Replay discriminator for position-sizer rebuild audit records; it is a schema tag, not an operator runtime value."
+context = '''| "position_sizer_rebuild"'''
+classification = "decision_evidence_legacy_non_recovery_skip_kind"
+reason = "Legacy pre-v14 audit-only discriminator retained only so below-schema rebuild audit records skip instead of blocking reservation recovery."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -14292,10 +14300,10 @@ reason = "Evidence source label for product inventory seeded from NT cache posit
 [[allowed]]
 path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
-literal = '''"nt_position_sizer_runtime_components"'''
-context = '''source: "nt_position_sizer_runtime_components".to_string(),'''
+literal = '''"nt_capital_admission_runtime_components"'''
+context = '''source: "nt_capital_admission_runtime_components".to_string(),'''
 classification = "position_sizer_evidence_source_label"
-reason = "Evidence source label for the composed NT-derived sizing component packet before submit admission adds Bolt reservation state."
+reason = "Evidence source label for the composed NT-derived capital-admission component packet before submit admission adds Bolt reservation state."
 
 [[allowed]]
 path = "src/bolt_v3_capital_admission_state.rs"
@@ -14868,8 +14876,8 @@ reason = "Runtime config schema key or enum label for reference_current_price pa
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''13'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 13;'''
+literal = '''14'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 14;'''
 classification = "decision_evidence_schema_contract"
 reason = "Decision-evidence JSONL schema/control literal; it defines audit-record compatibility, not operator runtime configuration."
 
@@ -19053,10 +19061,10 @@ reason = "Stable evidence key label for a forced-reduction cap rejection; it cla
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
-literal = '''"rejected_position_sizing"'''
-context = '''BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",'''
+literal = '''"rejected_capital_admission"'''
+context = '''BoltV3AdmissionOutcome::RejectedCapitalAdmission => "rejected_capital_admission",'''
 classification = "submit_admission_order_reject_outcome_key"
-reason = "Stable evidence key label for a position-sizing submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
+reason = "Stable evidence key label for a capital-admission submit-admission rejection; it classifies durable RCA #885 evidence and does not configure admission behavior."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

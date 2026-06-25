@@ -1550,7 +1550,7 @@ mod tests {
 
     fn capital_admission_components() -> BoltV3SubmitCapitalAdmissionNtComponents {
         BoltV3SubmitCapitalAdmissionNtComponents {
-            source: "nt_sizing_state".to_string(),
+            source: "nt_capital_admission_state".to_string(),
             observed_at_ns: 0,
             portfolio: PortfolioCapitalAdmissionSnapshot {
                 source: "nt_portfolio_snapshot".to_string(),

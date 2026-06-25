@@ -2487,7 +2487,7 @@ fn capital_admission_sell_submit_request(client_order_id: &str) -> BoltV3SubmitA
 
 fn fresh_capital_admission_state(observed_at_ns: u64) -> NtDerivedCapitalAdmissionState {
     NtDerivedCapitalAdmissionState {
-        source: "nt_sizing_state".to_string(),
+        source: "nt_capital_admission_state".to_string(),
         observed_at_ns,
         portfolio: PortfolioCapitalAdmissionSnapshot {
             source: "nt_portfolio_snapshot".to_string(),

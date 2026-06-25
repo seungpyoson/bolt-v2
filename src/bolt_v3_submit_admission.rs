@@ -136,7 +136,7 @@ fn admission_outcome_key(outcome: &BoltV3AdmissionOutcome) -> &'static str {
         BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
             "rejected_kill_switch_forced_reduction_cap_exceeded"
         }
-        BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",
+        BoltV3AdmissionOutcome::RejectedCapitalAdmission => "rejected_capital_admission",
     }
 }
 
@@ -1539,7 +1539,7 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
             }
-            BoltV3AdmissionOutcome::RejectedPositionSizing => {
+            BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
@@ -1887,7 +1887,7 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
             }
-            BoltV3AdmissionOutcome::RejectedPositionSizing => {
+            BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
                 Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                     reason: evaluation
                         .capital_admission_rejection
@@ -2323,7 +2323,7 @@ fn basket_outcome_from_submit_outcome(
         | BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
         | BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof
         | BoltV3AdmissionOutcome::RejectedCountCapExhausted
-        | BoltV3AdmissionOutcome::RejectedPositionSizing
+        | BoltV3AdmissionOutcome::RejectedCapitalAdmission
         | BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid
         | BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
             BoltV3BasketAdmissionOutcome::RejectedSubmitSlots
@@ -2389,7 +2389,7 @@ fn submit_admission_error_from_outcome(
         BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
             BoltV3SubmitAdmissionError::CountCapExhausted
         }
-        BoltV3AdmissionOutcome::RejectedPositionSizing => {
+        BoltV3AdmissionOutcome::RejectedCapitalAdmission => {
             BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                 reason: BoltV3CapitalAdmissionRejectReason::Rejected,
             }
@@ -2487,7 +2487,7 @@ impl BoltV3SubmitAdmissionEvaluation {
         admission_now_ns: u64,
     ) -> Self {
         Self {
-            outcome: BoltV3AdmissionOutcome::RejectedPositionSizing,
+            outcome: BoltV3AdmissionOutcome::RejectedCapitalAdmission,
             admission_now_ns,
             loss_halt_reasons: Vec::new(),
             loss_snapshot_diagnostics: None,

@@ -855,7 +855,7 @@ impl CapitalAdmissionRuntimeComponentBuilder {
             .max(self.order_lifecycle.observed_at_ns)
             .max(product_observed_at_ns);
         Some(BoltV3SubmitCapitalAdmissionNtComponents {
-            source: "nt_position_sizer_runtime_components".to_string(),
+            source: "nt_capital_admission_runtime_components".to_string(),
             observed_at_ns,
             portfolio,
             venue_spendability,

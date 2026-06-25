@@ -440,7 +440,7 @@ mod tests {
 
     fn state() -> NtDerivedCapitalAdmissionState {
         NtDerivedCapitalAdmissionState {
-            source: "nt_sizing_state".to_string(),
+            source: "nt_capital_admission_state".to_string(),
             observed_at_ns: 1_000,
             portfolio: PortfolioCapitalAdmissionSnapshot {
                 source: "nt_portfolio_snapshot".to_string(),

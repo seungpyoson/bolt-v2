@@ -20,10 +20,10 @@ use crate::bolt_v3_realized_volatility::{
     RealizedVolSourceRejectReason, RealizedVolSourceStatus,
 };
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 13;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 14;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
-pub const BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
+pub const BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID: &str = "bolt_v3.capital_admission_rebuild";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
 pub const BOLT_V3_ENTRY_SKIP_GATE_ID: &str = "bolt_v3.entry_skip";
@@ -39,7 +39,7 @@ pub const BOLT_V3_LOSS_GOVERNOR_HALT_RECORD_KIND: &str = "loss_governor_halt";
 pub const BOLT_V3_REQUOTE_THROTTLE_RECORD_KIND: &str = "requote_throttle";
 pub const BOLT_V3_LOSS_GOVERNOR_HALT_SUBSYSTEM: &str = "loss_governor";
 const BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND: &str = "basket_admission_decision";
-const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "position_sizer_rebuild";
+const BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND: &str = "capital_admission_rebuild";
 const BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND: &str = "submit_reservation_metadata";
 const BOLT_V3_SUBMIT_RESERVATION_FILL_RECORD_KIND: &str = "submit_reservation_fill";
 const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";
@@ -786,7 +786,7 @@ pub enum BoltV3LossSnapshotSource {
     NtPositionChanged,
     NtPositionClosed,
     NtPositionAdjusted,
-    NtSizingState,
+    NtCapitalAdmissionState,
     BoltLossSnapshot,
     LossGovernor,
     Unknown,
@@ -802,7 +802,8 @@ const LOSS_SNAPSHOT_SOURCE_NT_POSITION_EVENT: &str = stringify!(nt_position_even
 const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED: &str = stringify!(nt_position_changed);
 const LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED: &str = stringify!(nt_position_closed);
 const LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED: &str = stringify!(nt_position_adjusted);
-const LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE: &str = stringify!(nt_sizing_state);
+const LOSS_SNAPSHOT_SOURCE_NT_CAPITAL_ADMISSION_STATE: &str =
+    stringify!(nt_capital_admission_state);
 const LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT: &str = stringify!(bolt_loss_snapshot);
 const LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR: &str = stringify!(loss_governor);
 
@@ -819,7 +820,9 @@ pub fn loss_snapshot_source_to_evidence(source: &str) -> BoltV3LossSnapshotSourc
         LOSS_SNAPSHOT_SOURCE_NT_POSITION_CHANGED => BoltV3LossSnapshotSource::NtPositionChanged,
         LOSS_SNAPSHOT_SOURCE_NT_POSITION_CLOSED => BoltV3LossSnapshotSource::NtPositionClosed,
         LOSS_SNAPSHOT_SOURCE_NT_POSITION_ADJUSTED => BoltV3LossSnapshotSource::NtPositionAdjusted,
-        LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE => BoltV3LossSnapshotSource::NtSizingState,
+        LOSS_SNAPSHOT_SOURCE_NT_CAPITAL_ADMISSION_STATE => {
+            BoltV3LossSnapshotSource::NtCapitalAdmissionState
+        }
         LOSS_SNAPSHOT_SOURCE_BOLT_LOSS_SNAPSHOT => BoltV3LossSnapshotSource::BoltLossSnapshot,
         LOSS_SNAPSHOT_SOURCE_LOSS_GOVERNOR => BoltV3LossSnapshotSource::LossGovernor,
         _ if source.trim().is_empty() => BoltV3LossSnapshotSource::Unknown,
@@ -970,7 +973,7 @@ pub enum BoltV3AdmissionOutcome {
     RejectedCountCapExhausted,
     RejectedKillSwitchForcedReductionProofInvalid,
     RejectedKillSwitchForcedReductionCapExceeded,
-    RejectedPositionSizing,
+    RejectedCapitalAdmission,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1507,7 +1510,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
-            "position_sizer_rebuild" => {
+            "capital_admission_rebuild" => {
                 header.validate(
                     BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
                     BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
@@ -1781,7 +1784,7 @@ pub fn read_submit_reservation_recovery_evidence(
                     index,
                 )?;
             }
-            "position_sizer_rebuild" => {
+            "capital_admission_rebuild" => {
                 header.validate(
                     BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND,
                     BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID,
@@ -2003,6 +2006,8 @@ fn decision_evidence_header_is_below_current_schema_non_recovery_record(
                 | BOLT_V3_ADMISSION_DECISION_RECORD_KIND
                 | BOLT_V3_BASKET_ADMISSION_DECISION_RECORD_KIND
                 | BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND
+                // Legacy pre-v14 audit-only kind. It never carries reservation state.
+                | "position_sizer_rebuild"
                 | BOLT_V3_ENTRY_SKIP_RECORD_KIND
                 | BOLT_V3_EXIT_DECISION_RECORD_KIND
                 | BOLT_V3_EXIT_EVALUATION_RECORD_KIND
@@ -3174,6 +3179,46 @@ mod tests {
     }
 
     #[test]
+    fn legacy_schema_13_position_sizer_audit_skips_but_reservations_fail_closed() {
+        let legacy_audit = DecisionEvidenceEnvelopeHeader {
+            schema_version: 13,
+            recorded_at_utc_ns: 1,
+            gate_id: "bolt_v3.position_sizer_rebuild".to_string(),
+            gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION.to_string(),
+            kind: "position_sizer_rebuild".to_string(),
+        };
+        assert!(
+            decision_evidence_header_is_below_current_schema_non_recovery_record(&legacy_audit),
+            "legacy schema-13 audit-only position_sizer_rebuild records must remain skippable"
+        );
+
+        let legacy_reservation = DecisionEvidenceEnvelopeHeader {
+            schema_version: 13,
+            recorded_at_utc_ns: 1,
+            gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID.to_string(),
+            gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION.to_string(),
+            kind: BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND.to_string(),
+        };
+        assert!(
+            !decision_evidence_header_is_below_current_schema_non_recovery_record(
+                &legacy_reservation
+            ),
+            "legacy schema-13 reservation records must not be skipped"
+        );
+        let error = legacy_reservation
+            .validate(
+                BOLT_V3_SUBMIT_RESERVATION_METADATA_RECORD_KIND,
+                BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                0,
+            )
+            .expect_err("legacy schema-13 reservation metadata must fail closed");
+        assert!(
+            error.to_string().contains("schema_version mismatch"),
+            "reservation metadata should fail closed on schema mismatch, got: {error:#}"
+        );
+    }
+
+    #[test]
     fn encode_order_intent_line_wraps_intent_with_metadata() {
         let intent = BoltV3OrderIntentEvidence {
             strategy_id: "strategy-one".to_string(),
@@ -3464,7 +3509,7 @@ mod tests {
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid,
             BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded,
-            BoltV3AdmissionOutcome::RejectedPositionSizing,
+            BoltV3AdmissionOutcome::RejectedCapitalAdmission,
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
                 strategy_id: "strategy-one".to_string(),
@@ -3553,7 +3598,7 @@ mod tests {
                     "rejected_kill_switch_forced_reduction_cap_exceeded"
                 }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
-                BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",
+                BoltV3AdmissionOutcome::RejectedCapitalAdmission => "rejected_capital_admission",
             };
             assert_eq!(decision_field["outcome"], expected_outcome);
             if outcome == BoltV3AdmissionOutcome::RejectedLossGovernorHalted {

@@ -2322,7 +2322,7 @@ fn configured_capital_admission_rejects_replace_submit_before_admission() {
     assert_eq!(decisions.len(), 1);
     assert_eq!(
         decisions[0].outcome,
-        BoltV3AdmissionOutcome::RejectedPositionSizing
+        BoltV3AdmissionOutcome::RejectedCapitalAdmission
     );
     assert_eq!(
         decisions[0].intent_kind,

@@ -1,7 +1,7 @@
 # Implementation Plan: Positional Sizing Engine (#712)
 
-**Branch**: `712-positional-sizing-engine` | **Date**: 2026-06-25 | **Spec**: `specs/712-positional-sizing-engine/spec.md`
-**Input**: Feature specification from `specs/712-positional-sizing-engine/spec.md`. Tracking: #712. Depends on #711 and the risk-reservation substrate (`specs/973-risk-reservation-substrate/spec.md`); armed live by #688.
+**Branch**: `712-positional-sizing-engine` | **Date**: 2026-06-25 | **Spec**: `specs/712-positional-sizing-engine/712-positional-sizing-engine-spec.md`
+**Input**: Feature specification from `specs/712-positional-sizing-engine/712-positional-sizing-engine-spec.md`. Tracking: #712. Depends on #711 and the risk-reservation substrate (`specs/973-risk-reservation-substrate/973-risk-reservation-substrate-spec.md`); armed live by #688.
 
 ## Summary
 
@@ -42,8 +42,8 @@ Build the real positional sizer: a selectable sizing model on one seam (fixed-fr
 
 ```text
 specs/712-positional-sizing-engine/
-├── spec.md   # the sizing spec
-└── plan.md   # this file
+├── 712-positional-sizing-engine-spec.md   # the sizing spec
+└── 712-positional-sizing-engine-plan.md   # this file
 ```
 
 ### Source Code (new sizing modules; retires choose_robust_size)

@@ -1,7 +1,7 @@
 # Implementation Plan: Forecast Calibration Scoreboard (#724)
 
-**Branch**: `712-positional-sizing-engine` (design authoring; implementation branches from #724) | **Date**: 2026-06-25 | **Spec**: `specs/724-forecast-calibration-scoreboard/spec.md`
-**Input**: Feature specification from `specs/724-forecast-calibration-scoreboard/spec.md`. Tracking: #724 (parent epic #723).
+**Branch**: `712-positional-sizing-engine` (design authoring; implementation branches from #724) | **Date**: 2026-06-25 | **Spec**: `specs/724-forecast-calibration-scoreboard/724-forecast-calibration-scoreboard-spec.md`
+**Input**: Feature specification from `specs/724-forecast-calibration-scoreboard/724-forecast-calibration-scoreboard-spec.md`. Tracking: #724 (parent epic #723).
 
 ## Summary
 
@@ -42,8 +42,8 @@ Build a shared, generic, **offline** calibration scoreboard: it joins each persi
 
 ```text
 specs/724-forecast-calibration-scoreboard/
-├── spec.md   # the calibration spec
-└── plan.md   # this file
+├── 724-forecast-calibration-scoreboard-spec.md   # the calibration spec
+└── 724-forecast-calibration-scoreboard-plan.md   # this file
 ```
 
 New offline modules sit in the read-only analytics lane (exact paths confirmed at implementation). The generic scorer/report are shared; the binary up/down forecast+outcome adapters are the first family. The current `shadow_pnl.rs` operator-typed `winning_side` is replaced by a derived outcome for grading (P&L recording itself is untouched — no dual path, no live coupling).

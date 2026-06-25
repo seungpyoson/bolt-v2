@@ -16,7 +16,7 @@ The substrate **computes all authoritative risk itself**. Callers supply primiti
 
 **Lineage — this is an evolution of the consolidated gate, not a new system.** The "position sizer" (#507) was never just sizing: it bundled the loss governor (#505), the capital-reservation ledger (#504), and the admission gate, then consolidated (#658) with loss-halt and (#673/#738) with the kill switch's cancel/flatten/halt — deliberately, to end the fragmentation that had three reimplemented loss governors. This substrate is the NEXT iteration of that one consolidated gate (which #711 renames to `capital_admission_gate`). It REUSES the existing loss governor, kill switch, reservation ledger, NT runtime feeds, and restart recovery as single sources (FR-064), and adds only what five review rounds proved missing: atomic reservation across all dimensions on one version, descriptor-owned terminal economics, type-bound provenance, and prepared-epoch cutover. It MUST NOT re-fragment that stack.
 
-This spec covers the substrate (job 2). The sizing math (job 1) is `specs/712-positional-sizing-engine/spec.md`.
+This spec covers the substrate (job 2). The sizing math (job 1) is `specs/712-positional-sizing-engine/712-positional-sizing-engine-spec.md`.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -141,7 +141,7 @@ The authoritative critical section does bounded, I/O-free work over pre-resolved
 **Descriptor authority**
 
 - **FR-010**: The substrate MUST own an instrument-risk registry that is the SOLE authority mapping (instrument, venue, active policy epoch) to exactly one active descriptor version. The substrate MUST resolve the active version itself; a candidate MAY carry an expected version, and any mismatch MUST reject the candidate. A caller MUST NOT select the authoritative version.
-- **FR-011**: The active descriptor MUST be the SOLE authority for instrument terminal cash flows, settlement fees, recoveries, collateral rules, and terminal-state identifiers. No other component may independently encode or override these. (Sizing models attach probabilities/utility and select state partitions but derive cash flows from the active descriptor — see `specs/712-positional-sizing-engine/spec.md`.)
+- **FR-011**: The active descriptor MUST be the SOLE authority for instrument terminal cash flows, settlement fees, recoveries, collateral rules, and terminal-state identifiers. No other component may independently encode or override these. (Sizing models attach probabilities/utility and select state partitions but derive cash flows from the active descriptor — see `specs/712-positional-sizing-engine/712-positional-sizing-engine-spec.md`.)
 - **FR-012**: No descriptor may become active without a non-expired coverage attestation identifying instrument family and venue, source resolution-rule hash, descriptor schema and generator versions, a complete terminal-state enumeration, payout/recovery/collateral/settlement-fee validation, required classification-attribute coverage, conservative test vectors, and issuer/approver identity, validity interval, and revocation status. Missing, expired, revoked, or mismatched certification MUST fail closed.
 - **FR-013**: Descriptor production and descriptor coverage approval MUST be distinct, independently authenticated roles. The attestation MUST be machine-verifiable by the substrate and MUST name both producer and approver identities. (The substrate cannot prove real-world terminal-state completeness; completeness is a registration-time gate owned by a named certification authority, not a runtime check.)
 - **FR-014**: Every descriptor MUST include an explicit unknown/other terminal-state envelope whose payout and recovery assumptions are no better than the maximum loss the venue's enforceable collateral and contract rules permit. An outcome mapping to no certified state MUST use this envelope AND disable further risk-increasing admission for the affected instrument until reconciliation and descriptor review complete.
@@ -222,6 +222,6 @@ The authoritative critical section does bounded, I/O-free work over pre-resolved
 
 ## References
 
-- `specs/712-positional-sizing-engine/spec.md` — the sizing math that consumes this substrate (job 1 of the split).
+- `specs/712-positional-sizing-engine/712-positional-sizing-engine-spec.md` — the sizing math that consumes this substrate (job 1 of the split).
 - Code anchors (at `main`): `bolt_v3_capital_reservation.rs::ReservationLedger`, `bolt_v3_sizing_state.rs::NtDerivedSizingState`, `bolt_v3_submit_admission.rs`, `bolt_v3_live_node.rs`, `bolt_v3_config.rs::CapitalPoolBlock`, `bolt_v3_position_sizer.rs::evaluate_position_sizing` (renamed by #711). Reused single sources (FR-064): `bolt_v3_loss_governor.rs` + `bolt_v3_loss_halt_actions.rs` (realized-loss accumulator), `bolt_v3_kill_switch*.rs` (NT cancel/flatten/halt; #509/#673).
 - Dependency chain: #711 (rename → clean gate) → this substrate → #712 (sizing); #688 arms live. Reuses the kill switch (#509/#673) + loss governor as single sources (FR-064); #634's forced-reduction is a SafetyAction consumer.

@@ -105,5 +105,5 @@ The scoring core grades `(probability, outcome)` pairs and contains no venue, as
 ## References
 
 - Parent epic #723 (forecast robustness & measurement); siblings #725 (basis), #726 (vol freshness), #722 (current-price feed).
-- Consumer: `specs/712-positional-sizing-engine/spec.md` (the sizer consumes a config-tuned cautious edge informed by this module's offline findings).
+- Consumer: `specs/712-positional-sizing-engine/712-positional-sizing-engine-spec.md` (the sizer consumes a config-tuned cautious edge informed by this module's offline findings).
 - Code anchors (at `main`): forecast `fair_probability_up` persisted to decision evidence; the offline result path (`shadow_pnl.rs`) records only P&L + operator-typed `winning_side` today.

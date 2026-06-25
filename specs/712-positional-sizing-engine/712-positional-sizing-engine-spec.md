@@ -3,7 +3,7 @@
 **Feature Branch**: `712-positional-sizing-engine`
 **Created**: 2026-06-25 (replaces the round-2 draft after the review-driven split)
 **Status**: Draft — under review (consolidated three-module review: #973 substrate, #712 sizer, #724 calibration)
-**Tracking**: #712. Depends on #711 (rename) and the risk-reservation substrate (`specs/973-risk-reservation-substrate/spec.md`); armed live by #688.
+**Tracking**: #712. Depends on #711 (rename) and the risk-reservation substrate (`specs/973-risk-reservation-substrate/973-risk-reservation-substrate-spec.md`); armed live by #688.
 **Input**: A real positional sizer that decides *how much* to trade from a calibrated edge and a bankroll, then turns that target into an admitted order through the shared substrate. The atomic risk-reservation machinery is NOT here — it is the substrate. This spec is the sizing math plus the one coordinator that turns a target into an action.
 
 ## Overview
@@ -169,7 +169,7 @@ The maker (P2) reuses the same substrate, coordinator, evaluator, and token path
 
 ## Assumptions
 
-- The risk-reservation substrate (`specs/973-risk-reservation-substrate/spec.md`) exists and owns the atomic gate, the descriptor authority, the advisory view, provenance verification, and the SafetyAction path. This engine depends on it and does not re-implement any of it.
+- The risk-reservation substrate (`specs/973-risk-reservation-substrate/973-risk-reservation-substrate-spec.md`) exists and owns the atomic gate, the descriptor authority, the advisory view, provenance verification, and the SafetyAction path. This engine depends on it and does not re-implement any of it.
 - #711 has renamed the legacy admission component to the `capital_admission` gate, freeing the `position_sizer` name for this real sizer.
 - Band-coverage attestations are produced **offline** by #724/#723 and promoted to config; this engine consumes them as config (not a live call) and never measures calibration. Until #724 is built, Kelly cannot arm and the engine runs the fixed-fraction safe mode.
 - The binary/taker adapter is implemented first; the maker adapter is P2 on the same harness.
@@ -177,7 +177,7 @@ The maker (P2) reuses the same substrate, coordinator, evaluator, and token path
 
 ## References
 
-- `specs/973-risk-reservation-substrate/spec.md` — the substrate this engine submits to (job 2 of the split).
+- `specs/973-risk-reservation-substrate/973-risk-reservation-substrate-spec.md` — the substrate this engine submits to (job 2 of the split).
 - Risk-constrained Kelly: Busseti, Ryu, Boyd, "Risk-Constrained Kelly Gambling" (arXiv:1603.06183).
 - Code anchors (at `main`): `bolt_v3_sizing.rs::choose_robust_size` (retired), `bolt_v3_position_sizer.rs::evaluate_position_sizing` (renamed by #711), `bolt_v3_sizing_state.rs::NtDerivedSizingState`, signal sources `bolt_v3_taker_updown_signal.rs`, `bolt_v3_binary_outcome_edge.rs`, `bolt_v3_taker_pricing.rs`.
 - Dependency chain: #711 → #973 substrate → #712; #688 arms live. Kelly (the target model) is gated on calibration #724/#723 (offline → config).

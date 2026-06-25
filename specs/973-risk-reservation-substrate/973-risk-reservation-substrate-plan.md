@@ -1,7 +1,7 @@
 # Implementation Plan: Risk-Reservation Substrate (gate-owned safety ledger)
 
-**Branch**: `712-positional-sizing-engine` (design authoring; substrate implementation branches from its own tracking issue) | **Date**: 2026-06-25 | **Spec**: `specs/973-risk-reservation-substrate/spec.md`
-**Input**: Feature specification from `specs/973-risk-reservation-substrate/spec.md`. Tracking: #973. Depends on #711; consumed by #712; armed live by #688.
+**Branch**: `712-positional-sizing-engine` (design authoring; substrate implementation branches from its own tracking issue) | **Date**: 2026-06-25 | **Spec**: `specs/973-risk-reservation-substrate/973-risk-reservation-substrate-spec.md`
+**Input**: Feature specification from `specs/973-risk-reservation-substrate/973-risk-reservation-substrate-spec.md`. Tracking: #973. Depends on #711; consumed by #712; armed live by #688.
 
 ## Summary
 
@@ -51,8 +51,8 @@ One-way dependencies; only the state owner mutates authoritative risk state:
 
 ```text
 specs/973-risk-reservation-substrate/
-├── spec.md   # the substrate spec
-└── plan.md   # this file
+├── 973-risk-reservation-substrate-spec.md   # the substrate spec
+└── 973-risk-reservation-substrate-plan.md   # this file
 ```
 
 ### Source Code (new modules; extends the reservation primitive, no fork)

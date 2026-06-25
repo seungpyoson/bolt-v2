@@ -155,6 +155,12 @@ may add them fresh.
   resumed run skips already-v14 records and finishes the rest.
 - **Future-schema evidence present** (schema > 14): the migration tool must refuse rather than
   downgrade.
+- **Operator runs only one of the two migrators**: both partial states fail closed, not silently
+  mis-run. If only the config migrator ran (config at v2, evidence still v13), startup proceeds but
+  the gate fails closed at evidence header validation (`:2284`) → unreconciled. If only the evidence
+  migrator ran (evidence v14, config still v1), root-config validation refuses startup
+  (`SUPPORTED_ROOT_SCHEMA_VERSION` check, `:167`). Neither direction silently mis-recovers; the PR
+  operator runbook MUST instruct running both.
 
 ## Requirements *(mandatory)*
 
@@ -225,6 +231,16 @@ may add them fresh.
   updated to the new value.
 - **FR-009**: The evidence source label value MUST change `"nt_position_sizer_runtime_components"` →
   `"nt_capital_admission_runtime_components"`.
+- **FR-009b**: The loss-snapshot source label value MUST change `"nt_sizing_state"` →
+  `"nt_capital_admission_state"`. This is a **fifth** serialized value (the round-1 review missed it):
+  the variant `BoltV3LossSnapshotSource::NtSizingState` (`src/bolt_v3_decision_evidence.rs:789`), the
+  const `LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE = stringify!(nt_sizing_state)` (`:805`), its decode arm
+  (`:822`), and the three hard-coded emit literals `source: "nt_sizing_state".to_string()`
+  (`src/bolt_v3_order_execution.rs:1548`, `src/bolt_v3_position_sizer.rs:802`,
+  `src/bolt_v3_sizing_state.rs:426`) plus the test at
+  `tests/bolt_v3_position_sizer_runtime_feed.rs:2475` MUST all flip together, and migration (FR-013)
+  MUST cover the value. The other ten `LOSS_SNAPSHOT_SOURCE_*` labels carry no misnomer and are kept.
+  This value MUST NOT be allowlisted in the fence.
 - **FR-010**: The decision-evidence schema version MUST be bumped
   `BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION` 13 → 14 (`src/bolt_v3_decision_evidence.rs:23`).
 
@@ -233,34 +249,57 @@ may add them fresh.
 - **FR-011**: The operator TOML key MUST be renamed `sizing_policy` → `capital_admission_policy`
   under `[[risk.capital_pools]]` (field on `CapitalPoolBlock`, `src/bolt_v3_config.rs:243`), with the
   block type renamed per FR-002. Every config under `config/` and `tests/fixtures/` and the
-  `tests/config_parsing.rs` assertions MUST be updated.
+  `tests/config_parsing.rs` assertions MUST be updated. The user-visible **config-path format
+  strings** that embed the key MUST also change: `"risk.capital_pools.sizing_policy.*"` literals at
+  `src/bolt_v3_live_node.rs:5476,5481,5485` and the `"{label}.sizing_policy.*"` `format!` strings at
+  `src/bolt_v3_validate.rs:1528,1534,1539` (the compiler will not auto-update these literals).
 - **FR-012**: Because renaming a required TOML key is a breaking root-config schema change, the root
   config schema version MUST be bumped: `SUPPORTED_ROOT_SCHEMA_VERSION` 1 → 2
   (`src/bolt_v3_validate.rs:108`; strict `!=` check at `:167`); the `schema_version` field in every
   root config under `config/` and `tests/fixtures/` updated to `2`; and the `tests/config_parsing.rs`
   test asserting `== 1` updated. (`deny_unknown_fields` alone is insufficient — verified the const
-  exists and is enforced; corrects the earlier "unconfirmed" assumption.)
+  exists and is enforced; corrects the earlier "unconfirmed" assumption.) NOTE: this is the **root**
+  config version only; `SUPPORTED_STRATEGY_SCHEMA_VERSION` (`:109`, already `= 2`) is a separate
+  constant for strategy configs and MUST NOT be touched or conflated — keep the `config_parsing`
+  assertions for the two distinct.
 
 **Migration (one-time, offline)**
 
 - **FR-013**: A one-time JSONL migration tool MUST rewrite existing decision-evidence directories
   from v13 to v14: it changes the record-kind / gate-id / outcome / source-label string **values**
-  (FR-006/007/008/009) and sets every envelope's `schema_version` to 14 — **including** the
+  (FR-006/007/008/009/009b) and sets every envelope's `schema_version` to 14 — **including** the
   un-renamed but version-bearing `submit_reservation_metadata` / `submit_reservation_fill` records.
   It MUST:
-  - **Preserve bytes** outside the targeted changes: use **targeted string + integer replacement**,
-    not a JSON parse/`dumps` round-trip (which can reorder keys or reformat numbers/booleans). All
-    other bytes identical.
+  - **Be KEY-SCOPED, not free substitution.** A bare `13`→`14` replace is catastrophic — envelopes
+    carry `recorded_at_utc_ns: i64` nanosecond timestamps (and payloads carry quantities/liabilities)
+    that contain `13`/`14` as substrings. Each replacement MUST be anchored to its JSON key:
+    `"schema_version":13` → `"schema_version":14`; `"kind":"position_sizer_rebuild"`;
+    `"gate_id":"bolt_v3.position_sizer_rebuild"`; `"outcome":"rejected_position_sizing"`;
+    `"source":"nt_sizing_state"`; `"source":"nt_position_sizer_runtime_components"`. Because records
+    are emitted compact by `serde_json::to_vec` (no spaces), the regex anchors are stable. This is
+    **targeted-with-guards**, NOT a JSON `loads`/`dumps` round-trip (serde's `Value` is a `BTreeMap`
+    → would reorder keys) and NOT a global string replace. All non-targeted bytes stay identical.
+  - **Prove non-corruption by test**: the migrator's fixture MUST include (a) a `recorded_at_utc_ns`
+    value containing `13` and (b) a payload string field (e.g. `strategy_id`/`client_order_id`) whose
+    *value* is literally `"position_sizer_rebuild"` / `"nt_sizing_state"` — and assert both survive
+    migration byte-unchanged. (See SC-004.)
   - **Be atomic**: write each output file to a temp sibling, fsync, then atomically rename over the
     original — never a partial/truncated write.
   - **Be idempotent / resumable**: records already at v14 are left as-is, so a re-run after an
     interrupted run completes the directory rather than refusing it.
   - **Rewrite the whole directory** (mixed v13/v14 dirs otherwise fail closed at runtime).
-  - **Refuse on future-schema** (schema > 14).
-- **FR-014**: A one-time config migration tool MUST rewrite, in operator TOML, both
-  `[risk.capital_pools.sizing_policy]` → `capital_admission_policy` AND the root `schema_version`
-  `1` → `2`, preserving comments and other tables (text-based key rewrite, not a toml
-  parse/serialize round-trip).
+  - **Refuse on out-of-range schema**: accept only `13` (migrate) or `14` (skip); refuse any other
+    version (`<13` or `>14`) rather than guessing.
+  - Provide a **`--dry-run`** mode and emit a **changed-file manifest** (path + before/after content
+    hash) so operators can audit exactly what changed before committing.
+- **FR-014**: A one-time config migration tool MUST rewrite, in operator TOML, both the
+  `sizing_policy` key under **every** `[[risk.capital_pools]]` block → `capital_admission_policy` AND
+  the root `schema_version` `1` → `2`. It MUST use a **comment-and-order-preserving** TOML editor
+  (e.g. `tomlkit`), scoped to the `risk.capital_pools` table context, so that: multiple capital-pool
+  blocks are each migrated; comments are preserved; and an occurrence of the word `sizing_policy` in a
+  comment or in an unrelated table is NOT rewritten. A naive regex MUST NOT be used. Provide a
+  `--dry-run` mode. Tests MUST cover: multiple pools, a comment containing `sizing_policy`, and a
+  `sizing_policy` token outside `risk.capital_pools`.
 - **FR-015**: The running binary MUST accept only the new schema/names — **no** dual-path runtime
   reader, **no** accept-both TOML key, **no** accept-both root version. Migration is the single
   one-time bridge (NO DUAL PATHS). The sole concession is the below-schema audit-skip legacy literal
@@ -302,14 +341,28 @@ may add them fresh.
 
 - **FR-018**: The `gated_source_roots.manifest` MUST NOT require changes — the renamed files are not
   listed in any gated source root. The PR verifies this (rather than assumes it).
-- **FR-019**: A **repo-wide** misnomer fence MUST be added and wired into CI (`source-fence-static`):
-  it greps `src/`, `tests/`, `config/`, `scripts/`, and `docs/` for the misnomer token set
-  (`position_sizer`, `PositionSizer`, `PositionSizing`, `position_sizing`, `sizing_policy`,
-  `sized_quantity`, `SizedAdmission`, `sizing_state`, `nt_position_sizer`) and fails closed on any hit
-  **not** in an explicit, version-controlled **allowlist file**. The allowlist enumerates every
-  permitted residual line (the FR-017 legacy skip literal, this spec, the 506 spec, git-history
-  prose) — replacing the unenforceable "documented historical references" carve-out. It MUST NOT
-  match the legitimate sizer (`choose_robust_size`, `bolt_v3_sizing.rs`).
+- **FR-019**: A **repo-wide** misnomer fence MUST exist, scanning `src/`, `tests/`, `config/`,
+  `scripts/`, and `docs/`, failing closed on any misnomer hit **not** in an explicit,
+  version-controlled **allowlist file**. It MUST be implemented by **extending the existing
+  `scripts/verify_bolt_v3_naming.py`** (already run by `source-fence-static`), not by adding a
+  parallel fence script (single source of truth). Requirements:
+  - **Case-insensitive** matching, so SCREAMING_SNAKE constants (`BOLT_V3_POSITION_SIZER_REBUILD_*`,
+    `POSITION_SIZER_ORDER_TERMINAL_SOURCE`, `EXPECTED_POSITION_SIZER_*`) and PascalCase (`SizingPolicy`,
+    `SizedQuantityMismatch`) are all caught. (Verified: a case-sensitive set of lower/Pascal tokens
+    silently misses the ~19 SCREAMING_SNAKE lines — including the very constants being renamed.)
+  - Token stems covering the misnomer family: `position[_]?siz` (sizer/sizing), `sizing_policy`,
+    `sizing_state`, `sized_quantity`/`SizedQuantity`, `SizedAdmission`, `nt_sizing_state`,
+    `nt_position_sizer`, and the gate-context `*Sizing*` types (`CompiledOrderSizingEvidence`,
+    `MissingSizingEvidence`, `SizingRejected`).
+  - An explicit **legitimate-sizer keep-list** so the fence does NOT over-match the real sizer:
+    `bolt_v3_sizing.rs`, `choose_robust_size`, `RobustSize*`, and `SUPPORTED_STRATEGY_SCHEMA_VERSION`
+    are permitted.
+  - The allowlist file enumerates every permitted residual line (the FR-017 legacy skip literal, this
+    spec, the 506 spec, git-history prose) — replacing the unenforceable "documented historical
+    references" carve-out — and the verifier MUST fail closed if the allowlist file is missing.
+  - **Forward-compat note**: `position_sizer`/`position_sizing` are exactly the namespace #712 will
+    reintroduce. #712 MUST extend the allowlist (or the fence MUST scope #712's new paths); record
+    this so #712 is not silently blocked.
 
 ### Key Entities
 
@@ -335,11 +388,21 @@ may add them fresh.
 - **SC-003**: The runtime-literal audit, `scripts/verify_bolt_v3_schema_current.py`, and
   `scripts/test_verify_bolt_v3_schema_current.py` pass with the renamed identifiers/values and
   `schema_version = 14`.
-- **SC-004**: A hand-built v13 evidence fixture with known reservation records, migrated by the
-  JSONL tool, yields the **same reserved liability per pool** on the renamed binary's recovery as the
-  hard-coded expected output derived from the fixture (recovery-equivalence proof, not merely
-  parse-success); an un-migrated v13 reservation record fails closed; a legacy below-schema audit
-  record is skipped.
+- **SC-004**: Migration + recovery equivalence is proven, not asserted by hand. Specifically:
+  - **Decode identity** (the actually-provable core): every migrated v14 record decodes to a
+    reservation record **field-identical** to its v13 original (migration touches only
+    envelope/label strings + `schema_version`, never reservation payload fields). The migrator test
+    asserts byte-equality of all non-targeted bytes (incl. a `recorded_at_utc_ns` containing `13` and
+    a payload string whose value is literally `"position_sizer_rebuild"` — both unchanged).
+  - **Recovery golden**: a checked-in **golden snapshot** of recovered reserved-liability-per-pool
+    (not hand-derived inline) is compared against the renamed binary's recovery over the migrated
+    fixture, asserting **per-reservation** identity (reservation id, order mapping, fill/release/
+    revalue state), not just aggregate pool totals.
+  - **Fixture coverage** MUST exercise: `submit_reservation_metadata`, `submit_reservation_fill`
+    (partial + complete/release), a revalue, **≥2 capital pools**, and a rejected admission that
+    reserves nothing.
+  - **Fail-closed/skip**: an un-migrated v13 reservation record fails closed; a legacy below-schema
+    `position_sizer_rebuild` audit record is skipped (not failed).
 - **SC-005**: A config migrated to `capital_admission_policy` + `schema_version = 2` parses to the
   same pool policy values as the pre-rename config; an un-migrated `sizing_policy` config and an
   un-migrated `schema_version = 1` config each fail fast.

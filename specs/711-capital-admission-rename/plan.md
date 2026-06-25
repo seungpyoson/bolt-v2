@@ -33,6 +33,7 @@ Copied from `AGENTS.md` (every task implicitly includes these):
 - **Remote-first Rust verification** — local non-compile gates only (`just fmt-check`, `just source-fence-static`, `just ci-lint-workflow`, Python verifiers/tests); Rust compile/test proof via `just verify-remote` exact-head CI on a draft PR. Do not run local compile-heavy cargo.
 - **Review Bar** — open the PR and request review from the GitHub account with node ID `U_kgDOEZMFhA`; do not merge without its approval; do not request external review until exact-head CI is green.
 - **Evidence per requirement** — refactor evidence = existing tests + static checks + structural-equivalence review; new code (migration tools, equivalence test) = behavior tests; persisted/config contract changes = fail-closed evidence for invalid/missing/legacy inputs + exact-head proof.
+- **Gating model** — per-task local gate is `just fmt-check` ONLY. `just source-fence-static` runs the runtime-literal audit + `verify_bolt_v3_naming.py` + status-map verifiers (justfile `source-fence-static-inner`), so it cannot pass mid-rename until the audit TOML + naming verifier are updated (Tasks 9–10). Run the full `just source-fence-static` ONCE on the integrated head in Task 11. Intermediate commits need not be fence-clean; the final head MUST be.
 
 ## Technical Context
 
@@ -43,7 +44,7 @@ Copied from `AGENTS.md` (every task implicitly includes these):
 **Target Platform**: Linux server node.
 **Project Type**: Single Rust project (compiler/trading runtime) with Python tooling.
 **Constraints**: Behavior-preserving; fail-closed on invalid/missing/legacy inputs; exact-head CI green before review.
-**Scale/Scope**: ~30 files touched; ~768 misnomer hits (src 507 / tests 261 / docs 75 / scripts 6, measured at `07db9cb04`); 4 serialized string values + decision-evidence schema bump + TOML key + root-config schema bump; 2 migration tools; 1 repo-wide fence.
+**Scale/Scope**: ~30 files touched; ~768 misnomer hits (src 507 / tests 261 / docs 75 / scripts 6, measured at `07db9cb04`); **5** serialized string values (kind, gate-id, outcome, `nt_position_sizer_runtime_components`, **`nt_sizing_state`**) + decision-evidence schema bump 13→14 + TOML key + root-config schema bump 1→2; 2 migration tools; misnomer fence folded into `verify_bolt_v3_naming.py`.
 
 ## Constitution Check
 
@@ -101,7 +102,7 @@ scripts/verify_bolt_v3_schema_current.py, scripts/test_verify_bolt_v3_schema_cur
 # New files — Tasks 7/8/9
 scripts/migrate_bolt_v3_decision_evidence_v13_to_v14.py            (+ test_…)
 scripts/migrate_bolt_v3_capital_admission_config.py               (+ test_…)
-scripts/check_no_position_sizer_misnomer.py                        (repo-wide fence)
+scripts/verify_bolt_v3_naming.py                                  (EXTENDED into the misnomer fence — not a new script)
 specs/711-capital-admission-rename/misnomer-allowlist.txt          (fence allowlist)
 tests/bolt_v3_capital_admission_recovery_equivalence.rs           (SC-004 Rust equivalence test)
 tests/fixtures/bolt_v3/capital_admission_recovery/{v13_*.jsonl}    (hand-built equivalence fixture)
@@ -160,7 +161,7 @@ fields `accepted_quantity` / `calculated_liability` / `reserved_liability`.
   `liability_before_sizing` → `calculated_liability`; `liability_after_sizing` → `reserved_liability`
   in `LiabilityQuote`, `CapitalAdmissionDecision`, `CapitalAdmissionEvidence` and all
   constructors/readers (verified: these structs carry no `Serialize` derive → internal-only).
-- [ ] **Step 4:** Local static gates. Run: `just fmt-check && just source-fence-static`. Expected: pass.
+- [ ] **Step 4:** Local static gate. Run: `just fmt-check`. Expected: pass. (Full `just source-fence-static` deferred to the final gate — it runs the runtime-literal audit, which only passes after Task 10.)
 - [ ] **Step 5:** Commit. `git commit -m "refactor(711): rename position_sizer gate core -> capital_admission"`
 
 ## Task 2: Rename the runtime-feed module + identifiers + its test file
@@ -179,7 +180,7 @@ const identifier `POSITION_SIZER_ORDER_TERMINAL_SOURCE` → `CAPITAL_ADMISSION_O
 literal for it.
 
 - [ ] **Step 1:** `git mv` both files; apply rule; update `src/lib.rs` and references.
-- [ ] **Step 2:** `just fmt-check && just source-fence-static` → pass.
+- [ ] **Step 2:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.)
 - [ ] **Step 3:** Commit. `git commit -m "refactor(711): rename position_sizer runtime feed (+test) -> capital_admission"`
 
 ## Task 3: Rename the input-state module + identifiers
@@ -197,7 +198,7 @@ Anchor renames: `NtDerivedSizingState` → `NtDerivedCapitalAdmissionState`;
 **Keep (FR-004):** `VenueSpendabilitySnapshot`, `ReservationLedgerSnapshot`.
 
 - [ ] **Step 1:** `git mv` the file; apply rule; update `src/lib.rs` and references.
-- [ ] **Step 2:** `just fmt-check && just source-fence-static` → pass.
+- [ ] **Step 2:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.)
 - [ ] **Step 3:** Commit. `git commit -m "refactor(711): rename sizing_state -> capital_admission_state"`
 
 ## Task 4: Rename embedding field + submit-admission / live-node / validate / strategies / tests identifiers
@@ -246,7 +247,7 @@ Anchor renames:
 - [ ] **Step 1 (FR-005):** Apply the renames above. Update every user-visible string tied to a renamed
   identifier in the same edit — `StartupCapitalAdmissionRebuild`'s `Display` text, `anyhow!`/`bail!`
   messages, log lines — since the compiler updates patterns but not string literals.
-- [ ] **Step 2:** `just fmt-check && just source-fence-static` → pass.
+- [ ] **Step 2:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.)
 - [ ] **Step 3:** Commit. `git commit -m "refactor(711): rename position_sizer references in submit-admission/live-node/validate/strategies/tests"`
 
 ## Task 5: Flip serialized string VALUES + bump decision-evidence schema + retain legacy skip literal
@@ -264,17 +265,29 @@ Anchor renames:
   `BOLT_V3_CAPITAL_ADMISSION_REBUILD_GATE_ID` `"bolt_v3.position_sizer_rebuild"` → `"bolt_v3.capital_admission_rebuild"`;
   the evidence source label `"nt_position_sizer_runtime_components"` → `"nt_capital_admission_runtime_components"`.
   Update the read-dispatch `match` arm string literals at `:1510` and `:1784` to the new kind value.
+- [ ] **Step 2b (FR-009b — `nt_sizing_state`, the 5th serialized value):** Rename variant
+  `BoltV3LossSnapshotSource::NtSizingState` → `NtCapitalAdmissionState` (`:789`); change the const
+  `LOSS_SNAPSHOT_SOURCE_NT_SIZING_STATE` value `stringify!(nt_sizing_state)` →
+  `stringify!(nt_capital_admission_state)` (`:805`) and rename the const identifier; update the decode
+  arm (`:822`); and change the three hard-coded emit literals `source: "nt_sizing_state".to_string()`
+  at `src/bolt_v3_order_execution.rs:1548`, `src/bolt_v3_position_sizer.rs:802` (now
+  `bolt_v3_capital_admission.rs`), `src/bolt_v3_sizing_state.rs:426` (now
+  `bolt_v3_capital_admission_state.rs`), and the test at
+  `tests/bolt_v3_capital_admission_runtime_feed.rs:2475`. Leave the other ten `LOSS_SNAPSHOT_SOURCE_*`
+  labels unchanged.
 - [ ] **Step 3 (FR-017 — legacy skip literal):** In
   `decision_evidence_header_is_below_current_schema_non_recovery_record` (`:1995-2006`), retain the
   **legacy literal** `"position_sizer_rebuild"` in the matched set alongside the new
   `BOLT_V3_CAPITAL_ADMISSION_REBUILD_RECORD_KIND`, with a deprecation comment — so pre-rename
   audit-only records still skip rather than fail closed (spec Edge Cases / SC-004).
 - [ ] **Step 4 (FR-010):** Bump `BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION` 13 → 14 (`:23`).
-- [ ] **Step 5:** Update Rust unit tests asserting the old literals/version to the new values; keep the
-  below-schema audit-skip + reservation fail-closed tests and confirm they still encode the design at
-  `decision_evidence.rs:1995-2006, 2284`. Add a test that a record with the **legacy** kind
-  `"position_sizer_rebuild"` at schema 13 is classified skippable (not fail-closed).
-- [ ] **Step 6:** `just fmt-check && just source-fence-static` → pass. Commit.
+- [ ] **Step 5 (blocking legacy-skip test):** Update Rust unit tests asserting the old literals/version
+  to the new values; keep the below-schema audit-skip + reservation fail-closed tests at
+  `decision_evidence.rs:1995-2006, 2284`. Add an **explicit, blocking** test asserting BOTH: (a) a
+  schema-13 record with kind `"position_sizer_rebuild"` is classified skippable (non-recovery), and
+  (b) a schema-13 `submit_reservation_metadata` record is NOT skippable (fails closed). This pins the
+  FR-017 legacy-literal addition, which is an easy drop inside a ~768-hit rename.
+- [ ] **Step 6:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.) Commit.
   `git commit -m "feat(711): flip serialized capital_admission values + bump evidence schema 13->14 + keep legacy audit-skip literal"`
 
 ## Task 6: Rename TOML key + type + bump root-config schema version
@@ -287,12 +300,17 @@ Anchor renames:
   `CapitalAdmissionPolicyBlock` (`:256`); block stays under `[[risk.capital_pools]]`,
   `deny_unknown_fields` intact. Update doc-comment prose naming the component. Keep child keys
   `min_remaining_pool_balance`, `fee_slippage`, `max_fee_liability`, `max_slippage_liability`.
+  Also update the user-visible config-path strings that embed the key (compiler won't catch these):
+  `"risk.capital_pools.sizing_policy.*"` at `src/bolt_v3_live_node.rs:5476,5481,5485` and the
+  `"{label}.sizing_policy.*"` `format!` strings at `src/bolt_v3_validate.rs:1528,1534,1539`.
 - [ ] **Step 2 (FR-012):** Bump `SUPPORTED_ROOT_SCHEMA_VERSION` 1 → 2 (`src/bolt_v3_validate.rs:108`).
-  Update the `tests/config_parsing.rs` assertion `root.schema_version == 1` → `== 2`.
+  Update the `tests/config_parsing.rs` assertion `root.schema_version == 1` → `== 2`. **Do NOT touch**
+  `SUPPORTED_STRATEGY_SCHEMA_VERSION` (`:109`, already `= 2`) — it is a separate constant for strategy
+  configs; keep the two `config_parsing` assertions distinct (root → 2, strategy stays 2).
 - [ ] **Step 3:** Update every config under `config/` and `tests/fixtures/`:
   `[risk.capital_pools.sizing_policy]` → `[risk.capital_pools.capital_admission_policy]` and root
   `schema_version = 1` → `schema_version = 2`.
-- [ ] **Step 4:** `just fmt-check && just source-fence-static` → pass. Commit.
+- [ ] **Step 4:** `just fmt-check` → pass. (Full `just source-fence-static` is deferred to the final gate — see Global Constraints — because it runs the runtime-literal audit, which only passes after Task 10 updates the audit TOML.) Commit.
   `git commit -m "feat(711): rename sizing_policy TOML key/type + bump root-config schema 1->2"`
 
 ## Task 7: JSONL evidence migration tool + recovery-equivalence test (new code, TDD)
@@ -302,33 +320,47 @@ Anchor renames:
 - Create: `tests/bolt_v3_capital_admission_recovery_equivalence.rs` + fixtures under
   `tests/fixtures/bolt_v3/capital_admission_recovery/`
 
-**Interfaces — Produces:** a CLI `migrate_bolt_v3_decision_evidence_v13_to_v14.py <dir>` that, per
-file, applies targeted replacements (record-kind / gate-id / outcome / source-label string values per
-FR-006/007/008/009) and sets each envelope's `schema_version` to 14 — **including**
-`submit_reservation_metadata` / `submit_reservation_fill` — via byte-targeted string/integer
-substitution (no JSON round-trip), writing atomically (temp + fsync + os.replace), idempotently
-(records already at v14 untouched), over the whole directory, refusing schema > 14.
+**Interfaces — Produces:** a CLI `migrate_bolt_v3_decision_evidence_v13_to_v14.py <dir> [--dry-run]`
+that, per file, applies **key-scoped** replacements (record-kind / gate-id / outcome / source-label
+string values per FR-006/007/008/009/009b) and sets each envelope's `schema_version` to 14 —
+**including** `submit_reservation_metadata` / `submit_reservation_fill` — writing atomically (temp +
+fsync + os.replace), idempotently (records already at v14 untouched), over the whole directory.
+Replacements MUST be anchored to JSON keys (`"schema_version":13`, `"kind":"position_sizer_rebuild"`,
+`"gate_id":"bolt_v3.position_sizer_rebuild"`, `"outcome":"rejected_position_sizing"`,
+`"source":"nt_sizing_state"`, `"source":"nt_position_sizer_runtime_components"`) — NOT a bare `13`→`14`
+(would corrupt `recorded_at_utc_ns` timestamps) and NOT a JSON `loads`/`dumps` round-trip (serde's
+`Value` is a `BTreeMap` → reorders keys). Accept only schema `13` (migrate) or `14` (skip); refuse any
+other version. Emit a changed-file manifest (path + before/after hash).
 
 - [ ] **Step 1:** Write failing Python tests:
   (a) a v13 fixture with one `position_sizer_rebuild` (audit) record, one `submit_reservation_metadata`
-  (recovery) record, and one `admission_decision` record whose `outcome` is `"rejected_position_sizing"`
-  → after migration: kind/outcome/source-label values renamed, `submit_reservation_metadata` kind
-  unchanged but `schema_version` now 14, and **every other byte (key order, number formatting)
-  identical** (assert exact line bytes for unaffected fields);
-  (b) re-running on the migrated dir is a no-op (idempotent);
-  (c) a dir already containing a v14 record is completed, not refused (resumable);
-  (d) a schema-15 record causes refusal.
+  (recovery) record, one `admission_decision` record whose `outcome` is `"rejected_position_sizing"`,
+  and one record carrying `source:"nt_sizing_state"` → after migration: kind/outcome/source-label
+  values renamed (incl. `nt_sizing_state` → `nt_capital_admission_state`), `submit_reservation_metadata`
+  kind unchanged but `schema_version` now 14, and **every other byte identical** (assert exact line
+  bytes for unaffected fields);
+  (b) **non-corruption guard** — a record whose `recorded_at_utc_ns` value contains `13` (e.g.
+  `1731234567890123456`) AND a payload string field (`strategy_id`/`client_order_id`) whose *value* is
+  literally `"position_sizer_rebuild"` / `"nt_sizing_state"`: assert the timestamp and those payload
+  values survive **byte-unchanged** (proves key-scoping);
+  (c) re-running on the migrated dir is a no-op (idempotent);
+  (d) a dir already containing a v14 record is completed, not refused (resumable);
+  (e) a schema-15 AND a schema-12 record each cause refusal (accept only 13/14).
   Run: `python3.12 -m pytest scripts/test_migrate_bolt_v3_decision_evidence_v13_to_v14.py -v` → FAIL.
-- [ ] **Step 2:** Implement the migrator (targeted substitution + `tempfile` + `os.fsync` +
-  `os.replace`; per-record version guard for idempotency; pre-scan to refuse future-schema).
+- [ ] **Step 2:** Implement the migrator: **key-anchored regex** replacements (per Interfaces — never a
+  bare integer replace, never JSON round-trip) + `tempfile` + `os.fsync` + `os.replace`; per-record
+  version guard for idempotency; pre-scan to refuse any version other than 13/14; `--dry-run` + manifest.
 - [ ] **Step 3:** Run tests → PASS.
-- [ ] **Step 4 (SC-004 — Rust recovery equivalence):** Add `tests/bolt_v3_capital_admission_recovery_equivalence.rs`:
-  check in a hand-built v13 fixture dir representing known per-pool reservations; in the test, migrate
-  it (invoke the tool or check in the paired migrated v14 fixture), load it through the renamed
-  recovery path, and assert the recovered **reserved liability per pool** equals hard-coded expected
-  values derived by hand from the fixture payloads (which are unchanged by migration). Add the two
-  fail-closed/skip assertions: an un-migrated v13 reservation record → fail closed; a v13 legacy
-  `position_sizer_rebuild` audit record → skipped.
+- [ ] **Step 4 (SC-004 — Rust recovery equivalence):** Add `tests/bolt_v3_capital_admission_recovery_equivalence.rs`
+  with a fixture dir exercising **≥2 capital pools** and the reservation lifecycle:
+  `submit_reservation_metadata`, `submit_reservation_fill` (partial + complete/release), a revalue, and
+  a rejected admission that reserves nothing. Migrate it, load through the renamed recovery path, and:
+  (a) assert each migrated v14 record **decodes field-identical** to its v13 original (the real,
+  provable claim — migration touches no reservation payload field); (b) assert recovered state matches
+  a **checked-in golden snapshot** at **per-reservation** granularity (reservation id, order mapping,
+  fill/release/revalue state) — NOT hand-derived aggregate pool totals. Add the fail-closed/skip
+  assertions: an un-migrated v13 reservation record → fail closed; a v13 legacy `position_sizer_rebuild`
+  audit record → skipped.
 - [ ] **Step 5:** Commit. `git commit -m "feat(711): atomic idempotent v13->v14 evidence migrator + recovery-equivalence test"`
 
 ## Task 8: Config migration tool (new code, TDD)
@@ -336,38 +368,49 @@ substitution (no JSON round-trip), writing atomically (temp + fsync + os.replace
 **Files:**
 - Create: `scripts/migrate_bolt_v3_capital_admission_config.py` + `scripts/test_migrate_bolt_v3_capital_admission_config.py`
 
-- [ ] **Step 1:** Write failing test: a TOML with `[risk.capital_pools.sizing_policy]` and root
-  `schema_version = 1` → after migration the table is `capital_admission_policy` with identical child
-  values, root `schema_version = 2`, and comments / other tables byte-preserved.
-  Run: `python3.12 -m pytest scripts/test_migrate_bolt_v3_capital_admission_config.py -v` → FAIL.
-- [ ] **Step 2:** Implement (text-based key + version rewrite preserving comments; not a toml
-  parse/serialize round-trip).
+- [ ] **Step 1:** Write failing tests covering: (a) a TOML with `[risk.capital_pools.sizing_policy]` and
+  root `schema_version = 1` → after migration the table is `capital_admission_policy` with identical
+  child values, root `schema_version = 2`, comments preserved; (b) **multiple** `[[risk.capital_pools]]`
+  blocks → every `sizing_policy` migrated; (c) a comment containing the word `sizing_policy` → NOT
+  rewritten; (d) a `sizing_policy` token in an unrelated table outside `risk.capital_pools` → NOT
+  rewritten. Run: `python3.12 -m pytest scripts/test_migrate_bolt_v3_capital_admission_config.py -v` → FAIL.
+- [ ] **Step 2:** Implement with a **comment/order-preserving TOML editor (`tomlkit`)**, scoped to the
+  `risk.capital_pools` table context (NOT a naive regex). Provide `--dry-run`.
 - [ ] **Step 3:** Run tests → PASS. Commit.
   `git commit -m "feat(711): one-time sizing_policy->capital_admission_policy + root schema 1->2 config migrator"`
 
-## Task 9: Repo-wide misnomer fence + allowlist, wired into CI
+## Task 9: Extend the existing naming verifier into a repo-wide misnomer fence
+
+**Do this AFTER Task 10** (or in the same commit): the verifier scans `docs/`, so it only goes green
+once the audit TOML's `position_sizer` references are updated by Task 10.
 
 **Files:**
-- Create: `scripts/check_no_position_sizer_misnomer.py`, `specs/711-capital-admission-rename/misnomer-allowlist.txt`
-- Modify: the `source-fence-static` recipe (`justfile`) + the CI workflow step that runs it.
+- Modify: `scripts/verify_bolt_v3_naming.py` (+ `scripts/test_verify_bolt_v3_naming.py`) — extend the
+  EXISTING verifier (already run by `source-fence-static`), do NOT add a parallel fence script.
+- Create: `specs/711-capital-admission-rename/misnomer-allowlist.txt`.
 
-**Interfaces — Produces:** a fail-closed CLI that greps `src/`, `tests/`, `config/`, `scripts/`,
-`docs/` for the token set `position_sizer|PositionSizer|PositionSizing|position_sizing|sizing_policy|sized_quantity|SizedAdmission|sizing_state|nt_position_sizer`
-and exits non-zero on any hit whose `path:line` is not listed in the allowlist file. It MUST NOT
-match the legitimate sizer (`choose_robust_size`, `bolt_v3_sizing.rs`) — those tokens are not in the
-set; if any incidental overlap occurs, list it in the allowlist with a justification comment.
+**Interfaces — Produces:** the extended verifier fails closed on any misnomer hit over `src/`, `tests/`,
+`config/`, `scripts/`, `docs/` not in the allowlist file. It MUST:
+- Match **case-insensitively** so SCREAMING_SNAKE (`BOLT_V3_POSITION_SIZER_*`,
+  `POSITION_SIZER_ORDER_TERMINAL_SOURCE`, `EXPECTED_POSITION_SIZER_*`) and PascalCase (`SizingPolicy`,
+  `SizedQuantityMismatch`) are caught — a case-sensitive set silently misses ~19 SCREAMING_SNAKE lines
+  including the constants being renamed.
+- Cover stems: `position[_]?siz`, `sizing_policy`, `sizing_state`, `sized_quantity`/`SizedQuantity`,
+  `SizedAdmission`, `nt_sizing_state`, `nt_position_sizer`, and gate-context `*Sizing*` evidence types.
+- Carry an explicit **legit-sizer keep-list** (`bolt_v3_sizing.rs`, `choose_robust_size`, `RobustSize*`,
+  `SUPPORTED_STRATEGY_SCHEMA_VERSION`) so it does NOT over-match the real sizer.
+- **Fail closed if the allowlist file is missing.**
 
 - [ ] **Step 1:** Write the allowlist file: the FR-017 legacy skip literal line in
-  `decision_evidence.rs`, this spec, the 506 spec, and any deliberate historical-prose line — each
-  with a one-line justification. No code identifiers permitted.
-- [ ] **Step 2:** Write the fence script (exit non-zero on any non-allowlisted hit; print the
-  offending `path:line`).
-- [ ] **Step 3:** Run it. Run: `python3.12 scripts/check_no_position_sizer_misnomer.py`. Expected:
-  pass (zero non-allowlisted hits) once Tasks 1–8 + 10 are done; if it flags a residual, fix the
-  residual (do not add code identifiers to the allowlist).
-- [ ] **Step 4:** Wire it into `source-fence-static` and the CI lint step so the fence is a gate
-  (SC-001). Run: `just source-fence-static` → pass.
-- [ ] **Step 5:** Commit. `git commit -m "chore(711): add repo-wide position_sizer misnomer fence + allowlist + CI wiring"`
+  `decision_evidence.rs`, this spec, the 506 spec, and any deliberate historical-prose line — each with
+  a one-line justification. No code identifiers permitted.
+- [ ] **Step 2:** Extend `verify_bolt_v3_naming.py` (case-insensitive matcher + stems + keep-list +
+  allowlist-required) and its test `test_verify_bolt_v3_naming.py` (assert a SCREAMING_SNAKE residual
+  is caught, a legit-sizer token is not flagged, and a missing allowlist fails closed).
+- [ ] **Step 3:** Run the verifier standalone. Run: `python3.12 scripts/verify_bolt_v3_naming.py`.
+  Expected: pass once Tasks 1–8 AND Task 10 are done; if it flags a residual, fix the residual (do not
+  add code identifiers to the allowlist). (The full `just source-fence-static` runs in Task 11.)
+- [ ] **Step 4:** Commit. `git commit -m "chore(711): extend verify_bolt_v3_naming into repo-wide capital_admission fence + allowlist"`
 
 ## Task 10: Update runtime-literal audit, schema doc, Python schema verifier
 
@@ -389,13 +432,16 @@ set; if any incidental overlap occurs, list it in the allowlist with a justifica
 
 ## Task 11: Remote proof + PR
 
-- [ ] **Step 1:** Re-run the Task 0 snapshot grep over final head; confirm only allowlisted lines
-  remain. Run: `python3.12 scripts/check_no_position_sizer_misnomer.py` → pass.
+- [ ] **Step 1 (final local gate on integrated head):** Run the FULL `just source-fence-static`
+  (runtime-literal audit + extended `verify_bolt_v3_naming.py` fence + status-map) + `just fmt-check`
+  → all pass. This is the first point the full fence can pass (Tasks 1–10 complete). Confirm only
+  allowlisted misnomer lines remain.
 - [ ] **Step 2:** Push branch; open a PR titled `#711: rename position_sizer -> capital_admission gate`.
   Body: bullets covering the rename surfaces, the decision-evidence schema 13→14 + root-config 1→2
-  bumps, the two migration tools and **the exact operator steps** (run both migration tools before
-  starting the renamed binary; fail-closed behavior if skipped), and `Closes #711` is **omitted** per
-  the no-close-keyword rule — link with `Refs #711` / `Blocks #712` instead.
+  bumps, the two migration tools and **the exact operator runbook** (run BOTH migration tools — with
+  `--dry-run` first to inspect the manifest — before starting the renamed binary; both partial states
+  fail closed if skipped), and `Closes #711` is **omitted** per the no-close-keyword rule — link with
+  `Refs #711` / `Blocks #712` instead.
 - [ ] **Step 3:** `just verify-remote` → full `CI` + Backtester CI + actionlint green on exact head.
   Evidence: pre-existing behavior tests pass unchanged (FR-017 / SC-006); migration + equivalence
   tests green (FR-013/014 / SC-004); fence green (SC-001); schema verifier + audit green (SC-003).
@@ -412,7 +458,9 @@ set; if any incidental overlap occurs, list it in the allowlist with a justifica
 | Outcome string missed at the manual match arm (`submit_admission.rs:138`) — compiler won't catch RHS literal | Task 5 Step 1 changes both the serde-driven value and the manual arm + round-trip test | round-trip test asserts `outcome` byte (`decision_evidence.rs:3531-3556`) |
 | Old audit records fail closed after kind-value flip | Retain legacy `"position_sizer_rebuild"` literal in the below-schema skip set (Task 5 Step 3) | Task 5 Step 5 legacy-skip test + SC-004 |
 | Schema bump breaks startup reservation recovery | Recovery rides on un-renamed `submit_reservation_metadata/fill` payloads; migrator rewrites whole dir; un-migrated input fails closed by design (`decision_evidence.rs:2284`) | Task 7 Rust recovery-equivalence + fail-closed tests (SC-004) |
-| Migration corrupts the only evidence copy (reorder/truncate) | Targeted byte substitution (no JSON round-trip) + atomic temp/fsync/rename + idempotent/resumable + refuse future-schema (FR-013) | Task 7 byte-identity + idempotency + refusal tests |
+| Migration corrupts the only evidence copy (bare `13`→`14` hits timestamps; JSON round-trip reorders keys) | **Key-anchored** substitution (no bare integer, no JSON round-trip) + atomic temp/fsync/rename + idempotent/resumable + accept-only-13/14 (FR-013) | Task 7 non-corruption guard (13-in-timestamp + old-string-as-payload) + idempotency + refusal tests |
+| Fence silently misses SCREAMING_SNAKE / Pascal misnomer | Case-insensitive matcher folded into `verify_bolt_v3_naming.py` + legit-sizer keep-list + allowlist-required (FR-019) | Task 9 test: SCREAMING_SNAKE residual caught, legit sizer not flagged |
+| 5th serialized value (`nt_sizing_state`) left unmigrated | Renamed at variant/const/3 emit sites/decode (Task 5 Step 2b) + migrated (FR-013) + fence-caught | Task 5/7 tests + fence |
 | Root-config key rename silently accepted on old configs | Bump `SUPPORTED_ROOT_SCHEMA_VERSION` 1→2 + config migrator (Task 6/8); `deny_unknown_fields` is secondary | Task 6 config_parsing assertion + Task 8 migrator test (SC-005) |
 | Audit `path`/`context`/`classification` drift fails CI | Audit updated for paths+identifiers+values in one pass (Task 10) | runtime-literal audit recipe + schema verifier green (SC-003) |
 | Operator skips migration | Currently theoretical (no active deploy) but **not** weakened; fail-closed not silent; PR body documents the required steps | spec Assumptions + Edge Cases + Task 11 PR body |
@@ -421,8 +469,10 @@ set; if any incidental overlap occurs, list it in the allowlist with a justifica
 
 - FR-001 → Tasks 1/2/3 (modules + test-file rename). FR-002 → Tasks 1–4 (rule + verified surfaces).
   FR-003 → Task 4. FR-004 (keep) → scope notes in Tasks 1/3. FR-005 (strings) → Task 4 Step 1.
-  FR-006/007/009 → Task 5 Step 2. FR-008 (two sites) → Task 5 Step 1. FR-010 → Task 5 Step 4.
-  FR-011 → Task 6 Steps 1/3. FR-012 (root version) → Task 6 Step 2. FR-013 → Task 7. FR-014 → Task 8.
+  FR-006/007/009 → Task 5 Step 2. FR-009b (`nt_sizing_state`, 5th value) → Task 5 Step 2b + Task 7.
+  FR-008 (two sites) → Task 5 Step 1. FR-010 → Task 5 Step 4.
+  FR-011 (key + type + config-path strings) → Task 6 Steps 1/3. FR-012 (root version, ≠ strategy) →
+  Task 6 Step 2. FR-013 (key-scoped migrator) → Task 7. FR-014 (tomlkit) → Task 8.
   FR-015 (no dual path) → Tasks 5/6 (single reader) + 7/8 (offline migration). FR-016 → Task 10.
   FR-017 (invariants + keep-list + legacy skip literal + terminal-source value) → Tasks 1/3 scope +
   Task 5 Step 3 + Task 2 note. FR-018 → Task 0 Step 1. FR-019 (repo-wide fence) → Task 9.

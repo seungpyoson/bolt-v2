@@ -1465,7 +1465,7 @@ canonical_quote_asset = "<QUOTE_ASSET>"
     #[test]
     fn parses_minimal_root_block() {
         let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
-        assert_eq!(root.schema_version, 1);
+        assert_eq!(root.schema_version, 2);
         assert_eq!(root.trader_id, TraderId::from("BOLT-001"));
         assert_eq!(root.runtime.mode, Environment::Live);
         assert!(root.clients.contains_key("polymarket_main"));

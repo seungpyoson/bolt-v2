@@ -142,7 +142,8 @@ check-runs. This table is the single *proof source* per arrival.)
 | `gate` | stub ✓ *(skip ok)* | `ci.yml` ✓ | **`ci.yml` + stub ✗ (Defect A)** | `ci.yml` ✓ | none ✗ *(non-required name, fail-closed)* |
 | `backtester-gate` | `backtester-ci` ✓ | `backtester-ci` ✓ | `backtester-ci` ✓ | `backtester-ci` ✓ *(#957)* | none *(fail-closed)* |
 | `host-health` | **none ✗ (Defect B, narrow ignored-set only)** | `ci.yml` ✓ | `ci.yml` ✓ | `ci.yml` ✓ | none *(fail-closed)* |
-| `actionlint` | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | n/a |
+| `actionlint` | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | none ✗ *(fail-closed)* |
+| `coverage-enforcer` *(step 6 — **target**, not yet live; self-exempt)* | self ✓ | self ✓ | self ✓ | self ✓ | none ✗ *(fail-closed)* |
 
 **What the table proves:** the proof-source holes are *exactly two* — Defect A (`gate` ×
 mixed) and Defect B (`host-health` missing only when a PR touches **solely** the narrow ignored
@@ -152,7 +153,10 @@ set) — plus the deliberate oversized-PR fail-closed cell. The merge-queue hole
 *This table is today's **evidence** (it shows the two live holes). Step 2 turns it into the
 **target** registry — per required check: name, the **one** proof source, the **app allowed to
 report it** (`integration_id`), how it's reported (the job's own check-run under a stable literal
-name), the arrivals it must cover, and the proof rule. Step 6's enforcer adds a **fifth**
+name), the arrivals it must cover, and the proof rule **keyed by event** (a content push earns a
+fresh proof; a metadata-only event — `edited`/`ready_for_review`/`reopened` — carries the prior
+same-commit proof forward). So the registry is *(check × arrival × event) → proof source + rule*,
+not just per content-shape. Step 6's enforcer adds a **fifth**
 required context (itself, self-exempt).*
 
 **Carry-forward is a state, not a proof source.** No-code edits and draft toggles don't
@@ -166,17 +170,25 @@ fresh," never as a fresh proof.
 ## 5. The plan (eight steps, in order)
 
 Correctness (is green actually safe?): steps 1, 3, 4, 6, 7, 8. Read side (is the signal honest
-and readable at any moment?): step 5 (plus step 4's stable name). **Landing order:** steps **1
-and 5 can start now**; the registry (2) lands before its dependents (3, 4, 6); step 3 (one proof
-*source*) lands before step 4 (one *reporter* under a stable name); steps 7–8 last.
+and readable at any moment?): step 5 (plus step 4's stable name). **Landing order:** step **1 can
+start now**; the registry (2) lands before its dependents (3, 4, 5, 6); **steps 3 and 4 land
+together (atomic)** — step 3 deletes the stub (the only docs `gate` producer) and step 4
+stabilizes the name, so splitting them strands docs-only PRs in the gap; **step 5 lands with or
+after step 4** and reads the gate's name from the policy output (never hard-codes it); steps 7–8
+last.
 
 1. **Close stale green now.** Set `strict_required_status_checks_policy = true` on the CI-gates
    ruleset — one API call, independent of all code, shuts Defect C immediately. Capture
-   before/after + rollback. Kept until step 8 makes the queue the sole merge path.
+   before/after + rollback. Kept until step 8 makes the queue the sole merge path. *(Note: a PR
+   touching only the narrow ignored set is already blocked by Defect B — missing `host-health` —
+   until step 3 lands; that is not a new effect of `strict`, and the operator runbook covers the
+   rare case meanwhile.)*
 2. **Build the coverage map as a machine-readable registry** (promote section 4): per required
    check — name, the **one** proof source, the **app allowed to report it** (`integration_id`),
    how it's reported (the job's own check-run under a stable literal name), the arrivals it must
-   cover, and the proof rule. This is what step 6 enforces.
+   cover, and the proof rule **keyed by event** (fresh proof on a content push; carry-forward on a
+   metadata-only event). Include the **fifth** context (step 6's enforcer). This is what step 6
+   enforces.
 3. **One proof source per check** (closes Defect A + B). Fold docs-only handling into `ci.yml`
    and **delete `ci-docs-pass-stub.yml`**, so a docs-only PR runs `ci.yml` (heavy lanes
    skipped, `host-health` runs) and there's exactly one proof source per arrival. High blast
@@ -194,23 +206,46 @@ and 5 can start now**; the registry (2) lands before its dependents (3, 4, 6); s
    that "looks stuck" symptom of part i is step 5's job.)*
 5. **Progress visibility** (the "is it running or stuck?" half of Defect D **part i** — the #960
    experience: a green-lane run whose late gate looks stuck). An in-workflow step upserts a
-   **sticky PR comment** mapping the required checks to `running → passed/failed` (and "stalled"
-   if a run dies), so you can always tell live from broken; the lanes also show in-progress
-   meanwhile. Posted from a small job that **never runs PR code**. Optionally the same state is a
-   `scripts/merge_readiness.py <pr>` command. No privileged watcher. Design in section 7b.
+   **sticky PR comment** mapping the required checks to `running → passed/failed`, reading the
+   gate's name from the policy output so it is name-agnostic. Because a cancelled or killed run
+   can't post from inside itself, a **small post-run finalizer** (fires after the run ends,
+   *including* when cancelled/superseded) flips the comment to "stalled" — a status-only helper,
+   **not** the dropped verdict-watcher (no pass/fail logic, no migration). Both jobs **never run
+   PR code**, least scope (`checks: read`, `pull-requests: write`, `contents: read`); **fork PRs**
+   (read-only token) fall back to the visibly-running lanes + the `scripts/merge_readiness.py
+   <pr>` command. Design in section 7b.
 6. **Add the coverage-map enforcer** — a standalone workflow, no path filter, runs on every PR
    event and on the merge queue, **registered as a required check** (a fifth, self-exempt
-   context). It fails if the live reporters/proof sources drift from the registry.
-7. **Consolidate the two overlapping rulesets into one**, keeping the stricter pull-request
-   settings (`dismiss_stale=true`, `last_push_approval=true`, code-owner, thread-resolution),
-   **and pin each required context to the GitHub Actions app (`15368`)** — `gate` and
-   `actionlint` are unpinned today (`integration_id: null`) while `backtester-gate` /
-   `host-health` already pin `15368`; pin all four. Confirm with a test-merge; write a rollback.
+   context). It fails if the live reporters/proof sources drift from the registry. It reads the
+   registry from the **trusted base tree** (not the PR head — same boundary as step 3's C1, else a
+   PR edits the registry to exempt itself), and runs **after the reporters finish** so it sees real status, not "pending." It is its **own**
+   `pull_request` / `merge_group` workflow (never an in-`ci.yml` job — a job inside `ci.yml` dies
+   if `ci.yml` itself breaks, the very drift it must catch): it **polls the Checks API for the
+   registry's reporters on the exact PR-head SHA** until they are terminal (or a timeout →
+   fail-closed), then **publishes its own required check on that head SHA** (`checks: write`) — so
+   it stays independent of `ci.yml`'s outcome and always reports on the PR head. Roll it
+   out **advisory first, then flip to required** once proven, with a documented **one-line
+   off-switch** (un-require the context) since it is a new merge-gate.
+7. **Consolidate the two overlapping rulesets into one** — by **enumerating every rule from
+   both**, not just the review settings. The "Branch governance" set carries **branch-deletion +
+   non-fast-forward (force-push) protection** that the "CI gates" set does **not**; a naive merge
+   that only keeps the stricter pull-request settings (`dismiss_stale=true`,
+   `last_push_approval=true`, code-owner, thread-resolution) would silently **re-open
+   force-push/deletion on `main`**. Make an **explicit decision on the bypass actor**: the "CI
+   gates" set today exempts Integration app `10562` in pull-request mode (the governance set
+   exempts none) — identify it (likely the merge automation), keep it only if intentional, else
+   drop and document. **Pin every required context to the GitHub Actions app (`15368`)** — `gate`
+   and `actionlint` are unpinned today (`integration_id: null`) while `backtester-gate` /
+   `host-health` already pin `15368` — **including step 6's enforcer (five contexts, not four)**.
+   Confirm with a test-merge; write a rollback.
    *(The custom review-check retirement that used to live here is done — #959.)*
 8. **Durable stale-green closure — the Mergify merge queue, via #929.** #942 does not build the
    queue; it **defers to #929** (the Mergify plan) and only ensures every required check (incl.
-   step 6's enforcer) reports on the queue commit — `backtester-gate` already does (#957). When
-   #929's queue is the sole merge path, `strict` can relax.
+   step 6's enforcer) reports on the queue commit — `backtester-gate` already does (#957). The
+   queue coverage here is for **native `merge_group` events**; whether #929's Mergify batches via
+   native `merge_group` or its own temp-PRs is **#929's call** — if temp-PRs, #929 must re-map
+   this coverage rather than assume it transfers. When #929's queue is the sole merge path,
+   `strict` can relax.
 
 ---
 
@@ -219,10 +254,12 @@ and 5 can start now**; the registry (2) lands before its dependents (3, 4, 6); s
 - Not changing *what* the tests test.
 - Not weakening your approval gate — it stays required; the custom review checks were already
   retired separately (#959).
-- **Not building a privileged watcher** to animate the merge light to "running." The badge reads
-  "waiting" until the run finishes; live progress is the step-5 PR comment. (A `workflow_run`
-  watcher was considered and dropped — it would need its own verdict logic for CI *and*
-  backtester, race-handling, and a one-time migration, all to animate a badge.)
+- **Not building a privileged *verdict* watcher** to animate the merge light to "running." The
+  badge reads "waiting" until the run finishes; live progress is the step-5 PR comment. (A
+  `workflow_run` *verdict* watcher was considered and dropped — it would need its own pass/fail
+  logic for CI *and* backtester, race-handling, and a one-time migration, all to animate a badge.)
+  A **status-only** post-run helper (no verdict, no migration) *is* used to mark a cancelled run
+  as "stalled" (§7b) — the cheap part is kept; only the expensive verdict-watcher is dropped.
 - **Not building the merge queue here** — that's #929's Mergify work; #942 only makes the
   required checks queue-ready and defers the queue itself.
 - **Not replacing the lane checks** — `host-health`/`actionlint` keep reporting themselves.
@@ -315,12 +352,17 @@ case) is step 5's comment.
 case).** The required badge necessarily reads "Expected/waiting" until the late summary job runs
 (it is the single in-workflow producer). To show liveness without a privileged watcher, an in-workflow step
 upserts **one sticky PR comment**: `⏳ CI running — N/M checks done` → `✅ all required checks
-passed — safe to merge` / `❌ failed: <which>` (and `⚠️ stalled — no progress in N min` when a
-run dies). The individual lanes also show "in progress" in the checks list meanwhile. Post it
-from a **small dedicated job that never checks out or runs PR code**, least scope
-(`pull-requests: write` only). Read-only **Dependabot** PRs can't post a comment from their own
-run (rare, low-stakes) — they fall back to the visibly-running lanes. Optionally the same state
-is a `scripts/merge_readiness.py <pr>` command.
+passed — safe to merge` / `❌ failed: <which>`. The individual lanes also show "in progress" in
+the checks list meanwhile. Because the in-workflow job is **cancelled with its own run** (manual
+cancel or concurrency supersession), the `⚠️ stalled` state is set by a **small post-run
+finalizer** triggered *after* the run completes (`workflow_run`/terminal — fires on cancelled
+too) — a status-only helper, not the dropped verdict-watcher. **Run-dominance guard:** the finalizer
+**no-ops unless** the completed run's `head_sha` is still the PR head **and** its run id/attempt is
+still the latest run for that head — so a cancelled *older* run can't overwrite a newer run's
+comment. The sticky marker records `head_sha`, workflow, run id, and attempt. Both jobs **never check out or run
+PR code**, least scope (`checks: read`, `pull-requests: write`, `contents: read`). **Fork PRs**
+(and any PR whose token lacks `pull-requests: write`) can't post from their own run — they
+fall back to the visibly-running lanes and the `scripts/merge_readiness.py <pr>` command.
 
 **The honest trade.** The official required-check badge stays "waiting" until the run finishes —
 we deliberately did **not** build a privileged `workflow_run` watcher to animate it to "running"
@@ -341,8 +383,9 @@ required `gate` / `backtester-gate` appear under their **literal** names and res
 (never stranded on a `-noop`/`-deferred` sibling); a no-code / draft edit carries the prior
 same-commit proof forward (never a fresh green); a cancelled run leaves the gate non-success
 (blocked); a manual dispatch stays non-required; missing heavy proof leaves merge blocked; and
-the progress comment goes `running → passed/failed` and never sits on a stale "running" while
-the lanes are also dead.
+the progress comment goes `running → passed/failed`, and a cancelled/killed run is flipped to
+`⚠️ stalled` by the post-run finalizer (§7b) so it never sits on a stale "running" while the
+lanes are also dead.
 
 ---
 

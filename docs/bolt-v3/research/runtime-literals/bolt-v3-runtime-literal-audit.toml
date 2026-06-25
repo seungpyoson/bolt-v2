@@ -961,7 +961,7 @@ path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = '''"nt_open_order_cache"'''
 context = '''evidence_label: "nt_open_order_cache".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "This labels open-order reservation evidence rebuilt from NT cache state; the open orders and account facts come from NT."
 
 [[allowed]]
@@ -13982,7 +13982,7 @@ path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"prediction_market_binary"'''
 context = '''const SUBMIT_RESERVATION_METADATA_PRODUCT_KIND_BINARY: &str = "prediction_market_binary";'''
-classification = "position_sizer_product_kind_tag"
+classification = "capital_admission_product_kind_tag"
 reason = "Canonical schema tag accepted by the startup recovery evidence reader for binary prediction-market reservation metadata."
 
 [[allowed]]
@@ -13990,7 +13990,7 @@ path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"buy"'''
 context = '''const SUBMIT_RESERVATION_METADATA_SIDE_BUY: &str = "buy";'''
-classification = "position_sizer_order_side_tag"
+classification = "capital_admission_order_side_tag"
 reason = "Canonical schema tag accepted by the startup recovery evidence reader for buy-side reservation metadata."
 
 [[allowed]]
@@ -13998,7 +13998,7 @@ path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"sell"'''
 context = '''const SUBMIT_RESERVATION_METADATA_SIDE_SELL: &str = "sell";'''
-classification = "position_sizer_order_side_tag"
+classification = "capital_admission_order_side_tag"
 reason = "Canonical schema tag accepted by the startup recovery evidence reader for sell-side reservation metadata."
 
 [[allowed]]
@@ -14222,7 +14222,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "number"
 literal = '''0'''
 context = '''open_order_count: 0,'''
-classification = "position_sizer_order_lifecycle_identity"
+classification = "capital_admission_order_lifecycle_identity"
 reason = "Empty live-order count used before NT cache or order-event evidence arrives; it is an internal identity, not an operator runtime value."
 
 [[allowed]]
@@ -14230,7 +14230,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_account_cache"'''
 context = '''const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for startup account sizing components seeded from NT cache; balances remain NT-owned facts."
 
 [[allowed]]
@@ -14238,7 +14238,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_account_free_collateral"'''
 context = '''const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for spendable collateral derived from NT account free collateral; the value remains NT-owned."
 
 [[allowed]]
@@ -14246,7 +14246,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_open_order_cache"'''
 context = '''source: "nt_open_order_cache".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for order-lifecycle state seeded from NT cache open orders; the open-order set remains NT-owned."
 
 [[allowed]]
@@ -14254,7 +14254,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_order_event"'''
 context = '''source: "nt_order_event".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for order-lifecycle state derived from NT order events; event payloads remain NT-owned."
 
 [[allowed]]
@@ -14262,7 +14262,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_order_fill"'''
 context = '''evidence_label: "nt_order_fill".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for authoritative NT fill events before submit admission releases the matching reservation."
 
 [[allowed]]
@@ -14270,7 +14270,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_order_fill"'''
 context = '''snapshot.source = "nt_order_fill".to_string();'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for product inventory updated from authoritative NT fill events."
 
 [[allowed]]
@@ -14278,7 +14278,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_order_lifecycle_seed"'''
 context = '''source: "nt_order_lifecycle_seed".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for the empty startup lifecycle seed before NT cache or live-order evidence is applied."
 
 [[allowed]]
@@ -14286,7 +14286,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_portfolio_snapshot"'''
 context = '''source: "nt_portfolio_snapshot".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for portfolio/account sizing components derived from NT account and portfolio events."
 
 [[allowed]]
@@ -14294,7 +14294,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_position_cache"'''
 context = '''snapshot.source = "nt_position_cache".to_string();'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for product inventory seeded from NT cache positions."
 
 [[allowed]]
@@ -14302,7 +14302,7 @@ path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_capital_admission_runtime_components"'''
 context = '''source: "nt_capital_admission_runtime_components".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for the composed NT-derived capital-admission component packet before submit admission adds Bolt reservation state."
 
 [[allowed]]
@@ -14414,7 +14414,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
 context = '''next_sequence: 0,'''
-classification = "position_sizer_reservation_sequence_identity"
+classification = "capital_admission_reservation_sequence_identity"
 reason = "Initial value for the in-memory submit-reservation sequence; it is a counter identity, not an operator runtime value."
 
 [[allowed]]
@@ -14422,7 +14422,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
 context = '''&& components.order_lifecycle.open_order_count > 0'''
-classification = "position_sizer_non_empty_order_lifecycle_guard"
+classification = "capital_admission_non_empty_order_lifecycle_guard"
 reason = "Non-empty live-order count used to revoke reservation-ledger reconciliation when runtime components report unattributed open orders; it is an internal identity, not an operator runtime value."
 
 [[allowed]]
@@ -14430,7 +14430,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
 context = '''&& components.order_lifecycle.open_order_count == 0'''
-classification = "position_sizer_empty_order_lifecycle_guard"
+classification = "capital_admission_empty_order_lifecycle_guard"
 reason = "Empty live-order count used to reconcile an empty startup reservation ledger only after runtime components confirm there are no live orders; it is an internal identity, not an operator runtime value."
 
 [[allowed]]
@@ -14438,7 +14438,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
 context = '''capital_admission.next_sequence += 1;'''
-classification = "position_sizer_reservation_sequence_increment"
+classification = "capital_admission_reservation_sequence_increment"
 reason = "Single-reservation counter increment used to produce unique reservation ids under the configured pool."
 
 [[allowed]]
@@ -14446,7 +14446,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
 context = '''rebuilt_reservation_count: 0,'''
-classification = "position_sizer_rebuild_counter_identity"
+classification = "capital_admission_rebuild_counter_identity"
 reason = "Initial rebuilt-reservation count for a startup reconciliation audit; it is a counter identity, not an operator runtime value."
 
 [[allowed]]
@@ -14454,7 +14454,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''0'''
 context = '''attempted_reservation_count: 0,'''
-classification = "position_sizer_rebuild_counter_identity"
+classification = "capital_admission_rebuild_counter_identity"
 reason = "Initial attempted-reservation count for a startup reconciliation audit; it is a counter identity, not an operator runtime value."
 
 [[allowed]]
@@ -14462,7 +14462,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
 context = '''attempted_reservation_count: index + 1,'''
-classification = "position_sizer_rebuild_counter_increment"
+classification = "capital_admission_rebuild_counter_increment"
 reason = "Single-item increment used while reporting attempted reservation rebuild progress; it is not an operator runtime value."
 
 [[allowed]]
@@ -14470,7 +14470,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
 literal = '''1'''
 context = '''let Some(next_observed_at_ns) = metadata.last_lifecycle_observed_at_ns.checked_add(1)'''
-classification = "position_sizer_fill_lifecycle_sequence_increment"
+classification = "capital_admission_fill_lifecycle_sequence_increment"
 reason = "One-nanosecond internal sequence advance used to order same-timestamp fill lifecycle observations deterministically."
 
 [[allowed]]
@@ -14494,7 +14494,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"nt_order_fill_clamped"'''
 context = '''"nt_order_fill_clamped".to_string()'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence label for authoritative NT fill evidence clamped to the original reservation quantity."
 
 [[allowed]]
@@ -14502,7 +14502,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt_known_reservation_metadata"'''
 context = '''evidence_label: "bolt_known_reservation_metadata".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence label for startup-recovered reservations attributed through Bolt-owned durable metadata."
 
 [[allowed]]
@@ -14510,7 +14510,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt_recovered_open_order_reservations"'''
 context = '''evidence_label: "bolt_recovered_open_order_reservations".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence label for reservations rebuilt from attributed NT open orders during startup reconciliation."
 
 [[allowed]]
@@ -14518,7 +14518,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt_reservation_ledger"'''
 context = '''"bolt_reservation_ledger".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence label for the Bolt-owned reservation ledger snapshot composed into position-sizer state."
 
 [[allowed]]
@@ -14526,7 +14526,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt_reservation_ledger"'''
 context = '''source: "bolt_reservation_ledger".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for the Bolt-owned reservation ledger snapshot."
 
 [[allowed]]
@@ -14534,7 +14534,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"prediction_market_binary"'''
 context = '''BoltV3CompiledProductKind::PredictionMarketBinary => "prediction_market_binary",'''
-classification = "position_sizer_product_kind_tag"
+classification = "capital_admission_product_kind_tag"
 reason = "Schema tag used when serializing compiled binary prediction-market product metadata into reservation evidence."
 
 [[allowed]]
@@ -14542,7 +14542,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"prediction_market_binary"'''
 context = '''ProductKind::PredictionMarketBinary => "prediction_market_binary",'''
-classification = "position_sizer_product_kind_tag"
+classification = "capital_admission_product_kind_tag"
 reason = "Schema tag used when serializing configured binary prediction-market product metadata into reservation evidence."
 
 [[allowed]]
@@ -14550,7 +14550,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"buy"'''
 context = '''BoltV3CompiledOrderSide::Buy => "buy",'''
-classification = "position_sizer_order_side_tag"
+classification = "capital_admission_order_side_tag"
 reason = "Schema tag used when serializing compiled buy side into reservation metadata."
 
 [[allowed]]
@@ -14558,7 +14558,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"sell"'''
 context = '''BoltV3CompiledOrderSide::Sell => "sell",'''
-classification = "position_sizer_order_side_tag"
+classification = "capital_admission_order_side_tag"
 reason = "Schema tag used when serializing compiled sell side into reservation metadata."
 
 [[allowed]]
@@ -14566,7 +14566,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"submit_admission"'''
 context = '''source: "submit_admission".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for durable reservation metadata written by submit admission."
 
 [[allowed]]
@@ -14574,7 +14574,7 @@ path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"{}#{}"'''
 context = '''"{}#{}",'''
-classification = "position_sizer_reservation_id_template"
+classification = "capital_admission_reservation_id_template"
 reason = "Internal composite-id formatting template for client order id plus sequence; it does not configure trading behavior."
 
 [[allowed]]
@@ -14614,7 +14614,7 @@ path = "src/bolt_v3_live_node.rs"
 kind = "number"
 literal = '''0'''
 context = '''observed_at_ns: 0,'''
-classification = "position_sizer_startup_snapshot_seed"
+classification = "capital_admission_startup_snapshot_seed"
 reason = "Startup capital-pool snapshot seed before the NT runtime feed publishes an observed snapshot; admission remains fail-closed until configured runtime facts reconcile."
 
 [[allowed]]
@@ -14630,7 +14630,7 @@ path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = '''"bolt_configured_binary_product"'''
 context = '''source: "bolt_configured_binary_product".to_string(),'''
-classification = "position_sizer_evidence_source_label"
+classification = "capital_admission_evidence_source_label"
 reason = "Evidence source label for configured binary product metadata used to seed the runtime feed before NT-derived state arrives."
 
 [[allowed]]
@@ -14638,7 +14638,7 @@ path = "src/bolt_v3_live_node.rs"
 kind = "string"
 literal = '''"capital admission venue spendability source configured without runtime feed"'''
 context = '''"capital admission venue spendability source configured without runtime feed"'''
-classification = "position_sizer_source_diagnostic"
+classification = "capital_admission_source_diagnostic"
 reason = "Fail-closed diagnostic when a TOML-configured venue spendability source has no runtime feed; it does not configure trading behavior."
 
 [[allowed]]

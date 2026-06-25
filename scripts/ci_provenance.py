@@ -1834,16 +1834,31 @@ def resolve_gate_carry_forward(
             created_at = run.get("created_at")
             if not isinstance(created_at, str):
                 raise ProvenanceError("workflow run created_at must be a string")
-            if parse_timestamp(created_at) < cutoff:
-                page_has_old_run = True
-                continue
-            page_has_fresh_run = True
-            if run_matches_gate_carry_forward(
+            matches = run_matches_gate_carry_forward(
                 run,
                 requested_sha=requested_sha,
                 current_run_id=current_run_id,
                 workflow_path=workflow_path,
-            ):
+            )
+            if parse_timestamp(created_at) < cutoff:
+                page_has_old_run = True
+                # The age cutoff bounds which prior *success* may be carried
+                # forward: a carried success must still have its provenance
+                # artifact within retention. A completed non-success run, by
+                # contrast, dominates by its conclusion alone -- that signal is
+                # in the run metadata and does not depend on artifact retention.
+                # Keep an old same-SHA run that was re-run to failure so the
+                # dominance sort below still blocks a newer carry-forward; skip
+                # only old successes and not-yet-completed runs.
+                if (
+                    matches
+                    and as_text(run.get("status")) == "completed"
+                    and as_text(run.get("conclusion")) != "success"
+                ):
+                    candidates.append(run)
+                continue
+            page_has_fresh_run = True
+            if matches:
                 candidates.append(run)
         if page_has_old_run and not page_has_fresh_run:
             break

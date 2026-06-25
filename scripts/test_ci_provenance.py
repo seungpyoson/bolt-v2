@@ -2493,6 +2493,62 @@ def base_ci_gate_jobs(**overrides: str) -> dict[str, str]:
     return jobs
 
 
+def assert_gate_carry_forward_blocks_old_failure_rerun_after_cutoff() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        within_window_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-10T00:00:00Z",
+            updated_at="2026-06-10T00:00:00Z",
+        )
+        # Original run for this SHA: created before the lookback window opened
+        # but re-run to failure recently, so it is the newest activity by
+        # updated_at. Its failure must still dominate the within-window success.
+        old_failure_rerun = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            created_at="2026-05-01T00:00:00Z",
+            updated_at="2026-06-29T00:00:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[within_window_success, old_failure_rerun]],
+            jobs_by_run_id={RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]}},
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-30T00:00:00Z"),
+            ),
+        )
+
+
 def assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof() -> None:
     module = load_script()
     skipped_heavy = base_ci_gate_jobs(
@@ -2836,6 +2892,7 @@ def main() -> int:
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress()
     assert_gate_carry_forward_uses_newest_success_with_provenance()
     assert_gate_carry_forward_newest_failure_blocks_across_pages()
+    assert_gate_carry_forward_blocks_old_failure_rerun_after_cutoff()
     assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()
     assert_ci_gate_verdict_hardens_full_and_reuse_proof()
     assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()

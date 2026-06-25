@@ -341,6 +341,8 @@ jobs:
             ci/github-actions-runners.toml \
             scripts/nextest_fingerprint.py \
             scripts/test_nextest_fingerprint.py \
+            scripts/root_bin_sidecars.py \
+            scripts/test_root_bin_sidecars.py \
             scripts/ci_provenance.py \
             scripts/test_ci_provenance.py \
             scripts/verify_ci_workflow_hygiene.py \
@@ -558,12 +560,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
     steps:
       - uses: ./.github/actions/setup-environment
         id: setup
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -577,19 +581,31 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Restore root binary sidecars
+        id: root-bin-sidecars-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
-      - name: Build nextest archive binary sidecars
-        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "0"
-        run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
@@ -599,6 +615,42 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Extract root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
+        run: |
+          mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+          tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
+      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+      - name: Save root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Save archive build target cache
+        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
       - name: Run nextest archive partitions
         shell: bash
         run: |
@@ -1505,7 +1557,7 @@ def assert_ci_policy_matrix() -> None:
         ("pull_request", "edited", False, False, "", "refs/pull/1/merge", "noop"),
         ("pull_request", "edited", False, True, "", "refs/pull/1/merge", "full"),
         ("pull_request", "reopened", False, False, "", "refs/pull/1/merge", "noop"),
-        ("pull_request", "ready_for_review", True, False, "", "refs/pull/1/merge", "full"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge", "full"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch", "full"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch", "iteration"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch", "iteration"),
@@ -1537,6 +1589,24 @@ def assert_ci_policy_matrix() -> None:
             if result.gate_name != "gate-dispatch" or result.backtester_gate_name != "backtester-gate-dispatch":
                 raise AssertionError(f"workflow_dispatch full CI must publish non-required gate names: {result}")
 
+    try:
+        verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action="ready_for_review",
+            pull_request_draft=True,
+            pull_request_base_changed=False,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            ref="refs/pull/1/merge",
+        )
+    except ValueError as exc:
+        if "ready_for_review cannot be on a draft PR" not in str(exc):
+            raise AssertionError(f"unexpected ready_for_review draft error: {exc}") from exc
+    else:
+        raise AssertionError("ready_for_review draft event must fail closed")
+
     mergify_result = verifier.evaluate_ci_policy(
         policy,
         gate_names,
@@ -1557,6 +1627,50 @@ def assert_ci_policy_matrix() -> None:
         or mergify_result.reason != "mergify_temp_pr"
     ):
         raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
+
+    mergify_sync_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="synchronize",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_sync_result.ci_policy_path != "full"
+        or mergify_sync_result.gate_name != "gate"
+        or mergify_sync_result.backtester_gate_name != "backtester-gate"
+        or not mergify_sync_result.is_mergify_temp_pr
+        or mergify_sync_result.reason != "mergify_temp_pr"
+    ):
+        raise AssertionError(f"Mergify temp PR synchronize must resolve to required full CI: {mergify_sync_result}")
+
+    mergify_edited_result = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        ref="refs/pull/965/merge",
+    )
+    if (
+        mergify_edited_result.ci_policy_path != "defer"
+        or mergify_edited_result.gate_name != "gate-deferred"
+        or mergify_edited_result.backtester_gate_name != "backtester-gate-deferred"
+        or not mergify_edited_result.is_mergify_temp_pr
+        or mergify_edited_result.reason != "draft_pr_edited"
+    ):
+        raise AssertionError(
+            f"Mergify temp PR metadata edits must remain observable but non-required: {mergify_edited_result}"
+        )
 
     forced = dict(policy)
     forced["override"] = dict(policy["override"])
@@ -1605,7 +1719,7 @@ def assert_ci_policy_resolvers_agree() -> None:
         ("pull_request", "edited", False, False, "", "refs/pull/1/merge"),
         ("pull_request", "edited", False, True, "", "refs/pull/1/merge"),
         ("pull_request", "reopened", False, False, "", "refs/pull/1/merge"),
-        ("pull_request", "ready_for_review", True, False, "", "refs/pull/1/merge"),
+        ("pull_request", "ready_for_review", False, False, "", "refs/pull/1/merge"),
         ("workflow_dispatch", "", True, False, "true", "refs/heads/codex/branch"),
         ("workflow_dispatch", "", True, False, "false", "refs/heads/codex/branch"),
         ("workflow_dispatch", "", True, False, "", "refs/heads/codex/branch"),
@@ -1796,6 +1910,143 @@ def assert_ci_policy_resolvers_agree() -> None:
     )
     if ver_tuple != prov_tuple:
         raise AssertionError(f"ci_policy resolver drift for Mergify temp PR: verifier={ver_tuple} provenance={prov_tuple}")
+
+    ver = verifier.evaluate_ci_policy(
+        policy,
+        gate_names,
+        event_name="pull_request",
+        action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        mergify_temp_pr_head_ref_prefix=mergify_prefix,
+        ref="refs/pull/965/merge",
+    )
+    prov = provenance.evaluate_ci_policy(
+        prov_config,
+        event_name="pull_request",
+        event_action="edited",
+        pull_request_draft=True,
+        pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+        pull_request_base_changed=False,
+        workflow_dispatch_full_ci="",
+        ref="refs/pull/965/merge",
+    )
+    ver_tuple = (
+        ver.ci_policy_path,
+        ver.full_ci_required,
+        ver.full_ci_deferred,
+        ver.gate_name,
+        ver.backtester_gate_name,
+        ver.expected_event_class,
+        ver.is_mergify_temp_pr,
+        ver.reason,
+    )
+    prov_tuple = (
+        prov.ci_policy_path,
+        prov.full_ci_required,
+        prov.full_ci_deferred,
+        prov.gate_name,
+        prov.backtester_gate_name,
+        prov.expected_event_class,
+        prov.is_mergify_temp_pr,
+        prov.reason,
+    )
+    if ver_tuple != prov_tuple:
+        raise AssertionError(
+            f"ci_policy resolver drift for Mergify temp PR metadata edit: verifier={ver_tuple} provenance={prov_tuple}"
+        )
+    if ver_tuple != (
+        "defer",
+        False,
+        True,
+        "gate-deferred",
+        "backtester-gate-deferred",
+        "defer",
+        True,
+        "draft_pr_edited",
+    ):
+        raise AssertionError(f"Mergify temp PR metadata edits must not publish required gates: {ver_tuple}")
+    for string_base_changed, expected in [
+        (
+            "false",
+            (
+                "defer",
+                False,
+                True,
+                "gate-deferred",
+                "backtester-gate-deferred",
+                "defer",
+                True,
+                "draft_pr_edited",
+            ),
+        ),
+        (
+            "true",
+            (
+                "full",
+                True,
+                False,
+                "gate",
+                "backtester-gate",
+                "full",
+                True,
+                "mergify_temp_pr",
+            ),
+        ),
+    ]:
+        ver = verifier.evaluate_ci_policy(
+            policy,
+            gate_names,
+            event_name="pull_request",
+            action="edited",
+            pull_request_draft=True,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=string_base_changed,
+            workflow_dispatch_full_ci="",
+            mergify_temp_pr_head_ref_prefix=mergify_prefix,
+            ref="refs/pull/965/merge",
+        )
+        prov = provenance.evaluate_ci_policy(
+            prov_config,
+            event_name="pull_request",
+            event_action="edited",
+            pull_request_draft=True,
+            pull_request_head_ref="mergify/merge-queue/83d4b0be7e",
+            pull_request_base_changed=string_base_changed,
+            workflow_dispatch_full_ci="",
+            ref="refs/pull/965/merge",
+        )
+        ver_tuple = (
+            ver.ci_policy_path,
+            ver.full_ci_required,
+            ver.full_ci_deferred,
+            ver.gate_name,
+            ver.backtester_gate_name,
+            ver.expected_event_class,
+            ver.is_mergify_temp_pr,
+            ver.reason,
+        )
+        prov_tuple = (
+            prov.ci_policy_path,
+            prov.full_ci_required,
+            prov.full_ci_deferred,
+            prov.gate_name,
+            prov.backtester_gate_name,
+            prov.expected_event_class,
+            prov.is_mergify_temp_pr,
+            prov.reason,
+        )
+        if ver_tuple != prov_tuple:
+            raise AssertionError(
+                f"ci_policy resolver drift for string base_changed={string_base_changed!r}: "
+                f"verifier={ver_tuple} provenance={prov_tuple}"
+            )
+        if ver_tuple != expected:
+            raise AssertionError(
+                f"Mergify temp PR string base_changed={string_base_changed!r} resolved incorrectly: {ver_tuple}"
+            )
 
 
 def assert_pull_request_type_parser_accepts_block_list_indentation() -> None:
@@ -3875,10 +4126,16 @@ ci-lint-workflow:
 
 ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
+    python3 scripts/test_root_bin_sidecars.py
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
+
+    missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
+    missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_root_bin_sidecars.py" in error for error in missing_sidecar_test_errors):
+        raise AssertionError(f"root bin sidecar test wiring drift was silent, got: {missing_sidecar_test_errors}")
 
     ungated = justfile_text.replace(
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
@@ -3925,6 +4182,17 @@ ci-lint-workflow-inner: require-local-verification-gate
     missing_guard_errors = verifier.verify_local_verification_gate_recipes(missing_guard)
     if not any("justfile ci-lint-workflow-inner must require the local verification gate" in error for error in missing_guard_errors):
         raise AssertionError(f"ci-lint-workflow inner guard drift was silent, got: {missing_guard_errors}")
+
+
+def assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper() -> None:
+    verifier = load_verifier()
+    required_paths = (
+        "scripts/root_bin_sidecars.py",
+        "scripts/test_root_bin_sidecars.py",
+    )
+    missing = [path for path in required_paths if path not in verifier.FINGERPRINT_REUSE_GOVERNANCE_PATHS]
+    if missing:
+        raise AssertionError(f"fingerprint-reuse governance pathspec must include root sidecar helper files: {missing}")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -7124,9 +7392,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     narrowed_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
         """.github/workflows/ci.yml)
-          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
+          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
     )
     assert_error(
         "detector must detect fingerprint-reuse governance changes",
@@ -7136,13 +7404,13 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
         """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
-        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
           changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
     )
     git_diff_decoy_pathspec = replace_once_after(
         git_diff_decoy_pathspec,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
         """.github/workflows/ci.yml)""",
     )
     assert_error("detector must detect fingerprint-reuse governance changes", git_diff_decoy_pathspec)
@@ -8093,12 +8361,62 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must not opt into managed target dir",
+        "test-archive must opt into managed target dir",
         replace_once(
             BASE_WORKFLOW,
-            '          include-nextest-version: "true"',
-            '          include-nextest-version: "true"\n          include-managed-target-dir: "true"',
+            '          include-nextest-version: "true"\n'
+            '          include-managed-target-dir: "true"\n'
+            "      - uses: Swatinem/rust-cache@example",
+            '          include-nextest-version: "true"\n'
+            "      - uses: Swatinem/rust-cache@example",
         ),
+    )
+    assert_error(
+        "test-archive must restore archive build target cache",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must save archive build target cache",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Save archive build target cache
+        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must save target cache only on target cache miss",
+        replace_once(
+            BASE_WORKFLOW,
+            "        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}\n",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive managed target cache key must include src/**",
+        BASE_WORKFLOW.replace("'src/**', ", ""),
+    )
+    assert_error(
+        "test-archive managed target cache key must include tests/**",
+        BASE_WORKFLOW.replace(", 'tests/**'", ""),
     )
     assert_error(
         "test-archive must not save a second archive-build cache",
@@ -8138,8 +8456,8 @@ def main() -> int:
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n      - name: Install cargo-nextest",
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n          restore-keys: nextest-archive-v2-\n      - name: Install cargo-nextest",
+            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n      - name: Restore root binary sidecars",
+            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -8149,6 +8467,14 @@ def main() -> int:
             BASE_WORKFLOW,
             "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-\n      - run: just fmt-check\n      - run: just clippy",
             "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-clippy-host-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just fmt-check\n      - run: just clippy",
+        ),
+    )
+    assert_error(
+        "test-archive managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-",
+        replace_once(
+            BASE_WORKFLOW,
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-\n      - name: Install cargo-nextest",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n      - name: Install cargo-nextest",
         ),
     )
     assert_error(
@@ -8250,25 +8576,129 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must build CARGO_BIN_EXE sidecars on archive cache hit",
+        "test-archive must extract cached root binary sidecars",
         replace_once(
             BASE_WORKFLOW,
-            """      - name: Build nextest archive binary sidecars
-        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "0"
+            """      - name: Extract root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
         run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+          tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
 """,
             "",
         ),
     )
     assert_error(
+        "test-archive must build CARGO_BIN_EXE sidecars on sidecar cache miss",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must pack root binary sidecars from archive builds on archive-cache miss",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive archive-miss sidecar pack must use tracked root binary sidecar helper",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            """      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          find "$target_dir/debug" -maxdepth 1 -type f -perm -111 -print0
+""",
+        ),
+    )
+    sidecar_build_guard_regression_workflow = BASE_WORKFLOW
+    if (
+        "        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n"
+        in BASE_WORKFLOW
+    ):
+        sidecar_build_guard_regression_workflow = replace_once(
+            BASE_WORKFLOW,
+            "        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n",
+            "        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'\n",
+        )
+    assert_error(
+        "test-archive sidecar cargo build must run only on archive-cache hit and sidecar-cache miss",
+        sidecar_build_guard_regression_workflow,
+    )
+    assert_error(
         "test-archive sidecar build must use dev profile debug knob",
         replace_once(
             BASE_WORKFLOW,
-            '          CARGO_PROFILE_DEV_DEBUG: "0"',
-            '          CARGO_PROFILE_TEST_DEBUG: "0"',
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+""",
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+""",
+        ),
+    )
+    assert_error(
+        "test-archive sidecar build must use tracked root binary sidecar helper",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+""",
+            """      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          find "$target_dir/debug" -maxdepth 1 -type f -perm -111 -print0
+""",
         ),
     )
     assert_error(
@@ -8405,6 +8835,8 @@ def main() -> int:
         ("ci/github-actions-runners.toml", "ci/not-github-actions-runners.toml"),
         ("scripts/nextest_fingerprint.py", "scripts/not_nextest_fingerprint.py"),
         ("scripts/test_nextest_fingerprint.py", "scripts/not_test_nextest_fingerprint.py"),
+        ("scripts/root_bin_sidecars.py", "scripts/not_root_bin_sidecars.py"),
+        ("scripts/test_root_bin_sidecars.py", "scripts/not_test_root_bin_sidecars.py"),
     ):
         assert_error(
             "detector must detect fingerprint-reuse governance changes",
@@ -9328,8 +9760,8 @@ def main() -> int:
         "ci.yml test-archive install-action fallback must be none",
         replace_once(
             BASE_WORKFLOW,
-            '          fallback: none\n      - name: Build nextest archive binary sidecars',
-            '          fallback: cargo-install\n      - name: Build nextest archive binary sidecars',
+            '          fallback: none\n      - name: Build nextest archive',
+            '          fallback: cargo-install\n      - name: Build nextest archive',
         ),
     )
     assert_error(
@@ -9859,6 +10291,7 @@ def main() -> int:
     assert_ci_docs_pass_stub_requires_pr_event_types()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()
+    assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_ci_policy_resolvers_agree()

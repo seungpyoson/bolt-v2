@@ -32,10 +32,13 @@
 #   `[reference_live_probe]` and dropped `polyresearch_reference` from active
 #   BTC clients. Current-price readiness is now checked through the Chainlink-only
 #   `reference-current-price-health` ExecStartPre.
+# - 2026-06-25 (#711): re-baselined only the root schema version from 1 to 2
+#   after the capital-admission config-key migration. Effective runtime values are
+#   still compared against the composed config below.
 #
 # Non-secret only: every credential is an SSM parameter reference; the Polymarket
 # `funder` is a public on-chain Safe address.
-schema_version = 1
+schema_version = 2
 trader_id = "BOLT-001"
 
 strategy_files = [

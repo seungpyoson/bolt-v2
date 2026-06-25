@@ -4075,7 +4075,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("minimal v3 config should load");
 
-    assert_eq!(loaded.root.schema_version, 1);
+    assert_eq!(loaded.root.schema_version, 2);
     assert_eq!(
         loaded.root.trader_id,
         nautilus_model::identifiers::TraderId::from("BOLT-001")
@@ -4120,8 +4120,8 @@ fn rejects_unknown_bolt_v3_config_fields() {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = fixture.replace(
-        "schema_version = 1",
-        "schema_version = 1\nunexpected_root_field = \"nope\"",
+        "schema_version = 2",
+        "schema_version = 2\nunexpected_root_field = \"nope\"",
     );
 
     let error = toml::from_str::<BoltV3RootConfig>(&mutated)
@@ -5474,7 +5474,7 @@ fn rejects_polymarket_execution_client_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
-schema_version = 1
+schema_version = 2
 trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
@@ -5900,7 +5900,7 @@ fn rejects_polymarket_client_numeric_fields_at_zero() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let toml_text = r#"
-schema_version = 1
+schema_version = 2
 trader_id = "BOLT-001"
 strategy_files = ["strategies/binary_oracle.toml"]
 
@@ -6086,14 +6086,14 @@ fn rejects_unsupported_root_and_strategy_schema_versions() {
     let mutated_root =
         std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
             .expect("fixture should be readable")
-            .replace("schema_version = 1", "schema_version = 2");
+            .replace("schema_version = 2", "schema_version = 1");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated_root).expect("mutated root should parse with raw u32");
     let root_messages = validate_root_only(&root);
     assert!(
         root_messages
             .iter()
-            .any(|m| m.contains("root schema_version=2 is unsupported")),
+            .any(|m| m.contains("root schema_version=1 is unsupported")),
         "expected unsupported root schema version, got: {root_messages:#?}"
     );
 
@@ -7306,20 +7306,20 @@ fn capital_pool_rejects_non_positive_thresholds() {
             "max_snapshot_age_ns = 0",
         ),
         (
-            "[risk.capital_pools.sizing_policy]",
-            "risk.capital_pools[polymarket-prediction-live].sizing_policy.min_remaining_pool_balance",
+            "[risk.capital_pools.capital_admission_policy]",
+            "risk.capital_pools[polymarket-prediction-live].capital_admission_policy.min_remaining_pool_balance",
             "min_remaining_pool_balance = \"1.00\"",
             "min_remaining_pool_balance = \"0\"",
         ),
         (
-            "[risk.capital_pools.sizing_policy.fee_slippage]",
-            "risk.capital_pools[polymarket-prediction-live].sizing_policy.fee_slippage.max_fee_liability",
+            "[risk.capital_pools.capital_admission_policy.fee_slippage]",
+            "risk.capital_pools[polymarket-prediction-live].capital_admission_policy.fee_slippage.max_fee_liability",
             "max_fee_liability = \"0.10\"",
             "max_fee_liability = \"0\"",
         ),
         (
-            "[risk.capital_pools.sizing_policy.fee_slippage]",
-            "risk.capital_pools[polymarket-prediction-live].sizing_policy.fee_slippage.max_slippage_liability",
+            "[risk.capital_pools.capital_admission_policy.fee_slippage]",
+            "risk.capital_pools[polymarket-prediction-live].capital_admission_policy.fee_slippage.max_slippage_liability",
             "max_slippage_liability = \"0.20\"",
             "max_slippage_liability = \"0\"",
         ),
@@ -7367,10 +7367,10 @@ yes_instrument_id = "condition-secondary-yes.POLYMARKET"
 no_instrument_id = "condition-secondary-no.POLYMARKET"
 collateral_coupled_group_id = "condition-secondary"
 
-[risk.capital_pools.sizing_policy]
+[risk.capital_pools.capital_admission_policy]
 min_remaining_pool_balance = "1.00"
 
-[risk.capital_pools.sizing_policy.fee_slippage]
+[risk.capital_pools.capital_admission_policy.fee_slippage]
 max_fee_liability = "0.10"
 max_slippage_liability = "0.20"
 "#

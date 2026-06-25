@@ -181,6 +181,43 @@ impl FencedRiskStateStore {
         Ok(version)
     }
 
+    pub fn commit_safety_action(
+        &self,
+        lease: &PoolOwnershipLease,
+        mutation_id: impl Into<String>,
+        source_risk_state_version: RiskStateVersion,
+    ) -> Result<RiskStateVersion, RiskStateMutationError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
+        validate_lease(&inner, lease, &self.lease_authority)?;
+        let mutation_id = mutation_id.into();
+        if mutation_id.trim().is_empty() {
+            return Err(RiskStateMutationError::InvalidMutation);
+        }
+        let current_version = inner
+            .versions
+            .get(lease.pool_id())
+            .copied()
+            .unwrap_or_else(RiskStateVersion::zero);
+        if current_version != source_risk_state_version {
+            return Err(RiskStateMutationError::StaleRiskStateVersion);
+        }
+
+        let version = current_version
+            .next()
+            .map_err(|_| RiskStateMutationError::VersionOverflow)?;
+        inner.versions.insert(lease.pool_id().clone(), version);
+        inner.mutations.push(DurableRiskMutationRecord {
+            pool_id: lease.pool_id().clone(),
+            fencing_token: lease.fencing_token(),
+            mutation: DurableRiskMutation::new(mutation_id, RiskMutationKind::SafetyAction),
+            risk_state_version: version,
+        });
+        Ok(version)
+    }
+
     pub fn durable_mutation_records(
         &self,
     ) -> Result<Vec<DurableRiskMutationRecord>, RiskStateMutationError> {
@@ -577,6 +614,15 @@ impl RiskStateOwner {
         self.store.commit_durable_mutation(&self.lease, mutation)
     }
 
+    pub fn commit_safety_action(
+        &self,
+        mutation_id: impl Into<String>,
+        source_risk_state_version: RiskStateVersion,
+    ) -> Result<RiskStateVersion, RiskStateMutationError> {
+        self.store
+            .commit_safety_action(&self.lease, mutation_id, source_risk_state_version)
+    }
+
     pub fn compare_and_reserve(
         &self,
         transaction: RiskReservationTransaction,
@@ -692,6 +738,7 @@ pub enum RiskStateMutationError {
     InvalidMutation,
     AmbiguousLeaseState,
     StaleFencingToken,
+    StaleRiskStateVersion,
     ReconciliationRequired,
     VersionOverflow,
 }

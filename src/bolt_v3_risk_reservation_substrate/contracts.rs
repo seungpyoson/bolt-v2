@@ -376,7 +376,6 @@ pub struct LiveSubmissionRecord {
 pub enum SafetyAction {
     CancelExistingOrder { client_order_id: String },
     ReduceOnlyCloseExistingPosition { position_id: String },
-    VenueRequiredAdministrative { action_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

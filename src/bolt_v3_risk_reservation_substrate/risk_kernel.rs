@@ -25,6 +25,19 @@ pub struct RiskPortfolioSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiskExposureSetInput {
+    pub risk_state_version: RiskStateVersion,
+    pub exposures: Vec<RiskExposure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RiskLossMetrics {
+    pub risk_state_version: RiskStateVersion,
+    pub equity_floor_stress_loss: Decimal,
+    pub governor_realized_loss: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RiskCandidate {
     pub instrument_id: String,
     pub buckets: BTreeSet<ConcentrationBucket>,
@@ -115,6 +128,31 @@ impl RiskKernel {
             post_candidate_scope_equity_floor_stress_loss,
             governor_realized_loss: candidate_governor_realized_loss,
             rejection_reason: None,
+        })
+    }
+
+    /// Evaluates total loss metrics for an already bounded exposure set.
+    ///
+    /// The caller supplies the explicit bound separately and the SafetyAction
+    /// verifier rejects before this method when that bound would be exceeded.
+    /// Given `N` exposures and at most `T` terminal cash-flow states per
+    /// exposure, this runs in `O(N * T)` time and `O(1)` extra space. It
+    /// performs no I/O, no mutable reads, no lock acquisition, and no search.
+    pub fn evaluate_exposure_set(
+        input: &RiskExposureSetInput,
+    ) -> Result<RiskLossMetrics, RiskKernelError> {
+        let mut equity_floor_stress_loss_total = Decimal::ZERO;
+        let mut governor_realized_loss_total = Decimal::ZERO;
+        for exposure in &input.exposures {
+            validate_exposure(exposure)?;
+            equity_floor_stress_loss_total += equity_floor_stress_loss(exposure)?;
+            governor_realized_loss_total += governor_realized_loss(exposure)?;
+        }
+
+        Ok(RiskLossMetrics {
+            risk_state_version: input.risk_state_version,
+            equity_floor_stress_loss: equity_floor_stress_loss_total,
+            governor_realized_loss: governor_realized_loss_total,
         })
     }
 }

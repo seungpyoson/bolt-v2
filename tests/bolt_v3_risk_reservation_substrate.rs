@@ -7,7 +7,8 @@ use std::{
 use bolt_v2::bolt_v3_risk_reservation_substrate::{
     admission_service::{
         AdmissionReserveError, AdmissionService, BoundReusableSafetyState, CallerRiskDiagnostics,
-        RiskCapDimension,
+        RiskCapDimension, SafetyActionAdmissionError, SafetyActionAdmissionRequest,
+        SafetyActionMetric, SafetyActionProofDomain,
     },
     contracts::{
         ActiveDescriptorView, AdmissionCandidate, AdmissionToken, AdmittedOrder,
@@ -27,8 +28,8 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         RiskClassificationPolicy, RiskClassifier, RiskDescriptorCanonicalAttributes,
     },
     risk_kernel::{
-        RiskCandidate, RiskEvaluationScope, RiskExposure, RiskKernel, RiskKernelError,
-        RiskKernelInput, RiskPortfolioSnapshot,
+        RiskCandidate, RiskEvaluationScope, RiskExposure, RiskExposureSetInput, RiskKernel,
+        RiskKernelError, RiskKernelInput, RiskPortfolioSnapshot,
     },
     risk_view_publisher::{RiskViewPublicationInput, RiskViewPublisher},
     state_owner::{
@@ -41,6 +42,213 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
 };
 use nautilus_model::identifiers::ClientOrderId;
 use rust_decimal::Decimal;
+
+#[test]
+fn s5_reduce_only_safety_action_is_admitted_while_kill_switch_and_governor_freeze_new_risk() {
+    let (service, _owner, _store) = reconciled_risk_context("pool-s5-reduce", "owner-s5-reduce");
+    let frozen = BoundReusableSafetyState {
+        risk_state_version: RiskStateVersion::zero(),
+        kill_switch_latched: true,
+        loss_governor_halted: true,
+    };
+    let request = reduce_only_safety_action_request(
+        "safety-action-reduce",
+        "position-reducible",
+        RiskStateVersion::zero(),
+        frozen,
+        vec![exposure(
+            "affected-instrument",
+            [bucket("risk_class", "safety")],
+            12,
+            14,
+            2,
+        )],
+        vec![exposure(
+            "affected-instrument",
+            [bucket("risk_class", "safety")],
+            6,
+            7,
+            2,
+        )],
+        4,
+    );
+
+    let admission = service
+        .admit_safety_action(request)
+        .expect("recomputed reduce-only proof should bypass the new-risk freeze");
+
+    assert_eq!(admission.action_id, "safety-action-reduce");
+    assert_eq!(admission.risk_state_version.get(), 1);
+    assert_eq!(admission.before.equity_floor_stress_loss, dec(10));
+    assert_eq!(admission.after.equity_floor_stress_loss, dec(4));
+    assert_eq!(admission.before.governor_realized_loss, dec(12));
+    assert_eq!(admission.after.governor_realized_loss, dec(5));
+    assert_eq!(admission.proof_domain.before_exposure_count, 1);
+    assert_eq!(admission.proof_domain.after_exposure_count, 1);
+}
+
+#[test]
+fn s5_reduce_only_safety_action_is_admitted_before_new_risk_reconciliation() {
+    let (service, _owner, _store) =
+        unreconciled_risk_context("pool-s5-unreconciled", "owner-s5-unreconciled");
+    let safety_bucket = bucket("risk_class", "safety");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-s5-unreconciled",
+        "unreconciled-instrument",
+        safety_bucket.clone(),
+        dec(100),
+        dec(100),
+    );
+    let frozen_new_risk = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-unreconciled",
+                "idempotency-unreconciled",
+                "pool-s5-unreconciled",
+                "unreconciled-instrument",
+                RiskStateVersion::zero(),
+                dec(1),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_000,
+        )
+        .expect_err("new-risk admission must remain frozen until reconciliation completes");
+    assert!(matches!(
+        frozen_new_risk,
+        AdmissionReserveError::StateMutation(RiskStateMutationError::ReconciliationRequired)
+    ));
+
+    let request = reduce_only_safety_action_request(
+        "safety-action-unreconciled",
+        "position-unreconciled",
+        RiskStateVersion::zero(),
+        unlatched_safety(RiskStateVersion::zero()),
+        vec![exposure("affected-instrument", [safety_bucket], 12, 14, 2)],
+        vec![exposure(
+            "affected-instrument",
+            [bucket("risk_class", "safety")],
+            6,
+            7,
+            2,
+        )],
+        4,
+    );
+
+    let admission = service
+        .admit_safety_action(request)
+        .expect("recomputed reduce-only proof should bypass not-yet-reconciled new-risk freeze");
+
+    assert_eq!(admission.risk_state_version.get(), 1);
+}
+
+#[test]
+fn s5_disguised_risk_increase_safety_action_is_rejected_even_while_frozen() {
+    let (service, _owner, _store) =
+        reconciled_risk_context("pool-s5-disguised", "owner-s5-disguised");
+    let frozen = BoundReusableSafetyState {
+        risk_state_version: RiskStateVersion::zero(),
+        kill_switch_latched: true,
+        loss_governor_halted: true,
+    };
+    let request = reduce_only_safety_action_request(
+        "safety-action-disguised",
+        "position-disguised",
+        RiskStateVersion::zero(),
+        frozen,
+        vec![exposure(
+            "affected-instrument",
+            [bucket("risk_class", "safety")],
+            7,
+            9,
+            2,
+        )],
+        vec![exposure(
+            "affected-instrument",
+            [bucket("risk_class", "safety")],
+            13,
+            15,
+            2,
+        )],
+        4,
+    );
+
+    let error = service
+        .admit_safety_action(request)
+        .expect_err("a reduce-only label cannot admit a recomputed risk increase");
+
+    assert_eq!(
+        error,
+        SafetyActionAdmissionError::RiskIncreased {
+            increased_metrics: BTreeSet::from([
+                SafetyActionMetric::EquityFloorStressLoss,
+                SafetyActionMetric::GovernorRealizedLoss,
+            ]),
+            before_equity_floor_stress_loss: dec(5),
+            after_equity_floor_stress_loss: dec(11),
+            before_governor_realized_loss: dec(7),
+            after_governor_realized_loss: dec(13),
+        }
+    );
+    assert!(
+        service
+            .reservation_records()
+            .expect("reservation records should remain readable")
+            .is_empty(),
+        "rejected SafetyActions must not mint a risk reservation"
+    );
+}
+
+#[test]
+fn s5_safety_action_reduction_proof_fails_closed_when_exposure_domain_exceeds_bound() {
+    let (service, _owner, _store) = reconciled_risk_context("pool-s5-bound", "owner-s5-bound");
+    let request = reduce_only_safety_action_request(
+        "safety-action-bound",
+        "position-bound",
+        RiskStateVersion::zero(),
+        unlatched_safety(RiskStateVersion::zero()),
+        vec![
+            exposure("affected-a", [bucket("risk_class", "safety")], 8, 9, 2),
+            exposure("affected-b", [bucket("risk_class", "safety")], 7, 8, 2),
+        ],
+        vec![exposure(
+            "affected-a",
+            [bucket("risk_class", "safety")],
+            4,
+            5,
+            2,
+        )],
+        1,
+    );
+
+    assert_eq!(
+        service.admit_safety_action(request),
+        Err(SafetyActionAdmissionError::ProofDomainExceeded {
+            max_exposure_count: 1,
+            before_exposure_count: 2,
+            after_exposure_count: 1,
+        }),
+        "SafetyAction proof must reject rather than scan beyond the configured bounded domain"
+    );
+}
+
+#[test]
+fn s5_safety_action_operation_set_is_closed_and_not_open_ended() {
+    let contracts = include_str!("../src/bolt_v3_risk_reservation_substrate/contracts.rs");
+
+    assert!(
+        contracts.contains("pub enum SafetyAction")
+            && contracts.contains("CancelExistingOrder")
+            && contracts.contains("ReduceOnlyCloseExistingPosition"),
+        "SafetyAction must remain the sealed substrate operation alphabet"
+    );
+    assert!(
+        !contracts.contains("VenueRequiredAdministrative"),
+        "SafetyAction must not expose an arbitrary administrative action escape hatch"
+    );
+}
 
 #[test]
 fn sc_014_shared_store_rejects_paused_owner_after_pool_ownership_transfers() {
@@ -1368,21 +1576,10 @@ fn s4_sc_012_submit_boundary_is_admitted_order_only_and_authority_owned() {
     );
 
     let forbidden_constructor = "from_submitted_reservation(";
-    for (path, source) in [
-        (
-            "admission_service.rs",
-            include_str!("../src/bolt_v3_risk_reservation_substrate/admission_service.rs"),
-        ),
-        (
-            "lifecycle_reconciler.rs",
-            include_str!("../src/bolt_v3_risk_reservation_substrate/lifecycle_reconciler.rs"),
-        ),
-        (
-            "risk_view_publisher.rs",
-            include_str!("../src/bolt_v3_risk_reservation_substrate/risk_view_publisher.rs"),
-        ),
-        ("state_owner.rs", state_owner_source),
-    ] {
+    for (path, source) in risk_reservation_module_sources() {
+        if path == "contracts.rs" || path == "submission_authority.rs" {
+            continue;
+        }
         assert!(
             !source.contains(forbidden_constructor),
             "{path} must not construct AdmittedOrder; only submission_authority owns the boundary"
@@ -1482,6 +1679,17 @@ fn reconciled_risk_context(
     pool_id: &str,
     owner_id: &str,
 ) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
+    let (service, owner, store) = unreconciled_risk_context(pool_id, owner_id);
+    owner
+        .reconcile_before_new_risk()
+        .expect("owner should reconcile before admission");
+    (service, owner, store)
+}
+
+fn unreconciled_risk_context(
+    pool_id: &str,
+    owner_id: &str,
+) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
     let lease_authority = ConfiguredLeaseAuthority::new(
         LeaseAuthorityBackend::DynamoDbConditionalWrite,
         format!("{pool_id}-lease-authority"),
@@ -1489,14 +1697,11 @@ fn reconciled_risk_context(
     .expect("lease authority dependency should be valid");
     let store = FencedRiskStateStore::new(lease_authority);
     let owner = RiskStateOwner::acquire(
-        store,
+        store.clone(),
         PoolId::new(pool_id).expect("pool id should be valid"),
         owner_id,
     )
     .expect("risk state owner should acquire the pool");
-    owner
-        .reconcile_before_new_risk()
-        .expect("owner should reconcile before admission");
     (AdmissionService::new(owner.clone()), owner, store)
 }
 
@@ -1506,6 +1711,61 @@ fn unlatched_safety(risk_state_version: RiskStateVersion) -> BoundReusableSafety
         kill_switch_latched: false,
         loss_governor_halted: false,
     }
+}
+
+fn reduce_only_safety_action_request(
+    action_id: &str,
+    position_id: &str,
+    risk_state_version: RiskStateVersion,
+    safety_state: BoundReusableSafetyState,
+    before: Vec<RiskExposure>,
+    after: Vec<RiskExposure>,
+    max_exposure_count: usize,
+) -> SafetyActionAdmissionRequest {
+    let before_exposure_count = before.len();
+    let after_exposure_count = after.len();
+    SafetyActionAdmissionRequest {
+        action_id: action_id.to_string(),
+        action: SafetyAction::ReduceOnlyCloseExistingPosition {
+            position_id: position_id.to_string(),
+        },
+        safety_state,
+        before: RiskExposureSetInput {
+            risk_state_version,
+            exposures: before,
+        },
+        after: RiskExposureSetInput {
+            risk_state_version,
+            exposures: after,
+        },
+        proof_domain: SafetyActionProofDomain {
+            max_exposure_count,
+            before_exposure_count,
+            after_exposure_count,
+        },
+    }
+}
+
+fn risk_reservation_module_sources() -> Vec<(String, String)> {
+    let module_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("bolt_v3_risk_reservation_substrate");
+    let mut sources = Vec::new();
+    for entry in std::fs::read_dir(&module_dir).expect("risk reservation module directory exists") {
+        let entry = entry.expect("risk reservation module entry is readable");
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        sources.push((
+            path.file_name()
+                .expect("module source has a file name")
+                .to_string_lossy()
+                .into_owned(),
+            std::fs::read_to_string(&path).expect("module source is readable"),
+        ));
+    }
+    sources
 }
 
 fn published_view(

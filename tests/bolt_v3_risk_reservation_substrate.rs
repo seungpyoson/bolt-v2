@@ -46,6 +46,22 @@ use rust_decimal::Decimal;
 #[test]
 fn s5_reduce_only_safety_action_is_admitted_while_kill_switch_and_governor_freeze_new_risk() {
     let (service, _owner, _store) = reconciled_risk_context("pool-s5-reduce", "owner-s5-reduce");
+    let safety_bucket = bucket("risk_class", "safety");
+    let view = published_view_with_positions(
+        RiskStateVersion::zero(),
+        "pool-s5-reduce",
+        "affected-instrument",
+        safety_bucket.clone(),
+        dec(100),
+        dec(100),
+        vec![exposure(
+            "affected-instrument",
+            [safety_bucket.clone()],
+            12,
+            14,
+            2,
+        )],
+    );
     let frozen = BoundReusableSafetyState {
         risk_state_version: RiskStateVersion::zero(),
         kill_switch_latched: true,
@@ -59,13 +75,6 @@ fn s5_reduce_only_safety_action_is_admitted_while_kill_switch_and_governor_freez
         vec![exposure(
             "affected-instrument",
             [bucket("risk_class", "safety")],
-            12,
-            14,
-            2,
-        )],
-        vec![exposure(
-            "affected-instrument",
-            [bucket("risk_class", "safety")],
             6,
             7,
             2,
@@ -74,7 +83,7 @@ fn s5_reduce_only_safety_action_is_admitted_while_kill_switch_and_governor_freez
     );
 
     let admission = service
-        .admit_safety_action(request)
+        .admit_safety_action(&view, request)
         .expect("recomputed reduce-only proof should bypass the new-risk freeze");
 
     assert_eq!(admission.action_id, "safety-action-reduce");
@@ -92,13 +101,20 @@ fn s5_reduce_only_safety_action_is_admitted_before_new_risk_reconciliation() {
     let (service, _owner, _store) =
         unreconciled_risk_context("pool-s5-unreconciled", "owner-s5-unreconciled");
     let safety_bucket = bucket("risk_class", "safety");
-    let view = published_view(
+    let view = published_view_with_positions(
         RiskStateVersion::zero(),
         "pool-s5-unreconciled",
         "unreconciled-instrument",
         safety_bucket.clone(),
         dec(100),
         dec(100),
+        vec![exposure(
+            "affected-instrument",
+            [safety_bucket.clone()],
+            12,
+            14,
+            2,
+        )],
     );
     let frozen_new_risk = service
         .compare_and_reserve(
@@ -126,7 +142,6 @@ fn s5_reduce_only_safety_action_is_admitted_before_new_risk_reconciliation() {
         "position-unreconciled",
         RiskStateVersion::zero(),
         unlatched_safety(RiskStateVersion::zero()),
-        vec![exposure("affected-instrument", [safety_bucket], 12, 14, 2)],
         vec![exposure(
             "affected-instrument",
             [bucket("risk_class", "safety")],
@@ -138,16 +153,97 @@ fn s5_reduce_only_safety_action_is_admitted_before_new_risk_reconciliation() {
     );
 
     let admission = service
-        .admit_safety_action(request)
+        .admit_safety_action(&view, request)
         .expect("recomputed reduce-only proof should bypass not-yet-reconciled new-risk freeze");
 
     assert_eq!(admission.risk_state_version.get(), 1);
 }
 
 #[test]
-fn s5_disguised_risk_increase_safety_action_is_rejected_even_while_frozen() {
+fn s5_fabricated_new_after_exposure_is_rejected_even_when_standalone_metrics_are_low() {
+    let (service, _owner, _store) =
+        reconciled_risk_context("pool-s5-fabricated", "owner-s5-fabricated");
+    let safety_bucket = bucket("risk_class", "safety");
+    let view = published_view_with_positions(
+        RiskStateVersion::zero(),
+        "pool-s5-fabricated",
+        "affected-instrument",
+        safety_bucket.clone(),
+        dec(100),
+        dec(100),
+        vec![exposure(
+            "affected-instrument",
+            [safety_bucket.clone()],
+            12,
+            14,
+            2,
+        )],
+    );
+    let frozen = BoundReusableSafetyState {
+        risk_state_version: RiskStateVersion::zero(),
+        kill_switch_latched: true,
+        loss_governor_halted: true,
+    };
+    let request = reduce_only_safety_action_request(
+        "safety-action-fabricated",
+        "position-fabricated",
+        RiskStateVersion::zero(),
+        frozen,
+        vec![exposure(
+            "fabricated-instrument",
+            [bucket("risk_class", "safety")],
+            1,
+            1,
+            1,
+        )],
+        4,
+    );
+
+    let error = service
+        .admit_safety_action(&view, request)
+        .expect_err("a caller-fabricated after exposure must fail closed even with low metrics");
+
+    assert_eq!(
+        error,
+        SafetyActionAdmissionError::AfterExposureNotReduction {
+            new_exposure_count: 1,
+            increased_exposure_count: 0,
+            increased_metrics: BTreeSet::new(),
+            before_equity_floor_stress_loss: dec(10),
+            after_equity_floor_stress_loss: dec(0),
+            before_governor_realized_loss: dec(12),
+            after_governor_realized_loss: dec(0),
+        }
+    );
+    assert!(
+        service
+            .reservation_records()
+            .expect("reservation records should remain readable")
+            .is_empty(),
+        "rejected SafetyActions must not mint a risk reservation"
+    );
+}
+
+#[test]
+fn s5_asymmetric_safety_action_increase_reports_exact_increased_metric() {
     let (service, _owner, _store) =
         reconciled_risk_context("pool-s5-disguised", "owner-s5-disguised");
+    let safety_bucket = bucket("risk_class", "safety");
+    let view = published_view_with_positions(
+        RiskStateVersion::zero(),
+        "pool-s5-disguised",
+        "affected-instrument",
+        safety_bucket.clone(),
+        dec(100),
+        dec(100),
+        vec![exposure(
+            "affected-instrument",
+            [safety_bucket.clone()],
+            10,
+            20,
+            5,
+        )],
+    );
     let frozen = BoundReusableSafetyState {
         risk_state_version: RiskStateVersion::zero(),
         kill_switch_latched: true,
@@ -161,35 +257,27 @@ fn s5_disguised_risk_increase_safety_action_is_rejected_even_while_frozen() {
         vec![exposure(
             "affected-instrument",
             [bucket("risk_class", "safety")],
-            7,
             9,
-            2,
-        )],
-        vec![exposure(
-            "affected-instrument",
-            [bucket("risk_class", "safety")],
-            13,
-            15,
-            2,
+            21,
+            5,
         )],
         4,
     );
 
     let error = service
-        .admit_safety_action(request)
-        .expect_err("a reduce-only label cannot admit a recomputed risk increase");
+        .admit_safety_action(&view, request)
+        .expect_err("a one-metric increase must still fail closed");
 
     assert_eq!(
         error,
-        SafetyActionAdmissionError::RiskIncreased {
-            increased_metrics: BTreeSet::from([
-                SafetyActionMetric::EquityFloorStressLoss,
-                SafetyActionMetric::GovernorRealizedLoss,
-            ]),
+        SafetyActionAdmissionError::AfterExposureNotReduction {
+            new_exposure_count: 0,
+            increased_exposure_count: 1,
+            increased_metrics: BTreeSet::from([SafetyActionMetric::GovernorRealizedLoss]),
             before_equity_floor_stress_loss: dec(5),
-            after_equity_floor_stress_loss: dec(11),
-            before_governor_realized_loss: dec(7),
-            after_governor_realized_loss: dec(13),
+            after_equity_floor_stress_loss: dec(4),
+            before_governor_realized_loss: dec(15),
+            after_governor_realized_loss: dec(16),
         }
     );
     assert!(
@@ -204,15 +292,24 @@ fn s5_disguised_risk_increase_safety_action_is_rejected_even_while_frozen() {
 #[test]
 fn s5_safety_action_reduction_proof_fails_closed_when_exposure_domain_exceeds_bound() {
     let (service, _owner, _store) = reconciled_risk_context("pool-s5-bound", "owner-s5-bound");
+    let safety_bucket = bucket("risk_class", "safety");
+    let view = published_view_with_positions(
+        RiskStateVersion::zero(),
+        "pool-s5-bound",
+        "affected-a",
+        safety_bucket.clone(),
+        dec(100),
+        dec(100),
+        vec![
+            exposure("affected-a", [safety_bucket.clone()], 8, 9, 2),
+            exposure("affected-b", [safety_bucket], 7, 8, 2),
+        ],
+    );
     let request = reduce_only_safety_action_request(
         "safety-action-bound",
         "position-bound",
         RiskStateVersion::zero(),
         unlatched_safety(RiskStateVersion::zero()),
-        vec![
-            exposure("affected-a", [bucket("risk_class", "safety")], 8, 9, 2),
-            exposure("affected-b", [bucket("risk_class", "safety")], 7, 8, 2),
-        ],
         vec![exposure(
             "affected-a",
             [bucket("risk_class", "safety")],
@@ -224,7 +321,7 @@ fn s5_safety_action_reduction_proof_fails_closed_when_exposure_domain_exceeds_bo
     );
 
     assert_eq!(
-        service.admit_safety_action(request),
+        service.admit_safety_action(&view, request),
         Err(SafetyActionAdmissionError::ProofDomainExceeded {
             max_exposure_count: 1,
             before_exposure_count: 2,
@@ -1718,11 +1815,9 @@ fn reduce_only_safety_action_request(
     position_id: &str,
     risk_state_version: RiskStateVersion,
     safety_state: BoundReusableSafetyState,
-    before: Vec<RiskExposure>,
     after: Vec<RiskExposure>,
     max_exposure_count: usize,
 ) -> SafetyActionAdmissionRequest {
-    let before_exposure_count = before.len();
     let after_exposure_count = after.len();
     SafetyActionAdmissionRequest {
         action_id: action_id.to_string(),
@@ -1730,17 +1825,13 @@ fn reduce_only_safety_action_request(
             position_id: position_id.to_string(),
         },
         safety_state,
-        before: RiskExposureSetInput {
-            risk_state_version,
-            exposures: before,
-        },
         after: RiskExposureSetInput {
             risk_state_version,
             exposures: after,
         },
         proof_domain: SafetyActionProofDomain {
             max_exposure_count,
-            before_exposure_count,
+            before_exposure_count: 0,
             after_exposure_count,
         },
     }
@@ -1776,6 +1867,26 @@ fn published_view(
     global_headroom: Decimal,
     bucket_headroom: Decimal,
 ) -> bolt_v2::bolt_v3_risk_reservation_substrate::risk_view_publisher::PublishedRiskView {
+    published_view_with_positions(
+        risk_state_version,
+        pool_id,
+        instrument_id,
+        bucket,
+        global_headroom,
+        bucket_headroom,
+        Vec::new(),
+    )
+}
+
+fn published_view_with_positions(
+    risk_state_version: RiskStateVersion,
+    pool_id: &str,
+    instrument_id: &str,
+    bucket: ConcentrationBucket,
+    global_headroom: Decimal,
+    bucket_headroom: Decimal,
+    positions: Vec<RiskExposure>,
+) -> bolt_v2::bolt_v3_risk_reservation_substrate::risk_view_publisher::PublishedRiskView {
     let bucket_attribute = "descriptor_risk_class";
     RiskViewPublisher::publish(RiskViewPublicationInput {
         sizing_view: RiskSizingView {
@@ -1808,9 +1919,7 @@ fn published_view(
             bucket_attribute,
         )]),
         caller_declared_buckets: Vec::new(),
-        portfolio: RiskPortfolioSnapshot {
-            positions: Vec::new(),
-        },
+        portfolio: RiskPortfolioSnapshot { positions },
         portfolio_scope_id: pool_id.to_string(),
     })
     .expect("published view should resolve active descriptor and classification")

@@ -19345,3 +19345,43 @@ literal = "0"
 context = '''open_order_count: 0,'''
 classification = "risk_reservation_open_order_counter_identity"
 reason = "A fresh risk-reservation accumulator starts with zero open-order reservations before accepted compare-and-reserve transactions consume slots; the configured headroom remains view-owned."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "0"
+context = '''new_exposure_count: 0,'''
+classification = "safety_action_reduction_counter_identity"
+reason = "A fresh SafetyAction structural reduction scan starts with zero new exposure identities found; the bounded proof domain is request/view-owned and validated separately."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "0"
+context = '''increased_exposure_count: 0,'''
+classification = "safety_action_reduction_counter_identity"
+reason = "A fresh SafetyAction structural reduction scan starts with zero enlarged exposure identities found; the bounded proof domain is request/view-owned and validated separately."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "0"
+context = '''self.new_exposure_count > 0 || self.increased_exposure_count > 0'''
+classification = "safety_action_reduction_counter_nonempty_check"
+reason = "Zero is the structural identity used to test whether the SafetyAction reduction scan found any new or enlarged exposure identities; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "1"
+context = '''reduction.new_exposure_count += 1;'''
+classification = "safety_action_reduction_counter_increment"
+reason = "The structural scan increments by one for each after-exposure identity absent from the authoritative before view; risk limits remain enforced by the view/kernel state."
+
+[[allowed]]
+path = "src/bolt_v3_risk_reservation_substrate/admission_service.rs"
+kind = "number"
+literal = "1"
+context = '''reduction.increased_exposure_count += 1;'''
+classification = "safety_action_reduction_counter_increment"
+reason = "The structural scan increments by one for each after-exposure identity whose per-exposure loss contribution exceeds the authoritative before view; risk limits remain enforced by the view/kernel state."

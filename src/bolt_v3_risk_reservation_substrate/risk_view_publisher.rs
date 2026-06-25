@@ -9,8 +9,8 @@ use crate::bolt_v3_risk_reservation_substrate::{
         RiskDescriptorCanonicalAttributes,
     },
     risk_kernel::{
-        RiskCandidate, RiskEvaluationScope, RiskKernel, RiskKernelError, RiskKernelInput,
-        RiskPortfolioSnapshot,
+        RiskCandidate, RiskEvaluationScope, RiskExposureSetInput, RiskKernel, RiskKernelError,
+        RiskKernelInput, RiskPortfolioSnapshot,
     },
 };
 
@@ -94,6 +94,13 @@ impl PublishedRiskView {
 
     pub fn active_descriptor(&self) -> &ActiveDescriptorView {
         &self.active_descriptor
+    }
+
+    pub fn authoritative_exposure_set(&self) -> RiskExposureSetInput {
+        RiskExposureSetInput {
+            risk_state_version: self.sizing_view.risk_state_version,
+            exposures: self.portfolio.positions.clone(),
+        }
     }
 
     pub fn kernel_input_for_preview(

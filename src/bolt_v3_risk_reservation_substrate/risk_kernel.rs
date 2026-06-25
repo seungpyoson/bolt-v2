@@ -144,9 +144,9 @@ impl RiskKernel {
         let mut equity_floor_stress_loss_total = Decimal::ZERO;
         let mut governor_realized_loss_total = Decimal::ZERO;
         for exposure in &input.exposures {
-            validate_exposure(exposure)?;
-            equity_floor_stress_loss_total += equity_floor_stress_loss(exposure)?;
-            governor_realized_loss_total += governor_realized_loss(exposure)?;
+            equity_floor_stress_loss_total +=
+                Self::equity_floor_stress_loss_for_exposure(exposure)?;
+            governor_realized_loss_total += Self::governor_realized_loss_for_exposure(exposure)?;
         }
 
         Ok(RiskLossMetrics {
@@ -154,6 +154,20 @@ impl RiskKernel {
             equity_floor_stress_loss: equity_floor_stress_loss_total,
             governor_realized_loss: governor_realized_loss_total,
         })
+    }
+
+    pub fn equity_floor_stress_loss_for_exposure(
+        exposure: &RiskExposure,
+    ) -> Result<Decimal, RiskKernelError> {
+        validate_exposure(exposure)?;
+        equity_floor_stress_loss(exposure)
+    }
+
+    pub fn governor_realized_loss_for_exposure(
+        exposure: &RiskExposure,
+    ) -> Result<Decimal, RiskKernelError> {
+        validate_exposure(exposure)?;
+        governor_realized_loss(exposure)
     }
 }
 

@@ -3,7 +3,7 @@ pub use crate::bolt_v3_risk_reservation_substrate::reservation_ledger::{
     RiskReservationCommit as AdmissionReservation, RiskReservationError as AdmissionReserveError,
 };
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rust_decimal::Decimal;
 
@@ -12,7 +12,9 @@ use crate::bolt_v3_risk_reservation_substrate::{
     instrument_risk_registry::{DescriptorRegistryAdmissionError, InstrumentRiskRegistry},
     reservation_ledger::{RiskReservationTransaction, SubstrateReservationRecord},
     risk_classifier::ConcentrationBucket,
-    risk_kernel::{RiskExposureSetInput, RiskKernel, RiskKernelError, RiskLossMetrics},
+    risk_kernel::{
+        RiskExposure, RiskExposureSetInput, RiskKernel, RiskKernelError, RiskLossMetrics,
+    },
     risk_view_publisher::PublishedRiskView,
     state_owner::{RiskStateMutationError, RiskStateOwner},
 };
@@ -39,7 +41,6 @@ pub struct SafetyActionAdmissionRequest {
     pub action_id: String,
     pub action: SafetyAction,
     pub safety_state: BoundReusableSafetyState,
-    pub before: RiskExposureSetInput,
     pub after: RiskExposureSetInput,
     pub proof_domain: SafetyActionProofDomain,
 }
@@ -91,6 +92,15 @@ pub enum SafetyActionAdmissionError {
         after_exposure_count: usize,
     },
     Kernel(RiskKernelError),
+    AfterExposureNotReduction {
+        new_exposure_count: usize,
+        increased_exposure_count: usize,
+        increased_metrics: BTreeSet<SafetyActionMetric>,
+        before_equity_floor_stress_loss: Decimal,
+        after_equity_floor_stress_loss: Decimal,
+        before_governor_realized_loss: Decimal,
+        after_governor_realized_loss: Decimal,
+    },
     RiskIncreased {
         increased_metrics: BTreeSet<SafetyActionMetric>,
         before_equity_floor_stress_loss: Decimal,
@@ -168,15 +178,30 @@ impl AdmissionService {
 
     pub fn admit_safety_action(
         &self,
+        view: &PublishedRiskView,
         request: SafetyActionAdmissionRequest,
     ) -> Result<SafetyActionAdmission, SafetyActionAdmissionError> {
-        validate_safety_action_request(&request)?;
+        let before_input = view.authoritative_exposure_set();
+        validate_safety_action_request(&before_input, &request)?;
 
-        let before = RiskKernel::evaluate_exposure_set(&request.before)
+        let before = RiskKernel::evaluate_exposure_set(&before_input)
             .map_err(SafetyActionAdmissionError::Kernel)?;
         let after = RiskKernel::evaluate_exposure_set(&request.after)
             .map_err(SafetyActionAdmissionError::Kernel)?;
         let increased_metrics = increased_safety_action_metrics(&before, &after);
+        let exposure_reduction = check_after_exposure_reduction(&before_input, &request.after)
+            .map_err(SafetyActionAdmissionError::Kernel)?;
+        if exposure_reduction.has_violation() {
+            return Err(SafetyActionAdmissionError::AfterExposureNotReduction {
+                new_exposure_count: exposure_reduction.new_exposure_count,
+                increased_exposure_count: exposure_reduction.increased_exposure_count,
+                increased_metrics,
+                before_equity_floor_stress_loss: before.equity_floor_stress_loss,
+                after_equity_floor_stress_loss: after.equity_floor_stress_loss,
+                before_governor_realized_loss: before.governor_realized_loss,
+                after_governor_realized_loss: after.governor_realized_loss,
+            });
+        }
         if !increased_metrics.is_empty() {
             return Err(SafetyActionAdmissionError::RiskIncreased {
                 increased_metrics,
@@ -187,7 +212,7 @@ impl AdmissionService {
             });
         }
 
-        let source_risk_state_version = request.before.risk_state_version;
+        let source_risk_state_version = before_input.risk_state_version;
         let risk_state_version = self
             .owner
             .commit_safety_action(&request.action_id, source_risk_state_version)
@@ -200,12 +225,17 @@ impl AdmissionService {
             risk_state_version,
             before,
             after,
-            proof_domain: request.proof_domain,
+            proof_domain: SafetyActionProofDomain {
+                max_exposure_count: request.proof_domain.max_exposure_count,
+                before_exposure_count: before_input.exposures.len(),
+                after_exposure_count: request.after.exposures.len(),
+            },
         })
     }
 }
 
 fn validate_safety_action_request(
+    before: &RiskExposureSetInput,
     request: &SafetyActionAdmissionRequest,
 ) -> Result<(), SafetyActionAdmissionError> {
     if !is_clean_runtime_value(&request.action_id) {
@@ -223,34 +253,131 @@ fn validate_safety_action_request(
             }
         }
     }
-    if request.before.risk_state_version != request.after.risk_state_version {
+    if before.risk_state_version != request.after.risk_state_version {
         return Err(SafetyActionAdmissionError::ProofVersionMismatch {
-            before: request.before.risk_state_version,
+            before: before.risk_state_version,
             after: request.after.risk_state_version,
         });
     }
-    if request.safety_state.risk_state_version != request.before.risk_state_version {
+    if request.safety_state.risk_state_version != before.risk_state_version {
         return Err(SafetyActionAdmissionError::SafetyStateVersionMismatch {
-            expected: request.before.risk_state_version,
+            expected: before.risk_state_version,
             actual: request.safety_state.risk_state_version,
         });
     }
     if request.proof_domain.max_exposure_count == 0
-        || request.proof_domain.before_exposure_count != request.before.exposures.len()
         || request.proof_domain.after_exposure_count != request.after.exposures.len()
     {
         return Err(SafetyActionAdmissionError::InvalidProofDomain);
     }
-    if request.before.exposures.len() > request.proof_domain.max_exposure_count
+    if before.exposures.len() > request.proof_domain.max_exposure_count
         || request.after.exposures.len() > request.proof_domain.max_exposure_count
     {
         return Err(SafetyActionAdmissionError::ProofDomainExceeded {
             max_exposure_count: request.proof_domain.max_exposure_count,
-            before_exposure_count: request.before.exposures.len(),
+            before_exposure_count: before.exposures.len(),
             after_exposure_count: request.after.exposures.len(),
         });
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SafetyActionExposureIdentity {
+    instrument_id: String,
+    buckets: BTreeSet<ConcentrationBucket>,
+}
+
+impl From<&RiskExposure> for SafetyActionExposureIdentity {
+    fn from(exposure: &RiskExposure) -> Self {
+        Self {
+            instrument_id: exposure.instrument_id.clone(),
+            buckets: exposure.buckets.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SafetyActionExposureMetrics {
+    equity_floor_stress_loss: Decimal,
+    governor_realized_loss: Decimal,
+}
+
+impl SafetyActionExposureMetrics {
+    fn add(&mut self, other: Self) {
+        self.equity_floor_stress_loss += other.equity_floor_stress_loss;
+        self.governor_realized_loss += other.governor_realized_loss;
+    }
+
+    fn exceeds(self, before: Self) -> bool {
+        self.equity_floor_stress_loss > before.equity_floor_stress_loss
+            || self.governor_realized_loss > before.governor_realized_loss
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SafetyActionExposureReduction {
+    new_exposure_count: usize,
+    increased_exposure_count: usize,
+}
+
+impl SafetyActionExposureReduction {
+    fn none() -> Self {
+        Self {
+            new_exposure_count: 0,
+            increased_exposure_count: 0,
+        }
+    }
+
+    fn has_violation(self) -> bool {
+        self.new_exposure_count > 0 || self.increased_exposure_count > 0
+    }
+}
+
+fn check_after_exposure_reduction(
+    before: &RiskExposureSetInput,
+    after: &RiskExposureSetInput,
+) -> Result<SafetyActionExposureReduction, RiskKernelError> {
+    let before_by_identity = exposure_metrics_by_identity(before)?;
+    let after_by_identity = exposure_metrics_by_identity(after)?;
+    let mut reduction = SafetyActionExposureReduction::none();
+
+    // S8 handoff: derive the exact `after` set from the named SafetyAction here.
+    for (identity, after_metrics) in after_by_identity {
+        let Some(before_metrics) = before_by_identity.get(&identity).copied() else {
+            reduction.new_exposure_count += 1;
+            continue;
+        };
+        if after_metrics.exceeds(before_metrics) {
+            reduction.increased_exposure_count += 1;
+        }
+    }
+
+    Ok(reduction)
+}
+
+fn exposure_metrics_by_identity(
+    input: &RiskExposureSetInput,
+) -> Result<BTreeMap<SafetyActionExposureIdentity, SafetyActionExposureMetrics>, RiskKernelError> {
+    let mut metrics_by_identity = BTreeMap::new();
+    for exposure in &input.exposures {
+        let identity = SafetyActionExposureIdentity::from(exposure);
+        let metrics = per_exposure_metrics(exposure)?;
+        metrics_by_identity
+            .entry(identity)
+            .and_modify(|current: &mut SafetyActionExposureMetrics| current.add(metrics))
+            .or_insert(metrics);
+    }
+    Ok(metrics_by_identity)
+}
+
+fn per_exposure_metrics(
+    exposure: &RiskExposure,
+) -> Result<SafetyActionExposureMetrics, RiskKernelError> {
+    Ok(SafetyActionExposureMetrics {
+        equity_floor_stress_loss: RiskKernel::equity_floor_stress_loss_for_exposure(exposure)?,
+        governor_realized_loss: RiskKernel::governor_realized_loss_for_exposure(exposure)?,
+    })
 }
 
 fn increased_safety_action_metrics(

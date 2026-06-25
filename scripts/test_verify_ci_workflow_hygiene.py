@@ -1582,12 +1582,12 @@ def assert_ci_policy_matrix() -> None:
     )
     if (
         mergify_edited_result.ci_policy_path != "defer"
-        or mergify_edited_result.gate_name != "gate-deferred"
-        or mergify_edited_result.backtester_gate_name != "backtester-gate-deferred"
+        or mergify_edited_result.gate_name != "gate"
+        or mergify_edited_result.backtester_gate_name != "backtester-gate"
         or mergify_edited_result.reason != "draft_pr_edited"
     ):
         raise AssertionError(
-            f"Mergify temp PR metadata edits must remain observable but non-required: {mergify_edited_result}"
+            f"Mergify temp PR metadata edits must remain deferred: {mergify_edited_result}"
         )
 
     forced = dict(policy)
@@ -1871,12 +1871,12 @@ def assert_ci_policy_resolvers_agree() -> None:
         "defer",
         False,
         True,
-        "gate-deferred",
-        "backtester-gate-deferred",
+        "gate",
+        "backtester-gate",
         "defer",
         "draft_pr_edited",
     ):
-        raise AssertionError(f"Mergify temp PR metadata edits must not publish required gates: {ver_tuple}")
+        raise AssertionError(f"Mergify temp PR metadata edits must stay deferred: {ver_tuple}")
     for string_base_changed, expected in [
         (
             "false",
@@ -1884,8 +1884,8 @@ def assert_ci_policy_resolvers_agree() -> None:
                 "defer",
                 False,
                 True,
-                "gate-deferred",
-                "backtester-gate-deferred",
+                "gate",
+                "backtester-gate",
                 "defer",
                 "draft_pr_edited",
             ),

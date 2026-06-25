@@ -901,9 +901,17 @@ jobs:
           if [[ -z "$provenance_config" ]]; then
             provenance_config="ci/github-actions-runners.toml"
           fi
+          ci_policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          policy_args=()
+          if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--ci-policy-path"; then
+            policy_args+=(--ci-policy-path "$ci_policy_path")
+          elif [[ "$ci_policy_path" != "full" ]]; then
+            echo "trusted base provenance emitter does not support ci_policy_path=$ci_policy_path" >&2
+            exit 1
+          fi
           python3 "$provenance_script" emit-full-ci \
             --config "$provenance_config" \
-            --ci-policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
+            "${policy_args[@]}" \
             --output ci-provenance.json \
             --required-job detector=${{ needs.detector.result }} \
             --required-job deny=${{ needs.deny.result }} \

@@ -7940,8 +7940,14 @@ def ci_provenance_emit_runs_emitter(job_lines: list[str]) -> bool:
         "git archive \"$base_ref\" scripts/ ci/github-actions-runners.toml",
         "steps.provenance_base.outputs.script",
         "steps.provenance_base.outputs.config",
+        'ci_policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"',
+        "policy_args=()",
+        'python3 "$provenance_script" emit-full-ci --help | grep -q -- "--ci-policy-path"',
+        'policy_args+=(--ci-policy-path "$ci_policy_path")',
+        "trusted base provenance emitter does not support ci_policy_path=$ci_policy_path",
         'python3 "$provenance_script" emit-full-ci',
         '--config "$provenance_config"',
+        '"${policy_args[@]}"',
         "--output ci-provenance.json",
     )
     return all(item in text for item in required)

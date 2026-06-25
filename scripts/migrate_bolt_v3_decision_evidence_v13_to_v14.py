@@ -37,6 +37,10 @@ KEY_STRING_REPLACEMENTS: tuple[tuple[re.Pattern[bytes], bytes], ...] = (
         b"nt_capital_admission_state",
     ),
     (
+        re.compile(rb'("snapshot_source"\s*:\s*)"nt_sizing_state"'),
+        b"nt_capital_admission_state",
+    ),
+    (
         re.compile(rb'("source"\s*:\s*)"nt_position_sizer_runtime_components"'),
         b"nt_capital_admission_runtime_components",
     ),

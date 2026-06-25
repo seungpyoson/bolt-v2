@@ -40,7 +40,7 @@ def test_migrates_v13_records_with_key_scoped_byte_preserving_replacements() -> 
     lines = [
         '{"schema_version":13,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.position_sizer_rebuild","kind":"position_sizer_rebuild","payload":{"source":"nt_position_sizer_runtime_components","unchanged":[1,13,"position_sizer_rebuild"]}}',
         '{"schema_version":13,"recorded_at_utc_ns":1700000000000000001,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{"reservation_id":"reservation-one","source":"nt_sizing_state","unchanged":13}}',
-        '{"schema_version":13,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_position_sizing"},"note":"unchanged"}}',
+        '{"schema_version":13,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_position_sizing","snapshot_source":"nt_sizing_state"},"note":"unchanged"}}',
         '{"schema_version":13,"recorded_at_utc_ns":1700000000000000003,"gate_id":"bolt_v3.submit_admission","kind":"loss_snapshot","payload":{"source":"nt_sizing_state","note":"untouched-tail"}}',
     ]
     write_jsonl(path, lines)
@@ -51,7 +51,7 @@ def test_migrates_v13_records_with_key_scoped_byte_preserving_replacements() -> 
     assert migrated == [
         '{"schema_version":14,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{"source":"nt_capital_admission_runtime_components","unchanged":[1,13,"position_sizer_rebuild"]}}',
         '{"schema_version":14,"recorded_at_utc_ns":1700000000000000001,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{"reservation_id":"reservation-one","source":"nt_capital_admission_state","unchanged":13}}',
-        '{"schema_version":14,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_capital_admission"},"note":"unchanged"}}',
+        '{"schema_version":14,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_capital_admission","snapshot_source":"nt_capital_admission_state"},"note":"unchanged"}}',
         '{"schema_version":14,"recorded_at_utc_ns":1700000000000000003,"gate_id":"bolt_v3.submit_admission","kind":"loss_snapshot","payload":{"source":"nt_capital_admission_state","note":"untouched-tail"}}',
     ]
     try:

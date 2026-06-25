@@ -656,6 +656,8 @@ def evaluate_ci_gate_verdict(
         raise ProvenanceError("ignore_emit_failure=true requires the merge-readiness workflow rollout")
 
     if policy_path == "tag_reuse":
+        if expected_event_class != "tag_reuse":
+            raise ProvenanceError(f"tag reuse CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_job_result(job_results, "same-sha-main-evidence", "success", "same-sha-main-evidence did not succeed")
         require_jobs_skipped(
             job_results,
@@ -709,6 +711,8 @@ def evaluate_ci_gate_verdict(
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown CI policy path {policy_path!r}")
+    if expected_event_class != "full":
+        raise ProvenanceError(f"full CI policy outside resolver-permitted event class {expected_event_class!r}")
 
     if reuse_found:
         require_job_result(
@@ -778,13 +782,15 @@ def evaluate_backtester_gate_verdict(
         require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester defer")
         require_gate_rollout("backtester deferred policy")
 
+    if policy_path != "full":
+        raise ProvenanceError(f"unknown backtester CI policy path {policy_path!r}")
+    if expected_event_class != "full":
+        raise ProvenanceError(f"backtester full CI policy outside resolver-permitted event class {expected_event_class!r}")
+
     if not bvs_changed:
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
         require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester no-crate")
         return "backtester no-crate proof passed"
-
-    if policy_path != "full":
-        raise ProvenanceError(f"unknown backtester CI policy path {policy_path!r}")
 
     # issue_789 is intentionally downstream of backtester-gate; requiring it here
     # would make the diagnostic lane part of the merge gate and create a cycle.
@@ -837,6 +843,8 @@ def evaluate_ci_policy(
             path = config.policy["mergify_temp_pr"]
             reason = "mergify_temp_pr"
         elif event_action == "ready_for_review":
+            if pull_request_draft:
+                raise ProvenanceError("ready_for_review cannot be on a draft PR")
             path = config.policy["ready_for_review"]
             reason = "ready_for_review"
         elif not pull_request_draft and event_action == "edited" and not pull_request_base_changed:
@@ -1854,15 +1862,6 @@ def parse_job_result_values(values: list[str]) -> dict[str, str]:
     if not results:
         raise ProvenanceError("at least one --job result is required")
     return results
-
-
-def parse_bool(value: str) -> bool:
-    lowered = value.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    raise ProvenanceError(f"expected boolean true/false, got {value!r}")
 
 
 def parse_required_job_results(values: list[str], config: ProvenanceConfig) -> dict[str, str]:

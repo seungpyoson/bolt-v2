@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -30,7 +33,9 @@ def run_migration(directory: Path, *, dry_run: bool = False) -> dict[str, object
     return MIGRATOR.migrate_cli(argv)
 
 
-def test_migrates_v13_records_with_key_scoped_byte_preserving_replacements(tmp_path: Path) -> None:
+def test_migrates_v13_records_with_key_scoped_byte_preserving_replacements() -> None:
+    temp = tempfile.TemporaryDirectory()
+    tmp_path = Path(temp.name)
     path = tmp_path / "decision-evidence" / "records.jsonl"
     lines = [
         '{"schema_version":13,"recorded_at_utc_ns":1731234567890123456,"gate_id":"bolt_v3.position_sizer_rebuild","kind":"position_sizer_rebuild","payload":{"source":"nt_position_sizer_runtime_components","unchanged":[1,13,"position_sizer_rebuild"]}}',
@@ -49,16 +54,21 @@ def test_migrates_v13_records_with_key_scoped_byte_preserving_replacements(tmp_p
         '{"schema_version":14,"recorded_at_utc_ns":1700000000000000002,"gate_id":"bolt_v3.submit_admission","kind":"admission_decision","payload":{"decision":{"outcome":"rejected_capital_admission"},"note":"unchanged"}}',
         '{"schema_version":14,"recorded_at_utc_ns":1700000000000000003,"gate_id":"bolt_v3.submit_admission","kind":"loss_snapshot","payload":{"source":"nt_capital_admission_state","note":"untouched-tail"}}',
     ]
-    assert manifest["changed_files"] == [
-        {
-            "path": str(path),
-            "before_sha256": MIGRATOR.sha256_bytes(("\n".join(lines) + "\n").encode("utf-8")),
-            "after_sha256": MIGRATOR.sha256_bytes(path.read_bytes()),
-        }
-    ]
+    try:
+        assert manifest["changed_files"] == [
+            {
+                "path": str(path),
+                "before_sha256": MIGRATOR.sha256_bytes(("\n".join(lines) + "\n").encode("utf-8")),
+                "after_sha256": MIGRATOR.sha256_bytes(path.read_bytes()),
+            }
+        ]
+    finally:
+        temp.cleanup()
 
 
-def test_non_corruption_guard_preserves_timestamps_and_payload_string_values(tmp_path: Path) -> None:
+def test_non_corruption_guard_preserves_timestamps_and_payload_string_values() -> None:
+    temp = tempfile.TemporaryDirectory()
+    tmp_path = Path(temp.name)
     path = tmp_path / "records.jsonl"
     original = (
         '{"schema_version":13,"recorded_at_utc_ns":1731234567890123456,'
@@ -77,9 +87,12 @@ def test_non_corruption_guard_preserves_timestamps_and_payload_string_values(tmp
     assert '"sequence":13' in migrated
     assert '"schema_version":14' in migrated
     assert '"source":"nt_capital_admission_state"' in migrated
+    temp.cleanup()
 
 
-def test_idempotent_second_run_is_noop(tmp_path: Path) -> None:
+def test_idempotent_second_run_is_noop() -> None:
+    temp = tempfile.TemporaryDirectory()
+    tmp_path = Path(temp.name)
     path = tmp_path / "records.jsonl"
     write_jsonl(
         path,
@@ -95,9 +108,12 @@ def test_idempotent_second_run_is_noop(tmp_path: Path) -> None:
     assert len(first["changed_files"]) == 1
     assert second == {"changed_files": []}
     assert path.read_bytes() == after_first
+    temp.cleanup()
 
 
-def test_existing_v14_record_is_left_untouched_while_v13_records_complete(tmp_path: Path) -> None:
+def test_existing_v14_record_is_left_untouched_while_v13_records_complete() -> None:
+    temp = tempfile.TemporaryDirectory()
+    tmp_path = Path(temp.name)
     path = tmp_path / "mixed.jsonl"
     v14 = '{"schema_version":14,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{"source":"nt_capital_admission_state"}}'
     v13 = '{"schema_version":13,"gate_id":"bolt_v3.position_sizer_rebuild","kind":"position_sizer_rebuild","payload":{}}'
@@ -109,9 +125,12 @@ def test_existing_v14_record_is_left_untouched_while_v13_records_complete(tmp_pa
         v14,
         '{"schema_version":14,"gate_id":"bolt_v3.capital_admission_rebuild","kind":"capital_admission_rebuild","payload":{}}',
     ]
+    temp.cleanup()
 
 
-def test_dry_run_reports_manifest_without_mutating(tmp_path: Path) -> None:
+def test_dry_run_reports_manifest_without_mutating() -> None:
+    temp = tempfile.TemporaryDirectory()
+    tmp_path = Path(temp.name)
     path = tmp_path / "records.jsonl"
     original = b'{"schema_version":13,"gate_id":"bolt_v3.position_sizer_rebuild","kind":"position_sizer_rebuild","payload":{}}\n'
     path.write_bytes(original)
@@ -120,9 +139,12 @@ def test_dry_run_reports_manifest_without_mutating(tmp_path: Path) -> None:
 
     assert len(manifest["changed_files"]) == 1
     assert path.read_bytes() == original
+    temp.cleanup()
 
 
-def test_refuses_schema_versions_outside_13_and_14_without_writing(tmp_path: Path) -> None:
+def test_refuses_schema_versions_outside_13_and_14_without_writing() -> None:
+    temp = tempfile.TemporaryDirectory()
+    tmp_path = Path(temp.name)
     path = tmp_path / "records.jsonl"
     path.write_text(
         '{"schema_version":12,"gate_id":"bolt_v3.submit_admission","kind":"submit_reservation_metadata","payload":{}}\n'
@@ -140,9 +162,12 @@ def test_refuses_schema_versions_outside_13_and_14_without_writing(tmp_path: Pat
 
     assert "unsupported schema_version=12" in message
     assert path.read_bytes() == before
+    temp.cleanup()
 
 
-def test_cli_prints_manifest_json(tmp_path: Path, capsys) -> None:
+def test_cli_prints_manifest_json() -> None:
+    temp = tempfile.TemporaryDirectory()
+    tmp_path = Path(temp.name)
     path = tmp_path / "records.jsonl"
     write_jsonl(
         path,
@@ -151,9 +176,29 @@ def test_cli_prints_manifest_json(tmp_path: Path, capsys) -> None:
         ],
     )
 
-    rc = MIGRATOR.main([str(tmp_path)])
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        rc = MIGRATOR.main([str(tmp_path)])
 
-    captured = capsys.readouterr()
     assert rc == 0
-    payload = json.loads(captured.out)
+    payload = json.loads(stdout.getvalue())
     assert payload["changed_files"][0]["path"] == str(path)
+    temp.cleanup()
+
+
+def main() -> int:
+    tests = [
+        value
+        for name, value in sorted(globals().items())
+        if name.startswith("test_") and callable(value)
+    ]
+    for test in tests:
+        test()
+    return 0
+
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
+    raise SystemExit(main())

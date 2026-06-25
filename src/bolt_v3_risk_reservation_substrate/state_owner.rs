@@ -294,6 +294,10 @@ impl RiskStateOwner {
         &self.lease
     }
 
+    pub fn owner_id(&self) -> &OwnerId {
+        self.lease.owner_id()
+    }
+
     pub fn reconcile_before_new_risk(&self) -> Result<RiskStateVersion, RiskStateMutationError> {
         self.store.mark_reconciled(&self.lease)
     }

@@ -126,6 +126,10 @@ impl RiskDescriptorCanonicalAttributes {
     pub fn get(&self, attribute: &str) -> Option<&str> {
         self.attributes.get(attribute).map(String::as_str)
     }
+
+    pub fn attributes(&self) -> &BTreeMap<String, String> {
+        &self.attributes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

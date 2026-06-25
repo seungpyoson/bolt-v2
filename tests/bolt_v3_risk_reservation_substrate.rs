@@ -15,6 +15,12 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         PoolOwnershipLease, PreparedPolicyEpoch, RiskAssessment, RiskPreviewInput, RiskSizingView,
         RiskStateVersion, SafetyAction, SafetyPolicyEnvelope, SizingDecisionPermit,
     },
+    instrument_risk_registry::{
+        CertifiedActiveDescriptor, DescriptorActivationStatus, DescriptorCertificationDecision,
+        DescriptorCertificationEvidence, DescriptorCoverageAttestation,
+        DescriptorRegistryAdmissionError, DescriptorRegistryError, DescriptorTerminalStateEnvelope,
+        InstrumentRiskDescriptor, InstrumentRiskRegistry, TerminalStateObservation,
+    },
     risk_classifier::{
         ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationError,
         RiskClassificationPolicy, RiskClassifier, RiskDescriptorCanonicalAttributes,
@@ -646,6 +652,350 @@ fn s2_preview_kernel_result_equals_commit_kernel_result_for_same_input() {
     );
 }
 
+#[test]
+fn s3_stale_descriptor_version_is_rejected_against_registry_resolved_active_version() {
+    let bucket = bucket("risk_class", "alpha");
+    let mut registry = InstrumentRiskRegistry::new();
+    let descriptor_v1 = descriptor(
+        "candidate-instrument",
+        "descriptor-version-v1",
+        "policy-epoch",
+        &bucket,
+        0,
+    );
+    let attestation_v1 = attestation_for(
+        &descriptor_v1,
+        "descriptor-producer",
+        "descriptor-certifier",
+    );
+    registry
+        .register_descriptor_version(descriptor_v1, Some(attestation_v1), 1_000)
+        .expect("v1 descriptor should certify");
+    registry
+        .activate_descriptor_version(
+            "candidate-instrument",
+            "policy-epoch",
+            "descriptor-version-v1",
+        )
+        .expect("v1 should activate");
+    let descriptor_v2 = descriptor(
+        "candidate-instrument",
+        "descriptor-version-v2",
+        "policy-epoch",
+        &bucket,
+        0,
+    );
+    let attestation_v2 = attestation_for(
+        &descriptor_v2,
+        "descriptor-producer",
+        "descriptor-certifier",
+    );
+    registry
+        .register_descriptor_version(descriptor_v2, Some(attestation_v2), 1_000)
+        .expect("v2 descriptor should certify");
+    registry
+        .activate_descriptor_version(
+            "candidate-instrument",
+            "policy-epoch",
+            "descriptor-version-v2",
+        )
+        .expect("v2 should supersede v1");
+
+    let service = reconciled_admission_service("pool-stale-descriptor", "admission-owner");
+    let certified = registry
+        .resolve_active_descriptor("candidate-instrument", "policy-epoch")
+        .expect("registry should resolve the active v2 descriptor");
+    let view = published_view_from_certified(
+        RiskStateVersion::zero(),
+        "pool-stale-descriptor",
+        bucket,
+        dec(20),
+        dec(20),
+        certified,
+    );
+    let mut candidate = admission_candidate(
+        "intent-stale-descriptor",
+        "idempotency-stale-descriptor",
+        "pool-stale-descriptor",
+        "candidate-instrument",
+        RiskStateVersion::zero(),
+        dec(3),
+    );
+    candidate.expected_descriptor_version = "descriptor-version-v1".to_string();
+
+    let error = service
+        .compare_and_reserve_certified(
+            &registry,
+            &view,
+            candidate,
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect_err("candidate naming a superseded descriptor version must fail closed");
+
+    assert_eq!(
+        error,
+        DescriptorRegistryAdmissionError::DescriptorVersionMismatch {
+            active_descriptor_version: "descriptor-version-v2".to_string(),
+            candidate_descriptor_version: "descriptor-version-v1".to_string(),
+        }
+    );
+    assert!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable")
+            .is_empty(),
+        "stale descriptor mismatch must not mint a token or reserve"
+    );
+}
+
+#[test]
+fn s3_uncertified_or_digest_mismatched_descriptor_fails_closed() {
+    let bucket = bucket("risk_class", "alpha");
+    let descriptor = descriptor(
+        "candidate-instrument",
+        "descriptor-version",
+        "policy-epoch",
+        &bucket,
+        0,
+    );
+    let mut uncertified_registry = InstrumentRiskRegistry::new();
+
+    assert_eq!(
+        uncertified_registry.register_descriptor_version(descriptor.clone(), None, 1_000),
+        Err(DescriptorRegistryError::UncertifiedDescriptor)
+    );
+    assert_eq!(
+        uncertified_registry.resolve_active_descriptor("candidate-instrument", "policy-epoch"),
+        Err(DescriptorRegistryError::NoActiveDescriptor)
+    );
+
+    let mut digest_mismatch_registry = InstrumentRiskRegistry::new();
+    let mut bad_attestation =
+        attestation_for(&descriptor, "descriptor-producer", "descriptor-certifier");
+    bad_attestation.descriptor_digest = hash("different-descriptor-content");
+
+    assert_eq!(
+        digest_mismatch_registry.register_descriptor_version(
+            descriptor,
+            Some(bad_attestation),
+            1_000,
+        ),
+        Err(DescriptorRegistryError::AttestationDigestMismatch)
+    );
+    assert_eq!(
+        digest_mismatch_registry.resolve_active_descriptor("candidate-instrument", "policy-epoch"),
+        Err(DescriptorRegistryError::NoActiveDescriptor)
+    );
+}
+
+#[test]
+fn s3_self_certified_descriptor_fails_closed_for_the_reserving_identity() {
+    let bucket = bucket("risk_class", "alpha");
+    let mut registry = InstrumentRiskRegistry::new();
+    let descriptor = descriptor(
+        "candidate-instrument",
+        "descriptor-version",
+        "policy-epoch",
+        &bucket,
+        0,
+    );
+    let attestation = attestation_for(&descriptor, "descriptor-producer", "admission-owner");
+    registry
+        .register_descriptor_version(descriptor, Some(attestation), 1_000)
+        .expect("descriptor can register, but same certifier/admitter must not reserve");
+    registry
+        .activate_descriptor_version("candidate-instrument", "policy-epoch", "descriptor-version")
+        .expect("descriptor should activate");
+    let service = reconciled_admission_service("pool-self-certified", "admission-owner");
+    let certified = registry
+        .resolve_active_descriptor("candidate-instrument", "policy-epoch")
+        .expect("registry should resolve the active descriptor");
+    let view = published_view_from_certified(
+        RiskStateVersion::zero(),
+        "pool-self-certified",
+        bucket,
+        dec(20),
+        dec(20),
+        certified,
+    );
+
+    let error = service
+        .compare_and_reserve_certified(
+            &registry,
+            &view,
+            admission_candidate(
+                "intent-self-certified",
+                "idempotency-self-certified",
+                "pool-self-certified",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(3),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect_err("certifier identity must differ from the reserving identity");
+
+    assert_eq!(
+        error,
+        DescriptorRegistryAdmissionError::CertifierMatchesAdmissionIdentity
+    );
+    assert!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable")
+            .is_empty(),
+        "self-certified admission must halt before token issuance"
+    );
+}
+
+#[test]
+fn s3_descriptor_versions_are_immutable_and_changes_require_new_revalued_version() {
+    let bucket = bucket("risk_class", "alpha");
+    let mut registry = InstrumentRiskRegistry::new();
+    let descriptor_v1 = descriptor(
+        "candidate-instrument",
+        "descriptor-version-v1",
+        "policy-epoch",
+        &bucket,
+        0,
+    );
+    let attestation_v1 = attestation_for(
+        &descriptor_v1,
+        "descriptor-producer",
+        "descriptor-certifier",
+    );
+    registry
+        .register_descriptor_version(descriptor_v1.clone(), Some(attestation_v1), 1_000)
+        .expect("v1 descriptor should certify");
+    assert_eq!(
+        registry
+            .activate_descriptor_version(
+                "candidate-instrument",
+                "policy-epoch",
+                "descriptor-version-v1"
+            )
+            .expect("first activation should not require revaluation"),
+        DescriptorActivationStatus::InitialActivation
+    );
+
+    let mutated_v1 = descriptor(
+        "candidate-instrument",
+        "descriptor-version-v1",
+        "policy-epoch",
+        &bucket,
+        -1,
+    );
+    let mutated_attestation =
+        attestation_for(&mutated_v1, "descriptor-producer", "descriptor-certifier");
+    assert_eq!(
+        registry.register_descriptor_version(mutated_v1, Some(mutated_attestation), 1_000),
+        Err(DescriptorRegistryError::ImmutableVersionMutationRejected)
+    );
+
+    let descriptor_v2 = descriptor(
+        "candidate-instrument",
+        "descriptor-version-v2",
+        "policy-epoch",
+        &bucket,
+        -1,
+    );
+    let attestation_v2 = attestation_for(
+        &descriptor_v2,
+        "descriptor-producer",
+        "descriptor-certifier",
+    );
+    registry
+        .register_descriptor_version(descriptor_v2, Some(attestation_v2), 1_000)
+        .expect("changed descriptor content must enter as a new version");
+    assert_eq!(
+        registry
+            .activate_descriptor_version(
+                "candidate-instrument",
+                "policy-epoch",
+                "descriptor-version-v2"
+            )
+            .expect("changed version activates only through revaluation status"),
+        DescriptorActivationStatus::SupersededVersionRequiresRevaluation
+    );
+}
+
+#[test]
+fn s3_unmapped_terminal_state_emits_unknown_envelope_and_halts_admission_without_token() {
+    let bucket = bucket("risk_class", "alpha");
+    let mut registry = InstrumentRiskRegistry::new();
+    let descriptor = descriptor(
+        "candidate-instrument",
+        "descriptor-version",
+        "policy-epoch",
+        &bucket,
+        0,
+    );
+    let expected_envelope = descriptor.unknown_state_envelope.clone();
+    let attestation = attestation_for(&descriptor, "descriptor-producer", "descriptor-certifier");
+    registry
+        .register_descriptor_version(descriptor, Some(attestation), 1_000)
+        .expect("descriptor should certify");
+    registry
+        .activate_descriptor_version("candidate-instrument", "policy-epoch", "descriptor-version")
+        .expect("descriptor should activate");
+
+    assert_eq!(
+        registry
+            .observe_terminal_state("candidate-instrument", "policy-epoch", "unmapped-terminal")
+            .expect("unknown state should emit an envelope"),
+        TerminalStateObservation::Unknown(expected_envelope.clone())
+    );
+
+    let service = reconciled_admission_service("pool-unknown-state", "admission-owner");
+    let certified = registry
+        .resolve_active_descriptor("candidate-instrument", "policy-epoch")
+        .expect("registry should still expose the active descriptor for review");
+    let view = published_view_from_certified(
+        RiskStateVersion::zero(),
+        "pool-unknown-state",
+        bucket,
+        dec(20),
+        dec(20),
+        certified,
+    );
+
+    let error = service
+        .compare_and_reserve_certified(
+            &registry,
+            &view,
+            admission_candidate(
+                "intent-unknown-state",
+                "idempotency-unknown-state",
+                "pool-unknown-state",
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(3),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect_err("unknown terminal state must halt risk-increasing admission");
+
+    assert_eq!(
+        error,
+        DescriptorRegistryAdmissionError::AdmissionHaltedByUnknownState {
+            envelope: expected_envelope,
+        }
+    );
+    assert!(
+        service
+            .reservation_records()
+            .expect("reservation records should be readable")
+            .is_empty(),
+        "unknown-state halt must not mint an admission token"
+    );
+}
+
 fn scoped_stress_fixture(evaluation_scope: RiskEvaluationScope) -> RiskKernelInput {
     RiskKernelInput {
         risk_state_version:
@@ -804,6 +1154,43 @@ fn published_view(
     .expect("published view should resolve active descriptor and classification")
 }
 
+fn published_view_from_certified(
+    risk_state_version: RiskStateVersion,
+    pool_id: &str,
+    bucket: ConcentrationBucket,
+    global_headroom: Decimal,
+    bucket_headroom: Decimal,
+    certified: CertifiedActiveDescriptor,
+) -> bolt_v2::bolt_v3_risk_reservation_substrate::risk_view_publisher::PublishedRiskView {
+    RiskViewPublisher::publish(RiskViewPublicationInput {
+        sizing_view: RiskSizingView {
+            risk_state_version,
+            reconciliation_ready: true,
+            reference_growth_wealth: dec(100),
+            conservative_liquidation_equity: dec(100),
+            free_collateral: global_headroom,
+            equity_floor_headroom: global_headroom,
+            governor_headroom: global_headroom,
+            global_stress_loss_headroom: global_headroom,
+            bucket_stress_loss_headrooms: BTreeMap::from([(bucket, bucket_headroom)]),
+            open_order_headroom: 1,
+            position_quantity_headroom: dec(100),
+        },
+        active_descriptor: certified.active_descriptor,
+        descriptor_attributes: certified.descriptor_attributes,
+        classification_policy: classification_policy([dimension(
+            "risk_class",
+            "descriptor_risk_class",
+        )]),
+        caller_declared_buckets: Vec::new(),
+        portfolio: RiskPortfolioSnapshot {
+            positions: Vec::new(),
+        },
+        portfolio_scope_id: pool_id.to_string(),
+    })
+    .expect("published view should consume the registry-certified active descriptor")
+}
+
 fn admission_candidate(
     intent_id: &str,
     idempotency_key: &str,
@@ -865,4 +1252,59 @@ fn admission_candidate_from_preview(
         },
         expires_at_unix_nanos: 2_000,
     }
+}
+
+fn descriptor(
+    instrument_id: &str,
+    descriptor_version: &str,
+    policy_epoch_id: &str,
+    bucket: &ConcentrationBucket,
+    worst_terminal_cash_flow: i64,
+) -> InstrumentRiskDescriptor {
+    InstrumentRiskDescriptor::new(
+        instrument_id.to_string(),
+        descriptor_version.to_string(),
+        policy_epoch_id.to_string(),
+        vec!["terminal-loss".to_string(), "terminal-gain".to_string()],
+        vec![dec(worst_terminal_cash_flow), dec(99)],
+        DescriptorTerminalStateEnvelope {
+            terminal_state_id: "unknown-terminal-envelope".to_string(),
+            terminal_cash_flow: dec(worst_terminal_cash_flow),
+        },
+        RiskDescriptorCanonicalAttributes::new(BTreeMap::from([(
+            "descriptor_risk_class".to_string(),
+            bucket.bucket_value().to_string(),
+        )]))
+        .expect("descriptor attributes should classify"),
+    )
+    .expect("descriptor fixture should be valid")
+}
+
+fn attestation_for(
+    descriptor: &InstrumentRiskDescriptor,
+    producer_identity: &str,
+    certifier_identity: &str,
+) -> DescriptorCoverageAttestation {
+    DescriptorCoverageAttestation {
+        descriptor_digest: descriptor
+            .canonical_digest()
+            .expect("descriptor fixture should digest"),
+        producer_identity: producer_identity.to_string(),
+        certifier_identity: certifier_identity.to_string(),
+        decision: DescriptorCertificationDecision::Approved,
+        evidence: DescriptorCertificationEvidence {
+            evidence_digest: hash("descriptor-evidence"),
+            terminal_state_count: descriptor.terminal_state_ids.len(),
+            classification_attribute_count: 1,
+        },
+        valid_from_unix_nanos: 900,
+        valid_until_unix_nanos: 2_000,
+        revoked: false,
+    }
+}
+
+fn hash(value: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    hex::encode(Sha256::digest(value.as_bytes()))
 }

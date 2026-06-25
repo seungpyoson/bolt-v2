@@ -554,6 +554,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
     steps:
       - uses: ./.github/actions/setup-environment
         id: setup
@@ -568,31 +569,32 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
-      - name: Restore archive build target cache
-        id: test-target-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
-        with:
-          path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
-          restore-keys: |
-            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
       - name: Restore nextest archive
         id: nextest-archive-cache
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Restore root binary sidecars
+        id: root-bin-sidecars-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
-      - name: Build nextest archive binary sidecars
-        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "0"
-        run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         run: |
@@ -604,8 +606,31 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+      - name: Extract root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
+        run: |
+          mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+          tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
+      - name: Build root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          (
+            cd "$target_dir"
+            find debug -maxdepth 1 -type f -perm -111 -print0 \
+              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
+          )
+      - name: Save root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
       - name: Save archive build target cache
-        if: steps.test-target-cache.outputs.cache-hit != 'true'
+        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -8030,6 +8055,7 @@ def main() -> int:
             BASE_WORKFLOW,
             """      - name: Restore archive build target cache
         id: test-target-cache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -8045,7 +8071,7 @@ def main() -> int:
         replace_once(
             BASE_WORKFLOW,
             """      - name: Save archive build target cache
-        if: steps.test-target-cache.outputs.cache-hit != 'true'
+        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -8058,7 +8084,7 @@ def main() -> int:
         "test-archive must save target cache only on target cache miss",
         replace_once(
             BASE_WORKFLOW,
-            "        if: steps.test-target-cache.outputs.cache-hit != 'true'\n",
+            "        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}\n",
             "",
         ),
     )
@@ -8108,8 +8134,8 @@ def main() -> int:
         "test-archive cache must not use restore-keys",
         replace_once(
             BASE_WORKFLOW,
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n      - name: Install cargo-nextest",
-            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n          restore-keys: nextest-archive-v2-\n      - name: Install cargo-nextest",
+            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n      - name: Restore root binary sidecars",
+            "          key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}\n          restore-keys: nextest-archive-v2-\n      - name: Restore root binary sidecars",
         ),
     )
     # #400: every managed-target cache must declare a restore-keys prefix fallback.
@@ -8125,8 +8151,8 @@ def main() -> int:
         "test-archive managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-\n      - name: Restore nextest archive",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n      - name: Restore nextest archive",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-\n      - name: Install cargo-nextest",
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}\n      - name: Install cargo-nextest",
         ),
     )
     assert_error(
@@ -8228,15 +8254,34 @@ def main() -> int:
         ),
     )
     assert_error(
-        "test-archive must build CARGO_BIN_EXE sidecars on archive cache hit",
+        "test-archive must extract cached root binary sidecars",
         replace_once(
             BASE_WORKFLOW,
-            """      - name: Build nextest archive binary sidecars
-        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
+            """      - name: Extract root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
+        run: |
+          mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+          tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
+""",
+            "",
+        ),
+    )
+    assert_error(
+        "test-archive must build CARGO_BIN_EXE sidecars on sidecar cache miss",
+        replace_once(
+            BASE_WORKFLOW,
+            """      - name: Build root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          (
+            cd "$target_dir"
+            find debug -maxdepth 1 -type f -perm -111 -print0 \
+              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
+          )
 """,
             "",
         ),
@@ -9306,8 +9351,8 @@ def main() -> int:
         "ci.yml test-archive install-action fallback must be none",
         replace_once(
             BASE_WORKFLOW,
-            '          fallback: none\n      - name: Build nextest archive binary sidecars',
-            '          fallback: cargo-install\n      - name: Build nextest archive binary sidecars',
+            '          fallback: none\n      - name: Build nextest archive',
+            '          fallback: cargo-install\n      - name: Build nextest archive',
         ),
     )
     assert_error(

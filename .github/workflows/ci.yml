@@ -532,6 +532,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -550,6 +551,13 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
 
+      - name: Restore root binary sidecars
+        id: root-bin-sidecars-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-on-failure: true
@@ -560,6 +568,7 @@ jobs:
 
       - name: Restore archive build target cache
         id: test-target-cache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}
@@ -572,15 +581,6 @@ jobs:
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
-
-      - name: Build nextest archive binary sidecars
-        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
-        env:
-          # Archived integration tests can embed CARGO_BIN_EXE_* paths; cache-hit
-          # runs still need those package binaries present at the managed target dir.
-          CARGO_PROFILE_DEV_DEBUG: "0"
-        run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
 
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
@@ -599,8 +599,43 @@ jobs:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
 
+      - name: Extract root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
+        run: |
+          mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+          tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
+
+      - name: Build root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          # Archived integration tests can embed CARGO_BIN_EXE_* paths; cache-hit
+          # runs still need those package binaries present at the managed target dir.
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          mkdir -p "$(dirname "$ROOT_BIN_SIDECARS_PATH")"
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
+          if [[ "$sidecar_count" == "0" ]]; then
+            echo "no root binary sidecars found in $target_dir/debug"
+            exit 1
+          fi
+          (
+            cd "$target_dir"
+            find debug -maxdepth 1 -type f -perm -111 -print0 \
+              | tar --null -czf "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH" --files-from -
+          )
+
+      - name: Save root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+
       - name: Save archive build target cache
-        if: steps.test-target-cache.outputs.cache-hit != 'true'
+        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.setup.outputs.managed_target_dir }}

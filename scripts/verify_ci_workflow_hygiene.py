@@ -520,10 +520,20 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'scripts/command_understanding.py'",
 )
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
+TEST_ARCHIVE_SIDECAR_PATH = "ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
+TEST_ARCHIVE_SIDECAR_CACHE_PATH = "path: ${{ env.ROOT_BIN_SIDECARS_PATH }}"
+TEST_ARCHIVE_SIDECAR_CACHE_KEY = (
+    "root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
+    "-${{ runner.os }}-${{ runner.arch }}"
+    "-${{ needs.nextest-fingerprint.outputs.nextest_profile }}"
+    "-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+)
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
-TEST_ARCHIVE_SIDECAR_BUILD_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit == 'true'"
-TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: steps.test-target-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
+TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}"
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
     'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins'
@@ -8898,6 +8908,17 @@ def verify_workflow(workflow_text: str) -> list[str]:
             if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
         ]
         archive_cache_blocks = archive_restore_blocks + archive_save_blocks
+        sidecar_restore_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/restore@")
+            if block_has_input(block, "path", "${{ env.ROOT_BIN_SIDECARS_PATH }}")
+        ]
+        sidecar_save_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/save@")
+            if block_has_input(block, "path", "${{ env.ROOT_BIN_SIDECARS_PATH }}")
+        ]
+        sidecar_cache_blocks = sidecar_restore_blocks + sidecar_save_blocks
         archive_upload_blocks = [
             block
             for block in action_blocks(archive_lines, "actions/upload-artifact@")
@@ -8920,6 +8941,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
         ]
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
+        if TEST_ARCHIVE_SIDECAR_PATH not in archive_text:
+            errors.append("test-archive must declare root binary sidecar path")
         if not archive_cache_blocks or not all(
             block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY)
             for block in archive_cache_blocks
@@ -8927,10 +8950,22 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest archive cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in archive_cache_blocks):
             errors.append("nextest archive cache key must use nextest fingerprint output")
+        if not sidecar_cache_blocks or not all(
+            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY)
+            for block in sidecar_cache_blocks
+        ):
+            errors.append("root binary sidecar cache key must use nextest fingerprint output")
+        if any("hashFiles(" in (block_input_value(block, "key") or "") for block in sidecar_cache_blocks):
+            errors.append("root binary sidecar cache key must use nextest fingerprint output")
         if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
             errors.append("test-archive must opt into managed target dir")
         if not target_restore_blocks:
             errors.append("test-archive must restore archive build target cache")
+        if any(
+            TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD not in uncommented_text(block)
+            for block in target_restore_blocks
+        ):
+            errors.append("test-archive must restore target cache only while producing archive or sidecars")
         if not target_save_blocks:
             errors.append("test-archive must save archive build target cache")
         if any(
@@ -8951,18 +8986,36 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must not upload nextest archive artifact")
         if any(block_has_input(block, "restore-keys") for block in archive_cache_blocks):
             errors.append("test-archive cache must not use restore-keys")
+        if any(block_has_input(block, "restore-keys") for block in sidecar_cache_blocks):
+            errors.append("root binary sidecar cache must not use restore-keys")
         if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:
             errors.append("test-archive cache must use archive path env")
-        if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 2:
+        if archive_text.count(TEST_ARCHIVE_SIDECAR_CACHE_PATH) < 2:
+            errors.append("root binary sidecar cache must use sidecar path env")
+        archive_build_block = named_step_block(archive_lines, "Build nextest archive")
+        if archive_build_block is None or TEST_ARCHIVE_CACHE_HIT_GUARD not in uncommented_text(archive_build_block):
             errors.append("test-archive build must be skipped on archive cache hit")
         if (
-            TEST_ARCHIVE_SIDECAR_BUILD_GUARD not in archive_text
+            TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD not in archive_text
+            or 'tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"' not in archive_text
+        ):
+            errors.append("test-archive must extract cached root binary sidecars")
+        if (
+            TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD not in archive_text
             or TEST_ARCHIVE_SIDECAR_BUILD_COMMAND not in archive_text
         ):
-            errors.append("test-archive must build CARGO_BIN_EXE sidecars on archive cache hit")
-        sidecar_block = named_step_block(archive_lines, "Build nextest archive binary sidecars")
+            errors.append("test-archive must build CARGO_BIN_EXE sidecars on sidecar cache miss")
+        sidecar_block = named_step_block(archive_lines, "Build root binary sidecars")
         if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PROFILE_ENV not in uncommented_text(sidecar_block):
             errors.append("test-archive sidecar build must use dev profile debug knob")
+        if sidecar_block is None or "find debug -maxdepth 1 -type f -perm -111 -print0" not in uncommented_text(sidecar_block):
+            errors.append("test-archive sidecar build must pack root binary sidecars")
+        if not sidecar_restore_blocks:
+            errors.append("test-archive must restore root binary sidecar cache")
+        if not sidecar_save_blocks:
+            errors.append("test-archive must save root binary sidecar cache")
+        if any(TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD not in uncommented_text(block) for block in sidecar_save_blocks):
+            errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:

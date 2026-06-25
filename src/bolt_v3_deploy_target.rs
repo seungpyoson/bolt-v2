@@ -19,9 +19,7 @@
 //!   - `name_tag` is informational only (basic IMDSv2 metadata does not expose
 //!     instance tags), so it never gates the outcome in this slice.
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -348,11 +346,9 @@ impl HostFactsSource for Imdsv2HostFactsSource {
     }
 }
 
-type ImdsMetadataFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Option<String>, DeployTargetError>> + 'a>>;
-
 trait ImdsMetadataLeafSource {
-    fn fetch_metadata<'a>(&'a self, path: &'static str) -> ImdsMetadataFuture<'a>;
+    async fn fetch_metadata(&self, path: &'static str)
+    -> Result<Option<String>, DeployTargetError>;
 }
 
 struct AwsImdsMetadataLeafSource {
@@ -360,13 +356,16 @@ struct AwsImdsMetadataLeafSource {
 }
 
 impl ImdsMetadataLeafSource for AwsImdsMetadataLeafSource {
-    fn fetch_metadata<'a>(&'a self, path: &'static str) -> ImdsMetadataFuture<'a> {
-        Box::pin(fetch_metadata(&self.client, path))
+    async fn fetch_metadata(
+        &self,
+        path: &'static str,
+    ) -> Result<Option<String>, DeployTargetError> {
+        fetch_metadata(&self.client, path).await
     }
 }
 
 async fn observe_imdsv2_host_facts(
-    source: &dyn ImdsMetadataLeafSource,
+    source: &impl ImdsMetadataLeafSource,
 ) -> Result<ObservedHostFacts, DeployTargetError> {
     let (instance_id, availability_zone, region) = tokio::try_join!(
         source.fetch_metadata(IMDS_INSTANCE_ID_PATH),
@@ -656,18 +655,19 @@ mod tests {
     }
 
     impl ImdsMetadataLeafSource for FakeImdsMetadataLeafSource {
-        fn fetch_metadata<'a>(&'a self, path: &'static str) -> ImdsMetadataFuture<'a> {
-            Box::pin(async move {
-                self.calls.borrow_mut().push(path);
-                match path {
-                    IMDS_INSTANCE_ID_PATH => Ok(Some("instance-target".to_string())),
-                    IMDS_AVAILABILITY_ZONE_PATH => Ok(Some("region-x-zone-a".to_string())),
-                    IMDS_REGION_PATH => Ok(Some("region-x".to_string())),
-                    other => Err(DeployTargetError::Observe(format!(
-                        "unexpected IMDS metadata path requested by test fake: {other}"
-                    ))),
-                }
-            })
+        async fn fetch_metadata(
+            &self,
+            path: &'static str,
+        ) -> Result<Option<String>, DeployTargetError> {
+            self.calls.borrow_mut().push(path);
+            match path {
+                IMDS_INSTANCE_ID_PATH => Ok(Some("instance-target".to_string())),
+                IMDS_AVAILABILITY_ZONE_PATH => Ok(Some("region-x-zone-a".to_string())),
+                IMDS_REGION_PATH => Ok(Some("region-x".to_string())),
+                other => Err(DeployTargetError::Observe(format!(
+                    "unexpected IMDS metadata path requested by test fake: {other}"
+                ))),
+            }
         }
     }
 

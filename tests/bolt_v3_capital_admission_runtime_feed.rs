@@ -2,14 +2,15 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
+use bolt_v2::bolt_v3_capital_admission::{
+    CapitalAdmissionLifecycleAction, CapitalAdmissionPolicy, FeeSlippagePolicy,
+    PredictionMarketAdmissionSnapshot, ProductAdmissionSnapshot, ProductKind,
+};
+use bolt_v2::bolt_v3_capital_admission_runtime_feed::{
+    CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
+    subscribe_capital_admission_runtime_feed,
+};
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
-use bolt_v2::bolt_v3_position_sizer::{
-    FeeSlippagePolicy, PositionSizingLifecycleAction, PredictionMarketSizingSnapshot, ProductKind,
-    ProductSizingSnapshot, SizingPolicy,
-};
-use bolt_v2::bolt_v3_position_sizer_runtime_feed::{
-    PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig, subscribe_position_sizer_runtime_feed,
-};
 use bolt_v2::bolt_v3_sizing_state::{
     NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
     ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
@@ -63,7 +64,7 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
     let _ = std::any::type_name::<TypedHandler<PortfolioSnapshot>>();
     let _ = std::any::type_name::<TypedHandler<PositionEvent>>();
 
-    let source = support::repo_text("src/bolt_v3_position_sizer_runtime_feed.rs");
+    let source = support::repo_text("src/bolt_v3_capital_admission_runtime_feed.rs");
     for needle in [
         "subscribe_account_state",
         "subscribe_order_events",
@@ -81,11 +82,11 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
 #[test]
 fn subscribed_account_and_portfolio_events_publish_account_spendability() {
     let admission = Arc::new(position_sized_admission());
-    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+    let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
         runtime_feed_config(),
         admission.clone(),
     )));
-    let mut subscription = subscribe_position_sizer_runtime_feed(feed);
+    let mut subscription = subscribe_capital_admission_runtime_feed(feed);
 
     publish_account_state(
         "events.account.ACCOUNT-001".into(),
@@ -113,7 +114,7 @@ fn subscribed_account_and_portfolio_events_publish_account_spendability() {
 }
 
 #[test]
-fn position_sizer_runtime_subscription_drop_unsubscribes_all_handlers() {
+fn capital_admission_runtime_subscription_drop_unsubscribes_all_handlers() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     admission.update_position_sizing_nt_components(fresh_components(900));
@@ -123,11 +124,11 @@ fn position_sizer_runtime_subscription_drop_unsubscribes_all_handlers() {
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+    let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
         runtime_feed_config(),
         admission.clone(),
     )));
-    let mut subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+    let mut subscription = subscribe_capital_admission_runtime_feed(feed.clone());
     subscription.unsubscribe_all();
 
     publish_account_state(
@@ -163,7 +164,7 @@ fn position_sizer_runtime_subscription_drop_unsubscribes_all_handlers() {
 #[test]
 fn feed_waits_for_matching_account_identity_before_publish() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_account_state(&account_state(
@@ -177,7 +178,7 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     assert!(admission.position_sizer_state_snapshot().is_some());
 
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -190,7 +191,7 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     assert_eq!(admission.position_sizer_state_snapshot(), None);
 
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
         feed.on_account_state(&account_state(
             AccountId::from("OTHER-ACCOUNT"),
@@ -203,7 +204,7 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     assert_eq!(admission.position_sizer_state_snapshot(), None);
 
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
         feed.on_account_state(&account_state(
             AccountId::from("ACCOUNT-001"),
@@ -216,7 +217,7 @@ fn feed_waits_for_matching_account_identity_before_publish() {
     assert!(admission.position_sizer_state_snapshot().is_some());
 
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -232,7 +233,7 @@ fn feed_waits_for_matching_account_identity_before_publish() {
 #[test]
 fn feed_derives_default_venue_spendability_from_nt_account_free_collateral() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let components = feed
         .on_account_state(&account_state(
@@ -255,14 +256,14 @@ fn feed_derives_default_venue_spendability_from_nt_account_free_collateral() {
         components.venue_spendability.collateral_allowance,
         Decimal::new(45, 0)
     );
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(45, 0));
 }
 
 #[test]
 fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_venue_spendability_snapshot(venue_spendability_snapshot(950, 30, 25))
@@ -277,7 +278,7 @@ fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
         ))
         .expect("account and spendability should publish components");
 
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
 
     let state = admission
@@ -296,7 +297,7 @@ fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
 #[test]
 fn account_update_does_not_make_external_venue_spendability_fresh() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission);
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission);
 
     assert!(
         feed.on_venue_spendability_snapshot(venue_spendability_snapshot(100, 30, 25))
@@ -322,9 +323,9 @@ fn recomputed_product_allowance_carries_fresh_component_timestamp() {
     let admission = Arc::new(position_sized_admission());
     let mut config = runtime_feed_config();
     config.startup_observed_at_ns = 0;
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
     product.observed_at_ns = 0;
-    let mut feed = PositionSizerRuntimeFeed::new(config, admission);
+    let mut feed = CapitalAdmissionRuntimeFeed::new(config, admission);
 
     assert!(
         feed.on_venue_spendability_snapshot(venue_spendability_snapshot(10_000, 30, 25))
@@ -339,7 +340,7 @@ fn recomputed_product_allowance_carries_fresh_component_timestamp() {
         ))
         .expect("complete fresh account components should publish");
 
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
     assert_eq!(
         product.observed_at_ns, 10_000,
@@ -350,7 +351,7 @@ fn recomputed_product_allowance_carries_fresh_component_timestamp() {
 #[test]
 fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_venue_spendability_snapshot(venue_spendability_snapshot(950, 25, 30))
@@ -365,14 +366,14 @@ fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
         ))
         .expect("complete spendability/account state should publish");
 
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
 }
 
 #[test]
 fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_venue_spendability_snapshot(venue_spendability_snapshot(900, 100, 100))
@@ -393,7 +394,7 @@ fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives()
     let components = feed
         .on_venue_spendability_snapshot(mismatched)
         .expect("mismatched spendability must not clear the last valid state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(100, 0));
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
@@ -414,7 +415,7 @@ fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives()
 #[test]
 fn feed_ignores_older_spendability_snapshot_after_newer_one() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_000, 100, 40))
@@ -433,14 +434,14 @@ fn feed_ignores_older_spendability_snapshot_after_newer_one() {
     let components = feed
         .on_venue_spendability_snapshot(venue_spendability_snapshot(900, 100, 5))
         .expect("older spendability should not clear or regress the latest snapshot");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = components.product_state;
     assert_eq!(product.collateral_allowance, Decimal::new(40, 0));
 }
 
 #[test]
 fn feed_ignores_account_state_for_other_collateral_currency() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
@@ -466,7 +467,7 @@ fn feed_ignores_account_state_for_other_collateral_currency() {
 #[test]
 fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
@@ -505,7 +506,7 @@ fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
 #[test]
 fn account_state_after_empty_startup_cache_reconciles_empty_gate_without_portfolio_snapshot() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     seed_venue_spendability(&mut feed, 950);
     assert!(
@@ -542,7 +543,7 @@ fn account_state_after_empty_startup_cache_reconciles_empty_gate_without_portfol
 #[test]
 fn account_state_after_unattributed_live_order_keeps_gate_unreconciled() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     seed_venue_spendability(&mut feed, 950);
     let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
@@ -580,7 +581,7 @@ fn account_state_after_unattributed_live_order_keeps_gate_unreconciled() {
 #[test]
 fn unattributed_live_order_after_empty_reconcile_recloses_gate() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     seed_venue_spendability(&mut feed, 950);
     assert!(
@@ -627,7 +628,7 @@ fn unattributed_live_order_after_empty_reconcile_recloses_gate() {
 #[test]
 fn terminal_event_after_unattributed_live_order_reopens_empty_gate() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     seed_venue_spendability(&mut feed, 950);
     assert!(
@@ -676,7 +677,7 @@ fn terminal_event_after_unattributed_live_order_reopens_empty_gate() {
 #[test]
 fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
@@ -707,7 +708,7 @@ fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
     let state = admission
         .position_sizer_state_snapshot()
         .expect("cache seed should publish configured product inventory");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_position_cache");
     assert_eq!(product.observed_at_ns, 1_200);
     assert_eq!(product.yes_position, Decimal::new(7, 0));
@@ -717,7 +718,7 @@ fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
 #[test]
 fn cache_seed_and_concurrent_order_event_do_not_double_count() {
     let admission = Arc::new(position_sized_admission());
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
@@ -778,7 +779,7 @@ fn cache_seed_and_concurrent_order_event_do_not_double_count() {
 fn account_bound_live_order_events_update_open_order_count() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
@@ -845,7 +846,7 @@ fn account_bound_live_order_events_update_open_order_count() {
 fn live_order_event_for_submit_owned_reservation_keeps_second_submit_open() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
@@ -922,7 +923,7 @@ fn partial_fill_event_revalues_residual_reservation() {
         .expect("matching fill should update residual liability");
 
     assert!(decision.accepted);
-    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Revalued);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(27, 1))
@@ -931,7 +932,7 @@ fn partial_fill_event_revalues_residual_reservation() {
         .position_sizer_state_snapshot()
         .expect("partial fill should keep live lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_order_fill");
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::new(4, 0));
@@ -966,7 +967,7 @@ fn unknown_external_fill_updates_product_position_once_without_reservation_lifec
     let state = admission
         .position_sizer_state_snapshot()
         .expect("unknown external fill should still publish observed product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_order_fill");
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::new(3, 0));
@@ -987,7 +988,7 @@ fn unknown_external_fill_updates_product_position_once_without_reservation_lifec
     let state = admission
         .position_sizer_state_snapshot()
         .expect("duplicate external trade id should not mutate product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::new(3, 0));
     assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
@@ -1025,7 +1026,7 @@ fn external_fill_replay_after_dedupe_retention_expires_does_not_double_count_pro
     let state = admission
         .position_sizer_state_snapshot()
         .expect("post-retention duplicate external fill should leave product state intact");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::new(3, 0));
     assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
@@ -1035,7 +1036,7 @@ fn external_fill_replay_after_dedupe_retention_expires_does_not_double_count_pro
 fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1097,7 +1098,7 @@ fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() 
     let state = admission
         .position_sizer_state_snapshot()
         .expect("latched external fill should preserve pre-reseed product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::new(3, 0));
 
@@ -1121,7 +1122,7 @@ fn authoritative_reseed_rearms_external_fill_accounting_after_retention_latch() 
     let state = admission
         .position_sizer_state_snapshot()
         .expect("authoritative reseed should re-arm external fill accounting");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 2_000);
     assert_eq!(product.yes_position, Decimal::new(2, 0));
 }
@@ -1162,7 +1163,7 @@ fn known_fill_retention_expiry_does_not_block_distinct_external_fill() {
     let state = admission
         .position_sizer_state_snapshot()
         .expect("distinct external fill should update after known-fill retention expiry");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_700);
     assert_eq!(product.yes_position, Decimal::new(12, 0));
     assert_eq!(product.conditional_token_allowance, Decimal::new(12, 0));
@@ -1204,7 +1205,7 @@ fn known_fill_replay_after_dedupe_retention_expires_does_not_apply_external_delt
     let state = admission
         .position_sizer_state_snapshot()
         .expect("post-retention known duplicate should preserve product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::new(10, 0));
     assert_eq!(product.conditional_token_allowance, Decimal::new(10, 0));
@@ -1242,7 +1243,7 @@ fn external_fill_dedupe_keys_by_instrument_and_trade_id() {
     let state = admission
         .position_sizer_state_snapshot()
         .expect("same venue trade id on a different instrument should still publish");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_200);
     assert_eq!(product.yes_position, Decimal::new(3, 0));
     assert_eq!(product.no_position, Decimal::new(2, 0));
@@ -1253,7 +1254,7 @@ fn external_fill_dedupe_keys_by_instrument_and_trade_id() {
 fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1300,7 +1301,7 @@ fn unknown_reconciliation_fill_does_not_replay_seeded_product_position() {
     let state = admission
         .position_sizer_state_snapshot()
         .expect("reconciliation fill should preserve seeded product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_ne!(product.source, "nt_order_fill");
     assert_eq!(product.yes_position, Decimal::new(3, 0));
     assert_eq!(product.conditional_token_allowance, Decimal::ZERO);
@@ -1332,7 +1333,7 @@ fn full_fill_event_releases_reservation_and_closes_live_order_count() {
         .expect("matching full fill should release reservation");
 
     assert!(decision.accepted);
-    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
@@ -1380,7 +1381,7 @@ fn duplicate_known_full_fill_trade_id_does_not_apply_external_delta_after_releas
     let state = admission
         .position_sizer_state_snapshot()
         .expect("duplicate known trade id should not mutate product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::new(10, 0));
     assert_eq!(product.conditional_token_allowance, Decimal::new(10, 0));
@@ -1407,7 +1408,7 @@ fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
         )))
         .expect("partial fill should revalue reservation");
     assert!(partial.accepted);
-    assert_eq!(partial.action, PositionSizingLifecycleAction::Revalued);
+    assert_eq!(partial.action, CapitalAdmissionLifecycleAction::Revalued);
 
     let terminal = feed
         .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
@@ -1416,7 +1417,7 @@ fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
         )))
         .expect("cancel should release residual reservation");
     assert!(terminal.accepted);
-    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(terminal.action, CapitalAdmissionLifecycleAction::Released);
 
     assert!(
         feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
@@ -1433,7 +1434,7 @@ fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
     let state = admission
         .position_sizer_state_snapshot()
         .expect("post-terminal duplicate fill should not mutate product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::new(4, 0));
 
@@ -1452,7 +1453,7 @@ fn distinct_post_cancel_fill_updates_product_position_after_terminal_release() {
     let state = admission
         .position_sizer_state_snapshot()
         .expect("distinct post-terminal fill should publish product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_order_fill");
     assert_eq!(product.observed_at_ns, 1_400);
     assert_eq!(product.yes_position, Decimal::new(6, 0));
@@ -1464,9 +1465,9 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     let mut config = runtime_feed_config();
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
     product.conditional_token_allowance = Decimal::new(10, 0);
-    let mut feed = PositionSizerRuntimeFeed::new(config, admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(config, admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1518,12 +1519,12 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
             InstrumentId::from("instrument-yes.VENUE-A"),
         )))
         .expect("matching sell fill should release the first order");
-    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
 
     let state = admission
         .position_sizer_state_snapshot()
         .expect("sell fill should publish updated inventory");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_order_fill");
     assert_eq!(product.observed_at_ns, 1_100);
     assert_eq!(product.yes_position, Decimal::ZERO);
@@ -1602,7 +1603,7 @@ fn fill_event_account_or_instrument_mismatch_is_non_mutating() {
 fn fill_event_for_rebuilt_reservation_revalues_residual() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1641,7 +1642,7 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
         )))
         .expect("rebuilt reservation metadata should support residual revalue");
     assert!(decision.accepted);
-    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Revalued);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(27, 1))
@@ -1653,7 +1654,7 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
 fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1695,7 +1696,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
         ))
         .expect("startup reconciliation fill should be accepted as already accounted");
     assert!(reconciliation.accepted);
-    assert_eq!(reconciliation.action, PositionSizingLifecycleAction::None);
+    assert_eq!(reconciliation.action, CapitalAdmissionLifecycleAction::None);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(43, 1))
@@ -1713,7 +1714,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
         )))
         .expect("seen reconciliation trade id should stay idempotent");
     assert!(duplicate.accepted);
-    assert_eq!(duplicate.action, PositionSizingLifecycleAction::None);
+    assert_eq!(duplicate.action, CapitalAdmissionLifecycleAction::None);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(43, 1))
@@ -1726,7 +1727,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
         )))
         .expect("terminal event should release recovered startup reservation");
     assert!(terminal.accepted);
-    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(terminal.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
@@ -1747,7 +1748,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
     let state = admission
         .position_sizer_state_snapshot()
         .expect("post-terminal duplicate reconciliation fill should not mutate product state");
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    let ProductAdmissionSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_ne!(product.source, "nt_order_fill");
     assert_eq!(product.yes_position, Decimal::ZERO);
 }
@@ -1756,7 +1757,7 @@ fn reconciliation_fill_for_recovered_startup_reservation_is_idempotent() {
 fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1808,7 +1809,7 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
 fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attribution() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1894,7 +1895,7 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
 fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -1938,7 +1939,7 @@ fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count(
         .expect("rebuilt reservation full fill should release");
 
     assert!(decision.accepted);
-    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(decision.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
@@ -2012,7 +2013,7 @@ fn terminal_event_after_partial_fill_releases_residual_reservation() {
         )))
         .expect("terminal after partial fill should release residual");
 
-    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(terminal.action, CapitalAdmissionLifecycleAction::Released);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
@@ -2038,7 +2039,7 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
         Some(Decimal::new(43, 1))
     );
 
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let decision = feed
         .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
             "client-order-1",
@@ -2091,11 +2092,11 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+    let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
         runtime_feed_config(),
         admission.clone(),
     )));
-    let mut subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+    let mut subscription = subscribe_capital_admission_runtime_feed(feed.clone());
 
     publish_order_event(
         switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
@@ -2126,7 +2127,7 @@ fn denied_nt_order_event_without_account_releases_matching_committed_submit_rese
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let decision = feed
         .on_order_event(&OrderEventAny::Denied(order_denied_event(
             "client-order-1",
@@ -2174,7 +2175,7 @@ fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
@@ -2202,7 +2203,7 @@ fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_order_event(&OrderEventAny::Expired(order_expired_event(
@@ -2230,7 +2231,7 @@ fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
         .commit_submitted();
 
     let observed_at_ns = event.ts_event().as_u64();
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let decision = feed
         .on_order_event(&event)
         .expect("terminal event should release matching committed reservation");
@@ -2244,13 +2245,13 @@ fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
     assert_eq!(feed.latest_terminal_observed_at_ns(), Some(observed_at_ns));
 }
 
-fn runtime_feed_config() -> PositionSizerRuntimeFeedConfig {
-    PositionSizerRuntimeFeedConfig {
+fn runtime_feed_config() -> CapitalAdmissionRuntimeFeedConfig {
+    CapitalAdmissionRuntimeFeedConfig {
         venue_id: "VENUE-A".to_string(),
         account_id: AccountId::from("ACCOUNT-001"),
         collateral_currency: "USD".to_string(),
-        product_state: ProductSizingSnapshot::PredictionMarketBinary(
-            PredictionMarketSizingSnapshot {
+        product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+            PredictionMarketAdmissionSnapshot {
                 source: "bolt_configured_binary_product".to_string(),
                 observed_at_ns: 900,
                 yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
@@ -2353,7 +2354,7 @@ fn position_sized_admission() -> BoltV3SubmitAdmissionState {
                 committed_liability: Decimal::ZERO,
                 max_snapshot_age_ns: 500,
             },
-            policy: SizingPolicy {
+            policy: CapitalAdmissionPolicy {
                 min_remaining_pool_balance: None,
                 fee_slippage_policy: Some(FeeSlippagePolicy {
                     max_fee_liability: Decimal::new(10, 2),
@@ -2400,10 +2401,11 @@ fn open_order_reservation(
     }
 }
 
-fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, PositionSizerRuntimeFeed) {
+fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, CapitalAdmissionRuntimeFeed)
+{
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    let mut feed = CapitalAdmissionRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let _ = feed.on_account_state(&account_state(
         AccountId::from("ACCOUNT-001"),
         "USD",
@@ -2490,8 +2492,8 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
             open_order_count: 0,
             all_open_orders_attributed: true,
         },
-        product_state: ProductSizingSnapshot::PredictionMarketBinary(
-            PredictionMarketSizingSnapshot {
+        product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+            PredictionMarketAdmissionSnapshot {
                 source: "nt_prediction_market_snapshot".to_string(),
                 observed_at_ns,
                 yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
@@ -2525,7 +2527,7 @@ fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitPositionSizingNtComponen
     }
 }
 
-fn seed_venue_spendability(feed: &mut PositionSizerRuntimeFeed, observed_at_ns: u64) {
+fn seed_venue_spendability(feed: &mut CapitalAdmissionRuntimeFeed, observed_at_ns: u64) {
     let _ =
         feed.on_venue_spendability_snapshot(venue_spendability_snapshot(observed_at_ns, 100, 100));
 }

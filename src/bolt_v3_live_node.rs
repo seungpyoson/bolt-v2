@@ -106,6 +106,14 @@ use crate::{
         BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters,
         map_bolt_v3_adapters_with_runtime_approvals,
     },
+    bolt_v3_capital_admission::{
+        CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
+        ProductAdmissionSnapshot, ProductKind,
+    },
+    bolt_v3_capital_admission_runtime_feed::{
+        CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
+        CapitalAdmissionRuntimeFeedSubscription, subscribe_capital_admission_runtime_feed,
+    },
     bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
@@ -166,14 +174,6 @@ use crate::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
         subscribe_order_reject_observer_feed,
     },
-    bolt_v3_position_sizer::{
-        FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
-        SizingPolicy,
-    },
-    bolt_v3_position_sizer_runtime_feed::{
-        PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig,
-        PositionSizerRuntimeFeedSubscription, subscribe_position_sizer_runtime_feed,
-    },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderRuntimeApprovals,
@@ -220,8 +220,8 @@ pub struct BoltV3LiveNodeRuntime {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
-    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
-    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
+    capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+    capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
     position_sizer_venue_spendability_source:
         Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
@@ -2443,8 +2443,8 @@ struct BoltV3LiveNodeRuntimeFeeds {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
-    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
-    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
+    capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+    capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
     position_sizer_venue_spendability_source:
         Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
@@ -2470,9 +2470,9 @@ impl BoltV3LiveNodeRuntime {
             loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
             order_reject_observer_feed: feeds.order_reject_observer_feed,
             order_reject_observer_feed_subscription: feeds.order_reject_observer_feed_subscription,
-            position_sizer_runtime_feed: feeds.position_sizer_runtime_feed,
-            position_sizer_runtime_feed_subscription: feeds
-                .position_sizer_runtime_feed_subscription,
+            capital_admission_runtime_feed: feeds.capital_admission_runtime_feed,
+            capital_admission_runtime_feed_subscription: feeds
+                .capital_admission_runtime_feed_subscription,
             position_sizer_venue_spendability_source: feeds
                 .position_sizer_venue_spendability_source,
             submit_reservation_recovery: feeds.submit_reservation_recovery,
@@ -3009,9 +3009,9 @@ impl BoltV3LiveNodeRuntime {
         self.submit_admission.position_sizer_configured()
     }
 
-    pub fn position_sizer_runtime_feed_configured(&self) -> bool {
-        self.position_sizer_runtime_feed.is_some()
-            && self.position_sizer_runtime_feed_subscription.is_some()
+    pub fn capital_admission_runtime_feed_configured(&self) -> bool {
+        self.capital_admission_runtime_feed.is_some()
+            && self.capital_admission_runtime_feed_subscription.is_some()
     }
 
     pub fn refresh_position_sizer_venue_spendability_from_configured_source(
@@ -3020,7 +3020,7 @@ impl BoltV3LiveNodeRuntime {
         let Some(config) = self.position_sizer_venue_spendability_source.as_ref() else {
             return Ok(None);
         };
-        let Some(feed) = self.position_sizer_runtime_feed.as_ref() else {
+        let Some(feed) = self.capital_admission_runtime_feed.as_ref() else {
             return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
                 "position sizer venue spendability source configured without runtime feed"
             )));
@@ -3048,7 +3048,7 @@ impl BoltV3LiveNodeRuntime {
         now_ns: u64,
     ) -> BoltV3SubmitPositionSizingRebuildDecision {
         let (account_id, binary_instrument_ids, collateral_currency) =
-            match self.position_sizer_runtime_feed.as_ref() {
+            match self.capital_admission_runtime_feed.as_ref() {
                 Some(feed) => {
                     let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     (
@@ -3128,7 +3128,7 @@ impl BoltV3LiveNodeRuntime {
 
         let account_cache_is_authoritative = cached_account_balances.is_some();
         // Seed live NT order and position state before rebuilding reservations from the same snapshot.
-        if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
+        if let Some(feed) = self.capital_admission_runtime_feed.as_ref() {
             let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some((free_collateral, total_equity)) = cached_account_balances {
                 feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
@@ -5097,12 +5097,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         )
     };
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
-    let position_sizer_runtime_feed_config =
-        position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
+    let capital_admission_runtime_feed_config =
+        capital_admission_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
     let order_reject_observer_account_id = order_reject_observer_account_id_from_loaded(loaded);
     let position_sizer_venue_spendability_source =
         position_sizer_venue_spendability_source_config_from_loaded(loaded)?;
-    let submit_reservation_recovery = if position_sizer_runtime_feed_config.is_some() {
+    let submit_reservation_recovery = if capital_admission_runtime_feed_config.is_some() {
         submit_reservation_recovery_config_from_loaded(loaded)?
     } else {
         None
@@ -5121,14 +5121,14 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     if let Some(state) = kill_switch_startup_state.as_ref() {
         submit_admission.replace_kill_switch_state(state.clone());
     }
-    let (position_sizer_runtime_feed, position_sizer_runtime_feed_subscription) =
-        match position_sizer_runtime_feed_config {
+    let (capital_admission_runtime_feed, capital_admission_runtime_feed_subscription) =
+        match capital_admission_runtime_feed_config {
             Some(config) => {
-                let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+                let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
                     config,
                     submit_admission.clone(),
                 )));
-                let subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+                let subscription = subscribe_capital_admission_runtime_feed(feed.clone());
                 (Some(feed), Some(subscription))
             }
             None => (None, None),
@@ -5284,8 +5284,8 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             loss_runtime_feed_subscription,
             order_reject_observer_feed,
             order_reject_observer_feed_subscription,
-            position_sizer_runtime_feed,
-            position_sizer_runtime_feed_subscription,
+            capital_admission_runtime_feed,
+            capital_admission_runtime_feed_subscription,
             position_sizer_venue_spendability_source,
             submit_reservation_recovery,
         },
@@ -5316,19 +5316,19 @@ fn loss_governor_runtime_feed_config_from_loaded(
     }))
 }
 
-fn position_sizer_runtime_feed_config_from_loaded(
+fn capital_admission_runtime_feed_config_from_loaded(
     loaded: &LoadedBoltV3Config,
     startup_observed_at_ns: u64,
-) -> Option<PositionSizerRuntimeFeedConfig> {
+) -> Option<CapitalAdmissionRuntimeFeedConfig> {
     let pools = loaded.root.risk.capital_pools.as_ref()?;
     let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
     let product = pool.prediction_market_binary.as_ref()?;
-    Some(PositionSizerRuntimeFeedConfig {
+    Some(CapitalAdmissionRuntimeFeedConfig {
         venue_id: pool.venue_id.clone(),
         account_id: pool.account_id,
         collateral_currency: pool.collateral_currency.clone(),
-        product_state: ProductSizingSnapshot::PredictionMarketBinary(
-            PredictionMarketSizingSnapshot {
+        product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+            PredictionMarketAdmissionSnapshot {
                 source: "bolt_configured_binary_product".to_string(),
                 observed_at_ns: startup_observed_at_ns,
                 yes_instrument_id: product.yes_instrument_id.to_string(),
@@ -5431,7 +5431,7 @@ fn position_sizer_venue_spendability_snapshot_from_source_config(
 }
 
 fn refresh_position_sizer_venue_spendability_from_source(
-    feed: &Arc<Mutex<PositionSizerRuntimeFeed>>,
+    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
     config: &BoltV3PositionSizerVenueSpendabilitySourceConfig,
 ) -> Result<Option<BoltV3SubmitPositionSizingNtComponents>, BoltV3LiveNodeError> {
     let snapshot = position_sizer_venue_spendability_snapshot_from_source_config(config)?;
@@ -5469,9 +5469,11 @@ fn position_sizer_config_from_loaded(
     }))
 }
 
-fn sizing_policy_from_pool(pool: &CapitalPoolBlock) -> Result<SizingPolicy, BoltV3LiveNodeError> {
+fn sizing_policy_from_pool(
+    pool: &CapitalPoolBlock,
+) -> Result<CapitalAdmissionPolicy, BoltV3LiveNodeError> {
     let sizing = &pool.sizing_policy;
-    Ok(SizingPolicy {
+    Ok(CapitalAdmissionPolicy {
         min_remaining_pool_balance: optional_pool_decimal(
             "risk.capital_pools.sizing_policy.min_remaining_pool_balance",
             sizing.min_remaining_pool_balance.as_deref(),
@@ -6434,7 +6436,7 @@ mod tests {
         assert_eq!(runtime.position_sizer_reconciled(), Some(false));
 
         let feed = runtime
-            .position_sizer_runtime_feed
+            .capital_admission_runtime_feed
             .as_ref()
             .expect("fixture should configure position-sizer runtime feed");
         let account_state = account_state_event("POLYMARKET-001", "PUSD", 100.0, 100.0, 2_100);
@@ -6613,7 +6615,7 @@ mod tests {
             "fixture must prove locked collateral is not treated as spendable"
         );
         match state.product_state {
-            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+            ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
                 assert_eq!(snapshot.collateral_allowance, Decimal::new(60, 0));
             }
         }

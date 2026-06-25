@@ -14210,7 +14210,7 @@ classification = "loss_governor_halt_reason_code"
 reason = "Stable evidence reason code for fail-closed stale loss-governor state; the freshness bound remains config-owned."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "number"
 literal = '''0'''
 context = '''open_order_count: 0,'''
@@ -14218,7 +14218,7 @@ classification = "position_sizer_order_lifecycle_identity"
 reason = "Empty live-order count used before NT cache or order-event evidence arrives; it is an internal identity, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_account_cache"'''
 context = '''const NT_ACCOUNT_CACHE_PORTFOLIO_SOURCE: &str = "nt_account_cache";'''
@@ -14226,7 +14226,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for startup account sizing components seeded from NT cache; balances remain NT-owned facts."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_account_free_collateral"'''
 context = '''const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";'''
@@ -14234,7 +14234,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for spendable collateral derived from NT account free collateral; the value remains NT-owned."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_open_order_cache"'''
 context = '''source: "nt_open_order_cache".to_string(),'''
@@ -14242,7 +14242,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for order-lifecycle state seeded from NT cache open orders; the open-order set remains NT-owned."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_order_event"'''
 context = '''source: "nt_order_event".to_string(),'''
@@ -14250,7 +14250,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for order-lifecycle state derived from NT order events; event payloads remain NT-owned."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_order_fill"'''
 context = '''evidence_label: "nt_order_fill".to_string(),'''
@@ -14258,7 +14258,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for authoritative NT fill events before submit admission releases the matching reservation."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_order_fill"'''
 context = '''snapshot.source = "nt_order_fill".to_string();'''
@@ -14266,7 +14266,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for product inventory updated from authoritative NT fill events."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_order_lifecycle_seed"'''
 context = '''source: "nt_order_lifecycle_seed".to_string(),'''
@@ -14274,7 +14274,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for the empty startup lifecycle seed before NT cache or live-order evidence is applied."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_portfolio_snapshot"'''
 context = '''source: "nt_portfolio_snapshot".to_string(),'''
@@ -14282,7 +14282,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for portfolio/account sizing components derived from NT account and portfolio events."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_position_cache"'''
 context = '''snapshot.source = "nt_position_cache".to_string();'''
@@ -14290,7 +14290,7 @@ classification = "position_sizer_evidence_source_label"
 reason = "Evidence source label for product inventory seeded from NT cache positions."
 
 [[allowed]]
-path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+path = "src/bolt_v3_capital_admission_runtime_feed.rs"
 kind = "string"
 literal = '''"nt_position_sizer_runtime_components"'''
 context = '''source: "nt_position_sizer_runtime_components".to_string(),'''

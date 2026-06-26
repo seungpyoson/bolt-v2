@@ -341,6 +341,8 @@ jobs:
             ci/github-actions-runners.toml \
             scripts/nextest_fingerprint.py \
             scripts/test_nextest_fingerprint.py \
+            scripts/root_bin_sidecars.py \
+            scripts/test_root_bin_sidecars.py \
             scripts/ci_provenance.py \
             scripts/test_ci_provenance.py \
             scripts/verify_ci_workflow_hygiene.py \
@@ -4128,10 +4130,16 @@ ci-lint-workflow:
 
 ci-lint-workflow-inner: require-local-verification-gate
     python3 scripts/test_verify_ci_workflow_hygiene.py
+    python3 scripts/test_root_bin_sidecars.py
 """
     errors = verifier.verify_local_verification_gate_recipes(justfile_text)
     if errors:
         raise AssertionError(f"local gate recipe wiring should pass, got: {errors}")
+
+    missing_sidecar_test = justfile_text.replace("    python3 scripts/test_root_bin_sidecars.py\n", "")
+    missing_sidecar_test_errors = verifier.verify_local_verification_gate_recipes(missing_sidecar_test)
+    if not any("justfile ci-lint-workflow-inner must run python3 scripts/test_root_bin_sidecars.py" in error for error in missing_sidecar_test_errors):
+        raise AssertionError(f"root bin sidecar test wiring drift was silent, got: {missing_sidecar_test_errors}")
 
     ungated = justfile_text.replace(
         "    python3 scripts/local_verification_gate.py ci-lint-workflow -- just ci-lint-workflow-inner",
@@ -4178,6 +4186,17 @@ ci-lint-workflow-inner: require-local-verification-gate
     missing_guard_errors = verifier.verify_local_verification_gate_recipes(missing_guard)
     if not any("justfile ci-lint-workflow-inner must require the local verification gate" in error for error in missing_guard_errors):
         raise AssertionError(f"ci-lint-workflow inner guard drift was silent, got: {missing_guard_errors}")
+
+
+def assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper() -> None:
+    verifier = load_verifier()
+    required_paths = (
+        "scripts/root_bin_sidecars.py",
+        "scripts/test_root_bin_sidecars.py",
+    )
+    missing = [path for path in required_paths if path not in verifier.FINGERPRINT_REUSE_GOVERNANCE_PATHS]
+    if missing:
+        raise AssertionError(f"fingerprint-reuse governance pathspec must include root sidecar helper files: {missing}")
 
 
 def assert_rust_verification_policy_parse_errors_are_domain_specific() -> None:
@@ -6969,6 +6988,7 @@ def assert_v6_red_workflow_policy_gaps() -> None:
         assert_v6_red_backtester_cache_keys_include_crate_sources,
         assert_v6_red_backtester_gate_fails_when_detect_fails,
         assert_v6_red_backtester_test_uses_nextest_archive,
+        assert_cache_as_same_run_transport_is_banned,
         assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths,
     ]
     failures: list[str] = []
@@ -7099,6 +7119,13 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       - name: Save archive build target cache
         if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae
+      - name: Upload BVS test payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+          include-hidden-files: true
+          if-no-files-found: error
   test:
     name: bvs-test ${{ matrix.shard }} of 4
     needs: [ci-policy, detect, fmt, test-archive]
@@ -7112,12 +7139,15 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BVS_NEXTEST_SHARDS: "4"
     steps:
-      - name: Restore BVS nextest archive
-        id: bvs-nextest-archive-cache
-      - name: Require BVS nextest archive cache
-      - name: Restore BVS binary sidecars
-        id: bvs-bin-sidecars-cache
-      - name: Require BVS binary sidecars cache
+      - name: Download BVS test payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+      - name: Require BVS test payload
+        run: |
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: test
@@ -7133,12 +7163,15 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
       BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
       BOLT_ISSUE_789_RESULT_PATH: result.json
     steps:
-      - name: Restore BVS nextest archive
-        id: bvs-nextest-archive-cache
-      - name: Require BVS nextest archive cache
-      - name: Restore BVS binary sidecars
-        id: bvs-bin-sidecars-cache
-      - name: Require BVS binary sidecars cache
+      - name: Download BVS test payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+      - name: Require BVS test payload
+        run: |
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
       - name: Extract BVS binary sidecars
         run: tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
       - name: test issue-789
@@ -7153,6 +7186,406 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
 """
     good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
     assert not [error for error in good_errors if "backtester bvs-test" in error], good_errors
+
+    weakened_archive_guard = good.replace(
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true',
+        1,
+    )
+    weakened_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": weakened_archive_guard}
+    )
+    assert any("not fail-closed" in error and 'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || true' in error for error in weakened_errors), weakened_errors
+
+    missing_archive_guard = good.replace(
+        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
+        "",
+        1,
+    )
+    def assert_missing_consumer_guard(workflow: str, payload_name: str, scope_name: str) -> None:
+        expected_error = (
+            f"backtester consumer must fail closed if the downloaded {payload_name} "
+            f"is missing or empty ({scope_name})"
+        )
+        workflow_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": workflow}
+        )
+        assert any(expected_error in error for error in workflow_errors), workflow_errors
+
+    def assert_missing_shards_archive_guard(workflow: str) -> None:
+        assert_missing_consumer_guard(workflow, "archive", "bvs-test shards")
+
+    missing_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": missing_archive_guard}
+    )
+    assert any(
+        "backtester consumer must fail closed if the downloaded archive is missing or empty" in error
+        for error in missing_errors
+    ), missing_errors
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '      BVS_NEXTEST_SHARDS: "4"\n',
+            '      BVS_NEXTEST_SHARDS: "4"\n'
+            '      ARCHIVE_DECOY: \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
+            1,
+        )
+    )
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          echo \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
+            1,
+        )
+    )
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '      BVS_NEXTEST_SHARDS: "4"\n',
+            '      BVS_NEXTEST_SHARDS: "4"\n'
+            "      DECOY: |\n"
+            "        ignored\n"
+            '        test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\n',
+            1,
+        )
+    )
+    assert_missing_consumer_guard(
+        replace_once(
+            missing_archive_guard,
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          test -s "$BVS_NEXTEST_ARCHIVE_PATH".decoy || exit 1\n',
+        ),
+        "archive",
+        "bvs-test shards",
+    )
+
+    missing_sidecars_guard = good.replace(
+        '          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }\n',
+        "",
+        1,
+    )
+    assert_missing_consumer_guard(
+        replace_once(
+            missing_sidecars_guard,
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          test -s "$BVS_BIN_SIDECARS_PATH".decoy || exit 1\n',
+        ),
+        "sidecars",
+        "bvs-test shards",
+    )
+
+    missing_issue_archive_guard = without_once_after(
+        good,
+        "  issue_789:\n",
+        '          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }\n',
+    )
+    assert_missing_consumer_guard(
+        replace_once_after(
+            missing_issue_archive_guard,
+            "      - name: test issue-789\n",
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          test -s "$BVS_NEXTEST_ARCHIVE_PATH".decoy || exit 1\n',
+        ),
+        "archive",
+        "bvs-test issue-789",
+    )
+
+    exit_one_archive_guard = good.replace(
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',
+        'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1',
+        1,
+    )
+    exit_one_errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/backtester-ci.yml": exit_one_archive_guard}
+    )
+    assert not [error for error in exit_one_errors if "backtester consumer" in error], exit_one_errors
+
+
+def assert_cache_as_same_run_transport_is_banned() -> None:
+    verifier = load_verifier()
+    fail_on_miss_message = verifier.CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE
+    def has_fail_on_miss_message(errors: list[str]) -> bool:
+        return any(fail_on_miss_message in error for error in errors)
+
+    bad_hand_rolled = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "payload cache unavailable"
+          exit 1
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": bad_hand_rolled})
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
+
+    bad_builtin = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: true
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": bad_builtin})
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+
+    # Quoted/case variants are the same fail-closed directive; the old exact
+    # substring check missed `'true'`, so the ban must catch these too.
+    for variant in ("'true'", '"true"', "True"):
+        bad_builtin_variant = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: {variant}
+"""
+        variant_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_builtin_variant}
+        )
+        assert any(
+            "fail-closed same-run transport" in error for error in variant_errors
+        ), (variant, variant_errors)
+
+    bad_builtin_flow = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with: { path: payload, key: payload-key, fail-on-cache-miss: true }
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_builtin_flow}
+    )
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+
+    bad_builtin_bool_tag = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: !!bool true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_builtin_bool_tag}
+    )
+    assert has_fail_on_miss_message(errors), errors
+
+    bad_folded_true = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: >-
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_folded_true}
+    )
+    assert has_fail_on_miss_message(errors), errors
+
+    bad_block_literal_true = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: |
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_block_literal_true}
+    )
+    assert has_fail_on_miss_message(errors), errors
+
+    ok_commented_block_scalar_key = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          # fail-on-cache-miss: >-
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_commented_block_scalar_key}
+    )
+    assert not has_fail_on_miss_message(errors), errors
+
+    ok_block_multiline_string = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: |
+            some line
+            true
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_block_multiline_string}
+    )
+    assert not has_fail_on_miss_message(errors), errors
+
+    ok_folded_false = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: >-
+            false
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": ok_folded_false}
+    )
+    assert not has_fail_on_miss_message(errors), errors
+
+    for variant in ("yes", "on"):
+        bad_builtin_truthy = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: {variant}
+"""
+        truthy_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_builtin_truthy}
+        )
+        assert any(
+            "fail-closed same-run transport" in error for error in truthy_errors
+        ), (variant, truthy_errors)
+
+    for run_body in (
+        "test -s payload || exit 1",
+        "test -s payload && exit 1",
+        "test -s payload || { echo m; exit 1; }",
+    ):
+        bad_guarded_chain = f"""jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: {run_body}
+"""
+        chain_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/example-ci.yml": bad_guarded_chain}
+        )
+        assert any(
+            "must not fail a job on a cache miss" in error for error in chain_errors
+        ), (run_body, chain_errors)
+
+    good = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Build payload on miss
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: just build-payload
+      - name: Validate unrelated invariant
+        run: |
+          echo "unrelated failure path"
+          exit 1
+"""
+    errors = verifier.verify_repo_automation_texts({".github/workflows/example-ci.yml": good})
+    assert not [
+        error for error in errors if "cache" in error and "same-run" in error
+    ], errors
+
+    producer_nested_exit = """jobs:
+  test:
+    steps:
+      - name: Build payload on miss
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: |
+          if [[ "$n" == "0" ]]; then
+            echo none
+            exit 1
+          fi
+          echo ok
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": producer_nested_exit}
+    )
+    assert not [
+        error for error in errors if "cache" in error and "same-run" in error
+    ], errors
+
+    bad_both_arms = """jobs:
+  test:
+    steps:
+      - name: Restore builtin payload
+        uses: actions/cache/restore@example
+        with:
+          path: payload
+          key: payload-key
+          fail-on-cache-miss: true
+      - name: Restore hand rolled payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require hand rolled payload cache
+        if: steps.x-cache.outputs.cache-hit != 'true'
+        run: exit 1
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_both_arms}
+    )
+    assert any("fail-closed same-run transport" in error for error in errors), errors
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
+
+    bad_double_quoted_false_guard = """jobs:
+  test:
+    steps:
+      - name: Restore payload
+        id: x-cache
+        uses: actions/cache/restore@example
+      - name: Require payload cache
+        if: steps.x-cache.outputs.cache-hit == "false"
+        run: exit 1
+"""
+    errors = verifier.verify_repo_automation_texts(
+        {".github/workflows/example-ci.yml": bad_double_quoted_false_guard}
+    )
+    assert any("must not fail a job on a cache miss" in error for error in errors), errors
+
+    # The guard's if-matcher must tolerate zero leading whitespace; the old
+    # anchor required at least one leading space and would miss a stripped or
+    # pre-processed line.
+    assert verifier.step_has_cache_miss_guard(
+        ["if: steps.x.outputs.cache-hit != 'true'"]
+    ), "zero-indent cache-miss guard must be detected"
 
 
 def assert_v6_red_backtester_nextest_archive_recipes_absolutize_paths() -> None:
@@ -7377,9 +7810,9 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     narrowed_pathspec = replace_once_after(
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
         """.github/workflows/ci.yml)
-          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
+          echo "decoy paths: .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py\"""",
     )
     assert_error(
         "detector must detect fingerprint-reuse governance changes",
@@ -7389,13 +7822,13 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
         BASE_WORKFLOW,
         "      - name: Detect fingerprint-reuse governance changes",
         """          changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
-        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
+        """          echo "$(git diff --name-only "${base_ref}...${head_ref}" -- .github/workflows/ci.yml .github/actions/setup-environment/action.yml ci/nextest-fingerprint.toml ci/github-actions-runners.toml scripts/nextest_fingerprint.py scripts/test_nextest_fingerprint.py scripts/root_bin_sidecars.py scripts/test_root_bin_sidecars.py scripts/ci_provenance.py scripts/test_ci_provenance.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py)"
           changed="$(git diff --name-only "${base_ref}...${head_ref}" --             .github/workflows/ci.yml""",
     )
     git_diff_decoy_pathspec = replace_once_after(
         git_diff_decoy_pathspec,
         "      - name: Detect fingerprint-reuse governance changes",
-        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
+        """.github/workflows/ci.yml             .github/actions/setup-environment/action.yml             ci/nextest-fingerprint.toml             ci/github-actions-runners.toml             scripts/nextest_fingerprint.py             scripts/test_nextest_fingerprint.py             scripts/root_bin_sidecars.py             scripts/test_root_bin_sidecars.py             scripts/ci_provenance.py             scripts/test_ci_provenance.py             scripts/verify_ci_workflow_hygiene.py             scripts/test_verify_ci_workflow_hygiene.py)""",
         """.github/workflows/ci.yml)""",
     )
     assert_error("detector must detect fingerprint-reuse governance changes", git_diff_decoy_pathspec)
@@ -8820,6 +9253,8 @@ def main() -> int:
         ("ci/github-actions-runners.toml", "ci/not-github-actions-runners.toml"),
         ("scripts/nextest_fingerprint.py", "scripts/not_nextest_fingerprint.py"),
         ("scripts/test_nextest_fingerprint.py", "scripts/not_test_nextest_fingerprint.py"),
+        ("scripts/root_bin_sidecars.py", "scripts/not_root_bin_sidecars.py"),
+        ("scripts/test_root_bin_sidecars.py", "scripts/not_test_root_bin_sidecars.py"),
     ):
         assert_error(
             "detector must detect fingerprint-reuse governance changes",
@@ -10274,6 +10709,7 @@ def main() -> int:
     assert_ci_docs_pass_stub_requires_pr_event_types()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()
+    assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper()
     assert_rust_verification_policy_parse_errors_are_domain_specific()
     assert_ci_policy_matrix()
     assert_ci_policy_resolvers_agree()

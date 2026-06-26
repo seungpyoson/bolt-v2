@@ -1241,7 +1241,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
                 ),
                 risk_reducing_exit_proof: None,
                 kill_switch_forced_reduction: None,
-                position_sizing: None,
+                admission_evidence: None,
             },
         )
         .expect("first admission should consume the only slot")

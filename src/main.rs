@@ -352,6 +352,7 @@ struct OpsLaunchStageLog {
 struct OpsLaunchContext {
     profile: String,
     config_root: PathBuf,
+    target_host_facts_source: Box<dyn HostFactsSource>,
     loaded: Option<LoadedBoltV3Config>,
     resolved_secrets: Option<ResolvedBoltV3Secrets>,
     /// Host facts observed by the `TargetVerify` stage, threaded forward so the
@@ -362,10 +363,15 @@ struct OpsLaunchContext {
 }
 
 impl OpsLaunchContext {
-    fn new(profile: String, config_root: PathBuf) -> Self {
+    fn new(
+        profile: String,
+        config_root: PathBuf,
+        target_host_facts_source: Box<dyn HostFactsSource>,
+    ) -> Self {
         Self {
             profile,
             config_root,
+            target_host_facts_source,
             loaded: None,
             resolved_secrets: None,
             observed_host_facts: None,
@@ -380,7 +386,8 @@ impl OpsLaunchContext {
 }
 
 fn run_ops_launch(profile: String, config_root: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let mut context = OpsLaunchContext::new(profile, config_root);
+    let mut context =
+        OpsLaunchContext::new(profile, config_root, Box::new(Imdsv2HostFactsSource::new()));
     run_ops_launch_chain_with(|stage| run_ops_launch_stage(stage, &mut context))
 }
 
@@ -452,8 +459,10 @@ fn run_ops_launch_stage(
             Ok(())
         }
         OpsLaunchStage::TargetVerify => {
-            context.observed_host_facts =
-                run_loaded_target_verify(&context.config_root, &Imdsv2HostFactsSource::new())?;
+            context.observed_host_facts = run_loaded_target_verify(
+                &context.config_root,
+                context.target_host_facts_source.as_ref(),
+            )?;
             Ok(())
         }
         OpsLaunchStage::SecretsCheck => run_loaded_secrets_check(context.loaded()?).map(|_| ()),
@@ -1544,9 +1553,9 @@ struct SecretCheckReport {
 /// over IMDSv2 only when a gating binding is configured, and fails closed on
 /// a mismatch or an unobservable host. An unconfigured target degrades to a
 /// successful no-op so the lane works before any instance is provisioned.
-fn run_loaded_target_verify<S: HostFactsSource>(
+fn run_loaded_target_verify(
     config_root: &Path,
-    source: &S,
+    source: &dyn HostFactsSource,
 ) -> Result<Option<ObservedHostFacts>, Box<dyn std::error::Error>> {
     let config = load_deploy_target(config_root)?;
     let verification = verify_deploy_target(&config, source)?;
@@ -1837,8 +1846,11 @@ mod tests {
         for client in loaded.root.clients.values_mut() {
             client.secrets = None;
         }
-        let mut context =
-            OpsLaunchContext::new("fixture-profile".to_string(), PathBuf::from("config"));
+        let mut context = OpsLaunchContext::new(
+            "fixture-profile".to_string(),
+            PathBuf::from("config"),
+            Box::new(FakeHostFactsSource::erroring()),
+        );
         context.loaded = Some(loaded);
         context
     }
@@ -1906,8 +1918,11 @@ mod tests {
         // `run_loaded_target_verify_errors_when_host_facts_mismatch_configured_target`
         // and `run_loaded_target_verify_errors_when_host_unobservable_for_configured_target`.
         let temp = tempfile::tempdir().expect("tempdir should create");
-        let mut context =
-            OpsLaunchContext::new("fixture-profile".to_string(), temp.path().to_path_buf());
+        let mut context = OpsLaunchContext::new(
+            "fixture-profile".to_string(),
+            temp.path().to_path_buf(),
+            Box::new(FakeHostFactsSource::erroring()),
+        );
 
         run_ops_launch_stage(OpsLaunchStage::TargetVerify, &mut context).expect(
             "target-verify stage must degrade to Ok when no deploy.toml configures a target",
@@ -1916,6 +1931,31 @@ mod tests {
             context.observed_host_facts.is_none(),
             "an unconfigured target must observe no host facts (no host was queried)"
         );
+    }
+
+    #[test]
+    fn ops_launch_target_verify_stage_uses_injected_host_facts_source() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        fs::write(
+            temp.path().join("deploy.toml"),
+            "[target]\nregion = \"region-x\"\ninstance_id = \"instance-target\"\n",
+        )
+        .expect("deploy.toml fixture should write");
+        let expected = ObservedHostFacts {
+            region: Some("region-x".to_string()),
+            availability_zone: Some("region-x-zone-a".to_string()),
+            instance_id: Some("instance-target".to_string()),
+        };
+        let mut context = OpsLaunchContext::new(
+            "fixture-profile".to_string(),
+            temp.path().to_path_buf(),
+            Box::new(FakeHostFactsSource::facts(expected.clone())),
+        );
+
+        run_ops_launch_stage(OpsLaunchStage::TargetVerify, &mut context)
+            .expect("target-verify stage must use the injected source for configured targets");
+
+        assert_eq!(context.observed_host_facts, Some(expected));
     }
 
     #[test]

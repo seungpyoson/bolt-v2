@@ -14,7 +14,7 @@ use bolt_v2::{
     nt_runtime_capture,
     venue_contract::{Capability, Policy, Provenance, StreamContract, VenueContract},
 };
-mod support;
+use crate::support;
 use nautilus_common::msgbus::{
     publish_any, publish_deltas, publish_depth10, publish_index_price, publish_mark_price,
     publish_quote, publish_trade, switchboard,
@@ -31,7 +31,7 @@ use nautilus_model::{
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use support::fast_test_live_node;
+use crate::support::fast_test_live_node;
 use tempfile::tempdir;
 use tokio::task::LocalSet;
 

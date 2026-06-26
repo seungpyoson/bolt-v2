@@ -11,20 +11,12 @@ name = "bolt_v3_adapter_mapping"
 path = "tests/bolt_v3_adapter_mapping.rs"
 
 [[test]]
-name = "bolt_v3_atomic_io"
-path = "tests/bolt_v3_atomic_io.rs"
-
-[[test]]
 name = "bolt_v3_backtest_config_override"
 path = "tests/bolt_v3_backtest_config_override.rs"
 
 [[test]]
 name = "bolt_v3_dead_gate_removal"
 path = "tests/bolt_v3_dead_gate_removal.rs"
-
-[[test]]
-name = "bolt_v3_instrument_filters"
-path = "tests/bolt_v3_instrument_filters.rs"
 
 [[test]]
 name = "iv"
@@ -87,32 +79,8 @@ name = "hyperliquid_product_matrix"
 path = "tests/hyperliquid_product_matrix.rs"
 
 [[test]]
-name = "lake_batch"
-path = "tests/lake_batch.rs"
-
-[[test]]
-name = "log_sweep"
-path = "tests/log_sweep.rs"
-
-[[test]]
-name = "nt_custom_data_catalog_integration"
-path = "tests/nt_custom_data_catalog_integration.rs"
-
-[[test]]
-name = "nt_polymarket_filter_integration"
-path = "tests/nt_polymarket_filter_integration.rs"
-
-[[test]]
-name = "nt_runtime_capture"
-path = "tests/nt_runtime_capture.rs"
-
-[[test]]
-name = "raw_capture_io"
-path = "tests/raw_capture_io.rs"
-
-[[test]]
-name = "shadow_pnl_report"
-path = "tests/shadow_pnl_report.rs"
+name = "runtime_capture_io"
+path = "tests/runtime_capture_io.rs"
 
 [[test]]
 name = "venue_contract"

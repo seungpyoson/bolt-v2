@@ -8,7 +8,6 @@ use bolt_v2::{
     execution_state::{OrderEventRow, PositionEventRow},
     nt_runtime_capture::spool_root_for_instance,
 };
-mod support;
 use nautilus_common::{
     messages::system::TradingStateChanged,
     msgbus::{
@@ -41,7 +40,7 @@ use nautilus_model::{
     instruments::{InstrumentAny, binary_option::BinaryOption},
     types::{Currency, Money, Price, Quantity},
 };
-use support::{fast_test_live_node, repo_path};
+use crate::support::{fast_test_live_node, repo_path};
 use tempfile::tempdir;
 use tokio::{sync::Mutex, task::LocalSet};
 

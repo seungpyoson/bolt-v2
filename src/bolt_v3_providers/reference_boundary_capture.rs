@@ -129,11 +129,11 @@ pub async fn capture_reference_boundary_fixture(
         None,
     )
     .await?;
-    let frame = tokio::time::timeout(request.wait_timeout, receiver.recv())
-        .await
+    let frame_result = tokio::time::timeout(request.wait_timeout, receiver.recv()).await;
+    websocket.disconnect().await;
+    let frame = frame_result
         .map_err(|_| anyhow::anyhow!("timed out waiting for Chainlink binary frame"))?
         .ok_or_else(|| anyhow::anyhow!("Chainlink binary frame channel closed before capture"))?;
-    websocket.disconnect().await;
 
     std::fs::create_dir_all(&request.output_dir)?;
     let frame_path = request

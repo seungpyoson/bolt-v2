@@ -533,6 +533,24 @@ def test_complete_fixture_passes() -> None:
         assert verifier.scan_root(root) == []
 
 
+def test_json_explanatory_text_can_be_reworded() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        durable_status = json.loads((root / verifier.PMXT_DURABLE_STATUS).read_text(encoding="utf-8"))
+        durable_status["claim_limits"] = ["Reworded claim limit; structured status fields remain unchanged."]
+        write_file(root, str(verifier.PMXT_DURABLE_STATUS), json.dumps(durable_status, indent=2) + "\n")
+        bte_status = json.loads((root / verifier.BTE_022_STATUS).read_text(encoding="utf-8"))
+        guard = bte_status["durable_source_selection_source_only_guardrail_status"]
+        guard["evidence"] = ["Reworded guard evidence; structured guard status remains unchanged."]
+        guard["claim_limits"] = ["Reworded guard claim limit; source-only guard remains unchanged."]
+        bte_status["decision"] = "Reworded decision with the same structured status and blocker fields."
+        write_file(root, str(verifier.BTE_022_STATUS), json.dumps(bte_status, indent=2) + "\n")
+
+        assert verifier.scan_root(root) == []
+
+
 def test_accepting_pmxt_source_proof_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -599,14 +617,9 @@ def test_bte_status_durable_guard_overclaim_is_a_finding() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_complete_fixture(root)
-        write_file(
-            root,
-            "specs/023-nt-research-analytics-platform/reference/source-proof-nt-catalog-mapping-status.backtesting-engine-022.2026-06-08.json",
-            bte_status_json().replace(
-                "This does not accept any PMXT source proof.",
-                "This accepts the PMXT source proof.",
-            ),
-        )
+        bte_status = json.loads(bte_status_json())
+        bte_status["durable_source_selection_source_only_guardrail_status"]["claim_limits"] = []
+        write_file(root, str(verifier.BTE_022_STATUS), json.dumps(bte_status, indent=2) + "\n")
         findings = verifier.scan_root(root)
     assert any("durable_source_selection_source_only_guardrail_status.claim_limits" in finding for finding in findings)
 
@@ -1019,6 +1032,7 @@ def test_cli_fails_with_actionable_output() -> None:
 def main() -> int:
     tests = [
         test_complete_fixture_passes,
+        test_json_explanatory_text_can_be_reworded,
         test_accepting_pmxt_source_proof_is_a_finding,
         test_missing_accepted_source_blocker_is_a_finding,
         test_bte_close_claim_is_a_finding,

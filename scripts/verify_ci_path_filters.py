@@ -29,6 +29,7 @@ REQUIRED_DOC_SCENARIOS = (
     "Rust source change",
     "managed rust-verification config",
     "forbidden legacy rust-verification config",
+    "feature registry input",
     "lockfile change",
     "mixed docs and source",
     "ignored Claude agent dir",
@@ -217,10 +218,35 @@ def verify_ci_workflow_has_no_pull_request_paths_ignore(workflow_text: str) -> N
     raise PathFilterError(f"ci workflow pull_request paths-ignore must be removed, got {tuple(paths)}")
 
 
+def extract_docs_table_scenarios(docs_text: str) -> tuple[str, ...]:
+    scenarios: list[str] = []
+    for line in docs_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        scenario = cells[0]
+        if not scenario or scenario == "Scenario" or set(scenario) <= {"-", ":"}:
+            continue
+        scenarios.append(scenario)
+    if not scenarios:
+        raise PathFilterError("docs table missing scenario rows")
+    return tuple(scenarios)
+
+
 def verify_docs_table(docs_text: str) -> None:
+    documented_scenarios = extract_docs_table_scenarios(docs_text)
+    documented_set = set(documented_scenarios)
+    if len(documented_set) != len(documented_scenarios):
+        raise PathFilterError("docs table contains duplicate scenario rows")
     for scenario in REQUIRED_DOC_SCENARIOS:
-        if scenario not in docs_text:
+        if scenario not in documented_set:
             raise PathFilterError(f"docs missing required scenario {scenario}")
+    required_set = set(REQUIRED_DOC_SCENARIOS)
+    for scenario in sorted(documented_set - required_set):
+        raise PathFilterError(f"docs table scenario is not enforced: {scenario}")
 
 
 def verify_rust_policy_location(

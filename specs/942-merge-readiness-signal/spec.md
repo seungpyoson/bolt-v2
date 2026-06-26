@@ -142,7 +142,7 @@ check-runs. This table is the single *proof source* per arrival.)
 | `gate` | stub ✓ *(skip ok)* | `ci.yml` ✓ | **`ci.yml` + stub ✗ (Defect A)** | `ci.yml` ✓ | none ✗ *(non-required name, fail-closed)* |
 | `backtester-gate` | `backtester-ci` ✓ *(re-proves; no carry-forward)* | `backtester-ci` ✓ | `backtester-ci` ✓ | `backtester-ci` ✓ *(#957; re-proves)* | none *(fail-closed)* |
 | `host-health` | **none ✗ (Defect B, narrow ignored-set only)** | `ci.yml` ✓ | `ci.yml` ✓ | `ci.yml` ✓ | none *(fail-closed)* |
-| `actionlint` | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | none ✗ *(fail-closed)* |
+| `actionlint` | `actionlint.yml` ✓ *(includes SpecKit context)* | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | none ✗ *(fail-closed)* |
 | `coverage-enforcer` *(step 6 — **target**, not yet live; self-exempt)* | self ✓ | self ✓ | self ✓ | self ✓ | none ✗ *(fail-closed)* |
 
 **What the table proves:** the proof-source holes are *exactly two* — Defect A (`gate` ×
@@ -167,6 +167,12 @@ with a fresh base," never as a fresh proof. `backtester-gate` deliberately does 
 forward:
 it re-proves on every `pull_request` and `merge_group`, including no-code and draft PRs. That
 costs more CI minutes, but avoids any stale-green risk for the backtester signal.
+
+**M1 boundary hardening:** docs-only changes to `AGENTS.md` and `.specify/feature.json` stay on
+the docs policy path. The cheap SpecKit context check runs from `actionlint.yml` on every PR by
+calling the existing `validate_speckit_context` implementation, so stale active-plan pointers fail
+without forcing full CI. The docs-safe denylist is therefore only `.claude/rust-verification.toml`,
+which gates real Rust verification behavior.
 
 ---
 
@@ -296,12 +302,12 @@ Mandatory hardening (each re-verified live):
 - **C2 — one source for the safe-path set + keep the guard.** The classifier today derives safe
   paths by reading `ci.yml`'s `paths-ignore`; removing that makes it crash. Move the safe-path
   set into **one config registry** consumed by both the classifier and the hygiene verifier (no
-  hardcoded literal). **Preserve `FORBIDDEN_IGNORED_BUILD_PATHS`** — the guard that forces full
-  CI if a build-input path lands in the safe set. Keep it narrow; never `docs/**` or `specs/**`.
-  Update the existing hygiene scripts that hardcode these (`verify_ci_path_filters.py` —
-  `EXPECTED_SAFE_PATHS`, `REQUIRED_PASS_STUB_JOBS`, and its stub reference — and
-  `verify_ci_workflow_hygiene.py`) to read the registry and the new docs path, or step 3's own
-  CI fails.
+  hardcoded literal). Preserve a narrow forbidden-build-input guard, but only for genuinely heavy
+  verification inputs. The current denylist is complete at `.claude/rust-verification.toml`.
+  `AGENTS.md` and `.specify/feature.json` stay docs-safe because the cheap SpecKit context
+  verifier runs in always-on `actionlint.yml` and calls the existing `validate_speckit_context`
+  implementation. Keep the safe set narrow; never `docs/**` or `specs/**`. The docs table is
+  parsed by `verify_ci_path_filters.py`, so every documented row must map to an enforced scenario.
 - **C3 — precedence.** `docs` is a pull-request-only override applied *after* the event branches
   and only to what would otherwise be `full`. It must **never** override the merge queue,
   push/tag, manual dispatch, or carry-forward. The critical case: a docs-only diff entering the

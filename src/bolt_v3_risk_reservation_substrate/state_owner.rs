@@ -208,40 +208,80 @@ impl FencedRiskStateStore {
             .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
         validate_lease(&inner, lease, &self.lease_authority)?;
         let pool_id = lease.pool_id().clone();
-        // FR-041/FR-067: a successor MUST reconcile reservations against venue
-        // truth before enabling new risk. An un-submitted (`Reserved`) reservation
-        // has no venue order, so a fenced-out predecessor's orphaned reservation
-        // MUST be released here; otherwise it permanently holds offered-load
-        // capacity (an envelope-slot leak) that no venue lifecycle event can free.
-        // Submitted/Open/... reservations carry a real venue order and are left for
-        // venue-event reconciliation.
+        Self::finalize_reconciliation(&mut inner, &pool_id)?;
+        Ok(*inner
+            .versions
+            .entry(pool_id)
+            .or_insert(RiskStateVersion::zero()))
+    }
+
+    fn finalize_reconciliation(
+        inner: &mut FencedRiskStateStoreInner,
+        pool_id: &PoolId,
+    ) -> Result<(), RiskStateMutationError> {
+        if inner.reservation_records.iter().any(|record| {
+            &record.pool_id == pool_id
+                && record.lifecycle_state == ReservationLifecycleState::ReconciliationRequired
+        }) {
+            return Err(RiskStateMutationError::ReconciliationRequired);
+        }
+
+        if inner.reservation_records.iter().any(|record| {
+            &record.pool_id == pool_id
+                && record.lifecycle_state != ReservationLifecycleState::Reserved
+                && inner
+                    .submission_intents
+                    .contains_key(&(pool_id.clone(), record.admission_token.token_id.clone()))
+                && !inner
+                    .live_submission_records
+                    .contains_key(&(pool_id.clone(), record.admission_token.token_id.clone()))
+        }) {
+            return Err(RiskStateMutationError::ReconciliationRequired);
+        }
+
+        // FR-041/FR-067: an un-submitted (`Reserved`) reservation has no venue
+        // order, so a fenced-out predecessor's orphaned reservation must be
+        // released here; otherwise no venue lifecycle event can free it.
         let orphaned: Vec<SubstrateReservationRecord> = inner
             .reservation_records
             .iter()
             .filter(|record| {
-                record.pool_id == pool_id
+                &record.pool_id == pool_id
                     && record.lifecycle_state == ReservationLifecycleState::Reserved
             })
             .cloned()
             .collect();
         if !orphaned.is_empty() {
-            let totals = inner
-                .reservation_totals
-                .entry(pool_id.clone())
-                .or_insert_with(RiskReservationTotals::empty);
+            {
+                let totals = inner
+                    .reservation_totals
+                    .entry(pool_id.clone())
+                    .or_insert_with(RiskReservationTotals::empty);
+                for record in &orphaned {
+                    totals.release_open_order_remainder(record);
+                }
+            }
             for record in &orphaned {
-                totals.release_open_order_remainder(record);
+                let reservation_key = (pool_id.clone(), record.admission_token.token_id.clone());
+                if let Some(idempotent) = inner.idempotent_reservations.remove(&reservation_key)
+                    && inner
+                        .consumed_permits
+                        .get(&idempotent.permit_id)
+                        .is_some_and(|idempotency_key| {
+                            idempotency_key == &record.admission_token.token_id
+                        })
+                {
+                    inner.consumed_permits.remove(&idempotent.permit_id);
+                }
             }
             inner.reservation_records.retain(|record| {
-                !(record.pool_id == pool_id
+                !(&record.pool_id == pool_id
                     && record.lifecycle_state == ReservationLifecycleState::Reserved)
             });
         }
+
         inner.reconciled.insert(pool_id.clone(), true);
-        Ok(*inner
-            .versions
-            .entry(pool_id)
-            .or_insert(RiskStateVersion::zero()))
+        Ok(())
     }
 
     pub fn commit_durable_mutation(
@@ -1098,19 +1138,21 @@ impl FencedRiskStateStore {
         })?;
         validate_lease(&inner, lease, &self.lease_authority)
             .map_err(RiskSubmissionMutationError::State)?;
+        let pool_id = lease.pool_id().clone();
         let version = inner
             .versions
-            .get(lease.pool_id())
+            .get(&pool_id)
             .copied()
             .unwrap_or_else(RiskStateVersion::zero)
             .next()
             .map_err(|_| {
                 RiskSubmissionMutationError::State(RiskStateMutationError::VersionOverflow)
             })?;
-        inner.versions.insert(lease.pool_id().clone(), version);
-        inner.reconciled.insert(lease.pool_id().clone(), true);
+        Self::finalize_reconciliation(&mut inner, &pool_id)
+            .map_err(RiskSubmissionMutationError::State)?;
+        inner.versions.insert(pool_id.clone(), version);
         inner.mutations.push(DurableRiskMutationRecord {
-            pool_id: lease.pool_id().clone(),
+            pool_id,
             fencing_token: lease.fencing_token(),
             mutation: DurableRiskMutation::new(
                 version.get().to_string(),
@@ -1872,6 +1914,9 @@ fn order_status_transition_allowed(
         ) | (
             ReservationLifecycleState::Open,
             ReservationLifecycleState::Open
+        ) | (
+            ReservationLifecycleState::ReconciliationRequired,
+            ReservationLifecycleState::Open
         )
     ) || (target_state == ReservationLifecycleState::CancelRequested
         && cancel_request_source_state(current_state))
@@ -1885,6 +1930,7 @@ fn cancel_request_source_state(current_state: ReservationLifecycleState) -> bool
         ReservationLifecycleState::Submitted
             | ReservationLifecycleState::Open
             | ReservationLifecycleState::PartiallyFilled
+            | ReservationLifecycleState::ReconciliationRequired
     )
 }
 
@@ -1896,6 +1942,7 @@ fn non_fillable_confirmation_source_state(current_state: ReservationLifecycleSta
             | ReservationLifecycleState::PartiallyFilled
             | ReservationLifecycleState::CancelRequested
             | ReservationLifecycleState::SubmissionUnknown
+            | ReservationLifecycleState::ReconciliationRequired
     )
 }
 
@@ -1913,6 +1960,7 @@ fn fill_transition_allowed(current_state: ReservationLifecycleState) -> bool {
             | ReservationLifecycleState::Open
             | ReservationLifecycleState::PartiallyFilled
             | ReservationLifecycleState::CancelRequested
+            | ReservationLifecycleState::ReconciliationRequired
     )
 }
 

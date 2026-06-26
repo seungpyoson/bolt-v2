@@ -8,7 +8,7 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
     admission_service::{
         AdmissionReserveError, AdmissionService, BoundReusableSafetyState, CallerRiskDiagnostics,
         RiskCapDimension, RiskReservationWorkDimension, SafetyActionAdmissionError,
-        SafetyActionAdmissionRequest, SafetyActionMetric, SafetyActionProofDomain,
+        SafetyActionAdmissionRequest, SafetyActionProofDomain,
     },
     contracts::{
         ActiveDescriptorView, AdmissionCandidate, AdmissionToken, AdmittedOrder,
@@ -26,22 +26,25 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
         InstrumentRiskDescriptor, InstrumentRiskRegistry, TerminalStateObservation,
     },
     lifecycle_reconciler::{
-        LifecycleReconciler, NtExecutionTruth, NtFillReportTruth, NtOrderStatusReportTruth,
-        NtOrderStatusTruth, NtSettlementTruth,
+        LifecycleReconciler, LifecycleReconciliationError, NtExecutionTruth, NtFillReportTruth,
+        NtOrderStatusReportTruth, NtOrderStatusTruth, NtSettlementTruth,
     },
-    reservation_ledger::{RiskReservationCommit, SubstrateReservationRecord},
+    reservation_ledger::{
+        RiskReservationCommit, RiskReservationError, RiskReservationTransaction,
+        SubstrateReservationRecord,
+    },
     risk_classifier::{
         ConcentrationBucket, ConcentrationBucketDimension, RiskClassificationError,
         RiskClassificationPolicy, RiskClassifier, RiskDescriptorCanonicalAttributes,
     },
     risk_kernel::{
-        RiskCandidate, RiskEvaluationScope, RiskExposure, RiskExposureSetInput, RiskKernel,
-        RiskKernelError, RiskKernelInput, RiskPortfolioSnapshot,
+        RiskCandidate, RiskEvaluationScope, RiskExposure, RiskKernel, RiskKernelError,
+        RiskKernelInput, RiskPortfolioSnapshot,
     },
     risk_view_publisher::{RiskViewPublicationInput, RiskViewPublisher},
     state_owner::{
         DurableRiskMutation, FencedRiskStateStore, PolicyEpochAlertReason, RiskMutationKind,
-        RiskStateMutationError, RiskStateOwner,
+        RiskStateMutationError, RiskStateOwner, RiskSubmissionMutationError,
     },
     submission_authority::{
         LiveSubmitBoundary, LiveSubmitReceipt, SubmissionAuthority, SubmissionAuthorityError,
@@ -1410,6 +1413,77 @@ fn s2_stale_view_reserve_is_rejected() {
 }
 
 #[test]
+fn s2_stale_transaction_reports_actual_mismatched_risk_state_version() {
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        "pool-static-version-reporting",
+        "candidate-instrument",
+        bucket,
+        dec(20),
+        dec(20),
+    );
+    let candidate = admission_candidate(
+        "intent-static-version-reporting",
+        "idempotency-static-version-reporting",
+        "pool-static-version-reporting",
+        "candidate-instrument",
+        RiskStateVersion::zero(),
+        dec(3),
+    );
+    let kernel_input = view
+        .kernel_input_for_candidate(&candidate)
+        .expect("candidate should produce a coherent kernel input before mutation");
+
+    let sizing_view_mismatch = RiskReservationTransaction {
+        candidate: candidate.clone(),
+        kernel_input: kernel_input.clone(),
+        sizing_view: {
+            let mut sizing_view = view.sizing_view().clone();
+            sizing_view.risk_state_version = RiskStateVersion::new(7);
+            sizing_view
+        },
+        safety_state: unlatched_safety(RiskStateVersion::zero()),
+        caller_diagnostics: None,
+        now_unix_nanos: 1_010,
+    };
+    assert_eq!(
+        sizing_view_mismatch.validate_static(
+            &PoolId::new("pool-static-version-reporting").expect("pool id should be valid"),
+            RiskStateVersion::zero(),
+        ),
+        Err(RiskReservationError::StaleRiskStateVersion {
+            expected: RiskStateVersion::zero(),
+            actual: RiskStateVersion::new(7),
+        }),
+        "stale sizing views must report the stale sizing-view version"
+    );
+
+    let kernel_input_mismatch = RiskReservationTransaction {
+        candidate,
+        kernel_input: RiskKernelInput {
+            risk_state_version: RiskStateVersion::new(8),
+            ..kernel_input
+        },
+        sizing_view: view.sizing_view().clone(),
+        safety_state: unlatched_safety(RiskStateVersion::zero()),
+        caller_diagnostics: None,
+        now_unix_nanos: 1_010,
+    };
+    assert_eq!(
+        kernel_input_mismatch.validate_static(
+            &PoolId::new("pool-static-version-reporting").expect("pool id should be valid"),
+            RiskStateVersion::zero(),
+        ),
+        Err(RiskReservationError::StaleRiskStateVersion {
+            expected: RiskStateVersion::zero(),
+            actual: RiskStateVersion::new(8),
+        }),
+        "stale kernel inputs must report the stale kernel-input version"
+    );
+}
+
+#[test]
 fn s6a_no_active_policy_epoch_rejects_risk_increasing_admission_without_mutation() {
     let (service, owner, _store) =
         risk_context_without_policy_epoch("pool-no-active-epoch", "owner-no-active-epoch");
@@ -1922,6 +1996,110 @@ fn s3_unmapped_terminal_state_emits_unknown_envelope_and_halts_admission_without
 }
 
 #[test]
+fn s3_corrected_descriptor_activation_clears_unknown_state_halt() {
+    let bucket = bucket("risk_class", "alpha");
+    let mut registry = InstrumentRiskRegistry::new();
+    let descriptor_v1 = descriptor(
+        "candidate-instrument",
+        "descriptor-version-v1",
+        "policy-epoch",
+        &bucket,
+        0,
+    );
+    let expected_envelope = descriptor_v1.unknown_state_envelope.clone();
+    let attestation_v1 = attestation_for(
+        &descriptor_v1,
+        "descriptor-producer",
+        "descriptor-certifier",
+    );
+    registry
+        .register_descriptor_version(descriptor_v1, Some(attestation_v1), 1_000)
+        .expect("v1 descriptor should certify");
+    registry
+        .activate_descriptor_version(
+            "candidate-instrument",
+            "policy-epoch",
+            "descriptor-version-v1",
+        )
+        .expect("v1 descriptor should activate");
+
+    assert_eq!(
+        registry
+            .observe_terminal_state("candidate-instrument", "policy-epoch", "recovered-terminal")
+            .expect("unknown state should halt admission under the active descriptor"),
+        TerminalStateObservation::Unknown(expected_envelope)
+    );
+
+    let descriptor_v2 = InstrumentRiskDescriptor::new(
+        "candidate-instrument".to_string(),
+        "descriptor-version-v2".to_string(),
+        "policy-epoch".to_string(),
+        vec![
+            "terminal-loss".to_string(),
+            "terminal-gain".to_string(),
+            "recovered-terminal".to_string(),
+        ],
+        vec![dec(0), dec(99), dec(1)],
+        DescriptorTerminalStateEnvelope {
+            terminal_state_id: "unknown-terminal-envelope-v2".to_string(),
+            terminal_cash_flow: dec(0),
+        },
+        RiskDescriptorCanonicalAttributes::new(BTreeMap::from([(
+            "descriptor_risk_class".to_string(),
+            bucket.bucket_value().to_string(),
+        )]))
+        .expect("descriptor attributes should classify"),
+    )
+    .expect("corrected descriptor fixture should be valid");
+    let attestation_v2 = attestation_for(
+        &descriptor_v2,
+        "descriptor-producer",
+        "descriptor-certifier",
+    );
+    registry
+        .register_descriptor_version(descriptor_v2, Some(attestation_v2), 1_000)
+        .expect("v2 descriptor should certify");
+    registry
+        .activate_descriptor_version(
+            "candidate-instrument",
+            "policy-epoch",
+            "descriptor-version-v2",
+        )
+        .expect("corrected descriptor should activate");
+
+    let certified = registry
+        .resolve_active_descriptor("candidate-instrument", "policy-epoch")
+        .expect("corrected descriptor should be active");
+    let view = published_view_from_certified(
+        RiskStateVersion::zero(),
+        "pool-halt-recovery",
+        bucket,
+        dec(20),
+        dec(20),
+        certified,
+    );
+    let mut candidate = admission_candidate(
+        "intent-halt-recovery",
+        "idempotency-halt-recovery",
+        "pool-halt-recovery",
+        "candidate-instrument",
+        RiskStateVersion::zero(),
+        dec(3),
+    );
+    candidate.expected_descriptor_version = "descriptor-version-v2".to_string();
+
+    assert_eq!(
+        registry.validate_admission_binding(
+            view.active_descriptor(),
+            &candidate,
+            "admission-owner",
+        ),
+        Ok(()),
+        "a corrected active descriptor must clear the stale unknown-state halt"
+    );
+}
+
+#[test]
 fn s4_permit_consumption_is_atomic_and_double_spend_fails_closed() {
     let (service, _owner, _store) =
         reconciled_risk_context("pool-permit-consume", "owner-permit-consume");
@@ -2256,6 +2434,198 @@ fn s4_reconnect_reconciliation_uses_nt_order_status_report_identity() {
     assert!(
         sink.submitted_client_order_ids().is_empty(),
         "an NT OrderStatusReport for the ClientOrderId proves the order exists; no replay send needed"
+    );
+}
+
+#[test]
+fn s4_restart_reconciliation_releases_reserved_orphan_and_prunes_idempotency() {
+    let pool_id = "pool-restart-orphan";
+    let (service, owner, store) = reconciled_risk_context(pool_id, "owner-before-orphan");
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        pool_id,
+        "candidate-instrument",
+        bucket.clone(),
+        dec(100),
+        dec(100),
+    );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-restart-orphan",
+                "idempotency-restart-orphan",
+                pool_id,
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(2),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("unsubmitted reservation should reserve risk");
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable before restart")
+            .open_order_count(),
+        1
+    );
+
+    let restarted_owner = RiskStateOwner::acquire(
+        store,
+        PoolId::new(pool_id).expect("pool id should be valid"),
+        "owner-after-orphan",
+    )
+    .expect("successor owner should acquire the pool");
+    let reconciler = LifecycleReconciler::new(restarted_owner.clone());
+    let mut sink = RecordingLiveSubmitBoundary::default();
+
+    reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect("restart reconciliation should release an unsubmitted orphan");
+
+    assert_eq!(
+        restarted_owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after restart")
+            .open_order_count(),
+        0,
+        "unsubmitted predecessor orphans have no venue release path and must be released"
+    );
+    assert!(
+        restarted_owner
+            .reservation_records()
+            .expect("reservation records should be readable after restart")
+            .iter()
+            .all(
+                |record| record.admission_token != reservation.admission_token
+                    && record.lifecycle_state != ReservationLifecycleState::Reserved
+            ),
+        "released orphan records must not remain as Reserved ledger entries"
+    );
+
+    let retry_version = restarted_owner
+        .policy_epoch_snapshot()
+        .expect("policy snapshot should expose post-reconcile version")
+        .risk_state_version;
+    let retry_view = published_view(
+        retry_version,
+        pool_id,
+        "candidate-instrument",
+        bucket,
+        dec(100),
+        dec(100),
+    );
+    let retry = AdmissionService::new(restarted_owner.clone())
+        .compare_and_reserve(
+            &retry_view,
+            admission_candidate(
+                "intent-restart-orphan",
+                "idempotency-restart-orphan",
+                pool_id,
+                "candidate-instrument",
+                retry_version,
+                dec(2),
+            ),
+            unlatched_safety(retry_version),
+            None,
+            1_210,
+        )
+        .expect("released orphan idempotency and permit keys should be reusable");
+    assert_ne!(
+        retry.admission_token, reservation.admission_token,
+        "retry after orphan release must mint a coherent new reservation record"
+    );
+    assert_eq!(
+        restarted_owner
+            .reservation_records()
+            .expect("reservation records should be readable after retry")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn s4_successor_reconciliation_fails_closed_on_dangling_submission_intent() {
+    let pool_id = "pool-dangling-intent";
+    let (service, owner, store) = reconciled_risk_context(pool_id, "owner-before-dangling");
+    let authority = SubmissionAuthority::new(owner);
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        pool_id,
+        "candidate-instrument",
+        bucket,
+        dec(20),
+        dec(20),
+    );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-dangling",
+                "idempotency-dangling",
+                pool_id,
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(2),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("reservation should issue an admission token");
+    let client_order_id = client_order_id("S4-DANGLING-INTENT");
+    authority
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("crash point: durable intent exists before live submission record");
+
+    let successor = RiskStateOwner::acquire(
+        store,
+        PoolId::new(pool_id).expect("pool id should be valid"),
+        "owner-after-dangling",
+    )
+    .expect("successor owner should acquire the pool");
+    assert_eq!(
+        successor.reconcile_before_new_risk(),
+        Err(RiskStateMutationError::ReconciliationRequired),
+        "a submitted durable intent without a live submission record must not reopen new risk"
+    );
+
+    let reconciler = LifecycleReconciler::new(successor.clone());
+    let mut sink = RecordingLiveSubmitBoundary::default();
+    reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect(
+            "restart reconciliation should redrive the dangling durable intent before reopening",
+        );
+    assert_eq!(sink.submitted_client_order_ids(), vec![client_order_id]);
+    assert_eq!(
+        successor
+            .live_submission_records()
+            .expect("live submission records should be readable")
+            .len(),
+        1,
+        "restart redrive must leave a live submission record for future venue release"
     );
 }
 
@@ -3158,22 +3528,204 @@ fn s8c_sequence_gap_requires_reconciliation_and_blocks_new_risk() {
 }
 
 #[test]
-fn s4_sc_012_submit_boundary_is_admitted_order_only_and_authority_owned() {
-    let contracts = include_str!("../src/bolt_v3_risk_reservation_substrate/contracts.rs");
-    assert!(
-        contracts.contains("pub struct AdmittedOrder {\n    admission_token: AdmissionToken,"),
-        "AdmittedOrder fields must stay private so external modules cannot construct it"
+fn s8c_reconciliation_required_exits_on_corrected_terminal_truth_and_releases_totals() {
+    let pool_id = "pool-s8c-reconciliation-exit";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-reconciliation-exit",
+        "intent-s8c-reconciliation-exit",
+        "idempotency-s8c-reconciliation-exit",
+        "S8C-RECONCILIATION-EXIT",
     );
-    let admitted_order_fields = contracts
-        .split("pub struct AdmittedOrder {")
-        .nth(1)
-        .and_then(|rest| rest.split('}').next())
-        .expect("AdmittedOrder struct must be defined in contracts");
-    assert!(
-        !admitted_order_fields.contains("pub "),
-        "AdmittedOrder must not expose public struct-literal construction fields"
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-reconciliation-exit-open",
+            1_150,
+            Some(1),
+        ))
+        .expect("first status event should apply");
+    let before_fault_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before ordering fault");
+    assert_eq!(before_fault_totals.open_order_count(), 1);
+
+    let fault = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-reconciliation-exit-gap",
+            1_170,
+            Some(3),
+        ))
+        .expect("gapped terminal truth should move the reservation to reconciliation");
+    assert_eq!(
+        fault.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
     );
 
+    let corrected = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-reconciliation-exit-corrected",
+            1_160,
+            Some(2),
+        ))
+        .expect("corrected terminal truth should exit reconciliation and release remainder");
+
+    assert_eq!(
+        corrected.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    let record = only_reservation_record(&owner);
+    assert_eq!(
+        record.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    assert_eq!(record.remaining_fillable_quantity, Decimal::ZERO);
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after corrected truth")
+            .open_order_count(),
+        0,
+        "corrected terminal truth must not leave a permanent ReconciliationRequired leak"
+    );
+}
+
+#[test]
+fn s8c_restart_reconciliation_refuses_to_finalize_with_reconciliation_required_record() {
+    let pool_id = "pool-s8c-restart-fail-open";
+    let (_reservation, owner, store, _client_order_id) = submitted_reservation_with_store(
+        pool_id,
+        "owner-s8c-restart-fail-open",
+        "intent-s8c-restart-fail-open",
+        "idempotency-s8c-restart-fail-open",
+        "S8C-RESTART-FAIL-OPEN",
+    );
+    let successor = RiskStateOwner::acquire(
+        store,
+        PoolId::new(pool_id).expect("pool id should be valid"),
+        "owner-s8c-restart-fail-open-successor",
+    )
+    .expect("successor owner should acquire the pool");
+    let reconciler = LifecycleReconciler::new(successor.clone());
+    let mut sink = RecordingLiveSubmitBoundary::default();
+
+    let error = reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: vec![
+                    nt_open_status_with_ordering(
+                        client_order_id("S8C-RESTART-FAIL-OPEN"),
+                        "s8c-restart-fail-open-status",
+                        1_150,
+                        Some(1),
+                    ),
+                    nt_cancel_confirmed_status_with_ordering(
+                        client_order_id("S8C-RESTART-FAIL-OPEN"),
+                        "s8c-restart-fail-open-gap",
+                        1_170,
+                        Some(3),
+                    ),
+                ],
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect_err("restart reconciliation must not finalize over ReconciliationRequired records");
+    assert_eq!(
+        error,
+        LifecycleReconciliationError::State(RiskSubmissionMutationError::State(
+            RiskStateMutationError::ReconciliationRequired,
+        )),
+    );
+    assert_new_risk_blocked_by_reconciliation(
+        &successor,
+        pool_id,
+        "s8c-restart-fail-open-successor-intent",
+    );
+    assert_eq!(
+        only_reservation_record(&owner).lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+}
+
+#[test]
+fn s8c_restart_reconciliation_applies_truth_in_monotonic_cross_type_order() {
+    let pool_id = "pool-s8c-restart-ordering";
+    let (_reservation, owner, store, _client_order_id) = submitted_reservation_with_store(
+        pool_id,
+        "owner-s8c-restart-ordering",
+        "intent-s8c-restart-ordering",
+        "idempotency-s8c-restart-ordering",
+        "S8C-RESTART-ORDERING",
+    );
+    let successor = RiskStateOwner::acquire(
+        store,
+        PoolId::new(pool_id).expect("pool id should be valid"),
+        "owner-s8c-restart-ordering-successor",
+    )
+    .expect("successor owner should acquire the pool");
+    let reconciler = LifecycleReconciler::new(successor.clone());
+    let mut sink = RecordingLiveSubmitBoundary::default();
+
+    reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: vec![nt_cancel_confirmed_status_with_ordering(
+                    client_order_id("S8C-RESTART-ORDERING"),
+                    "s8c-restart-ordering-cancel",
+                    1_170,
+                    Some(3),
+                )],
+                fill_reports: vec![nt_fill_with_ordering(
+                    client_order_id("S8C-RESTART-ORDERING"),
+                    "s8c-restart-ordering-fill",
+                    1_160,
+                    Some(2),
+                    dec(1),
+                    dec(1),
+                    dec(24),
+                    dec(26),
+                    vec![dec(1), dec(99)],
+                )],
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect("restart reconciliation should apply fill before higher-sequence status");
+
+    let record = only_reservation_record(&successor);
+    assert_eq!(
+        record.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    assert_eq!(
+        record
+            .filled_position_exposure
+            .expect("cross-type monotonic replay should apply the fill exposure")
+            .quantity,
+        dec(1)
+    );
+    assert_eq!(
+        successor
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after ordered replay")
+            .open_order_count(),
+        0,
+        "higher-sequence terminal status should release only after the lower-sequence fill applies"
+    );
+    assert_eq!(
+        only_reservation_record(&owner).lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+}
+
+#[test]
+fn s4_sc_012_submit_boundary_is_admitted_order_only_and_authority_owned() {
     let authority_source =
         include_str!("../src/bolt_v3_risk_reservation_substrate/submission_authority.rs");
     assert!(
@@ -3193,17 +3745,6 @@ fn s4_sc_012_submit_boundary_is_admitted_order_only_and_authority_owned() {
             && state_owner_source.contains("ReservationLifecycleState::Submitted"),
         "the store transition that backs AdmittedOrder construction must be Reserved -> Submitted"
     );
-
-    let forbidden_constructor = "from_submitted_reservation(";
-    for (path, source) in risk_reservation_module_sources() {
-        if path == "contracts.rs" || path == "submission_authority.rs" {
-            continue;
-        }
-        assert!(
-            !source.contains(forbidden_constructor),
-            "{path} must not construct AdmittedOrder; only submission_authority owns the boundary"
-        );
-    }
 }
 
 fn scoped_stress_fixture(evaluation_scope: RiskEvaluationScope) -> RiskKernelInput {
@@ -3325,13 +3866,6 @@ fn reconciled_risk_context_with_offered_load_envelope(
         .reconcile_before_new_risk()
         .expect("owner should reconcile before admission");
     (service, owner, store)
-}
-
-fn unreconciled_risk_context(
-    pool_id: &str,
-    owner_id: &str,
-) -> (AdmissionService, RiskStateOwner, FencedRiskStateStore) {
-    unreconciled_risk_context_with_work_bounds(pool_id, owner_id, roomy_work_bounds())
 }
 
 fn unreconciled_risk_context_with_work_bounds(
@@ -3525,28 +4059,6 @@ fn cancel_order_safety_action_request(
         safety_state,
         proof_domain: SafetyActionProofDomain { max_exposure_count },
     }
-}
-
-fn risk_reservation_module_sources() -> Vec<(String, String)> {
-    let module_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("bolt_v3_risk_reservation_substrate");
-    let mut sources = Vec::new();
-    for entry in std::fs::read_dir(&module_dir).expect("risk reservation module directory exists") {
-        let entry = entry.expect("risk reservation module entry is readable");
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
-            continue;
-        }
-        sources.push((
-            path.file_name()
-                .expect("module source has a file name")
-                .to_string_lossy()
-                .into_owned(),
-            std::fs::read_to_string(&path).expect("module source is readable"),
-        ));
-    }
-    sources
 }
 
 fn published_view(
@@ -3915,6 +4427,63 @@ fn submitted_reservation_context(
         LifecycleReconciler::new(owner),
         client_order_id,
     )
+}
+
+fn submitted_reservation_with_store(
+    pool_id: &str,
+    owner_id: &str,
+    intent_id: &str,
+    idempotency_key: &str,
+    client_order_id_value: &str,
+) -> (
+    RiskReservationCommit,
+    RiskStateOwner,
+    FencedRiskStateStore,
+    ClientOrderId,
+) {
+    let (service, owner, store) = reconciled_risk_context(pool_id, owner_id);
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        pool_id,
+        "candidate-instrument",
+        bucket,
+        dec(100),
+        dec(100),
+    );
+    let reservation = service
+        .compare_and_reserve(
+            &view,
+            admission_candidate_from_preview(
+                intent_id,
+                idempotency_key,
+                RiskPreviewInput {
+                    pool_id: PoolId::new(pool_id).expect("pool id should be valid"),
+                    instrument_id: "candidate-instrument".to_string(),
+                    model_risk_scope: ModelRiskEvaluationScope::CandidateInstrument {
+                        instrument_id: "candidate-instrument".to_string(),
+                    },
+                    side: "long".to_string(),
+                    quantity: dec(2),
+                    order_type: "limit".to_string(),
+                    time_in_force: "gtc".to_string(),
+                    max_unit_price: Some(dec(20)),
+                    max_cash_outlay: dec(20),
+                    source_view_version: RiskStateVersion::zero(),
+                    policy_epoch_id: "policy-epoch".to_string(),
+                },
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("reservation should issue an admission token");
+    let authority = SubmissionAuthority::new(owner.clone());
+    let client_order_id = client_order_id(client_order_id_value);
+    authority
+        .prepare_admitted_order(&reservation, client_order_id, 1_100)
+        .expect("submission authority should move the reservation to Submitted");
+    (reservation, owner, store, client_order_id)
 }
 
 fn filled_reservation_context(

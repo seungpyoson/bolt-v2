@@ -342,13 +342,22 @@ impl RiskReservationTransaction {
         if &self.candidate.pool_id != lease_pool_id {
             return Err(RiskReservationError::PoolMismatch);
         }
-        if self.candidate.source_view_version != current_version
-            || self.sizing_view.risk_state_version != current_version
-            || self.kernel_input.risk_state_version != current_version
-        {
+        if self.candidate.source_view_version != current_version {
             return Err(RiskReservationError::StaleRiskStateVersion {
                 expected: current_version,
                 actual: self.candidate.source_view_version,
+            });
+        }
+        if self.sizing_view.risk_state_version != current_version {
+            return Err(RiskReservationError::StaleRiskStateVersion {
+                expected: current_version,
+                actual: self.sizing_view.risk_state_version,
+            });
+        }
+        if self.kernel_input.risk_state_version != current_version {
+            return Err(RiskReservationError::StaleRiskStateVersion {
+                expected: current_version,
+                actual: self.kernel_input.risk_state_version,
             });
         }
         if self.safety_state.risk_state_version != current_version {

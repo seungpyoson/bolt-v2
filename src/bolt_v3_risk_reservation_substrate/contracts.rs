@@ -424,6 +424,48 @@ pub struct AdmissionToken {
     pub expires_at_unix_nanos: u64,
 }
 
+/// ```compile_fail
+/// use bolt_v2::bolt_v3_risk_reservation_substrate::contracts::{
+///     AdmittedOrder, AdmissionToken, PoolId, RiskStateVersion,
+/// };
+/// use nautilus_model::identifiers::ClientOrderId;
+///
+/// let _order = AdmittedOrder {
+///     admission_token: AdmissionToken {
+///         token_id: "token".to_string(),
+///         pool_id: PoolId::new("pool").expect("pool id should parse"),
+///         risk_state_version: RiskStateVersion::new(1),
+///         policy_epoch_id: "policy-epoch".to_string(),
+///         reservation_id: "reservation".to_string(),
+///         expires_at_unix_nanos: 2_000,
+///     },
+///     client_order_id: ClientOrderId::from("ORDER-1"),
+///     instrument_id: "instrument".to_string(),
+///     submitted_risk_state_version: RiskStateVersion::new(1),
+/// };
+/// ```
+///
+/// ```compile_fail
+/// use bolt_v2::bolt_v3_risk_reservation_substrate::contracts::{
+///     AdmittedOrder, AdmissionToken, PoolId, RiskStateVersion,
+/// };
+/// use nautilus_model::identifiers::ClientOrderId;
+///
+/// let token = AdmissionToken {
+///     token_id: "token".to_string(),
+///     pool_id: PoolId::new("pool").expect("pool id should parse"),
+///     risk_state_version: RiskStateVersion::new(1),
+///     policy_epoch_id: "policy-epoch".to_string(),
+///     reservation_id: "reservation".to_string(),
+///     expires_at_unix_nanos: 2_000,
+/// };
+/// let _order = AdmittedOrder::from_submitted_reservation(
+///     token,
+///     ClientOrderId::from("ORDER-1"),
+///     "instrument".to_string(),
+///     RiskStateVersion::new(1),
+/// );
+/// ```
 #[derive(Debug, PartialEq, Eq)]
 pub struct AdmittedOrder {
     admission_token: AdmissionToken,

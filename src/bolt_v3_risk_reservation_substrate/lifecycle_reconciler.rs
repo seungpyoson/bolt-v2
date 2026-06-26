@@ -74,6 +74,22 @@ pub struct ReconciliationSummary {
     pub risk_state_version: RiskStateVersion,
 }
 
+enum NtExecutionReplayEvent {
+    OrderStatus(NtOrderStatusReportTruth),
+    Fill(NtFillReportTruth),
+    Settlement(NtSettlementTruth),
+}
+
+impl NtExecutionReplayEvent {
+    const fn ordering_key(&self) -> (u64, Option<u64>) {
+        match self {
+            Self::OrderStatus(report) => (report.ts_event_unix_nanos, report.event_sequence),
+            Self::Fill(report) => (report.ts_event_unix_nanos, report.event_sequence),
+            Self::Settlement(report) => (report.ts_event_unix_nanos, report.event_sequence),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LifecycleEventSummary {
     pub risk_state_version: RiskStateVersion,
@@ -206,14 +222,43 @@ impl LifecycleReconciler {
             }
         }
 
-        for report in truth.order_status_reports {
-            self.apply_order_status_truth(report)?;
-        }
-        for report in truth.fill_reports {
-            self.apply_fill_truth(report)?;
-        }
-        for report in truth.settlement_reports {
-            self.apply_settlement_truth(report)?;
+        let mut replay_events = Vec::with_capacity(
+            truth.order_status_reports.len()
+                + truth.fill_reports.len()
+                + truth.settlement_reports.len(),
+        );
+        replay_events.extend(
+            truth
+                .order_status_reports
+                .into_iter()
+                .map(NtExecutionReplayEvent::OrderStatus),
+        );
+        replay_events.extend(
+            truth
+                .fill_reports
+                .into_iter()
+                .map(NtExecutionReplayEvent::Fill),
+        );
+        replay_events.extend(
+            truth
+                .settlement_reports
+                .into_iter()
+                .map(NtExecutionReplayEvent::Settlement),
+        );
+        replay_events.sort_by_key(NtExecutionReplayEvent::ordering_key);
+
+        for event in replay_events {
+            match event {
+                NtExecutionReplayEvent::OrderStatus(report) => {
+                    self.apply_order_status_truth(report)?;
+                }
+                NtExecutionReplayEvent::Fill(report) => {
+                    self.apply_fill_truth(report)?;
+                }
+                NtExecutionReplayEvent::Settlement(report) => {
+                    self.apply_settlement_truth(report)?;
+                }
+            }
         }
 
         let risk_state_version = self.owner.complete_reconciliation()?;

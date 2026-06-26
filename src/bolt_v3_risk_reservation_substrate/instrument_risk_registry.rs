@@ -216,16 +216,20 @@ impl InstrumentRiskRegistry {
         if !inner.descriptors.contains_key(&descriptor_key) {
             return Err(DescriptorRegistryError::DescriptorVersionUnknown);
         }
-        match inner
+        let status = match inner
             .active_versions
-            .insert(active, descriptor_version.to_string())
+            .insert(active.clone(), descriptor_version.to_string())
         {
-            None => Ok(DescriptorActivationStatus::InitialActivation),
+            None => DescriptorActivationStatus::InitialActivation,
             Some(previous) if previous == descriptor_version => {
-                Ok(DescriptorActivationStatus::AlreadyActive)
+                DescriptorActivationStatus::AlreadyActive
             }
-            Some(_) => Ok(DescriptorActivationStatus::SupersededVersionRequiresRevaluation),
+            Some(_) => DescriptorActivationStatus::SupersededVersionRequiresRevaluation,
+        };
+        if status != DescriptorActivationStatus::AlreadyActive {
+            inner.halted_unknown_states.remove(&active);
         }
+        Ok(status)
     }
 
     pub fn resolve_active_descriptor(

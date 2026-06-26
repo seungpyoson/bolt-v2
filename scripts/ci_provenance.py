@@ -368,6 +368,14 @@ def load_required_checks(
 def required_check_applicable_event_classes(
     *, check: RequiredCheckConfig, policy: dict[str, str]
 ) -> set[str]:
+    # The registry model is keyed on event class, not individual pull_request
+    # action. actionlint.yml omits converted_to_draft, but that action creates
+    # no new head SHA: every gated SHA was first introduced by opened or
+    # synchronize, which do trigger actionlint. The defer class therefore has a
+    # fresh same-SHA actionlint run, not carry-forward provenance or a skipped
+    # state. Before step 6 consumes this registry, derive and verify
+    # runs_on_tags/supports_carry_forward against
+    # .github/workflows/{ci,actionlint}.yml.
     applicable: set[str] = set()
     for event, policy_path in policy.items():
         candidate_policy_paths = {

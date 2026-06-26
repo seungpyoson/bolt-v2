@@ -1772,6 +1772,17 @@ fresh = ["full", "docs", "iteration", "noop"]
 carry_forward = ["defer"]
 """,
         ),
+        "carry_forward must be": replace_once(
+            CONFIG_TOML,
+            """[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["full", "docs", "iteration", "defer", "noop"]
+carry_forward = []
+""",
+            """[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["full", "docs", "iteration", "defer", "noop"]
+carry_forward = ["tag_reuse"]
+""",
+        ),
         "runs_on_tags=false": replace_once(
             CONFIG_TOML,
             """[ci_provenance.required_checks.host-health.proof_rule]

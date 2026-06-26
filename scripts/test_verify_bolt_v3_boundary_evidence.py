@@ -7,6 +7,8 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -16,7 +18,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_bolt_v3_boundary_evidence.py"
-SHA = "1" * 40
+UNRESOLVABLE_SHA = "1" * 40
 
 
 def load_verifier():
@@ -85,10 +87,30 @@ pub const BOUNDARY_REGISTRY: &[BoundaryRegistryEntry] = &[
         root,
         "src/bolt_v3_providers/mod.rs",
         """
-fn reference_price_provider_metadata() {
-    client_venue_key: chainlink_reference::KEY;
-    client_venue_key: polyresearch::KEY;
+pub enum ReferencePriceIdentifierKind {
+    InstrumentId,
+    Symbol,
 }
+pub struct ReferencePriceProviderMetadata {
+    pub provider_key: &'static str,
+    pub client_venue_key: &'static str,
+    pub identifier_kind: ReferencePriceIdentifierKind,
+    pub supported_assets: &'static [&'static str],
+}
+pub const REFERENCE_PRICE_PROVIDER_METADATA: &[ReferencePriceProviderMetadata] = &[
+    ReferencePriceProviderMetadata {
+        provider_key: chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY,
+        client_venue_key: chainlink_reference::KEY,
+        identifier_kind: ReferencePriceIdentifierKind::InstrumentId,
+        supported_assets: &[],
+    },
+    ReferencePriceProviderMetadata {
+        provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
+        client_venue_key: polyresearch::KEY,
+        identifier_kind: ReferencePriceIdentifierKind::Symbol,
+        supported_assets: &[],
+    },
+];
 fn validate_reference_live_probe_block() {
     chainlink_reference::KEY;
     polyresearch::KEY;
@@ -113,9 +135,9 @@ fn connect_websocket() {
         "src/bolt_v3_providers/chainlink_reference.rs",
         """
 pub const KEY: &str = "CHAINLINK_REFERENCE_PRICE";
-fn handler(message: Message) {
+fn handler(message: WireMessage) {
     let frame_bytes = match message {
-        Message::Text(bytes) | Message::Binary(bytes) => bytes,
+        WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes,
         _ => return,
     };
 }
@@ -211,7 +233,13 @@ jobs:
         run: just source-fence
   capture:
     steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          check_suite_id="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq '.check_suite_id')"
+          echo "check_suite_id=$check_suite_id" >> "$GITHUB_OUTPUT"
       - run: ops capture-reference-boundary-fixture --root-config config/root.toml
+          --check-suite-id "${{ steps.provenance.outputs.check_suite_id }}"
       - run: echo CREDENTIAL-SSM credential_ssm_gate
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
   capture-gate:
@@ -302,12 +330,33 @@ ignore_emit_failure = false
     )
 
 
+def commit_workflow(root: Path) -> str:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Boundary Test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "boundary-test@example.invalid"], cwd=root, check=True)
+    subprocess.run(["git", "add", ".github/workflows/ci.yml"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "commit", "--no-verify", "-q", "-m", "seed workflow"],
+        cwd=root,
+        check=True,
+    )
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
 def write_fixture_and_artifact(root: Path) -> None:
     fixture_rel = "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.bin"
     artifact_rel = "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
     write(root, fixture_rel, b"binary frame")
     fixture_sha = digest(root, fixture_rel)
     workflow_digest = digest(root, ".github/workflows/ci.yml")
+    capture_sha = commit_workflow(root)
     module = load_verifier()
     config_digest = module.ci_provenance.provenance_config_digest(
         root / "ci/chainlink-reference-fixture-capture-provenance.toml"
@@ -319,8 +368,8 @@ def write_fixture_and_artifact(root: Path) -> None:
         "workflow_path": ".github/workflows/ci.yml",
         "workflow_digest": workflow_digest,
         "provenance_config_digest": config_digest,
-        "head_sha": SHA,
-        "tested_sha": SHA,
+        "head_sha": capture_sha,
+        "tested_sha": capture_sha,
         "run_id": 1,
         "run_attempt": 1,
         "check_suite_id": 1,
@@ -360,9 +409,30 @@ signature_verified = false
 fixture = "chainlink-reference-frame.bin"
 fixture_sha256 = "{fixture_sha}"
 capture_artifact = "chainlink-reference-capture.zip"
-capture_head_sha = "{SHA}"
+capture_head_sha = "{capture_sha}"
 capture_head_branch = "seed-branch"
 """,
+    )
+
+
+def mutate_capture_record(root: Path, mutator) -> None:
+    artifact_path = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
+    with zipfile.ZipFile(artifact_path) as archive:
+        record = json.loads(archive.read("ci-provenance.json").decode("utf-8"))
+    mutator(record)
+    with zipfile.ZipFile(artifact_path, "w") as archive:
+        archive.writestr("ci-provenance.json", json.dumps(record, sort_keys=True))
+
+
+def replace_capture_head_sha(root: Path, sha: str) -> None:
+    sidecar = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml"
+    sidecar.write_text(
+        re.sub(
+            r'capture_head_sha = "[0-9a-f]{40}"',
+            f'capture_head_sha = "{sha}"',
+            sidecar.read_text(encoding="utf-8"),
+        ),
+        encoding="utf-8",
     )
 
 
@@ -398,7 +468,7 @@ def test_parser_only_chainlink_handler_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/chainlink_reference.rs"
         text = path.read_text(encoding="utf-8")
-        path.write_text(text.replace("Message::Text(bytes) | Message::Binary(bytes) => bytes", "message.as_text().unwrap()"), encoding="utf-8")
+        path.write_text(text.replace("WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes", "message.as_text().unwrap()"), encoding="utf-8")
 
     findings = scan_temp(mutate)
     assert_finding(findings, "must accept Text and Binary")
@@ -409,7 +479,7 @@ def test_registered_text_only_handler_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/chainlink_reference.rs"
         text = path.read_text(encoding="utf-8")
-        path.write_text(text.replace("Message::Text(bytes) | Message::Binary(bytes) => bytes", "Message::Text(bytes) => bytes"), encoding="utf-8")
+        path.write_text(text.replace("WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes", "WireMessage::Text(bytes) => bytes"), encoding="utf-8")
 
     assert_finding(scan_temp(mutate), "must accept Text and Binary")
 
@@ -432,15 +502,20 @@ def test_missing_committed_real_capture_decode_test_fails() -> None:
     )
 
 
-def test_new_ws_provider_without_registry_fails() -> None:
+def test_string_literal_non_reference_metadata_provider_without_registry_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "src/bolt_v3_providers/mod.rs"
         text = path.read_text(encoding="utf-8")
         path.write_text(
             text.replace(
-                "    ProviderBinding { key: polyresearch::KEY },\n",
-                "    ProviderBinding { key: polyresearch::KEY },\n"
-                "    ProviderBinding { key: new_reference::KEY },\n",
+                "];\nfn validate_reference_live_probe_block()",
+                '    ReferencePriceProviderMetadata {\n'
+                '        provider_key: pyth::REFERENCE_PRICE_PROVIDER_KEY,\n'
+                '        client_venue_key: "PYTH_REFERENCE_PRICE",\n'
+                '        identifier_kind: ReferencePriceIdentifierKind::Symbol,\n'
+                '        supported_assets: &[],\n'
+                '    },\n'
+                "];\nfn validate_reference_live_probe_block()",
             ),
             encoding="utf-8",
         )
@@ -448,12 +523,27 @@ def test_new_ws_provider_without_registry_fails() -> None:
     findings = scan_temp(mutate)
     assert_finding(
         findings,
-        "missing registry entry ('new_reference::KEY', 'WebSocketFrame', 'ReferenceCurrentPriceHealth')",
+        "missing registry entry ('\"PYTH_REFERENCE_PRICE\"', 'WebSocketFrame', 'ReferenceCurrentPriceHealth')",
     )
     assert_finding(
         findings,
-        "missing registry entry ('new_reference::KEY', 'WebSocketFrame', 'ReferenceLiveProbe')",
+        "missing registry entry ('\"PYTH_REFERENCE_PRICE\"', 'WebSocketFrame', 'ReferenceLiveProbe')",
     )
+
+
+def test_stale_registry_row_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/boundary_registry.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "];\n",
+                "    BoundaryRegistryEntry { adapter_id: stale_reference::KEY, class: BoundaryEvidenceClass::WebSocketFrame, feeder: BoundaryFeeder::ReferenceLiveProbe },\n];\n",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "unexpected registry entry")
 
 
 def test_unbound_invented_fixture_fails() -> None:
@@ -466,7 +556,7 @@ def test_unbound_invented_fixture_fails() -> None:
     assert_finding(scan_temp(mutate), "fixture_sha256 does not match")
 
 
-def test_capture_artifact_remains_bound_after_workflow_changes() -> None:
+def test_capture_artifact_uses_tested_sha_workflow_digest_after_workflow_changes() -> None:
     def mutate(root: Path) -> None:
         path = root / ".github/workflows/ci.yml"
         path.write_text(
@@ -475,6 +565,81 @@ def test_capture_artifact_remains_bound_after_workflow_changes() -> None:
         )
 
     assert scan_temp(mutate) == []
+
+
+def test_unresolvable_capture_workflow_sha_fails_closed() -> None:
+    def mutate(root: Path) -> None:
+        mutate_capture_record(
+            root,
+            lambda record: record.update(
+                {"head_sha": UNRESOLVABLE_SHA, "tested_sha": UNRESOLVABLE_SHA}
+            ),
+        )
+        replace_capture_head_sha(root, UNRESOLVABLE_SHA)
+
+    assert_finding(scan_temp(mutate), "is not resolvable at tested_sha")
+
+
+def test_unresolvable_capture_workflow_sha_defers_to_remote_resolver_in_ci() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        clean_files(root)
+        mutate_capture_record(
+            root,
+            lambda record: record.update(
+                {"head_sha": UNRESOLVABLE_SHA, "tested_sha": UNRESOLVABLE_SHA}
+            ),
+        )
+        replace_capture_head_sha(root, UNRESOLVABLE_SHA)
+        artifact = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-capture.zip"
+
+        calls: list[tuple[str, str]] = []
+        original_remote_context = verifier.remote_fixture_context
+        original_resolve = verifier.ci_provenance.resolve_exact_sha_evidence
+
+        def fake_remote_context(scan_root: Path, findings: list[str]):
+            if scan_root != root:
+                raise AssertionError(f"unexpected scan root {scan_root}")
+            return ("seungpyoson/bolt-v2", "token", "999")
+
+        def fake_resolve_exact_sha_evidence(**kwargs):
+            calls.append((str(kwargs["requested_sha"]), kwargs["config"].deploy_source_branch))
+            with zipfile.ZipFile(artifact) as archive:
+                record = json.loads(archive.read("ci-provenance.json").decode("utf-8"))
+            return verifier.ci_provenance.ResolvedEvidence(
+                run={},
+                artifact={},
+                record=record,
+            )
+
+        try:
+            verifier.remote_fixture_context = fake_remote_context
+            verifier.ci_provenance.resolve_exact_sha_evidence = fake_resolve_exact_sha_evidence
+            findings = verifier.scan_root(root, today=dt.date(2026, 6, 26))
+        finally:
+            verifier.remote_fixture_context = original_remote_context
+            verifier.ci_provenance.resolve_exact_sha_evidence = original_resolve
+
+        if findings:
+            raise AssertionError(f"expected remote resolver to validate unresolvable local SHA: {findings}")
+        if calls != [(UNRESOLVABLE_SHA, "seed-branch")]:
+            raise AssertionError(f"unexpected resolver calls {calls}")
+
+
+def test_capture_workflow_must_not_use_run_id_as_check_suite_id() -> None:
+    def mutate(root: Path) -> None:
+        path = root / ".github/workflows/ci.yml"
+        text = path.read_text(encoding="utf-8")
+        expected = '--check-suite-id "${{ steps.provenance.outputs.check_suite_id }}"'
+        if expected not in text:
+            raise AssertionError("clean workflow fixture missing check_suite_id output binding")
+        path.write_text(
+            text.replace(expected, '--check-suite-id "${{ github.run_id }}"'),
+            encoding="utf-8",
+        )
+
+    assert_finding(scan_temp(mutate), "capture provenance must use workflow run check_suite_id")
 
 
 def test_expired_deferral_fails() -> None:
@@ -492,7 +657,27 @@ def test_raw_connect_outside_wire_boundary_fails() -> None:
     def mutate(root: Path) -> None:
         write(root, "src/raw_connect.rs", "fn f() { WebSocketClient::connect_url(); }\n")
 
-    assert_finding(scan_temp(mutate), "raw NT connect call WebSocketClient::connect_url")
+    assert_finding(scan_temp(mutate), "raw NT wire symbol WebSocketClient connect primitive")
+
+
+def test_websocket_inner_and_aliased_client_import_outside_wire_boundary_fail() -> None:
+    def mutate(root: Path) -> None:
+        write(
+            root,
+            "src/raw_connect.rs",
+            """
+use nautilus_network::websocket::WebSocketClient as Ws;
+
+async fn f() {
+    WebSocketClientInner::connect_url();
+    Ws::connect();
+}
+""",
+        )
+
+    findings = scan_temp(mutate)
+    assert_finding(findings, "raw NT wire module path nautilus_network::websocket")
+    assert_finding(findings, "raw NT wire symbol WebSocketClientInner")
 
 
 if __name__ == "__main__":

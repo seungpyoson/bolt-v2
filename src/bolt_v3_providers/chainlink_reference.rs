@@ -29,12 +29,7 @@ use nautilus_model::{
     data::Data,
     identifiers::{ClientId, Venue},
 };
-use nautilus_network::{
-    http::USER_AGENT,
-    mode::ConnectionMode,
-    transport::Message,
-    websocket::{MessageHandler, TransportBackend, WebSocketClient, WebSocketConfig},
-};
+use nautilus_network::{http::USER_AGENT, mode::ConnectionMode};
 use serde::Deserialize;
 use url::Url;
 use zeroize::Zeroizing;
@@ -60,7 +55,9 @@ use crate::{
         ReferenceQuoteProvenance,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
-    bolt_v3_wire_boundary,
+    bolt_v3_wire_boundary::{
+        self, BoundaryWebSocket, TransportBackend, WebSocketConfig, WireMessage, WireMessageHandler,
+    },
 };
 
 pub const KEY: &str = "CHAINLINK_REFERENCE_PRICE";
@@ -222,7 +219,7 @@ struct ChainlinkReferencePriceClient {
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
     subscriptions:
         Arc<Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>>,
-    websocket: Option<WebSocketClient>,
+    websocket: Option<BoundaryWebSocket>,
     connected: bool,
 }
 
@@ -288,7 +285,7 @@ impl DataClient for ChainlinkReferencePriceClient {
             self.connected,
             self.websocket
                 .as_ref()
-                .map(WebSocketClient::connection_mode),
+                .map(BoundaryWebSocket::connection_mode),
         )
     }
 
@@ -597,10 +594,10 @@ fn chainlink_reference_message_handler(
         Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
     >,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
-) -> MessageHandler {
-    Arc::new(move |message: Message| {
+) -> WireMessageHandler {
+    Arc::new(move |message: WireMessage| {
         let frame_bytes = match message {
-            Message::Text(bytes) | Message::Binary(bytes) => bytes,
+            WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes,
             _ => return,
         };
         let frame = match std::str::from_utf8(frame_bytes.as_ref()) {
@@ -1369,7 +1366,7 @@ mod tests {
             client.data_sender.clone(),
         );
 
-        handler(Message::text(chainlink_report_frame_json()));
+        handler(WireMessage::text(chainlink_report_frame_json()));
 
         let event = data_receiver
             .try_recv()
@@ -1425,7 +1422,7 @@ mod tests {
             client.data_sender.clone(),
         );
 
-        handler(Message::binary(chainlink_report_frame_json()));
+        handler(WireMessage::binary(chainlink_report_frame_json()));
 
         assert_chainlink_reference_update(
             data_receiver
@@ -1465,7 +1462,7 @@ mod tests {
             client.data_sender.clone(),
         );
 
-        handler(Message::binary(frame_bytes.to_vec()));
+        handler(WireMessage::binary(frame_bytes.to_vec()));
 
         let event = data_receiver
             .try_recv()
@@ -1506,7 +1503,7 @@ mod tests {
             client.data_sender.clone(),
         );
 
-        handler(Message::binary(vec![0xff, 0xfe, 0xfd]));
+        handler(WireMessage::binary(vec![0xff, 0xfe, 0xfd]));
 
         let error = data_receiver
             .try_recv()
@@ -1533,7 +1530,7 @@ mod tests {
             client.data_sender.clone(),
         );
 
-        handler(Message::binary(chainlink_report_frame_json()));
+        handler(WireMessage::binary(chainlink_report_frame_json()));
 
         let error = data_receiver.try_recv().expect_err(
             "text-only Chainlink handler mutation must drop the provider's binary frame",
@@ -1560,7 +1557,7 @@ mod tests {
             client.data_sender.clone(),
         );
 
-        handler(Message::binary(chainlink_report_frame_json()));
+        handler(WireMessage::binary(chainlink_report_frame_json()));
 
         assert!(
             data_receiver.try_recv().is_err(),
@@ -1610,9 +1607,9 @@ mod tests {
             Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
         >,
         data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
-    ) -> MessageHandler {
-        Arc::new(move |message: Message| {
-            let Message::Text(bytes) = message else {
+    ) -> WireMessageHandler {
+        Arc::new(move |message: WireMessage| {
+            let WireMessage::Text(bytes) = message else {
                 return;
             };
             let frame = match std::str::from_utf8(bytes.as_ref()) {

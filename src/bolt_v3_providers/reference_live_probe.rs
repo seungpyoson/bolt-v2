@@ -7,18 +7,14 @@ use std::{
 };
 
 use anyhow::{Context, anyhow};
-use nautilus_network::{
-    mode::ConnectionMode,
-    transport::Message,
-    websocket::{MessageHandler, PingHandler},
-};
+use nautilus_network::mode::ConnectionMode;
 use serde::Serialize;
 
 use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_providers::{chainlink_reference, polyresearch},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
-    bolt_v3_wire_boundary,
+    bolt_v3_wire_boundary::{self, WireMessage, WireMessageHandler, WirePingHandler},
 };
 
 #[derive(Debug, Serialize)]
@@ -153,14 +149,14 @@ async fn probe_chainlink_reference(
     let data_frames = Arc::new(AtomicU64::new(0));
     let server_pings = Arc::new(AtomicU64::new(0));
     let handler_data_frames = Arc::clone(&data_frames);
-    let handler: MessageHandler = Arc::new(move |message| match message {
-        Message::Text(_) | Message::Binary(_) => {
+    let handler: WireMessageHandler = Arc::new(move |message| match message {
+        WireMessage::Text(_) | WireMessage::Binary(_) => {
             handler_data_frames.fetch_add(1, Ordering::SeqCst);
         }
-        Message::Ping(_) | Message::Pong(_) | Message::Close(_) => {}
+        WireMessage::Ping(_) | WireMessage::Pong(_) | WireMessage::Close => {}
     });
     let ping_counter = Arc::clone(&server_pings);
-    let ping_handler: PingHandler = Arc::new(move |_| {
+    let ping_handler: WirePingHandler = Arc::new(move |_| {
         ping_counter.fetch_add(1, Ordering::SeqCst);
     });
     let websocket_config = chainlink_reference::reference_price_websocket_config(config)
@@ -207,14 +203,14 @@ async fn probe_polyresearch_reference(
     let data_frames = Arc::new(AtomicU64::new(0));
     let server_pings = Arc::new(AtomicU64::new(0));
     let handler_data_frames = Arc::clone(&data_frames);
-    let handler: MessageHandler = Arc::new(move |message| match message {
-        Message::Text(_) | Message::Binary(_) => {
+    let handler: WireMessageHandler = Arc::new(move |message| match message {
+        WireMessage::Text(_) | WireMessage::Binary(_) => {
             handler_data_frames.fetch_add(1, Ordering::SeqCst);
         }
-        Message::Ping(_) | Message::Pong(_) | Message::Close(_) => {}
+        WireMessage::Ping(_) | WireMessage::Pong(_) | WireMessage::Close => {}
     });
     let ping_counter = Arc::clone(&server_pings);
-    let ping_handler: PingHandler = Arc::new(move |_| {
+    let ping_handler: WirePingHandler = Arc::new(move |_| {
         ping_counter.fetch_add(1, Ordering::SeqCst);
     });
     let websocket_config = polyresearch::reference_price_websocket_config(config)

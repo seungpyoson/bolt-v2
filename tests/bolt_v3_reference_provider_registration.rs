@@ -1,12 +1,72 @@
 use bolt_v2::{
+    bolt_v3_boundary_registry::{BOUNDARY_REGISTRY, BoundaryEvidenceClass, BoundaryFeeder},
     bolt_v3_config::ClientBlock,
     bolt_v3_providers::{
-        binding_for_provider_key, chainlink_reference, polyresearch, validate_client_block,
+        ReferencePriceIdentifierKind, ReferencePriceProviderMetadata, binding_for_provider_key,
+        chainlink_reference, polyresearch, reference_price_provider_metadata_entries,
+        validate_client_block,
     },
 };
 
+const REQUIRED_REFERENCE_PRICE_FEEDERS: [BoundaryFeeder; 2] = [
+    BoundaryFeeder::ReferenceCurrentPriceHealth,
+    BoundaryFeeder::ReferenceLiveProbe,
+];
+
 fn client_from_toml(toml: &str) -> ClientBlock {
     toml::from_str(toml).expect("test client block should parse")
+}
+
+fn missing_websocket_frame_registry_rows(
+    metadata_entries: &[ReferencePriceProviderMetadata],
+) -> Vec<(&'static str, BoundaryFeeder)> {
+    let mut missing = Vec::new();
+    for metadata in metadata_entries {
+        for feeder in REQUIRED_REFERENCE_PRICE_FEEDERS {
+            let registered = BOUNDARY_REGISTRY.iter().any(|entry| {
+                entry.adapter_id == metadata.client_venue_key
+                    && entry.class == BoundaryEvidenceClass::WebSocketFrame
+                    && entry.feeder == feeder
+            });
+            if !registered {
+                missing.push((metadata.client_venue_key, feeder));
+            }
+        }
+    }
+    missing
+}
+
+#[test]
+fn reference_price_providers_have_websocket_frame_boundary_registry_rows() {
+    let missing =
+        missing_websocket_frame_registry_rows(reference_price_provider_metadata_entries());
+    assert!(
+        missing.is_empty(),
+        "reference price provider metadata missing WebSocketFrame registry row(s): {missing:?}"
+    );
+}
+
+#[test]
+fn boundary_registry_completeness_rejects_string_literal_non_reference_provider_key() {
+    let planted = [ReferencePriceProviderMetadata {
+        provider_key: "pyth_ws",
+        client_venue_key: "PYTH_REFERENCE_PRICE",
+        identifier_kind: ReferencePriceIdentifierKind::Symbol,
+        supported_assets: &[],
+    }];
+
+    let missing = missing_websocket_frame_registry_rows(&planted);
+
+    assert_eq!(
+        missing,
+        vec![
+            (
+                "PYTH_REFERENCE_PRICE",
+                BoundaryFeeder::ReferenceCurrentPriceHealth
+            ),
+            ("PYTH_REFERENCE_PRICE", BoundaryFeeder::ReferenceLiveProbe),
+        ]
+    );
 }
 
 #[test]

@@ -46,14 +46,26 @@ REQUIRED_NON_WS_EXEMPTIONS = {
     ("Imdsv2HostFactsSource", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AwsSsmSecretSource", "AwsSdkResponse", "SecretResolution"),
 }
-FORBIDDEN_CONNECT_PATTERNS = {
-    r"\bWebSocketClient::connect\(": "WebSocketClient::connect",
-    r"\bWebSocketClient::connect_url\(": "WebSocketClient::connect_url",
-    r"\bWebSocketClient::connect_with_server\(": "WebSocketClient::connect_with_server",
-    r"\bWebSocketClient::connect_stream\(": "WebSocketClient::connect_stream",
-    r"\bWebSocketClient::connect_with_rate_limiter\(": "WebSocketClient::connect_with_rate_limiter",
-    r"(?<!Web)\bSocketClient::connect\(": "SocketClient::connect",
+FORBIDDEN_NT_WIRE_PATH_PATTERNS = {
+    r"\bnautilus_network\s*::\s*websocket\s*::": "nautilus_network::websocket",
+    r"\buse\s+nautilus_network\s*::\s*\{[^;]*\bwebsocket\s*::": "nautilus_network::{websocket::...}",
+    r"\bnautilus_network\s*::\s*transport\s*::\s*Message\b": "nautilus_network::transport::Message",
+    r"\buse\s+nautilus_network\s*::\s*\{[^;]*\btransport\s*::\s*Message\b": "nautilus_network::{transport::Message}",
+    r"\bnautilus_network\s*::\s*socket\s*::\s*SocketClient\b": "nautilus_network::socket::SocketClient",
+    r"\buse\s+nautilus_network\s*::\s*\{[^;]*\bsocket\s*::\s*SocketClient\b": "nautilus_network::{socket::SocketClient}",
 }
+FORBIDDEN_NT_WIRE_SYMBOL_PATTERNS = {
+    r"\bWebSocketClientInner\b": "WebSocketClientInner",
+    r"\bWebSocketClient\s*::\s*(connect|connect_url|connect_with_server|connect_stream|connect_with_rate_limiter)\s*\(": "WebSocketClient connect primitive",
+    r"\bMessageReader\b": "MessageReader",
+    r"\bMessageHandler\b": "MessageHandler",
+    r"(?<!Web)\bSocketClient\s*::\s*connect\s*\(": "SocketClient::connect",
+    r"(?<!Web)\bSocketClient\b": "SocketClient",
+}
+FORBIDDEN_WIRE_BOUNDARY_REEXPORT_PATTERN = (
+    r"\bpub\s+(?:use|type)\b[^\n;]*"
+    r"\b(WebSocketClient|WebSocketClientInner|MessageReader|MessageHandler|SocketClient)\b"
+)
 ALLOWED_AWS_SSM_PATHS = {
     "src/secrets.rs",
 }
@@ -73,6 +85,60 @@ def line_number(text: str, pos: int) -> int:
 
 def line_at(text: str, pos: int) -> str:
     return text.splitlines()[line_number(text, pos) - 1].strip()
+
+
+def strip_string_literals_preserve_lines(text: str) -> str:
+    output: list[str] = []
+    i = 0
+    quote: str | None = None
+    raw_string_closer: str | None = None
+    escaped = False
+
+    while i < len(text):
+        char = text[i]
+
+        if raw_string_closer is not None:
+            if text.startswith(raw_string_closer, i):
+                output.extend(" " for _ in raw_string_closer)
+                i += len(raw_string_closer)
+                raw_string_closer = None
+                continue
+            output.append("\n" if char == "\n" else " ")
+            i += 1
+            continue
+
+        if quote is not None:
+            output.append("\n" if char == "\n" else " ")
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            i += 1
+            continue
+
+        if char == "r":
+            match = re.match(r'r(#+)?"', text[i:])
+            if match is not None:
+                hashes = match.group(1) or ""
+                opener_len = len(match.group(0))
+                raw_string_closer = f'"{hashes}'
+                output.extend(" " for _ in range(opener_len))
+                i += opener_len
+                continue
+
+        if char == '"':
+            quote = char
+            escaped = False
+            output.append(" ")
+            i += 1
+            continue
+
+        output.append(char)
+        i += 1
+
+    return "".join(output)
 
 
 def registry_entries(text: str) -> set[tuple[str, str, str]]:
@@ -98,15 +164,20 @@ def provider_binding_keys(text: str, findings: list[str]) -> set[str]:
         return set()
     return {
         key.strip()
-        for key in re.findall(r"\bkey:\s*([A-Za-z0-9_:]+)", match.group("body"))
+        for key in re.findall(r'\bkey:\s*("[^"]+"|[A-Za-z0-9_:]+)', match.group("body"))
     }
 
 
 def reference_price_metadata_client_keys(text: str) -> set[str]:
-    return {
-        key.strip()
-        for key in re.findall(r"\bclient_venue_key:\s*([A-Za-z0-9_:]+)", text)
-    }
+    keys: set[str] = set()
+    for match in re.finditer(r"ReferencePriceProviderMetadata\s*\{(?P<body>.*?)\}", text, re.DOTALL):
+        client_key = re.search(
+            r'\bclient_venue_key:\s*("[^"]+"|[A-Za-z0-9_:]+)',
+            match.group("body"),
+        )
+        if client_key is not None:
+            keys.add(client_key.group(1).strip())
+    return keys
 
 
 def reference_live_probe_client_keys(text: str) -> set[str]:
@@ -138,9 +209,7 @@ def required_ws_registry_entries(provider_mod: str, findings: list[str]) -> set[
     binding_keys = provider_binding_keys(provider_mod, findings)
     metadata_keys = reference_price_metadata_client_keys(provider_mod)
     live_probe_keys = reference_live_probe_client_keys(provider_mod)
-    reference_keys = (
-        metadata_keys | live_probe_keys | reference_named_provider_binding_keys(binding_keys)
-    )
+    reference_keys = metadata_keys | live_probe_keys
     for key in sorted(metadata_keys | live_probe_keys):
         if key not in binding_keys:
             findings.append(
@@ -182,6 +251,9 @@ def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
     missing = sorted(required_entries - entries)
     for entry in missing:
         findings.append(f"{REGISTRY}: missing registry entry {entry}")
+    extra = sorted(entries - required_entries)
+    for entry in extra:
+        findings.append(f"{REGISTRY}: unexpected registry entry {entry}")
 
     extra_http = sorted(entry for entry in entries if entry[1] == "HttpResponseBody")
     if extra_http:
@@ -295,11 +367,23 @@ def scan_wire_boundary(root: Path, findings: list[str]) -> None:
     for path in (root / "src").rglob("*.rs"):
         rel = path.relative_to(root).as_posix()
         text = production_text(path.read_text(encoding="utf-8"))
-        for pattern, label in FORBIDDEN_CONNECT_PATTERNS.items():
-            for match in re.finditer(pattern, text):
-                if rel == WIRE_BOUNDARY.as_posix() and label == "WebSocketClient::connect":
-                    continue
-                findings.append(f"{rel}:{line_number(text, match.start())}: raw NT connect call {label}")
+        scan_text = strip_string_literals_preserve_lines(text)
+        if rel == WIRE_BOUNDARY.as_posix():
+            for match in re.finditer(FORBIDDEN_WIRE_BOUNDARY_REEXPORT_PATTERN, scan_text):
+                findings.append(
+                    f"{rel}:{line_number(scan_text, match.start())}: wire boundary must not re-export raw NT wire symbol {match.group(1)}"
+                )
+        else:
+            for pattern, label in FORBIDDEN_NT_WIRE_PATH_PATTERNS.items():
+                for match in re.finditer(pattern, scan_text, re.DOTALL):
+                    findings.append(
+                        f"{rel}:{line_number(scan_text, match.start())}: raw NT wire module path {label} must go through {WIRE_BOUNDARY}"
+                    )
+            for pattern, label in FORBIDDEN_NT_WIRE_SYMBOL_PATTERNS.items():
+                for match in re.finditer(pattern, scan_text):
+                    findings.append(
+                        f"{rel}:{line_number(scan_text, match.start())}: raw NT wire symbol {label} must go through {WIRE_BOUNDARY}"
+                    )
 
         if rel not in ALLOWED_AWS_SSM_PATHS and re.search(r"\baws_sdk_ssm::|\baws_sdk_ssm\b", text):
             findings.append(f"{rel}: aws_sdk_ssm usage must go through the registered SSM boundary")
@@ -324,7 +408,7 @@ def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
         if f"fn {name}" not in chainlink:
             findings.append(f"src/bolt_v3_providers/chainlink_reference.rs: missing test {name}")
     production = production_text(chainlink)
-    if "Message::Text(bytes) | Message::Binary(bytes)" not in production:
+    if "WireMessage::Text(bytes) | WireMessage::Binary(bytes)" not in production:
         findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must accept Text and Binary frames")
     if re.search(r"\.as_text\(", production):
         findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must not use parser-only as_text")
@@ -364,19 +448,17 @@ def remote_fixture_context(root: Path, findings: list[str]) -> tuple[str, str, s
 
 def capture_workflow_digest(root: Path, config: ci_provenance.ProvenanceConfig, record: dict[str, object]) -> str | None:
     tested_sha = record.get("tested_sha")
-    if isinstance(tested_sha, str) and re.fullmatch(r"[0-9a-f]{40}", tested_sha):
-        result = subprocess.run(
-            ["git", "-C", str(root), "show", f"{tested_sha}:{config.workflow_path}"],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        if result.returncode == 0:
-            return hashlib.sha256(result.stdout).hexdigest()
-    workflow_digest = record.get("workflow_digest")
-    if isinstance(workflow_digest, str):
-        return workflow_digest
-    return None
+    if not isinstance(tested_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", tested_sha):
+        raise ci_provenance.ProvenanceError("record tested_sha must be a 40-character hex SHA")
+    result = subprocess.run(
+        ["git", "-C", str(root), "show", f"{tested_sha}:{config.workflow_path}"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if result.returncode != 0:
+        return None
+    return hashlib.sha256(result.stdout).hexdigest()
 
 
 def scan_fixture_origin(root: Path, findings: list[str]) -> None:
@@ -436,13 +518,22 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
                 config,
                 deploy_source_branch=str(data["capture_head_branch"]),
             )
-            ci_provenance.validate_exact_sha_record(
-                record,
-                sidecar_config,
-                requested_sha=str(data["capture_head_sha"]),
-                config_path=config_path,
-                expected_workflow_digest=capture_workflow_digest(root, config, record),
-            )
+            workflow_digest = capture_workflow_digest(root, config, record)
+            if workflow_digest is None:
+                if remote_context is None:
+                    findings.append(
+                        f"{rel}: invalid capture artifact provenance: workflow {config.workflow_path} "
+                        f"is not resolvable at tested_sha {record.get('tested_sha')}"
+                    )
+                    continue
+            else:
+                ci_provenance.validate_exact_sha_record(
+                    record,
+                    sidecar_config,
+                    requested_sha=str(data["capture_head_sha"]),
+                    config_path=config_path,
+                    expected_workflow_digest=workflow_digest,
+                )
         except ci_provenance.ProvenanceError as exc:
             findings.append(f"{rel}: invalid capture artifact provenance: {exc}")
             continue
@@ -520,6 +611,10 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
     workflow = read(root, workflow_path)
     if "schedule:" in workflow:
         findings.append(f"{workflow_path}: recurring schedule is out of scope")
+    if '--check-suite-id "${{ github.run_id }}"' in workflow:
+        findings.append(
+            f"{workflow_path}: capture provenance must use workflow run check_suite_id, not github.run_id"
+        )
     for needle in (
         "capture_reference_boundary_fixture",
         "credential_ssm_gate",
@@ -527,6 +622,10 @@ def scan_static_wiring(root: Path, findings: list[str]) -> None:
         "capture-gate",
         "ops capture-reference-boundary-fixture",
         "--root-config",
+        "GH_TOKEN: ${{ github.token }}",
+        'gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq \'.check_suite_id\'',
+        'echo "check_suite_id=$check_suite_id"',
+        '--check-suite-id "${{ steps.provenance.outputs.check_suite_id }}"',
         "GITHUB_TOKEN: ${{ github.token }}",
         "GITHUB_REPOSITORY: ${{ github.repository }}",
         "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",

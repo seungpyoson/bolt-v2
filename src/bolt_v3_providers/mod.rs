@@ -578,26 +578,33 @@ pub struct ReferencePriceProviderMetadata {
     pub supported_assets: &'static [&'static str],
 }
 
+pub const REFERENCE_PRICE_PROVIDER_METADATA: &[ReferencePriceProviderMetadata] = &[
+    ReferencePriceProviderMetadata {
+        provider_key: chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY,
+        client_venue_key: chainlink_reference::KEY,
+        identifier_kind: ReferencePriceIdentifierKind::InstrumentId,
+        supported_assets: &[],
+    },
+    ReferencePriceProviderMetadata {
+        provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
+        client_venue_key: polyresearch::KEY,
+        identifier_kind: ReferencePriceIdentifierKind::Symbol,
+        supported_assets: &[],
+    },
+];
+
+pub const fn reference_price_provider_metadata_entries() -> &'static [ReferencePriceProviderMetadata]
+{
+    REFERENCE_PRICE_PROVIDER_METADATA
+}
+
 pub fn reference_price_provider_metadata(
     provider_key: &str,
 ) -> Option<ReferencePriceProviderMetadata> {
-    if provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY {
-        return Some(ReferencePriceProviderMetadata {
-            provider_key: chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY,
-            client_venue_key: chainlink_reference::KEY,
-            identifier_kind: ReferencePriceIdentifierKind::InstrumentId,
-            supported_assets: &[],
-        });
-    }
-    if provider_key == polyresearch::REFERENCE_PRICE_PROVIDER_KEY {
-        return Some(ReferencePriceProviderMetadata {
-            provider_key: polyresearch::REFERENCE_PRICE_PROVIDER_KEY,
-            client_venue_key: polyresearch::KEY,
-            identifier_kind: ReferencePriceIdentifierKind::Symbol,
-            supported_assets: &[],
-        });
-    }
-    None
+    reference_price_provider_metadata_entries()
+        .iter()
+        .copied()
+        .find(|metadata| metadata.provider_key == provider_key)
 }
 
 pub fn reference_price_provider_supports_asset(provider_key: &str, asset: &str) -> bool {

@@ -8,13 +8,13 @@ use std::{
 };
 
 use anyhow::Result;
-use nautilus_network::{transport::Message, websocket::MessageHandler};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_config::LoadedBoltV3Config, bolt_v3_secrets::ResolvedBoltV3Secrets,
-    bolt_v3_wire_boundary,
+    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_secrets::ResolvedBoltV3Secrets,
+    bolt_v3_wire_boundary::{self, WireMessage, WireMessageHandler},
 };
 
 use super::chainlink_reference;
@@ -195,13 +195,13 @@ fn chainlink_reference_capture_handler(
     sender: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
     observed_binary_frames: Arc<AtomicUsize>,
     observed_text_frames: Arc<AtomicUsize>,
-) -> MessageHandler {
-    Arc::new(move |message: Message| match message {
-        Message::Binary(bytes) => {
+) -> WireMessageHandler {
+    Arc::new(move |message: WireMessage| match message {
+        WireMessage::Binary(bytes) => {
             observed_binary_frames.fetch_add(1, Ordering::SeqCst);
-            let _ = sender.send(bytes.to_vec());
+            let _ = sender.send(bytes);
         }
-        Message::Text(_) => {
+        WireMessage::Text(_) => {
             observed_text_frames.fetch_add(1, Ordering::SeqCst);
         }
         _ => {}

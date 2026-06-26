@@ -36,11 +36,7 @@ use nautilus_model::{
     data::Data,
     identifiers::{ClientId, Venue},
 };
-use nautilus_network::{
-    mode::ConnectionMode,
-    transport::Message,
-    websocket::{MessageHandler, TransportBackend, WebSocketClient, WebSocketConfig},
-};
+use nautilus_network::mode::ConnectionMode;
 use serde::{Deserialize, Serialize};
 use url::Url;
 use zeroize::Zeroizing;
@@ -61,7 +57,9 @@ use crate::{
         ReferenceQuoteProvenance,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
-    bolt_v3_wire_boundary,
+    bolt_v3_wire_boundary::{
+        self, BoundaryWebSocket, TransportBackend, WebSocketConfig, WireMessage, WireMessageHandler,
+    },
 };
 
 const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";
@@ -671,14 +669,14 @@ fn polyresearch_reference_outbound_channel() -> (
 }
 
 fn polyresearch_reference_spawn_outbound_task(
-    websocket: WebSocketClient,
+    websocket: BoundaryWebSocket,
     mut receiver: tokio::sync::mpsc::UnboundedReceiver<PolyResearchReferenceOutboundCommand>,
 ) {
     get_runtime().spawn(async move {
         while let Some(command) = receiver.recv().await {
             match command {
                 PolyResearchReferenceOutboundCommand::SendText(frame) => {
-                    if let Err(error) = websocket.send_text(frame, None).await {
+                    if let Err(error) = websocket.send_text(frame).await {
                         log::warn!("PolyResearch reference outbound frame dropped: {error}");
                     }
                 }
@@ -1219,10 +1217,10 @@ fn polyresearch_reference_message_handler(
     outbound: Option<PolyResearchReferenceOutboundHandle>,
     subscribe_ack_timeout_ms: u64,
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
-) -> MessageHandler {
-    Arc::new(move |message: Message| {
+) -> WireMessageHandler {
+    Arc::new(move |message: WireMessage| {
         let frame_bytes = match message {
-            Message::Text(bytes) | Message::Binary(bytes) => bytes,
+            WireMessage::Text(bytes) | WireMessage::Binary(bytes) => bytes,
             _ => return,
         };
         let frame = match std::str::from_utf8(frame_bytes.as_ref()) {
@@ -1746,7 +1744,7 @@ mod tests {
             data_sender,
         );
 
-        handler(Message::text(
+        handler(WireMessage::text(
             r#"{"type":"price_feed","feed":"BTC/USD","timestamp":1774672588,"data":{"feed":"BTC/USD","price":66300.25,"bid":66299.5,"ask":66301.0,"timestamp":1774672588}}"#,
         ));
 
@@ -1784,7 +1782,7 @@ mod tests {
             data_sender,
         );
 
-        handler(Message::binary(
+        handler(WireMessage::binary(
             r#"{"type":"price_feed","feed":"BTC/USD","timestamp":1774672588,"data":{"feed":"BTC/USD","price":66300.25,"bid":66299.5,"ask":66301.0,"timestamp":1774672588}}"#,
         ));
 
@@ -1822,7 +1820,7 @@ mod tests {
             data_sender,
         );
 
-        handler(Message::binary(vec![0xff, 0xfe, 0xfd]));
+        handler(WireMessage::binary(vec![0xff, 0xfe, 0xfd]));
 
         let error = data_receiver
             .try_recv()
@@ -1850,7 +1848,7 @@ mod tests {
             data_sender,
         );
 
-        handler(Message::text(
+        handler(WireMessage::text(
             r#"{"type":"price_feed","feed":"ETH/USD","timestamp":1774672588,"data":{"feed":"ETH/USD","price":3000.25,"bid":2999.5,"ask":3001.0,"timestamp":1774672588}}"#,
         ));
 
@@ -2518,7 +2516,7 @@ mod tests {
             "pre-ack partial unsubscribe should wait for provider subscription_id"
         );
 
-        handler(Message::text(
+        handler(WireMessage::text(
             r#"{"type":"subscribed","subscription_id":"chainlink:btc"}"#,
         ));
         let PolyResearchReferenceOutboundCommand::SendText(unsubscribe_frame) = outbound_receiver
@@ -2542,7 +2540,7 @@ mod tests {
             r#"{"action":"subscribe","type":"chainlink","filters":{"feeds":["ETH/USD"]}}"#
         );
 
-        handler(Message::text(
+        handler(WireMessage::text(
             r#"{"type":"subscribed","subscription_id":"chainlink:eth"}"#,
         ));
         assert_eq!(

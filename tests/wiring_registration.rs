@@ -15,3 +15,6 @@ mod bolt_v3_production_readiness_contract;
 mod bolt_v3_provider_binding;
 mod bolt_v3_readiness;
 mod bolt_v3_strategy_registration;
+
+// Shared helper module (tests/support/mod.rs); not a [[test]] member.
+mod support;

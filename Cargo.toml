@@ -19,22 +19,6 @@ name = "bolt_v3_backtest_config_override"
 path = "tests/bolt_v3_backtest_config_override.rs"
 
 [[test]]
-name = "bolt_v3_basket_admission"
-path = "tests/bolt_v3_basket_admission.rs"
-
-[[test]]
-name = "bolt_v3_basket_execution"
-path = "tests/bolt_v3_basket_execution.rs"
-
-[[test]]
-name = "bolt_v3_capital_admission_recovery_equivalence"
-path = "tests/bolt_v3_capital_admission_recovery_equivalence.rs"
-
-[[test]]
-name = "bolt_v3_capital_admission_runtime_feed"
-path = "tests/bolt_v3_capital_admission_runtime_feed.rs"
-
-[[test]]
 name = "bolt_v3_dead_gate_removal"
 path = "tests/bolt_v3_dead_gate_removal.rs"
 
@@ -63,20 +47,12 @@ name = "pricing"
 path = "tests/pricing.rs"
 
 [[test]]
-name = "bolt_v3_order_intent"
-path = "tests/bolt_v3_order_intent.rs"
-
-[[test]]
-name = "bolt_v3_order_reject_observer_feed"
-path = "tests/bolt_v3_order_reject_observer_feed.rs"
+name = "admission_orders"
+path = "tests/admission_orders.rs"
 
 [[test]]
 name = "bolt_v3_polyresearch_auth"
 path = "tests/bolt_v3_polyresearch_auth.rs"
-
-[[test]]
-name = "bolt_v3_submit_admission"
-path = "tests/bolt_v3_submit_admission.rs"
 
 [[test]]
 name = "build_script_git_head_rerun_paths"

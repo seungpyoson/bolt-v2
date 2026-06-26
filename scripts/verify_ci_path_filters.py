@@ -158,7 +158,7 @@ def docs_only_safe(
         if not normalized:
             raise PathFilterError("changed file list contains an empty path")
         if normalized in forbidden_paths:
-            raise PathFilterError(f"forbidden ignored build path changed: {path}")
+            return False
         if not any(path_matches_pattern(normalized, pattern) for pattern in safe_paths):
             return False
     return True

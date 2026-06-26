@@ -2473,6 +2473,143 @@ def assert_gate_carry_forward_newest_failure_blocks_across_pages() -> None:
         )
 
 
+def assert_gate_carry_forward_refuses_page_cap_without_natural_boundary() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 1").replace(
+                "max_lookback_pages = 10", "max_lookback_pages = 2"
+            ),
+        )
+        same_sha_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        full_page_filler = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/other.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:11:00Z",
+        )
+        hidden_same_sha_failure = run_payload(
+            id=RUN_ID + 2,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:12:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[same_sha_success], [full_page_filler], [hidden_same_sha_failure]],
+            jobs_by_run_id={RUN_ID: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "lookback page limit exhausted before candidate evidence was found",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 3,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_failure_tie() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        success = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        tied_failure = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        newer_failure = dict(tied_failure)
+        newer_failure["updated_at"] = "2026-06-13T00:10:01Z"
+
+        control = FakeGitHub(
+            runs_pages=[[success, newer_failure]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=control.json,
+                api_bytes=control.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+        tied = FakeGitHub(
+            runs_pages=[[success, tied_failure]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=tied.json,
+                api_bytes=tied.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
 def assert_gate_carry_forward_blocks_failure_hidden_behind_all_old_page() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
@@ -2985,6 +3122,8 @@ def main() -> int:
     assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress()
     assert_gate_carry_forward_uses_newest_success_with_provenance()
     assert_gate_carry_forward_newest_failure_blocks_across_pages()
+    assert_gate_carry_forward_refuses_page_cap_without_natural_boundary()
+    assert_gate_carry_forward_blocks_equal_updated_at_failure_tie()
     assert_gate_carry_forward_blocks_failure_hidden_behind_all_old_page()
     assert_gate_carry_forward_blocks_old_failure_rerun_after_cutoff()
     assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()

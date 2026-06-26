@@ -140,7 +140,7 @@ check-runs. This table is the single *proof source* per arrival.)
 | Required check | Docs-only PR | Code PR | Mixed PR | Merge queue | Oversized PR (manual) |
 |---|---|---|---|---|---|
 | `gate` | stub ✓ *(skip ok)* | `ci.yml` ✓ | **`ci.yml` + stub ✗ (Defect A)** | `ci.yml` ✓ | none ✗ *(non-required name, fail-closed)* |
-| `backtester-gate` | `backtester-ci` ✓ | `backtester-ci` ✓ | `backtester-ci` ✓ | `backtester-ci` ✓ *(#957)* | none *(fail-closed)* |
+| `backtester-gate` | `backtester-ci` ✓ *(re-proves; no carry-forward)* | `backtester-ci` ✓ | `backtester-ci` ✓ | `backtester-ci` ✓ *(#957; re-proves)* | none *(fail-closed)* |
 | `host-health` | **none ✗ (Defect B, narrow ignored-set only)** | `ci.yml` ✓ | `ci.yml` ✓ | `ci.yml` ✓ | none *(fail-closed)* |
 | `actionlint` | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | `actionlint.yml` ✓ | none ✗ *(fail-closed)* |
 | `coverage-enforcer` *(step 6 — **target**, not yet live; self-exempt)* | self ✓ | self ✓ | self ✓ | self ✓ | none ✗ *(fail-closed)* |
@@ -159,11 +159,14 @@ same-commit proof forward). So the registry is *(check × arrival × event) → 
 not just per content-shape. Step 6's enforcer adds a **fifth**
 required context (itself, self-exempt).*
 
-**Carry-forward is a state, not a proof source.** No-code edits and draft toggles don't
-re-test; they rely on a prior full proof on the *same commit*. With `strict=false` that prior
-green can outlive a moved base — the stale-green vector that step 1 (`strict=true`) and step 8
-(queue) close. The gate job treats these paths as "prior required success still binding + base
-fresh," never as a fresh proof.
+**Carry-forward is a state, not a proof source.** For `gate`, no-code edits and draft toggles
+don't re-test; they rely on a prior full proof on the *same commit*. With `strict=false` that
+prior green can outlive a moved base — the stale-green vector that step 1 (`strict=true`) and
+step 8 (queue) close. The gate job treats these paths as "prior required success still binding
+with a fresh base," never as a fresh proof. `backtester-gate` deliberately does not carry
+forward:
+it re-proves on every `pull_request` and `merge_group`, including no-code and draft PRs. That
+costs more CI minutes, but avoids any stale-green risk for the backtester signal.
 
 ---
 

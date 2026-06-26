@@ -257,6 +257,16 @@ def require_string_list(parent: dict[str, object], key: str, prefix: str) -> tup
     return tuple(value)
 
 
+def require_lookback_natural_boundary(
+    *,
+    last_page_len: int,
+    workflow_runs_per_page: int,
+    exhausted_message: str,
+) -> None:
+    if last_page_len >= workflow_runs_per_page:
+        raise ProvenanceError(exhausted_message)
+
+
 def policy_contract_errors(policy: dict[str, object]) -> list[str]:
     errors: list[str] = []
     missing_contract = sorted(
@@ -1595,8 +1605,11 @@ def resolve_exact_sha_evidence(
             break
 
     if not candidates:
-        if last_page_len >= config.workflow_runs_per_page:
-            raise ProvenanceError("lookback page limit exhausted before candidate evidence was found")
+        require_lookback_natural_boundary(
+            last_page_len=last_page_len,
+            workflow_runs_per_page=config.workflow_runs_per_page,
+            exhausted_message="lookback page limit exhausted before candidate evidence was found",
+        )
         raise ProvenanceError(f"no candidate provenance evidence found for exact SHA {requested_sha}")
 
     candidates.sort(
@@ -1781,6 +1794,18 @@ def missing_gate_carry_forward_provenance_error(exc: ProvenanceError, run_id: in
     return str(exc) == f"source run {run_id} has no provenance artifact"
 
 
+def gate_carry_forward_dominance_key(run: dict[str, object]) -> tuple[str, int, int]:
+    completed_non_success = (
+        as_text(run.get("status")) == "completed"
+        and as_text(run.get("conclusion")) != "success"
+    )
+    return (
+        as_text(run.get("updated_at")),
+        1 if completed_non_success else 0,
+        positive_int_value(run.get("id"), "workflow run id"),
+    )
+
+
 def resolve_gate_carry_forward(
     *,
     repo: str,
@@ -1807,6 +1832,7 @@ def resolve_gate_carry_forward(
     last_error = f"no prior successful {gate_name} check found for exact SHA {requested_sha}"
 
     candidates: list[dict[str, object]] = []
+    last_page_len = 0
     for page in range(1, config.max_lookback_pages + 1):
         runs_payload = api_json(
             repo,
@@ -1824,6 +1850,7 @@ def resolve_gate_carry_forward(
         runs = runs_payload.get("workflow_runs")
         if not isinstance(runs, list):
             raise ProvenanceError("workflow runs payload is malformed")
+        last_page_len = len(runs)
         if not runs:
             break
         for run in runs:
@@ -1863,11 +1890,14 @@ def resolve_gate_carry_forward(
         if len(runs) < config.workflow_runs_per_page:
             break
 
+    require_lookback_natural_boundary(
+        last_page_len=last_page_len,
+        workflow_runs_per_page=config.workflow_runs_per_page,
+        exhausted_message="lookback page limit exhausted before candidate evidence was found",
+    )
+
     candidates.sort(
-        key=lambda run: (
-            as_text(run.get("updated_at")),
-            positive_int_value(run.get("id"), "workflow run id"),
-        ),
+        key=gate_carry_forward_dominance_key,
         reverse=True,
     )
     saw_successful_gate_without_provenance = False

@@ -188,6 +188,7 @@ safe_paths = [
 ]
 forbidden_ignored_build_paths = [
   ".claude/rust-verification.toml",
+  ".specify/feature.json",
 ]
 non_heavy_required_jobs = ["detector"]
 

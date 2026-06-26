@@ -14,7 +14,8 @@ policy path.
 | workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs |
 | Rust source change | `src/lib.rs` | full-ci | full CI runs |
 | managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs |
-| forbidden legacy rust-verification config | `.claude/rust-verification.toml` | invalid | classifier fails closed |
+| forbidden legacy rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs |
+| feature registry input | `.specify/feature.json` | full-ci | full CI runs |
 | lockfile change | `Cargo.lock` | full-ci | full CI runs |
 | mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs |
 | ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | docs | heavy Rust lanes skip; `host-health` runs; `gate` records docs proof |
@@ -39,5 +40,9 @@ Safe ignored paths are intentionally narrow:
 - `.opencode/**`
 - `.pi/**`
 - `.specify/**`
+
+Build inputs under those otherwise safe globs are forbidden from docs-only classification and
+force full CI. Today that exception list is `.claude/rust-verification.toml` and
+`.specify/feature.json`.
 
 Do not add broad `docs/**`, `specs/**`, or `*.md` safe paths. This repo has docs/spec files that are build or test inputs.

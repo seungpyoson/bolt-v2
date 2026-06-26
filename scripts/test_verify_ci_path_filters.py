@@ -56,6 +56,7 @@ safe_paths = [
 ]
 forbidden_ignored_build_paths = [
   ".claude/rust-verification.toml",
+  ".specify/feature.json",
 ]
 non_heavy_required_jobs = ["detector"]
 """
@@ -69,7 +70,8 @@ DOCS_FIXTURE = """
 | workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs |
 | Rust source change | `src/lib.rs` | full-ci | full CI runs |
 | managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs |
-| forbidden legacy rust-verification config | `.claude/rust-verification.toml` | invalid | classifier fails closed |
+| forbidden legacy rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs |
+| feature registry input | `.specify/feature.json` | full-ci | full CI runs |
 | lockfile change | `Cargo.lock` | full-ci | full CI runs |
 | mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs |
 | ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | docs | heavy lanes skipped; `gate` records docs proof |
@@ -117,6 +119,8 @@ def assert_loads_registry_safe_paths() -> None:
             raise AssertionError(f"build-input docs/spec paths must not be safe: {registry}")
         if ".claude/rust-verification.toml" not in registry.forbidden_ignored_build_paths:
             raise AssertionError(registry)
+        if ".specify/feature.json" not in registry.forbidden_ignored_build_paths:
+            raise AssertionError(registry)
         assert_raises(
             "ci_provenance.docs.safe_paths must not include build-input path docs/**",
             lambda: module.load_docs_path_registry(
@@ -137,9 +141,13 @@ def assert_classifies_changed_paths() -> None:
     cases = {
         ("AGENTS.md",): True,
         ("SECURITY.md",): True,
-        (".codex/settings.json", ".specify/feature.json"): True,
+        (".codex/settings.json", ".specify/notes.md"): True,
         (".claude/skills/speckit-plan/SKILL.md",): True,
         (".github/ISSUE_TEMPLATE/bug.yml",): True,
+        (".specify/feature.json",): False,
+        ("./.specify/feature.json",): False,
+        (".claude/rust-verification.toml",): False,
+        ("./.claude/rust-verification.toml",): False,
         ("src/lib.rs",): False,
         (".github/workflows/ci.yml",): False,
         ("ci/rust-verification.toml",): False,
@@ -157,15 +165,30 @@ def assert_classifies_changed_paths() -> None:
         actual = module.docs_only_safe(changed, safe, forbidden)
         if actual != expected:
             raise AssertionError((changed, actual, expected))
-    assert_raises(
-        "forbidden ignored build path",
-        lambda: module.docs_only_safe((".claude/rust-verification.toml",), safe, forbidden),
-    )
-    assert_raises(
-        "forbidden ignored build path",
-        lambda: module.docs_only_safe(("./.claude/rust-verification.toml",), safe, forbidden),
-    )
     assert_raises("changed file list is empty", lambda: module.docs_only_safe((), safe, forbidden))
+
+
+def assert_forbidden_registry_paths_force_full_ci() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = pathlib.Path(tmpdir)
+        output = tmp_path / "github-output"
+        changed = tmp_path / "changed.txt"
+        config = write_config(tmp_path)
+        changed.write_text(".specify/feature.json\n", encoding="utf-8")
+        assert_raises(
+            "changed files are not docs-only ignored-safe",
+            lambda: module.classify_changed_file_path(
+                changed,
+                output,
+                config_path=config,
+                require_docs_only=True,
+                verbose=False,
+            ),
+        )
+        text = output.read_text(encoding="utf-8")
+    if "docs_only=false" not in text:
+        raise AssertionError(text)
 
 
 def assert_verifies_docs_rows() -> None:
@@ -238,6 +261,7 @@ def assert_verifies_rust_policy_location() -> None:
 def main() -> int:
     assert_loads_registry_safe_paths()
     assert_classifies_changed_paths()
+    assert_forbidden_registry_paths_force_full_ci()
     assert_verifies_docs_rows()
     assert_writes_github_output()
     assert_input_reads_are_bounded()

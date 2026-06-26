@@ -59,16 +59,16 @@ name = "bolt_v3_fair_value_pricing"
 path = "tests/bolt_v3_fair_value_pricing.rs"
 
 [[test]]
-name = "bolt_v3_hyperliquid_outcome_groups"
-path = "tests/bolt_v3_hyperliquid_outcome_groups.rs"
-
-[[test]]
 name = "bolt_v3_instrument_filters"
 path = "tests/bolt_v3_instrument_filters.rs"
 
 [[test]]
 name = "iv"
 path = "tests/iv.rs"
+
+[[test]]
+name = "outcome_groups"
+path = "tests/outcome_groups.rs"
 
 [[test]]
 name = "bolt_v3_kill_switch"
@@ -125,18 +125,6 @@ path = "tests/bolt_v3_order_intent.rs"
 [[test]]
 name = "bolt_v3_order_reject_observer_feed"
 path = "tests/bolt_v3_order_reject_observer_feed.rs"
-
-[[test]]
-name = "bolt_v3_outcome_group_scanner"
-path = "tests/bolt_v3_outcome_group_scanner.rs"
-
-[[test]]
-name = "bolt_v3_outcome_groups"
-path = "tests/bolt_v3_outcome_groups.rs"
-
-[[test]]
-name = "bolt_v3_polymarket_outcome_groups"
-path = "tests/bolt_v3_polymarket_outcome_groups.rs"
 
 [[test]]
 name = "bolt_v3_polyresearch_auth"

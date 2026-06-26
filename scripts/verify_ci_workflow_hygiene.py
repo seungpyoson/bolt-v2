@@ -270,6 +270,12 @@ BANNED_RUST_INNER_ATTRS = {
     "crate_id",
 }
 NEXTEST_BINARY_FILTER_RE = re.compile(r"\bbinary\(=([A-Za-z0-9_-]+)\)")
+# Equality tail for an audited binary target: binary(=name). Anything else after
+# `binary(` (regex form binary(/.../), spaced forms, etc.) is unparseable by the
+# guardrail and must fail closed rather than collapse to an empty binary set.
+NEXTEST_BINARY_EQ_TAIL_RE = re.compile(r"=[A-Za-z0-9_-]+\)")
+# Harness-scoped live-node test prefix: test(/^member::/).
+NEXTEST_TEST_PREFIX_RE = re.compile(r"test\(/\^([A-Za-z0-9_]+)::/\)")
 NEXTEST_SENSITIVE_OVERRIDE_KEYS = {
     "test-group",
     "retries",
@@ -9584,11 +9590,35 @@ def nextest_filter_binaries(filter_expr: object) -> set[str]:
     return set(NEXTEST_BINARY_FILTER_RE.findall(filter_expr))
 
 
+def nextest_filter_has_unparseable_binary(filter_expr: object) -> bool:
+    """True if any binary(...) target is not the audited equality form binary(=name).
+
+    Regex-form binary(/.../) and other shapes parse to an empty binary set, which
+    would silently slip past the subset/skip checks; treat them as unauditable so
+    the override fails closed.
+    """
+    if not isinstance(filter_expr, str):
+        return False
+    for match in re.finditer(r"\bbinary\(", filter_expr):
+        if not NEXTEST_BINARY_EQ_TAIL_RE.match(filter_expr, match.end()):
+            return True
+    return False
+
+
+def nextest_filter_test_prefixes(filter_expr: object) -> set[str]:
+    """The set of harness-scoped member prefixes test(/^member::/) in the filter."""
+    if not isinstance(filter_expr, str):
+        return set()
+    return set(NEXTEST_TEST_PREFIX_RE.findall(filter_expr))
+
+
 def nextest_override_is_known_root_unit(override: dict[object, object]) -> bool:
     filter_expr = override.get("filter")
     if override.get("test-group") != LIVE_NODE_TEST_GROUP or not isinstance(filter_expr, str):
         return False
     if set(override) != {"filter", "test-group"}:
+        return False
+    if nextest_filter_has_unparseable_binary(filter_expr):
         return False
     return nextest_filter_binaries(filter_expr) <= {"bolt_v2"} and all(
         fragment in filter_expr for fragment in LIVE_NODE_UNIT_TEST_FILTERS
@@ -9601,13 +9631,22 @@ def nextest_override_is_known_live_node(override: dict[object, object], manifest
         return False
     if set(override) != {"filter", "test-group"}:
         return False
+    if nextest_filter_has_unparseable_binary(filter_expr):
+        return False
     expected_clauses = [live_node_nextest_expected_clause(member, manifest) for member in LIVE_NODE_NEXTEST_BINARIES]
     expected_binaries = {
         manifest.member_to_harness.get(member, member)
         for member in LIVE_NODE_NEXTEST_BINARIES
     }
-    return nextest_filter_binaries(filter_expr) <= expected_binaries and all(
-        clause in filter_expr for clause in expected_clauses
+    consolidated_members = {
+        member
+        for member in LIVE_NODE_NEXTEST_BINARIES
+        if manifest.member_to_harness.get(member, member) != member
+    }
+    return (
+        nextest_filter_binaries(filter_expr) <= expected_binaries
+        and nextest_filter_test_prefixes(filter_expr) == consolidated_members
+        and all(clause in filter_expr for clause in expected_clauses)
     )
 
 
@@ -9617,11 +9656,15 @@ def nextest_unregistered_override_errors(overrides: list[object], manifest: CiTe
         if not isinstance(override, dict):
             continue
         sensitive_keys = nextest_override_sensitive_keys(override)
-        if not sensitive_keys and not nextest_filter_binaries(override.get("filter")):
+        filter_expr = override.get("filter")
+        if (
+            not sensitive_keys
+            and not nextest_filter_binaries(filter_expr)
+            and not nextest_filter_has_unparseable_binary(filter_expr)
+        ):
             continue
         if nextest_override_is_known_root_unit(override) or nextest_override_is_known_live_node(override, manifest):
             continue
-        filter_expr = override.get("filter")
         errors.append(
             "nextest config has unregistered per-binary override "
             f"#{index}: keys {', '.join(sorted(sensitive_keys)) or '<none>'}, filter {filter_expr!r}"

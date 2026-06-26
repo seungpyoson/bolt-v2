@@ -4781,6 +4781,63 @@ retries = 2
     )
 
 
+def test_nextest_config_rejects_regex_form_binary_overrides() -> None:
+    # findings 2+3: a regex-form binary(/.../) filter parses to an empty binary set,
+    # so with a non-sensitive key it slips past the skip-guard entirely.
+    verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
+    assert_nextest_clean(BASE_NEXTEST_CONFIG, manifest)
+    assert_nextest_error(
+        "nextest config has unregistered per-binary override",
+        BASE_NEXTEST_CONFIG
+        + """
+
+[[profile.default.overrides]]
+filter = 'binary(/^venue_contract/)'
+threads-required = 4
+""",
+        manifest,
+    )
+
+
+def test_nextest_config_rejects_regex_binary_smuggled_into_live_node_override() -> None:
+    # finding 3: a regex-form binary appended to an otherwise-valid live-node filter
+    # is invisible to the <= whitelist (empty set), so the override is wrongly accepted.
+    verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
+    smuggled = BASE_NEXTEST_CONFIG.replace(
+        "binary(=venue_contract)'",
+        "binary(=venue_contract) | binary(/^retired_test_binary$/)'",
+    )
+    assert_nextest_error(
+        "nextest config has unregistered per-binary override",
+        smuggled,
+        manifest,
+    )
+
+
+def test_nextest_config_rejects_foreign_test_prefix_in_live_node_override() -> None:
+    # finding 5: a non-live-node member's tests smuggled into the serialization group
+    # via an already-recognized harness binary adds no new binary, so only exact
+    # test-prefix-set equality catches it.
+    verifier = load_verifier()
+    member = "bolt_v3_client_registration"
+    harness = "wiring_registration"
+    manifest = live_node_manifest_with(verifier, consolidated={member: harness})
+    expected_clause = f"(binary(={harness}) & test(/^{member}::/))"
+    canonical = BASE_NEXTEST_CONFIG.replace(f"binary(={member})", expected_clause)
+    assert_nextest_clean(canonical, manifest)
+    smuggled = canonical.replace(
+        expected_clause,
+        f"{expected_clause} | (binary(={harness}) & test(/^cli::/))",
+    )
+    assert_nextest_error(
+        "nextest config has unregistered per-binary override",
+        smuggled,
+        manifest,
+    )
+
+
 # Pin-consistency fixtures. The base SHA already appears throughout BASE_WORKFLOW
 # and BASE_ADVISORY_WORKFLOW; SHA_ALT is a different valid 40-hex SHA used to
 # exercise drift, and SHA_BASE_UPPER is the base SHA in uppercase to exercise
@@ -8717,6 +8774,9 @@ def main() -> int:
     test_harness_manifest_masks_inner_attrs_and_rejects_crate_attrs()
     test_harness_manifest_rejects_retired_member_test_filters()
     test_nextest_config_rejects_surprise_binary_overrides()
+    test_nextest_config_rejects_regex_form_binary_overrides()
+    test_nextest_config_rejects_regex_binary_smuggled_into_live_node_override()
+    test_nextest_config_rejects_foreign_test_prefix_in_live_node_override()
     for job in (
         "detector",
         "deny",

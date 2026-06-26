@@ -1,6 +1,7 @@
 pub mod admission_service;
 pub mod contracts;
 pub mod epoch_manager;
+mod error_traits;
 pub mod instrument_risk_registry;
 pub mod lifecycle_reconciler;
 pub mod reservation_ledger;

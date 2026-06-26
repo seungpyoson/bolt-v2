@@ -22,7 +22,8 @@ pub struct PoolId(String);
 impl PoolId {
     pub fn new(value: impl Into<String>) -> Result<Self, ContractIdentityError> {
         let value = value.into();
-        if value.trim().is_empty() || value.trim() != value {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed != value {
             return Err(ContractIdentityError::InvalidPoolId);
         }
         Ok(Self(value))
@@ -39,7 +40,8 @@ pub struct OwnerId(String);
 impl OwnerId {
     pub fn new(value: impl Into<String>) -> Result<Self, ContractIdentityError> {
         let value = value.into();
-        if value.trim().is_empty() || value.trim() != value {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed != value {
             return Err(ContractIdentityError::InvalidOwnerId);
         }
         Ok(Self(value))
@@ -119,7 +121,8 @@ impl ConfiguredLeaseAuthority {
         dependency_name: impl Into<String>,
     ) -> Result<Self, LeaseAuthorityConfigError> {
         let dependency_name = dependency_name.into();
-        if dependency_name.trim().is_empty() || dependency_name.trim() != dependency_name {
+        let trimmed = dependency_name.trim();
+        if trimmed.is_empty() || trimmed != dependency_name {
             return Err(LeaseAuthorityConfigError::InvalidDependencyName);
         }
         Ok(Self {

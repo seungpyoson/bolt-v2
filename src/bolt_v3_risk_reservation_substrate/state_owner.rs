@@ -2057,6 +2057,11 @@ fn terminal_order_status_supersedes_fault(
 /// in `ReconciliationRequired` while any non-superseded fault remains so
 /// exposure events replay before completion. The blocking fault's exact
 /// re-delivery or a later superseding terminal resolves the hold.
+///
+/// If an absorbed terminal's blocking fault resolves to a non-terminal state
+/// such as `PartiallyFilled` on a contradictory feed, the open remainder stays
+/// held fail-closed with no automatic release. This intentional S0
+/// over-reserve is tracked for graceful release in #1013.
 fn terminal_order_status_has_blocking_fault(
     record: &SubstrateReservationRecord,
     ts_event_unix_nanos: u64,

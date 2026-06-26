@@ -4195,6 +4195,92 @@ fn s8c_faulted_fill_replays_after_absorbed_terminal_before_reconciliation_comple
 }
 
 #[test]
+// Fail-closed contract: on a contradictory feed (a fill venue-sequenced after a terminal), an
+// absorbed terminal leaves the order at PartiallyFilled and the open remainder is HELD with no
+// automatic release. This is intentional over-reserve (never under-reserve). Graceful release is #1013.
+fn s8c_absorbed_terminal_partial_fill_holds_open_remainder_fail_closed() {
+    let pool_id = "pool-s8c-absorbed-terminal-strand";
+    let idempotency_key = "idempotency-s8c-absorbed-terminal-strand";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-absorbed-terminal-strand",
+        "intent-s8c-absorbed-terminal-strand",
+        idempotency_key,
+        "S8C-ABSORBED-TERMINAL-STRAND",
+    );
+    record_live_submission_for_test(&owner, idempotency_key, client_order_id);
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-absorbed-terminal-strand-open",
+            1_150,
+            Some(1),
+        ))
+        .expect("open seq1 applies");
+    reconciler
+        .apply_fill_truth(nt_fill_with_ordering(
+            client_order_id,
+            "s8c-absorbed-terminal-strand-fill",
+            1_170,
+            Some(3),
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("gapped fill faults");
+    reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-absorbed-terminal-strand-cancel",
+            1_160,
+            Some(2),
+        ))
+        .expect("cancel seq2 absorbed");
+    let replay = reconciler
+        .apply_fill_truth(nt_fill_with_ordering(
+            client_order_id,
+            "s8c-absorbed-terminal-strand-fill",
+            1_170,
+            Some(3),
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("fill replays after absorbed terminal");
+    assert_eq!(
+        replay.lifecycle_state,
+        ReservationLifecycleState::PartiallyFilled
+    );
+    // Contract: settlement cannot release from PartiallyFilled; the open remainder stays held (fail-closed).
+    let settle = reconciler.apply_settlement_truth(nt_settlement(
+        client_order_id,
+        "s8c-absorbed-terminal-strand-settle",
+        true,
+        true,
+        dec(28),
+        dec(30),
+        vec![dec(-2), dec(99)],
+    ));
+    assert!(
+        settle.is_err(),
+        "settlement from absorbed-terminal PartiallyFilled is rejected (#1013)"
+    );
+    let record = only_reservation_record(&owner);
+    assert!(
+        record.open_order_remainder_held,
+        "open remainder is held fail-closed, not released (#1013)"
+    );
+    assert!(
+        record.unresolved_lifecycle_reconciliation_faults.is_empty(),
+        "the pool finalizes (not wedged); only this reservation is over-reserved until #1013"
+    );
+}
+
+#[test]
 fn s8c_terminal_status_clears_stale_earlier_open_status_fault() {
     let pool_id = "pool-s8c-stale-open-fault";
     let idempotency_key = "idempotency-s8c-stale-open-fault";

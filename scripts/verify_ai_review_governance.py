@@ -546,8 +546,8 @@ def run_self_tests(repo_root: Path) -> None:
         agents_md=agents.replace("## Repo Rules", "## Repo Runtime Rules")
         .replace("2. <a id=\"repo-rule-no-dual-paths\"", "22. <a id=\"repo-rule-no-dual-paths\"")
         .replace(
-            "These repo-level rules are in addition to any higher-level agent instructions.",
-            "These repository instructions may move around without changing rule meaning.",
+            "Repo governance for agents; higher-level standing instructions apply.",
+            "Repo governance for agents; these instructions may move without changing rule meaning.",
         ),
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,

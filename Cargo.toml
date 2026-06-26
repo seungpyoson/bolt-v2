@@ -27,22 +27,6 @@ name = "bolt_v3_basket_execution"
 path = "tests/bolt_v3_basket_execution.rs"
 
 [[test]]
-name = "bolt_v3_binary_oracle_edge_taker_a10_structure"
-path = "tests/bolt_v3_binary_oracle_edge_taker_a10_structure.rs"
-
-[[test]]
-name = "bolt_v3_binary_oracle_entry_log_contract"
-path = "tests/bolt_v3_binary_oracle_entry_log_contract.rs"
-
-[[test]]
-name = "bolt_v3_binary_oracle_maker_config"
-path = "tests/bolt_v3_binary_oracle_maker_config.rs"
-
-[[test]]
-name = "bolt_v3_binary_oracle_maker_runtime"
-path = "tests/bolt_v3_binary_oracle_maker_runtime.rs"
-
-[[test]]
 name = "bolt_v3_capital_admission_recovery_equivalence"
 path = "tests/bolt_v3_capital_admission_recovery_equivalence.rs"
 
@@ -69,6 +53,10 @@ path = "tests/iv.rs"
 [[test]]
 name = "outcome_groups"
 path = "tests/outcome_groups.rs"
+
+[[test]]
+name = "maker_taker"
+path = "tests/maker_taker.rs"
 
 [[test]]
 name = "bolt_v3_kill_switch"
@@ -105,18 +93,6 @@ path = "tests/bolt_v3_loss_protection.rs"
 [[test]]
 name = "bolt_v3_loss_runtime_feed"
 path = "tests/bolt_v3_loss_runtime_feed.rs"
-
-[[test]]
-name = "bolt_v3_maker_event_fence"
-path = "tests/bolt_v3_maker_event_fence.rs"
-
-[[test]]
-name = "bolt_v3_maker_market_selection"
-path = "tests/bolt_v3_maker_market_selection.rs"
-
-[[test]]
-name = "bolt_v3_maker_runtime_quote"
-path = "tests/bolt_v3_maker_runtime_quote.rs"
 
 [[test]]
 name = "bolt_v3_order_intent"

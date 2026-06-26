@@ -51,36 +51,8 @@ name = "bolt_v3_capital_admission_runtime_feed"
 path = "tests/bolt_v3_capital_admission_runtime_feed.rs"
 
 [[test]]
-name = "bolt_v3_chainlink_config"
-path = "tests/bolt_v3_chainlink_config.rs"
-
-[[test]]
-name = "bolt_v3_chainlink_registration"
-path = "tests/bolt_v3_chainlink_registration.rs"
-
-[[test]]
-name = "bolt_v3_client_registration"
-path = "tests/bolt_v3_client_registration.rs"
-
-[[test]]
-name = "bolt_v3_complete_set_strategy_shell"
-path = "tests/bolt_v3_complete_set_strategy_shell.rs"
-
-[[test]]
-name = "bolt_v3_controlled_connect"
-path = "tests/bolt_v3_controlled_connect.rs"
-
-[[test]]
-name = "bolt_v3_credential_log_suppression"
-path = "tests/bolt_v3_credential_log_suppression.rs"
-
-[[test]]
 name = "bolt_v3_dead_gate_removal"
 path = "tests/bolt_v3_dead_gate_removal.rs"
-
-[[test]]
-name = "bolt_v3_decision_evidence"
-path = "tests/bolt_v3_decision_evidence.rs"
 
 [[test]]
 name = "bolt_v3_fair_value_pricing"
@@ -171,26 +143,6 @@ name = "bolt_v3_polyresearch_auth"
 path = "tests/bolt_v3_polyresearch_auth.rs"
 
 [[test]]
-name = "bolt_v3_prod_profile"
-path = "tests/bolt_v3_prod_profile.rs"
-
-[[test]]
-name = "bolt_v3_production_entrypoint"
-path = "tests/bolt_v3_production_entrypoint.rs"
-
-[[test]]
-name = "bolt_v3_production_readiness_contract"
-path = "tests/bolt_v3_production_readiness_contract.rs"
-
-[[test]]
-name = "bolt_v3_provider_binding"
-path = "tests/bolt_v3_provider_binding.rs"
-
-[[test]]
-name = "bolt_v3_readiness"
-path = "tests/bolt_v3_readiness.rs"
-
-[[test]]
 name = "bolt_v3_realized_volatility"
 path = "tests/bolt_v3_realized_volatility.rs"
 
@@ -221,10 +173,6 @@ path = "tests/bolt_v3_reference_provider_registration.rs"
 [[test]]
 name = "bolt_v3_static_binary_event_reference_price"
 path = "tests/bolt_v3_static_binary_event_reference_price.rs"
-
-[[test]]
-name = "bolt_v3_strategy_registration"
-path = "tests/bolt_v3_strategy_registration.rs"
 
 [[test]]
 name = "bolt_v3_submit_admission"
@@ -297,6 +245,10 @@ path = "tests/shadow_pnl_report.rs"
 [[test]]
 name = "venue_contract"
 path = "tests/venue_contract.rs"
+
+[[test]]
+name = "wiring_registration"
+path = "tests/wiring_registration.rs"
 
 [dependencies]
 ahash = "0.8.12"

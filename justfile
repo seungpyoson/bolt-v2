@@ -431,7 +431,7 @@ source-fence: source-fence-static
     python3 scripts/verify_runtime_capture_yaml.py
     # #342 owns these canonical source-fence checks. Until #332 changes full
     # nextest ownership, `test` intentionally still duplicates them under `gate`.
-    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test bolt_v3_controlled_connect --test bolt_v3_production_entrypoint -- --nocapture
+    python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test wiring_registration -- bolt_v3_controlled_connect:: bolt_v3_production_entrypoint:: --nocapture
     python3 "{{rust_verification_owner}}" cargo --repo "{{repo_root}}" -- test --locked --test iv -- bolt_v3_iv_source_fence:: --nocapture
 
 # Cargo shim guard tests (pytest-based, unlike the self-running script tests)

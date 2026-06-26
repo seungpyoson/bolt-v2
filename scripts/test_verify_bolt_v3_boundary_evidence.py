@@ -121,6 +121,7 @@ fn handler(message: Message) {
 }
 #[cfg(test)]
 mod tests {
+    fn committed_real_capture_frame_decodes_through_production_handler() {}
     fn binary_report_frame_for_active_subscription_emits_custom_reference_update() {}
     fn invalid_utf8_binary_report_frame_emits_no_custom_data() {}
     fn binary_report_frame_through_text_only_handler_emits_no_custom_data() {}
@@ -413,6 +414,48 @@ def test_registered_text_only_handler_fails() -> None:
     assert_finding(scan_temp(mutate), "must accept Text and Binary")
 
 
+def test_missing_committed_real_capture_decode_test_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/chainlink_reference.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "    fn committed_real_capture_frame_decodes_through_production_handler() {}\n",
+                "",
+            ),
+            encoding="utf-8",
+        )
+
+    assert_finding(
+        scan_temp(mutate),
+        "missing test committed_real_capture_frame_decodes_through_production_handler",
+    )
+
+
+def test_new_ws_provider_without_registry_fails() -> None:
+    def mutate(root: Path) -> None:
+        path = root / "src/bolt_v3_providers/mod.rs"
+        text = path.read_text(encoding="utf-8")
+        path.write_text(
+            text.replace(
+                "    ProviderBinding { key: polyresearch::KEY },\n",
+                "    ProviderBinding { key: polyresearch::KEY },\n"
+                "    ProviderBinding { key: new_reference::KEY },\n",
+            ),
+            encoding="utf-8",
+        )
+
+    findings = scan_temp(mutate)
+    assert_finding(
+        findings,
+        "missing registry entry ('new_reference::KEY', 'WebSocketFrame', 'ReferenceCurrentPriceHealth')",
+    )
+    assert_finding(
+        findings,
+        "missing registry entry ('new_reference::KEY', 'WebSocketFrame', 'ReferenceLiveProbe')",
+    )
+
+
 def test_unbound_invented_fixture_fails() -> None:
     def mutate(root: Path) -> None:
         path = root / "tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.toml"
@@ -421,6 +464,17 @@ def test_unbound_invented_fixture_fails() -> None:
         path.write_text("\n".join(f'{key} = "{value}"' for key, value in data.items()) + "\n", encoding="utf-8")
 
     assert_finding(scan_temp(mutate), "fixture_sha256 does not match")
+
+
+def test_capture_artifact_remains_bound_after_workflow_changes() -> None:
+    def mutate(root: Path) -> None:
+        path = root / ".github/workflows/ci.yml"
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\n# post-capture workflow lint edit\n",
+            encoding="utf-8",
+        )
+
+    assert scan_temp(mutate) == []
 
 
 def test_expired_deferral_fails() -> None:

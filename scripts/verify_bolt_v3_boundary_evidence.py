@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -32,11 +34,11 @@ REQUIRED_CLASSES = {
     "AwsSdkResponse",
     "HttpResponseBody",
 }
-REQUIRED_REGISTRY_ENTRIES = {
-    ("chainlink_reference::KEY", "WebSocketFrame", "ReferenceCurrentPriceHealth"),
-    ("polyresearch::KEY", "WebSocketFrame", "ReferenceCurrentPriceHealth"),
-    ("chainlink_reference::KEY", "WebSocketFrame", "ReferenceLiveProbe"),
-    ("polyresearch::KEY", "WebSocketFrame", "ReferenceLiveProbe"),
+REQUIRED_WS_FEEDERS = (
+    "ReferenceCurrentPriceHealth",
+    "ReferenceLiveProbe",
+)
+REQUIRED_NON_WS_REGISTRY_ENTRIES = {
     ("IMDS_METADATA_ADAPTER_ID", "ImdsMetadata", "DeployTargetHostFacts"),
     ("AWS_SSM_SECRET_SOURCE_ADAPTER_ID", "AwsSdkResponse", "SecretResolution"),
 }
@@ -85,6 +87,74 @@ def registry_entries(text: str) -> set[tuple[str, str, str]]:
     return entries
 
 
+def provider_binding_keys(text: str, findings: list[str]) -> set[str]:
+    match = re.search(
+        r"const\s+PROVIDER_BINDINGS\s*:\s*&\[ProviderBinding\]\s*=\s*&\[(?P<body>.*?)\n\];",
+        text,
+        re.DOTALL,
+    )
+    if match is None:
+        findings.append("src/bolt_v3_providers/mod.rs: missing PROVIDER_BINDINGS")
+        return set()
+    return {
+        key.strip()
+        for key in re.findall(r"\bkey:\s*([A-Za-z0-9_:]+)", match.group("body"))
+    }
+
+
+def reference_price_metadata_client_keys(text: str) -> set[str]:
+    return {
+        key.strip()
+        for key in re.findall(r"\bclient_venue_key:\s*([A-Za-z0-9_:]+)", text)
+    }
+
+
+def reference_live_probe_client_keys(text: str) -> set[str]:
+    keys: set[str] = set()
+    for match in re.finditer(
+        r"validate_reference_live_probe_client\((?P<body>.*?)\);",
+        text,
+        re.DOTALL,
+    ):
+        key_matches = re.findall(
+            r"\b([A-Za-z_][A-Za-z0-9_:]*::[A-Za-z0-9_]*KEY)\b",
+            match.group("body"),
+        )
+        if key_matches:
+            keys.add(key_matches[-1])
+    return keys
+
+
+def reference_named_provider_binding_keys(keys: set[str]) -> set[str]:
+    reference_keys = set()
+    for key in keys:
+        module = key.rsplit("::", 1)[0].rsplit("::", 1)[-1]
+        if module == "reference" or module.endswith("_reference") or "_reference_" in module:
+            reference_keys.add(key)
+    return reference_keys
+
+
+def required_ws_registry_entries(provider_mod: str, findings: list[str]) -> set[tuple[str, str, str]]:
+    binding_keys = provider_binding_keys(provider_mod, findings)
+    metadata_keys = reference_price_metadata_client_keys(provider_mod)
+    live_probe_keys = reference_live_probe_client_keys(provider_mod)
+    reference_keys = (
+        metadata_keys | live_probe_keys | reference_named_provider_binding_keys(binding_keys)
+    )
+    for key in sorted(metadata_keys | live_probe_keys):
+        if key not in binding_keys:
+            findings.append(
+                f"src/bolt_v3_providers/mod.rs: reference provider {key} missing PROVIDER_BINDINGS entry"
+            )
+    if not reference_keys:
+        findings.append("src/bolt_v3_providers/mod.rs: no reference WebSocket provider keys found")
+    return {
+        (adapter, "WebSocketFrame", feeder)
+        for adapter in reference_keys
+        for feeder in REQUIRED_WS_FEEDERS
+    }
+
+
 def manifest_exemptions(root: Path) -> list[dict[str, object]]:
     manifest = tomllib.loads(read(root, EXEMPTIONS))
     if manifest.get("schema_version") != 1:
@@ -97,6 +167,7 @@ def manifest_exemptions(root: Path) -> list[dict[str, object]]:
 
 def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
     text = read(root, REGISTRY)
+    provider_mod = read(root, "src/bolt_v3_providers/mod.rs")
     for klass in REQUIRED_CLASSES:
         if f"{klass}," not in text:
             findings.append(f"{REGISTRY}: missing BoundaryEvidenceClass::{klass}")
@@ -104,7 +175,11 @@ def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
         findings.append(f"{REGISTRY}: registry class tags must use enum variants, not strings")
 
     entries = registry_entries(text)
-    missing = sorted(REQUIRED_REGISTRY_ENTRIES - entries)
+    required_entries = REQUIRED_NON_WS_REGISTRY_ENTRIES | required_ws_registry_entries(
+        provider_mod,
+        findings,
+    )
+    missing = sorted(required_entries - entries)
     for entry in missing:
         findings.append(f"{REGISTRY}: missing registry entry {entry}")
 
@@ -112,7 +187,6 @@ def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
     if extra_http:
         findings.append(f"{REGISTRY}: http_response_body is an empty enforcing variant, got {extra_http}")
 
-    provider_mod = read(root, "src/bolt_v3_providers/mod.rs")
     cross_checks = {
         "reference_price_provider_metadata": (
             "client_venue_key: chainlink_reference::KEY",
@@ -240,6 +314,7 @@ def scan_wire_boundary(root: Path, findings: list[str]) -> None:
 def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
     chainlink = read(root, "src/bolt_v3_providers/chainlink_reference.rs")
     required_names = (
+        "committed_real_capture_frame_decodes_through_production_handler",
         "binary_report_frame_for_active_subscription_emits_custom_reference_update",
         "invalid_utf8_binary_report_frame_emits_no_custom_data",
         "binary_report_frame_through_text_only_handler_emits_no_custom_data",
@@ -285,6 +360,23 @@ def remote_fixture_context(root: Path, findings: list[str]) -> tuple[str, str, s
         )
         return None
     return repo, token, os.environ.get("GITHUB_RUN_ID")
+
+
+def capture_workflow_digest(root: Path, config: ci_provenance.ProvenanceConfig, record: dict[str, object]) -> str | None:
+    tested_sha = record.get("tested_sha")
+    if isinstance(tested_sha, str) and re.fullmatch(r"[0-9a-f]{40}", tested_sha):
+        result = subprocess.run(
+            ["git", "-C", str(root), "show", f"{tested_sha}:{config.workflow_path}"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return hashlib.sha256(result.stdout).hexdigest()
+    workflow_digest = record.get("workflow_digest")
+    if isinstance(workflow_digest, str):
+        return workflow_digest
+    return None
 
 
 def scan_fixture_origin(root: Path, findings: list[str]) -> None:
@@ -349,7 +441,7 @@ def scan_fixture_origin(root: Path, findings: list[str]) -> None:
                 sidecar_config,
                 requested_sha=str(data["capture_head_sha"]),
                 config_path=config_path,
-                expected_workflow_digest=ci_provenance.sha256_file(root / config.workflow_path),
+                expected_workflow_digest=capture_workflow_digest(root, config, record),
             )
         except ci_provenance.ProvenanceError as exc:
             findings.append(f"{rel}: invalid capture artifact provenance: {exc}")

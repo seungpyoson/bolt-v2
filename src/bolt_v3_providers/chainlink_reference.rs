@@ -1063,6 +1063,10 @@ mod tests {
     const TEST_BID_PRICE: f64 = 66_299.50;
     const TEST_ASK_PRICE: f64 = 66_301.00;
     const TEST_PRICE_TOLERANCE: f64 = 1e-6;
+    // Chainlink Data Streams V3 reports in the shared feed catalog are scaled
+    // by 18 decimals; the committed capture proves origin and the catalog scale
+    // proves the production decode path remains structurally usable.
+    const CAPTURED_REFERENCE_REPORT_DECIMAL_SCALE: u64 = 18;
 
     fn fixture_config() -> ChainlinkReferencePriceClientConfig {
         ChainlinkReferencePriceClientConfig {
@@ -1427,6 +1431,62 @@ mod tests {
             data_receiver
                 .try_recv()
                 .expect("matched binary Chainlink report frame should emit one data event"),
+        );
+    }
+
+    #[test]
+    fn committed_real_capture_frame_decodes_through_production_handler() {
+        let frame_bytes = include_bytes!(
+            "../../tests/fixtures/bolt_v3/boundary_evidence/chainlink-reference-frame.bin"
+        );
+        let envelope: ChainlinkDataStreamsReportApiResponse = serde_json::from_slice(frame_bytes)
+            .expect("committed Chainlink capture frame should be the report envelope");
+        let captured_feed_id = envelope.report.feed_id().to_string();
+        let captured_instrument_id = "CAPTURED-REFERENCE.CHAINLINK";
+        let (mut client, mut data_receiver) =
+            fixture_client_with_bindings(vec![ChainlinkStrikeFeedBinding {
+                feed_id: captured_feed_id,
+                instrument_id: InstrumentId::from_str(captured_instrument_id)
+                    .expect("captured Chainlink instrument id should parse"),
+                report_schema_version: TEST_REPORT_SCHEMA_VERSION,
+                report_decimal_scale: CAPTURED_REFERENCE_REPORT_DECIMAL_SCALE,
+                price_precision: 8,
+            }]);
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                TEST_ASSET,
+                TEST_SOURCE_ID,
+                captured_instrument_id,
+            ))
+            .expect("captured Chainlink reference subscription should be accepted");
+        let handler = chainlink_reference_message_handler(
+            client.config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+        );
+
+        handler(Message::binary(frame_bytes.to_vec()));
+
+        let event = data_receiver
+            .try_recv()
+            .expect("committed Chainlink capture frame should emit one data event");
+        let DataEvent::Data(Data::Custom(custom)) = event else {
+            panic!("committed Chainlink capture frame should emit custom data, got {event:?}");
+        };
+        let update = ReferencePriceUpdate::from_custom_data(&custom)
+            .expect("committed Chainlink capture should decode to a reference price update");
+        assert_eq!(update.provider(), REFERENCE_PRICE_PROVIDER_KEY);
+        assert!(
+            update.price().is_finite() && update.price() > 0.0,
+            "committed Chainlink capture should decode to a finite positive price, got {}",
+            update.price()
+        );
+        let error = data_receiver
+            .try_recv()
+            .expect_err("committed Chainlink capture frame should emit exactly one data event");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "committed Chainlink capture should leave the data channel open after one event, got {error:?}"
         );
     }
 

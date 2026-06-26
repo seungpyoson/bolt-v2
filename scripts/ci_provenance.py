@@ -84,6 +84,9 @@ POLICY_ALLOWED_VALUES = {
     "ready_pr_edited_no_base": {"noop", "full"},
     "ready_pr_reopened": {"noop", "full"},
 }
+REQUIRED_CHECK_INTEGRATION_ID = 15368
+REQUIRED_CHECK_ARRIVALS = ("pull_request", "merge_group")
+TARGET_REQUIRED_CHECK_CONTEXT = "coverage-enforcer"
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -113,6 +116,19 @@ class JobConfig:
     check_name_template: str | None
     shard_count: int | None
     conditional: str | None
+
+
+@dataclasses.dataclass(frozen=True)
+class RequiredCheckConfig:
+    key: str
+    context: str
+    reporter: str
+    integration_id: int
+    required: bool
+    target: bool
+    arrivals: tuple[str, ...]
+    fresh_event_classes: tuple[str, ...]
+    carry_forward_event_classes: tuple[str, ...]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -146,6 +162,7 @@ class ProvenanceConfig:
     artifact_retention_days: int
     policy: dict[str, str]
     gate_names: dict[str, str]
+    required_checks: dict[str, RequiredCheckConfig]
     mergify_temp_pr_head_ref_prefix: str
     docs_safe_paths: tuple[str, ...]
     docs_forbidden_ignored_build_paths: tuple[str, ...]
@@ -250,6 +267,13 @@ def require_positive_int(parent: dict[str, object], key: str, prefix: str) -> in
     return value
 
 
+def require_bool(parent: dict[str, object], key: str, prefix: str) -> bool:
+    value = parent.get(key)
+    if not isinstance(value, bool):
+        raise ProvenanceError(f"{prefix}.{key} must be boolean")
+    return value
+
+
 def require_string_list(parent: dict[str, object], key: str, prefix: str) -> tuple[str, ...]:
     value = parent.get(key)
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
@@ -302,6 +326,119 @@ def docs_safe_path_contract_errors(safe_paths: tuple[str, ...]) -> list[str]:
             )
     if len(set(safe_paths)) != len(safe_paths):
         errors.append("ci_provenance.docs.safe_paths must not contain duplicates")
+    return errors
+
+
+def load_required_checks(
+    required_checks_table: dict[str, object],
+) -> dict[str, RequiredCheckConfig]:
+    required_checks: dict[str, RequiredCheckConfig] = {}
+    for key, raw_entry in required_checks_table.items():
+        prefix = f"ci_provenance.required_checks.{key}"
+        if not isinstance(raw_entry, dict):
+            raise ProvenanceError(f"{prefix} must be a table")
+        integration_id = raw_entry.get("integration_id")
+        if not isinstance(integration_id, int) or isinstance(integration_id, bool):
+            raise ProvenanceError(f"{prefix}.integration_id must be an integer")
+        proof_rule = require_table(raw_entry, "proof_rule", prefix)
+        required_checks[key] = RequiredCheckConfig(
+            key=key,
+            context=require_string(raw_entry, "context", prefix),
+            reporter=require_string(raw_entry, "reporter", prefix),
+            integration_id=integration_id,
+            required=require_bool(raw_entry, "required", prefix),
+            target=require_bool(raw_entry, "target", prefix),
+            arrivals=require_string_list(raw_entry, "arrivals", prefix),
+            fresh_event_classes=require_string_list(
+                proof_rule, "fresh", f"{prefix}.proof_rule"
+            ),
+            carry_forward_event_classes=require_string_list(
+                proof_rule, "carry_forward", f"{prefix}.proof_rule"
+            ),
+        )
+    return required_checks
+
+
+def required_check_registry_contract_errors(
+    *,
+    required_checks: dict[str, RequiredCheckConfig],
+    gate_names: dict[str, str],
+    policy: dict[str, str],
+    workflows: dict[str, object],
+) -> list[str]:
+    errors: list[str] = []
+    ci_workflow = require_table(workflows, "ci", "workflows")
+    actionlint_workflow = require_table(workflows, "actionlint", "workflows")
+    workflow_required_contexts = {"host-health", "actionlint"}
+    if "host-health" not in ci_workflow:
+        errors.append("workflows.ci.host-health must exist for required-check registry")
+    if "actionlint" not in actionlint_workflow:
+        errors.append("workflows.actionlint.actionlint must exist for required-check registry")
+
+    expected_required_contexts = {
+        gate_names["gate_required"],
+        gate_names["backtester_required"],
+        *workflow_required_contexts,
+    }
+    required_contexts = {
+        check.context for check in required_checks.values() if check.required
+    }
+    if required_contexts != expected_required_contexts:
+        errors.append(
+            "required-check registry contexts must match gate_names plus host-health/actionlint"
+        )
+    expected_target_contexts = expected_required_contexts | {TARGET_REQUIRED_CHECK_CONTEXT}
+    target_contexts = {
+        check.context for check in required_checks.values() if check.target
+    }
+    if target_contexts != expected_target_contexts:
+        errors.append(
+            "required-check registry target contexts must match live contexts plus coverage-enforcer"
+        )
+
+    by_context = {check.context: check for check in required_checks.values()}
+    if len(by_context) != len(required_checks):
+        errors.append("ci_provenance.required_checks contexts must be unique")
+    target_check = by_context.get(TARGET_REQUIRED_CHECK_CONTEXT)
+    if target_check is None:
+        errors.append("coverage-enforcer target entry missing from required-check registry")
+    elif target_check.required or not target_check.target:
+        errors.append("coverage-enforcer must be required=false target=true")
+
+    for key, check in required_checks.items():
+        if check.key != key:
+            errors.append(f"ci_provenance.required_checks.{key}.key must match table key")
+        if check.context != key:
+            errors.append(f"ci_provenance.required_checks.{key}.context must match table key")
+        if check.integration_id != REQUIRED_CHECK_INTEGRATION_ID:
+            errors.append(f"ci_provenance.required_checks.{key}.integration_id must be {REQUIRED_CHECK_INTEGRATION_ID}")
+        if check.required and not check.target:
+            errors.append(f"ci_provenance.required_checks.{key} required checks must also be target=true")
+        if check.arrivals != REQUIRED_CHECK_ARRIVALS:
+            errors.append(
+                f"ci_provenance.required_checks.{key}.arrivals must be {list(REQUIRED_CHECK_ARRIVALS)!r}"
+            )
+
+        fresh = set(check.fresh_event_classes)
+        carry_forward = set(check.carry_forward_event_classes)
+        if len(fresh) != len(check.fresh_event_classes):
+            errors.append(f"ci_provenance.required_checks.{key}.proof_rule.fresh must not contain duplicates")
+        if len(carry_forward) != len(check.carry_forward_event_classes):
+            errors.append(
+                f"ci_provenance.required_checks.{key}.proof_rule.carry_forward must not contain duplicates"
+            )
+        overlap = sorted(fresh & carry_forward)
+        if overlap:
+            errors.append(
+                f"ci_provenance.required_checks.{key}.proof_rule maps event classes twice: {overlap!r}"
+            )
+        for event, policy_path in policy.items():
+            event_class = expected_event_class_for(event, policy_path)
+            matches = int(event_class in fresh) + int(event_class in carry_forward)
+            if matches != 1:
+                errors.append(
+                    f"ci_provenance.required_checks.{key} maps {event} ({event_class}) {matches} times"
+                )
     return errors
 
 
@@ -358,6 +495,9 @@ def provenance_config_digest(path: pathlib.Path = DEFAULT_CONFIG) -> str:
 
 def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     data = load_toml(path)
+    workflows = data.get("workflows")
+    if not isinstance(workflows, dict):
+        raise ProvenanceError("missing [workflows]")
     meter = data.get("meter")
     if not isinstance(meter, dict):
         raise ProvenanceError("missing [meter]")
@@ -444,6 +584,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
     policy_table = require_table(ci_provenance, "policy", "ci_provenance")
+    required_checks_table = require_table(
+        ci_provenance, "required_checks", "ci_provenance"
+    )
     overrides = require_table(policy_table, "override", "ci_provenance.policy")
 
     retention_days = require_positive_int(artifacts, "retention_days", "ci_provenance.artifacts")
@@ -485,6 +628,16 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     gate_name_errors = gate_name_collision_errors(gate_names)
     if gate_name_errors:
         raise ProvenanceError("; ".join(gate_name_errors))
+
+    required_checks = load_required_checks(required_checks_table)
+    required_check_errors = required_check_registry_contract_errors(
+        required_checks=required_checks,
+        gate_names=gate_names,
+        policy=policy,
+        workflows=workflows,
+    )
+    if required_check_errors:
+        raise ProvenanceError("; ".join(required_check_errors))
 
     docs_safe_paths = require_string_list(docs_table, "safe_paths", "ci_provenance.docs")
     docs_forbidden_ignored_build_paths = require_string_list(
@@ -552,6 +705,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         artifact_retention_days=retention_days,
         policy=policy,
         gate_names=gate_names,
+        required_checks=required_checks,
         mergify_temp_pr_head_ref_prefix=require_string(
             mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify"
         ),

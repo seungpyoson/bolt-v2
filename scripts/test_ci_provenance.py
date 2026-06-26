@@ -32,6 +32,12 @@ NEXTEST_FINGERPRINT_ARTIFACT = f"nextest-archive-fingerprint-v2-Linux-X64-test-p
 CONFIG_TOML = """
 schema_version = 1
 
+[workflows.ci]
+host-health = "github_hosted"
+
+[workflows.actionlint]
+actionlint = "github_hosted"
+
 [meter]
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
 fingerprint_workflow = "ci"
@@ -107,6 +113,66 @@ backtester_required = "backtester-gate"
 backtester_iteration = "backtester-gate-iteration"
 backtester_dispatch_full = "backtester-gate-dispatch"
 
+[ci_provenance.required_checks.gate]
+context = "gate"
+reporter = "ci.yml gate summary job"
+integration_id = 15368
+required = true
+target = true
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.gate.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = ["defer", "noop"]
+
+[ci_provenance.required_checks.backtester-gate]
+context = "backtester-gate"
+reporter = "backtester-ci.yml gate job"
+integration_id = 15368
+required = true
+target = true
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.backtester-gate.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = ["defer", "noop"]
+
+[ci_provenance.required_checks.host-health]
+context = "host-health"
+reporter = "ci.yml host-health lane"
+integration_id = 15368
+required = true
+target = true
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = ["defer", "noop"]
+
+[ci_provenance.required_checks.actionlint]
+context = "actionlint"
+reporter = "actionlint.yml"
+integration_id = 15368
+required = true
+target = true
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.actionlint.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = ["defer", "noop"]
+
+[ci_provenance.required_checks.coverage-enforcer]
+context = "coverage-enforcer"
+reporter = "self"
+integration_id = 15368
+required = false
+target = true
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.coverage-enforcer.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = ["defer", "noop"]
+
 [ci_provenance.docs]
 safe_paths = [
   "AGENTS.md",
@@ -171,6 +237,12 @@ schema_version = 1
 [unrelated]
 value = "kept out of the provenance digest"
 
+[workflows.actionlint]
+actionlint = "github_hosted"
+
+[workflows.ci]
+host-health = "github_hosted"
+
 [ci_provenance.policy.override]
 ignore_emit_failure = false
 force_full_ci = false
@@ -221,6 +293,66 @@ backtester_required = "backtester-gate"
 gate_dispatch_full = "gate-dispatch"
 gate_iteration = "gate-iteration"
 gate_required = "gate"
+
+[ci_provenance.required_checks.coverage-enforcer.proof_rule]
+carry_forward = ["defer", "noop"]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+
+[ci_provenance.required_checks.coverage-enforcer]
+arrivals = ["pull_request", "merge_group"]
+target = true
+required = false
+integration_id = 15368
+reporter = "self"
+context = "coverage-enforcer"
+
+[ci_provenance.required_checks.actionlint.proof_rule]
+carry_forward = ["defer", "noop"]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+
+[ci_provenance.required_checks.actionlint]
+arrivals = ["pull_request", "merge_group"]
+target = true
+required = true
+integration_id = 15368
+reporter = "actionlint.yml"
+context = "actionlint"
+
+[ci_provenance.required_checks.host-health.proof_rule]
+carry_forward = ["defer", "noop"]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+
+[ci_provenance.required_checks.host-health]
+arrivals = ["pull_request", "merge_group"]
+target = true
+required = true
+integration_id = 15368
+reporter = "ci.yml host-health lane"
+context = "host-health"
+
+[ci_provenance.required_checks.backtester-gate.proof_rule]
+carry_forward = ["defer", "noop"]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+
+[ci_provenance.required_checks.backtester-gate]
+arrivals = ["pull_request", "merge_group"]
+target = true
+required = true
+integration_id = 15368
+reporter = "backtester-ci.yml gate job"
+context = "backtester-gate"
+
+[ci_provenance.required_checks.gate.proof_rule]
+carry_forward = ["defer", "noop"]
+fresh = ["full", "docs", "iteration", "tag_reuse"]
+
+[ci_provenance.required_checks.gate]
+arrivals = ["pull_request", "merge_group"]
+target = true
+required = true
+integration_id = 15368
+reporter = "ci.yml gate summary job"
+context = "gate"
 
 [ci_provenance.docs]
 non_heavy_required_jobs = ["detector"]
@@ -1542,6 +1674,101 @@ def assert_gate_names_reject_collisions() -> None:
                     raise AssertionError(f"expected {fragment!r}, got {exc}") from exc
             else:
                 raise AssertionError(f"gate-name collision must be rejected: {fragment}")
+
+
+def replace_once(text: str, old: str, new: str) -> str:
+    if old not in text:
+        raise AssertionError(f"missing replacement target: {old!r}")
+    return text.replace(old, new, 1)
+
+
+def assert_required_checks_registry_contract(config, module) -> None:
+    required_contexts = {
+        check.context for check in config.required_checks.values() if check.required
+    }
+    expected_required_contexts = {
+        config.gate_names["gate_required"],
+        config.gate_names["backtester_required"],
+        "host-health",
+        "actionlint",
+    }
+    if required_contexts != expected_required_contexts:
+        raise AssertionError(
+            f"required-check registry contexts drifted: {required_contexts!r}"
+        )
+    target_contexts = {
+        check.context for check in config.required_checks.values() if check.target
+    }
+    expected_target_contexts = expected_required_contexts | {"coverage-enforcer"}
+    if target_contexts != expected_target_contexts:
+        raise AssertionError(
+            f"required-check target registry contexts drifted: {target_contexts!r}"
+        )
+
+    by_context = {check.context: check for check in config.required_checks.values()}
+    coverage_enforcer = by_context.get("coverage-enforcer")
+    if coverage_enforcer is None:
+        raise AssertionError("coverage-enforcer target entry missing")
+    if coverage_enforcer.required or not coverage_enforcer.target:
+        raise AssertionError(
+            f"coverage-enforcer must be required=false target=true: {coverage_enforcer}"
+        )
+
+    for check in config.required_checks.values():
+        if check.integration_id != 15368:
+            raise AssertionError(f"{check.context} integration_id drifted: {check}")
+        fresh = set(check.fresh_event_classes)
+        carry_forward = set(check.carry_forward_event_classes)
+        for event, policy_path in config.policy.items():
+            event_class = module.expected_event_class_for(event, policy_path)
+            matches = int(event_class in fresh) + int(event_class in carry_forward)
+            if matches != 1:
+                raise AssertionError(
+                    f"{check.context} maps {event} ({event_class}) {matches} times"
+                )
+
+
+def assert_required_checks_registry_matches_sources() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        fixture_config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    assert_required_checks_registry_contract(fixture_config, module)
+    assert_required_checks_registry_contract(module.load_config(module.DEFAULT_CONFIG), module)
+
+
+def assert_required_checks_registry_rejects_drift() -> None:
+    module = load_script()
+    mutations = {
+        "required-check registry contexts": replace_once(
+            CONFIG_TOML,
+            """[ci_provenance.required_checks.host-health]
+context = "host-health"
+reporter = "ci.yml host-health lane"
+integration_id = 15368
+required = true
+""",
+            """[ci_provenance.required_checks.host-health]
+context = "host-health"
+reporter = "ci.yml host-health lane"
+integration_id = 15368
+required = false
+""",
+        ),
+        "integration_id": replace_once(
+            CONFIG_TOML,
+            "integration_id = 15368",
+            "integration_id = 15369",
+        ),
+        "maps ready_pr": replace_once(
+            CONFIG_TOML,
+            'fresh = ["full", "docs", "iteration", "tag_reuse"]',
+            'fresh = ["docs", "iteration", "tag_reuse"]',
+        ),
+    }
+    for fragment, config_text in mutations.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(pathlib.Path(tmp), config_text)
+            assert_raises(fragment, lambda: module.load_config(config_path))
 
 
 def assert_policy_contract_rejects_required_gate_holes() -> None:
@@ -3298,6 +3525,8 @@ def main() -> int:
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
     assert_gate_names_reject_collisions()
+    assert_required_checks_registry_matches_sources()
+    assert_required_checks_registry_rejects_drift()
     assert_policy_contract_rejects_required_gate_holes()
     assert_main_evidence_matching_ignores_mutable_run_name()
     assert_config_digest_is_canonical()

@@ -1,6 +1,6 @@
 # bolt-v2 Agent Rules
 
-Repo rules for agents; higher-level instructions apply; deeper `AGENTS.md` wins for subtrees.
+Repo rules for agents; higher-level instructions apply.
 
 ## Instruction Precedence And Sources
 
@@ -21,7 +21,7 @@ Repo rules for agents; higher-level instructions apply; deeper `AGENTS.md` wins 
 ## Scope Discipline
 
 - One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice of one broader item.
-- Slice PRs must name remaining accepted scope and where it is tracked.
+- Slice PRs and their review requests must name remaining accepted scope and where it is tracked.
 - Reviewers must flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope as findings.
 - Do not claim a PR closes a broader issue unless the diff actually satisfies that broader issue.
 
@@ -43,13 +43,14 @@ Repo rules for agents; higher-level instructions apply; deeper `AGENTS.md` wins 
 7. **GROUP BY CHANGE** — values that share a lifecycle belong in one config section. Wallet, credential-set, or venue swaps must require one edit.
 8. **DO NOT REFERENCE BOLT V1** — do not read, import, or depend on `~/Projects/Claude/bolt/`. NT source is in `~/.cargo/git/checkouts/nautilus_trader-*/` or GitHub.
 9. **STRATEGIES PRODUCE INTENT ONLY** — strategies may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum size, fee-adjusted sizing, and submit gating live in shared NT-based execution/admission modules. Submit mechanics under `src/strategies/*` are rejected unless explicitly approved as strategy-local signal logic.
-10. **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the Chainlink Data Streams `price_to_beat` oracle, testnet is the only final environment. Do not raise testnet-vs-mainnet as a concern solely because the stream is testnet; still verify config-schema compatibility, service health, fail-closed behavior, and exact head.
+10. **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the Chainlink Data Streams `price_to_beat` oracle, testnet is the only final environment because mainnet credentials cannot be obtained. Treat the testnet Chainlink stream as production for this oracle. Do not raise testnet-vs-mainnet as a concern or ask for reconfirmation solely because the stream is testnet; still verify config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
 
 ## Evidence-Driven Verification
 
 - `AGENTS.md` owns workflow; `.specify/memory/constitution.md` mirrors the SpecKit principle.
 - TDD is allowed but not mandatory unless the user, active spec, or risk requires it.
 - Every claim must map to evidence: tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance that does not violate a MUST rule.
+- Documentation, prompt, template, and policy changes require targeted text/static checks plus internal adversarial review before completion claims.
 - Every plan or task list must name evidence: behavior tests/integration/remote CI/live artifacts for production; fail-closed invalid-input plus exact-head proof for trading, admission, secrets, and config; existing tests/static checks/source-fence/structural equivalence for refactors; targeted text/static checks plus internal adversarial review for documentation, prompt, template, and policy changes.
 - External review: only after local findings are resolved and exact-head CI or the user-approved equivalent is green.
 
@@ -59,10 +60,10 @@ Repo rules for agents; higher-level instructions apply; deeper `AGENTS.md` wins 
 - Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static`. Use the public `just` recipes; do not invoke `*-inner` local-verification recipes directly.
 - For draft PR Rust feedback, commit, push, open a draft PR, then run `just verify-remote` for exact-head Ubicloud/GitHub Actions feedback.
 - For merge proof, mark the PR ready and run `just verify-remote` for the required exact-head PR gate, or use the merge queue gate.
-- Default to draft PRs while iterating; mark ready only for the merge candidate. Draft pushes defer full-CI merge proof and cannot merge.
+- Default to draft PRs while iterating; mark ready only for the merge candidate. Draft pushes defer full-CI merge proof (clippy/deny still run) and cannot merge.
 - Human operator break-glass is only for exceptional local repro and live/operator lanes. Agents must not use it as a normal verification path.
-- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, `.no-mistakes.yaml`, and the PATH cargo shim in `scripts/cargo-shim` and `scripts/install-cargo-shim`.
-- CPU-heavy local verifier lanes self-serialize via `ci/rust-verification.toml` `[local_lane_policy]`; broad gates acquire the lane once, competing gates fail fast, CI bypasses the lock, and coverage drift fails `source-fence-static`.
+- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, `.no-mistakes.yaml`, and the PATH cargo shim in `scripts/cargo-shim` and `scripts/install-cargo-shim`; the shim reads `ci/rust-verification.toml` `[local_compile_policy]`.
+- CPU-heavy local verifier lanes self-serialize via `ci/rust-verification.toml` `[local_lane_policy]`; broad gates acquire the lane once, competing gates fail fast, CI (`allowed_ci_env`) bypasses the lock, and coverage drift fails `source-fence-static`.
 - Known bypasses: absolute-path cargo, `rustup run ... cargo`, cross-repo cargo, old daemons, non-shim PATHs, startup-skipping shells, direct `rustc`.
 
 ## Rust Probe Policy
@@ -95,6 +96,10 @@ Repo rules for agents; higher-level instructions apply; deeper `AGENTS.md` wins 
 - Before merging, verify each active rule is satisfied: checks green in `gh pr view <n> --json statusCheckRollup` and approvals met.
 - If rules pass but GitHub reports a stale block, force recompute by push, review, close/reopen, or waiting; then retry.
 - Never force past a green-but-cached block with `gh pr merge --admin`; that bypasses required checks.
+
+## Response Format
+
+- Keep responses concise by default; prefer short direct answers over long explanations unless depth is requested.
 
 <!-- SPECKIT START -->
 `specs/026-nt-backed-iv-engine/plan.md`

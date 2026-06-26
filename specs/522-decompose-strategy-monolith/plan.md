@@ -41,9 +41,9 @@ src/strategies/binary_oracle_edge_taker/
 src/bolt_v3_sizing.rs          # SHARED: pure dollar-intent sizing math (maker-reusable)
 src/bolt_v3_taker_updown_signal.rs # TAKER/UPDOWN: pure EV/side-selection/uncertainty math
 src/bolt_v3_taker_pricing.rs  # SHARED: reference-quote/RV/lead-venue pricing state (maker-reusable)
-src/bolt_v3_book_sizing.rs    # SHARED: OutcomeBookState + VWAP/slippage execution sizing (rule #9)
+src/bolt_v3_book_sizing.rs    # SHARED: OutcomeBookState + VWAP/slippage execution sizing (AGENTS.md#repo-rule-strategies-produce-intent-only)
 # OutcomeSide (binary up/down side) consolidates INTO src/bolt_v3_market_families/ (merges with UpdownOutcomeSide; A2) — NOT taker_signal
-# admission-request construction folds INTO existing src/bolt_v3_submit_admission.rs (rule #9)
+# admission-request construction folds INTO existing src/bolt_v3_submit_admission.rs (AGENTS.md#repo-rule-strategies-produce-intent-only)
 
 src/bolt_v3_operator_artifacts/   # Track B: mod.rs (core-glue: json-io, error enum, constants, re-exports) + submodules
 ```
@@ -68,12 +68,12 @@ movement evidence; line ranges are not.
 | **A1** | **OutcomeSide-free** pure math → new `bolt_v3_taker_signal.rs`; generic numeric primitives → existing `bolt_v3_numeric.rs` | symbol cluster merged by PR #524; no line anchors | pure-logic | — (first slice; no overlap) |
 | **A2** | Consolidate `OutcomeSide` into the market-family layer (merge with `UpdownOutcomeSide`; **partially resolves findings-doc #13 — OutcomeSide sub-item**); move the side-using math (`compute_worst_case_ev_bps`+`WorstCaseEvInputs`, `choose_entry_side`+`SideSelectionInputs`, `outcome_side_evidence_label`) into `bolt_v3_taker_signal` depending on that owner | symbol cluster merged by PR #526; reference repoints tracked by diff/tests, not line anchors | cross-cutting type move | — |
 | **A3** | Market selection + candidate snapshot construction (pure) → `selection.rs` (**completes findings-doc #13 — the strategy-local `CandidateMarket` wrapper over market-family output**) | symbol cluster in merged `src/strategies/binary_oracle_edge_taker/selection.rs`; merged to main | pure-logic | — |
-| **A4** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` (rule #9) | symbol cluster in merged `src/bolt_v3_book_sizing.rs`; merged to main | state-struct + pure | — |
+| **A4** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` ([AGENTS.md#repo-rule-strategies-produce-intent-only](../../AGENTS.md#repo-rule-strategies-produce-intent-only)) | symbol cluster in merged `src/bolt_v3_book_sizing.rs`; merged to main | state-struct + pure | — |
 | **A5** | Pricing state (reference/RV/lead-venue) → `bolt_v3_taker_pricing.rs` | symbol cluster in merged `src/bolt_v3_taker_pricing.rs`; merged to main | NT-actor-coupled state | #520 (SignedTradeFlow), #508 (pricing guards) |
 | **A6** | Exposure/recovery state machine → `exposure.rs` | symbol cluster in `slices/A6.md`: exposure state structs/enums, support predicates, forced-flat predicates | state-struct | #507 (sizer evidence on position state) |
 | **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | symbol cluster in `slices/A7.md`; merged by PR #586; no line anchors | pure-logic | — |
 | **A8** | Config structs + parse/validate → `config.rs` (or archetype) | symbol cluster in merged `config.rs`; merged to main | pure-logic | #508 (config guards) |
-| **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup). **Owns the base — #507/#510 rebase their admission edits onto it.** | symbol cluster in `slices/A9.md`; no stale line anchors | pure-logic | #507, #510 |
+| **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` ([AGENTS.md#repo-rule-strategies-produce-intent-only](../../AGENTS.md#repo-rule-strategies-produce-intent-only); kill test-only dup). **Owns the base — #507/#510 rebase their admission edits onto it.** | symbol cluster in `slices/A9.md`; no stale line anchors | pure-logic | #507, #510 |
 | **A10** | Split the 238 tests to mirror submodules; `mod.rs` = struct + `DataActor` + glue | `tests/{book_sizing,config,core_glue,exposure,orders_admission,pricing,selection,source_evidence,trade_flow}.rs` plus `shared_fixture.rs`; no line anchors | tests | — |
 
 ### Track B — operator_artifacts (parallel, conflict-free with Track A)

@@ -35,16 +35,16 @@ These repo-level rules are in addition to any higher-level agent instructions.
 
 ## Repo Rules
 
-1. **NO HARDCODES** — every runtime value comes from TOML config. No string literals for IDs, quantities, timeouts, or any runtime value in code.
-2. **NO DUAL PATHS** — one way to do each thing. One config format, one secret source, one build path.
-3. **NO DEBTS** — no TODO, no "fix later", no unpinned dependencies, no uncommitted work.
-4. **NO CREDENTIAL DISPLAY** — never cat/print/log API keys, private keys, secrets.
-5. **PURE RUST BINARY** — no Python layer. The binary is a standalone Rust `LiveNode` using NT's Rust API directly. No PyO3, no maturin, no pip.
-6. **SSM IS THE SINGLE SECRET SOURCE** — all credentials resolve from AWS SSM via the Rust AWS SDK (`aws-sdk-ssm`). No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks, no other secret backends.
-7. **GROUP BY CHANGE** — if swapping a wallet, credential set, or venue requires editing more than one config section, the config is wrong. All values that share a lifecycle belong in one section. Test: "if I change X, how many places do I touch?" The answer must be one.
-8. **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
-9. **STRATEGIES PRODUCE INTENT ONLY** — strategy files may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating must live in shared execution/admission modules built on NT APIs. Any change under `src/strategies/*` that handles submit mechanics is rejected unless explicitly approved as strategy-local signal logic.
-10. **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the Chainlink Data Streams resolution oracle (`price_to_beat` for the binary-oracle taker), testnet is the only and final environment because mainnet credentials cannot be obtained. Treat the testnet Chainlink stream as production for this oracle. Do not raise testnet-vs-mainnet as a concern or ask for reconfirmation solely because the stream is testnet. Real deploy concerns still apply: config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
+1. <a id="repo-rule-no-hardcodes"></a> **NO HARDCODES** — every runtime value comes from TOML config. No string literals for IDs, quantities, timeouts, or any runtime value in code.
+2. <a id="repo-rule-no-dual-paths"></a> **NO DUAL PATHS** — one way to do each thing. One config format, one secret source, one build path.
+3. <a id="repo-rule-no-debts"></a> **NO DEBTS** — no TODO, no "fix later", no unpinned dependencies, no uncommitted work.
+4. <a id="repo-rule-no-credential-display"></a> **NO CREDENTIAL DISPLAY** — never cat/print/log API keys, private keys, secrets.
+5. <a id="repo-rule-pure-rust-binary"></a> **PURE RUST BINARY** — no Python layer. The binary is a standalone Rust `LiveNode` using NT's Rust API directly. No PyO3, no maturin, no pip.
+6. <a id="repo-rule-ssm-single-secret-source"></a> **SSM IS THE SINGLE SECRET SOURCE** — all credentials resolve from AWS SSM via the Rust AWS SDK (`aws-sdk-ssm`). No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks, no other secret backends.
+7. <a id="repo-rule-group-by-change"></a> **GROUP BY CHANGE** — if swapping a wallet, credential set, or venue requires editing more than one config section, the config is wrong. All values that share a lifecycle belong in one section. Test: "if I change X, how many places do I touch?" The answer must be one.
+8. <a id="repo-rule-do-not-reference-bolt-v1"></a> **DO NOT REFERENCE BOLT V1** — `~/Projects/Claude/bolt/` is the old repo. Do not read from it, import from it, or depend on it. NT source is in the git cache at `~/.cargo/git/checkouts/nautilus_trader-*/` or on GitHub.
+9. <a id="repo-rule-strategies-produce-intent-only"></a> **STRATEGIES PRODUCE INTENT ONLY** — strategy files may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating must live in shared execution/admission modules built on NT APIs. Any change under `src/strategies/*` that handles submit mechanics is rejected unless explicitly approved as strategy-local signal logic.
+10. <a id="repo-rule-chainlink-data-streams-testnet-is-production"></a> **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the Chainlink Data Streams resolution oracle (`price_to_beat` for the binary-oracle taker), testnet is the only and final environment because mainnet credentials cannot be obtained. Treat the testnet Chainlink stream as production for this oracle. Do not raise testnet-vs-mainnet as a concern or ask for reconfirmation solely because the stream is testnet. Real deploy concerns still apply: config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
 
 ## Evidence-Driven Verification
 

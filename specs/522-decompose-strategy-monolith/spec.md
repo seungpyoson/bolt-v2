@@ -7,7 +7,8 @@
 
 `src/strategies/binary_oracle_edge_taker.rs` (18,205 lines, 229 embedded tests) and
 `src/bolt_v3_operator_artifacts.rs` (17,466 lines) together are ~45% of `src/`. The
-strategy file owns concerns that, per `AGENTS.md` rule #9, must live in shared
+strategy file owns concerns that, per
+[AGENTS.md#repo-rule-strategies-produce-intent-only](../../AGENTS.md#repo-rule-strategies-produce-intent-only), must live in shared
 execution/admission modules (admission-request construction, fee-adjusted sizing,
 rounding/precision, submit gating) — and bundles config, market selection, pricing
 state, decision math, exposure lifecycle, order construction, source-proof, the
@@ -19,13 +20,13 @@ behavior hard to reason about and debug.
 
 Decompose both monoliths into focused modules with **intended shared helpers**, so
 each module does one job, the strategy file holds only intent + signal +
-orchestration (rule #9), and the #488 maker can reuse the taker's pure helpers
+orchestration ([AGENTS.md#repo-rule-strategies-produce-intent-only](../../AGENTS.md#repo-rule-strategies-produce-intent-only)), and the #488 maker can reuse the taker's pure helpers
 without copying. Every move is **behavior-preserving** (no logic change inside a
 move slice) and verified.
 
 ## North Star (why each move is principled, not cosmetic)
 
-1. **`AGENTS.md` rule #9** — strategies emit intent/signal only; admission, sizing,
+1. **[AGENTS.md#repo-rule-strategies-produce-intent-only](../../AGENTS.md#repo-rule-strategies-produce-intent-only)** — strategies emit intent/signal only; admission, sizing,
    rounding, fee-adjustment, submit gating belong in shared modules.
 2. **spec 023 (NT order-intent layer)** — the shared landing zone already exists
    (`bolt_v3_order_intent`, `bolt_v3_submit_admission`); the taker is retrofit onto it.

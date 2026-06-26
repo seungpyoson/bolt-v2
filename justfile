@@ -164,6 +164,10 @@ verify-023-status-legend-registry: check-workspace
     python3 scripts/test_verify_023_status_legend_registry.py
     python3 scripts/verify_023_status_legend_registry.py
 
+verify-doc-rule-references: check-workspace
+    python3 scripts/test_verify_doc_rule_references.py
+    python3 scripts/verify_doc_rule_references.py
+
 verify-bte-022-pmxt-durable-source: check-workspace
     python3 scripts/test_verify_bte_022_pmxt_durable_source.py
     python3 scripts/verify_bte_022_pmxt_durable_source.py
@@ -381,6 +385,8 @@ source-fence-static-inner: require-local-verification-gate check-workspace requi
     python3 scripts/verify_stable_doc_section_ids.py
     python3 scripts/test_verify_023_status_legend_registry.py
     python3 scripts/verify_023_status_legend_registry.py
+    python3 scripts/test_verify_doc_rule_references.py
+    python3 scripts/verify_doc_rule_references.py
     python3 scripts/test_verify_bte_022_pmxt_durable_source.py
     python3 scripts/verify_bte_022_pmxt_durable_source.py
     python3 scripts/test_verify_bte_022_pmxt_storage_proof.py

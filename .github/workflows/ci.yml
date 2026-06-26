@@ -172,6 +172,7 @@ jobs:
             --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
             --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
             --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \
+            --event-sender-id "${{ github.event.sender.id }}" \
             --ref "${{ github.ref }}" \
             | tee -a "$GITHUB_OUTPUT"
 

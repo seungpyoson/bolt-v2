@@ -60,14 +60,23 @@ POLICY_ROWS = (
     "tag",
     "unknown_event",
 )
+# Queue-only rework (#981): this repo runs the Mergify queue in TEMP-PR mode, so the
+# native merge_group never fires and the SOLE producer of a green REQUIRED gate is the
+# Mergify temp PR validated at the merge boundary. Every ordinary pull_request row is
+# therefore pinned to "iteration" (defer heavy lanes, publish only the non-required
+# gate-iteration); only the genuine merge-boundary rows stay "full". A non-iteration
+# value on a PR row, or a non-full value on a boundary row, is a required-gate hole and
+# fails the load-time contract closed.
 POLICY_REQUIRED_VALUES = {
-    "draft_pr_synchronize": "defer",
-    "draft_pr_opened": "defer",
-    "draft_pr_reopened": "defer",
-    "draft_pr_edited": "defer",
-    "converted_to_draft": "defer",
-    "ready_pr": "full",
-    "ready_for_review": "full",
+    "draft_pr_synchronize": "iteration",
+    "draft_pr_opened": "iteration",
+    "draft_pr_reopened": "iteration",
+    "draft_pr_edited": "iteration",
+    "converted_to_draft": "iteration",
+    "ready_pr": "iteration",
+    "ready_pr_edited_no_base": "iteration",
+    "ready_pr_reopened": "iteration",
+    "ready_for_review": "iteration",
     "docs": "docs",
     "workflow_dispatch": "iteration",
     "workflow_dispatch_full_ci": "full",
@@ -80,10 +89,7 @@ POLICY_REQUIRED_VALUES = {
 POLICY_REQUIRED_MESSAGES = {
     "workflow_dispatch_full_ci": "ci_provenance.policy.workflow_dispatch_full_ci must remain full",
 }
-POLICY_ALLOWED_VALUES = {
-    "ready_pr_edited_no_base": {"noop", "full"},
-    "ready_pr_reopened": {"noop", "full"},
-}
+POLICY_ALLOWED_VALUES: dict[str, set[str]] = {}
 FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -147,6 +153,7 @@ class ProvenanceConfig:
     policy: dict[str, str]
     gate_names: dict[str, str]
     mergify_temp_pr_head_ref_prefix: str
+    mergify_temp_pr_actor_id: int
     docs_safe_paths: tuple[str, ...]
     docs_forbidden_ignored_build_paths: tuple[str, ...]
     docs_non_heavy_required_jobs: tuple[str, ...]
@@ -555,6 +562,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         mergify_temp_pr_head_ref_prefix=require_string(
             mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify"
         ),
+        mergify_temp_pr_actor_id=require_positive_int(
+            mergify, "mergify_temp_pr_actor_id", "ci_provenance.mergify"
+        ),
         docs_safe_paths=docs_safe_paths,
         docs_forbidden_ignored_build_paths=docs_forbidden_ignored_build_paths,
         docs_non_heavy_required_jobs=docs_non_heavy_required_jobs,
@@ -826,6 +836,14 @@ def evaluate_backtester_gate_verdict(
 def expected_event_class_for(reason: str, path: str) -> str:
     if reason == "docs" or path == "docs":
         return "docs"
+    # Queue-only rework (#981): the iteration policy is now path-led. Every newly
+    # demoted pull_request row (ready_pr, ready_for_review, draft_pr_*,
+    # converted_to_draft, ready_pr_edited_no_base, ready_pr_reopened) resolves to
+    # ci_policy_path == "iteration", so its event class is "iteration" regardless of
+    # the originating reason. force_full_ci/merge_group keep path == "full" and fall
+    # through to the "full" class below.
+    if path == "iteration":
+        return "iteration"
     if reason in {
         "draft_pr_synchronize",
         "draft_pr_opened",
@@ -850,6 +868,15 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
         return "dispatch_full"
     if event_name == "workflow_dispatch":
         return "iteration"
+    # Queue-only rework (#981): the gate name is a pure function of (event_name,
+    # reason), NEVER the policy VALUE. A pull_request head run is never proof of the
+    # squash-merged commit, so every pull_request that is not the actor-verified
+    # mergify temp PR publishes only the non-required gate-iteration (even when its
+    # path is "full" under force_full_ci or an unknown draft action). The required
+    # suffix is reachable only by merge_group, push/main_push, tag, the
+    # actor-verified mergify_temp_pr, and unknown non-PR events.
+    if event_name == "pull_request" and reason != "mergify_temp_pr":
+        return "iteration"
     if path in POLICY_VALUES:
         return "required"
     raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
@@ -861,11 +888,19 @@ def mergify_temp_pr_matches(
     pull_request_draft: bool,
     pull_request_head_ref: str,
     temp_pr_head_ref_prefix: str,
+    event_sender_id: int,
+    temp_pr_actor_id: int,
 ) -> bool:
+    # GAP-1 fix (#981): a head-ref prefix alone must NEVER grant the required gate —
+    # any actor can open a draft PR whose head ref starts with the mergify prefix. The
+    # temp PR is recognized only when the event sender is the bound mergify actor, so a
+    # spoofed head ref (or an absent/mismatched sender id) fails closed and is treated
+    # as an ordinary PR -> gate-iteration (demote).
     return (
         event_name == "pull_request"
         and pull_request_draft
         and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+        and event_sender_id == temp_pr_actor_id
     )
 
 
@@ -897,6 +932,7 @@ def evaluate_ci_policy(
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
     docs_only: bool = False,
+    event_sender_id: int = -1,
     ref: str,
 ) -> CiPolicyResult:
     mergify_temp_pr = mergify_temp_pr_matches(
@@ -904,6 +940,8 @@ def evaluate_ci_policy(
         pull_request_draft=pull_request_draft,
         pull_request_head_ref=pull_request_head_ref,
         temp_pr_head_ref_prefix=config.mergify_temp_pr_head_ref_prefix,
+        event_sender_id=event_sender_id,
+        temp_pr_actor_id=config.mergify_temp_pr_actor_id,
     )
     if event_name == "merge_group":
         # The merge queue validates the exact to-be-merged commit on a temporary
@@ -2412,6 +2450,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--pull-request-base-changed", default="false")
         parser.add_argument("--workflow-dispatch-full-ci", default="")
         parser.add_argument("--docs-only", default="false")
+        parser.add_argument("--event-sender-id", default="")
         parser.add_argument("--ref", required=True)
     if mode == "check-ci-gate":
         parser.add_argument("--policy-path", required=True)
@@ -2485,6 +2524,7 @@ def main(argv: list[str] | None = None) -> int:
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 docs_only=parse_bool(args.docs_only),
+                event_sender_id=int(args.event_sender_id) if args.event_sender_id else -1,
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")

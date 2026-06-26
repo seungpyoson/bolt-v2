@@ -1104,10 +1104,17 @@ def evaluate_ci_policy(
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
     mergify_temp_pr_head_ref_prefix: str = "",
+    mergify_temp_pr_actor_id: int = -1,
+    event_sender_id: int = -1,
     ref: str,
 ) -> CiPolicyResult:
     override = policy.get("override")
     force_full_ci = isinstance(override, dict) and override.get("force_full_ci") is True
+    # Queue-only rework (#981): the runtime resolver now reads
+    # config.mergify_temp_pr_actor_id and an event_sender_id to bind the mergify temp
+    # PR to its actor. This static mirror delegates to that same resolver, so it must
+    # supply the bound actor id (or a sentinel that never matches a real sender) and
+    # thread the sender id through, or it would crash on the missing attribute.
     config = type(
         "StaticPolicyConfig",
         (),
@@ -1115,6 +1122,7 @@ def evaluate_ci_policy(
             "policy": {key: str(value) for key, value in policy.items() if key != "override"},
             "gate_names": dict(gate_names),
             "mergify_temp_pr_head_ref_prefix": mergify_temp_pr_head_ref_prefix,
+            "mergify_temp_pr_actor_id": mergify_temp_pr_actor_id,
             "force_full_ci": force_full_ci,
         },
     )()
@@ -1128,6 +1136,7 @@ def evaluate_ci_policy(
             pull_request_base_changed=pull_request_base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
             docs_only=False,
+            event_sender_id=event_sender_id,
             ref=ref,
         )
     except ProvenanceError as exc:
@@ -1305,6 +1314,8 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass detector docs_only output")
     if '--ref "${{ github.ref }}"' not in text:
         errors.append("ci-policy must pass github.ref")
+    if '--event-sender-id "${{ github.event.sender.id }}"' not in text:
+        errors.append("ci-policy must pass github.event.sender.id for the mergify actor binding")
     return errors
 
 
@@ -9935,6 +9946,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '--pull-request-head-ref "$PR_HEAD_REF"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"',
+            '--event-sender-id "${{ github.event.sender.id }}"',
             '--ref "${{ github.ref }}"',
         ]:
             if required not in policy_text:

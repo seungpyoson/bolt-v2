@@ -1200,6 +1200,128 @@ def assert_nextest_error(fragment: str, nextest_config: str, manifest: CiTestMan
     if not any(fragment in error for error in errors):
         raise AssertionError(f"expected nextest error containing {fragment!r}, got: {errors}")
 
+
+TEST_HARNESS_NAMES = (
+    "iv",
+    "outcome_groups",
+    "maker_taker",
+    "kill_switch_loss",
+    "pricing",
+    "admission_orders",
+    "platform_config",
+    "runtime_capture_io",
+    "wiring_registration",
+)
+TEST_HARNESS_MEMBER = "bolt_v3_fixture_member"
+
+
+def base_test_harness_manifest(
+    harness_to_members: dict[str, tuple[str, ...]] | None = None,
+) -> CiTestManifest:
+    if harness_to_members is None:
+        harness_to_members = {
+            harness: ((harness, TEST_HARNESS_MEMBER) if harness == "iv" else (harness,))
+            for harness in TEST_HARNESS_NAMES
+        }
+    member_to_harness: dict[str, str] = {}
+    for harness, members in harness_to_members.items():
+        for member in members:
+            member_to_harness.setdefault(member, harness)
+    return CiTestManifest(member_to_harness=member_to_harness, harness_to_members=harness_to_members)
+
+
+def write_test_harness_fixture(
+    root: pathlib.Path,
+    *,
+    manifest: CiTestManifest | None = None,
+    cargo_autotests: str = "false",
+    test_files: dict[str, str] | None = None,
+    workflow_text: str = "jobs:\n  test:\n    steps:\n      - run: cargo test --test pricing\n",
+    justfile_text: str = "ci-test:\n    cargo test --test iv\n",
+    write_workflow: bool = True,
+    write_justfile: bool = True,
+) -> None:
+    cargo_lines = [
+        "[package]",
+        'name = "bolt-v2-fixture"',
+        'version = "0.0.0"',
+        'edition = "2021"',
+        f"autotests = {cargo_autotests}",
+        "",
+    ]
+    for harness in TEST_HARNESS_NAMES:
+        cargo_lines.extend(
+            [
+                "[[test]]",
+                f'name = "{harness}"',
+                f'path = "tests/{harness}.rs"',
+                "",
+            ]
+        )
+    (root / "Cargo.toml").write_text("\n".join(cargo_lines), encoding="utf-8")
+    tests_root = root / "tests"
+    tests_root.mkdir()
+    fixture_files = {harness: "" for harness in TEST_HARNESS_NAMES}
+    manifest_members = manifest.harness_to_members if manifest is not None else base_test_harness_manifest().harness_to_members
+    for harness, members in manifest_members.items():
+        for member in members:
+            if member != harness:
+                fixture_files[member] = "#[test]\nfn fixture_member_runs() {}\n"
+    if test_files:
+        fixture_files.update(test_files)
+    for stem, text in fixture_files.items():
+        path = tests_root / f"{stem}.rs"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    if write_workflow:
+        workflow_path = root / ".github" / "workflows" / "ci.yml"
+        workflow_path.parent.mkdir(parents=True)
+        workflow_path.write_text(workflow_text, encoding="utf-8")
+    if write_justfile:
+        (root / "justfile").write_text(justfile_text, encoding="utf-8")
+
+
+def test_harness_manifest_errors(
+    *,
+    manifest: CiTestManifest | None = None,
+    cargo_autotests: str = "false",
+    test_files: dict[str, str] | None = None,
+    workflow_text: str = "jobs:\n  test:\n    steps:\n      - run: cargo test --test pricing\n",
+    justfile_text: str = "ci-test:\n    cargo test --test iv\n",
+) -> list[str]:
+    verifier = load_verifier()
+    manifest = manifest or base_test_harness_manifest()
+    verifier.build_test_manifest = lambda _manifest_path, _tests_root: manifest
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = pathlib.Path(temp_dir)
+        write_test_harness_fixture(
+            root,
+            manifest=manifest,
+            cargo_autotests=cargo_autotests,
+            test_files=test_files,
+            workflow_text=workflow_text,
+            justfile_text=justfile_text,
+        )
+        return verifier.verify_test_harness_manifest(
+            cargo_manifest_path=root / "Cargo.toml",
+            tests_root=root / "tests",
+            workflow_path=root / ".github" / "workflows" / "ci.yml",
+            justfile_path=root / "justfile",
+        )
+
+
+def assert_test_harness_manifest_clean(**kwargs) -> None:
+    errors = test_harness_manifest_errors(**kwargs)
+    if errors:
+        raise AssertionError(f"expected no test harness manifest errors, got: {errors}")
+
+
+def assert_test_harness_manifest_error(fragment: str, **kwargs) -> None:
+    errors = test_harness_manifest_errors(**kwargs)
+    if not any(fragment in error for error in errors):
+        raise AssertionError(f"expected test harness manifest error containing {fragment!r}, got: {errors}")
+
+
 LOCAL_COMPILE_POLICY_TOML = """
 [local_compile_policy]
 enabled = true
@@ -4665,6 +4787,105 @@ def assert_nextest_live_node_group_accepts_manifest_standalone_member() -> None:
     assert_nextest_clean(BASE_NEXTEST_CONFIG, manifest)
 
 
+def test_harness_manifest_requires_autotests_false() -> None:
+    assert_test_harness_manifest_clean()
+    assert_test_harness_manifest_error(
+        "Cargo.toml [package].autotests must be false",
+        cargo_autotests="true",
+    )
+
+
+def test_harness_manifest_rejects_orphan_test_members() -> None:
+    assert_test_harness_manifest_clean()
+    assert_test_harness_manifest_error(
+        "tests/bolt_v3_orphan.rs has #[test] but is not registered in any explicit test harness",
+        test_files={"bolt_v3_orphan": "#[test]\nfn orphan_runs() {}\n"},
+    )
+
+
+def test_harness_manifest_rejects_double_modded_members() -> None:
+    assert_test_harness_manifest_clean()
+    harness_to_members = {
+        harness: ((harness, TEST_HARNESS_MEMBER) if harness in {"iv", "pricing"} else (harness,))
+        for harness in TEST_HARNESS_NAMES
+    }
+    assert_test_harness_manifest_error(
+        f"tests/{TEST_HARNESS_MEMBER}.rs is registered by multiple harnesses: iv, pricing",
+        manifest=base_test_harness_manifest(harness_to_members),
+    )
+
+
+def test_harness_manifest_rejects_unreferenced_top_level_files() -> None:
+    assert_test_harness_manifest_clean()
+    assert_test_harness_manifest_error(
+        "tests/bolt_v3_unreferenced.rs is neither a harness root, a #[test]-bearing registered member, nor a declared test helper",
+        test_files={"bolt_v3_unreferenced": "pub fn helper_only() {}\n"},
+    )
+
+
+def test_harness_manifest_enforces_expected_harness_count() -> None:
+    assert_test_harness_manifest_clean()
+    harness_to_members = {
+        **base_test_harness_manifest().harness_to_members,
+        "extra_harness": ("extra_harness",),
+    }
+    assert_test_harness_manifest_error(
+        "Cargo.toml explicit test harness count must be 9, got 10",
+        manifest=base_test_harness_manifest(harness_to_members),
+    )
+
+
+def test_harness_manifest_rejects_harness_roots_as_members() -> None:
+    assert_test_harness_manifest_clean()
+    harness_to_members = dict(base_test_harness_manifest().harness_to_members)
+    harness_to_members["iv"] = ("iv", TEST_HARNESS_MEMBER, "pricing")
+    assert_test_harness_manifest_error(
+        "tests/pricing.rs is a harness root and must not be mod-ed by harness iv",
+        manifest=base_test_harness_manifest(harness_to_members),
+    )
+
+
+def test_harness_manifest_masks_inner_attrs_and_rejects_crate_attrs() -> None:
+    source = (REPO_ROOT / "tests" / "bolt_v3_binary_oracle_edge_taker_a10_structure.rs").read_text(encoding="utf-8")
+    harness_to_members = {
+        harness: ((harness, "bolt_v3_binary_oracle_edge_taker_a10_structure") if harness == "maker_taker" else (harness,))
+        for harness in TEST_HARNESS_NAMES
+    }
+    assert_test_harness_manifest_clean(
+        manifest=base_test_harness_manifest(harness_to_members),
+        test_files={"bolt_v3_binary_oracle_edge_taker_a10_structure": source},
+    )
+    assert_test_harness_manifest_error(
+        "tests/bolt_v3_fixture_member.rs uses banned module-level inner attribute #![feature(...)]",
+        test_files={TEST_HARNESS_MEMBER: "#![feature(test)]\n#[test]\nfn fixture_member_runs() {}\n"},
+    )
+
+
+def test_harness_manifest_rejects_retired_member_test_filters() -> None:
+    assert_test_harness_manifest_clean()
+    assert_test_harness_manifest_error(
+        f"justfile references retired integration-test member {TEST_HARNESS_MEMBER!r} with --test; use harness 'iv'",
+        justfile_text=f"ci-test:\n    cargo test --test {TEST_HARNESS_MEMBER}\n",
+    )
+
+
+def test_nextest_config_rejects_surprise_binary_overrides() -> None:
+    verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
+    assert_nextest_clean(BASE_NEXTEST_CONFIG, manifest)
+    assert_nextest_error(
+        "nextest config has unregistered per-binary override",
+        BASE_NEXTEST_CONFIG
+        + """
+
+[[profile.default.overrides]]
+filter = 'binary(=platform_config)'
+retries = 2
+""",
+        manifest,
+    )
+
+
 # Pin-consistency fixtures. The base SHA already appears throughout BASE_WORKFLOW
 # and BASE_ADVISORY_WORKFLOW; SHA_ALT is a different valid 40-hex SHA used to
 # exercise drift, and SHA_BASE_UPPER is the base SHA in uppercase to exercise
@@ -6546,6 +6767,12 @@ def run_verifier_main_with_no_mistakes(
 
         workflow_dir = tmp_path / ".github" / "workflows"
         write_base_workflows(workflow_dir)
+        write_test_harness_fixture(
+            tmp_path,
+            manifest=base_test_harness_manifest(),
+            write_workflow=False,
+            write_justfile=False,
+        )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -6561,6 +6788,7 @@ def run_verifier_main_with_no_mistakes(
         write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_no_mistakes_entrypoint")
+        temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -6577,6 +6805,12 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
 
         workflow_dir = tmp_path / ".github" / "workflows"
         write_base_workflows(workflow_dir)
+        write_test_harness_fixture(
+            tmp_path,
+            manifest=base_test_harness_manifest(),
+            write_workflow=False,
+            write_justfile=False,
+        )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -6592,6 +6826,7 @@ def run_verifier_main_with_extra_action(extra_action_text: str) -> tuple[int, st
         write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_action_entrypoint")
+        temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -6609,6 +6844,12 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         workflow_dir = tmp_path / ".github" / "workflows"
         write_base_workflows(workflow_dir)
         (workflow_dir / workflow_name).write_text(workflow_text)
+        write_test_harness_fixture(
+            tmp_path,
+            manifest=base_test_harness_manifest(),
+            write_workflow=False,
+            write_justfile=False,
+        )
 
         action_path = tmp_path / ".github" / "actions" / "setup-environment" / "action.yml"
         action_path.parent.mkdir(parents=True)
@@ -6620,6 +6861,7 @@ def run_verifier_main_with_extra_workflow(workflow_name: str, workflow_text: str
         write_rust_verification_policy_fixtures(tmp_path)
 
         temp_verifier = load_verifier(verifier_path, "verify_ci_workflow_hygiene_extra_workflow_entrypoint")
+        temp_verifier.build_test_manifest = lambda _manifest_path, _tests_root: base_test_harness_manifest()
         stdout = io.StringIO()
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -8158,6 +8400,15 @@ def main() -> int:
     assert_nextest_live_node_group_covers_bolt_v3_builders()
     assert_nextest_live_node_group_uses_manifest_harness_scope()
     assert_nextest_live_node_group_accepts_manifest_standalone_member()
+    test_harness_manifest_requires_autotests_false()
+    test_harness_manifest_rejects_orphan_test_members()
+    test_harness_manifest_rejects_double_modded_members()
+    test_harness_manifest_rejects_unreferenced_top_level_files()
+    test_harness_manifest_enforces_expected_harness_count()
+    test_harness_manifest_rejects_harness_roots_as_members()
+    test_harness_manifest_masks_inner_attrs_and_rejects_crate_attrs()
+    test_harness_manifest_rejects_retired_member_test_filters()
+    test_nextest_config_rejects_surprise_binary_overrides()
     for job in (
         "detector",
         "deny",

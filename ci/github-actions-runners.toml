@@ -42,6 +42,8 @@ deploy = "github_hosted"
 ci-policy = "managed_light"
 detect = "managed_light"
 fmt = "managed_light"
+# This config is a full proof path for merge-queue probe PRs; comment-only
+# probe edits here still exercise both required gates before queueing.
 # clippy compiles the full NT-heavy crate (same footprint as test) and rides above the disk-pressure
 # floor only on the heavy tier; on managed_light (ubicloud-standard-2) the preflight refused at
 # free_bytes=10,622,885,888 < min_free_bytes=10,737,418,240. Kept consistent with the test lane,

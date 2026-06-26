@@ -229,7 +229,7 @@ TAG_SKIP_REQUIRED_JOBS = (
     "test",
     "ci-provenance-emit",
 )
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "build")
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-archive", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 JOB_REQUIRED_JUST_RECIPE = {
     "deny": "deny",
@@ -338,6 +338,8 @@ changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \\
   ci/github-actions-runners.toml \\
   scripts/nextest_fingerprint.py \\
   scripts/test_nextest_fingerprint.py \\
+  scripts/root_bin_sidecars.py \\
+  scripts/test_root_bin_sidecars.py \\
   scripts/ci_provenance.py \\
   scripts/test_ci_provenance.py \\
   scripts/verify_ci_workflow_hygiene.py \\
@@ -374,6 +376,8 @@ FINGERPRINT_REUSE_GOVERNANCE_PATHS = (
     "ci/github-actions-runners.toml",
     "scripts/nextest_fingerprint.py",
     "scripts/test_nextest_fingerprint.py",
+    "scripts/root_bin_sidecars.py",
+    "scripts/test_root_bin_sidecars.py",
     "scripts/ci_provenance.py",
     "scripts/test_ci_provenance.py",
     "scripts/verify_ci_workflow_hygiene.py",
@@ -520,13 +524,34 @@ EXACT_HEAD_GOVERNANCE_CACHE_INPUTS = (
     "'scripts/command_understanding.py'",
 )
 TEST_ARCHIVE_PATH = "NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst"
+TEST_ARCHIVE_SIDECAR_PATH = "ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz"
 TEST_ARCHIVE_CACHE_PATH = "path: ${{ env.NEXTEST_ARCHIVE_PATH }}"
+TEST_ARCHIVE_SIDECAR_CACHE_PATH = "path: ${{ env.ROOT_BIN_SIDECARS_PATH }}"
+TEST_ARCHIVE_SIDECAR_CACHE_KEY = (
+    "root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}"
+    "-${{ runner.os }}-${{ runner.arch }}"
+    "-${{ needs.nextest-fingerprint.outputs.nextest_profile }}"
+    "-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}"
+)
 TEST_ARCHIVE_CACHE_HIT_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true'"
-TEST_ARCHIVE_SIDECAR_BUILD_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit == 'true'"
+TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'"
+TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD = "if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_SIDECAR_BUILD_GUARD = (
+    "if: steps.nextest-archive-cache.outputs.cache-hit == 'true' "
+    "&& steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+)
+TEST_ARCHIVE_SIDECAR_PACK_GUARD = (
+    "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' "
+    "&& steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+)
+TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD = "if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'"
+TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD = "if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}"
+TEST_ARCHIVE_TEST_PROFILE_ENV = 'CARGO_PROFILE_TEST_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_PROFILE_ENV = 'CARGO_PROFILE_DEV_DEBUG: "0"'
 TEST_ARCHIVE_SIDECAR_BUILD_COMMAND = (
     'python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins'
 )
+TEST_ARCHIVE_SIDECAR_PACK_COMMAND = "python3 scripts/root_bin_sidecars.py pack"
 TEST_ARCHIVE_RESTORE_ACTION = "uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_SAVE_ACTION = "uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae"
 TEST_ARCHIVE_DOWNLOAD_ACTION = "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
@@ -546,6 +571,7 @@ MANAGED_TARGET_CACHE_KEYS = {
     "clippy": "clippy-host",
     "check-aarch64": "check-aarch64-dev",
     "source-fence": "source-fence-test",
+    "test-archive": "test-archive-test",
     "build": "build-aarch64-release",
 }
 JUST_LANE_RE = re.compile(
@@ -1074,6 +1100,20 @@ def verify_pr_concurrency(workflow_text: str) -> list[str]:
     return errors
 
 
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+
+
+def bool_like(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() == "true"
+
+
+def mergify_temp_pr_requires_full_ci(*, action: str, pull_request_base_changed: bool | str) -> bool:
+    base_changed = bool_like(pull_request_base_changed)
+    return action in MERGIFY_TEMP_PR_FULL_ACTIONS or (action == "edited" and base_changed)
+
+
 def evaluate_ci_policy(
     policy: dict[str, object],
     gate_names: dict[str, str],
@@ -1120,10 +1160,15 @@ def evaluate_ci_policy(
         if force_full_ci:
             path = "full"
             reason = "force_full_ci"
-        elif is_mergify_temp_pr:
+        elif is_mergify_temp_pr and mergify_temp_pr_requires_full_ci(
+            action=action,
+            pull_request_base_changed=pull_request_base_changed,
+        ):
             path = str(policy["mergify_temp_pr"])
             reason = "mergify_temp_pr"
         elif action == "ready_for_review":
+            if pull_request_draft:
+                raise ValueError("ready_for_review cannot be on a draft PR")
             path = str(policy["ready_for_review"])
             reason = "ready_for_review"
         elif not pull_request_draft and action == "edited" and not pull_request_base_changed:
@@ -1475,7 +1520,11 @@ def rust_cache_blocks(job_lines: list[str]) -> list[list[str]]:
 
 
 def github_cache_blocks(job_lines: list[str]) -> list[list[str]]:
-    return action_blocks(job_lines, "actions/cache@")
+    return (
+        action_blocks(job_lines, "actions/cache@")
+        + action_blocks(job_lines, "actions/cache/restore@")
+        + action_blocks(job_lines, "actions/cache/save@")
+    )
 
 
 def block_runs_command(block: list[str], command: str) -> bool:
@@ -5046,6 +5095,9 @@ LOCAL_VERIFICATION_GATE_RECIPES = (
     "source-fence-static",
     "ci-lint-workflow",
 )
+CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS = (
+    "python3 scripts/test_root_bin_sidecars.py",
+)
 
 
 def local_verification_inner_errors(
@@ -5103,6 +5155,11 @@ def verify_local_verification_gate_recipes(justfile_text: str) -> list[str]:
         ("ci-lint-workflow", "ci-lint-workflow-inner"),
     ):
         gated_inner_recipe_name(recipes, public_name, inner_name, errors)
+    if "ci-lint-workflow-inner" in recipes:
+        ci_lint_inner_lines = active_recipe_lines(recipes, "ci-lint-workflow-inner")
+        for required_command in CI_LINT_WORKFLOW_INNER_REQUIRED_COMMANDS:
+            if not any(required_command in line for line in ci_lint_inner_lines):
+                errors.append(f"justfile ci-lint-workflow-inner must run {required_command}")
     return errors
 
 
@@ -8921,22 +8978,52 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("test-archive must require detector success")
         archive_lines = jobs["test-archive"]
         archive_text = uncommented_text(archive_lines)
-        archive_cache_blocks = [
+        archive_restore_blocks = [
             block
-            for block in (
-                action_blocks(archive_lines, "actions/cache/restore@")
-                + action_blocks(archive_lines, "actions/cache/save@")
-            )
+            for block in action_blocks(archive_lines, "actions/cache/restore@")
             if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
         ]
+        archive_save_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/save@")
+            if block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
+        ]
+        archive_cache_blocks = archive_restore_blocks + archive_save_blocks
+        sidecar_restore_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/restore@")
+            if block_has_input(block, "path", "${{ env.ROOT_BIN_SIDECARS_PATH }}")
+        ]
+        sidecar_save_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/save@")
+            if block_has_input(block, "path", "${{ env.ROOT_BIN_SIDECARS_PATH }}")
+        ]
+        sidecar_cache_blocks = sidecar_restore_blocks + sidecar_save_blocks
         archive_upload_blocks = [
             block
             for block in action_blocks(archive_lines, "actions/upload-artifact@")
             if block_has_input(block, "name", "nextest-archive")
             and block_has_input(block, "path", "${{ env.NEXTEST_ARCHIVE_PATH }}")
         ]
+        target_restore_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/restore@")
+            if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
+        ]
+        target_save_blocks = [
+            block
+            for block in action_blocks(archive_lines, "actions/cache/save@")
+            if block_has_input(block, "path", "${{ steps.setup.outputs.managed_target_dir }}")
+        ]
+        target_cache_keys = [
+            block_input_value(block, "key") or ""
+            for block in target_restore_blocks + target_save_blocks
+        ]
         if TEST_ARCHIVE_PATH not in archive_text:
             errors.append("test-archive must declare nextest archive path")
+        if TEST_ARCHIVE_SIDECAR_PATH not in archive_text:
+            errors.append("test-archive must declare root binary sidecar path")
         if not archive_cache_blocks or not all(
             block_has_input(block, "key", TEST_ARCHIVE_CACHE_KEY)
             for block in archive_cache_blocks
@@ -8944,30 +9031,83 @@ def verify_workflow(workflow_text: str) -> list[str]:
             errors.append("nextest archive cache key must use nextest fingerprint output")
         if any("hashFiles(" in (block_input_value(block, "key") or "") for block in archive_cache_blocks):
             errors.append("nextest archive cache key must use nextest fingerprint output")
-        if "include-managed-target-dir:" in archive_text:
-            errors.append("test-archive must not opt into managed target dir")
+        if not sidecar_cache_blocks or not all(
+            block_has_input(block, "key", TEST_ARCHIVE_SIDECAR_CACHE_KEY)
+            for block in sidecar_cache_blocks
+        ):
+            errors.append("root binary sidecar cache key must use nextest fingerprint output")
+        if any("hashFiles(" in (block_input_value(block, "key") or "") for block in sidecar_cache_blocks):
+            errors.append("root binary sidecar cache key must use nextest fingerprint output")
+        if not job_has_setup_input(archive_lines, "include-managed-target-dir", '"true"'):
+            errors.append("test-archive must opt into managed target dir")
+        if not target_restore_blocks:
+            errors.append("test-archive must restore archive build target cache")
+        if any(
+            TEST_ARCHIVE_TARGET_CACHE_RESTORE_GUARD not in uncommented_text(block)
+            for block in target_restore_blocks
+        ):
+            errors.append("test-archive must restore target cache only while producing archive or sidecars")
+        if not target_save_blocks:
+            errors.append("test-archive must save archive build target cache")
+        if any(
+            TEST_ARCHIVE_TARGET_CACHE_SAVE_GUARD not in uncommented_text(block)
+            for block in target_save_blocks
+        ):
+            errors.append("test-archive must save target cache only on target cache miss")
+        for required in ("src/**", "tests/**"):
+            if not any(required in key for key in target_cache_keys):
+                errors.append(f"test-archive managed target cache key must include {required}")
         if "nextest-archive-build-v1" in archive_text:
             errors.append("test-archive must not save a second archive-build cache")
-        if TEST_ARCHIVE_RESTORE_ACTION not in archive_text:
+        if not archive_restore_blocks:
             errors.append("test-archive must restore nextest archive cache")
-        if TEST_ARCHIVE_SAVE_ACTION not in archive_text:
+        if not archive_save_blocks:
             errors.append("test-archive must save nextest archive cache")
         if archive_upload_blocks:
             errors.append("test-archive must not upload nextest archive artifact")
-        if "restore-keys:" in archive_text:
+        if any(block_has_input(block, "restore-keys") for block in archive_cache_blocks):
             errors.append("test-archive cache must not use restore-keys")
+        if any(block_has_input(block, "restore-keys") for block in sidecar_cache_blocks):
+            errors.append("root binary sidecar cache must not use restore-keys")
         if archive_text.count(TEST_ARCHIVE_CACHE_PATH) < 2:
             errors.append("test-archive cache must use archive path env")
-        if archive_text.count(TEST_ARCHIVE_CACHE_HIT_GUARD) < 2:
+        if archive_text.count(TEST_ARCHIVE_SIDECAR_CACHE_PATH) < 2:
+            errors.append("root binary sidecar cache must use sidecar path env")
+        archive_build_block = named_step_block(archive_lines, "Build nextest archive")
+        if archive_build_block is None or TEST_ARCHIVE_CACHE_HIT_GUARD not in uncommented_text(archive_build_block):
             errors.append("test-archive build must be skipped on archive cache hit")
+        if archive_build_block is None or TEST_ARCHIVE_TEST_PROFILE_ENV not in uncommented_text(archive_build_block):
+            errors.append("test-archive build must use test profile debug knob")
+        if archive_build_block is None or TEST_ARCHIVE_SIDECAR_PROFILE_ENV not in uncommented_text(archive_build_block):
+            errors.append("test-archive build must use dev profile debug knob for sidecars")
         if (
-            TEST_ARCHIVE_SIDECAR_BUILD_GUARD not in archive_text
+            TEST_ARCHIVE_SIDECAR_CACHE_HIT_GUARD not in archive_text
+            or 'tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"' not in archive_text
+        ):
+            errors.append("test-archive must extract cached root binary sidecars")
+        sidecar_pack_block = named_step_block(archive_lines, "Pack root binary sidecars from archive build")
+        if sidecar_pack_block is None or TEST_ARCHIVE_SIDECAR_PACK_GUARD not in uncommented_text(sidecar_pack_block):
+            errors.append("test-archive must pack root binary sidecars from archive builds on archive-cache miss")
+        if sidecar_pack_block is None or TEST_ARCHIVE_SIDECAR_PACK_COMMAND not in uncommented_text(sidecar_pack_block):
+            errors.append("test-archive archive-miss sidecar pack must use tracked root binary sidecar helper")
+        if (
+            TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD not in archive_text
             or TEST_ARCHIVE_SIDECAR_BUILD_COMMAND not in archive_text
         ):
-            errors.append("test-archive must build CARGO_BIN_EXE sidecars on archive cache hit")
-        sidecar_block = named_step_block(archive_lines, "Build nextest archive binary sidecars")
+            errors.append("test-archive must build CARGO_BIN_EXE sidecars on sidecar cache miss")
+        sidecar_block = named_step_block(archive_lines, "Build root binary sidecars")
+        if sidecar_block is None or TEST_ARCHIVE_SIDECAR_BUILD_GUARD not in uncommented_text(sidecar_block):
+            errors.append("test-archive sidecar cargo build must run only on archive-cache hit and sidecar-cache miss")
         if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PROFILE_ENV not in uncommented_text(sidecar_block):
             errors.append("test-archive sidecar build must use dev profile debug knob")
+        if sidecar_block is None or TEST_ARCHIVE_SIDECAR_PACK_COMMAND not in uncommented_text(sidecar_block):
+            errors.append("test-archive sidecar build must use tracked root binary sidecar helper")
+        if not sidecar_restore_blocks:
+            errors.append("test-archive must restore root binary sidecar cache")
+        if not sidecar_save_blocks:
+            errors.append("test-archive must save root binary sidecar cache")
+        if any(TEST_ARCHIVE_SIDECAR_CACHE_MISS_GUARD not in uncommented_text(block) for block in sidecar_save_blocks):
+            errors.append("test-archive must save root binary sidecar cache only on sidecar cache miss")
         if not job_runs_command(archive_lines, 'just test-archive "$NEXTEST_ARCHIVE_PATH"'):
             errors.append("test-archive must build through just test-archive")
         if TEST_ARCHIVE_DOWNLOAD_ACTION in archive_text:
@@ -9477,6 +9617,22 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "id: bvs-bin-sidecars-cache",
         ),
         (
+            "backtester bvs-test archive must upload the run-scoped test payload artifact",
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        ),
+        (
+            "backtester bvs-test archive must publish the bvs-test-payload artifact",
+            "name: bvs-test-payload",
+        ),
+        (
+            "backtester bvs-test archive payload upload must include hidden files (.nextest-archive dot-dir)",
+            "include-hidden-files: true",
+        ),
+        (
+            "backtester bvs-test archive payload upload must fail closed when the payload is empty",
+            "if-no-files-found: error",
+        ),
+        (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
             "key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
         ),
@@ -9545,20 +9701,12 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ("backtester bvs-test shards must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
         ("backtester bvs-test shards must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
         (
-            "backtester bvs-test shards must restore nextest archive cache",
-            "id: bvs-nextest-archive-cache",
+            "backtester bvs-test shards must download the run-scoped test payload artifact",
+            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
         ),
         (
-            "backtester bvs-test shards must fail closed if archive cache is absent",
-            "Require BVS nextest archive cache",
-        ),
-        (
-            "backtester bvs-test shards must restore binary sidecar cache",
-            "id: bvs-bin-sidecars-cache",
-        ),
-        (
-            "backtester bvs-test shards must fail closed if sidecar cache is absent",
-            "Require BVS binary sidecars cache",
+            "backtester bvs-test shards must download the bvs-test-payload artifact by name",
+            "name: bvs-test-payload",
         ),
         (
             "backtester bvs-test shards must extract binary sidecars",
@@ -9598,20 +9746,12 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "BOLT_ISSUE_789_RESULT_PATH:",
         ),
         (
-            "backtester bvs-test issue-789 must restore nextest archive cache",
-            "id: bvs-nextest-archive-cache",
+            "backtester bvs-test issue-789 must download the run-scoped test payload artifact",
+            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
         ),
         (
-            "backtester bvs-test issue-789 must fail closed if archive cache is absent",
-            "Require BVS nextest archive cache",
-        ),
-        (
-            "backtester bvs-test issue-789 must restore binary sidecar cache",
-            "id: bvs-bin-sidecars-cache",
-        ),
-        (
-            "backtester bvs-test issue-789 must fail closed if sidecar cache is absent",
-            "Require BVS binary sidecars cache",
+            "backtester bvs-test issue-789 must download the bvs-test-payload artifact by name",
+            "name: bvs-test-payload",
         ),
         (
             "backtester bvs-test issue-789 must extract binary sidecars",
@@ -9640,10 +9780,130 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     for message, fragment in test_fragments:
         if fragment not in job_text:
             errors.append(message)
+    for scope_name, scope_job in (("bvs-test shards", test_job), ("bvs-test issue-789", issue_job)):
+        if scope_job is None:
+            continue
+        for var_name, payload_name in (
+            ("BVS_NEXTEST_ARCHIVE_PATH", "archive"),
+            ("BVS_BIN_SIDECARS_PATH", "sidecars"),
+        ):
+            guard_prefix = f'test -s "${var_name}"'
+            guard_lines: list[str] = []
+            for block in step_blocks(scope_job):
+                for line in block_run_body(block).splitlines():
+                    guard_line = strip_comment(line).strip()
+                    if guard_line.startswith(guard_prefix) and (
+                        len(guard_line) == len(guard_prefix)
+                        or guard_line[len(guard_prefix)] in " \t;|&)"
+                    ):
+                        guard_lines.append(guard_line)
+            if not guard_lines:
+                errors.append(
+                    f"backtester consumer must fail closed if the downloaded {payload_name} "
+                    f"is missing or empty ({scope_name})"
+                )
+                continue
+            for guard_line in guard_lines:
+                if not EXIT_ONE_RE.search(guard_line):
+                    errors.append(
+                        f"backtester consumer guard is not fail-closed for downloaded "
+                        f"{payload_name} ({scope_name}): {guard_line}"
+                    )
     if issue_job is not None:
         for message, fragment in issue_fragments:
             if fragment not in issue_text:
                 errors.append(message)
+    return errors
+
+
+CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE = (
+    "workflow must not use cache as a fail-closed same-run transport (fail-on-cache-miss: true); "
+    "use upload/download-artifact for same-run cross-job handoff"
+)
+CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE = (
+    "workflow must not fail a job on a cache miss (cache-hit guard + exit 1); cache is "
+    "best-effort and may be evicted before the consumer runs — use upload/download-artifact "
+    "for same-run cross-job handoff"
+)
+CACHE_MISS_IF_RE = re.compile(r"\bcache-hit\b\s*(?:!=\s*[\"']?true[\"']?|==\s*[\"']?false[\"']?)")
+# A cache-miss-guarded build step may contain nested validation failures (e.g.
+# the producer's `if [ count -eq 0 ]; then ... exit 1; fi`), which are NOT the
+# banned shape. The banned same-run transport shape is a fail-closed `exit 1`
+# reached unconditionally: at top level, or chained after a command via `||`,
+# `&&`, or `;` (covering `test -s x || exit 1` and `... || { ...; exit 1; }`).
+# The producer's nested `exit 1` is indented and not operator-chained, so it is
+# correctly excluded. A cache-miss guard expressed inside the run body (rather
+# than the step `if:`) or delegated to a separate script is outside this line
+# scanner's scope; see cache_same_run_transport_errors.
+EXIT_ONE_RE = re.compile(
+    r"(?m)(?:^exit\s+1\b|\|\|\s*exit\s+1\b|&&\s*exit\s+1\b|;\s*exit\s+1\b)"
+)
+# `fail-on-cache-miss: <truthy>` in same-line YAML forms, including flow-style
+# (`with: { fail-on-cache-miss: true }`), optional `!!bool` tag, optional quotes,
+# flexible spacing, case-insensitive truthy value. Folded/block scalars are
+# handled by a continuation-line peek below. Not anchored to the whole line, so
+# flow-style maps are caught; a negative lookbehind avoids matching a longer key
+# such as `my-fail-on-cache-miss`. The caller strips comments before matching.
+# `true`/`!!bool true` enable the directive; `yes`/`on` are rejected loudly by
+# actions/cache's boolean input parser — either way it is not a silent same-run
+# transport and must not ship.
+FAIL_ON_CACHE_MISS_TRUE_RE = re.compile(
+    r"(?<![\w-])fail-on-cache-miss:\s*(?:!!bool\s+)?[\"']?(?:true|yes|on)\b",
+    re.IGNORECASE,
+)
+FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE = re.compile(
+    r"(?<![\w-])fail-on-cache-miss:\s*(?:!!\S+\s+)?[>|][-+0-9]*\s*(?:#.*)?$",
+    re.IGNORECASE,
+)
+FAIL_ON_CACHE_MISS_BLOCK_TRUTHY_RE = re.compile(r"^[\"']?(?:true|yes|on)[\"']?$", re.IGNORECASE)
+
+
+def is_workflow_yaml(file_name: str) -> bool:
+    normalized = file_name.replace("\\", "/")
+    return normalized.startswith(".github/workflows/") and normalized.endswith((".yml", ".yaml"))
+
+
+def step_has_cache_miss_guard(block: list[str]) -> bool:
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if re.match(r"^\s*(?:-\s*)?if:\s*", clean) and CACHE_MISS_IF_RE.search(clean):
+            return True
+    return False
+
+
+def has_fail_on_cache_miss_true(text: str) -> bool:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if FAIL_ON_CACHE_MISS_TRUE_RE.search(strip_comment(line)):
+            return True
+        if not FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE.search(strip_comment(line)):
+            continue
+        key_indent = len(line) - len(line.lstrip(" "))
+        for continuation in lines[index + 1:]:
+            continuation_indent = len(continuation) - len(continuation.lstrip(" "))
+            if continuation_indent <= key_indent:
+                break
+            continuation_value = strip_comment(continuation).strip()
+            if not continuation_value:
+                continue
+            if FAIL_ON_CACHE_MISS_BLOCK_TRUTHY_RE.fullmatch(continuation_value):
+                return True
+            break
+    return False
+
+
+def cache_same_run_transport_errors(file_name: str, text: str) -> list[str]:
+    if not is_workflow_yaml(file_name):
+        return []
+    errors: list[str] = []
+    if has_fail_on_cache_miss_true(text):
+        errors.append(CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE)
+    if any(
+        step_has_cache_miss_guard(block) and EXIT_ONE_RE.search(block_run_body(block))
+        for job_lines in parse_jobs(text).values()
+        for block in step_blocks(job_lines)
+    ):
+        errors.append(CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE)
     return errors
 
 
@@ -9920,6 +10180,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_draft_deferral_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in cache_same_run_transport_errors(file_name, text)),
         )
         if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
             add_unique_errors(

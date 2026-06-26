@@ -244,6 +244,8 @@ jobs:
             ci/github-actions-runners.toml \
             scripts/nextest_fingerprint.py \
             scripts/test_nextest_fingerprint.py \
+            scripts/root_bin_sidecars.py \
+            scripts/test_root_bin_sidecars.py \
             scripts/ci_provenance.py \
             scripts/test_ci_provenance.py \
             scripts/verify_ci_workflow_hygiene.py \
@@ -548,6 +550,7 @@ jobs:
     env:
       CARGO_BUILD_JOBS: "2"
       NEXTEST_ARCHIVE_PATH: .nextest-archive/nextest-archive.tar.zst
+      ROOT_BIN_SIDECARS_PATH: .nextest-archive/root-bin-sidecars.tar.gz
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -557,6 +560,7 @@ jobs:
         with:
           just-version: ${{ env.JUST_VERSION }}
           include-nextest-version: "true"
+          include-managed-target-dir: "true"
 
       - name: Restore nextest archive
         id: nextest-archive-cache
@@ -564,6 +568,13 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+
+      - name: Restore root binary sidecars
+        id: root-bin-sidecars-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
@@ -573,27 +584,29 @@ jobs:
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
 
+      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
+          restore-keys: |
+            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
 
-      - name: Build nextest archive binary sidecars
-        if: steps.nextest-archive-cache.outputs.cache-hit == 'true'
-        env:
-          # Archived integration tests can embed CARGO_BIN_EXE_* paths; cache-hit
-          # runs still need those package binaries present at the managed target dir.
-          CARGO_PROFILE_DEV_DEBUG: "0"
-        run: |
-          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
-
       - name: Build nextest archive
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
         env:
-          # Keep CI test binaries small enough for CI link/disk limits.
-          # This disables test debuginfo only; assertions and test logic still run.
+          # Keep CI test and CARGO_BIN_EXE sidecar binaries small enough for CI
+          # link/disk limits; assertions and test logic still run.
           CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           mkdir -p "$(dirname "$NEXTEST_ARCHIVE_PATH")"
           just test-archive "$NEXTEST_ARCHIVE_PATH"
@@ -604,6 +617,51 @@ jobs:
         with:
           path: ${{ env.NEXTEST_ARCHIVE_PATH }}
           key: ${{ needs.nextest-fingerprint.outputs.nextest_archive_prefix }}v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-shards-${{ needs.nextest-fingerprint.outputs.nextest_shards }}-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+
+      - name: Extract root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit == 'true'
+        run: |
+          mkdir -p "${{ steps.setup.outputs.managed_target_dir }}"
+          tar -xzf "$ROOT_BIN_SIDECARS_PATH" -C "${{ steps.setup.outputs.managed_target_dir }}"
+
+      - name: Pack root binary sidecars from archive build
+        if: steps.nextest-archive-cache.outputs.cache-hit != 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+
+      - name: Build root binary sidecars
+        if: steps.nextest-archive-cache.outputs.cache-hit == 'true' && steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          # Archived integration tests can embed CARGO_BIN_EXE_* paths; cache-hit
+          # runs still need those package binaries present at the managed target dir.
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo "$GITHUB_WORKSPACE" -- build --locked --bins
+          target_dir="${{ steps.setup.outputs.managed_target_dir }}"
+          python3 scripts/root_bin_sidecars.py pack \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --target-dir "$target_dir" \
+            --output "$GITHUB_WORKSPACE/$ROOT_BIN_SIDECARS_PATH"
+
+      - name: Save root binary sidecars
+        if: steps.root-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.ROOT_BIN_SIDECARS_PATH }}
+          key: root-bin-sidecars-v${{ needs.nextest-fingerprint.outputs.nextest_schema }}-${{ runner.os }}-${{ runner.arch }}-${{ needs.nextest-fingerprint.outputs.nextest_profile }}-profile-${{ needs.nextest-fingerprint.outputs.nextest_digest }}
+
+      - name: Save archive build target cache
+        if: ${{ (steps.nextest-archive-cache.outputs.cache-hit != 'true' || steps.root-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.setup.outputs.managed_target_dir }}
+          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-test-archive-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml', '.config/nextest.toml', 'build.rs', 'gated_source_roots.manifest', 'src/**', 'tests/**') }}
 
       - name: Run nextest archive partitions
         shell: bash

@@ -1220,8 +1220,16 @@ fn polyresearch_reference_message_handler(
     data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
 ) -> MessageHandler {
     Arc::new(move |message: Message| {
-        let Some(frame) = message.as_text() else {
-            return;
+        let frame_bytes = match message {
+            Message::Text(bytes) | Message::Binary(bytes) => bytes,
+            _ => return,
+        };
+        let frame = match std::str::from_utf8(frame_bytes.as_ref()) {
+            Ok(frame) => frame,
+            Err(error) => {
+                log::warn!("PolyResearch reference frame dropped: invalid UTF-8: {error}");
+                return;
+            }
         };
         let received_ts_ms = match current_unix_timestamp_ms() {
             Ok(value) => value,
@@ -1756,6 +1764,72 @@ mod tests {
         assert_eq!(update.provider_instrument(), "BTC/USD");
         assert_eq!(update.price(), 66300.25);
         assert_eq!(update.observed_ts_ms(), 1774672588000);
+    }
+
+    #[test]
+    fn binary_price_feed_frame_for_active_subscription_emits_custom_reference_update() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
+            subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+            subscription("BTC", "polyresearch_primary", "BTC/USD"),
+        )])));
+        let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handler = polyresearch_reference_message_handler(
+            subscriptions,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            2_000,
+            data_sender,
+        );
+
+        handler(Message::binary(
+            r#"{"type":"price_feed","feed":"BTC/USD","timestamp":1774672588,"data":{"feed":"BTC/USD","price":66300.25,"bid":66299.5,"ask":66301.0,"timestamp":1774672588}}"#,
+        ));
+
+        let event = data_receiver
+            .try_recv()
+            .expect("matched binary PRR price_feed frame should emit one data event");
+        let DataEvent::Data(Data::Custom(custom)) = event else {
+            panic!("matched binary PRR price_feed frame should emit custom data, got {event:?}");
+        };
+        let update = ReferencePriceUpdate::from_custom_data(&custom)
+            .expect("custom data should contain a reference price update");
+
+        assert_eq!(update.asset(), "BTC");
+        assert_eq!(update.source_id(), "polyresearch_primary");
+        assert_eq!(update.provider(), REFERENCE_PRICE_PROVIDER_KEY);
+        assert_eq!(update.provider_instrument(), "BTC/USD");
+        assert_eq!(update.price(), 66300.25);
+        assert_eq!(update.observed_ts_ms(), 1774672588000);
+    }
+
+    #[test]
+    fn invalid_utf8_binary_frame_emits_no_custom_data() {
+        let subscriptions = Arc::new(Mutex::new(BTreeMap::from([(
+            subscription_key("BTC", "polyresearch_primary", "BTC/USD"),
+            subscription("BTC", "polyresearch_primary", "BTC/USD"),
+        )])));
+        let (data_sender, mut data_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let handler = polyresearch_reference_message_handler(
+            subscriptions,
+            Arc::new(Mutex::new(VecDeque::new())),
+            Arc::new(Mutex::new(BTreeMap::new())),
+            Arc::new(AtomicU64::new(0)),
+            None,
+            2_000,
+            data_sender,
+        );
+
+        handler(Message::binary(vec![0xff, 0xfe, 0xfd]));
+
+        let error = data_receiver
+            .try_recv()
+            .expect_err("invalid UTF-8 binary PRR frame must not emit data");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "invalid UTF-8 binary PRR frame should leave the data channel open and empty, got {error:?}"
+        );
     }
 
     #[test]

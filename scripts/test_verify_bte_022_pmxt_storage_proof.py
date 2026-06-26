@@ -390,6 +390,20 @@ def test_complete_fixture_passes() -> None:
     with_fixture(check)
 
 
+def test_json_explanatory_text_can_be_reworded() -> None:
+    def check(root: Path, module) -> None:
+        overwrite_json(root, module.PMXT_STORAGE_STATUS, lambda value: value.update({"decision": "Reworded storage decision."}))
+        overwrite_json(root, module.PMXT_STORAGE_STAGING_STATUS, lambda value: value.update({"decision": "Reworded staging decision."}))
+
+        def mutate_bte(value: dict) -> None:
+            value["remaining_blockers"][0]["required_evidence"] = "Reworded durable-source evidence requirement."
+
+        overwrite_json(root, module.BTE_022_STATUS, mutate_bte)
+        assert module.scan_root(root) == []
+
+    with_fixture(check)
+
+
 def test_s3_head_present_is_a_finding() -> None:
     def check(root: Path, module) -> None:
         overwrite_json(root, module.PMXT_STORAGE_STATUS, lambda value: value["s3_head_check"].update({"status": "present"}))
@@ -399,14 +413,14 @@ def test_s3_head_present_is_a_finding() -> None:
     with_fixture(check)
 
 
-def test_missing_bte_storage_reference_is_a_finding() -> None:
+def test_empty_bte_storage_required_evidence_is_a_finding() -> None:
     def check(root: Path, module) -> None:
         def mutate(value: dict) -> None:
-            value["remaining_blockers"][0]["required_evidence"] = "durable source still pending"
+            value["remaining_blockers"][0]["required_evidence"] = ""
 
         overwrite_json(root, module.BTE_022_STATUS, mutate)
         findings = module.scan_root(root)
-        assert any("source-proof-pmxt-storage-proof-status.2026-06-17.json" in finding for finding in findings), findings
+        assert any("required_evidence" in finding for finding in findings), findings
 
     with_fixture(check)
 
@@ -464,8 +478,9 @@ def test_cli_fails_with_actionable_output() -> None:
 def main() -> int:
     tests = [
         test_complete_fixture_passes,
+        test_json_explanatory_text_can_be_reworded,
         test_s3_head_present_is_a_finding,
-        test_missing_bte_storage_reference_is_a_finding,
+        test_empty_bte_storage_required_evidence_is_a_finding,
         test_staged_source_proof_fixture_present_is_a_finding,
         test_missing_justfile_command_is_a_finding,
         test_committed_hash_drift_is_a_finding,

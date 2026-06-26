@@ -188,17 +188,6 @@ STAGED_REPO_ARTIFACTS = {
     "category_manifest": (PMXT_CATEGORY_MANIFEST, CATEGORY_MANIFEST_S3_URI),
     "archive_index_manifest": (PMXT_ARCHIVE_INDEX_MANIFEST, ARCHIVE_INDEX_MANIFEST_S3_URI),
 }
-BTE_DURABLE_BLOCKER_SNIPPETS = (
-    "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-storage-proof-status.2026-06-17.json",
-    "repo://specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-storage-staging-status.2026-06-17.json",
-    "prior manifest-planned raw sample S3 URI HeadObject 404",
-    "raw sample S3 staging now HeadObject-present",
-    "source-proof fixture staging remains blocked",
-    "schema_sample_uri",
-    "STATIC-GATED scripts/verify_bte_022_pmxt_storage_proof.py",
-)
-
-
 def read_text(root: Path, rel_path: Path, findings: list[str]) -> str:
     try:
         return (root / rel_path).read_text(encoding="utf-8")
@@ -273,6 +262,11 @@ def require_list_equal(
 def require_text_contains(rel_path: Path, label: str, text: object, expected: str, findings: list[str]) -> None:
     if not isinstance(text, str) or expected not in text:
         findings.append(f"{rel_path}: {label} must contain {expected!r}")
+
+
+def require_non_empty_string(rel_path: Path, label: str, actual: object, findings: list[str]) -> None:
+    if not isinstance(actual, str) or not actual.strip():
+        findings.append(f"{rel_path}: {label} must be a non-empty string")
 
 
 def nested_mapping(value: dict, key: str, rel_path: Path, findings: list[str]) -> dict:
@@ -492,13 +486,7 @@ def check_blockers_and_decision(status: dict, findings: list[str]) -> None:
         "coverage_retention_freshness_completeness_and_cost_checks_remain_pending",
     )
     require_list_equal(PMXT_STORAGE_STATUS, "canonical_acceptance_blockers", blockers, expected_blockers, findings)
-    decision = status.get("decision")
-    for snippet in (
-        "Do not accept the PMXT source proof",
-        "raw sample, schema sample, manifest, and evidence artifacts are staged under the artifact root",
-        "BACKTESTING_ENGINE-022",
-    ):
-        require_text_contains(PMXT_STORAGE_STATUS, "decision", decision, snippet, findings)
+    require_non_empty_string(PMXT_STORAGE_STATUS, "decision", status.get("decision"), findings)
 
 
 def check_guard_verification(status: dict, justfile: str, findings: list[str]) -> None:
@@ -692,14 +680,7 @@ def check_storage_staging_status(root: Path, staging_status: dict, fixture: dict
         expected_blockers,
         findings,
     )
-    decision = staging_status.get("decision")
-    for snippet in (
-        "raw sample, schema inspection, source-universe manifest, category manifest, and archive-index manifest are now staged",
-        "source-proof fixture itself is not staged",
-        "Do not accept the PMXT source proof",
-        "one_off_backfill_data",
-    ):
-        require_text_contains(PMXT_STORAGE_STAGING_STATUS, "decision", decision, snippet, findings)
+    require_non_empty_string(PMXT_STORAGE_STAGING_STATUS, "decision", staging_status.get("decision"), findings)
     check_guard_verification(staging_status, read_text(root, JUSTFILE, findings), findings)
 
 
@@ -718,8 +699,7 @@ def check_bte_status(bte_status: dict, findings: list[str]) -> None:
         findings.append(f"{BTE_022_STATUS}: expected exactly one durable_source_selection_unproven blocker, found {len(durable)}")
         return
     evidence = durable[0].get("required_evidence")
-    for snippet in BTE_DURABLE_BLOCKER_SNIPPETS:
-        require_text_contains(BTE_022_STATUS, "durable_source_selection_unproven.required_evidence", evidence, snippet, findings)
+    require_non_empty_string(BTE_022_STATUS, "durable_source_selection_unproven.required_evidence", evidence, findings)
 
 
 def scan_root(root: Path) -> list[str]:

@@ -4,6 +4,343 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96.0"
 publish = false
+autotests = false
+
+[[test]]
+name = "bolt_v3_adapter_mapping"
+path = "tests/bolt_v3_adapter_mapping.rs"
+
+[[test]]
+name = "bolt_v3_atomic_io"
+path = "tests/bolt_v3_atomic_io.rs"
+
+[[test]]
+name = "bolt_v3_backtest_config_override"
+path = "tests/bolt_v3_backtest_config_override.rs"
+
+[[test]]
+name = "bolt_v3_basket_admission"
+path = "tests/bolt_v3_basket_admission.rs"
+
+[[test]]
+name = "bolt_v3_basket_execution"
+path = "tests/bolt_v3_basket_execution.rs"
+
+[[test]]
+name = "bolt_v3_binary_oracle_edge_taker_a10_structure"
+path = "tests/bolt_v3_binary_oracle_edge_taker_a10_structure.rs"
+
+[[test]]
+name = "bolt_v3_binary_oracle_entry_log_contract"
+path = "tests/bolt_v3_binary_oracle_entry_log_contract.rs"
+
+[[test]]
+name = "bolt_v3_binary_oracle_maker_config"
+path = "tests/bolt_v3_binary_oracle_maker_config.rs"
+
+[[test]]
+name = "bolt_v3_binary_oracle_maker_runtime"
+path = "tests/bolt_v3_binary_oracle_maker_runtime.rs"
+
+[[test]]
+name = "bolt_v3_capital_admission_recovery_equivalence"
+path = "tests/bolt_v3_capital_admission_recovery_equivalence.rs"
+
+[[test]]
+name = "bolt_v3_capital_admission_runtime_feed"
+path = "tests/bolt_v3_capital_admission_runtime_feed.rs"
+
+[[test]]
+name = "bolt_v3_chainlink_config"
+path = "tests/bolt_v3_chainlink_config.rs"
+
+[[test]]
+name = "bolt_v3_chainlink_registration"
+path = "tests/bolt_v3_chainlink_registration.rs"
+
+[[test]]
+name = "bolt_v3_client_registration"
+path = "tests/bolt_v3_client_registration.rs"
+
+[[test]]
+name = "bolt_v3_complete_set_strategy_shell"
+path = "tests/bolt_v3_complete_set_strategy_shell.rs"
+
+[[test]]
+name = "bolt_v3_controlled_connect"
+path = "tests/bolt_v3_controlled_connect.rs"
+
+[[test]]
+name = "bolt_v3_credential_log_suppression"
+path = "tests/bolt_v3_credential_log_suppression.rs"
+
+[[test]]
+name = "bolt_v3_dead_gate_removal"
+path = "tests/bolt_v3_dead_gate_removal.rs"
+
+[[test]]
+name = "bolt_v3_decision_evidence"
+path = "tests/bolt_v3_decision_evidence.rs"
+
+[[test]]
+name = "bolt_v3_fair_value_pricing"
+path = "tests/bolt_v3_fair_value_pricing.rs"
+
+[[test]]
+name = "bolt_v3_hyperliquid_outcome_groups"
+path = "tests/bolt_v3_hyperliquid_outcome_groups.rs"
+
+[[test]]
+name = "bolt_v3_instrument_filters"
+path = "tests/bolt_v3_instrument_filters.rs"
+
+[[test]]
+name = "bolt_v3_iv_capability"
+path = "tests/bolt_v3_iv_capability.rs"
+
+[[test]]
+name = "bolt_v3_iv_config"
+path = "tests/bolt_v3_iv_config.rs"
+
+[[test]]
+name = "bolt_v3_iv_derive"
+path = "tests/bolt_v3_iv_derive.rs"
+
+[[test]]
+name = "bolt_v3_iv_foundation"
+path = "tests/bolt_v3_iv_foundation.rs"
+
+[[test]]
+name = "bolt_v3_iv_ingest"
+path = "tests/bolt_v3_iv_ingest.rs"
+
+[[test]]
+name = "bolt_v3_iv_live_integration"
+path = "tests/bolt_v3_iv_live_integration.rs"
+
+[[test]]
+name = "bolt_v3_iv_policy"
+path = "tests/bolt_v3_iv_policy.rs"
+
+[[test]]
+name = "bolt_v3_iv_query"
+path = "tests/bolt_v3_iv_query.rs"
+
+[[test]]
+name = "bolt_v3_iv_source_fence"
+path = "tests/bolt_v3_iv_source_fence.rs"
+
+[[test]]
+name = "bolt_v3_iv_store"
+path = "tests/bolt_v3_iv_store.rs"
+
+[[test]]
+name = "bolt_v3_iv_subscription"
+path = "tests/bolt_v3_iv_subscription.rs"
+
+[[test]]
+name = "bolt_v3_iv_support"
+path = "tests/bolt_v3_iv_support.rs"
+
+[[test]]
+name = "bolt_v3_kill_switch"
+path = "tests/bolt_v3_kill_switch.rs"
+
+[[test]]
+name = "bolt_v3_kill_switch_action_router"
+path = "tests/bolt_v3_kill_switch_action_router.rs"
+
+[[test]]
+name = "bolt_v3_kill_switch_cancel"
+path = "tests/bolt_v3_kill_switch_cancel.rs"
+
+[[test]]
+name = "bolt_v3_kill_switch_config"
+path = "tests/bolt_v3_kill_switch_config.rs"
+
+[[test]]
+name = "bolt_v3_kill_switch_flatten"
+path = "tests/bolt_v3_kill_switch_flatten.rs"
+
+[[test]]
+name = "bolt_v3_kill_switch_runtime"
+path = "tests/bolt_v3_kill_switch_runtime.rs"
+
+[[test]]
+name = "bolt_v3_kill_switch_store"
+path = "tests/bolt_v3_kill_switch_store.rs"
+
+[[test]]
+name = "bolt_v3_loss_protection"
+path = "tests/bolt_v3_loss_protection.rs"
+
+[[test]]
+name = "bolt_v3_loss_runtime_feed"
+path = "tests/bolt_v3_loss_runtime_feed.rs"
+
+[[test]]
+name = "bolt_v3_maker_event_fence"
+path = "tests/bolt_v3_maker_event_fence.rs"
+
+[[test]]
+name = "bolt_v3_maker_market_selection"
+path = "tests/bolt_v3_maker_market_selection.rs"
+
+[[test]]
+name = "bolt_v3_maker_runtime_quote"
+path = "tests/bolt_v3_maker_runtime_quote.rs"
+
+[[test]]
+name = "bolt_v3_order_intent"
+path = "tests/bolt_v3_order_intent.rs"
+
+[[test]]
+name = "bolt_v3_order_reject_observer_feed"
+path = "tests/bolt_v3_order_reject_observer_feed.rs"
+
+[[test]]
+name = "bolt_v3_outcome_group_scanner"
+path = "tests/bolt_v3_outcome_group_scanner.rs"
+
+[[test]]
+name = "bolt_v3_outcome_groups"
+path = "tests/bolt_v3_outcome_groups.rs"
+
+[[test]]
+name = "bolt_v3_polymarket_outcome_groups"
+path = "tests/bolt_v3_polymarket_outcome_groups.rs"
+
+[[test]]
+name = "bolt_v3_polyresearch_auth"
+path = "tests/bolt_v3_polyresearch_auth.rs"
+
+[[test]]
+name = "bolt_v3_prod_profile"
+path = "tests/bolt_v3_prod_profile.rs"
+
+[[test]]
+name = "bolt_v3_production_entrypoint"
+path = "tests/bolt_v3_production_entrypoint.rs"
+
+[[test]]
+name = "bolt_v3_production_readiness_contract"
+path = "tests/bolt_v3_production_readiness_contract.rs"
+
+[[test]]
+name = "bolt_v3_provider_binding"
+path = "tests/bolt_v3_provider_binding.rs"
+
+[[test]]
+name = "bolt_v3_readiness"
+path = "tests/bolt_v3_readiness.rs"
+
+[[test]]
+name = "bolt_v3_realized_volatility"
+path = "tests/bolt_v3_realized_volatility.rs"
+
+[[test]]
+name = "bolt_v3_realized_volatility_runtime"
+path = "tests/bolt_v3_realized_volatility_runtime.rs"
+
+[[test]]
+name = "bolt_v3_realized_volatility_source_fence"
+path = "tests/bolt_v3_realized_volatility_source_fence.rs"
+
+[[test]]
+name = "bolt_v3_reference_price"
+path = "tests/bolt_v3_reference_price.rs"
+
+[[test]]
+name = "bolt_v3_reference_price_config"
+path = "tests/bolt_v3_reference_price_config.rs"
+
+[[test]]
+name = "bolt_v3_reference_price_runtime"
+path = "tests/bolt_v3_reference_price_runtime.rs"
+
+[[test]]
+name = "bolt_v3_reference_provider_registration"
+path = "tests/bolt_v3_reference_provider_registration.rs"
+
+[[test]]
+name = "bolt_v3_static_binary_event_reference_price"
+path = "tests/bolt_v3_static_binary_event_reference_price.rs"
+
+[[test]]
+name = "bolt_v3_strategy_registration"
+path = "tests/bolt_v3_strategy_registration.rs"
+
+[[test]]
+name = "bolt_v3_submit_admission"
+path = "tests/bolt_v3_submit_admission.rs"
+
+[[test]]
+name = "bolt_v3_taker_pricing"
+path = "tests/bolt_v3_taker_pricing.rs"
+
+[[test]]
+name = "build_script_git_head_rerun_paths"
+path = "tests/build_script_git_head_rerun_paths.rs"
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+
+[[test]]
+name = "config_parsing"
+path = "tests/config_parsing.rs"
+
+[[test]]
+name = "deploy_install"
+path = "tests/deploy_install.rs"
+
+[[test]]
+name = "deploy_systemd"
+path = "tests/deploy_systemd.rs"
+
+[[test]]
+name = "hyperliquid_fail_closed"
+path = "tests/hyperliquid_fail_closed.rs"
+
+[[test]]
+name = "hyperliquid_live_submit_artifact"
+path = "tests/hyperliquid_live_submit_artifact.rs"
+
+[[test]]
+name = "hyperliquid_product_matrix"
+path = "tests/hyperliquid_product_matrix.rs"
+
+[[test]]
+name = "lake_batch"
+path = "tests/lake_batch.rs"
+
+[[test]]
+name = "log_sweep"
+path = "tests/log_sweep.rs"
+
+[[test]]
+name = "nt_custom_data_catalog_integration"
+path = "tests/nt_custom_data_catalog_integration.rs"
+
+[[test]]
+name = "nt_polymarket_filter_integration"
+path = "tests/nt_polymarket_filter_integration.rs"
+
+[[test]]
+name = "nt_runtime_capture"
+path = "tests/nt_runtime_capture.rs"
+
+[[test]]
+name = "raw_capture_io"
+path = "tests/raw_capture_io.rs"
+
+[[test]]
+name = "shadow_pnl_report"
+path = "tests/shadow_pnl_report.rs"
+
+[[test]]
+name = "venue_contract"
+path = "tests/venue_contract.rs"
 
 [dependencies]
 ahash = "0.8.12"

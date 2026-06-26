@@ -9792,7 +9792,10 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             for block in step_blocks(scope_job):
                 for line in block_run_body(block).splitlines():
                     guard_line = strip_comment(line).strip()
-                    if guard_line.startswith(guard_prefix):
+                    if guard_line.startswith(guard_prefix) and (
+                        len(guard_line) == len(guard_prefix)
+                        or guard_line[len(guard_prefix)] in " \t;|&)"
+                    ):
                         guard_lines.append(guard_line)
             if not guard_lines:
                 errors.append(

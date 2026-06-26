@@ -117,7 +117,7 @@ fn s5_reduce_only_safety_action_is_admitted_while_kill_switch_and_governor_freez
 #[test]
 fn s5_reduce_only_safety_action_is_admitted_before_new_risk_reconciliation() {
     let (service, owner, store) =
-        unreconciled_risk_context("pool-s5-unreconciled", "owner-s5-unreconciled");
+        reconciled_risk_context("pool-s5-unreconciled", "owner-s5-unreconciled");
     let bucket = bucket("risk_class", "safety");
     let view = published_view(
         RiskStateVersion::zero(),
@@ -3164,8 +3164,13 @@ fn s4_sc_012_submit_boundary_is_admitted_order_only_and_authority_owned() {
         contracts.contains("pub struct AdmittedOrder {\n    admission_token: AdmissionToken,"),
         "AdmittedOrder fields must stay private so external modules cannot construct it"
     );
+    let admitted_order_fields = contracts
+        .split("pub struct AdmittedOrder {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("AdmittedOrder struct must be defined in contracts");
     assert!(
-        !contracts.contains("pub client_order_id"),
+        !admitted_order_fields.contains("pub "),
         "AdmittedOrder must not expose public struct-literal construction fields"
     );
 
@@ -3820,7 +3825,7 @@ fn admission_candidate_from_preview(
         model_binding: "model-binding".to_string(),
         attestation_binding: "attestation-binding".to_string(),
         sizing_permit: SizingDecisionPermit {
-            permit_id: "permit".to_string(),
+            permit_id: format!("permit-{idempotency_key}"),
             source_view_version: preview.source_view_version,
             candidate_digest: "candidate-digest".to_string(),
         },

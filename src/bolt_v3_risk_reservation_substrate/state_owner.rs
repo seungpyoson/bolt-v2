@@ -207,10 +207,40 @@ impl FencedRiskStateStore {
             .lock()
             .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
         validate_lease(&inner, lease, &self.lease_authority)?;
-        inner.reconciled.insert(lease.pool_id().clone(), true);
+        let pool_id = lease.pool_id().clone();
+        // FR-041/FR-067: a successor MUST reconcile reservations against venue
+        // truth before enabling new risk. An un-submitted (`Reserved`) reservation
+        // has no venue order, so a fenced-out predecessor's orphaned reservation
+        // MUST be released here; otherwise it permanently holds offered-load
+        // capacity (an envelope-slot leak) that no venue lifecycle event can free.
+        // Submitted/Open/... reservations carry a real venue order and are left for
+        // venue-event reconciliation.
+        let orphaned: Vec<SubstrateReservationRecord> = inner
+            .reservation_records
+            .iter()
+            .filter(|record| {
+                record.pool_id == pool_id
+                    && record.lifecycle_state == ReservationLifecycleState::Reserved
+            })
+            .cloned()
+            .collect();
+        if !orphaned.is_empty() {
+            let totals = inner
+                .reservation_totals
+                .entry(pool_id.clone())
+                .or_insert_with(RiskReservationTotals::empty);
+            for record in &orphaned {
+                totals.release_open_order_remainder(record);
+            }
+            inner.reservation_records.retain(|record| {
+                !(record.pool_id == pool_id
+                    && record.lifecycle_state == ReservationLifecycleState::Reserved)
+            });
+        }
+        inner.reconciled.insert(pool_id.clone(), true);
         Ok(*inner
             .versions
-            .entry(lease.pool_id().clone())
+            .entry(pool_id)
             .or_insert(RiskStateVersion::zero()))
     }
 

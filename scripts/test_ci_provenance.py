@@ -119,6 +119,8 @@ reporter = "ci.yml gate summary job"
 integration_id = 15368
 required = true
 target = true
+runs_on_tags = true
+supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.gate.proof_rule]
@@ -131,6 +133,8 @@ reporter = "backtester-ci.yml gate job"
 integration_id = 15368
 required = true
 target = true
+runs_on_tags = true
+supports_carry_forward = true
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.backtester-gate.proof_rule]
@@ -143,11 +147,13 @@ reporter = "ci.yml host-health lane"
 integration_id = 15368
 required = true
 target = true
+runs_on_tags = false
+supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.host-health.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
-carry_forward = ["defer", "noop"]
+fresh = ["full", "docs", "iteration", "defer", "noop"]
+carry_forward = []
 
 [ci_provenance.required_checks.actionlint]
 context = "actionlint"
@@ -155,11 +161,13 @@ reporter = "actionlint.yml"
 integration_id = 15368
 required = true
 target = true
+runs_on_tags = false
+supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.actionlint.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
-carry_forward = ["defer", "noop"]
+fresh = ["full", "docs", "iteration", "defer", "noop"]
+carry_forward = []
 
 [ci_provenance.required_checks.coverage-enforcer]
 context = "coverage-enforcer"
@@ -167,11 +175,13 @@ reporter = "self"
 integration_id = 15368
 required = false
 target = true
+runs_on_tags = false
+supports_carry_forward = false
 arrivals = ["pull_request", "merge_group"]
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
-carry_forward = ["defer", "noop"]
+fresh = ["full", "docs", "iteration", "defer", "noop"]
+carry_forward = []
 
 [ci_provenance.docs]
 safe_paths = [
@@ -295,11 +305,13 @@ gate_iteration = "gate-iteration"
 gate_required = "gate"
 
 [ci_provenance.required_checks.coverage-enforcer.proof_rule]
-carry_forward = ["defer", "noop"]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = []
+fresh = ["full", "docs", "iteration", "defer", "noop"]
 
 [ci_provenance.required_checks.coverage-enforcer]
 arrivals = ["pull_request", "merge_group"]
+supports_carry_forward = false
+runs_on_tags = false
 target = true
 required = false
 integration_id = 15368
@@ -307,11 +319,13 @@ reporter = "self"
 context = "coverage-enforcer"
 
 [ci_provenance.required_checks.actionlint.proof_rule]
-carry_forward = ["defer", "noop"]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = []
+fresh = ["full", "docs", "iteration", "defer", "noop"]
 
 [ci_provenance.required_checks.actionlint]
 arrivals = ["pull_request", "merge_group"]
+supports_carry_forward = false
+runs_on_tags = false
 target = true
 required = true
 integration_id = 15368
@@ -319,11 +333,13 @@ reporter = "actionlint.yml"
 context = "actionlint"
 
 [ci_provenance.required_checks.host-health.proof_rule]
-carry_forward = ["defer", "noop"]
-fresh = ["full", "docs", "iteration", "tag_reuse"]
+carry_forward = []
+fresh = ["full", "docs", "iteration", "defer", "noop"]
 
 [ci_provenance.required_checks.host-health]
 arrivals = ["pull_request", "merge_group"]
+supports_carry_forward = false
+runs_on_tags = false
 target = true
 required = true
 integration_id = 15368
@@ -336,6 +352,8 @@ fresh = ["full", "docs", "iteration", "tag_reuse"]
 
 [ci_provenance.required_checks.backtester-gate]
 arrivals = ["pull_request", "merge_group"]
+supports_carry_forward = true
+runs_on_tags = true
 target = true
 required = true
 integration_id = 15368
@@ -348,6 +366,8 @@ fresh = ["full", "docs", "iteration", "tag_reuse"]
 
 [ci_provenance.required_checks.gate]
 arrivals = ["pull_request", "merge_group"]
+supports_carry_forward = true
+runs_on_tags = true
 target = true
 required = true
 integration_id = 15368
@@ -1682,11 +1702,156 @@ def replace_once(text: str, old: str, new: str) -> str:
     return text.replace(old, new, 1)
 
 
+EXPECTED_REQUIRED_CHECK_PROOF_RULES = {
+    "gate": {
+        "runs_on_tags": True,
+        "supports_carry_forward": True,
+        "fresh": ("full", "docs", "iteration", "tag_reuse"),
+        "carry_forward": ("defer", "noop"),
+    },
+    "backtester-gate": {
+        "runs_on_tags": True,
+        "supports_carry_forward": True,
+        "fresh": ("full", "docs", "iteration", "tag_reuse"),
+        "carry_forward": ("defer", "noop"),
+    },
+    "host-health": {
+        "runs_on_tags": False,
+        "supports_carry_forward": False,
+        "fresh": ("full", "docs", "iteration", "defer", "noop"),
+        "carry_forward": (),
+    },
+    "actionlint": {
+        "runs_on_tags": False,
+        "supports_carry_forward": False,
+        "fresh": ("full", "docs", "iteration", "defer", "noop"),
+        "carry_forward": (),
+    },
+    "coverage-enforcer": {
+        "runs_on_tags": False,
+        "supports_carry_forward": False,
+        "fresh": ("full", "docs", "iteration", "defer", "noop"),
+        "carry_forward": (),
+    },
+}
+
+
+def assert_required_check_proof_rules(config) -> None:
+    for context, expected in EXPECTED_REQUIRED_CHECK_PROOF_RULES.items():
+        check = config.required_checks[context]
+        if check.runs_on_tags != expected["runs_on_tags"]:
+            raise AssertionError(f"{context} runs_on_tags drifted: {check}")
+        if check.supports_carry_forward != expected["supports_carry_forward"]:
+            raise AssertionError(f"{context} supports_carry_forward drifted: {check}")
+        if check.fresh_event_classes != expected["fresh"]:
+            raise AssertionError(f"{context} fresh proof rule drifted: {check}")
+        if check.carry_forward_event_classes != expected["carry_forward"]:
+            raise AssertionError(f"{context} carry-forward proof rule drifted: {check}")
+
+
 def assert_required_checks_registry_matches_sources() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
-        module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
-    module.load_config(module.DEFAULT_CONFIG)
+        assert_required_check_proof_rules(
+            module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+        )
+    assert_required_check_proof_rules(module.load_config(module.DEFAULT_CONFIG))
+
+
+def assert_required_checks_registry_rejects_unreachable_proof_rules() -> None:
+    module = load_script()
+    mutations = {
+        "supports_carry_forward=false": replace_once(
+            CONFIG_TOML,
+            """[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["full", "docs", "iteration", "defer", "noop"]
+carry_forward = []
+""",
+            """[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["full", "docs", "iteration", "noop"]
+carry_forward = ["defer"]
+""",
+        ),
+        "runs_on_tags=false": replace_once(
+            CONFIG_TOML,
+            """[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["full", "docs", "iteration", "defer", "noop"]
+carry_forward = []
+""",
+            """[ci_provenance.required_checks.host-health.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse", "defer", "noop"]
+carry_forward = []
+""",
+        ),
+    }
+    for fragment, config_text in mutations.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(pathlib.Path(tmp), config_text)
+            assert_raises(fragment, lambda: module.load_config(config_path))
+
+
+def assert_required_checks_registry_is_closed() -> None:
+    module = load_script()
+    dead_context = """
+
+[ci_provenance.required_checks.dead-context]
+context = "dead-context"
+reporter = "stale"
+integration_id = 15368
+required = false
+target = false
+runs_on_tags = true
+supports_carry_forward = false
+arrivals = ["pull_request", "merge_group"]
+
+[ci_provenance.required_checks.dead-context.proof_rule]
+fresh = ["full", "docs", "iteration", "tag_reuse", "defer", "noop"]
+carry_forward = []
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        config_path = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace(
+                "\n[ci_provenance.docs]",
+                dead_context + "\n[ci_provenance.docs]",
+            ),
+        )
+        assert_raises(
+            "required-check registry contexts must be closed",
+            lambda: module.load_config(config_path),
+        )
+
+
+def assert_required_checks_registry_rejects_arrival_and_target_drift() -> None:
+    module = load_script()
+    mutations = {
+        "arrivals must be": replace_once(
+            CONFIG_TOML,
+            'arrivals = ["pull_request", "merge_group"]',
+            'arrivals = ["pull_request"]',
+        ),
+        "coverage-enforcer must be required=false target=true": replace_once(
+            CONFIG_TOML,
+            """[ci_provenance.required_checks.coverage-enforcer]
+context = "coverage-enforcer"
+reporter = "self"
+integration_id = 15368
+required = false
+target = true
+""",
+            """[ci_provenance.required_checks.coverage-enforcer]
+context = "coverage-enforcer"
+reporter = "self"
+integration_id = 15368
+required = true
+target = true
+""",
+        ),
+    }
+    for fragment, config_text in mutations.items():
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = write_config(pathlib.Path(tmp), config_text)
+            assert_raises(fragment, lambda: module.load_config(config_path))
 
 
 def assert_required_checks_registry_rejects_drift() -> None:
@@ -3479,6 +3644,9 @@ def main() -> int:
     assert_gate_names_reject_github_output_control_chars()
     assert_gate_names_reject_collisions()
     assert_required_checks_registry_matches_sources()
+    assert_required_checks_registry_rejects_unreachable_proof_rules()
+    assert_required_checks_registry_is_closed()
+    assert_required_checks_registry_rejects_arrival_and_target_drift()
     assert_required_checks_registry_rejects_drift()
     assert_policy_contract_rejects_required_gate_holes()
     assert_main_evidence_matching_ignores_mutable_run_name()

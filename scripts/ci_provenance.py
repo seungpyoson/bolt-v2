@@ -126,6 +126,8 @@ class RequiredCheckConfig:
     integration_id: int
     required: bool
     target: bool
+    runs_on_tags: bool
+    supports_carry_forward: bool
     arrivals: tuple[str, ...]
     fresh_event_classes: tuple[str, ...]
     carry_forward_event_classes: tuple[str, ...]
@@ -348,6 +350,10 @@ def load_required_checks(
             integration_id=integration_id,
             required=require_bool(raw_entry, "required", prefix),
             target=require_bool(raw_entry, "target", prefix),
+            runs_on_tags=require_bool(raw_entry, "runs_on_tags", prefix),
+            supports_carry_forward=require_bool(
+                raw_entry, "supports_carry_forward", prefix
+            ),
             arrivals=require_string_list(raw_entry, "arrivals", prefix),
             fresh_event_classes=require_string_list(
                 proof_rule, "fresh", f"{prefix}.proof_rule"
@@ -357,6 +363,43 @@ def load_required_checks(
             ),
         )
     return required_checks
+
+
+def required_check_applicable_event_classes(
+    *, check: RequiredCheckConfig, policy: dict[str, str]
+) -> set[str]:
+    applicable: set[str] = set()
+    for event, policy_path in policy.items():
+        candidate_policy_paths = {
+            policy_path,
+            *POLICY_ALLOWED_VALUES.get(event, set()),
+        }
+        for candidate_policy_path in candidate_policy_paths:
+            applicable.add(expected_event_class_for(event, candidate_policy_path))
+    if not check.runs_on_tags:
+        applicable.discard("tag_reuse")
+    return applicable
+
+
+def required_check_carry_forward_event_classes(
+    *, check: RequiredCheckConfig, policy: dict[str, str], applicable: set[str]
+) -> set[str]:
+    if not check.supports_carry_forward:
+        return set()
+    carry_forward: set[str] = set()
+    for event, policy_path in policy.items():
+        candidate_policy_paths = {
+            policy_path,
+            *POLICY_ALLOWED_VALUES.get(event, set()),
+        }
+        for candidate_policy_path in candidate_policy_paths:
+            if candidate_policy_path in {"defer", "noop"}:
+                carry_forward.add(expected_event_class_for(event, candidate_policy_path))
+    return carry_forward & applicable
+
+
+def toml_bool(value: bool) -> str:
+    return "true" if value else "false"
 
 
 def required_check_registry_contract_errors(
@@ -395,6 +438,19 @@ def required_check_registry_contract_errors(
         errors.append(
             "required-check registry target contexts must match live contexts plus coverage-enforcer"
         )
+    registry_contexts = {check.context for check in required_checks.values()}
+    if registry_contexts != expected_target_contexts:
+        errors.append(
+            "required-check registry contexts must be closed over live targets plus coverage-enforcer"
+        )
+    non_target_contexts = sorted(
+        check.context for check in required_checks.values() if not check.target
+    )
+    if non_target_contexts:
+        errors.append(
+            "ci_provenance.required_checks entries must all be target=true: "
+            + ", ".join(non_target_contexts)
+        )
 
     by_context = {check.context: check for check in required_checks.values()}
     if len(by_context) != len(required_checks):
@@ -421,6 +477,13 @@ def required_check_registry_contract_errors(
 
         fresh = set(check.fresh_event_classes)
         carry_forward = set(check.carry_forward_event_classes)
+        applicable = required_check_applicable_event_classes(check=check, policy=policy)
+        expected_carry_forward = required_check_carry_forward_event_classes(
+            check=check,
+            policy=policy,
+            applicable=applicable,
+        )
+        expected_fresh = applicable - expected_carry_forward
         if len(fresh) != len(check.fresh_event_classes):
             errors.append(f"ci_provenance.required_checks.{key}.proof_rule.fresh must not contain duplicates")
         if len(carry_forward) != len(check.carry_forward_event_classes):
@@ -432,8 +495,22 @@ def required_check_registry_contract_errors(
             errors.append(
                 f"ci_provenance.required_checks.{key}.proof_rule maps event classes twice: {overlap!r}"
             )
+        if fresh != expected_fresh:
+            errors.append(
+                f"ci_provenance.required_checks.{key}.proof_rule.fresh must be "
+                f"{sorted(expected_fresh)!r} for runs_on_tags={toml_bool(check.runs_on_tags)} "
+                f"supports_carry_forward={toml_bool(check.supports_carry_forward)}"
+            )
+        if carry_forward != expected_carry_forward:
+            errors.append(
+                f"ci_provenance.required_checks.{key}.proof_rule.carry_forward must be "
+                f"{sorted(expected_carry_forward)!r} for runs_on_tags={toml_bool(check.runs_on_tags)} "
+                f"supports_carry_forward={toml_bool(check.supports_carry_forward)}"
+            )
         for event, policy_path in policy.items():
             event_class = expected_event_class_for(event, policy_path)
+            if event_class not in applicable:
+                continue
             matches = int(event_class in fresh) + int(event_class in carry_forward)
             if matches != 1:
                 errors.append(

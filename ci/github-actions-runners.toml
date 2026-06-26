@@ -229,6 +229,8 @@ unknown_event = "full"
 temp_pr_head_ref_prefix = "mergify/merge-queue/"
 # GAP-1 (#981): a head-ref prefix alone must never earn the required gate. The temp PR
 # is recognized only when github.event.sender.id is this bound mergify[bot] actor id.
+# Evidence: author.id == 37929162 == mergify[bot], verified on merge-queue temp PRs
+# #998, #984, #980 (github.event.sender.id on those temp PRs). Do not re-litigate.
 mergify_temp_pr_actor_id = 37929162
 
 [ci_provenance.policy.override]

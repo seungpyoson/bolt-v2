@@ -1588,6 +1588,12 @@ def assert_ci_policy_matrix() -> None:
         ("merge_group", "checks_requested", False, False, "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full"),
         ("unknown_event", "", True, False, "", "refs/heads/codex/branch", "full"),
     ]
+    # Queue-only rework (#981): the policy table pins every row to a non-"defer" value,
+    # so no matrix row can exercise full_ci_deferred's True branch. Assert that invariant
+    # explicitly; the deferred branch is exercised by dedicated VALIDATOR tests that feed
+    # policy_path="defer" directly (verify_ci_provenance / backtester), not via this table.
+    if any(expected == "defer" for *_, expected in cases):
+        raise AssertionError("policy matrix must not expect 'defer' — defer is unreachable via the table")
     for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref, expected in cases:
         result = verifier.evaluate_ci_policy(
             policy,
@@ -1604,8 +1610,8 @@ def assert_ci_policy_matrix() -> None:
             raise AssertionError((event_name, action, draft, ref, expected, result))
         if result.full_ci_required != (expected == "full"):
             raise AssertionError(f"full_ci_required must derive from {expected}: {result}")
-        if result.full_ci_deferred != (expected == "defer"):
-            raise AssertionError(f"full_ci_deferred must derive from {expected}: {result}")
+        if result.full_ci_deferred is not False:
+            raise AssertionError(f"every policy-table row must resolve full_ci_deferred False: {result}")
         if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
             if result.gate_name != "gate-dispatch" or result.backtester_gate_name != "backtester-gate-dispatch":
                 raise AssertionError(f"workflow_dispatch full CI must publish non-required gate names: {result}")

@@ -1179,6 +1179,12 @@ def assert_ci_policy_outputs_matrix() -> None:
             ("merge_group", "checks_requested", "false", "false", "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "true", "full", "merge_group"),
             ("unknown_event", "", "true", "false", "", "refs/heads/codex/branch", "true", "full", "unknown_event"),
         ]
+        # Queue-only rework (#981): the policy table pins every row to a non-"defer" value,
+        # so no matrix row can exercise full_ci_deferred's True branch. Assert that invariant
+        # explicitly; the deferred branch is exercised by dedicated VALIDATOR tests that feed
+        # policy_path="defer" directly (verify_ci_provenance / backtester), not via this table.
+        if any(expected == "defer" for *_, expected, _reason in cases):
+            raise AssertionError("policy matrix must not expect 'defer' — defer is unreachable via the table")
         for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref, docs_only, expected, reason in cases:
             code, stdout, stderr = run_cli(
                 [
@@ -1210,8 +1216,8 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError((event_name, action, draft, ref, expected, output))
             if output.get("full_ci_required") != str(expected == "full").lower():
                 raise AssertionError(f"full_ci_required must derive from {expected}: {output}")
-            if output.get("full_ci_deferred") != str(expected == "defer").lower():
-                raise AssertionError(f"full_ci_deferred must derive from {expected}: {output}")
+            if output.get("full_ci_deferred") != "false":
+                raise AssertionError(f"every policy-table row must resolve full_ci_deferred false: {output}")
             if output.get("reason") != reason:
                 raise AssertionError(f"ci-policy must expose reason {reason}: {output}")
             if output.get("expected_event_class") != expected_event_classes[reason]:
@@ -1540,6 +1546,151 @@ def assert_mergify_temp_pr_requires_actor_binding() -> None:
             or bound.get("full_ci_required") != "true"
         ):
             raise AssertionError(f"bound mergify actor must earn the required gate and full CI: {bound}")
+
+
+def assert_mergify_tmp_prefixed_temp_pr_earns_required_gate() -> None:
+    # #929: Mergify's transient "tmp-mergify/merge-queue/<hex>" form must be treated
+    # identically to "mergify/merge-queue/<hex>". Before the queue-only rework a missed
+    # temp PR fell through to a still-required gate; now it would fall to the NON-required
+    # gate-iteration and DEADLOCK the queue, so both forms must earn the required gate.
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    actor_id = config.mergify_temp_pr_actor_id
+    gate_required = config.gate_names["gate_required"]
+    gate_iteration = config.gate_names["gate_iteration"]
+    for head_ref in ("mergify/merge-queue/83d4b0be7e", "tmp-mergify/merge-queue/83d4b0be7e"):
+        bound = module.evaluate_ci_policy(
+            config,
+            event_name="pull_request",
+            event_action="opened",
+            pull_request_draft=True,
+            pull_request_head_ref=head_ref,
+            pull_request_base_changed=False,
+            workflow_dispatch_full_ci="",
+            event_sender_id=actor_id,
+            ref="refs/pull/965/merge",
+        )
+        if bound.reason != "mergify_temp_pr" or bound.gate_name != gate_required:
+            raise AssertionError(f"{head_ref} from bound actor must earn the required gate: {bound}")
+        spoof = module.evaluate_ci_policy(
+            config,
+            event_name="pull_request",
+            event_action="opened",
+            pull_request_draft=True,
+            pull_request_head_ref=head_ref,
+            pull_request_base_changed=False,
+            workflow_dispatch_full_ci="",
+            event_sender_id=4242,
+            ref="refs/pull/965/merge",
+        )
+        if spoof.reason == "mergify_temp_pr" or spoof.gate_name != gate_iteration:
+            raise AssertionError(f"{head_ref} from a non-actor sender must demote: {spoof}")
+
+
+def assert_parse_event_sender_id_fails_closed() -> None:
+    module = load_script()
+    cases = {
+        "37929162": 37929162,
+        "  37929162 ": 37929162,
+        "-1": -1,
+        "": -1,
+        "bot": -1,
+        "37929162x": -1,
+        None: -1,
+        37929162: 37929162,
+    }
+    for raw, expected in cases.items():
+        # Suppress the fail-loud stderr here; its contract is asserted explicitly below.
+        with contextlib.redirect_stderr(io.StringIO()):
+            got = module.parse_event_sender_id(raw)
+        if got != expected:
+            raise AssertionError(f"parse_event_sender_id({raw!r}) -> {got}, expected {expected}")
+
+    # Fail-loud contract: a non-empty malformed sender id warns on stderr (a wiring bug
+    # that would otherwise silently deadlock the queue); empty (the expected senderless
+    # case) and valid ids stay quiet.
+    def _stderr_for(raw: object) -> str:
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            module.parse_event_sender_id(raw)
+        return buf.getvalue()
+
+    if "warning:" not in _stderr_for("bot"):
+        raise AssertionError("non-empty malformed EVENT_SENDER_ID must warn on stderr (fail loud)")
+    if _stderr_for("").strip():
+        raise AssertionError("empty EVENT_SENDER_ID (senderless) must stay quiet")
+    if _stderr_for("37929162").strip():
+        raise AssertionError("valid EVENT_SENDER_ID must not warn")
+
+
+def assert_ci_policy_non_numeric_sender_id_does_not_crash() -> None:
+    # A malformed EVENT_SENDER_ID must demote, never crash the ci-policy job.
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "opened",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "mergify/merge-queue/83d4b0be7e",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--docs-only",
+                "false",
+                "--ref",
+                "refs/pull/965/merge",
+                "--event-sender-id",
+                "not-a-number",
+            ]
+        )
+    if code != 0:
+        raise AssertionError(f"non-numeric sender id must not crash ci-policy: {stderr}")
+    out = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+    if out.get("reason") == "mergify_temp_pr" or out.get("gate_name") != "gate-iteration":
+        raise AssertionError(f"malformed sender id must fail closed to gate-iteration: {out}")
+
+
+def assert_mergify_actor_binding_demotes_every_full_action() -> None:
+    # GAP-1 canary across the WHOLE full-CI action set (imported, never re-listed): a
+    # spoofed mergify head ref from a non-actor sender must NEVER earn reason
+    # mergify_temp_pr and must demote to the non-required gate-iteration, for every
+    # action that mergify_temp_pr_requires_full_ci treats as full.
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
+    gate_iteration = config.gate_names["gate_iteration"]
+    non_actor = config.mergify_temp_pr_actor_id + 1
+    cases = [(a, False) for a in sorted(module.MERGIFY_TEMP_PR_FULL_ACTIONS)] + [("edited", True)]
+    for action, base_changed in cases:
+        # ready_for_review is the only full action delivered on a NON-draft PR; every other
+        # action a mergify temp PR fires is on a draft. A temp PR is always a draft, so here
+        # the actor binding is the only clause that should fail.
+        draft = action != "ready_for_review"
+        result = module.evaluate_ci_policy(
+            config,
+            event_name="pull_request",
+            event_action=action,
+            pull_request_draft=draft,
+            pull_request_head_ref="mergify/merge-queue/abc123",
+            pull_request_base_changed=base_changed,
+            workflow_dispatch_full_ci="",
+            event_sender_id=non_actor,
+            ref="refs/pull/965/merge",
+        )
+        if result.reason == "mergify_temp_pr":
+            raise AssertionError(f"{action}: non-actor sender must never earn mergify_temp_pr: {result}")
+        if result.full_ci_required or result.gate_name != gate_iteration:
+            raise AssertionError(f"{action}: non-actor spoof must demote to gate-iteration: {result}")
 
 
 def assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate() -> None:
@@ -3571,6 +3722,10 @@ def main() -> int:
     assert_ci_policy_outputs_matrix()
     assert_ci_policy_gate_names_are_event_based()
     assert_mergify_temp_pr_requires_actor_binding()
+    assert_mergify_tmp_prefixed_temp_pr_earns_required_gate()
+    assert_parse_event_sender_id_fails_closed()
+    assert_ci_policy_non_numeric_sender_id_does_not_crash()
+    assert_mergify_actor_binding_demotes_every_full_action()
     assert_ready_pr_defers_proof_to_merge_boundary_without_required_gate()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()

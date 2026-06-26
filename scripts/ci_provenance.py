@@ -582,6 +582,32 @@ def parse_bool(value: str) -> bool:
     raise ProvenanceError(f"expected boolean true or false, got {value!r}")
 
 
+def parse_event_sender_id(raw: object) -> int:
+    # github.event.sender.id is always an integer, but the env-bound value can be empty
+    # (events without a sender) or malformed. Fail CLOSED to -1 (never the bound mergify
+    # actor) so a bad sender id demotes to the non-required gate instead of crashing the
+    # ci-policy job and blocking ALL CI.
+    if isinstance(raw, int):
+        return raw
+    if not isinstance(raw, str):
+        return -1
+    text = raw.strip()
+    if not text:
+        # Senderless event (expected, e.g. an event with no sender): demote quietly.
+        return -1
+    try:
+        return int(text)
+    except ValueError:
+        # Fail LOUD: a non-empty, non-numeric sender id is a wiring bug that would
+        # otherwise SILENTLY demote a real mergify temp PR and deadlock the queue. The
+        # warning goes to stderr so it never pollutes the key=value stdout the gate parses.
+        print(
+            f"warning: EVENT_SENDER_ID={raw!r} is not an integer; failing closed to -1 (gate demoted)",
+            file=sys.stderr,
+        )
+        return -1
+
+
 def require_job_result(
     job_results: dict[str, str],
     job: str,
@@ -882,6 +908,21 @@ def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
     raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
 
 
+# Mergify documents the merge-queue branch as "[tmp-]mergify/merge-queue/<10 hex>";
+# the transient "tmp-" decoration is part of Mergify's naming convention, not an
+# independent constant, so it is normalized here (issue #929 requires matching BOTH
+# forms). Keeping ONE canonical prefix in config avoids duplicating the prefix string.
+MERGIFY_TEMP_PR_TRANSIENT_PREFIX = "tmp-"
+
+
+def head_ref_has_mergify_temp_prefix(head_ref: str, temp_pr_head_ref_prefix: str) -> bool:
+    # Mergify decorates with at most ONE "tmp-"; strip a single occurrence. A double
+    # "tmp-tmp-" is not a real Mergify form and intentionally does not match.
+    if head_ref.startswith(MERGIFY_TEMP_PR_TRANSIENT_PREFIX):
+        head_ref = head_ref[len(MERGIFY_TEMP_PR_TRANSIENT_PREFIX):]
+    return head_ref.startswith(temp_pr_head_ref_prefix)
+
+
 def mergify_temp_pr_matches(
     *,
     event_name: str,
@@ -899,7 +940,7 @@ def mergify_temp_pr_matches(
     return (
         event_name == "pull_request"
         and pull_request_draft
-        and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+        and head_ref_has_mergify_temp_prefix(pull_request_head_ref, temp_pr_head_ref_prefix)
         and event_sender_id == temp_pr_actor_id
     )
 
@@ -2524,7 +2565,7 @@ def main(argv: list[str] | None = None) -> int:
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 docs_only=parse_bool(args.docs_only),
-                event_sender_id=int(args.event_sender_id or os.environ.get("EVENT_SENDER_ID") or -1),
+                event_sender_id=parse_event_sender_id(args.event_sender_id or os.environ.get("EVENT_SENDER_ID") or -1),
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")

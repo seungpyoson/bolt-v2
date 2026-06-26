@@ -164,10 +164,13 @@ pub struct SubstrateReservationRecord {
     pub lifecycle_state: ReservationLifecycleState,
     pub reserved_order_quantity: Decimal,
     pub remaining_fillable_quantity: Decimal,
+    pub open_order_remainder_held: bool,
     pub filled_position_exposure: Option<RiskExposure>,
     pub filled_position_equity_floor_stress_loss: Decimal,
     pub filled_position_governor_realized_loss: Decimal,
+    pub filled_position_held: bool,
     pub applied_lifecycle_event_ids: BTreeSet<String>,
+    pub unresolved_lifecycle_reconciliation_event_ids: BTreeSet<String>,
     pub last_lifecycle_ts_event_unix_nanos: Option<u64>,
     pub last_lifecycle_event_sequence: Option<u64>,
 }
@@ -267,31 +270,40 @@ impl RiskReservationTotals {
     }
 
     pub fn release_settled_reservation(&mut self, record: &SubstrateReservationRecord) {
-        let equity_floor_release = record.assessment.equity_floor_stress_loss
-            + record.filled_position_equity_floor_stress_loss;
-        self.collateral_required = subtract_floor_zero(
-            self.collateral_required,
-            record.assessment.collateral_required,
+        if record.open_order_remainder_held {
+            self.release_open_order_remainder(record);
+        }
+        if record.filled_position_held {
+            self.release_filled_position(record);
+        }
+    }
+
+    pub fn release_filled_position(&mut self, record: &SubstrateReservationRecord) {
+        self.equity_floor_stress_loss = subtract_floor_zero(
+            self.equity_floor_stress_loss,
+            record.filled_position_equity_floor_stress_loss,
         );
-        self.equity_floor_stress_loss =
-            subtract_floor_zero(self.equity_floor_stress_loss, equity_floor_release);
         self.governor_realized_loss = subtract_floor_zero(
             self.governor_realized_loss,
-            record.assessment.governor_realized_loss
-                + record.filled_position_governor_realized_loss,
+            record.filled_position_governor_realized_loss,
         );
-        self.global_stress_loss =
-            subtract_floor_zero(self.global_stress_loss, equity_floor_release);
+        self.global_stress_loss = subtract_floor_zero(
+            self.global_stress_loss,
+            record.filled_position_equity_floor_stress_loss,
+        );
         for bucket in &record.buckets {
             let remaining = subtract_floor_zero(
                 self.reserved_bucket_stress_loss(bucket),
-                equity_floor_release,
+                record.filled_position_equity_floor_stress_loss,
             );
             self.bucket_stress_loss.insert(bucket.clone(), remaining);
         }
-        self.open_order_count = self.open_order_count.saturating_sub(1);
-        self.position_quantity =
-            subtract_floor_zero(self.position_quantity, record.reserved_order_quantity);
+        let filled_quantity = record
+            .filled_position_exposure
+            .as_ref()
+            .map(|exposure| exposure.quantity)
+            .unwrap_or(Decimal::ZERO);
+        self.position_quantity = subtract_floor_zero(self.position_quantity, filled_quantity);
     }
 
     pub fn release_open_order_remainder(&mut self, record: &SubstrateReservationRecord) {

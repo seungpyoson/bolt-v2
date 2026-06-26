@@ -194,6 +194,23 @@ impl LifecycleReconciler {
         B: LiveSubmitBoundary<Error = SubmissionAuthorityError>,
     {
         let authority = SubmissionAuthority::new(self.owner.clone());
+        let known_at_venue_client_order_ids: Vec<ClientOrderId> = truth
+            .order_status_reports
+            .iter()
+            .map(|report| report.client_order_id)
+            .chain(
+                truth
+                    .fill_reports
+                    .iter()
+                    .map(|report| report.client_order_id),
+            )
+            .chain(
+                truth
+                    .settlement_reports
+                    .iter()
+                    .map(|report| report.client_order_id),
+            )
+            .collect();
         for intent in self.owner.durable_submission_intents()? {
             let idempotency_key = intent.idempotency_key().to_string();
             if self
@@ -203,11 +220,7 @@ impl LifecycleReconciler {
             {
                 continue;
             }
-            if truth
-                .order_status_reports
-                .iter()
-                .any(|report| report.client_order_id == intent.client_order_id())
-            {
+            if known_at_venue_client_order_ids.contains(&intent.client_order_id()) {
                 self.owner.record_live_submission(
                     &idempotency_key,
                     LiveSubmissionRecord {

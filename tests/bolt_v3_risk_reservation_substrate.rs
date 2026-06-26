@@ -12,12 +12,13 @@ use bolt_v2::bolt_v3_risk_reservation_substrate::{
     },
     contracts::{
         ActiveDescriptorView, AdmissionCandidate, AdmissionToken, AdmittedOrder,
-        ConfiguredLeaseAuthority, LeaseAuthorityBackend, ModelRiskEvaluationScope, PolicyApproval,
-        PoolId, PoolOwnershipLease, PreparedEpochDescriptor, PreparedPolicyEpoch,
-        ReservationLifecycleState, RiskAssessment, RiskPreviewInput,
-        RiskReservationOfferedLoadEnvelope, RiskReservationOfferedLoadEnvelopeError,
-        RiskReservationSubstrateConfig, RiskReservationWorkBounds, RiskSizingView,
-        RiskStateVersion, SafetyAction, SafetyPolicyEnvelope, SizingDecisionPermit,
+        ConfiguredLeaseAuthority, LeaseAuthorityBackend, LiveSubmissionRecord,
+        ModelRiskEvaluationScope, PolicyApproval, PoolId, PoolOwnershipLease,
+        PreparedEpochDescriptor, PreparedPolicyEpoch, ReservationLifecycleState, RiskAssessment,
+        RiskPreviewInput, RiskReservationOfferedLoadEnvelope,
+        RiskReservationOfferedLoadEnvelopeError, RiskReservationSubstrateConfig,
+        RiskReservationWorkBounds, RiskSizingView, RiskStateVersion, SafetyAction,
+        SafetyPolicyEnvelope, SizingDecisionPermit,
     },
     instrument_risk_registry::{
         CertifiedActiveDescriptor, DescriptorActivationStatus, DescriptorCertificationDecision,
@@ -1108,7 +1109,11 @@ fn s7b_lifecycle_and_safety_action_bypass_shed_gate_while_admission_load_is_over
     let lifecycle_version = successor
         .reconcile_before_new_risk()
         .expect("lifecycle reconciliation should bypass the shed gate while over envelope");
-    assert_eq!(lifecycle_version, RiskStateVersion::new(1));
+    assert_eq!(
+        lifecycle_version,
+        RiskStateVersion::new(2),
+        "direct reconciliation releases the unsubmitted orphan and must advance the risk version"
+    );
 
     let priority_service = AdmissionService::new(successor.clone());
     let priority_view = published_view(
@@ -2438,6 +2443,62 @@ fn s4_reconnect_reconciliation_uses_nt_order_status_report_identity() {
 }
 
 #[test]
+fn s4_restart_reconciliation_treats_fill_report_as_authoritative_venue_presence() {
+    let pool_id = "pool-fill-only-restart";
+    let idempotency_key = "idempotency-fill-only-restart";
+    let (_reservation, _owner, store, client_order_id) = submitted_reservation_with_store(
+        pool_id,
+        "owner-before-fill-only-restart",
+        "intent-fill-only-restart",
+        idempotency_key,
+        "S4-FILL-ONLY-RESTART",
+    );
+
+    let successor = RiskStateOwner::acquire(
+        store,
+        PoolId::new(pool_id).expect("pool id should be valid"),
+        "owner-after-fill-only-restart",
+    )
+    .expect("successor owner should acquire the pool");
+    let reconciler = LifecycleReconciler::new(successor.clone());
+    let mut sink = RecordingLiveSubmitBoundary::default();
+
+    let summary = reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: vec![nt_fill(
+                    client_order_id,
+                    "s4-fill-only-restart-fill",
+                    dec(2),
+                    dec(0),
+                    dec(24),
+                    dec(26),
+                    vec![dec(1), dec(99)],
+                )],
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect("fill truth alone proves the order already reached the venue");
+
+    assert!(
+        sink.submitted_client_order_ids().is_empty(),
+        "restart must not re-submit when the ClientOrderId appears only in fill truth"
+    );
+    assert_eq!(summary.live_order_count, 1);
+    assert_eq!(
+        successor
+            .live_submission_record(idempotency_key)
+            .expect("live submission lookup should be readable")
+            .expect("fill-only truth should register a live submission")
+            .client_order_id,
+        client_order_id
+    );
+}
+
+#[test]
 fn s4_restart_reconciliation_releases_reserved_orphan_and_prunes_idempotency() {
     let pool_id = "pool-restart-orphan";
     let (service, owner, store) = reconciled_risk_context(pool_id, "owner-before-orphan");
@@ -2553,6 +2614,112 @@ fn s4_restart_reconciliation_releases_reserved_orphan_and_prunes_idempotency() {
             .expect("reservation records should be readable after retry")
             .len(),
         1
+    );
+}
+
+#[test]
+fn s4_direct_reconcile_requires_restart_truth_for_live_durable_intents_and_logs_orphan_release() {
+    let submitted_pool_id = "pool-direct-reconcile-submitted";
+    let submitted_idempotency_key = "idempotency-direct-reconcile-submitted";
+    let (_reservation, submitted_owner, submitted_store, submitted_client_order_id) =
+        submitted_reservation_with_store(
+            submitted_pool_id,
+            "owner-before-direct-reconcile-submitted",
+            "intent-direct-reconcile-submitted",
+            submitted_idempotency_key,
+            "S4-DIRECT-RECONCILE-SUBMITTED",
+        );
+    record_live_submission_for_test(
+        &submitted_owner,
+        submitted_idempotency_key,
+        submitted_client_order_id,
+    );
+    let submitted_successor = RiskStateOwner::acquire(
+        submitted_store,
+        PoolId::new(submitted_pool_id).expect("pool id should be valid"),
+        "owner-after-direct-reconcile-submitted",
+    )
+    .expect("successor owner should acquire the submitted pool");
+
+    let submitted_direct_reconcile = submitted_successor.reconcile_before_new_risk();
+
+    let orphan_pool_id = "pool-direct-reconcile-orphan";
+    let (service, orphan_owner, orphan_store) =
+        reconciled_risk_context(orphan_pool_id, "owner-before-direct-reconcile-orphan");
+    let bucket = bucket("risk_class", "alpha");
+    let view = published_view(
+        RiskStateVersion::zero(),
+        orphan_pool_id,
+        "candidate-instrument",
+        bucket,
+        dec(100),
+        dec(100),
+    );
+    service
+        .compare_and_reserve(
+            &view,
+            admission_candidate(
+                "intent-direct-reconcile-orphan",
+                "idempotency-direct-reconcile-orphan",
+                orphan_pool_id,
+                "candidate-instrument",
+                RiskStateVersion::zero(),
+                dec(2),
+            ),
+            unlatched_safety(RiskStateVersion::zero()),
+            None,
+            1_010,
+        )
+        .expect("unsubmitted reservation should reserve risk");
+    assert_eq!(
+        orphan_owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable before orphan handoff")
+            .open_order_count(),
+        1
+    );
+
+    let orphan_successor = RiskStateOwner::acquire(
+        orphan_store,
+        PoolId::new(orphan_pool_id).expect("pool id should be valid"),
+        "owner-after-direct-reconcile-orphan",
+    )
+    .expect("successor owner should acquire the orphan pool");
+    let before_version = orphan_successor
+        .policy_epoch_snapshot()
+        .expect("policy snapshot should expose pre-reconcile version")
+        .risk_state_version;
+    let before_mutation_count = orphan_successor
+        .durable_mutation_records()
+        .expect("durable records should be readable before direct reconcile")
+        .len();
+
+    let reconciled_version = orphan_successor
+        .reconcile_before_new_risk()
+        .expect("direct reconciliation may release a pool with only unsubmitted orphans");
+    let records = orphan_successor
+        .durable_mutation_records()
+        .expect("durable records should be readable after direct reconcile");
+    let submitted_requires_truth_replay =
+        submitted_direct_reconcile == Err(RiskStateMutationError::ReconciliationRequired);
+    let orphan_version_advanced = reconciled_version > before_version;
+    let orphan_reconciliation_logged = records.len() == before_mutation_count + 1
+        && records
+            .last()
+            .is_some_and(|record| record.mutation.kind() == RiskMutationKind::Reconciliation);
+
+    assert!(
+        submitted_requires_truth_replay && orphan_version_advanced && orphan_reconciliation_logged,
+        "direct reconcile result = {submitted_direct_reconcile:?}; orphan version before = {before_version:?}, after = {reconciled_version:?}; mutation count before = {before_mutation_count}, after = {}; last mutation kind = {:?}",
+        records.len(),
+        records.last().map(|record| record.mutation.kind())
+    );
+    assert_eq!(
+        orphan_successor
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after direct reconcile")
+            .open_order_count(),
+        0
     );
 }
 
@@ -2999,6 +3166,62 @@ fn s8b_cancel_confirmed_releases_open_remainder_but_retains_filled_position() {
     assert_eq!(post_confirm_totals.collateral_required(), Decimal::ZERO);
     assert_eq!(post_confirm_totals.open_order_count(), 0);
     assert_eq!(post_confirm_totals.position_quantity(), exposure.quantity);
+}
+
+#[test]
+fn s8b_cancel_confirmed_filled_position_settlement_releases_all_reserved_components() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8b-cancel-settlement",
+        "owner-s8b-cancel-settlement",
+        "intent-s8b-cancel-settlement",
+        "idempotency-s8b-cancel-settlement",
+        "S8B-CANCEL-SETTLEMENT",
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status(
+            client_order_id,
+            "s8b-cancel-settlement-open",
+        ))
+        .expect("authoritative open status should move the order to Open");
+    reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8b-cancel-settlement-partial-fill",
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("partial fill should establish filled-position reservation");
+    reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status(
+            client_order_id,
+            "s8b-cancel-settlement-confirmed",
+        ))
+        .expect("cancel confirmation should release only the open remainder");
+
+    let settled = reconciler
+        .apply_settlement_truth(nt_settlement(
+            client_order_id,
+            "s8b-cancel-settlement-final",
+            true,
+            true,
+            dec(28),
+            dec(30),
+            vec![dec(-2), dec(99)],
+        ))
+        .expect("settlement truth must release the filled component after terminal cancel");
+
+    assert_eq!(settled.lifecycle_state, ReservationLifecycleState::Settled);
+    let totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable after filled-position settlement");
+    assert_eq!(totals.equity_floor_stress_loss(), Decimal::ZERO);
+    assert_eq!(totals.governor_realized_loss(), Decimal::ZERO);
+    assert_eq!(totals.position_quantity(), Decimal::ZERO);
+    assert_eq!(totals.collateral_required(), Decimal::ZERO);
+    assert_eq!(totals.open_order_count(), 0);
 }
 
 #[test]
@@ -3525,6 +3748,119 @@ fn s8c_sequence_gap_requires_reconciliation_and_blocks_new_risk() {
         "gapped events must not silently apply fill deltas"
     );
     assert_new_risk_blocked_by_reconciliation(&owner, pool_id, "s8c-sequence-gap-successor");
+}
+
+#[test]
+fn s8c_local_cancel_request_cannot_clear_reconciliation_fault() {
+    let pool_id = "pool-s8c-local-cancel-fault";
+    let idempotency_key = "idempotency-s8c-local-cancel-fault";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-local-cancel-fault",
+        "intent-s8c-local-cancel-fault",
+        idempotency_key,
+        "S8C-LOCAL-CANCEL-FAULT",
+    );
+    record_live_submission_for_test(&owner, idempotency_key, client_order_id);
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-local-cancel-fault-open",
+            1_150,
+            Some(1),
+        ))
+        .expect("first status event should apply");
+    reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-local-cancel-fault-gap",
+            1_170,
+            Some(3),
+        ))
+        .expect("gapped terminal truth should require reconciliation");
+
+    let _cancel_attempt =
+        owner.mark_cancel_requested(client_order_id, "s8c-local-cancel-fault-request");
+
+    assert_eq!(
+        owner.reconcile_before_new_risk(),
+        Err(RiskStateMutationError::ReconciliationRequired),
+        "local cancel intent must not clear a reconciliation fault"
+    );
+    assert_eq!(
+        owner.complete_reconciliation(),
+        Err(RiskSubmissionMutationError::State(
+            RiskStateMutationError::ReconciliationRequired,
+        )),
+        "restart finalization must still fail closed until authoritative truth resolves the fault"
+    );
+    assert_eq!(
+        only_reservation_record(&owner).lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    assert_new_risk_blocked_by_reconciliation(&owner, pool_id, "s8c-local-cancel-fault-successor");
+}
+
+#[test]
+fn s8c_faulting_event_replays_after_sequence_gap_is_filled() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8c-replay-gap-event",
+        "owner-s8c-replay-gap-event",
+        "intent-s8c-replay-gap-event",
+        "idempotency-s8c-replay-gap-event",
+        "S8C-REPLAY-GAP-EVENT",
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-replay-gap-open",
+            1_150,
+            Some(1),
+        ))
+        .expect("first status event should apply");
+    let gapped_cancel = nt_cancel_confirmed_status_with_ordering(
+        client_order_id,
+        "s8c-replay-gap-cancel",
+        1_170,
+        Some(3),
+    );
+    reconciler
+        .apply_order_status_truth(gapped_cancel.clone())
+        .expect("gapped cancel should be held for reconciliation");
+    reconciler
+        .apply_fill_truth(nt_fill_with_ordering(
+            client_order_id,
+            "s8c-replay-gap-fill",
+            1_160,
+            Some(2),
+            dec(1),
+            dec(1),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("missing lower-sequence fill should apply after the fault");
+
+    let replayed = reconciler
+        .apply_order_status_truth(gapped_cancel)
+        .expect("replayed gapped event should apply after the sequence gap is filled");
+
+    assert_eq!(
+        replayed.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed,
+        "the faulting event must not be dropped as already applied"
+    );
+    assert_eq!(
+        only_reservation_record(&owner).lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after replay")
+            .open_order_count(),
+        0
+    );
 }
 
 #[test]
@@ -4708,6 +5044,25 @@ fn reservation_record_for_commit(
         .into_iter()
         .find(|record| record.admission_token == reservation.admission_token)
         .expect("reservation record for commit should exist")
+}
+
+fn record_live_submission_for_test(
+    owner: &RiskStateOwner,
+    idempotency_key: &str,
+    client_order_id: ClientOrderId,
+) {
+    let intent = owner
+        .durable_submission_intent(idempotency_key)
+        .expect("durable submission intent should be readable");
+    owner
+        .record_live_submission(
+            idempotency_key,
+            LiveSubmissionRecord {
+                client_order_id,
+                risk_state_version: intent.submitted_risk_state_version,
+            },
+        )
+        .expect("live submission record should be writable for test setup");
 }
 
 fn client_order_id(value: &str) -> ClientOrderId {

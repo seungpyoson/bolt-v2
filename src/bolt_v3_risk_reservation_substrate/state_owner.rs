@@ -208,20 +208,56 @@ impl FencedRiskStateStore {
             .map_err(|_| RiskStateMutationError::AmbiguousLeaseState)?;
         validate_lease(&inner, lease, &self.lease_authority)?;
         let pool_id = lease.pool_id().clone();
-        Self::finalize_reconciliation(&mut inner, &pool_id)?;
-        Ok(*inner
+        if inner
+            .submission_intents
+            .keys()
+            .any(|(intent_pool_id, _)| intent_pool_id == &pool_id)
+        {
+            return Err(RiskStateMutationError::ReconciliationRequired);
+        }
+        let current_version = *inner
             .versions
-            .entry(pool_id)
-            .or_insert(RiskStateVersion::zero()))
+            .entry(pool_id.clone())
+            .or_insert(RiskStateVersion::zero());
+        let will_mutate = reconciliation_would_release_reserved_orphans(&inner, &pool_id);
+        let next_version = if will_mutate {
+            Some(
+                current_version
+                    .next()
+                    .map_err(|_| RiskStateMutationError::VersionOverflow)?,
+            )
+        } else {
+            None
+        };
+        let mutated = Self::finalize_reconciliation(&mut inner, &pool_id)?;
+        if let Some(version) = next_version {
+            debug_assert!(mutated);
+            inner.versions.insert(pool_id.clone(), version);
+            inner.mutations.push(DurableRiskMutationRecord {
+                pool_id,
+                fencing_token: lease.fencing_token(),
+                mutation: DurableRiskMutation::new(
+                    version.get().to_string(),
+                    RiskMutationKind::Reconciliation,
+                ),
+                risk_state_version: version,
+            });
+            return Ok(version);
+        }
+        debug_assert!(!mutated);
+        Ok(current_version)
     }
 
     fn finalize_reconciliation(
         inner: &mut FencedRiskStateStoreInner,
         pool_id: &PoolId,
-    ) -> Result<(), RiskStateMutationError> {
+    ) -> Result<bool, RiskStateMutationError> {
         if inner.reservation_records.iter().any(|record| {
             &record.pool_id == pool_id
-                && record.lifecycle_state == ReservationLifecycleState::ReconciliationRequired
+                && (record.lifecycle_state == ReservationLifecycleState::ReconciliationRequired
+                    || !record
+                        .unresolved_lifecycle_reconciliation_event_ids
+                        .is_empty())
         }) {
             return Err(RiskStateMutationError::ReconciliationRequired);
         }
@@ -281,7 +317,7 @@ impl FencedRiskStateStore {
         }
 
         inner.reconciled.insert(pool_id.clone(), true);
-        Ok(())
+        Ok(!orphaned.is_empty())
     }
 
     pub fn commit_durable_mutation(
@@ -827,7 +863,9 @@ impl FencedRiskStateStore {
             return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
         }
         let state_changed = current_state != target_state;
-        let release_open_remainder = state_changed && open_remainder_release_state(target_state);
+        let release_open_remainder = state_changed
+            && open_remainder_release_state(target_state)
+            && inner.reservation_records[record_index].open_order_remainder_held;
         let release_record = release_open_remainder.then(|| {
             let mut released = inner.reservation_records[record_index].clone();
             released.lifecycle_state = target_state;
@@ -841,6 +879,7 @@ impl FencedRiskStateStore {
             record.lifecycle_state = target_state;
             if release_open_remainder {
                 record.remaining_fillable_quantity = Decimal::ZERO;
+                record.open_order_remainder_held = false;
             }
             record_lifecycle_event_success(record, event_id, ts_event_unix_nanos, event_sequence);
         }
@@ -998,6 +1037,7 @@ impl FencedRiskStateStore {
         record.filled_position_exposure = Some(filled_position_exposure);
         record.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
         record.filled_position_governor_realized_loss = new_governor_realized_loss;
+        record.filled_position_held = true;
         record_lifecycle_event_success(record, event_id, ts_event_unix_nanos, event_sequence);
         inner
             .reservation_totals
@@ -1060,7 +1100,8 @@ impl FencedRiskStateStore {
             &terminal_cash_flows,
         )?;
         let record = &inner.reservation_records[record_index];
-        if record.lifecycle_state != ReservationLifecycleState::Filled {
+        let settlement_source_state = record.lifecycle_state;
+        if !settlement_transition_allowed(settlement_source_state) {
             return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
         }
         let Some(existing_exposure) = record.filled_position_exposure.clone() else {
@@ -1085,11 +1126,16 @@ impl FencedRiskStateStore {
         let target_state = if terminal_final && reconciliation_complete {
             ReservationLifecycleState::Settled
         } else {
-            ReservationLifecycleState::Filled
+            settlement_source_state
         };
         let buckets = record.buckets.clone();
-        let release_record = (target_state == ReservationLifecycleState::Settled).then(|| {
+        let release_open_order_remainder =
+            target_state == ReservationLifecycleState::Settled && record.open_order_remainder_held;
+        let release_filled_position =
+            target_state == ReservationLifecycleState::Settled && record.filled_position_held;
+        let release_record = (release_open_order_remainder || release_filled_position).then(|| {
             let mut released = record.clone();
+            released.filled_position_exposure = Some(revised_exposure.clone());
             released.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
             released.filled_position_governor_realized_loss = new_governor_realized_loss;
             released
@@ -1102,6 +1148,13 @@ impl FencedRiskStateStore {
         record.filled_position_exposure = Some(revised_exposure);
         record.filled_position_equity_floor_stress_loss = new_equity_floor_stress_loss;
         record.filled_position_governor_realized_loss = new_governor_realized_loss;
+        if release_open_order_remainder {
+            record.remaining_fillable_quantity = Decimal::ZERO;
+            record.open_order_remainder_held = false;
+        }
+        if release_filled_position {
+            record.filled_position_held = false;
+        }
         record_lifecycle_event_success(record, event_id, ts_event_unix_nanos, event_sequence);
         let totals = inner
             .reservation_totals
@@ -1114,8 +1167,13 @@ impl FencedRiskStateStore {
             new_equity_floor_stress_loss,
             new_governor_realized_loss,
         );
-        if let Some(release_record) = release_record {
-            totals.release_settled_reservation(&release_record);
+        if let Some(release_record) = &release_record {
+            if release_open_order_remainder {
+                totals.release_open_order_remainder(release_record);
+            }
+            if release_filled_position {
+                totals.release_filled_position(release_record);
+            }
         }
         inner.mutations.push(DurableRiskMutationRecord {
             pool_id: lease.pool_id().clone(),
@@ -1283,10 +1341,13 @@ impl FencedRiskStateStore {
             lifecycle_state: ReservationLifecycleState::Reserved,
             reserved_order_quantity: transaction.candidate.quantity,
             remaining_fillable_quantity: transaction.candidate.quantity,
+            open_order_remainder_held: true,
             filled_position_exposure: None,
             filled_position_equity_floor_stress_loss: Decimal::ZERO,
             filled_position_governor_realized_loss: Decimal::ZERO,
+            filled_position_held: false,
             applied_lifecycle_event_ids: BTreeSet::new(),
+            unresolved_lifecycle_reconciliation_event_ids: BTreeSet::new(),
             last_lifecycle_ts_event_unix_nanos: None,
             last_lifecycle_event_sequence: None,
         });
@@ -1765,6 +1826,15 @@ fn matching_reservation_record_index_for_client_order(
     .ok_or(RiskSubmissionMutationError::UnknownReservation)
 }
 
+fn reconciliation_would_release_reserved_orphans(
+    inner: &FencedRiskStateStoreInner,
+    pool_id: &PoolId,
+) -> bool {
+    inner.reservation_records.iter().any(|record| {
+        &record.pool_id == pool_id && record.lifecycle_state == ReservationLifecycleState::Reserved
+    })
+}
+
 fn validate_lifecycle_mutation_id(mutation_id: &str) -> Result<(), RiskSubmissionMutationError> {
     if mutation_id.trim().is_empty() {
         return Err(RiskSubmissionMutationError::State(
@@ -1787,6 +1857,16 @@ fn lifecycle_event_preflight(
         return Ok(Some(LifecycleMutationResult {
             risk_state_version: current_pool_version(inner, lease.pool_id()),
             lifecycle_state: record.lifecycle_state,
+        }));
+    }
+    if record
+        .unresolved_lifecycle_reconciliation_event_ids
+        .contains(event_id)
+        && lifecycle_event_ordering_fault(record, ts_event_unix_nanos, event_sequence)
+    {
+        return Ok(Some(LifecycleMutationResult {
+            risk_state_version: current_pool_version(inner, lease.pool_id()),
+            lifecycle_state: ReservationLifecycleState::ReconciliationRequired,
         }));
     }
     if lifecycle_event_ordering_fault(record, ts_event_unix_nanos, event_sequence) {
@@ -1828,7 +1908,7 @@ fn mark_lifecycle_reconciliation_required(
         let record = &mut inner.reservation_records[record_index];
         record.lifecycle_state = ReservationLifecycleState::ReconciliationRequired;
         record
-            .applied_lifecycle_event_ids
+            .unresolved_lifecycle_reconciliation_event_ids
             .insert(event_id.to_string());
     }
     inner.reconciled.insert(lease.pool_id().clone(), false);
@@ -1853,6 +1933,9 @@ fn record_lifecycle_event_success(
     record
         .applied_lifecycle_event_ids
         .insert(event_id.to_string());
+    record
+        .unresolved_lifecycle_reconciliation_event_ids
+        .remove(event_id);
     record.last_lifecycle_ts_event_unix_nanos = Some(ts_event_unix_nanos);
     if let Some(event_sequence) = event_sequence {
         record.last_lifecycle_event_sequence = Some(event_sequence);
@@ -1930,7 +2013,6 @@ fn cancel_request_source_state(current_state: ReservationLifecycleState) -> bool
         ReservationLifecycleState::Submitted
             | ReservationLifecycleState::Open
             | ReservationLifecycleState::PartiallyFilled
-            | ReservationLifecycleState::ReconciliationRequired
     )
 }
 
@@ -1961,6 +2043,15 @@ fn fill_transition_allowed(current_state: ReservationLifecycleState) -> bool {
             | ReservationLifecycleState::PartiallyFilled
             | ReservationLifecycleState::CancelRequested
             | ReservationLifecycleState::ReconciliationRequired
+    )
+}
+
+fn settlement_transition_allowed(current_state: ReservationLifecycleState) -> bool {
+    matches!(
+        current_state,
+        ReservationLifecycleState::Filled
+            | ReservationLifecycleState::CancelConfirmed
+            | ReservationLifecycleState::ExpiredConfirmed
     )
 }
 

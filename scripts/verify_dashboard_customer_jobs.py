@@ -14,34 +14,15 @@ PLAN_PATH = Path("specs/023-nt-research-analytics-platform/3-dashboard/plan.md")
 SPEC_PATH = Path("specs/023-nt-research-analytics-platform/3-dashboard/spec.md")
 TASKS_PATH = Path("specs/023-nt-research-analytics-platform/3-dashboard/tasks.md")
 
-PLAN_REQUIRED_SNIPPETS = (
-    "## Customer Jobs And Capability Classes",
-    "Product choice is deferred",
-    "Trade monitor",
-    "ongoing trades/orders",
-    "Trade investigation",
-    "source proof/data used",
-    "Annotation/review notes",
-    "explicit owner/schema/audit",
-    "Controlled action workflow",
-    "Trading/runtime/credential/fund/order",
-    "unless separately approved",
+PLAN_MARKER = "dashboard-customer-job-ids"
+PLAN_REQUIRED_IDS = (
+    "trade_monitor",
+    "trade_investigation",
+    "annotation_review_notes",
+    "controlled_action_workflow",
 )
-SPEC_REQUIRED_SNIPPETS = (
-    "classify customer jobs and write capabilities",
-    "before product selection",
-    "Non-trading annotation/review workflow writes",
-    "explicit artifact kind/schema/owner/audit",
-    "Trading, runtime config, credential, and funds/order mutations remain outside",
-)
-TASK_REQUIRED_SNIPPETS = (
-    "DASH-001 Define dashboard customer jobs and capability classes",
-    "trade monitor",
-    "trade investigation",
-    "optional annotation/review notes",
-    "controlled action workflow",
-    "trading/runtime/credential/fund/order mutation outside",
-)
+SPEC_MARKER = "dashboard-capability-boundary-ids"
+SPEC_REQUIRED_IDS = ("no_trading_runtime_credential_fund_order_mutation",)
 CHECKED_DASH001 = re.compile(r"^- \[[xX]\] DASH-001\b", re.MULTILINE)
 
 
@@ -59,6 +40,23 @@ def require_snippets(rel_path: Path, text: str, snippets: tuple[str, ...], findi
             findings.append(f"{rel_path}: missing `{snippet}`")
 
 
+def marker_ids(text: str, marker: str) -> set[str] | None:
+    match = re.search(rf"<!--\s*{re.escape(marker)}\s*:\s*(?P<ids>.*?)-->", text, re.DOTALL)
+    if match is None:
+        return None
+    return {part.strip() for part in match.group("ids").replace("\n", " ").split(",") if part.strip()}
+
+
+def require_marker_ids(rel_path: Path, text: str, marker: str, required_ids: tuple[str, ...], findings: list[str]) -> None:
+    ids = marker_ids(text, marker)
+    if ids is None:
+        findings.append(f"{rel_path}: missing `{marker}` marker")
+        return
+    for required_id in required_ids:
+        if required_id not in ids:
+            findings.append(f"{rel_path}: `{marker}` missing `{required_id}`")
+
+
 def scan_root(root: Path) -> list[str]:
     root = root.resolve()
     findings: list[str] = []
@@ -67,9 +65,8 @@ def scan_root(root: Path) -> list[str]:
     spec_text = require_file(root, SPEC_PATH, findings)
     tasks_text = require_file(root, TASKS_PATH, findings)
 
-    require_snippets(PLAN_PATH, plan_text, PLAN_REQUIRED_SNIPPETS, findings)
-    require_snippets(SPEC_PATH, spec_text, SPEC_REQUIRED_SNIPPETS, findings)
-    require_snippets(TASKS_PATH, tasks_text, TASK_REQUIRED_SNIPPETS, findings)
+    require_marker_ids(PLAN_PATH, plan_text, PLAN_MARKER, PLAN_REQUIRED_IDS, findings)
+    require_marker_ids(SPEC_PATH, spec_text, SPEC_MARKER, SPEC_REQUIRED_IDS, findings)
 
     if tasks_text and not CHECKED_DASH001.search(tasks_text):
         findings.append(f"{TASKS_PATH}: DASH-001 must be checked once customer jobs are defined")

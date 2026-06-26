@@ -131,45 +131,35 @@ REQUIRED_STATUS_MAP_PHRASES = (
     "order-template validation follows the pinned NT single-order `OrderFactory` surface",
     STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE,
 )
-STALE_RESEARCH_PHRASES = (
-    "current archetype accepts coherent short-side",
-    "current archetype supports coherent short-side",
+COMPLETED_PHASE_VERIFICATION_TASKS = (
+    ("50", "T224"),
+    ("51", "T228"),
+    ("52", "T233"),
+    ("53", "T236"),
+    ("54", "T240"),
 )
-STALE_TASKS_PHRASES = (
-    "Allow coherent short-side contracts while keeping incoherent long/short contracts rejected",
-    "Phase 47 blocks completion because current-head multi-agent review found forced-flat exit order semantics still synthesized as Market/TIF/reduce-only fields in strategy code rather than carried as a TOML-owned NT order template.",
-    "Phase 48 blocks completion because latest-head multi-agent review found active schema docs still describe removed market-exit fields and `manage_stop=true` can silently route non-market `forced_exit_order` configs through NT's built-in market close path.",
-    "Phase 50 blocks completion because current-head PR-body/Greptile evidence and source inspection found maker entry sizing still uses taker-side book depth and external Managed close still drops a resting pending entry without NT cancel.",
-    "Phase 34 blocks completion because multi-agent pinned-NT review found TrailingStopMarket validation still requires optional fields that NT defaults.",
-    "Phase 50 closes the current-head maker lifecycle/sizing review findings; only terminal reviewer/no-mistakes state remains open in T224.",
-    "Phase 51 closes the TrailingStopMarket schema-default drift and equivalent-wording verifier gap; only terminal reviewer/no-mistakes state remains open in T228.",
-    "Phase 52 remains open until T233 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
-    "Phase 53 remains open until T236 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
-    "Phase 54 remains open until T240 records focused verification, branch cleanliness, exact-head PR checks, and terminal or timed-out reviewer/no-mistakes state.",
+COMPLETED_PHASE_OPEN_PATTERN = re.compile(
+    r"\bPhase\s+(?P<phase>34|47|48|50|51|52|53|54)\b[^\n]*(?:blocks completion|remains open(?:\s+until)?)\b",
+    re.IGNORECASE,
 )
-REQUIRED_TASKS_PHRASES = (
-    "Phase 50 is closed by T224 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-    "Phase 51 is closed by T228 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-    "Phase 52 is closed by T233 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-    "Phase 53 is closed by T236 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
-    "Phase 54 is closed by T240 verification, with no-mistakes wait-cap state recorded as non-terminal reviewer evidence rather than approval.",
+NON_GTD_EXPIRY_OVERCLAIM_PATTERN = re.compile(
+    r"\bexpire_time_unix_nanos\b[^\n]*(?:only|solely)[^\n]*\bGTD\b|"
+    r"\bGTD\b[^\n]*(?:only|solely)[^\n]*\bexpire_time_unix_nanos\b",
+    re.IGNORECASE,
 )
-STALE_CONTRACT_PHRASES = (
-    "Long and short position contracts are coherent.",
-)
-STALE_SPEC_PHRASES = (
-    "config validation does not reject the shape merely because it is short-side",
-)
-STALE_DATA_MODEL_PHRASES = (
-    "`expire_time_unix_nanos` only when GTD is enabled by a reviewed slice",
-)
-STALE_MAKER_SCOPE_CONTRACT_PHRASES = (
-    "until a separate TOML-owned forced-exit override exists",
-    "bolt-v3 must not enable `gtd` until",
-)
-STALE_MAKER_SCOPE_DATA_MODEL_PHRASES = (
-    "limit + post-only + `gtd` until a TOML-owned expiry policy is approved",
-    "Maps TOML-owned timing into NT `expire_time`. This policy is not implemented",
+MAKER_SCOPE_STALE_PATTERNS = (
+    (
+        "forced-exit override still described as missing",
+        re.compile(
+            r"\bforced[- ]exit\b[^\n]*(?:until|before|missing|separate)[^\n]*\boverride\b|"
+            r"\b(?:until|before|missing|separate)\b[^\n]*\bforced[- ]exit\b[^\n]*\boverride\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "GTD still described as blocked pending expiry policy",
+        re.compile(r"\b(?:gtd|expire_time)\b[^\n]*(?:until|before|blocked|must not enable)[^\n]*\bexpiry policy\b", re.IGNORECASE),
+    ),
 )
 UNSUPPORTED_SCOPE_PATTERNS = (
     re.compile(
@@ -303,6 +293,31 @@ def unsupported_scope_overclaims(label: str, text: str) -> list[str]:
         findings.append(
             f"{label} contains unsupported current-scope overclaim on line {line_number}: {line.strip()}"
         )
+    return findings
+
+
+def completed_phase_task_findings(tasks: str) -> list[str]:
+    findings: list[str] = []
+    for phase, task_id in COMPLETED_PHASE_VERIFICATION_TASKS:
+        if task_id not in tasks:
+            findings.append(f"tasks missing completed Phase {phase} verification task {task_id}")
+    for match in COMPLETED_PHASE_OPEN_PATTERN.finditer(tasks):
+        phase = match.group("phase")
+        findings.append(f"tasks describe completed Phase {phase} as open/blocking")
+    return findings
+
+
+def non_gtd_expiry_overclaim(label: str, text: str) -> list[str]:
+    if NON_GTD_EXPIRY_OVERCLAIM_PATTERN.search(text):
+        return [f"{label} contains blanket non-GTD expiry overclaim"]
+    return []
+
+
+def maker_scope_stale_findings(label: str, text: str) -> list[str]:
+    findings: list[str] = []
+    for description, pattern in MAKER_SCOPE_STALE_PATTERNS:
+        if pattern.search(text):
+            findings.append(f"{label}: {description}")
     return findings
 
 
@@ -512,38 +527,8 @@ def validate_docs(
         if phrase not in status_map:
             findings.append(f"status map missing current phrase: {phrase}")
 
-    for phrase in STALE_RESEARCH_PHRASES:
-        if phrase in research:
-            findings.append(f"research still contains stale phrase: {phrase}")
-
-    for phrase in STALE_TASKS_PHRASES:
-        if phrase in tasks:
-            findings.append(f"tasks still contains stale phrase: {phrase}")
-
     if tasks:
-        for phrase in REQUIRED_TASKS_PHRASES:
-            if phrase not in tasks:
-                findings.append(f"tasks missing current phrase: {phrase}")
-
-    for phrase in STALE_CONTRACT_PHRASES:
-        if phrase in contract:
-            findings.append(f"contract still contains stale phrase: {phrase}")
-
-    for phrase in STALE_SPEC_PHRASES:
-        if phrase in spec:
-            findings.append(f"spec still contains stale phrase: {phrase}")
-
-    for phrase in STALE_DATA_MODEL_PHRASES:
-        if phrase in data_model:
-            findings.append(f"data model still contains stale phrase: {phrase}")
-
-    for phrase in STALE_MAKER_SCOPE_CONTRACT_PHRASES:
-        if phrase in maker_scope_contract:
-            findings.append(f"maker scope contract still contains stale phrase: {phrase}")
-
-    for phrase in STALE_MAKER_SCOPE_DATA_MODEL_PHRASES:
-        if phrase in maker_scope_data_model:
-            findings.append(f"maker scope data model still contains stale phrase: {phrase}")
+        findings.extend(completed_phase_task_findings(tasks))
 
     findings.extend(unsupported_scope_overclaims("schema", schema))
     findings.extend(unsupported_scope_overclaims("runtime contracts", runtime_contracts))
@@ -553,6 +538,9 @@ def validate_docs(
     findings.extend(unsupported_scope_overclaims("contract", contract))
     findings.extend(unsupported_scope_overclaims("spec", spec))
     findings.extend(unsupported_scope_overclaims("data model", data_model))
+    findings.extend(non_gtd_expiry_overclaim("data model", data_model))
+    findings.extend(maker_scope_stale_findings("maker scope contract", maker_scope_contract))
+    findings.extend(maker_scope_stale_findings("maker scope data model", maker_scope_data_model))
     findings.extend(unsupported_scope_overclaims("maker scope contract", maker_scope_contract))
     findings.extend(unsupported_scope_overclaims("maker scope data model", maker_scope_data_model))
     findings.extend(validate_speckit_context(agents_doc, feature_json))

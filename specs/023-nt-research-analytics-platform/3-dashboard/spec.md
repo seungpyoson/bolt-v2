@@ -107,6 +107,8 @@ independent PnL/account truth.
 
 ## Product Gate
 
+<!-- dashboard-capability-boundary-ids: no_trading_runtime_credential_fund_order_mutation -->
+
 - Grafana: first candidate for ops metrics/logs and time-series observability.
 - Metabase or Superset/Preset: candidates for SQL analytics/read-model
   dashboards.

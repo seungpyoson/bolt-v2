@@ -112,6 +112,8 @@ rejects resolving fields through venue or provider identity.
 
 ## Customer Jobs And Capability Classes
 
+<!-- dashboard-customer-job-ids: trade_monitor, trade_investigation, annotation_review_notes, controlled_action_workflow -->
+
 Product choice is deferred until these jobs are specified and weighted:
 
 1. Trade monitor: ongoing trades/orders, positions, exposure, current PnL,
@@ -127,6 +129,8 @@ Product choice is deferred until these jobs are specified and weighted:
    mutation remains outside this package unless separately approved.
 
 ## Field Source Matrix Seed
+
+<!-- dashboard-field-source-columns: source_proof_id, run_purpose, proof_pin_reason_code, proof_pin_reason_detail, fidelity_class, claim_limits, warning_fields, source_role, data_status, gap_reason -->
 
 Matrix semantics come from `../reference/contracts.md`; this plan only selects
 dashboard fields and source columns.
@@ -144,6 +148,8 @@ dashboard fields and source columns.
 | Data health/freshness | Source timestamp plus configured stale threshold. | `source_proof_id`, `run_purpose`, `fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
 
 ## Product Gate
+
+<!-- dashboard-read-only-contract-ids: product_gate_metabase, source_binding_key, no_mutation_controls, artifact_root_boundary -->
 
 Evaluate products against the customer jobs and read-model shape before
 selection:

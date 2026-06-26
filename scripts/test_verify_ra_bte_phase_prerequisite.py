@@ -32,27 +32,23 @@ def write_file(root: Path, rel: str, text: str) -> Path:
 
 
 def documented_plan_text(*, omit_binary_oracle: bool = False) -> str:
-    binary_oracle = "" if omit_binary_oracle else "`binary_oracle_edge_taker` strategy and "
+    ids = [
+        "nt_example_strategy_current",
+        *([] if omit_binary_oracle else ["binary_oracle_edge_taker_required"]),
+        "venue_normalization_required",
+    ]
     return f"""
-## Backtest Phase Prerequisite
+<!-- ra-bte-prerequisite-ids: {", ".join(ids)} -->
 
-The BTE runner today wires only an NT example strategy
-(`HurstVpinDirectional`) over a single venue (`bybit-spot`). Bolt's
-{binary_oracle}venue normalization must be wired into
-the BTE engine before any Phase-3 sweep is real. Surface this prerequisite
-explicitly in the backtest phase; do not hide it. NT's pyo3
-`add_native_strategy` is `#[cfg(feature = "examples")]` and can only run NT
-example strategies, not bolt's, so this wiring is a hard precondition, not an
-optional optimization.
+The prerequisite explanation may be reworded.
 """
 
 
 def documented_spec_text() -> str:
     return """
-Known prerequisite (do not hide): the BTE runner today registers only an NT
-example strategy (`HurstVpinDirectional`) over one venue (`bybit-spot`); bolt's
-`binary_oracle_edge_taker` + venue normalization must be wired into the BTE
-before Phase-3 sweeps are real.
+<!-- ra-bte-prerequisite-ids: nt_example_strategy_current, binary_oracle_edge_taker_required, venue_normalization_required -->
+
+The spec prerequisite explanation may be reworded.
 """
 
 
@@ -219,7 +215,7 @@ def test_missing_bolt_strategy_is_a_finding() -> None:
 
         findings = verifier.scan_root(root)
 
-    assert any("binary_oracle_edge_taker" in finding for finding in findings)
+    assert any("binary_oracle_edge_taker_required" in finding for finding in findings)
 
 
 def test_missing_bte_runner_wiring_is_a_finding() -> None:

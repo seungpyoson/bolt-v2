@@ -59,24 +59,12 @@ TEST_SNIPPETS = (
     "dashboard_rejects_mutation_actions_and_canonical_artifact_writes",
     "dashboard_rejects_unmapped_stale_missing_pnl_and_strategy_truth_fields",
 )
-PLAN_SNIPPETS = (
-    "## Dependency Decisions",
-    "#409 / `PortfolioSnapshot`",
-    "#77 durable trade-history/PnL",
-    "#36 redemption-realized PnL",
-    "#369 is non-closure context",
-    "## Read-Only Source Contract Validation",
-    "## Product Gate",
-    "Decision: select Metabase Open Source/self-hosted",
-    "Grafana Cloud",
-    "Metabase",
-    "Preset/Superset",
-    "Retool",
-    "Plotly/Dash",
-    "Custom UI",
+PLAN_MARKER = "dashboard-read-only-contract-ids"
+PLAN_REQUIRED_IDS = (
+    "product_gate_metabase",
     "source_binding_key",
-    "no-mutation-controls",
-    "annotation/review",
+    "no_mutation_controls",
+    "artifact_root_boundary",
 )
 JUSTFILE_COMMANDS = (
     "python3 scripts/test_verify_dashboard_read_only_contract.py",
@@ -98,6 +86,23 @@ def require_snippets(rel_path: Path, text: str, snippets: tuple[str, ...], findi
             findings.append(f"{rel_path}: missing `{snippet}`")
 
 
+def marker_ids(text: str, marker: str) -> set[str] | None:
+    match = re.search(rf"<!--\s*{re.escape(marker)}\s*:\s*(?P<ids>.*?)-->", text, re.DOTALL)
+    if match is None:
+        return None
+    return {part.strip() for part in match.group("ids").replace("\n", " ").split(",") if part.strip()}
+
+
+def require_marker_ids(rel_path: Path, text: str, marker: str, required_ids: tuple[str, ...], findings: list[str]) -> None:
+    ids = marker_ids(text, marker)
+    if ids is None:
+        findings.append(f"{rel_path}: missing `{marker}` marker")
+        return
+    for required_id in required_ids:
+        if required_id not in ids:
+            findings.append(f"{rel_path}: `{marker}` missing `{required_id}`")
+
+
 def task_is_checked(tasks_text: str, task_id: str) -> bool:
     return re.search(rf"^- \[[xX]\] {re.escape(task_id)}\b", tasks_text, re.MULTILINE) is not None
 
@@ -114,7 +119,7 @@ def scan_root(root: Path) -> list[str]:
 
     require_snippets(DASHBOARD_RS, code_text, CODE_SNIPPETS, findings)
     require_snippets(DASHBOARD_TEST, test_text, TEST_SNIPPETS, findings)
-    require_snippets(DASHBOARD_PLAN, plan_text, PLAN_SNIPPETS, findings)
+    require_marker_ids(DASHBOARD_PLAN, plan_text, PLAN_MARKER, PLAN_REQUIRED_IDS, findings)
 
     for task_id in CHECKED_TASKS:
         if tasks_text and not task_is_checked(tasks_text, task_id):

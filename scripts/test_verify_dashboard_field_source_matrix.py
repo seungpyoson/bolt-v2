@@ -32,17 +32,22 @@ def write_file(root: Path, rel: str, text: str) -> Path:
 
 
 def dashboard_plan_text(*, omit_proof_pin_detail: bool = False) -> str:
-    detail = "" if omit_proof_pin_detail else "`proof_pin_reason_detail`, "
+    columns = [
+        "source_proof_id",
+        "run_purpose",
+        "proof_pin_reason_code",
+        *([] if omit_proof_pin_detail else ["proof_pin_reason_detail"]),
+        "fidelity_class",
+        "claim_limits",
+        "warning_fields",
+        "source_role",
+        "data_status",
+        "gap_reason",
+    ]
     return f"""
-## Field Source Matrix Seed
+<!-- dashboard-field-source-columns: {", ".join(columns)} -->
 
-Matrix semantics come from `../reference/contracts.md`; this plan only selects
-dashboard fields and source columns.
-
-| Field group | Required source stance | Required source columns |
-|---|---|---|
-| Trade explanation fields | Strategy/signal/reason evidence refs and source binding from accepted upstream artifacts; never inferred by dashboard. | `source_proof_id`, `run_purpose`, `proof_pin_reason_code`, {detail}`fidelity_class`, `claim_limits`, `warning_fields`, `source_role`, `data_status`, `gap_reason` |
-| Data health/freshness | Source timestamp plus configured stale threshold. | `source_role`, `data_status`, `gap_reason` |
+The field-source matrix prose can be reflowed or reworded.
 """
 
 

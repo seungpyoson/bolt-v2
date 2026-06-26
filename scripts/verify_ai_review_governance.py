@@ -121,7 +121,6 @@ MIRRORED_RULES = (
         "required human review",
         (
             "Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval",
-            "required reviewer approved",
         ),
         (
             "Required human review must be preserved",

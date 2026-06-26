@@ -204,6 +204,7 @@ def test_main_reports_forbidden_and_required_names() -> None:
     original_docs = VERIFIER.CANONICAL_DOCS
     original_scan_globs = VERIFIER.SCAN_GLOBS
     original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         audit_path = root / "audit.yaml"
@@ -214,6 +215,8 @@ def test_main_reports_forbidden_and_required_names() -> None:
         docs = root / "docs" / "contract.md"
         docs.parent.mkdir(parents=True)
         docs.write_text("ProviderKey\n", encoding="utf-8")
+        allowlist_path = root / "allowlist.txt"
+        allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
         stderr = io.StringIO()
         try:
             VERIFIER.REPO_ROOT = root
@@ -221,6 +224,7 @@ def test_main_reports_forbidden_and_required_names() -> None:
             VERIFIER.CANONICAL_DOCS = [docs]
             VERIFIER.SCAN_GLOBS = ["src/**/*.rs"]
             VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
             with contextlib.redirect_stderr(stderr):
                 code = VERIFIER.main()
         finally:
@@ -229,6 +233,7 @@ def test_main_reports_forbidden_and_required_names() -> None:
             VERIFIER.CANONICAL_DOCS = original_docs
             VERIFIER.SCAN_GLOBS = original_scan_globs
             VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
 
     output = stderr.getvalue()
     if code != 1 or "forbidden 'VenueKind'" not in output:
@@ -241,6 +246,7 @@ def test_main_reports_path_scoped_forbidden_table_prefix() -> None:
     original_docs = VERIFIER.CANONICAL_DOCS
     original_scan_globs = VERIFIER.SCAN_GLOBS
     original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         audit_path = root / "audit.yaml"
@@ -266,6 +272,8 @@ accepted_non_nt_names: []
         docs = root / "docs" / "contract.md"
         docs.parent.mkdir(parents=True)
         docs.write_text("canonical docs\n", encoding="utf-8")
+        allowlist_path = root / "allowlist.txt"
+        allowlist_path.write_text("# no allowed residuals\n", encoding="utf-8")
         stderr = io.StringIO()
         try:
             VERIFIER.REPO_ROOT = root
@@ -273,6 +281,7 @@ accepted_non_nt_names: []
             VERIFIER.CANONICAL_DOCS = [docs]
             VERIFIER.SCAN_GLOBS = ["tests/fixtures/**/*.toml"]
             VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
             with contextlib.redirect_stderr(stderr):
                 code = VERIFIER.main()
         finally:
@@ -281,10 +290,97 @@ accepted_non_nt_names: []
             VERIFIER.CANONICAL_DOCS = original_docs
             VERIFIER.SCAN_GLOBS = original_scan_globs
             VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
 
     output = stderr.getvalue()
     if code != 1 or "forbidden '[venues.'" not in output:
         raise AssertionError(f"expected path-scoped table finding, got code={code}, stderr={output!r}")
+
+
+def run_main_with_misnomer_fixture(
+    files: dict[str, str],
+    allowlist_text: str | None,
+) -> tuple[int, str]:
+    original_root = VERIFIER.REPO_ROOT
+    original_audit_path = VERIFIER.AUDIT_PATH
+    original_docs = VERIFIER.CANONICAL_DOCS
+    original_scan_globs = VERIFIER.SCAN_GLOBS
+    original_misnomer_scan_globs = VERIFIER.MISNOMER_SCAN_GLOBS
+    original_excluded = VERIFIER.EXCLUDED_RELATIVE_PATHS
+    original_allowlist_path = VERIFIER.MISNOMER_ALLOWLIST_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        audit_path = root / "audit.yaml"
+        audit_path.write_text(AUDIT_TEXT, encoding="utf-8")
+        docs = root / "docs" / "contract.md"
+        docs.parent.mkdir(parents=True)
+        docs.write_text("ProviderKey\n", encoding="utf-8")
+        allowlist_path = root / "allowlist.txt"
+        if allowlist_text is not None:
+            allowlist_path.write_text(allowlist_text, encoding="utf-8")
+        for rel, content in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        stderr = io.StringIO()
+        try:
+            VERIFIER.REPO_ROOT = root
+            VERIFIER.AUDIT_PATH = audit_path
+            VERIFIER.CANONICAL_DOCS = [docs]
+            VERIFIER.SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.MISNOMER_SCAN_GLOBS = ["src/**/*.rs"]
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = set()
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = allowlist_path
+            with contextlib.redirect_stderr(stderr):
+                code = VERIFIER.main()
+        finally:
+            VERIFIER.REPO_ROOT = original_root
+            VERIFIER.AUDIT_PATH = original_audit_path
+            VERIFIER.CANONICAL_DOCS = original_docs
+            VERIFIER.SCAN_GLOBS = original_scan_globs
+            VERIFIER.MISNOMER_SCAN_GLOBS = original_misnomer_scan_globs
+            VERIFIER.EXCLUDED_RELATIVE_PATHS = original_excluded
+            VERIFIER.MISNOMER_ALLOWLIST_PATH = original_allowlist_path
+    return code, stderr.getvalue()
+
+
+def test_capital_admission_misnomer_fence_catches_screaming_snake() -> None:
+    code, output = run_main_with_misnomer_fixture(
+        {
+            "src/core.rs": (
+                'const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "probe";\n'
+            )
+        },
+        "# no allowed residuals\n",
+    )
+
+    if code != 1 or "POSITION_SIZER" not in output or "capital-admission misnomer" not in output:
+        raise AssertionError(f"expected SCREAMING_SNAKE misnomer finding, got {code}, {output!r}")
+
+
+def test_capital_admission_misnomer_fence_allows_legitimate_sizer_keep_list() -> None:
+    code, output = run_main_with_misnomer_fixture(
+        {
+            "src/bolt_v3_sizing.rs": (
+                "pub struct SizingPolicyProbe;\n"
+                "pub fn choose_robust_size() -> RobustSizeProbe { todo!() }\n"
+            )
+        },
+        "# no allowed residuals\n",
+    )
+
+    if code != 0:
+        raise AssertionError(f"expected legitimate sizer keep-list to pass, got {code}, {output!r}")
+
+
+def test_capital_admission_misnomer_fence_fails_closed_without_allowlist() -> None:
+    code, output = run_main_with_misnomer_fixture(
+        {"src/core.rs": "pub struct CapitalAdmissionOnly;\n"},
+        None,
+    )
+
+    if code != 1 or "missing capital-admission misnomer allowlist" not in output:
+        raise AssertionError(f"expected missing allowlist failure, got {code}, {output!r}")
 
 
 def main() -> int:
@@ -298,6 +394,9 @@ def main() -> int:
         test_default_scan_paths_cover_companion_docs_and_research_artifacts,
         test_main_reports_forbidden_and_required_names,
         test_main_reports_path_scoped_forbidden_table_prefix,
+        test_capital_admission_misnomer_fence_catches_screaming_snake,
+        test_capital_admission_misnomer_fence_allows_legitimate_sizer_keep_list,
+        test_capital_admission_misnomer_fence_fails_closed_without_allowlist,
     ]
     for test in tests:
         test()

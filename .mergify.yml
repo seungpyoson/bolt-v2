@@ -1,0 +1,20 @@
+merge_queue:
+  max_parallel_checks: 1
+  reset_on_external_merge: always
+
+queue_rules:
+  - name: default
+    queue_conditions: []
+    merge_conditions:
+      - approved-reviews-by = sp-reviewer
+      - check-success = gate
+      - check-success = backtester-gate
+      - check-success = actionlint
+      - check-success = host-health
+    branch_protection_injection_mode: merge
+    batch_size: 1
+    # merge_conditions intentionally differ from queue_conditions, which makes
+    # Mergify use a queue proof context instead of in-place checks.
+    checks_timeout: 60 minutes
+    draft_bot_account: null
+    merge_method: squash

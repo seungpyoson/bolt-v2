@@ -24,9 +24,30 @@ fingerprint_workflow = "ci"
 
 FINGERPRINT_CONFIG_TEXT = """
 [nextest_archive]
-schema = 2
+schema = 3
 profile = "test"
 shards = 4
+tracked_inputs = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    ".cargo/",
+    ".config/nextest.toml",
+    "build.rs",
+    "gated_source_roots.manifest",
+    "justfile",
+    "ci/nextest-fingerprint.toml",
+    "ci/rust-verification.toml",
+    "scripts/nextest_fingerprint.py",
+    "scripts/root_bin_sidecars.py",
+    "scripts/rust_verification.py",
+    "scripts/command_understanding.py",
+    ".github/actions/setup-environment/action.yml",
+    "src/",
+    "tests/",
+    "config/root.toml",
+    "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
+]
 
 [[safe_excludes]]
 path = "crates/backtesting-vertical-slice/"
@@ -69,18 +90,21 @@ def temporary_git_directory():
         yield tmp
     finally:
         last_error: OSError | None = None
+        removed = False
         for attempt in range(5):
             try:
                 shutil.rmtree(tmp)
-                return
+                removed = True
+                break
             except FileNotFoundError:
-                return
+                removed = True
+                break
             except OSError as exc:
                 last_error = exc
                 if attempt == 4:
                     break
                 time.sleep(0.1)
-        if last_error is not None:
+        if not removed and last_error is not None:
             raise last_error
 
 
@@ -145,7 +169,9 @@ edition = "2021"
     write(repo / "rust-toolchain.toml", "[toolchain]\nchannel = \"stable\"\n")
     write(repo / ".cargo" / "config.toml", "[build]\n")
     write(repo / ".config" / "nextest.toml", "[profile.default]\n")
+    write(repo / ".github" / "actions" / "setup-environment" / "action.yml", "name: setup\n")
     write(repo / ".github" / "workflows" / "ci.yml", "name: ci\n")
+    write(repo / "ci" / "rust-verification.toml", "[local_compile_policy]\n")
     write(repo / "justfile", "default:\n    @true\n")
     write(repo / "gated_source_roots.manifest", "src\n")
     write(repo / "deploy" / "install.sh", "#!/usr/bin/env bash\necho install\n")
@@ -155,10 +181,16 @@ edition = "2021"
     write(repo / "benches" / "root.rs", "fn main() {}\n")
     write(repo / "examples" / "root.rs", "fn main() {}\n")
     write(repo / "scripts" / "nextest_fingerprint.py", "# tracked producer placeholder\n")
+    write(repo / "scripts" / "root_bin_sidecars.py", "# tracked sidecar helper placeholder\n")
     write(repo / "scripts" / "rust_verification.py", "# tracked verifier placeholder\n")
+    write(repo / "scripts" / "command_understanding.py", "# tracked command parser placeholder\n")
     write(repo / "config" / "root.toml", "[root]\n")
     write(repo / "contracts" / "root.md", "# contract\n")
     write(repo / "docs" / "bolt-v3" / "index.md", "# bolt-v3\n")
+    write(
+        repo / "docs" / "bolt-v3" / "2026-04-25-bolt-v3-runtime-contracts.md",
+        "# runtime contracts\n",
+    )
     write(repo / "docs" / "extra" / "index.md", "# extra docs\n")
     write(repo / "specs" / "root.md", "# spec\n")
     write(repo / "crates" / "backtesting-vertical-slice" / "src" / "lib.rs", "pub fn bvs() {}\n")
@@ -247,19 +279,19 @@ def assert_fingerprint_outputs_have_provenance_shape() -> None:
     with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
         key, outputs = fingerprint(repo)
-        shape = r"^nextest-archive-v2-Linux-X64-test-profile-shards-4-[0-9a-f]{64}$"
+        shape = r"^nextest-archive-v3-Linux-X64-test-profile-shards-4-[0-9a-f]{64}$"
         if re.fullmatch(shape, key) is None:
             raise AssertionError(key)
         if outputs.get("nextest_digest", "") != key.rsplit("-", 1)[-1]:
             raise AssertionError(outputs)
         if outputs.get("nextest_fingerprint") != key:
             raise AssertionError(outputs)
-        artifact_shape = r"^nextest-archive-fingerprint-v2-Linux-X64-test-profile-shards-4-[0-9a-f]{64}$"
+        artifact_shape = r"^nextest-archive-fingerprint-v3-Linux-X64-test-profile-shards-4-[0-9a-f]{64}$"
         if re.fullmatch(artifact_shape, outputs.get("nextest_fingerprint_artifact_name", "")) is None:
             raise AssertionError(outputs)
         if outputs.get("nextest_archive_prefix") != "nextest-archive-":
             raise AssertionError(outputs)
-        if outputs.get("nextest_schema") != "2":
+        if outputs.get("nextest_schema") != "3":
             raise AssertionError(outputs)
         if outputs.get("nextest_profile") != "test":
             raise AssertionError(outputs)
@@ -272,11 +304,23 @@ def assert_tree_digest_covers_runtime_inputs_and_mode_bits() -> None:
         repo = init_repo(pathlib.Path(tmp))
         first, _ = fingerprint(repo)
 
+        write(repo / ".github" / "workflows" / "ci.yml", "name: ci\n# workflow-only change\n")
+        commit_all(repo, "change unrelated workflow")
+        unrelated_workflow_changed, _ = fingerprint(repo)
+        if unrelated_workflow_changed != first:
+            raise AssertionError("unrelated workflow changes must not change the nextest archive key")
+
+        write(repo / "docs" / "extra" / "index.md", "# extra docs changed\n")
+        commit_all(repo, "change unrelated docs")
+        unrelated_docs_changed, _ = fingerprint(repo)
+        if unrelated_docs_changed != first:
+            raise AssertionError("unrelated docs changes must not change the nextest archive key")
+
         write(repo / "deploy" / "install.sh", "#!/usr/bin/env bash\necho changed\n")
         commit_all(repo, "change deploy")
         deploy_changed, _ = fingerprint(repo)
-        if deploy_changed == first:
-            raise AssertionError("deploy changes must change the nextest archive key")
+        if deploy_changed != first:
+            raise AssertionError("runtime-only deploy changes must not change the nextest archive key")
 
         write(repo / "gated_source_roots.manifest", "src\ndeploy\n")
         commit_all(repo, "change gated manifest")
@@ -284,11 +328,23 @@ def assert_tree_digest_covers_runtime_inputs_and_mode_bits() -> None:
         if manifest_changed == deploy_changed:
             raise AssertionError("gated_source_roots.manifest changes must change the nextest archive key")
 
-        (repo / "deploy" / "install.sh").chmod(0o755)
+        write(repo / "config" / "root.toml", "[root]\nchanged = true\n")
+        commit_all(repo, "change compile-time root config")
+        root_config_changed, _ = fingerprint(repo)
+        if root_config_changed == manifest_changed:
+            raise AssertionError("config/root.toml changes must change the nextest archive key")
+
+        write(repo / "docs" / "bolt-v3" / "2026-04-25-bolt-v3-runtime-contracts.md", "# changed\n")
+        commit_all(repo, "change compile-time docs contract")
+        docs_changed, _ = fingerprint(repo)
+        if docs_changed == root_config_changed:
+            raise AssertionError("compile-time docs contract changes must change the nextest archive key")
+
+        (repo / "build.rs").chmod(0o755)
         commit_all(repo, "make deploy executable")
         mode_changed, _ = fingerprint(repo)
-        if mode_changed == manifest_changed:
-            raise AssertionError("tracked mode changes must change the nextest archive key")
+        if mode_changed == docs_changed:
+            raise AssertionError("allowlisted tracked mode changes must change the nextest archive key")
 
 
 def assert_self_governance_changes_affect_digest() -> None:
@@ -309,6 +365,117 @@ def assert_self_governance_changes_affect_digest() -> None:
             raise AssertionError("fingerprint producer changes must change the digest")
 
 
+def assert_tracked_inputs_must_match_head_tree() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "ci" / "nextest-fingerprint.toml",
+            FINGERPRINT_CONFIG_TEXT.replace(
+                '    "src/",\n',
+                '    "missing-build-input/",\n    "src/",\n',
+            ),
+        )
+        commit_all(repo, "add stale tracked input")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("tracked_inputs entries that match no tracked files must fail closed")
+        if "nextest_archive.tracked_inputs entry matches no tracked files" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_compile_time_include_targets_must_be_tracked() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const EXTRA_DOC: &str = include_str!("../docs/extra/index.md");\n',
+        )
+        commit_all(repo, "include untracked docs")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include targets outside tracked_inputs must fail closed")
+        if "compile-time include target is outside nextest tracked inputs: docs/extra/index.md" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_commented_compile_time_include_targets_are_ignored() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            '// include_str!("../docs/extra/index.md")\n'
+            'pub const ROOT: &str = include_str!("../tests/root.rs");\n',
+        )
+        commit_all(repo, "commented include")
+        fingerprint(repo)
+
+
+def assert_string_literal_include_text_is_ignored() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const DOC_EXAMPLE: &str = r#"\n'
+            'let _ = include_str!("../docs/extra/index.md");\n'
+            '"#;\n'
+            'pub const ESCAPED_EXAMPLE: &str = "include_bytes!(\\"../docs/extra/index.md\\")";\n'
+            'pub const ROOT: &str = include_str!("../tests/root.rs");\n',
+        )
+        commit_all(repo, "string literal include examples")
+        fingerprint(repo)
+
+
+def assert_compile_time_include_macro_syntax_variants_are_detected() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const COMMENT_AFTER_NAME: &str = include_str /* comment */ !("../docs/extra/index.md");\n'
+            'pub const COMMENT_AFTER_BANG: &str = include_str! /* comment */ ("../docs/extra/index.md");\n'
+            'pub const COMMENT_BEFORE_ARG: &[u8] = include_bytes!(/* comment */ "../docs/extra/index.md");\n'
+            'pub const BRACKET_DELIMITER: &str = include_str!["../docs/extra/index.md"];\n'
+            'pub const BRACE_DELIMITER: &str = include_str!{ "../docs/extra/index.md" };\n',
+        )
+        commit_all(repo, "include macro syntax variants")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include macro syntax variants must fail closed")
+        if "compile-time include target is outside nextest tracked inputs: docs/extra/index.md" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_compile_time_include_non_literal_arguments_fail_closed() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const CONCAT_DOC: &str = include_str!(concat!("../docs/extra/", "index.md"));\n',
+        )
+        commit_all(repo, "include concat expression")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include non-literal arguments must fail closed")
+        if "compile-time include argument must be a direct string literal" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
+def assert_compile_time_include_targets_must_be_tracked_files() -> None:
+    with temporary_git_directory() as tmp:
+        repo = init_repo(pathlib.Path(tmp))
+        write(
+            repo / "src" / "lib.rs",
+            'pub const UNTRACKED_FIXTURE: &str = include_str!("../tests/fixtures/untracked.txt");\n',
+        )
+        git(repo, "add", "src/lib.rs")
+        git(repo, "commit", "-m", "include untracked fixture")
+        write(repo / "tests" / "fixtures" / "untracked.txt", "not in git\n")
+        result = run_fingerprint_expect_failure(repo)
+        if result.returncode == 0:
+            raise AssertionError("compile-time include targets absent from HEAD must fail closed")
+        if "compile-time include target is not tracked in HEAD: tests/fixtures/untracked.txt" not in result.stderr:
+            raise AssertionError(result.stderr)
+
+
 def assert_safe_list_excludes_only_exact_backtester_prefix() -> None:
     with temporary_git_directory() as tmp:
         repo = init_repo(pathlib.Path(tmp))
@@ -321,9 +488,20 @@ def assert_safe_list_excludes_only_exact_backtester_prefix() -> None:
             raise AssertionError("safe-listed isolated backtester changes must not change the root nextest key")
 
         write(repo / "crates" / "backtesting-vertical-slice-extra" / "src" / "lib.rs", "pub fn sibling() {}\n")
-        commit_all(repo, "add similarly named sibling")
+        write(
+            repo / "ci" / "nextest-fingerprint.toml",
+            FINGERPRINT_CONFIG_TEXT.replace(
+                '    "tests/",\n',
+                '    "tests/",\n    "crates/backtesting-vertical-slice-extra/",\n',
+            ),
+        )
+        commit_all(repo, "track similarly named sibling")
+        sibling_tracked, _ = fingerprint(repo)
+
+        write(repo / "crates" / "backtesting-vertical-slice-extra" / "src" / "lib.rs", "pub fn sibling_changed() {}\n")
+        commit_all(repo, "change similarly named sibling")
         sibling, _ = fingerprint(repo)
-        if sibling == safe_listed:
+        if sibling == sibling_tracked:
             raise AssertionError("safe-list matching must not over-match similarly named siblings")
 
 
@@ -361,7 +539,10 @@ def assert_root_inputs_cannot_be_safe_listed() -> None:
             result = run_fingerprint_expect_failure(repo)
             if result.returncode == 0:
                 raise AssertionError(f"safe-listing root input {entry} must fail closed")
-            if "safe-listed path must be a separate Cargo workspace" not in result.stderr:
+            if (
+                "safe-listed path overlaps tracked input" not in result.stderr
+                and "safe-listed path must be a separate Cargo workspace" not in result.stderr
+            ):
                 raise AssertionError(result.stderr)
 
 
@@ -468,12 +649,20 @@ def assert_invalid_shards_fail_closed() -> None:
 def assert_missing_or_malformed_config_fails_closed() -> None:
     cases = {
         "missing schema": (
-            FINGERPRINT_CONFIG_TEXT.replace("schema = 2\n", ""),
+            FINGERPRINT_CONFIG_TEXT.replace("schema = 3\n", ""),
             "nextest_archive.schema must be a positive integer",
         ),
         "missing profile": (
             FINGERPRINT_CONFIG_TEXT.replace('profile = "test"\n', ""),
             "nextest_archive.profile must be a non-empty string",
+        ),
+        "missing tracked inputs": (
+            re.sub(r"tracked_inputs = \[[\s\S]*?\]\n\n", "", FINGERPRINT_CONFIG_TEXT),
+            "nextest_archive.tracked_inputs must be a non-empty string list",
+        ),
+        "tracked inputs missing source root": (
+            FINGERPRINT_CONFIG_TEXT.replace('    "src/",\n', ""),
+            "nextest_archive.tracked_inputs must include src/",
         ),
         "malformed toml": ("[nextest_archive\n", "nextest fingerprint config invalid TOML"),
     }
@@ -503,6 +692,13 @@ def main() -> int:
     assert_fingerprint_outputs_have_provenance_shape()
     assert_tree_digest_covers_runtime_inputs_and_mode_bits()
     assert_self_governance_changes_affect_digest()
+    assert_tracked_inputs_must_match_head_tree()
+    assert_compile_time_include_targets_must_be_tracked()
+    assert_commented_compile_time_include_targets_are_ignored()
+    assert_string_literal_include_text_is_ignored()
+    assert_compile_time_include_macro_syntax_variants_are_detected()
+    assert_compile_time_include_non_literal_arguments_fail_closed()
+    assert_compile_time_include_targets_must_be_tracked_files()
     assert_safe_list_excludes_only_exact_backtester_prefix()
     assert_forbidden_safe_list_entries_fail_closed()
     assert_root_inputs_cannot_be_safe_listed()

@@ -106,6 +106,18 @@ use crate::{
         BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters,
         map_bolt_v3_adapters_with_runtime_approvals,
     },
+    bolt_v3_capital_admission::{
+        CapitalAdmissionPolicy, FeeSlippagePolicy, PredictionMarketAdmissionSnapshot,
+        ProductAdmissionSnapshot, ProductKind,
+    },
+    bolt_v3_capital_admission_runtime_feed::{
+        CapitalAdmissionRuntimeFeed, CapitalAdmissionRuntimeFeedConfig,
+        CapitalAdmissionRuntimeFeedSubscription, subscribe_capital_admission_runtime_feed,
+    },
+    bolt_v3_capital_admission_state::{
+        VenueSpendabilityIdentity, VenueSpendabilitySnapshot, VenueSpendabilitySourceFileRequest,
+        venue_spendability_snapshot_from_json_file,
+    },
     bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
@@ -118,9 +130,9 @@ use crate::{
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-        BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
-        BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence,
-        BoltV3OrderRejectEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
+        BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+        BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
         BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
@@ -166,14 +178,6 @@ use crate::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
         subscribe_order_reject_observer_feed,
     },
-    bolt_v3_position_sizer::{
-        FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
-        SizingPolicy,
-    },
-    bolt_v3_position_sizer_runtime_feed::{
-        PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig,
-        PositionSizerRuntimeFeedSubscription, subscribe_position_sizer_runtime_feed,
-    },
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderRuntimeApprovals,
@@ -184,10 +188,6 @@ use crate::{
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
     },
-    bolt_v3_sizing_state::{
-        VenueSpendabilityIdentity, VenueSpendabilitySnapshot, VenueSpendabilitySourceFileRequest,
-        venue_spendability_snapshot_from_json_file,
-    },
     bolt_v3_strategy_registration::{
         BoltV3StrategyExecutionControls, BoltV3StrategyRegistrationError,
         register_bolt_v3_strategies_on_node_with_bindings,
@@ -195,9 +195,10 @@ use crate::{
     },
     bolt_v3_submit_admission::{
         BoltV3CompiledOrderSide, BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState,
-        BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingMissingNtAccountCacheBalance,
-        BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderEvidence,
-        BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
+        BoltV3SubmitCapitalAdmissionConfig,
+        BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance,
+        BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
+        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitCapitalAdmissionRebuildDecision,
     },
     bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{
@@ -220,10 +221,10 @@ pub struct BoltV3LiveNodeRuntime {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
-    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
-    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
-    position_sizer_venue_spendability_source:
-        Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
+    capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+    capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
+    capital_admission_venue_spendability_source:
+        Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
     iv_runtime: Option<IvRuntimeEngine>,
     iv_event_bindings: Option<BoltV3IvRuntimeEventBindings>,
@@ -231,7 +232,7 @@ pub struct BoltV3LiveNodeRuntime {
 }
 
 #[derive(Debug, Clone)]
-struct BoltV3PositionSizerVenueSpendabilitySourceConfig {
+struct BoltV3CapitalAdmissionVenueSpendabilitySourceConfig {
     path: PathBuf,
     max_bytes: u64,
     expected_sha256: String,
@@ -2390,9 +2391,9 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> Result<()> {
         Ok(())
     }
@@ -2443,10 +2444,10 @@ struct BoltV3LiveNodeRuntimeFeeds {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
-    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
-    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
-    position_sizer_venue_spendability_source:
-        Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
+    capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
+    capital_admission_runtime_feed_subscription: Option<CapitalAdmissionRuntimeFeedSubscription>,
+    capital_admission_venue_spendability_source:
+        Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
 }
 
@@ -2470,11 +2471,11 @@ impl BoltV3LiveNodeRuntime {
             loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
             order_reject_observer_feed: feeds.order_reject_observer_feed,
             order_reject_observer_feed_subscription: feeds.order_reject_observer_feed_subscription,
-            position_sizer_runtime_feed: feeds.position_sizer_runtime_feed,
-            position_sizer_runtime_feed_subscription: feeds
-                .position_sizer_runtime_feed_subscription,
-            position_sizer_venue_spendability_source: feeds
-                .position_sizer_venue_spendability_source,
+            capital_admission_runtime_feed: feeds.capital_admission_runtime_feed,
+            capital_admission_runtime_feed_subscription: feeds
+                .capital_admission_runtime_feed_subscription,
+            capital_admission_venue_spendability_source: feeds
+                .capital_admission_venue_spendability_source,
             submit_reservation_recovery: feeds.submit_reservation_recovery,
             iv_runtime,
             iv_event_bindings,
@@ -3005,34 +3006,34 @@ impl BoltV3LiveNodeRuntime {
         Some(target)
     }
 
-    pub fn position_sizer_configured(&self) -> bool {
-        self.submit_admission.position_sizer_configured()
+    pub fn capital_admission_configured(&self) -> bool {
+        self.submit_admission.capital_admission_configured()
     }
 
-    pub fn position_sizer_runtime_feed_configured(&self) -> bool {
-        self.position_sizer_runtime_feed.is_some()
-            && self.position_sizer_runtime_feed_subscription.is_some()
+    pub fn capital_admission_runtime_feed_configured(&self) -> bool {
+        self.capital_admission_runtime_feed.is_some()
+            && self.capital_admission_runtime_feed_subscription.is_some()
     }
 
-    pub fn refresh_position_sizer_venue_spendability_from_configured_source(
+    pub fn refresh_capital_admission_venue_spendability_from_configured_source(
         &self,
-    ) -> Result<Option<BoltV3SubmitPositionSizingNtComponents>, BoltV3LiveNodeError> {
-        let Some(config) = self.position_sizer_venue_spendability_source.as_ref() else {
+    ) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, BoltV3LiveNodeError> {
+        let Some(config) = self.capital_admission_venue_spendability_source.as_ref() else {
             return Ok(None);
         };
-        let Some(feed) = self.position_sizer_runtime_feed.as_ref() else {
+        let Some(feed) = self.capital_admission_runtime_feed.as_ref() else {
             return Err(BoltV3LiveNodeError::Build(anyhow::anyhow!(
-                "position sizer venue spendability source configured without runtime feed"
+                "capital admission venue spendability source configured without runtime feed"
             )));
         };
-        refresh_position_sizer_venue_spendability_from_source(feed, config)
+        refresh_capital_admission_venue_spendability_from_source(feed, config)
     }
 
-    pub fn position_sizer_reconciled(&self) -> Option<bool> {
-        self.submit_admission.position_sizer_reconciled()
+    pub fn capital_admission_reconciled(&self) -> Option<bool> {
+        self.submit_admission.capital_admission_reconciled()
     }
 
-    /// Rebuild the position sizer's capital-reservation ledger from the
+    /// Rebuild the capital admission's capital-reservation ledger from the
     /// live NT cache at startup so a restart cannot double-allocate capital
     /// against orders/positions that already exist. Reads open orders,
     /// the configured collateral balance, and open positions for the
@@ -3043,12 +3044,12 @@ impl BoltV3LiveNodeRuntime {
     /// cannot be attributed, the snapshot is marked not-all-attributed so
     /// the caller fails closed rather than arming with an unreconciled
     /// ledger.
-    pub fn rebuild_position_sizer_from_nt_cache(
+    pub fn rebuild_capital_admission_from_nt_cache(
         &self,
         now_ns: u64,
-    ) -> BoltV3SubmitPositionSizingRebuildDecision {
+    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
         let (account_id, binary_instrument_ids, collateral_currency) =
-            match self.position_sizer_runtime_feed.as_ref() {
+            match self.capital_admission_runtime_feed.as_ref() {
                 Some(feed) => {
                     let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     (
@@ -3094,12 +3095,12 @@ impl BoltV3LiveNodeRuntime {
             collateral_currency.as_deref(),
         ) {
             (Some(account_id), Some(collateral_currency)) if cached_account_balances.is_none() => {
-                let missing = BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+                let missing = BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance {
                     account_id: account_id.to_string(),
                     collateral_currency: collateral_currency.to_string(),
                 };
                 log::warn!(
-                    "bolt-v3 position sizer startup rebuild could not seed account portfolio snapshot because NT cache is missing account_id={} collateral_currency={}",
+                    "bolt-v3 capital admission startup rebuild could not seed account portfolio snapshot because NT cache is missing account_id={} collateral_currency={}",
                     missing.account_id,
                     missing.collateral_currency
                 );
@@ -3128,7 +3129,7 @@ impl BoltV3LiveNodeRuntime {
 
         let account_cache_is_authoritative = cached_account_balances.is_some();
         // Seed live NT order and position state before rebuilding reservations from the same snapshot.
-        if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
+        if let Some(feed) = self.capital_admission_runtime_feed.as_ref() {
             let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some((free_collateral, total_equity)) = cached_account_balances {
                 feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
@@ -3182,7 +3183,7 @@ impl BoltV3LiveNodeRuntime {
             };
             let Some(reservation) = self
                 .submit_admission
-                .position_sizing_open_order_reservation_from_known_metadata(evidence, recovered)
+                .capital_admission_open_order_reservation_from_known_metadata(evidence, recovered)
             else {
                 all_open_orders_attributed = false;
                 break;
@@ -3195,8 +3196,8 @@ impl BoltV3LiveNodeRuntime {
 
         let mut rebuild = self
             .submit_admission
-            .rebuild_position_sizing_open_order_snapshot(
-                BoltV3SubmitPositionSizingOpenOrderSnapshot {
+            .rebuild_capital_admission_open_order_snapshot(
+                BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
                     observed_at_ns: now_ns,
                     evidence_label: "nt_open_order_cache".to_string(),
                     observed_open_order_count: open_order_snapshots.len(),
@@ -3218,7 +3219,7 @@ impl BoltV3LiveNodeRuntime {
 fn nt_open_order_evidence_from_order(
     order: &OrderAny,
     observed_at_ns: u64,
-) -> Option<BoltV3SubmitPositionSizingOpenOrderEvidence> {
+) -> Option<BoltV3SubmitCapitalAdmissionOpenOrderEvidence> {
     if order.order_type() != OrderType::Limit {
         return None;
     }
@@ -3235,7 +3236,7 @@ fn nt_open_order_evidence_from_order(
     if open_quantity <= Decimal::ZERO {
         return None;
     }
-    Some(BoltV3SubmitPositionSizingOpenOrderEvidence {
+    Some(BoltV3SubmitCapitalAdmissionOpenOrderEvidence {
         client_order_id: order.client_order_id().to_string(),
         instrument_id: order.instrument_id().to_string(),
         side,
@@ -3409,7 +3410,7 @@ pub enum BoltV3LiveNodeError {
     },
     StrategyFreeStopTimeoutOverflow,
     StrategyFreeStopFailed(anyhow::Error),
-    /// The startup position-sizer rebuild from the NT cache could not
+    /// The startup capital-admission rebuild from the NT cache could not
     /// attribute one or more pre-existing open orders to recovered
     /// submit-reservation metadata, so submit admission would arm with an
     /// unreconciled capital-reservation ledger. The live runner refuses to
@@ -3419,7 +3420,7 @@ pub enum BoltV3LiveNodeError {
     /// captured at boot. This is intentionally outside the removed start
     /// gate: it is a fail-closed reconciliation guard, not the live-canary
     /// arm gate, so it never reintroduces a gate-report/arm sequence.
-    StartupPositionSizerRebuild(BoltV3SubmitPositionSizingRebuildDecision),
+    StartupCapitalAdmissionRebuild(BoltV3SubmitCapitalAdmissionRebuildDecision),
 }
 
 impl std::fmt::Display for BoltV3LiveNodeError {
@@ -3556,9 +3557,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyFreeStopFailed(error) => {
                 write!(f, "bolt-v3 strategy-free controlled-stop failed: {error}")
             }
-            BoltV3LiveNodeError::StartupPositionSizerRebuild(decision) => write!(
+            BoltV3LiveNodeError::StartupCapitalAdmissionRebuild(decision) => write!(
                 f,
-                "bolt-v3 startup position-sizer rebuild rejected runtime start: {decision:?}"
+                "bolt-v3 startup capital-admission rebuild rejected runtime start: {decision:?}"
             ),
         }
     }
@@ -3598,7 +3599,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::StrategyFreeDataClientProbeFailed { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeout { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow
-            | BoltV3LiveNodeError::StartupPositionSizerRebuild(..) => None,
+            | BoltV3LiveNodeError::StartupCapitalAdmissionRebuild(..) => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
             | BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error)
             | BoltV3LiveNodeError::StrategyFreeStartFailed(error)
@@ -4844,7 +4845,7 @@ pub async fn run_bolt_v3_live_node(
     let startup_rebuild_observed_at_ns =
         current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let startup_rebuild =
-        runtime.rebuild_position_sizer_from_nt_cache(startup_rebuild_observed_at_ns);
+        runtime.rebuild_capital_admission_from_nt_cache(startup_rebuild_observed_at_ns);
     // A no-open-order startup may legitimately recover nothing: NT only
     // populates the account/portfolio cache once its runner loop performs
     // startup reconciliation, and the live runtime feed re-seeds the
@@ -4904,10 +4905,10 @@ pub async fn run_bolt_v3_live_node(
 }
 
 fn fail_closed_on_unreconciled_startup_rebuild(
-    startup_rebuild: BoltV3SubmitPositionSizingRebuildDecision,
+    startup_rebuild: BoltV3SubmitCapitalAdmissionRebuildDecision,
 ) -> Result<(), BoltV3LiveNodeError> {
     if !startup_rebuild.accepted && startup_rebuild.attempted_reservation_count > 0 {
-        return Err(BoltV3LiveNodeError::StartupPositionSizerRebuild(
+        return Err(BoltV3LiveNodeError::StartupCapitalAdmissionRebuild(
             startup_rebuild,
         ));
     }
@@ -5059,7 +5060,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     let kill_switch_startup_state = recover_kill_switch_state_before_live_node_build(loaded)?;
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
     let loss_halt_action_policy = loss_governor_halt_action_policy_from_loaded(loaded)?;
-    let position_sizer = position_sizer_config_from_loaded(loaded)?;
+    let capital_admission = capital_admission_config_from_loaded(loaded)?;
     let iv_client_errors = crate::bolt_v3_validate::validate_iv_source_clients(&loaded.root);
     if !iv_client_errors.is_empty() {
         return Err(BoltV3LiveNodeError::StrategyRegistration(
@@ -5072,7 +5073,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         ));
     }
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
-        if loss_policy.is_none() && position_sizer.is_none() {
+        if loss_policy.is_none() && capital_admission.is_none() {
             Arc::new(NoStrategyDecisionEvidenceWriter)
         } else {
             Arc::new(
@@ -5097,12 +5098,12 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         )
     };
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
-    let position_sizer_runtime_feed_config =
-        position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
+    let capital_admission_runtime_feed_config =
+        capital_admission_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
     let order_reject_observer_account_id = order_reject_observer_account_id_from_loaded(loaded);
-    let position_sizer_venue_spendability_source =
-        position_sizer_venue_spendability_source_config_from_loaded(loaded)?;
-    let submit_reservation_recovery = if position_sizer_runtime_feed_config.is_some() {
+    let capital_admission_venue_spendability_source =
+        capital_admission_venue_spendability_source_config_from_loaded(loaded)?;
+    let submit_reservation_recovery = if capital_admission_runtime_feed_config.is_some() {
         submit_reservation_recovery_config_from_loaded(loaded)?
     } else {
         None
@@ -5112,7 +5113,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             decision_evidence.clone(),
             live_submit_approval_limits,
             loss_policy.clone(),
-            position_sizer,
+            capital_admission,
         ),
     );
     // Latch the recovered kill-switch state into submit admission before any
@@ -5121,14 +5122,14 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     if let Some(state) = kill_switch_startup_state.as_ref() {
         submit_admission.replace_kill_switch_state(state.clone());
     }
-    let (position_sizer_runtime_feed, position_sizer_runtime_feed_subscription) =
-        match position_sizer_runtime_feed_config {
+    let (capital_admission_runtime_feed, capital_admission_runtime_feed_subscription) =
+        match capital_admission_runtime_feed_config {
             Some(config) => {
-                let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+                let feed = Arc::new(Mutex::new(CapitalAdmissionRuntimeFeed::new(
                     config,
                     submit_admission.clone(),
                 )));
-                let subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+                let subscription = subscribe_capital_admission_runtime_feed(feed.clone());
                 (Some(feed), Some(subscription))
             }
             None => (None, None),
@@ -5284,16 +5285,16 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             loss_runtime_feed_subscription,
             order_reject_observer_feed,
             order_reject_observer_feed_subscription,
-            position_sizer_runtime_feed,
-            position_sizer_runtime_feed_subscription,
-            position_sizer_venue_spendability_source,
+            capital_admission_runtime_feed,
+            capital_admission_runtime_feed_subscription,
+            capital_admission_venue_spendability_source,
             submit_reservation_recovery,
         },
         iv_runtime,
         iv_event_bindings,
         resolved.redaction_values(),
     );
-    runtime.refresh_position_sizer_venue_spendability_from_configured_source()?;
+    runtime.refresh_capital_admission_venue_spendability_from_configured_source()?;
     Ok((runtime, summary))
 }
 
@@ -5316,19 +5317,19 @@ fn loss_governor_runtime_feed_config_from_loaded(
     }))
 }
 
-fn position_sizer_runtime_feed_config_from_loaded(
+fn capital_admission_runtime_feed_config_from_loaded(
     loaded: &LoadedBoltV3Config,
     startup_observed_at_ns: u64,
-) -> Option<PositionSizerRuntimeFeedConfig> {
+) -> Option<CapitalAdmissionRuntimeFeedConfig> {
     let pools = loaded.root.risk.capital_pools.as_ref()?;
     let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
     let product = pool.prediction_market_binary.as_ref()?;
-    Some(PositionSizerRuntimeFeedConfig {
+    Some(CapitalAdmissionRuntimeFeedConfig {
         venue_id: pool.venue_id.clone(),
         account_id: pool.account_id,
         collateral_currency: pool.collateral_currency.clone(),
-        product_state: ProductSizingSnapshot::PredictionMarketBinary(
-            PredictionMarketSizingSnapshot {
+        product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+            PredictionMarketAdmissionSnapshot {
                 source: "bolt_configured_binary_product".to_string(),
                 observed_at_ns: startup_observed_at_ns,
                 yes_instrument_id: product.yes_instrument_id.to_string(),
@@ -5351,9 +5352,9 @@ fn order_reject_observer_account_id_from_loaded(loaded: &LoadedBoltV3Config) -> 
     Some(pool.account_id)
 }
 
-fn position_sizer_venue_spendability_source_config_from_loaded(
+fn capital_admission_venue_spendability_source_config_from_loaded(
     loaded: &LoadedBoltV3Config,
-) -> Result<Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>, BoltV3LiveNodeError> {
+) -> Result<Option<BoltV3CapitalAdmissionVenueSpendabilitySourceConfig>, BoltV3LiveNodeError> {
     let Some(pool) = loaded
         .root
         .risk
@@ -5378,7 +5379,7 @@ fn position_sizer_venue_spendability_source_config_from_loaded(
             "risk.capital_pools venue_spendability_source path, sha256, and max_bytes must be configured together"
         )));
     };
-    Ok(Some(BoltV3PositionSizerVenueSpendabilitySourceConfig {
+    Ok(Some(BoltV3CapitalAdmissionVenueSpendabilitySourceConfig {
         path: resolve_root_relative_path(&loaded.root_path, path_value),
         max_bytes,
         expected_sha256: expected_sha256.clone(),
@@ -5410,8 +5411,8 @@ fn submit_reservation_recovery_config_from_loaded(
     }))
 }
 
-fn position_sizer_venue_spendability_snapshot_from_source_config(
-    config: &BoltV3PositionSizerVenueSpendabilitySourceConfig,
+fn capital_admission_venue_spendability_snapshot_from_source_config(
+    config: &BoltV3CapitalAdmissionVenueSpendabilitySourceConfig,
 ) -> Result<VenueSpendabilitySnapshot, BoltV3LiveNodeError> {
     venue_spendability_snapshot_from_json_file(VenueSpendabilitySourceFileRequest {
         path: &config.path,
@@ -5425,30 +5426,30 @@ fn position_sizer_venue_spendability_snapshot_from_source_config(
     })
     .map_err(|error| {
         BoltV3LiveNodeError::Build(anyhow::anyhow!(
-            "position sizer venue spendability source rejected: {error:?}"
+            "capital admission venue spendability source rejected: {error:?}"
         ))
     })
 }
 
-fn refresh_position_sizer_venue_spendability_from_source(
-    feed: &Arc<Mutex<PositionSizerRuntimeFeed>>,
-    config: &BoltV3PositionSizerVenueSpendabilitySourceConfig,
-) -> Result<Option<BoltV3SubmitPositionSizingNtComponents>, BoltV3LiveNodeError> {
-    let snapshot = position_sizer_venue_spendability_snapshot_from_source_config(config)?;
+fn refresh_capital_admission_venue_spendability_from_source(
+    feed: &Arc<Mutex<CapitalAdmissionRuntimeFeed>>,
+    config: &BoltV3CapitalAdmissionVenueSpendabilitySourceConfig,
+) -> Result<Option<BoltV3SubmitCapitalAdmissionNtComponents>, BoltV3LiveNodeError> {
+    let snapshot = capital_admission_venue_spendability_snapshot_from_source_config(config)?;
     let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     Ok(feed.on_venue_spendability_snapshot(snapshot))
 }
 
-fn position_sizer_config_from_loaded(
+fn capital_admission_config_from_loaded(
     loaded: &LoadedBoltV3Config,
-) -> Result<Option<BoltV3SubmitPositionSizerConfig>, BoltV3LiveNodeError> {
+) -> Result<Option<BoltV3SubmitCapitalAdmissionConfig>, BoltV3LiveNodeError> {
     let Some(pools) = loaded.root.risk.capital_pools.as_ref() else {
         return Ok(None);
     };
     let Some(pool) = pools.iter().find(|pool| pool.enforce_submit_admission) else {
         return Ok(None);
     };
-    Ok(Some(BoltV3SubmitPositionSizerConfig {
+    Ok(Some(BoltV3SubmitCapitalAdmissionConfig {
         venue_id: pool.venue_id.clone(),
         account_id: pool.account_id.to_string(),
         product_kind: ProductKind::PredictionMarketBinary,
@@ -5464,26 +5465,28 @@ fn position_sizer_config_from_loaded(
             committed_liability: Decimal::ZERO,
             max_snapshot_age_ns: pool.max_snapshot_age_ns,
         },
-        policy: sizing_policy_from_pool(pool)?,
+        policy: capital_admission_policy_from_pool(pool)?,
         dedupe_retention_ns: pool.dedupe_retention_ns,
     }))
 }
 
-fn sizing_policy_from_pool(pool: &CapitalPoolBlock) -> Result<SizingPolicy, BoltV3LiveNodeError> {
-    let sizing = &pool.sizing_policy;
-    Ok(SizingPolicy {
+fn capital_admission_policy_from_pool(
+    pool: &CapitalPoolBlock,
+) -> Result<CapitalAdmissionPolicy, BoltV3LiveNodeError> {
+    let policy = &pool.capital_admission_policy;
+    Ok(CapitalAdmissionPolicy {
         min_remaining_pool_balance: optional_pool_decimal(
-            "risk.capital_pools.sizing_policy.min_remaining_pool_balance",
-            sizing.min_remaining_pool_balance.as_deref(),
+            "risk.capital_pools.capital_admission_policy.min_remaining_pool_balance",
+            policy.min_remaining_pool_balance.as_deref(),
         )?,
         fee_slippage_policy: Some(FeeSlippagePolicy {
             max_fee_liability: required_pool_decimal(
-                "risk.capital_pools.sizing_policy.fee_slippage.max_fee_liability",
-                &sizing.fee_slippage.max_fee_liability,
+                "risk.capital_pools.capital_admission_policy.fee_slippage.max_fee_liability",
+                &policy.fee_slippage.max_fee_liability,
             )?,
             max_slippage_liability: required_pool_decimal(
-                "risk.capital_pools.sizing_policy.fee_slippage.max_slippage_liability",
-                &sizing.fee_slippage.max_slippage_liability,
+                "risk.capital_pools.capital_admission_policy.fee_slippage.max_slippage_liability",
+                &policy.fee_slippage.max_slippage_liability,
             )?,
         }),
     })
@@ -6310,7 +6313,7 @@ mod tests {
         let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
             .expect("fixture v3 LiveNode should build");
 
-        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert_eq!(runtime.capital_admission_reconciled(), Some(false));
         write_submit_reservation_metadata(&loaded, &metadata);
         seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
         seed_accepted_open_limit_order(
@@ -6325,11 +6328,11 @@ mod tests {
             "POLYMARKET-001",
         );
 
-        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+        let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
 
         assert_eq!(
             rebuild,
-            BoltV3SubmitPositionSizingRebuildDecision {
+            BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: true,
                 reason: None,
                 attempted_reservation_count: 1,
@@ -6338,17 +6341,17 @@ mod tests {
                 missing_nt_account_cache_balance: None,
             }
         );
-        assert_eq!(runtime.position_sizer_reconciled(), Some(true));
+        assert_eq!(runtime.capital_admission_reconciled(), Some(true));
         assert_eq!(
             runtime
                 .submit_admission
-                .position_sizer_live_reserved_liability(),
+                .capital_admission_live_reserved_liability(),
             Some(Decimal::new(27, 1))
         );
         assert!(
             runtime
                 .submit_admission
-                .position_sizer_has_live_reservation("startup-known-client-order"),
+                .capital_admission_has_live_reservation("startup-known-client-order"),
             "startup rebuild must install the recovered reservation for later fill/cancel release"
         );
     }
@@ -6372,11 +6375,11 @@ mod tests {
             "POLYMARKET-001",
         );
 
-        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+        let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
 
         assert_eq!(
             rebuild,
-            BoltV3SubmitPositionSizingRebuildDecision {
+            BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
                 attempted_reservation_count: 1,
@@ -6385,17 +6388,17 @@ mod tests {
                 missing_nt_account_cache_balance: None,
             }
         );
-        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert_eq!(runtime.capital_admission_reconciled(), Some(false));
         assert!(
             !runtime
                 .submit_admission
-                .position_sizer_has_live_reservation("startup-unknown-client-order")
+                .capital_admission_has_live_reservation("startup-unknown-client-order")
         );
     }
 
     #[test]
     fn startup_rebuild_guard_aborts_before_live_node_run_for_unattributed_open_orders() {
-        let rebuild = BoltV3SubmitPositionSizingRebuildDecision {
+        let rebuild = BoltV3SubmitCapitalAdmissionRebuildDecision {
             accepted: false,
             reason: Some(ReservationRejectionReason::MissingEvidence),
             attempted_reservation_count: 1,
@@ -6408,7 +6411,7 @@ mod tests {
             .expect_err("unattributed startup open orders must abort before NT runner entry");
 
         match error {
-            BoltV3LiveNodeError::StartupPositionSizerRebuild(decision) => {
+            BoltV3LiveNodeError::StartupCapitalAdmissionRebuild(decision) => {
                 assert_eq!(decision, rebuild);
             }
             other => panic!("unexpected startup rebuild guard error: {other:?}"),
@@ -6422,21 +6425,21 @@ mod tests {
         let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
             .expect("fixture v3 LiveNode should build");
 
-        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+        let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
 
         assert_eq!(
             rebuild.missing_nt_account_cache_balance,
-            Some(BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+            Some(BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance {
                 account_id: "POLYMARKET-001".to_string(),
                 collateral_currency: "PUSD".to_string(),
             })
         );
-        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert_eq!(runtime.capital_admission_reconciled(), Some(false));
 
         let feed = runtime
-            .position_sizer_runtime_feed
+            .capital_admission_runtime_feed
             .as_ref()
-            .expect("fixture should configure position-sizer runtime feed");
+            .expect("fixture should configure capital-admission runtime feed");
         let account_state = account_state_event("POLYMARKET-001", "PUSD", 100.0, 100.0, 2_100);
         assert!(
             feed.lock()
@@ -6446,13 +6449,13 @@ mod tests {
             "account state should still publish sizing components once collateral facts arrive"
         );
         assert_eq!(
-            runtime.position_sizer_reconciled(),
+            runtime.capital_admission_reconciled(),
             Some(false),
             "missing startup account cache means the pre-run empty order cache is not authoritative"
         );
         let state = runtime
             .submit_admission
-            .position_sizer_state_snapshot()
+            .capital_admission_state_snapshot()
             .expect("account state should publish an unreconciled sizing state");
         assert_eq!(state.order_lifecycle.source, "nt_order_lifecycle_seed");
         assert!(!state.order_lifecycle.all_open_orders_attributed);
@@ -6598,14 +6601,14 @@ mod tests {
             assert_eq!(balance.free.as_decimal(), Decimal::new(60, 0));
         }
 
-        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+        let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
 
         assert_eq!(rebuild.missing_nt_account_cache_balance, None);
-        assert_eq!(runtime.position_sizer_reconciled(), Some(true));
+        assert_eq!(runtime.capital_admission_reconciled(), Some(true));
         let state = runtime
             .submit_admission
-            .position_sizer_state_snapshot()
-            .expect("startup rebuild should seed position sizing state");
+            .capital_admission_state_snapshot()
+            .expect("startup rebuild should seed capital admission state");
         assert_eq!(state.portfolio.free_collateral, Decimal::new(60, 0));
         assert_eq!(state.portfolio.total_equity, Decimal::new(100, 0));
         assert_ne!(
@@ -6613,7 +6616,7 @@ mod tests {
             "fixture must prove locked collateral is not treated as spendable"
         );
         match state.product_state {
-            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+            ProductAdmissionSnapshot::PredictionMarketBinary(snapshot) => {
                 assert_eq!(snapshot.collateral_allowance, Decimal::new(60, 0));
             }
         }
@@ -6649,11 +6652,11 @@ mod tests {
             "POLYMARKET-001",
         );
 
-        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+        let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
 
         assert_eq!(
             rebuild,
-            BoltV3SubmitPositionSizingRebuildDecision {
+            BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
                 attempted_reservation_count: 1,
@@ -6662,11 +6665,11 @@ mod tests {
                 missing_nt_account_cache_balance: None,
             }
         );
-        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert_eq!(runtime.capital_admission_reconciled(), Some(false));
         assert!(
             !runtime
                 .submit_admission
-                .position_sizer_has_live_reservation("startup-overopen-client-order")
+                .capital_admission_has_live_reservation("startup-overopen-client-order")
         );
     }
 
@@ -8220,8 +8223,10 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
   "spendable_collateral": "{spendable_collateral}",
   "collateral_allowance": "{collateral_allowance}"
 }}"#,
-            schema_version = crate::bolt_v3_sizing_state::VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION,
-            record_kind = crate::bolt_v3_sizing_state::VENUE_SPENDABILITY_SOURCE_RECORD_KIND,
+            schema_version =
+                crate::bolt_v3_capital_admission_state::VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION,
+            record_kind =
+                crate::bolt_v3_capital_admission_state::VENUE_SPENDABILITY_SOURCE_RECORD_KIND,
             venue_id = pool.venue_id,
             account_id = pool.account_id,
             collateral_currency = pool.collateral_currency,
@@ -10964,11 +10969,11 @@ configured_source_param = "configured-value"
         let temp = tempfile::tempdir().expect("tempdir should create");
         let mut loaded = fixture_loaded_config();
         write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
-        let config = position_sizer_venue_spendability_source_config_from_loaded(&loaded)
+        let config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
             .expect("source config should build")
             .expect("fixture should configure source");
 
-        let snapshot = position_sizer_venue_spendability_snapshot_from_source_config(&config)
+        let snapshot = capital_admission_venue_spendability_snapshot_from_source_config(&config)
             .expect("configured source should be accepted");
 
         assert_eq!(snapshot.source, "operator_venue_spendability");
@@ -10981,18 +10986,18 @@ configured_source_param = "configured-value"
         let temp = tempfile::tempdir().expect("tempdir should create");
         let mut loaded = fixture_loaded_config();
         write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
-        let mut config = position_sizer_venue_spendability_source_config_from_loaded(&loaded)
+        let mut config = capital_admission_venue_spendability_source_config_from_loaded(&loaded)
             .expect("source config should build")
             .expect("fixture should configure source");
         config.expected_sha256 =
             "0000000000000000000000000000000000000000000000000000000000000000".to_string();
 
-        let error = position_sizer_venue_spendability_snapshot_from_source_config(&config)
+        let error = capital_admission_venue_spendability_snapshot_from_source_config(&config)
             .expect_err("hash mismatch must fail closed");
         let rendered = error.to_string();
 
         assert!(
-            rendered.contains("position sizer venue spendability source rejected")
+            rendered.contains("capital admission venue spendability source rejected")
                 && rendered.contains("Sha256Mismatch"),
             "startup error should name rejected spendability evidence, got: {rendered}"
         );

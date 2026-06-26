@@ -175,9 +175,9 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -307,9 +307,9 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
         Ok(())
     }
 
-    fn record_position_sizer_rebuild_audit(
+    fn record_capital_admission_rebuild_audit(
         &self,
-        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        _audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3CapitalAdmissionRebuildAuditEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -417,8 +417,9 @@ impl TempCaseDir {
             .duration_since(UNIX_EPOCH)
             .expect("time should move forward")
             .as_nanos();
+        let pid = std::process::id();
         let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dirname = format!("bolt-v2-{label}-{timestamp_nanos}-{counter}");
+        let dirname = format!("bolt-v2-{label}-{pid}-{timestamp_nanos}-{counter}");
         let path = std::env::temp_dir().join(dirname);
         fs::create_dir_all(&path).expect("temp case dir should be created");
         Self { path }

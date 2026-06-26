@@ -40,12 +40,16 @@ deploy = "github_hosted"
 ci-policy = "managed_light"
 detect = "managed_light"
 fmt = "managed_light"
+# This config is a full proof path for merge-queue probe PRs; comment-only
+# probe edits here still exercise both required gates before queueing.
 # clippy compiles the full NT-heavy crate (same footprint as test) and rides above the disk-pressure
 # floor only on the heavy tier; on managed_light (ubicloud-standard-2) the preflight refused at
 # free_bytes=10,622,885,888 < min_free_bytes=10,737,418,240. Kept consistent with the test lane,
 # which already compiles this crate on managed_heavy.
 clippy = "managed_heavy"
+test-archive = "managed_heavy"
 test = "managed_heavy"
+issue_789 = "managed_heavy"
 gate = "github_hosted"
 
 [workflows.ci_runner_debug]
@@ -70,12 +74,6 @@ kimi-cli-review = "github_hosted"
 [workflows.ai_review_coding_plan_smoke]
 smoke = "github_hosted"
 
-[workflows.require_reviewer_node]
-require-reviewer-node = "github_hosted"
-
-[workflows.require_resolved_review_threads]
-require-resolved-review-threads = "github_hosted"
-
 [workflows.dispatch_ci_cancel]
 cancel-obsolete-dispatch = "github_hosted"
 
@@ -87,12 +85,6 @@ summary = "github_hosted"
 
 [workflows.stale]
 stale = "github_hosted"
-
-[workflows.ci_docs_pass_stub]
-build = "github_hosted"
-clippy = "github_hosted"
-test = "github_hosted"
-gate = "github_hosted"
 
 [meter]
 fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
@@ -172,15 +164,32 @@ proof_gate_job = "gate"
 
 [ci_provenance.gate_names]
 gate_required = "gate"
-gate_defer = "gate-deferred"
 gate_iteration = "gate-iteration"
-gate_noop = "gate-noop"
 gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
-backtester_defer = "backtester-gate-deferred"
 backtester_iteration = "backtester-gate-iteration"
-backtester_noop = "backtester-gate-noop"
 backtester_dispatch_full = "backtester-gate-dispatch"
+
+[ci_provenance.docs]
+safe_paths = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  "REASONIX.md",
+  "LICENSE",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".claude/**",
+  ".codex/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".specify/**",
+]
+forbidden_ignored_build_paths = [
+  ".claude/rust-verification.toml",
+]
+non_heavy_required_jobs = ["detector"]
 
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
@@ -202,12 +211,17 @@ ready_pr = "full"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
 ready_for_review = "full"
+docs = "docs"
 workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
+mergify_temp_pr = "full"
 tag = "tag_reuse"
 unknown_event = "full"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.policy.override]
 force_full_ci = false

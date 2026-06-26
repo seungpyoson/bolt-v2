@@ -101,15 +101,32 @@ proof_gate_job = "gate"
 
 [ci_provenance.gate_names]
 gate_required = "gate"
-gate_defer = "gate-deferred"
 gate_iteration = "gate-iteration"
-gate_noop = "gate-noop"
 gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
-backtester_defer = "backtester-gate-deferred"
 backtester_iteration = "backtester-gate-iteration"
-backtester_noop = "backtester-gate-noop"
 backtester_dispatch_full = "backtester-gate-dispatch"
+
+[ci_provenance.docs]
+safe_paths = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  "REASONIX.md",
+  "LICENSE",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".claude/**",
+  ".codex/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".specify/**",
+]
+forbidden_ignored_build_paths = [
+  ".claude/rust-verification.toml",
+]
+non_heavy_required_jobs = ["detector"]
 
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
@@ -131,12 +148,17 @@ ready_pr = "full"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
 ready_for_review = "full"
+docs = "docs"
 workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
 merge_group = "full"
+mergify_temp_pr = "full"
 tag = "tag_reuse"
 unknown_event = "full"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.policy.override]
 force_full_ci = false
@@ -156,10 +178,12 @@ force_full_ci = false
 [ci_provenance.policy]
 unknown_event = "full"
 tag = "tag_reuse"
+mergify_temp_pr = "full"
 merge_group = "full"
 main_push = "full"
 workflow_dispatch_full_ci = "full"
 workflow_dispatch = "iteration"
+docs = "docs"
 ready_for_review = "full"
 ready_pr_reopened = "noop"
 ready_pr_edited_no_base = "noop"
@@ -169,6 +193,9 @@ draft_pr_edited = "defer"
 draft_pr_reopened = "defer"
 draft_pr_opened = "defer"
 draft_pr_synchronize = "defer"
+
+[ci_provenance.mergify]
+temp_pr_head_ref_prefix = "mergify/merge-queue/"
 
 [ci_provenance.artifacts]
 retention_days = 30
@@ -189,15 +216,32 @@ proof_gate_job = "gate"
 
 [ci_provenance.gate_names]
 backtester_dispatch_full = "backtester-gate-dispatch"
-backtester_noop = "backtester-gate-noop"
 backtester_iteration = "backtester-gate-iteration"
-backtester_defer = "backtester-gate-deferred"
 backtester_required = "backtester-gate"
 gate_dispatch_full = "gate-dispatch"
-gate_noop = "gate-noop"
 gate_iteration = "gate-iteration"
-gate_defer = "gate-deferred"
 gate_required = "gate"
+
+[ci_provenance.docs]
+non_heavy_required_jobs = ["detector"]
+forbidden_ignored_build_paths = [
+  ".claude/rust-verification.toml",
+]
+safe_paths = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  "REASONIX.md",
+  "LICENSE",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".claude/**",
+  ".codex/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".specify/**",
+]
 
 [ci_provenance.deploy]
 require_gate_check = true
@@ -583,6 +627,115 @@ def assert_emit_full_ci_records_nextest_fingerprint_argument() -> None:
             )
         if record["nextest_fingerprint"] != NEXTEST_FINGERPRINT:
             raise AssertionError(record)
+
+
+def assert_emit_full_ci_hashes_explicit_tested_workflow() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+        tested_workflow = tmp_path / "tested-ci.yml"
+        tested_workflow.write_text("name: tested workflow\n", encoding="utf-8")
+        expected_digest = hashlib.sha256(tested_workflow.read_bytes()).hexdigest()
+
+        def fake_api_json(repo: str, token: str, path: str, query: dict[str, str] | None = None) -> dict[str, object]:
+            if path == f"actions/runs/{RUN_ID}":
+                return run_payload()
+            raise AssertionError((repo, token, path, query))
+
+        with patched_env(
+            {
+                "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+                "GITHUB_TOKEN": "token",
+                "GITHUB_RUN_ID": str(RUN_ID),
+                "GITHUB_RUN_ATTEMPT": "1",
+                "GITHUB_SHA": SHA,
+                "GITHUB_EVENT_NAME": "push",
+            }
+        ):
+            record = module.emit_full_ci_record(
+                config=module.load_config(config),
+                config_path=config,
+                workflow_file=tested_workflow,
+                required_job_values=[
+                    "detector=success",
+                    "deny=success",
+                    "clippy=success",
+                    "check-aarch64=success",
+                    "source-fence=success",
+                    "nextest-fingerprint=success",
+                    "test-archive=success",
+                    "test=success",
+                ],
+                conditional_job_values=["build.required=true", "build.result=success"],
+                nextest_fingerprint=NEXTEST_FINGERPRINT,
+                api_json=fake_api_json,
+            )
+        if record["workflow_digest"] != expected_digest:
+            raise AssertionError(record)
+
+
+def assert_emit_docs_ci_record_requires_skipped_heavy_jobs() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = pathlib.Path(tmp)
+        config = write_config(tmp_path)
+
+        def fake_api_json(repo: str, token: str, path: str, query: dict[str, str] | None = None) -> dict[str, object]:
+            if path == f"actions/runs/{RUN_ID}":
+                return run_payload(event="pull_request", head_branch="feature", head_sha=SHA)
+            raise AssertionError((repo, token, path, query))
+
+        env = {
+            "GITHUB_REPOSITORY": "seungpyoson/bolt-v2",
+            "GITHUB_TOKEN": "token",
+            "GITHUB_RUN_ID": str(RUN_ID),
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_SHA": OTHER_SHA,
+            "GITHUB_EVENT_NAME": "pull_request",
+            "PR_NUMBER": "960",
+            "PR_BASE_SHA": "1" * 40,
+        }
+        required_values = [
+            "detector=success",
+            "deny=skipped",
+            "clippy=skipped",
+            "check-aarch64=skipped",
+            "source-fence=skipped",
+            "nextest-fingerprint=skipped",
+            "test-archive=skipped",
+            "test=skipped",
+        ]
+        with patched_env(env):
+            record = module.emit_full_ci_record(
+                config=module.load_config(config),
+                config_path=config,
+                ci_policy_path="docs",
+                required_job_values=required_values,
+                conditional_job_values=["build.required=false", "build.result=skipped"],
+                nextest_fingerprint=None,
+                api_json=fake_api_json,
+            )
+        if record["kind"] != "docs-ci":
+            raise AssertionError(record)
+        if record["required_jobs"]["clippy"] != "skipped":
+            raise AssertionError(record)
+        if record["pull_request"]["base_sha"] != "1" * 40:
+            raise AssertionError(record)
+
+        with patched_env(env):
+            assert_raises(
+                "docs required job clippy must be skipped",
+                lambda: module.emit_full_ci_record(
+                    config=module.load_config(config),
+                    config_path=config,
+                    ci_policy_path="docs",
+                    required_job_values=[value.replace("clippy=skipped", "clippy=success") for value in required_values],
+                    conditional_job_values=["build.required=false", "build.result=skipped"],
+                    nextest_fingerprint=None,
+                    api_json=fake_api_json,
+                ),
+            )
 
 
 def assert_unknown_record_schema_fails() -> None:
@@ -975,46 +1128,50 @@ def assert_ci_policy_outputs_matrix() -> None:
             "ready_pr_edited_no_base": "noop",
             "ready_pr_reopened": "noop",
             "ready_for_review": "full",
+            "docs": "docs",
             "workflow_dispatch": "iteration",
             "workflow_dispatch_full_ci": "full",
             "main_push": "full",
             "merge_group": "full",
+            "mergify_temp_pr": "full",
             "tag": "tag_reuse",
             "unknown_event": "full",
         }
         gate_names = {
             "full": ("gate", "backtester-gate"),
             "tag_reuse": ("gate", "backtester-gate"),
-            "defer": ("gate-deferred", "backtester-gate-deferred"),
+            "docs": ("gate", "backtester-gate"),
+            "defer": ("gate", "backtester-gate"),
             "iteration": ("gate-iteration", "backtester-gate-iteration"),
-            "noop": ("gate-noop", "backtester-gate-noop"),
+            "noop": ("gate", "backtester-gate"),
             "workflow_dispatch_full_ci": ("gate-dispatch", "backtester-gate-dispatch"),
         }
         cases = [
-            ("push", "", "false", "false", "", "refs/heads/main", "full", "main_push"),
-            ("push", "", "false", "false", "true", "refs/heads/main", "full", "main_push"),
-            ("push", "", "false", "false", "", "refs/tags/v1.2.3", "tag_reuse", "tag"),
-            ("pull_request", "opened", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_opened"),
-            ("pull_request", "synchronize", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_synchronize"),
-            ("pull_request", "reopened", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_reopened"),
-            ("pull_request", "edited", "true", "false", "", "refs/pull/1/merge", "defer", "draft_pr_edited"),
-            ("pull_request", "converted_to_draft", "true", "false", "", "refs/pull/1/merge", "defer", "converted_to_draft"),
-            ("pull_request", "opened", "false", "false", "", "refs/pull/1/merge", "full", "ready_pr"),
-            ("pull_request", "edited", "false", "false", "", "refs/pull/1/merge", "noop", "ready_pr_edited_no_base"),
-            ("pull_request", "edited", "false", "true", "", "refs/pull/1/merge", "full", "ready_pr"),
-            ("pull_request", "reopened", "false", "false", "", "refs/pull/1/merge", "noop", "ready_pr_reopened"),
-            ("pull_request", "ready_for_review", "true", "false", "", "refs/pull/1/merge", "full", "ready_for_review"),
-            ("workflow_dispatch", "", "true", "false", "true", "refs/heads/codex/branch", "full", "workflow_dispatch_full_ci"),
-            ("workflow_dispatch", "", "true", "false", "false", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", "", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", "TRUE", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", " true ", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", "1", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
-            ("workflow_dispatch", "", "true", "false", "yes", "refs/heads/codex/branch", "iteration", "workflow_dispatch"),
-            ("merge_group", "checks_requested", "false", "false", "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "full", "merge_group"),
-            ("unknown_event", "", "true", "false", "", "refs/heads/codex/branch", "full", "unknown_event"),
+            ("push", "", "false", "false", "", "refs/heads/main", "false", "full", "main_push"),
+            ("push", "", "false", "false", "true", "refs/heads/main", "false", "full", "main_push"),
+            ("push", "", "false", "false", "", "refs/tags/v1.2.3", "false", "tag_reuse", "tag"),
+            ("pull_request", "opened", "true", "false", "", "refs/pull/1/merge", "false", "defer", "draft_pr_opened"),
+            ("pull_request", "synchronize", "true", "false", "", "refs/pull/1/merge", "false", "defer", "draft_pr_synchronize"),
+            ("pull_request", "reopened", "true", "false", "", "refs/pull/1/merge", "false", "defer", "draft_pr_reopened"),
+            ("pull_request", "edited", "true", "false", "", "refs/pull/1/merge", "false", "defer", "draft_pr_edited"),
+            ("pull_request", "converted_to_draft", "true", "false", "", "refs/pull/1/merge", "false", "defer", "converted_to_draft"),
+            ("pull_request", "opened", "false", "false", "", "refs/pull/1/merge", "false", "full", "ready_pr"),
+            ("pull_request", "opened", "false", "false", "", "refs/pull/1/merge", "true", "docs", "docs"),
+            ("pull_request", "edited", "false", "false", "", "refs/pull/1/merge", "true", "noop", "ready_pr_edited_no_base"),
+            ("pull_request", "edited", "false", "true", "", "refs/pull/1/merge", "true", "docs", "docs"),
+            ("pull_request", "reopened", "false", "false", "", "refs/pull/1/merge", "false", "noop", "ready_pr_reopened"),
+            ("pull_request", "ready_for_review", "false", "false", "", "refs/pull/1/merge", "true", "docs", "docs"),
+            ("workflow_dispatch", "", "true", "false", "true", "refs/heads/codex/branch", "true", "full", "workflow_dispatch_full_ci"),
+            ("workflow_dispatch", "", "true", "false", "false", "refs/heads/codex/branch", "true", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", "", "refs/heads/codex/branch", "true", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", "TRUE", "refs/heads/codex/branch", "false", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", " true ", "refs/heads/codex/branch", "false", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", "1", "refs/heads/codex/branch", "false", "iteration", "workflow_dispatch"),
+            ("workflow_dispatch", "", "true", "false", "yes", "refs/heads/codex/branch", "false", "iteration", "workflow_dispatch"),
+            ("merge_group", "checks_requested", "false", "false", "", "refs/heads/gh-readonly-queue/main/pr-1-deadbeef", "true", "full", "merge_group"),
+            ("unknown_event", "", "true", "false", "", "refs/heads/codex/branch", "true", "full", "unknown_event"),
         ]
-        for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref, expected, reason in cases:
+        for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref, docs_only, expected, reason in cases:
             code, stdout, stderr = run_cli(
                 [
                     "ci-policy",
@@ -1026,10 +1183,14 @@ def assert_ci_policy_outputs_matrix() -> None:
                     action,
                     "--pull-request-draft",
                     draft,
+                    "--pull-request-head-ref",
+                    "",
                     "--pull-request-base-changed",
                     base_changed,
                     "--workflow-dispatch-full-ci",
                     workflow_dispatch_full_ci,
+                    "--docs-only",
+                    docs_only,
                     "--ref",
                     ref,
                 ]
@@ -1055,10 +1216,98 @@ def assert_ci_policy_outputs_matrix() -> None:
                 raise AssertionError(
                     f"ci-policy must expose backtester_gate_name {expected_backtester_gate}: {output}"
                 )
-            if output.get("is_mergify_temp_pr") != "false":
-                raise AssertionError(f"ci-policy must expose is_mergify_temp_pr=false: {output}")
             if output.get("ignore_emit_failure") != "false":
                 raise AssertionError(f"ci-policy must expose ignore_emit_failure: {output}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "opened",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "mergify/merge-queue/83d4b0be7e",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--docs-only",
+                "false",
+                "--ref",
+                "refs/pull/965/merge",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"Mergify ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if (
+            output.get("ci_policy_path") != "full"
+            or output.get("gate_name") != "gate"
+            or output.get("backtester_gate_name") != "backtester-gate"
+            or output.get("expected_event_class") != "full"
+            or output.get("reason") != "mergify_temp_pr"
+        ):
+            raise AssertionError(f"Mergify temp PR must resolve to required full CI: {output}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "synchronize",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "mergify/merge-queue/83d4b0be7e",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--docs-only",
+                "true",
+                "--ref",
+                "refs/pull/965/merge",
+            ]
+        )
+        if code != 0:
+            raise AssertionError(f"Mergify docs-only ci-policy failed: {stderr}")
+        output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+        if output.get("ci_policy_path") != "full" or output.get("reason") != "mergify_temp_pr":
+            raise AssertionError(f"Mergify temp PR docs-only hint must not bypass full CI: {output}")
+
+        code, stdout, stderr = run_cli(
+            [
+                "ci-policy",
+                "--config",
+                str(config),
+                "--event-name",
+                "pull_request",
+                "--event-action",
+                "ready_for_review",
+                "--pull-request-draft",
+                "true",
+                "--pull-request-head-ref",
+                "",
+                "--pull-request-base-changed",
+                "false",
+                "--workflow-dispatch-full-ci",
+                "",
+                "--docs-only",
+                "true",
+                "--ref",
+                "refs/pull/1/merge",
+            ]
+        )
+        if code == 0 or "ready_for_review cannot be on a draft PR" not in stderr:
+            raise AssertionError(f"ready_for_review draft event must fail closed, got {code=} {stdout=} {stderr=}")
 
         force_config = write_config(
             pathlib.Path(tmp),
@@ -1076,10 +1325,14 @@ def assert_ci_policy_outputs_matrix() -> None:
                 "synchronize",
                 "--pull-request-draft",
                 "true",
+                "--pull-request-head-ref",
+                "",
                 "--pull-request-base-changed",
                 "false",
                 "--workflow-dispatch-full-ci",
                 "",
+                "--docs-only",
+                "true",
                 "--ref",
                 "refs/pull/1/merge",
             ]
@@ -1095,32 +1348,53 @@ def assert_ci_policy_outputs_matrix() -> None:
             raise AssertionError(f"force_full_ci must publish full event class, got {output}")
 
 
-def legacy_workflow_gate_names(
-    *,
-    event_name: str,
-    action: str,
-    pull_request_draft: bool,
-    pull_request_base_changed: bool,
-    workflow_dispatch_full_ci: str,
-) -> tuple[str, str]:
-    deferred_actions = {"opened", "synchronize", "reopened", "converted_to_draft", "edited"}
-    if event_name == "pull_request" and pull_request_draft and action in deferred_actions:
-        return "gate-deferred", "backtester-gate-deferred"
-    ready_noop = (
-        event_name == "pull_request"
-        and not pull_request_draft
-        and (action == "reopened" or (action == "edited" and not pull_request_base_changed))
-    )
-    if ready_noop:
-        return "gate-noop", "backtester-gate-noop"
-    if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
-        return "gate", "backtester-gate"
-    if event_name == "workflow_dispatch":
-        return "gate-iteration", "backtester-gate-iteration"
-    return "gate", "backtester-gate"
+def assert_ready_noop_rows_emit_full_event_class_when_configured_full() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace('ready_pr_edited_no_base = "noop"', 'ready_pr_edited_no_base = "full"').replace(
+                'ready_pr_reopened = "noop"', 'ready_pr_reopened = "full"'
+            ),
+        )
+        for action, reason in (
+            ("edited", "ready_pr_edited_no_base"),
+            ("reopened", "ready_pr_reopened"),
+        ):
+            code, stdout, stderr = run_cli(
+                [
+                    "ci-policy",
+                    "--config",
+                    str(config),
+                    "--event-name",
+                    "pull_request",
+                    "--event-action",
+                    action,
+                    "--pull-request-draft",
+                    "false",
+                    "--pull-request-head-ref",
+                    "",
+                    "--pull-request-base-changed",
+                    "false",
+                    "--workflow-dispatch-full-ci",
+                    "",
+                    "--docs-only",
+                    "false",
+                    "--ref",
+                    "refs/pull/1/merge",
+                ]
+            )
+            if code != 0:
+                raise AssertionError(f"ci-policy failed for configured full {reason}: {stderr}")
+            output = dict(line.split("=", 1) for line in stdout.splitlines() if "=" in line)
+            if output.get("reason") != reason:
+                raise AssertionError(f"ci-policy must expose reason {reason}: {output}")
+            if output.get("ci_policy_path") != "full":
+                raise AssertionError(f"ci-policy must honor configured full for {reason}: {output}")
+            if output.get("expected_event_class") != "full":
+                raise AssertionError(f"configured full {reason} must emit full event class: {output}")
 
 
-def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() -> None:
+def assert_ci_policy_gate_names_are_event_based() -> None:
     module = load_script()
     with tempfile.TemporaryDirectory() as tmp:
         config = module.load_config(write_config(pathlib.Path(tmp), CONFIG_TOML))
@@ -1146,42 +1420,53 @@ def assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full() ->
             for base_changed in (False, True):
                 cases.append(("pull_request", action, draft, base_changed, "", "refs/pull/1/merge"))
 
-    saw_intentional_dispatch_flip = False
+    saw_dispatch_full = saw_dispatch_iteration = saw_pr_defer = saw_pr_noop = False
     for event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref in cases:
+        if event_name == "pull_request" and action == "ready_for_review" and draft:
+            assert_raises(
+                "ready_for_review cannot be on a draft PR",
+                lambda: module.evaluate_ci_policy(
+                    config,
+                    event_name=event_name,
+                    event_action=action,
+                    pull_request_draft=draft,
+                    pull_request_head_ref="",
+                    pull_request_base_changed=base_changed,
+                    workflow_dispatch_full_ci=workflow_dispatch_full_ci,
+                    ref=ref,
+                ),
+            )
+            continue
         result = module.evaluate_ci_policy(
             config,
             event_name=event_name,
             event_action=action,
             pull_request_draft=draft,
+            pull_request_head_ref="",
             pull_request_base_changed=base_changed,
             workflow_dispatch_full_ci=workflow_dispatch_full_ci,
             ref=ref,
         )
-        legacy_gate, legacy_backtester_gate = legacy_workflow_gate_names(
-            event_name=event_name,
-            action=action,
-            pull_request_draft=draft,
-            pull_request_base_changed=base_changed,
-            workflow_dispatch_full_ci=workflow_dispatch_full_ci,
-        )
         case_label = (event_name, action, draft, base_changed, workflow_dispatch_full_ci, ref)
-        if event_name == "workflow_dispatch" and workflow_dispatch_full_ci == "true":
-            saw_intentional_dispatch_flip = True
-            if (legacy_gate, legacy_backtester_gate) != ("gate", "backtester-gate"):
-                raise AssertionError(f"legacy dispatch full snapshot must publish required gates: {case_label}")
-            if (result.gate_name, result.backtester_gate_name) != (
-                "gate-dispatch",
-                "backtester-gate-dispatch",
-            ):
-                raise AssertionError(f"dispatch full must flip to non-required gate names: {case_label} {result}")
+        if event_name == "workflow_dispatch":
+            if workflow_dispatch_full_ci == "true":
+                saw_dispatch_full = True
+                expected_names = ("gate-dispatch", "backtester-gate-dispatch")
+            else:
+                saw_dispatch_iteration = True
+                expected_names = ("gate-iteration", "backtester-gate-iteration")
+            if (result.gate_name, result.backtester_gate_name) != expected_names:
+                raise AssertionError(f"workflow_dispatch must publish feedback-only names: {case_label} {result}")
             continue
-        if (result.gate_name, result.backtester_gate_name) != (legacy_gate, legacy_backtester_gate):
+        saw_pr_defer = saw_pr_defer or result.ci_policy_path == "defer"
+        saw_pr_noop = saw_pr_noop or result.ci_policy_path == "noop"
+        if (result.gate_name, result.backtester_gate_name) != ("gate", "backtester-gate"):
             raise AssertionError(
-                f"resolver gate names drifted outside the intentional dispatch-full flip: "
-                f"{case_label} legacy={(legacy_gate, legacy_backtester_gate)} result={result}"
+                f"{event_name} must publish literal required gate names regardless of policy path: "
+                f"{case_label} result={result}"
             )
-    if not saw_intentional_dispatch_flip:
-        raise AssertionError("differential snapshot must exercise workflow_dispatch full_ci=true")
+    if not (saw_dispatch_full and saw_dispatch_iteration and saw_pr_defer and saw_pr_noop):
+        raise AssertionError("event-based naming matrix must exercise dispatch full/iteration and PR defer/noop")
 
 
 def assert_dispatch_run_names_come_from_config() -> None:
@@ -1230,21 +1515,21 @@ def assert_gate_names_reject_github_output_control_chars() -> None:
 def assert_gate_names_reject_collisions() -> None:
     module = load_script()
     cases = {
-        "ci_provenance.gate_names.gate_noop must not equal gate_iteration": CONFIG_TOML.replace(
-            'gate_noop = "gate-noop"',
-            'gate_noop = "gate-iteration"',
+        "ci_provenance.gate_names.gate_iteration must not equal gate_required": CONFIG_TOML.replace(
+            'gate_iteration = "gate-iteration"',
+            'gate_iteration = "gate"',
         ),
-        "ci_provenance.gate_names.backtester_noop must not equal backtester_iteration": CONFIG_TOML.replace(
-            'backtester_noop = "backtester-gate-noop"',
-            'backtester_noop = "backtester-gate-iteration"',
+        "ci_provenance.gate_names.backtester_iteration must not equal backtester_required": CONFIG_TOML.replace(
+            'backtester_iteration = "backtester-gate-iteration"',
+            'backtester_iteration = "backtester-gate"',
         ),
-        "ci_provenance.gate_names.gate_noop must not equal backtester_required": CONFIG_TOML.replace(
-            'gate_noop = "gate-noop"',
-            'gate_noop = "backtester-gate"',
+        "ci_provenance.gate_names.gate_dispatch_full must not equal gate_required": CONFIG_TOML.replace(
+            'gate_dispatch_full = "gate-dispatch"',
+            'gate_dispatch_full = "gate"',
         ),
-        "ci_provenance.gate_names.backtester_noop must not equal gate_required": CONFIG_TOML.replace(
-            'backtester_noop = "backtester-gate-noop"',
-            'backtester_noop = "gate"',
+        "ci_provenance.gate_names.backtester_dispatch_full must not equal backtester_required": CONFIG_TOML.replace(
+            'backtester_dispatch_full = "backtester-gate-dispatch"',
+            'backtester_dispatch_full = "backtester-gate"',
         ),
     }
     for fragment, config_text in cases.items():
@@ -1278,9 +1563,13 @@ def assert_policy_contract_rejects_required_gate_holes() -> None:
             'ready_pr = "full"',
             'ready_pr = "iteration"',
         ),
+        "ci_provenance.policy.docs must be docs": CONFIG_TOML.replace(
+            'docs = "docs"',
+            'docs = "full"',
+        ),
         "ci_provenance.policy has unexpected keys": CONFIG_TOML.replace(
-            "[ci_provenance.policy.override]",
-            'synthetic_new = "full"\n\n[ci_provenance.policy.override]',
+            "\n[ci_provenance.mergify]",
+            '\nsynthetic_new = "full"\n\n[ci_provenance.mergify]',
         ),
     }
     for fragment, config_text in cases.items():
@@ -1871,10 +2160,1123 @@ def assert_test_archive_and_build_rules() -> None:
         )
 
 
+def pull_request_record(module, config_path: pathlib.Path, *, base_sha: str = "1" * 40) -> dict[str, object]:
+    record = valid_record(module, config_path)
+    record.update(
+        {
+            "event": "pull_request",
+            "head_branch": "feature",
+            "tested_sha": OTHER_SHA,
+            "pull_request": {"number": 960, "base_sha": base_sha},
+        }
+    )
+    return record
+
+
+def assert_gate_carry_forward_requires_same_base_pr_provenance() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        prior_run = run_payload(
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[prior_run]],
+            jobs_by_run_id={RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]}},
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        result = module.resolve_gate_carry_forward(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            requested_sha=SHA,
+            base_sha="1" * 40,
+            current_run_id=RUN_ID + 1,
+            gate_name="gate",
+            workflow_path=".github/workflows/ci.yml",
+            config=module.load_config(config),
+            config_path=config,
+            require_provenance_base=True,
+            api_json=fake.json,
+            api_bytes=fake.bytes,
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        )
+        if result.source_run_id != str(RUN_ID) or not result.carry_forward_verified:
+            raise AssertionError(result)
+
+        assert_raises(
+            "base_sha does not match current PR base",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="2" * 40,
+                current_run_id=RUN_ID + 1,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_refuses_when_newest_same_sha_run_failed() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        older_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        newer_failure = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:20:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[newer_failure, older_success]],
+            jobs_by_run_id={RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]}},
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        older_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        newer_running = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="in_progress",
+            conclusion=None,
+            updated_at="2026-06-13T00:20:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[newer_running, older_success]],
+            jobs_by_run_id={RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]}},
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_uses_newest_success_with_provenance() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 1"),
+        )
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        older_provenance_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        intervening_older_failure = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:15:00Z",
+        )
+        newer_carry_forward_success = run_payload(
+            id=RUN_ID + 2,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:20:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[newer_carry_forward_success], [intervening_older_failure, older_provenance_success]],
+            jobs_by_run_id={
+                RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]},
+                RUN_ID + 2: {"jobs": [job_payload("gate")]},
+            },
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        result = module.resolve_gate_carry_forward(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            requested_sha=SHA,
+            base_sha="1" * 40,
+            current_run_id=RUN_ID + 3,
+            gate_name="gate",
+            workflow_path=".github/workflows/ci.yml",
+            config=module.load_config(config),
+            config_path=config,
+            require_provenance_base=True,
+            api_json=fake.json,
+            api_bytes=fake.bytes,
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        )
+        if result.source_run_id != str(RUN_ID) or not result.carry_forward_verified:
+            raise AssertionError(result)
+
+
+def assert_gate_carry_forward_newest_failure_blocks_across_pages() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 1"),
+        )
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        older_provenance_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:00:00Z",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        newer_updated_failure_on_later_page = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            created_at="2026-06-13T00:01:00Z",
+            updated_at="2026-06-13T00:30:00Z",
+        )
+        newer_created_success_without_provenance = run_payload(
+            id=RUN_ID + 2,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:02:00Z",
+            updated_at="2026-06-13T00:20:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[
+                [newer_created_success_without_provenance],
+                [newer_updated_failure_on_later_page],
+                [older_provenance_success],
+            ],
+            jobs_by_run_id={
+                RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]},
+                RUN_ID + 2: {"jobs": [*required_job_payloads(), job_payload("gate")]},
+            },
+            artifacts_by_run_id={
+                RUN_ID: {"artifacts": [provenance_artifact(run_id=RUN_ID)]},
+                RUN_ID + 2: {"artifacts": []},
+            },
+            records_by_artifact_id={123: record},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 3,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:40:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_refuses_page_cap_without_natural_boundary() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 1").replace(
+                "max_lookback_pages = 10", "max_lookback_pages = 2"
+            ),
+        )
+        same_sha_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        full_page_filler = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/other.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:11:00Z",
+        )
+        hidden_same_sha_failure = run_payload(
+            id=RUN_ID + 2,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:12:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[same_sha_success], [full_page_filler], [hidden_same_sha_failure]],
+            jobs_by_run_id={RUN_ID: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "lookback page limit exhausted before candidate evidence was found",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 3,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_failure_tie() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        success = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        tied_failure = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        newer_failure = dict(tied_failure)
+        newer_failure["updated_at"] = "2026-06-13T00:10:01Z"
+
+        control = FakeGitHub(
+            runs_pages=[[success, newer_failure]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=control.json,
+                api_bytes=control.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+        tied = FakeGitHub(
+            runs_pages=[[success, tied_failure]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=tied.json,
+                api_bytes=tied.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_non_completed_tie(status: str) -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        success = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        tied_non_completed = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status=status,
+            conclusion=None,
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[success, tied_non_completed]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_in_progress_tie() -> None:
+    assert_gate_carry_forward_blocks_equal_updated_at_non_completed_tie("in_progress")
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_queued_tie() -> None:
+    assert_gate_carry_forward_blocks_equal_updated_at_non_completed_tie("queued")
+
+
+def assert_gate_carry_forward_blocks_equal_updated_at_waiting_tie() -> None:
+    assert_gate_carry_forward_blocks_equal_updated_at_non_completed_tie("waiting")
+
+
+def assert_gate_carry_forward_blocks_old_created_equal_updated_at_non_completed_ties() -> None:
+    module = load_script()
+    for status in ("in_progress", "queued", "waiting"):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = write_config(pathlib.Path(tmp))
+            success = run_payload(
+                id=RUN_ID + 1,
+                event="pull_request",
+                head_branch="feature",
+                head_sha=SHA,
+                path=".github/workflows/ci.yml",
+                status="completed",
+                conclusion="success",
+                created_at="2026-06-13T00:00:00Z",
+                updated_at="2026-06-29T00:00:00Z",
+            )
+            old_non_completed = run_payload(
+                id=RUN_ID,
+                event="pull_request",
+                head_branch="feature",
+                head_sha=SHA,
+                path=".github/workflows/ci.yml",
+                status=status,
+                conclusion=None,
+                created_at="2026-05-01T00:00:00Z",
+                updated_at="2026-06-29T00:00:00Z",
+            )
+            fake = FakeGitHub(
+                runs_pages=[[success, old_non_completed]],
+                jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+            )
+            assert_raises(
+                "newest same-SHA carry-forward run",
+                lambda: module.resolve_gate_carry_forward(
+                    repo="seungpyoson/bolt-v2",
+                    token="token",
+                    requested_sha=SHA,
+                    base_sha="1" * 40,
+                    current_run_id=RUN_ID + 2,
+                    gate_name="gate",
+                    workflow_path=".github/workflows/ci.yml",
+                    config=module.load_config(config),
+                    config_path=config,
+                    require_provenance_base=False,
+                    api_json=fake.json,
+                    api_bytes=fake.bytes,
+                    now=module.parse_timestamp("2026-06-30T00:00:00Z"),
+                ),
+            )
+
+
+def assert_gate_carry_forward_blocks_old_created_strictly_newer_in_progress() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        success = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:00:00Z",
+            updated_at="2026-06-29T00:00:00Z",
+        )
+        old_in_progress = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="in_progress",
+            conclusion=None,
+            created_at="2026-05-01T00:00:00Z",
+            updated_at="2026-06-29T00:00:01Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[success, old_in_progress]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=False,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-30T00:00:00Z"),
+            ),
+        )
+
+
+def assert_gate_carry_forward_newer_success_supersedes_older_failure() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        older_failure = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        newer_success = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            updated_at="2026-06-13T00:20:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[newer_success, older_failure]],
+            jobs_by_run_id={RUN_ID + 1: {"jobs": [job_payload("gate")]}},
+        )
+        result = module.resolve_gate_carry_forward(
+            repo="seungpyoson/bolt-v2",
+            token="token",
+            requested_sha=SHA,
+            base_sha="1" * 40,
+            current_run_id=RUN_ID + 2,
+            gate_name="gate",
+            workflow_path=".github/workflows/ci.yml",
+            config=module.load_config(config),
+            config_path=config,
+            require_provenance_base=False,
+            api_json=fake.json,
+            api_bytes=fake.bytes,
+            now=module.parse_timestamp("2026-06-13T00:30:00Z"),
+        )
+        if result.source_run_id != str(RUN_ID + 1) or not result.carry_forward_verified:
+            raise AssertionError(result)
+
+
+def assert_gate_carry_forward_blocks_failure_hidden_behind_all_old_page() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(
+            pathlib.Path(tmp),
+            CONFIG_TOML.replace("workflow_runs_per_page = 100", "workflow_runs_per_page = 2"),
+        )
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        fresh_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:00:00Z",
+            updated_at="2026-06-13T00:10:00Z",
+        )
+        fresh_filler = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/other.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-13T00:01:00Z",
+            updated_at="2026-06-13T00:11:00Z",
+        )
+        old_success_a = run_payload(
+            id=RUN_ID + 2,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-05-01T00:00:00Z",
+            updated_at="2026-05-01T00:00:00Z",
+        )
+        old_success_b = run_payload(
+            id=RUN_ID + 3,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-05-01T00:01:00Z",
+            updated_at="2026-05-01T00:01:00Z",
+        )
+        old_failure_rerun_after_old_page = run_payload(
+            id=RUN_ID + 4,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            created_at="2026-05-01T00:02:00Z",
+            updated_at="2026-06-29T00:00:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[
+                [fresh_success, fresh_filler],
+                [old_success_a, old_success_b],
+                [old_failure_rerun_after_old_page],
+            ],
+            jobs_by_run_id={RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]}},
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 5,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-30T00:00:00Z"),
+            ),
+        )
+
+
+def base_ci_gate_jobs(**overrides: str) -> dict[str, str]:
+    jobs = {
+        "ci-policy": "success",
+        "detector": "success",
+        "deny": "success",
+        "clippy": "success",
+        "check-aarch64": "success",
+        "source-fence": "success",
+        "nextest-fingerprint": "success",
+        "test-archive": "success",
+        "nextest-fingerprint-reuse": "skipped",
+        "test": "success",
+        "build": "success",
+        "ci-provenance-emit": "success",
+        "same-sha-main-evidence": "skipped",
+    }
+    jobs.update(overrides)
+    return jobs
+
+
+def assert_gate_carry_forward_blocks_old_failure_rerun_after_cutoff() -> None:
+    module = load_script()
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp))
+        record = pull_request_record(module, config, base_sha="1" * 40)
+        within_window_success = run_payload(
+            id=RUN_ID,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="success",
+            created_at="2026-06-10T00:00:00Z",
+            updated_at="2026-06-10T00:00:00Z",
+        )
+        # Original run for this SHA: created before the lookback window opened
+        # but re-run to failure recently, so it is the newest activity by
+        # updated_at. Its failure must still dominate the within-window success.
+        old_failure_rerun = run_payload(
+            id=RUN_ID + 1,
+            event="pull_request",
+            head_branch="feature",
+            head_sha=SHA,
+            path=".github/workflows/ci.yml",
+            status="completed",
+            conclusion="failure",
+            created_at="2026-05-01T00:00:00Z",
+            updated_at="2026-06-29T00:00:00Z",
+        )
+        fake = FakeGitHub(
+            runs_pages=[[within_window_success, old_failure_rerun]],
+            jobs_by_run_id={RUN_ID: {"jobs": [*required_job_payloads(), job_payload("gate")]}},
+            artifacts_by_run_id={RUN_ID: {"artifacts": [provenance_artifact()]}},
+            records_by_artifact_id={123: record},
+        )
+        assert_raises(
+            "newest same-SHA carry-forward run",
+            lambda: module.resolve_gate_carry_forward(
+                repo="seungpyoson/bolt-v2",
+                token="token",
+                requested_sha=SHA,
+                base_sha="1" * 40,
+                current_run_id=RUN_ID + 2,
+                gate_name="gate",
+                workflow_path=".github/workflows/ci.yml",
+                config=module.load_config(config),
+                config_path=config,
+                require_provenance_base=True,
+                api_json=fake.json,
+                api_bytes=fake.bytes,
+                now=module.parse_timestamp("2026-06-30T00:00:00Z"),
+            ),
+        )
+
+
+def assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof() -> None:
+    module = load_script()
+    skipped_heavy = base_ci_gate_jobs(
+        deny="skipped",
+        clippy="skipped",
+        **{
+            "check-aarch64": "skipped",
+            "source-fence": "skipped",
+            "nextest-fingerprint": "skipped",
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "skipped",
+            "test": "skipped",
+            "build": "skipped",
+        },
+    )
+    assert_raises(
+        "verified carry-forward",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="noop",
+            expected_event_class="noop",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results={**skipped_heavy, "ci-provenance-emit": "skipped"},
+            build_required=False,
+        ),
+    )
+    module.evaluate_ci_gate_verdict(
+        policy_path="noop",
+        expected_event_class="noop",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        carry_forward_verified=True,
+        job_results={**skipped_heavy, "ci-provenance-emit": "skipped"},
+        build_required=False,
+    )
+    module.evaluate_ci_gate_verdict(
+        policy_path="docs",
+        expected_event_class="docs",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        carry_forward_verified=False,
+        job_results=skipped_heavy,
+        build_required=False,
+    )
+    assert_raises(
+        "clippy unexpectedly ran during docs",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="docs",
+            expected_event_class="docs",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results={**skipped_heavy, "clippy": "failure"},
+            build_required=False,
+        ),
+    )
+
+
+def assert_ci_gate_verdict_hardens_full_and_reuse_proof() -> None:
+    module = load_script()
+    full_jobs = base_ci_gate_jobs()
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=False,
+        carry_forward_verified=False,
+        job_results=full_jobs,
+        build_required=True,
+    )
+    assert_raises(
+        "test-archive did not succeed",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results={**full_jobs, "test-archive": "skipped"},
+            build_required=True,
+        ),
+    )
+    reuse_jobs = base_ci_gate_jobs(
+        **{
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "success",
+            "ci-provenance-emit": "skipped",
+        }
+    )
+    module.evaluate_ci_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        ignore_emit_failure=False,
+        reuse_found=True,
+        carry_forward_verified=False,
+        job_results=reuse_jobs,
+        build_required=True,
+    )
+    assert_raises(
+        "nextest fingerprint did not succeed during reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            carry_forward_verified=False,
+            job_results={**reuse_jobs, "nextest-fingerprint": "failure"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "test-archive unexpectedly ran during nextest fingerprint reuse",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=True,
+            carry_forward_verified=False,
+            job_results={**reuse_jobs, "test-archive": "success"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "ignore_emit_failure cannot satisfy the required gate",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=True,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results={**full_jobs, "ci-provenance-emit": "failure"},
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "full CI policy outside resolver-permitted event class",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="iteration",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=full_jobs,
+            build_required=True,
+        ),
+    )
+    assert_raises(
+        "full_ci_deferred must match policy_path",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="full",
+            expected_event_class="full",
+            full_ci_deferred=True,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=full_jobs,
+            build_required=True,
+        ),
+    )
+    tag_jobs = base_ci_gate_jobs(
+        deny="skipped",
+        clippy="skipped",
+        **{
+            "source-fence": "skipped",
+            "nextest-fingerprint": "skipped",
+            "test-archive": "skipped",
+            "nextest-fingerprint-reuse": "skipped",
+            "test": "skipped",
+            "build": "skipped",
+            "ci-provenance-emit": "skipped",
+            "same-sha-main-evidence": "success",
+        },
+    )
+    assert_raises(
+        "tag reuse CI policy outside resolver-permitted event class",
+        lambda: module.evaluate_ci_gate_verdict(
+            policy_path="tag_reuse",
+            expected_event_class="full",
+            full_ci_deferred=False,
+            ignore_emit_failure=False,
+            reuse_found=False,
+            carry_forward_verified=False,
+            job_results=tag_jobs,
+            build_required=False,
+        ),
+    )
+    assert_raises(
+        "duplicate --job result for test",
+        lambda: module.parse_job_result_values(["test=success", "test=failure"]),
+    )
+    assert_raises(
+        "missing-lane missing or not skipped during test path",
+        lambda: module.require_jobs_skipped({}, ("missing-lane",), "test path"),
+    )
+
+
+def assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes() -> None:
+    module = load_script()
+    skipped_jobs = {
+        "ci-policy": "success",
+        "detect": "success",
+        "fmt": "skipped",
+        "clippy": "skipped",
+        "test-archive": "skipped",
+        "test": "skipped",
+    }
+    module.evaluate_backtester_gate_verdict(
+        policy_path="full",
+        expected_event_class="full",
+        full_ci_deferred=False,
+        job_results=skipped_jobs,
+        bvs_changed=False,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="defer",
+        expected_event_class="defer",
+        full_ci_deferred=True,
+        job_results=skipped_jobs,
+        bvs_changed=False,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="noop",
+        expected_event_class="noop",
+        full_ci_deferred=False,
+        job_results=skipped_jobs,
+        bvs_changed=False,
+    )
+    assert_raises(
+        "clippy unexpectedly ran during backtester no-crate",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="noop",
+            expected_event_class="noop",
+            full_ci_deferred=False,
+            job_results={**skipped_jobs, "clippy": "success"},
+            bvs_changed=False,
+        ),
+    )
+
+    proof_jobs = {
+        "ci-policy": "success",
+        "detect": "success",
+        "fmt": "success",
+        "clippy": "success",
+        "test-archive": "success",
+        "test": "success",
+    }
+    module.evaluate_backtester_gate_verdict(
+        policy_path="defer",
+        expected_event_class="defer",
+        full_ci_deferred=True,
+        job_results=proof_jobs,
+        bvs_changed=True,
+    )
+    module.evaluate_backtester_gate_verdict(
+        policy_path="noop",
+        expected_event_class="noop",
+        full_ci_deferred=False,
+        job_results=proof_jobs,
+        bvs_changed=True,
+    )
+    assert_raises(
+        "bvs-clippy did not succeed",
+        lambda: module.evaluate_backtester_gate_verdict(
+            policy_path="defer",
+            expected_event_class="defer",
+            full_ci_deferred=True,
+            job_results={**proof_jobs, "clippy": "skipped"},
+            bvs_changed=True,
+        ),
+    )
+
+
 def main() -> int:
     assert_unknown_mode_fails()
     assert_missing_config_table_fails()
     assert_emit_full_ci_records_nextest_fingerprint_argument()
+    assert_emit_full_ci_hashes_explicit_tested_workflow()
+    assert_emit_docs_ci_record_requires_skipped_heavy_jobs()
     assert_unknown_record_schema_fails()
     assert_fingerprint_reuse_prior_green_returns_reuse()
     assert_fingerprint_reuse_no_prior_run_returns_no_reuse()
@@ -1891,7 +3293,8 @@ def main() -> int:
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
     assert_ci_policy_outputs_matrix()
-    assert_ci_policy_gate_name_snapshot_matches_legacy_except_dispatch_full()
+    assert_ready_noop_rows_emit_full_event_class_when_configured_full()
+    assert_ci_policy_gate_names_are_event_based()
     assert_dispatch_run_names_come_from_config()
     assert_gate_names_reject_github_output_control_chars()
     assert_gate_names_reject_collisions()
@@ -1922,6 +3325,24 @@ def main() -> int:
     assert_job_evidence_success_passes()
     assert_nextest_archive_job_failures_rejected()
     assert_test_archive_and_build_rules()
+    assert_gate_carry_forward_requires_same_base_pr_provenance()
+    assert_gate_carry_forward_refuses_when_newest_same_sha_run_failed()
+    assert_gate_carry_forward_refuses_when_newest_same_sha_run_in_progress()
+    assert_gate_carry_forward_uses_newest_success_with_provenance()
+    assert_gate_carry_forward_newest_failure_blocks_across_pages()
+    assert_gate_carry_forward_refuses_page_cap_without_natural_boundary()
+    assert_gate_carry_forward_blocks_equal_updated_at_failure_tie()
+    assert_gate_carry_forward_blocks_equal_updated_at_in_progress_tie()
+    assert_gate_carry_forward_blocks_equal_updated_at_queued_tie()
+    assert_gate_carry_forward_blocks_equal_updated_at_waiting_tie()
+    assert_gate_carry_forward_blocks_old_created_equal_updated_at_non_completed_ties()
+    assert_gate_carry_forward_blocks_old_created_strictly_newer_in_progress()
+    assert_gate_carry_forward_newer_success_supersedes_older_failure()
+    assert_gate_carry_forward_blocks_failure_hidden_behind_all_old_page()
+    assert_gate_carry_forward_blocks_old_failure_rerun_after_cutoff()
+    assert_ci_gate_verdict_requires_real_docs_or_carry_forward_proof()
+    assert_ci_gate_verdict_hardens_full_and_reuse_proof()
+    assert_backtester_gate_verdict_recomputes_noop_and_defer_for_crate_changes()
     print("OK: CI provenance self-tests passed.")
     return 0
 

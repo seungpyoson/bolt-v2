@@ -934,12 +934,11 @@ mod tests {
     use crate::{
         bolt_v3_decision_evidence::{
             BoltV3AdmissionDecisionEvidence, BoltV3BasketAdmissionDecisionEvidence,
-            BoltV3DecisionEvidenceWriter, BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence,
-            BoltV3ExitEvaluationEvidence, BoltV3LossGovernorHaltEvidence,
-            BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
-            BoltV3PositionSizerRebuildAuditEvidence, BoltV3RequoteThrottleEvidence,
-            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitReservationFillEvidence,
-            BoltV3SubmitReservationMetadataEvidence,
+            BoltV3CapitalAdmissionRebuildAuditEvidence, BoltV3DecisionEvidenceWriter,
+            BoltV3EntrySkipEvidence, BoltV3ExitDecisionEvidence, BoltV3ExitEvaluationEvidence,
+            BoltV3LossGovernorHaltEvidence, BoltV3OrderIntentEvidence, BoltV3OrderRejectEvidence,
+            BoltV3RequoteThrottleEvidence, BoltV3StrategyInputEvidenceSnapshot,
+            BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
         },
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
@@ -1039,9 +1038,9 @@ mod tests {
             Ok(())
         }
 
-        fn record_position_sizer_rebuild_audit(
+        fn record_capital_admission_rebuild_audit(
             &self,
-            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+            _audit: &BoltV3CapitalAdmissionRebuildAuditEvidence,
         ) -> Result<()> {
             Ok(())
         }

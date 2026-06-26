@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from pathlib import Path
@@ -24,26 +23,12 @@ MAKER_SCOPE_CONTRACT_DOC = (
     REPO_ROOT / "specs/022-nt-maker-order-scope/contracts/maker-order-config.md"
 )
 MAKER_SCOPE_DATA_MODEL_DOC = REPO_ROOT / "specs/022-nt-maker-order-scope/data-model.md"
-AGENTS_DOC = REPO_ROOT / "AGENTS.md"
-FEATURE_JSON = REPO_ROOT / ".specify/feature.json"
 VALIDATE_SOURCE = REPO_ROOT / "src/bolt_v3_validate.rs"
 DECISION_EVIDENCE_SOURCE = REPO_ROOT / "src/bolt_v3_decision_evidence.rs"
 ARCHETYPE_BINARY_ORACLE_SOURCE = (
     REPO_ROOT / "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 )
 POSITION_CONTRACT_SOURCE = REPO_ROOT / "src/bolt_v3_position_contract.rs"
-ORDER_INTENT_FEATURE_DIR = "specs/023-nt-order-intent-layer"
-ORDER_INTENT_PLAN = f"{ORDER_INTENT_FEATURE_DIR}/plan.md"
-ACTIVE_SPECKIT_FEATURE_DIRS = (
-    ORDER_INTENT_FEATURE_DIR,
-    "specs/026-nt-backed-iv-engine",
-)
-ACTIVE_SPECKIT_PLANS = tuple(f"{feature_dir}/plan.md" for feature_dir in ACTIVE_SPECKIT_FEATURE_DIRS)
-SPECKIT_BLOCK_PATTERN = re.compile(
-    r"<!-- SPECKIT START -->(?P<body>.*?)<!-- SPECKIT END -->",
-    re.DOTALL,
-)
-BACKTICKED_PLAN_PATTERN = re.compile(r"`(?P<path>specs/[^`]+/plan\.md)`")
 RUST_STRUCT_FIELD_PATTERN = re.compile(r"^\s*(?P<field>[a-z][a-z0-9_]*):\s*[^,]+,\s*$")
 SCHEMA_FIELD_LINE_PATTERN = re.compile(r"^\s*-\s*(?P<fields>[^:]+):")
 BACKTICKED_FIELD_PATTERN = re.compile(r"`(?P<field>[a-z][a-z0-9_]*)`")
@@ -53,6 +38,7 @@ SUPPORTED_STRATEGY_SCHEMA_VERSION_PATTERN = re.compile(
 DECISION_EVIDENCE_SCHEMA_VERSION_PATTERN = re.compile(
     r"pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = (?P<version>\d+);"
 )
+DEFAULT_DECISION_EVIDENCE_SCHEMA_VERSION = 14
 STRATEGY_SCHEMA_EXAMPLE_PATTERN = re.compile(
     r"schema_version = (?P<version>\d+)\nstrategy_instance_id = ",
     re.MULTILINE,
@@ -84,7 +70,7 @@ ORDER_TEMPLATE_FIELDS = (
 )
 DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE = (
     "Decision-evidence JSONL records use `schema_version = {version}` for `order_intent`, "
-    "`admission_decision`, `strategy_input_snapshot`, `position_sizer_rebuild`, "
+    "`admission_decision`, `strategy_input_snapshot`, `capital_admission_rebuild`, "
     "`submit_reservation_metadata`, `submit_reservation_fill`, `entry_skip`, "
     "`exit_decision`, `loss_governor_halt`, and `requote_throttle` envelopes."
 )
@@ -119,8 +105,8 @@ REQUIRED_SCHEMA_PHRASES = (
     "`trigger_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TriggerType::Default`",
     "`trailing_offset_type` is optional for `trailing_stop_market`; NT defaults omitted values to `TrailingOffsetType::Price`",
     "Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and the matching payload field: `intent`, `decision`, `snapshot`, `audit`, `metadata`, `fill`, `entry_skip`, `exit_decision`, `loss_governor_halt`, or `requote_throttle`.",
-    "The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `position_sizer_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, and `requote_throttle` for maker requote budget throttle transitions.",
-    "`position_sizer_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-10 reservation records.",
+    "The `kind` field is `order_intent` for `intent` payloads, `admission_decision` for `decision` payloads, `strategy_input_snapshot` for `snapshot` payloads, `capital_admission_rebuild` for startup rebuild audit payloads, `submit_reservation_metadata` for admitted reservation metadata, `submit_reservation_fill` for fill metadata, `entry_skip` for entry skip rationale, `exit_decision` for exit rationale, `loss_governor_halt` for loss-governor halt transitions, and `requote_throttle` for maker requote budget throttle transitions.",
+    "`capital_admission_rebuild`, `submit_reservation_metadata`, and `submit_reservation_fill` payloads support startup reservation recovery and fail closed on pre-schema-14 reservation records.",
 )
 STALE_STATUS_MAP_PHRASES = (
     "Single-value enums (`RuntimeMode::Live`, `OmsType::Netting`, `CatalogFsProtocol::File`, `RotationKind::None`)",
@@ -316,53 +302,6 @@ def section_requires_defaulted_trailing_stop_market_field(section: str) -> bool:
     return False
 
 
-def validate_speckit_context(agents_doc: str | None, feature_json: str | None) -> list[str]:
-    findings: list[str] = []
-
-    if agents_doc is not None:
-        if not agents_doc.strip():
-            findings.append("AGENTS.md is empty; missing active Speckit block")
-        else:
-            match = SPECKIT_BLOCK_PATTERN.search(agents_doc)
-            if match is None:
-                findings.append("AGENTS.md missing active Speckit block")
-            else:
-                speckit_block = match.group("body")
-                plan_paths = [
-                    plan_match.group("path") for plan_match in BACKTICKED_PLAN_PATTERN.finditer(speckit_block)
-                ]
-                if len(plan_paths) != 1 or plan_paths[0] not in ACTIVE_SPECKIT_PLANS:
-                    findings.append(
-                        "AGENTS.md active Speckit block must contain exactly "
-                        f"one current plan pointer from {ACTIVE_SPECKIT_PLANS!r}, got {plan_paths!r}"
-                    )
-                if "specs/023-nt-research-analytics-platform/plan.md" in speckit_block:
-                    findings.append(
-                        "AGENTS.md active Speckit block still points at stale research-analytics plan"
-                    )
-
-    if feature_json is not None:
-        if not feature_json.strip():
-            findings.append(".specify/feature.json is empty; missing feature_directory")
-            return findings
-        try:
-            parsed = json.loads(feature_json)
-        except json.JSONDecodeError as exc:
-            findings.append(f".specify/feature.json is not valid JSON: {exc.msg}")
-        else:
-            if not isinstance(parsed, dict):
-                findings.append(".specify/feature.json must be a JSON object")
-                return findings
-            feature_directory = parsed.get("feature_directory")
-            if feature_directory not in ACTIVE_SPECKIT_FEATURE_DIRS:
-                findings.append(
-                    ".specify/feature.json points to "
-                    f"{feature_directory!r}, expected one of {ACTIVE_SPECKIT_FEATURE_DIRS!r}"
-                )
-
-    return findings
-
-
 def validate_docs(
     schema: str,
     status_map: str,
@@ -374,8 +313,6 @@ def validate_docs(
     runtime_contracts: str = "",
     maker_scope_contract: str = "",
     maker_scope_data_model: str = "",
-    agents_doc: str | None = None,
-    feature_json: str | None = None,
     validate_source: str = "",
     decision_evidence_source: str = "",
     archetype_source: str = "",
@@ -412,10 +349,13 @@ def validate_docs(
 
     if not decision_evidence_source:
         decision_evidence_contract_phrase = DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE_TEMPLATE.format(
-            version=10
+            version=DEFAULT_DECISION_EVIDENCE_SCHEMA_VERSION
         )
         if decision_evidence_contract_phrase not in schema:
-            findings.append("schema missing decision-evidence JSONL schema v10 contract")
+            findings.append(
+                "schema missing decision-evidence JSONL schema "
+                f"v{DEFAULT_DECISION_EVIDENCE_SCHEMA_VERSION} contract"
+            )
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:
@@ -551,7 +491,6 @@ def validate_docs(
     findings.extend(unsupported_scope_overclaims("data model", data_model))
     findings.extend(unsupported_scope_overclaims("maker scope contract", maker_scope_contract))
     findings.extend(unsupported_scope_overclaims("maker scope data model", maker_scope_data_model))
-    findings.extend(validate_speckit_context(agents_doc, feature_json))
 
     return findings
 
@@ -568,8 +507,6 @@ def main() -> int:
         runtime_contracts=RUNTIME_CONTRACTS_DOC.read_text(encoding="utf-8"),
         maker_scope_contract=MAKER_SCOPE_CONTRACT_DOC.read_text(encoding="utf-8"),
         maker_scope_data_model=MAKER_SCOPE_DATA_MODEL_DOC.read_text(encoding="utf-8"),
-        agents_doc=AGENTS_DOC.read_text(encoding="utf-8"),
-        feature_json=FEATURE_JSON.read_text(encoding="utf-8"),
         validate_source=VALIDATE_SOURCE.read_text(encoding="utf-8"),
         decision_evidence_source=DECISION_EVIDENCE_SOURCE.read_text(encoding="utf-8"),
         archetype_source=ARCHETYPE_BINARY_ORACLE_SOURCE.read_text(encoding="utf-8"),

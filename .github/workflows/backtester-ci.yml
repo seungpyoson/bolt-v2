@@ -16,22 +16,18 @@ name: Backtester CI
 # deploy lane here.
 #
 # ALWAYS-PRESENT GATE (no path-filter trap): the workflow has NO `on.*.paths` filter, so it
-# triggers on every pull_request to main and every push to main. That makes `backtester-gate` a
-# context that is ALWAYS reported — safe for the owner to mark required later without the GitHub
+# triggers on every pull_request to main, every push to main, and every
+# merge_group queue validation. That makes `backtester-gate` a context that is
+# ALWAYS reported — safe for the owner to mark required later without the GitHub
 # "frozen PR" problem (a path-filtered required check never reports on PRs that miss the path, so
 # the PR can never satisfy the rule). Crate-change detection moved INSIDE the workflow: the
 # `detect` job computes `bvs_changed`, the fmt/clippy/test lanes SKIP when the crate is untouched,
 # and `backtester-gate` concludes success as an explicit no-op on non-crate PRs.
 #
 # DRAFT COST GOVERNANCE: draft pull_request opened/synchronize/reopened/converted_to_draft/edited
-# events publish `backtester-gate-deferred` and defer the managed-heavy proof lanes. Only
-# `backtester-gate` is required-capable; `backtester-gate-deferred` and
-# `backtester-gate-iteration` are feedback-only and must not be marked required. Marking the PR ready or pushing
-# to main still runs full required backtester proof; workflow_dispatch full CI is feedback-only. `bvs-fmt` remains cheap draft feedback and reports as
-# its own check; the deferred gate does not fold draft formatting failures into required proof.
-# Moving a ready PR back to draft does not rewrite a prior same-SHA `backtester-gate` result; the
-# GitHub draft state plus the non-required deferred context is the safety boundary. Ready no-code
-# edits and ready reopen events likewise report only `backtester-gate-noop`.
+# events publish `backtester-gate` after recomputing proof lanes for crate-changing noop/defer
+# paths. `backtester-gate-iteration` is feedback-only and must not be marked required.
+# PRs that do not touch the crate still pass through the explicit no-crate proof.
 
 on:
   # Manual lane: GitHub Actions does not deliver pull_request events for PRs
@@ -50,24 +46,30 @@ on:
     # or base-ref changes (edited). Both can leave this always-reported check
     # unmet for a PR that ends up targeting main.
     # GitHub's edited event also fires on title/body edits. The policy resolver
-    # sends ready no-code edits to backtester-gate-noop while keeping base-ref
+    # sends ready no-code edits through verified carry-forward while keeping base-ref
     # edits on the full, cancelling proof path.
-    # If main advances after the last full proof, backtester-gate-noop preserves
-    # the prior head-SHA gate conclusion instead of re-proving the new merge
-    # commit. With the current non-strict ruleset, stale-green can still merge;
-    # require base freshness with a push, merge queue, or strict checks.
+    # If main advances after the last full proof, the primary CI gate rejects
+    # carry-forward unless its provenance records the current PR base SHA.
     # converted_to_draft is included so the gate records an explicit deferred
     # backtester verdict when a ready PR is moved back to draft.
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
   push:
     branches: [main]
+  # Merge queue lane: required merge-proof checks must report on the temporary
+  # gh-readonly-queue ref carrying the exact to-be-merged commit.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   # Deferred and full PR runs intentionally use separate groups. Moving a ready PR back to draft
   # records an explicit deferred verdict without cancelling a full proof already in progress.
   # Manual workflow_dispatch runs are split by class so iteration smoke runs do not cancel full proof.
+  # Merge queue and Mergify proof PR runs are never cancelled by this workflow.
   group: >-
     ${{ github.event_name == 'pull_request'
+        && startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
+        && format('bvs-pr-{0}-mergify-proof-{1}', github.event.number, github.run_id)
+        || github.event_name == 'pull_request'
         && github.event.pull_request.draft == true
         && contains(fromJSON('["opened","synchronize","reopened","converted_to_draft","edited"]'), github.event.action)
         && format('bvs-pr-{0}-deferred', github.event.number)
@@ -83,9 +85,12 @@ concurrency:
         && format('bvs-{0}-dispatch-full', github.ref_name)
         || github.event_name == 'workflow_dispatch'
         && format('bvs-{0}-dispatch-iteration', github.ref_name)
+        || github.event_name == 'merge_group'
+        && format('bvs-mq-{0}', github.ref)
         || format('bvs-{0}-{1}', github.ref_name, github.sha) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request'
+        && !startsWith(github.event.pull_request.head.ref, 'mergify/merge-queue/')
         && !(github.event.pull_request.draft == false
              && (github.event.action == 'reopened'
                  || (github.event.action == 'edited' && !(github.event.changes.base.ref.from != ''))))
@@ -110,7 +115,6 @@ jobs:
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
-      is_mergify_temp_pr: ${{ steps.policy.outputs.is_mergify_temp_pr }}
       reason: ${{ steps.policy.outputs.reason }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_LIGHT }}
     steps:
@@ -120,18 +124,66 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Prepare trusted base policy tree
+        id: policy_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_ref="refs/remotes/origin/bvs-policy-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/bvs-policy-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
+          git check-ref-format "refs/heads/$base_branch"
+          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          base_tree="$RUNNER_TEMP/bvs-policy-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
+
       - name: Compute Backtester CI policy
         id: policy
         shell: bash
-        run: >
-          python3 scripts/ci_provenance.py ci-policy
-          --event-name "${{ github.event_name }}"
-          --event-action "${{ github.event.action || '' }}"
-          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
-          --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
-          --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
-          --ref "${{ github.ref }}"
-          | tee -a "$GITHUB_OUTPUT"
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+        run: |
+          policy_script="${{ steps.policy_base.outputs.script }}"
+          if [[ -z "$policy_script" ]]; then
+            policy_script="scripts/ci_provenance.py"
+          fi
+          policy_config="${{ steps.policy_base.outputs.config }}"
+          if [[ -z "$policy_config" ]]; then
+            policy_config="ci/github-actions-runners.toml"
+          fi
+          python3 "$policy_script" ci-policy \
+            --config "$policy_config" \
+            --event-name "${{ github.event_name }}" \
+            --event-action "${{ github.event.action || '' }}" \
+            --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
+            --pull-request-head-ref "$PR_HEAD_REF" \
+            --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
+            --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
+            --ref "${{ github.ref }}" \
+            | tee -a "$GITHUB_OUTPUT"
 
   # Always-runs detector (no compile, no toolchain). Decides whether the crate or any of its
   # shared build inputs changed between the PR base and head, so the heavy lanes can skip on
@@ -152,6 +204,11 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "push" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "push or manual dispatch event; treating crate as changed"
+            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          elif [[ "${{ github.event_name }}" == "merge_group" ]]; then
+            # A skipped required gate counts as passing, so queue validation must run proof lanes.
+            echo "merge_group event; treating crate as changed"
             echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -223,7 +280,7 @@ jobs:
   clippy:
     name: bvs-clippy
     needs: [ci-policy, detect, fmt]
-    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}
+    if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     env:
       CARGO_BUILD_JOBS: "2"
@@ -252,9 +309,9 @@ jobs:
           cache-bin: false
           cache-targets: false
           # Distinct from ci.yml's cargo-registry-git-v1: the crate has its own dep graph.
-          # Single writer is the test job (below); clippy reads only.
+          # The archive producer writes this cache; clippy reads only.
           shared-key: cargo-registry-git-bvs-v1
-          save-if: ${{ github.job == 'test' }}
+          save-if: false
 
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -267,13 +324,144 @@ jobs:
       - name: clippy
         run: just bte-clippy
 
-  test:
-    name: bvs-test
+  test-archive:
+    name: bvs-test archive
     needs: [ci-policy, detect, fmt]
-    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}
+    if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}
     runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
     env:
       CARGO_BUILD_JOBS: "2"
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+
+      - name: Restore BVS nextest archive
+        id: bvs-nextest-archive-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}
+          key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+
+      - name: Restore BVS binary sidecars
+        id: bvs-bin-sidecars-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.BVS_BIN_SIDECARS_PATH }}
+          key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+
+      - name: Resolve crate managed target dir
+        id: crate_target
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        run: |
+          dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-on-failure: true
+          cache-bin: false
+          cache-targets: false
+          shared-key: cargo-registry-git-bvs-v1
+          save-if: ${{ github.job == 'test-archive' }}
+
+      - name: Restore archive build target cache
+        id: test-target-cache
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.crate_target.outputs.dir }}
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          restore-keys: |
+            managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-
+
+      - name: Install cargo-nextest
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: Build BVS nextest archive
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: "0"
+        run: |
+          mkdir -p "$(dirname "$BVS_NEXTEST_ARCHIVE_PATH")"
+          just bte-test-archive "$BVS_NEXTEST_ARCHIVE_PATH"
+
+      - name: Save BVS nextest archive
+        if: steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.BVS_NEXTEST_ARCHIVE_PATH }}
+          key: bvs-nextest-archive-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+
+      - name: Build BVS binary sidecars
+        if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python3 "${{ steps.setup.outputs.rust_verification_owner }}" cargo --repo crates/backtesting-vertical-slice -- build --locked --bins
+          mkdir -p "$(dirname "$BVS_BIN_SIDECARS_PATH")"
+          target_dir="${{ steps.crate_target.outputs.dir }}"
+          sidecar_count="$(find "$target_dir/debug" -maxdepth 1 -type f -perm -111 | wc -l | tr -d ' ')"
+          if [[ "$sidecar_count" == "0" ]]; then
+            echo "no BVS binary sidecars found in $target_dir/debug"
+            exit 1
+          fi
+          (
+            cd "$target_dir"
+            find debug -maxdepth 1 -type f -perm -111 -print0 \
+              | tar --null -czf "$GITHUB_WORKSPACE/$BVS_BIN_SIDECARS_PATH" --files-from -
+          )
+
+      - name: Save BVS binary sidecars
+        if: steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ env.BVS_BIN_SIDECARS_PATH }}
+          key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+
+      - name: Save archive build target cache
+        if: ${{ (steps.bvs-nextest-archive-cache.outputs.cache-hit != 'true' || steps.bvs-bin-sidecars-cache.outputs.cache-hit != 'true') && steps.test-target-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ steps.crate_target.outputs.dir }}
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+
+      - name: Upload BVS test payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+          overwrite: true
+
+  test:
+    name: bvs-test ${{ matrix.shard }} of 4
+    needs: [ci-policy, detect, fmt, test-archive]
+    if: ${{ always() && needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') && needs.test-archive.result == 'success' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BVS_NEXTEST_SHARDS: "4"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -290,20 +478,21 @@ jobs:
           dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
           echo "dir=$dir" >> "$GITHUB_OUTPUT"
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Download BVS test payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          cache-on-failure: true
-          cache-bin: false
-          cache-targets: false
-          shared-key: cargo-registry-git-bvs-v1
-          save-if: ${{ github.job == 'test' }}
+          name: bvs-test-payload
+          path: .nextest-archive
 
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/src/**', 'crates/backtesting-vertical-slice/tests/**', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
-          restore-keys: |
-            managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-
+      - name: Require BVS test payload
+        run: |
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
+
+      - name: Extract BVS binary sidecars
+        run: |
+          mkdir -p "${{ steps.crate_target.outputs.dir }}"
+          tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
@@ -312,10 +501,63 @@ jobs:
           fallback: none
 
       - name: test
-        env:
-          CARGO_PROFILE_TEST_DEBUG: "0"
-          BOLT_ISSUE_789_RESULT_PATH: ${{ github.workspace }}/crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json
-        run: just bte-test
+        run: |
+          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
+          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" --partition "count:${{ matrix.shard }}/${{ env.BVS_NEXTEST_SHARDS }}" -- --skip issue_789_first_real_free_data_taker_pl
+
+  issue_789:
+    name: bvs-test issue-789
+    # Diagnostic evidence lane: keep the long #789 first-P/L artifact visible
+    # without extending the required backtester-gate critical path.
+    needs: [ci-policy, detect, test-archive, gate]
+    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' && needs.test-archive.result == 'success' && needs.gate.result == 'success' }}
+    runs-on: ${{ vars.CI_RUNNER_MANAGED_HEAVY }}
+    env:
+      BVS_NEXTEST_ARCHIVE_PATH: .nextest-archive/bvs-nextest-archive.tar.zst
+      BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz
+      BOLT_ISSUE_789_RESULT_PATH: ${{ github.workspace }}/crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-environment
+        with:
+          just-version: ${{ env.JUST_VERSION }}
+          include-nextest-version: "true"
+
+      - name: Resolve crate managed target dir
+        id: crate_target
+        run: |
+          dir="$(python3 "${{ steps.setup.outputs.rust_verification_owner }}" target-dir --repo crates/backtesting-vertical-slice)"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Download BVS test payload
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bvs-test-payload
+          path: .nextest-archive
+
+      - name: Require BVS test payload
+        run: |
+          test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }
+          test -s "$BVS_BIN_SIDECARS_PATH" || { echo "BVS binary sidecars missing or empty after artifact download"; exit 1; }
+
+      - name: Extract BVS binary sidecars
+        run: |
+          mkdir -p "${{ steps.crate_target.outputs.dir }}"
+          tar -xzf "$BVS_BIN_SIDECARS_PATH" -C "${{ steps.crate_target.outputs.dir }}"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
+        with:
+          tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
+          fallback: none
+
+      - name: test issue-789
+        run: |
+          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"
+          just bte-test-archive-run "$BVS_NEXTEST_ARCHIVE_PATH" "$RUNNER_TEMP/bvs-nextest-archive-extract" issue_789_first_real_free_data_taker_pl
 
       - name: Upload issue #789 first-P/L artifact
         if: ${{ always() }}
@@ -323,85 +565,71 @@ jobs:
         with:
           name: issue-789-first-pl-${{ github.run_id }}-${{ github.run_attempt }}
           path: crates/backtesting-vertical-slice/target/issue-789-first-pl/result.json
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   gate:
     name: ${{ needs.ci-policy.outputs.backtester_gate_name }}
     # backtester-gate-iteration is intentionally non-required; only backtester-gate is merge proof.
-    needs: [ci-policy, detect, fmt, clippy, test]
+    needs: [ci-policy, detect, fmt, clippy, test-archive, test]
     if: ${{ always() }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Prepare trusted base verdict tree
+        id: verdict_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.run_id }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_branch="$PR_BASE_REF"
+            base_ref="refs/remotes/origin/bvs-gate-base-${PR_NUMBER}"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            merge_group_base="$MERGE_GROUP_BASE_REF"
+            if [[ "$merge_group_base" == refs/heads/* ]]; then
+              base_branch="${merge_group_base#refs/heads/}"
+            elif [[ "$merge_group_base" == refs/* ]]; then
+              echo "unsupported merge_group base_ref: $merge_group_base" >&2
+              exit 1
+            else
+              base_branch="$merge_group_base"
+            fi
+            base_ref="refs/remotes/origin/bvs-gate-base-merge-group-${GITHUB_RUN_ID}"
+          else
+            echo "unsupported trusted base event: $EVENT_NAME" >&2
+            exit 1
+          fi
+          git check-ref-format "refs/heads/$base_branch"
+          git fetch --no-tags origin "+refs/heads/${base_branch}:${base_ref}"
+          base_tree="$RUNNER_TEMP/bvs-gate-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+
       - name: Check required lanes
         shell: bash
         run: |
-          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
-          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
-          expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"
-          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
-            echo "bvs-ci-policy did not succeed (${{ needs.ci-policy.result }})"
-            exit 1
+          verdict_script="${{ steps.verdict_base.outputs.script }}"
+          if [[ -z "$verdict_script" ]]; then
+            verdict_script="scripts/ci_provenance.py"
           fi
-          if [[ "${{ needs.detect.result }}" != "success" ]]; then
-            echo "bvs-detect did not succeed (${{ needs.detect.result }})"
-            exit 1
-          fi
-          if [[ "$policy_path" == "iteration" ]]; then
-            if [[ "$expected_event_class" != "iteration" ]]; then
-              echo "backtester iteration CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            if [[ "${{ needs.fmt.result }}" != "success" && "${{ needs.fmt.result }}" != "skipped" ]]; then
-              echo "bvs-fmt did not succeed or skip during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
-              echo "bvs-clippy unexpectedly ran during iteration"
-              exit 1
-            fi
-            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
-              echo "bvs-test unexpectedly ran during iteration"
-              exit 1
-            fi
-            echo "backtester iteration CI policy; no required full proof published by this run"
-            exit 0
-          fi
-          if [[ "$policy_path" == "noop" ]]; then
-            if [[ "$expected_event_class" != "noop" ]]; then
-              echo "backtester noop CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "backtester no code-change CI event; preserving prior required same-SHA gate conclusion"
-            exit 0
-          fi
-          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
-            echo "no crate changes; gate is a no-op"
-            exit 0
-          fi
-          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-            if [[ "$expected_event_class" != "defer" ]]; then
-              echo "backtester deferred CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for full feedback or mark ready for merge proof"
-            exit 0
-          fi
-          if [[ "$policy_path" == "full" ]]; then
-            echo "backtester proof required"
-          else
-            echo "unknown backtester CI policy path '$policy_path'"
-            exit 1
-          fi
-          if [[ "${{ needs.fmt.result }}" != "success" ]]; then
-            echo "bvs-fmt did not succeed (${{ needs.fmt.result }})"
-            exit 1
-          fi
-          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
-            echo "bvs-clippy did not succeed (${{ needs.clippy.result }})"
-            exit 1
-          fi
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            echo "bvs-test did not succeed (${{ needs.test.result }})"
-            exit 1
-          fi
-          echo "backtester lanes passed"
+          python3 "$verdict_script" check-backtester-gate \
+            --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
+            --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
+            --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}" \
+            --bvs-changed "${{ needs.detect.outputs.bvs_changed || 'false' }}" \
+            --job ci-policy=${{ needs.ci-policy.result }} \
+            --job detect=${{ needs.detect.result }} \
+            --job fmt=${{ needs.fmt.result }} \
+            --job clippy=${{ needs.clippy.result }} \
+            --job test-archive=${{ needs.test-archive.result }} \
+            --job test=${{ needs.test.result }}

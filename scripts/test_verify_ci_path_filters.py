@@ -153,7 +153,7 @@ def assert_classifies_changed_paths() -> None:
     cases = {
         ("AGENTS.md",): True,
         ("SECURITY.md",): True,
-        (".codex/settings.json", ".specify/feature.json"): True,
+        (".codex/settings.json", ".specify/init-options.json"): True,
         (".claude/skills/speckit-plan/SKILL.md",): True,
         (".github/ISSUE_TEMPLATE/bug.yml",): True,
         ("src/lib.rs",): False,

@@ -1314,8 +1314,8 @@ def ci_policy_job_errors(job_lines: list[str]) -> list[str]:
         errors.append("ci-policy must pass detector docs_only output")
     if '--ref "${{ github.ref }}"' not in text:
         errors.append("ci-policy must pass github.ref")
-    if '--event-sender-id "${{ github.event.sender.id }}"' not in text:
-        errors.append("ci-policy must pass github.event.sender.id for the mergify actor binding")
+    if "EVENT_SENDER_ID: ${{ github.event.sender.id }}" not in text:
+        errors.append("ci-policy must set EVENT_SENDER_ID env for the mergify actor binding")
     return errors
 
 
@@ -9946,7 +9946,7 @@ def backtester_draft_deferral_errors(file_name: str, text: str) -> list[str]:
             '--pull-request-head-ref "$PR_HEAD_REF"',
             f'--pull-request-base-changed "${{{{ {PR_BASE_CHANGED_EXPR} }}}}"',
             '--workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || \'\' }}"',
-            '--event-sender-id "${{ github.event.sender.id }}"',
+            "EVENT_SENDER_ID: ${{ github.event.sender.id }}",
             '--ref "${{ github.ref }}"',
         ]:
             if required not in policy_text:

@@ -2524,7 +2524,7 @@ def main(argv: list[str] | None = None) -> int:
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
                 docs_only=parse_bool(args.docs_only),
-                event_sender_id=int(args.event_sender_id) if args.event_sender_id else -1,
+                event_sender_id=int(args.event_sender_id or os.environ.get("EVENT_SENDER_ID") or -1),
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")

@@ -319,6 +319,7 @@ jobs:
         shell: bash
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
+          EVENT_SENDER_ID: ${{ github.event.sender.id }}
         run: |
           policy_script="${{ steps.policy_base.outputs.script }}"
           if [[ -z "$policy_script" ]]; then
@@ -337,7 +338,6 @@ jobs:
             --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
             --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
             --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \
-            --event-sender-id "${{ github.event.sender.id }}" \
             --ref "${{ github.ref }}" \
             | tee -a "$GITHUB_OUTPUT"
 

@@ -100,7 +100,3 @@ Repo rules for agents; higher-level instructions apply.
 ## Response Format
 
 - Keep responses concise by default; prefer short direct answers over long explanations unless depth is requested.
-
-<!-- SPECKIT START -->
-`specs/026-nt-backed-iv-engine/plan.md`
-<!-- SPECKIT END -->

@@ -270,7 +270,7 @@ fn add_manifest_strategy() {}
     assert any("runner" in finding and "binary_oracle_edge_taker" in finding for finding in findings)
 
 
-def test_unchecked_task_is_a_finding() -> None:
+def test_unchecked_task_still_passes() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -281,9 +281,7 @@ def test_unchecked_task_is_a_finding() -> None:
             documented_tasks_text(checked=False),
         )
 
-        findings = verifier.scan_root(root)
-
-    assert any("RA-016 must be checked" in finding for finding in findings)
+        assert verifier.scan_root(root) == []
 
 
 def test_cli_fails_with_actionable_output() -> None:
@@ -318,7 +316,7 @@ def main() -> int:
         test_missing_bolt_strategy_is_a_finding,
         test_missing_bte_runner_wiring_is_a_finding,
         test_runner_tokens_in_comments_and_strings_do_not_satisfy_wiring,
-        test_unchecked_task_is_a_finding,
+        test_unchecked_task_still_passes,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

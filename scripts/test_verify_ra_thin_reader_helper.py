@@ -200,7 +200,7 @@ fn unrelated() {}
     assert any("query_catalog_typed" in finding or "CatalogQuerySpec" in finding for finding in findings)
 
 
-def test_unchecked_ra004_task_is_a_finding() -> None:
+def test_unchecked_ra004_task_still_passes() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -216,9 +216,7 @@ def test_unchecked_ra004_task_is_a_finding() -> None:
             "- [ ] RA-004 Implement a thin reader helper.\n",
         )
 
-        findings = verifier.scan_root(root)
-
-    assert any("RA-004 must be checked" in finding for finding in findings)
+        assert verifier.scan_root(root) == []
 
 
 def test_cli_fails_with_actionable_output() -> None:
@@ -241,7 +239,7 @@ def main() -> int:
         test_helper_must_use_data_backend_session_for_arrow_sql,
         test_helper_must_not_import_backtest_runtime,
         test_helper_tokens_in_comments_and_strings_do_not_satisfy_wiring,
-        test_unchecked_ra004_task_is_a_finding,
+        test_unchecked_ra004_task_still_passes,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

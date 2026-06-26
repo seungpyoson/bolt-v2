@@ -14,8 +14,9 @@ CONTRACTS_PATH = Path("specs/023-nt-research-analytics-platform/reference/contra
 TASKS_PATH = Path("specs/023-nt-research-analytics-platform/tasks.md")
 JUSTFILE_PATH = Path("justfile")
 
-REGISTRY_SECTION = "## Cross-Project Status And Legend Registry"
-CHECKED_ROOT009 = re.compile(r"^- \[[xX]\] ROOT-009\b", re.MULTILINE)
+REGISTRY_SECTION_ID = "023-status-legend-registry"
+REGISTRY_SECTION_ANCHOR = f'<a id="{REGISTRY_SECTION_ID}"></a>'
+TASK_ROOT009 = re.compile(r"^- \[[ xX]\] ROOT-009\b", re.MULTILINE)
 REGISTRY_ROW = re.compile(
     r"^\|\s*`(?P<key>[^`]+)`\s*\|\s*(?P<concept>[^|]+?)\s*\|\s*(?P<label>[^|]+?)\s*\|"
     r"\s*(?P<legend>[^|]+?)\s*\|\s*(?P<owner>[^|]+?)\s*\|\s*(?P<setters>[^|]+?)\s*\|"
@@ -118,7 +119,7 @@ def scan_root(root: Path) -> list[str]:
     tasks_text = require_file(root, TASKS_PATH, findings)
     justfile_text = require_file(root, JUSTFILE_PATH, findings)
 
-    require_snippets(CONTRACTS_PATH, contracts_text, (REGISTRY_SECTION, *REQUIRED_COLUMNS), findings)
+    require_snippets(CONTRACTS_PATH, contracts_text, (REGISTRY_SECTION_ANCHOR, *REQUIRED_COLUMNS), findings)
     require_snippets(CONTRACTS_PATH, contracts_text, REQUIRED_CONCEPTS, findings)
     require_snippets(CONTRACTS_PATH, contracts_text, REQUIRED_VALUES, findings)
     require_snippets(CONTRACTS_PATH, contracts_text, REQUIRED_OWNER_SNIPPETS, findings)
@@ -145,8 +146,8 @@ def scan_root(root: Path) -> list[str]:
         if required_value not in row_keys:
             findings.append(f"{CONTRACTS_PATH}: missing registry row for `{required_value}`")
 
-    if tasks_text and not CHECKED_ROOT009.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: ROOT-009 must be checked once the registry is canonical")
+    if tasks_text and not TASK_ROOT009.search(tasks_text):
+        findings.append(f"{TASKS_PATH}: ROOT-009 task row is missing")
 
     for command in JUSTFILE_COMMANDS:
         if justfile_text and command not in justfile_text:

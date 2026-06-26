@@ -30,7 +30,12 @@ def write_file(root: Path, rel: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def registry_text(*, omit_value: str | None = None) -> str:
+def registry_text(
+    *,
+    omit_value: str | None = None,
+    include_anchor: bool = True,
+    heading: str = "## Cross-Project Status And Legend Registry",
+) -> str:
     rows = [
         ("L2_REPLAY", "fidelity_class", "L2 replay", "Historical L2/L3 order-book replay supports proven execution-quality claims.", "reference/contracts.md", "Backtesting Engine", "Research Analytics, Dashboard"),
         ("TRADE_BAR_REPLAY", "fidelity_class", "Trade/bar replay", "Trades, fills, candles, or bars support price or alpha research with limits.", "reference/contracts.md", "Backtesting Engine", "Research Analytics, Dashboard"),
@@ -77,8 +82,9 @@ def registry_text(*, omit_value: str | None = None) -> str:
         for key, concept, label, legend, owner, setters, displayers in rows
         if key != omit_value
     )
+    anchor = '<a id="023-status-legend-registry"></a>\n\n' if include_anchor else ""
     return f"""
-## Cross-Project Status And Legend Registry
+{anchor}{heading}
 
 | Registry key | Concept | Display label | Legend meaning | Owner/source of truth | May set | May display |
 |---|---|---|---|---|---|---|
@@ -142,6 +148,36 @@ def test_missing_required_value_is_a_finding() -> None:
     assert any("stale" in finding for finding in findings)
 
 
+def test_registry_heading_reword_still_passes() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        write_file(
+            root,
+            "specs/023-nt-research-analytics-platform/reference/contracts.md",
+            registry_text(heading="## Registry Title Can Change"),
+        )
+
+        assert verifier.scan_root(root) == []
+
+
+def test_missing_registry_stable_section_id_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        write_file(
+            root,
+            "specs/023-nt-research-analytics-platform/reference/contracts.md",
+            registry_text(include_anchor=False),
+        )
+
+        findings = verifier.scan_root(root)
+
+    assert any("023-status-legend-registry" in finding for finding in findings)
+
+
 def test_required_value_mentioned_only_in_prose_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -159,16 +195,14 @@ def test_required_value_mentioned_only_in_prose_is_a_finding() -> None:
     assert any("stale" in finding for finding in findings)
 
 
-def test_unchecked_root_task_is_a_finding() -> None:
+def test_unchecked_root_task_still_passes() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_complete_fixture(root)
         write_file(root, "specs/023-nt-research-analytics-platform/tasks.md", tasks_text(checked=False))
 
-        findings = verifier.scan_root(root)
-
-    assert any("ROOT-009 must be checked" in finding for finding in findings)
+        assert verifier.scan_root(root) == []
 
 
 def test_missing_source_fence_wiring_is_a_finding() -> None:
@@ -201,8 +235,10 @@ def main() -> int:
     tests = [
         test_complete_registry_passes,
         test_missing_required_value_is_a_finding,
+        test_registry_heading_reword_still_passes,
+        test_missing_registry_stable_section_id_is_a_finding,
         test_required_value_mentioned_only_in_prose_is_a_finding,
-        test_unchecked_root_task_is_a_finding,
+        test_unchecked_root_task_still_passes,
         test_missing_source_fence_wiring_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

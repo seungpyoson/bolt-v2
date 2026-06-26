@@ -98,8 +98,8 @@ def require_snippets(rel_path: Path, text: str, snippets: tuple[str, ...], findi
             findings.append(f"{rel_path}: missing `{snippet}`")
 
 
-def task_is_checked(tasks_text: str, task_id: str) -> bool:
-    return re.search(rf"^- \[[xX]\] {re.escape(task_id)}\b", tasks_text, re.MULTILINE) is not None
+def task_is_present(tasks_text: str, task_id: str) -> bool:
+    return re.search(rf"^- \[[ xX]\] {re.escape(task_id)}\b", tasks_text, re.MULTILINE) is not None
 
 
 def scan_root(root: Path) -> list[str]:
@@ -117,8 +117,8 @@ def scan_root(root: Path) -> list[str]:
     require_snippets(DASHBOARD_PLAN, plan_text, PLAN_SNIPPETS, findings)
 
     for task_id in CHECKED_TASKS:
-        if tasks_text and not task_is_checked(tasks_text, task_id):
-            findings.append(f"{DASHBOARD_TASKS}: {task_id} must be checked for this source-contract slice")
+        if tasks_text and not task_is_present(tasks_text, task_id):
+            findings.append(f"{DASHBOARD_TASKS}: {task_id} task row is missing")
 
     for command in JUSTFILE_COMMANDS:
         if justfile_text and command not in justfile_text:

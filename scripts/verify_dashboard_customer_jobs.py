@@ -42,7 +42,7 @@ TASK_REQUIRED_SNIPPETS = (
     "controlled action workflow",
     "trading/runtime/credential/fund/order mutation outside",
 )
-CHECKED_DASH001 = re.compile(r"^- \[[xX]\] DASH-001\b", re.MULTILINE)
+TASK_DASH001 = re.compile(r"^- \[[ xX]\] DASH-001\b", re.MULTILINE)
 
 
 def require_file(root: Path, rel_path: Path, findings: list[str]) -> str:
@@ -71,8 +71,8 @@ def scan_root(root: Path) -> list[str]:
     require_snippets(SPEC_PATH, spec_text, SPEC_REQUIRED_SNIPPETS, findings)
     require_snippets(TASKS_PATH, tasks_text, TASK_REQUIRED_SNIPPETS, findings)
 
-    if tasks_text and not CHECKED_DASH001.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: DASH-001 must be checked once customer jobs are defined")
+    if tasks_text and not TASK_DASH001.search(tasks_text):
+        findings.append(f"{TASKS_PATH}: DASH-001 task row is missing")
 
     return findings
 

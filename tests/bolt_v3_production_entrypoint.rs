@@ -411,18 +411,7 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
 
 #[test]
 fn production_entrypoint_vocab_does_not_claim_future_or_env_query_path() {
-    let checked_surfaces = [
-        (
-            "src/bolt_v3_live_node.rs",
-            include_str!("../src/bolt_v3_live_node.rs"),
-        ),
-        (
-            "docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md",
-            include_str!("../docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md"),
-        ),
-    ];
-
-    for (path, source) in checked_surfaces {
+    for (path, source) in production_entrypoint_vocab_checked_surfaces() {
         for forbidden in [
             "which queries `std::env`",
             "future production v3 entrypoint",
@@ -433,4 +422,28 @@ fn production_entrypoint_vocab_does_not_claim_future_or_env_query_path() {
             );
         }
     }
+}
+
+#[test]
+fn production_entrypoint_vocab_guard_is_code_owned() {
+    let checked_surfaces = production_entrypoint_vocab_checked_surfaces();
+    assert!(
+        checked_surfaces
+            .iter()
+            .any(|(path, _source)| *path == "src/bolt_v3_live_node.rs"),
+        "production entrypoint vocabulary guard must cover the live-node Rust source"
+    );
+    for (path, _source) in checked_surfaces {
+        assert!(
+            path.starts_with("src/") && path.ends_with(".rs"),
+            "production entrypoint vocabulary guard must be code-owned, not compile Markdown docs via `{path}`"
+        );
+    }
+}
+
+fn production_entrypoint_vocab_checked_surfaces() -> [(&'static str, &'static str); 1] {
+    [(
+        "src/bolt_v3_live_node.rs",
+        include_str!("../src/bolt_v3_live_node.rs"),
+    )]
 }

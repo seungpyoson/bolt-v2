@@ -41,6 +41,8 @@ Rules:
   for internal-tool workflows, and Plotly/Dash for custom visual apps. Product
   choice cannot change source truth.
 
+<a id="023-status-legend-registry"></a>
+
 ## Cross-Project Status And Legend Registry
 
 This is the canonical status, label, and legend registry for the 023 package.

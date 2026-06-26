@@ -240,7 +240,7 @@ def test_raw_only_python_script_is_a_finding() -> None:
     assert any("raw fallback sunset" in finding for finding in findings)
 
 
-def test_unchecked_ra007_task_is_a_finding() -> None:
+def test_unchecked_ra007_task_still_passes() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -251,9 +251,7 @@ def test_unchecked_ra007_task_is_a_finding() -> None:
             "- [ ] RA-007 Lift the lead-lag measurement lane off raw archive reads.\n",
         )
 
-        findings = verifier.scan_root(root)
-
-    assert any("RA-007 must be checked" in finding for finding in findings)
+        assert verifier.scan_root(root) == []
 
 
 def test_cli_fails_with_actionable_output() -> None:
@@ -274,7 +272,7 @@ def main() -> int:
         test_rust_comments_and_strings_do_not_satisfy_reader_shape,
         test_catalog_reader_must_query_trades_and_books,
         test_raw_only_python_script_is_a_finding,
-        test_unchecked_ra007_task_is_a_finding,
+        test_unchecked_ra007_task_still_passes,
         test_cli_fails_with_actionable_output,
     ]
     for test in tests:

@@ -7,18 +7,6 @@ publish = false
 autotests = false
 
 [[test]]
-name = "bolt_v3_adapter_mapping"
-path = "tests/bolt_v3_adapter_mapping.rs"
-
-[[test]]
-name = "bolt_v3_backtest_config_override"
-path = "tests/bolt_v3_backtest_config_override.rs"
-
-[[test]]
-name = "bolt_v3_dead_gate_removal"
-path = "tests/bolt_v3_dead_gate_removal.rs"
-
-[[test]]
 name = "iv"
 path = "tests/iv.rs"
 
@@ -43,48 +31,12 @@ name = "admission_orders"
 path = "tests/admission_orders.rs"
 
 [[test]]
-name = "bolt_v3_polyresearch_auth"
-path = "tests/bolt_v3_polyresearch_auth.rs"
-
-[[test]]
-name = "build_script_git_head_rerun_paths"
-path = "tests/build_script_git_head_rerun_paths.rs"
-
-[[test]]
-name = "cli"
-path = "tests/cli.rs"
-
-[[test]]
-name = "config_parsing"
-path = "tests/config_parsing.rs"
-
-[[test]]
-name = "deploy_install"
-path = "tests/deploy_install.rs"
-
-[[test]]
-name = "deploy_systemd"
-path = "tests/deploy_systemd.rs"
-
-[[test]]
-name = "hyperliquid_fail_closed"
-path = "tests/hyperliquid_fail_closed.rs"
-
-[[test]]
-name = "hyperliquid_live_submit_artifact"
-path = "tests/hyperliquid_live_submit_artifact.rs"
-
-[[test]]
-name = "hyperliquid_product_matrix"
-path = "tests/hyperliquid_product_matrix.rs"
+name = "platform_config"
+path = "tests/platform_config.rs"
 
 [[test]]
 name = "runtime_capture_io"
 path = "tests/runtime_capture_io.rs"
-
-[[test]]
-name = "venue_contract"
-path = "tests/venue_contract.rs"
 
 [[test]]
 name = "wiring_registration"

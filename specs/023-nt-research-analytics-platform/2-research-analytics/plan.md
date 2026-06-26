@@ -81,6 +81,8 @@ contracts.
 
 ## Backtest Phase Prerequisite
 
+<!-- ra-bte-prerequisite-ids: nt_example_strategy_current, binary_oracle_edge_taker_required, venue_normalization_required -->
+
 The BTE runner currently registers only the NT example strategy
 `HurstVpinDirectional` over `bybit-spot`. Wiring bolt's
 `binary_oracle_edge_taker` plus venue normalization into the BTE is a

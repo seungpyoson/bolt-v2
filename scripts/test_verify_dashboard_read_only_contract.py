@@ -42,7 +42,11 @@ def test_text() -> str:
 
 
 def plan_text() -> str:
-    return "\n".join(load_verifier().PLAN_SNIPPETS)
+    return """
+<!-- dashboard-read-only-contract-ids: product_gate_metabase, source_binding_key, no_mutation_controls, artifact_root_boundary -->
+
+The read-only dashboard plan prose may be reworded.
+"""
 
 
 def tasks_text(*, checked: bool = True) -> str:
@@ -100,6 +104,18 @@ def test_missing_contract_code_is_a_finding() -> None:
     assert any("PortfolioSnapshot" in finding for finding in findings)
 
 
+def test_missing_plan_marker_is_a_finding() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_complete_fixture(root)
+        write_file(root, "specs/023-nt-research-analytics-platform/3-dashboard/plan.md", "")
+
+        findings = verifier.scan_root(root)
+
+    assert any("dashboard-read-only-contract-ids" in finding for finding in findings)
+
+
 def test_unchecked_tasks_still_pass() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -139,6 +155,7 @@ def main() -> int:
     tests = [
         test_complete_fixture_passes,
         test_missing_contract_code_is_a_finding,
+        test_missing_plan_marker_is_a_finding,
         test_unchecked_tasks_still_pass,
         test_missing_source_fence_wiring_is_a_finding,
         test_cli_fails_with_actionable_output,

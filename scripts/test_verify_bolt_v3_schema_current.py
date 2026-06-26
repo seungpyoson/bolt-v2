@@ -278,12 +278,12 @@ def test_validate_docs_rejects_short_side_overclaims_in_scoped_docs() -> None:
         CURRENT_SCHEMA,
         CURRENT_STATUS_MAP,
         "The current archetype accepts coherent short-side entry/exit contracts.",
-        "- [x] T013 [US2] GREEN: Allow coherent short-side contracts while keeping incoherent long/short contracts rejected",
+        "- [x] T013 [US2] GREEN: Current strategy supports short-side position contracts.",
     )
 
     expected_fragments = [
-        "research still contains stale phrase",
-        "tasks still contains stale phrase",
+        "research contains unsupported current-scope overclaim",
+        "tasks contains unsupported current-scope overclaim",
     ]
     for fragment in expected_fragments:
         if not any(fragment in finding for finding in findings):
@@ -294,7 +294,7 @@ def test_validate_docs_rejects_stale_contract_short_side_claim() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
         CURRENT_STATUS_MAP,
-        contract="- Long and short position contracts are coherent.",
+        contract="- Current contract supports short position contracts.",
     )
 
     if not any("contract" in finding and "short" in finding for finding in findings):
@@ -305,7 +305,7 @@ def test_validate_docs_rejects_stale_spec_short_side_claim() -> None:
     findings = VERIFIER.validate_docs(
         CURRENT_SCHEMA,
         CURRENT_STATUS_MAP,
-        spec="Given short-side entry and exit contracts, config validation does not reject the shape merely because it is short-side.",
+        spec="Config validation accepts short-side entry and exit contracts.",
     )
 
     if not any("spec" in finding and "short-side" in finding for finding in findings):
@@ -319,9 +319,7 @@ def test_validate_docs_rejects_blanket_non_gtd_expiry_claim() -> None:
         data_model="- `expire_time_unix_nanos` only when GTD is enabled by a reviewed slice",
     )
 
-    if not any(
-        "data model" in finding and "expire_time_unix_nanos" in finding for finding in findings
-    ):
+    if not any("data model" in finding and "non-GTD expiry" in finding for finding in findings):
         raise AssertionError(f"expected data-model expiry finding, got {findings!r}")
 
 
@@ -419,8 +417,7 @@ def test_validate_docs_rejects_completed_phase50_blocker_wording() -> None:
     findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
     expected_fragments = [
         "Phase 50",
-        "taker-side book depth",
-        "without NT cancel",
+        "open/blocking",
     ]
     for fragment in expected_fragments:
         if not any(fragment in finding for finding in findings):
@@ -440,9 +437,8 @@ def test_validate_docs_rejects_completed_phase47_and_phase48_blocker_wording() -
     findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
     expected_fragments = [
         "Phase 47",
-        "synthesized as Market/TIF/reduce-only fields",
         "Phase 48",
-        "manage_stop=true",
+        "open/blocking",
     ]
     for fragment in expected_fragments:
         if not any(fragment in finding for finding in findings):
@@ -461,7 +457,7 @@ def test_validate_docs_rejects_completed_phase34_default_blocker_wording() -> No
     findings = VERIFIER.validate_docs(CURRENT_SCHEMA, CURRENT_STATUS_MAP, tasks=stale_tasks)
     expected_fragments = [
         "Phase 34",
-        "optional fields that NT defaults",
+        "open/blocking",
     ]
     for fragment in expected_fragments:
         if not any(fragment in finding for finding in findings):
@@ -663,8 +659,8 @@ def test_validate_docs_rejects_decision_evidence_and_maker_scope_doc_drift() -> 
         "schema missing decision-evidence JSONL schema v14 contract",
         "runtime contracts missing order-template evidence field",
         "status map missing current phrase: Order construction uses",
-        "maker scope contract still contains stale phrase",
-        "maker scope data model still contains stale phrase",
+        "maker scope contract: forced-exit override still described as missing",
+        "maker scope data model: GTD still described as blocked pending expiry policy",
     ]
     for fragment in expected_fragments:
         if not any(fragment in finding for finding in findings):

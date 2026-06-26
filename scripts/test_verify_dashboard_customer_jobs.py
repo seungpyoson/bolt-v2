@@ -31,40 +31,25 @@ def write_file(root: Path, rel: str, text: str) -> Path:
     return path
 
 
-def dashboard_plan_text(*, omit_controlled_action: bool = False) -> str:
-    controlled_action = (
-        ""
-        if omit_controlled_action
-        else (
-            "4. Controlled action workflow: request rerun, request RA review, stage config\n"
-            "   review, or future high-risk actions. Trading/runtime/credential/fund/order\n"
-            "   mutation remains outside this package unless separately approved.\n"
-        )
-    )
+def dashboard_plan_text(*, omit_controlled_action_id: bool = False) -> str:
+    ids = [
+        "trade_monitor",
+        "trade_investigation",
+        "annotation_review_notes",
+        *([] if omit_controlled_action_id else ["controlled_action_workflow"]),
+    ]
     return f"""
-## Customer Jobs And Capability Classes
+<!-- dashboard-customer-job-ids: {", ".join(ids)} -->
 
-Product choice is deferred until these jobs are specified and weighted:
-
-1. Trade monitor: ongoing trades/orders, positions, exposure, current PnL,
-   venue/source binding, and freshness.
-2. Trade investigation: prior trades/fills, why trade fired,
-   strategy/signal/reason refs, source proof/data used, and historical PnL
-   context.
-3. Annotation/review notes: optional notes, tags, comments, and investigation
-   status. This is least necessary and requires explicit owner/schema/audit
-   rules before any write path.
-{controlled_action}
+The dashboard plan can describe the customer jobs in ordinary prose.
 """
 
 
 def dashboard_spec_text() -> str:
     return """
-- Future dashboard work must classify customer jobs and write capabilities
-  before product selection. Non-trading annotation/review workflow writes may be
-  considered only after explicit artifact kind/schema/owner/audit rules exist.
-  Trading, runtime config, credential, and funds/order mutations remain outside
-  this package unless a separate future scope explicitly approves them.
+<!-- dashboard-capability-boundary-ids: no_trading_runtime_credential_fund_order_mutation -->
+
+The dashboard capability boundary can be worded freely.
 """
 
 
@@ -102,7 +87,7 @@ def test_customer_jobs_pass_when_defined_and_checked() -> None:
         assert verifier.scan_root(root) == []
 
 
-def test_missing_controlled_action_workflow_is_a_finding() -> None:
+def test_missing_controlled_action_marker_is_a_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -110,12 +95,12 @@ def test_missing_controlled_action_workflow_is_a_finding() -> None:
         write_file(
             root,
             "specs/023-nt-research-analytics-platform/3-dashboard/plan.md",
-            dashboard_plan_text(omit_controlled_action=True),
+            dashboard_plan_text(omit_controlled_action_id=True),
         )
 
         findings = verifier.scan_root(root)
 
-    assert any("Controlled action workflow" in finding for finding in findings)
+    assert any("controlled_action_workflow" in finding for finding in findings)
 
 
 def test_unchecked_task_still_passes() -> None:
@@ -138,7 +123,7 @@ def test_cli_fails_with_actionable_output() -> None:
         write_file(
             root,
             "specs/023-nt-research-analytics-platform/3-dashboard/plan.md",
-            dashboard_plan_text(omit_controlled_action=True),
+            dashboard_plan_text(omit_controlled_action_id=True),
         )
         write_file(root, "specs/023-nt-research-analytics-platform/3-dashboard/spec.md", dashboard_spec_text())
         write_file(root, "specs/023-nt-research-analytics-platform/3-dashboard/tasks.md", dashboard_tasks_text())
@@ -147,13 +132,13 @@ def test_cli_fails_with_actionable_output() -> None:
 
     assert result.returncode == 1
     assert "FAIL:" in result.stderr
-    assert "Controlled action workflow" in result.stderr
+    assert "controlled_action_workflow" in result.stderr
 
 
 def main() -> int:
     tests = [
         test_customer_jobs_pass_when_defined_and_checked,
-        test_missing_controlled_action_workflow_is_a_finding,
+        test_missing_controlled_action_marker_is_a_finding,
         test_unchecked_task_still_passes,
         test_cli_fails_with_actionable_output,
     ]

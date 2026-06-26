@@ -19,6 +19,8 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Do not patch plugin caches as a durable repo fix. Prefer repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters.
 - Known generated-adapter drift: current SpecKit implement prompts may still say to follow TDD. Treat that as lower-priority generated guidance, not as repo policy.
 
+<a id="governance-scope-discipline"></a>
+
 ## Scope Discipline
 
 - One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice of one broader item.
@@ -46,6 +48,8 @@ These repo-level rules are in addition to any higher-level agent instructions.
 9. <a id="repo-rule-strategies-produce-intent-only"></a> **STRATEGIES PRODUCE INTENT ONLY** — strategy files may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating must live in shared execution/admission modules built on NT APIs. Any change under `src/strategies/*` that handles submit mechanics is rejected unless explicitly approved as strategy-local signal logic.
 10. <a id="repo-rule-chainlink-data-streams-testnet-is-production"></a> **CHAINLINK DATA STREAMS: TESTNET IS PRODUCTION** — for the Chainlink Data Streams resolution oracle (`price_to_beat` for the binary-oracle taker), testnet is the only and final environment because mainnet credentials cannot be obtained. Treat the testnet Chainlink stream as production for this oracle. Do not raise testnet-vs-mainnet as a concern or ask for reconfirmation solely because the stream is testnet. Real deploy concerns still apply: config-schema compatibility, service health, fail-closed behavior, and exact-head verification.
 
+<a id="governance-evidence-driven-verification"></a>
+
 ## Evidence-Driven Verification
 
 - Follow the evidence-driven verification rule in this file. `.specify/memory/constitution.md` records the matching SpecKit principle, but `AGENTS.md` owns the operational workflow.
@@ -59,6 +63,8 @@ These repo-level rules are in addition to any higher-level agent instructions.
   - Documentation, prompt, template, and policy changes: targeted text/static checks and internal adversarial review.
   - External review: only after local findings are resolved and exact-head CI or the user-approved equivalent is green.
 - For agents/tools that do not automatically load this file, pass `AGENTS.md` as read-only launch context rather than creating another policy document. Add the SpecKit constitution only when the task needs SpecKit principle context.
+
+<a id="governance-remote-first-rust-verification"></a>
 
 ## Remote-First Rust Verification
 
@@ -82,6 +88,8 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Use dispatching `just rust-probe ...` modes only from a clean named branch whose `HEAD` is pushed to its upstream. Those modes dispatch the exact pushed SHA to GitHub Actions/Ubicloud and refuse unsafe local state.
 - Before running Rust Probe, state: (1) changed files, (2) suspected failure class, (3) selected mode, (4) selected test target/name, (5) why this is the smallest sufficient probe.
 - Limits: max 2 Rust Probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; Rust Probe must not replace the required `gate`; do not run full CI just to discover ordinary compiler errors.
+
+<a id="governance-review-bar"></a>
 
 ## Review Bar
 

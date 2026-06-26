@@ -15,116 +15,64 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class MirrorRule:
     name: str
-    agents_snippets: tuple[str, ...]
-    pr_agent_snippets: tuple[str, ...]
+    agents_id: str
+    pr_agent_rule: str
 
 
-AGENTS_BACKPOINTER_SNIPPETS = (
-    ".pr_agent.toml` mirrors the critical AI-review subset for PR-Agent",
-    "scripts/verify_ai_review_governance.py` checks the mirror in CI",
-)
+PR_AGENT_CONFIG_PATH = ".pr_agent.toml"
+GOVERNANCE_VERIFIER_PATH = "scripts/verify_ai_review_governance.py"
 
-PR_AGENT_MIRROR_NOTE_SNIPPETS = (
-    "This mirror is checked by scripts/verify_ai_review_governance.py",
-    "update this block when the mirrored AGENTS.md rules change",
-)
 
 MIRRORED_RULES = (
     MirrorRule(
         "scope discipline",
-        (
-            "One branch or PR may cover only one declared issue, spec, task, or an explicitly named slice",
-            "Reviewers must flag out-of-scope changes, hidden adjacent issue work, and missing claimed scope",
-        ),
-        (
-            "Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice",
-            "flag out-of-scope changes, hidden adjacent work, and missing claimed scope",
-        ),
+        "governance-scope-discipline",
+        "Scope discipline: one branch or PR may cover only one declared issue, spec, task, or explicitly named slice; flag out-of-scope changes, hidden adjacent work, and missing claimed scope.",
     ),
     MirrorRule(
         "no hardcodes",
-        (
-            "**NO HARDCODES**",
-            "every runtime value comes from TOML config",
-        ),
-        (
-            "NO HARDCODES: every runtime value comes from TOML config",
-            "no string literals for IDs, quantities, timeouts, or any runtime value in code",
-        ),
+        "repo-rule-no-hardcodes",
+        "NO HARDCODES: every runtime value comes from TOML config; no string literals for IDs, quantities, timeouts, or any runtime value in code.",
     ),
     MirrorRule(
         "no dual paths",
-        (
-            "**NO DUAL PATHS**",
-            "one way to do each thing",
-        ),
-        (
-            "NO DUAL PATHS: one way to do each thing",
-            "one config format, one secret source, one build path",
-        ),
+        "repo-rule-no-dual-paths",
+        "NO DUAL PATHS: one way to do each thing; one config format, one secret source, one build path.",
     ),
     MirrorRule(
         "no debts",
-        (
-            "**NO DEBTS**",
-            "no TODO, no \"fix later\", no unpinned dependencies, no uncommitted work",
-        ),
-        (
-            "NO DEBTS: no TODO, no \"fix later\", no unpinned dependencies, no uncommitted work",
-        ),
+        "repo-rule-no-debts",
+        "NO DEBTS: no TODO, no \"fix later\", no unpinned dependencies, no uncommitted work.",
     ),
     MirrorRule(
         "no credential display",
-        (
-            "**NO CREDENTIAL DISPLAY**",
-            "never cat/print/log API keys, private keys, secrets",
-        ),
-        (
-            "NO CREDENTIAL DISPLAY: never cat, print, or log API keys, private keys, or secrets",
-        ),
+        "repo-rule-no-credential-display",
+        "NO CREDENTIAL DISPLAY: never cat, print, or log API keys, private keys, or secrets.",
     ),
     MirrorRule(
         "ssm secret source",
-        (
-            "**SSM IS THE SINGLE SECRET SOURCE**",
-            "No AWS CLI subprocess, no 1Password CLI, no environment variable fallbacks",
-        ),
-        (
-            "SSM is the single secret source for runtime credentials",
-            "do not add environment variable fallbacks or alternate secret backends in product code",
-        ),
+        "repo-rule-ssm-single-secret-source",
+        "SSM is the single secret source for runtime credentials; do not add environment variable fallbacks or alternate secret backends in product code.",
     ),
     MirrorRule(
         "evidence-driven verification",
-        (
-            "Every claim must map to evidence",
-            "External review: only after local findings are resolved and exact-head CI or the user-approved equivalent is green",
-        ),
-        (
-            "Evidence-driven verification: every claim must map to tests",
-            "External review happens only after local findings are resolved and exact-head CI or a user-approved equivalent is green",
-        ),
+        "governance-evidence-driven-verification",
+        "Evidence-driven verification: every claim must map to tests, static checks, source-fence results, remote CI, live artifacts, direct inspection, or explicit user-approved risk acceptance.",
+    ),
+    MirrorRule(
+        "external review gate",
+        "governance-evidence-driven-verification",
+        "External review happens only after local findings are resolved and exact-head CI or a user-approved equivalent is green.",
     ),
     MirrorRule(
         "remote-first rust verification",
-        (
-            "Do not run local compile-heavy Rust verification by default",
-            "Use local non-compile gates for fast feedback",
-        ),
-        (
-            "Remote-first Rust verification: do not request local compile-heavy Rust checks by default",
-            "request remote CI or allowed static checks",
-        ),
+        "governance-remote-first-rust-verification",
+        "Remote-first Rust verification: do not request local compile-heavy Rust checks by default; request remote CI or allowed static checks.",
     ),
     MirrorRule(
         "required human review",
-        (
-            "Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval",
-        ),
-        (
-            "Required human review must be preserved",
-            "agents must not merge or bypass the required reviewer gate",
-        ),
+        "governance-review-bar",
+        "Required human review must be preserved; agents must not merge or bypass the required reviewer gate.",
     ),
 )
 
@@ -272,6 +220,14 @@ def pr_agent_extra_instructions(pr_agent_toml: str) -> tuple[str, list[str]]:
 
 def missing_snippets(label: str, text: str, snippets: tuple[str, ...]) -> list[str]:
     return [f"{label} missing expected snippet: {snippet!r}" for snippet in snippets if snippet not in text]
+
+
+def agents_rule_id(rule_id: str) -> str:
+    return f'id="{rule_id}"'
+
+
+def pr_agent_rule_line(rule: MirrorRule) -> str:
+    return f"- {rule.pr_agent_rule}"
 
 
 def verify_ai_review_config(ai_review_toml: str) -> list[str]:
@@ -424,24 +380,20 @@ def verify_texts(
     if extra_findings:
         return findings
 
-    findings.extend(missing_snippets("AGENTS.md", agents_md, AGENTS_BACKPOINTER_SNIPPETS))
-    findings.extend(missing_snippets(".pr_agent.toml extra_instructions", extra, PR_AGENT_MIRROR_NOTE_SNIPPETS))
+    findings.extend(missing_snippets("AGENTS.md", agents_md, (PR_AGENT_CONFIG_PATH, GOVERNANCE_VERIFIER_PATH)))
+    findings.extend(missing_snippets(".pr_agent.toml extra_instructions", extra, ("AGENTS.md", GOVERNANCE_VERIFIER_PATH)))
     findings.extend(verify_ai_review_config(ai_review_toml))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, glm_workflow, "glm", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, kimi_workflow, "kimi", setup_required=True))
     findings.extend(verify_review_job_timeout_budget(ai_review_toml, smoke_workflow, "smoke", setup_required=False))
 
     for rule in MIRRORED_RULES:
-        for snippet in rule.agents_snippets:
-            if snippet not in agents_md:
-                findings.append(
-                    f"AGENTS.md source for mirrored rule {rule.name!r} changed or disappeared: {snippet!r}"
-                )
-        for snippet in rule.pr_agent_snippets:
-            if snippet not in extra:
-                findings.append(
-                    f".pr_agent.toml missing mirrored AGENTS.md rule {rule.name!r}: {snippet!r}"
-                )
+        expected_id = agents_rule_id(rule.agents_id)
+        if expected_id not in agents_md:
+            findings.append(f"AGENTS.md missing mirrored rule ID {rule.agents_id!r} for {rule.name!r}")
+        expected_line = pr_agent_rule_line(rule)
+        if expected_line not in extra:
+            findings.append(f".pr_agent.toml missing mirrored AGENTS.md rule {rule.name!r}: {expected_line!r}")
 
     if "pr_reviewer." in glm_workflow:
         findings.append(
@@ -506,6 +458,17 @@ def run_self_tests(repo_root: Path) -> None:
     )
     if baseline:
         raise AssertionError(f"real repository must satisfy AI review governance check, got {baseline!r}")
+
+    reworded_agents_rule = verify_texts(
+        agents_md=agents.replace("one way to do each thing", "one accepted path for each behavior"),
+        pr_agent_toml=pr_agent,
+        ai_review_toml=ai_review,
+        glm_workflow=glm,
+        kimi_workflow=kimi,
+        smoke_workflow=smoke,
+    )
+    if reworded_agents_rule:
+        raise AssertionError(f"AGENTS rule prose reword must not break mirror governance, got {reworded_agents_rule!r}")
 
     wrong_ai_review_config = verify_texts(
         agents_md=agents,
@@ -590,15 +553,15 @@ def run_self_tests(repo_root: Path) -> None:
     )
     assert_finding("missing PR-Agent mirror", missing_mirror, ".pr_agent.toml missing mirrored")
 
-    changed_source = verify_texts(
-        agents_md=agents.replace("**NO DUAL PATHS**", "**NO MULTI PATHS**"),
+    missing_agents_rule_id = verify_texts(
+        agents_md=agents.replace(' id="repo-rule-no-dual-paths"', ' id="repo-rule-no-multi-paths"'),
         pr_agent_toml=pr_agent,
         ai_review_toml=ai_review,
         glm_workflow=glm,
         kimi_workflow=kimi,
         smoke_workflow=smoke,
     )
-    assert_finding("changed AGENTS source", changed_source, "AGENTS.md source for mirrored rule 'no dual paths'")
+    assert_finding("missing AGENTS rule ID", missing_agents_rule_id, "AGENTS.md missing mirrored rule ID 'repo-rule-no-dual-paths'")
 
     glm_split_config = verify_texts(
         agents_md=agents,

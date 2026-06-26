@@ -60,6 +60,23 @@ fn loaded_with_enabled_kill_switch(
 }
 
 #[test]
+fn temp_case_dir_name_includes_process_id() {
+    let label = "bolt-v3-kill-switch-runtime";
+    let temp = support::TempCaseDir::new(label);
+    let file_name = temp
+        .path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("temp case dir should have a UTF-8 file name");
+    let expected_prefix = format!("bolt-v2-{label}-{}-", std::process::id());
+
+    assert!(
+        file_name.starts_with(&expected_prefix),
+        "temp case dir name {file_name:?} should start with {expected_prefix:?}"
+    );
+}
+
+#[test]
 fn enabled_kill_switch_missing_durable_state_fails_closed_before_live_node_build() {
     let (loaded, _temp) = loaded_with_enabled_kill_switch("state/missing-kill-switch.json");
 

@@ -1,5 +1,6 @@
 use std::{io::Cursor, sync::OnceLock};
 
+use crate::support::{fast_test_live_node, repo_path};
 use arrow::array::{
     Array, FixedSizeBinaryArray, RecordBatch, StringArray, UInt8Array, UInt32Array, UInt64Array,
 };
@@ -40,7 +41,6 @@ use nautilus_model::{
     instruments::{InstrumentAny, binary_option::BinaryOption},
     types::{Currency, Money, Price, Quantity},
 };
-use crate::support::{fast_test_live_node, repo_path};
 use tempfile::tempdir;
 use tokio::{sync::Mutex, task::LocalSet};
 

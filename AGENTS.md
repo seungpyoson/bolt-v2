@@ -1,18 +1,19 @@
 # bolt-v2 Agent Rules
 
-Repo governance for agents; higher-level user instructions win unless they violate safety.
+Repo governance for agents; higher-level standing instructions apply.
 
 ## Precedence & Source Of Truth
 
+- Direct user instructions win unless they violate safety.
 - `AGENTS.md` is the governance source and operational entrypoint. `CLAUDE.md`, `GEMINI.md`, SpecKit prompts, Superpowers skills, and plugin docs are adapters — if they conflict, follow `AGENTS.md` and report the drift.
 - `.specify/memory/constitution.md` records SpecKit principles; update it only when governance changes those principles or gates. The active SpecKit plan is feature context, not governance.
-- After a merge, `main` is authoritative; old branches, worktrees, and plan pointers become reference-only. Do not continue from stale work or cite it as proof that accepted scope is missing from `main`; port only proven-missing scope onto a fresh branch from `main`.
+- After a merge, `main` is authoritative; old branches, worktrees, and plan pointers become reference-only immediately after supersession or merge. Do not continue from stale work or cite it as proof that accepted scope is missing from `main`; port only proven-missing scope onto a fresh branch from `main`.
 
 ## Agent & Plugin Discipline
 
 - Do not create per-agent policy docs unless the tool loads them and the policy cannot live in `AGENTS.md`. For tools that do not load it, pass `AGENTS.md` as read-only context; add `.specify/memory/constitution.md` only when SpecKit principles or gates matter.
 - `.pr_agent.toml` mirrors the critical AI-review subset for PR-Agent, which cannot load arbitrary repo files in GitHub Actions. Keep that mirror current with this file; `scripts/verify_ai_review_governance.py` checks the mirror in CI.
-- Do not patch plugin caches as durable fixes; use repo governance, SpecKit templates, verified override surfaces, or regenerated adapters. Generated prompts may recommend strict TDD — use Evidence-Driven Verification unless the user, active spec, or risk requires TDD.
+- Do not patch plugin caches as durable fixes; use repo governance, SpecKit templates, verified extension/override surfaces, or regenerated adapters. Generated prompts may recommend strict TDD — use Evidence-Driven Verification unless the user, active spec, or risk requires TDD.
 
 ## Scope Discipline
 
@@ -41,8 +42,8 @@ Repo governance for agents; higher-level user instructions win unless they viola
 ## Remote-First Rust Verification
 
 - Do not run local compile-heavy Rust verification by default: no managed `just` Rust test/build/clippy recipes, no raw cargo refused by `ci/rust-verification.toml` `[local_compile_policy]`. Use local non-compile gates for fast feedback: `just fmt-check`, `just deny`, `just ci-lint-workflow`, Python verifiers, and `just source-fence-static` (public recipes only, never `*-inner`).
-- For Rust feedback, push and run `just verify-remote` for exact-head Ubicloud/GitHub Actions; draft pushes defer full-CI merge proof (clippy/deny still run) and cannot merge. Mark a PR ready only for the merge candidate. Operator break-glass is for exceptional local repro and live/operator lanes only, never a normal agent path.
-- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, `.no-mistakes.yaml`, and the PATH cargo shim (`scripts/cargo-shim`, `scripts/install-cargo-shim`), which reads `[local_compile_policy]`. Lanes self-serialize via `[local_lane_policy]`; CI (`allowed_ci_env`) bypasses the lock; coverage drift fails `source-fence-static`. Known bypasses: absolute-path cargo, `rustup run ... cargo`, cross-repo cargo, old daemons, non-shim PATHs, startup-skipping shells, direct `rustc`.
+- Default to draft PRs while iterating; for Rust feedback, commit, push, open a draft PR, then run `just verify-remote` for exact-head Ubicloud/GitHub Actions. Draft pushes defer full-CI merge proof (clippy/deny still run) and cannot merge. For merge proof, mark the PR ready and run `just verify-remote` for the required exact-head PR gate, or use the merge queue gate. Operator break-glass is for exceptional local repro and live/operator lanes only, never a normal agent path.
+- Cooperative paths are gated through `just`, `scripts/rust_verification.py`, `.no-mistakes.yaml`, and the PATH cargo shim (`scripts/cargo-shim`, `scripts/install-cargo-shim`), which reads `[local_compile_policy]`. Lanes self-serialize via `[local_lane_policy]`: broad gates acquire the lane once, competing gates fail fast, CI (`allowed_ci_env`) bypasses the lock, and coverage drift fails `source-fence-static`. Known bypasses: absolute-path cargo, `rustup run ... cargo`, cross-repo cargo, old daemons, non-shim PATHs, startup-skipping shells, direct `rustc`.
 
 ## Rust Probe Policy
 
@@ -52,7 +53,7 @@ Repo governance for agents; higher-level user instructions win unless they viola
 ## Review Bar & Merge Mechanics
 
 - Every unique substantive issue is a finding regardless of severity; do not downgrade real issues into notes or treat tracked as resolved unless fixed or explicitly waived.
-- Before completing or merging coding work, open a PR and request review from the GitHub account with node ID `U_kgDOEZMFhA` (login-based — resolve the node ID to its current login and keep `.github/CODEOWNERS` aligned). This required-reviewer node ID is an intentional hardcoded policy constant: PR-editable config must not select the required reviewer.
+- Before completing or merging coding work, open a PR and request review from the GitHub account with node ID `U_kgDOEZMFhA` (login-based — resolve the node ID to its current login and keep `.github/CODEOWNERS` aligned). This required-reviewer node ID is an intentional hardcoded policy constant for native merge governance: PR-editable config must not select the required reviewer.
 - The `main` ruleset must require native code-owner review, stale-review dismissal, last-push approval, and review-thread resolution; if those are missing, stop and report the blocker instead of treating CI checks as merge controls. Agents must not merge, squash, rebase-merge, or otherwise land code until the PR has approval from node ID `U_kgDOEZMFhA`; if review cannot be requested, stop and report.
 - Do not request external review with uncommitted changes, unpushed commits, unresolved findings, unanswered comments, or non-green exact-head CI. Reply to and resolve every applicable review thread (give the technical reason for any inapplicable one); commit and push any remaining fix before further review discussion.
 - Verify each active `main` rule before merge: list with `gh api repos/{owner}/{repo}/rules/branches/main`, confirm checks green in `gh pr view <n> --json statusCheckRollup` and approvals met. On a stale block, force recompute by push, review, close/reopen, or waiting; never force past a green-but-cached block with `gh pr merge --admin`.

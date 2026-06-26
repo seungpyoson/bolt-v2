@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-tests for CI path-filter docs and pass-stub verifier."""
+"""Self-tests for CI path-filter docs and policy verifier."""
 
 from __future__ import annotations
 
@@ -18,90 +18,63 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - 'GEMINI.md'
-      - 'REASONIX.md'
-      - 'LICENSE'
-      - 'SECURITY.md'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.claude/**'
-      - '.codex/**'
-      - '.gemini/**'
-      - '.opencode/**'
-      - '.pi/**'
-      - '.specify/**'
   push:
     branches: [main]
 """
 
 
-PASS_STUB_HEADER = """
-name: CI docs pass stub
-on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - 'GEMINI.md'
-      - 'REASONIX.md'
-      - 'LICENSE'
-      - 'SECURITY.md'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.claude/**'
-      - '.codex/**'
-      - '.gemini/**'
-      - '.opencode/**'
-      - '.pi/**'
-      - '.specify/**'
-permissions:
-  contents: read
-jobs:
-"""
+CONFIG_FIXTURE = """
+schema_version = 1
 
+[meter]
+fingerprint_artifact_prefix = "nextest-archive-fingerprint-"
+fingerprint_workflow = "ci"
 
-PASS_STUB_JOB_TEMPLATE = """
-  {job}:
-    name: {job}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@example
-      - name: Classify changed files
-        run: python3 scripts/verify_ci_path_filters.py --changed-files changed-files.txt --github-output "$GITHUB_OUTPUT"
-"""
+[ci_provenance]
+schema_version = 1
+artifact_name_template = "ci-provenance-attempt-{run_attempt}"
+workflow_key = "ci"
+workflow_name = "CI"
+workflow_path = ".github/workflows/ci.yml"
+fingerprint_source = "meter"
 
-
-PASS_STUB_FIXTURE = PASS_STUB_HEADER + "".join(PASS_STUB_JOB_TEMPLATE.format(job=job) for job in ("build", "clippy", "test", "gate"))
-
-
-PASS_STUB_GATE_ONLY_FIXTURE = PASS_STUB_HEADER + """
-  gate:
-    name: gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@example
-      - name: Classify changed files
-        run: python3 scripts/verify_ci_path_filters.py --changed-files changed-files.txt --github-output "$GITHUB_OUTPUT"
+[ci_provenance.docs]
+safe_paths = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  "REASONIX.md",
+  "LICENSE",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".claude/**",
+  ".codex/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".specify/**",
+]
+forbidden_ignored_build_paths = [
+  ".claude/rust-verification.toml",
+]
+non_heavy_required_jobs = ["detector"]
 """
 
 
 DOCS_FIXTURE = """
 | Scenario | Example path | Classification | CI behavior |
 | --- | --- | --- | --- |
-| docs-only root agent doc | `AGENTS.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
-| root security policy | `SECURITY.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
-| workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs; pass-stub does not trigger |
-| Rust source change | `src/lib.rs` | full-ci | full CI runs; pass-stub does not trigger |
-| managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs; pass-stub does not trigger |
-| forbidden legacy rust-verification config | `.claude/rust-verification.toml` | invalid | pass-stub classifier fails closed |
-| lockfile change | `Cargo.lock` | full-ci | full CI runs; pass-stub does not trigger |
-| mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs; pass-stub records `docs_only=false` without blocking |
-| ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
-| ignored config dir | `.codex/config.toml` | ignored-safe | full CI skipped; pass-stub `build`, `clippy`, `test`, and `gate` run and succeed |
+| docs-only root agent doc | `AGENTS.md` | docs | heavy lanes skipped; `gate` records docs proof |
+| root security policy | `SECURITY.md` | docs | heavy lanes skipped; `gate` records docs proof |
+| workflow change | `.github/workflows/ci.yml` | full-ci | full CI runs |
+| Rust source change | `src/lib.rs` | full-ci | full CI runs |
+| managed rust-verification config | `ci/rust-verification.toml` | full-ci | full CI runs |
+| forbidden legacy rust-verification config | `.claude/rust-verification.toml` | full-ci | full CI runs |
+| lockfile change | `Cargo.lock` | full-ci | full CI runs |
+| mixed docs and source | `AGENTS.md` + `src/lib.rs` | full-ci | full CI runs |
+| ignored Claude agent dir | `.claude/skills/speckit-plan/SKILL.md` | docs | heavy lanes skipped; `gate` records docs proof |
+| ignored config dir | `.codex/config.toml` | docs | heavy lanes skipped; `gate` records docs proof |
 """
-
 
 def load_script():
     if not SCRIPT_PATH.exists():
@@ -125,37 +98,49 @@ def assert_raises(fragment: str, func) -> None:
     raise AssertionError(f"expected error containing {fragment!r}")
 
 
-def assert_extracts_ci_paths_ignore() -> None:
+def write_config(tmpdir: pathlib.Path, text: str = CONFIG_FIXTURE) -> pathlib.Path:
+    path = tmpdir / "github-actions-runners.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def assert_loads_registry_safe_paths() -> None:
     module = load_script()
-    paths = module.extract_ci_paths_ignore(CI_FIXTURE)
-    expected = (
-        "AGENTS.md",
-        "CLAUDE.md",
-        "GEMINI.md",
-        "REASONIX.md",
-        "LICENSE",
-        "SECURITY.md",
-        ".github/ISSUE_TEMPLATE/**",
-        ".claude/**",
-        ".codex/**",
-        ".gemini/**",
-        ".opencode/**",
-        ".pi/**",
-        ".specify/**",
-    )
-    if tuple(paths) != expected:
-        raise AssertionError(paths)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = pathlib.Path(tmpdir)
+        config = write_config(tmp_path)
+        registry = module.load_docs_path_registry(config)
+        if registry.safe_paths[:2] != ("AGENTS.md", "CLAUDE.md"):
+            raise AssertionError(registry)
+        if "docs/**" in registry.safe_paths or "specs/**" in registry.safe_paths:
+            raise AssertionError(f"build-input docs/spec paths must not be safe: {registry}")
+        if ".claude/rust-verification.toml" not in registry.forbidden_ignored_build_paths:
+            raise AssertionError(registry)
+        assert_raises(
+            "ci_provenance.docs.safe_paths must not include build-input path docs/**",
+            lambda: module.load_docs_path_registry(
+                write_config(
+                    tmp_path,
+                    CONFIG_FIXTURE.replace('  ".specify/**",', '  ".specify/**",\n  "docs/**",'),
+                )
+            ),
+        )
 
 
 def assert_classifies_changed_paths() -> None:
     module = load_script()
-    safe = module.extract_ci_paths_ignore(CI_FIXTURE)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        registry = module.load_docs_path_registry(write_config(pathlib.Path(tmpdir)))
+    safe = registry.safe_paths
+    forbidden = registry.forbidden_ignored_build_paths
     cases = {
         ("AGENTS.md",): True,
         ("SECURITY.md",): True,
         (".codex/settings.json", ".specify/init-options.json"): True,
         (".claude/skills/speckit-plan/SKILL.md",): True,
         (".github/ISSUE_TEMPLATE/bug.yml",): True,
+        (".claude/rust-verification.toml",): False,
+        ("./.claude/rust-verification.toml",): False,
         ("src/lib.rs",): False,
         (".github/workflows/ci.yml",): False,
         ("ci/rust-verification.toml",): False,
@@ -170,46 +155,49 @@ def assert_classifies_changed_paths() -> None:
         ("AGENTS.md", ".codex_malicious/config.toml"): False,
     }
     for changed, expected in cases.items():
-        actual = module.docs_only_safe(changed, safe)
+        actual = module.docs_only_safe(changed, safe, forbidden)
         if actual != expected:
             raise AssertionError((changed, actual, expected))
-    assert_raises(
-        "forbidden ignored build path",
-        lambda: module.docs_only_safe((".claude/rust-verification.toml",), safe),
-    )
-    assert_raises(
-        "forbidden ignored build path",
-        lambda: module.docs_only_safe(("./.claude/rust-verification.toml",), safe),
-    )
-    assert_raises("changed file list is empty", lambda: module.docs_only_safe((), safe))
+    assert_raises("changed file list is empty", lambda: module.docs_only_safe((), safe, forbidden))
 
 
-def assert_verifies_pass_stub_workflow() -> None:
+def assert_forbidden_rust_policy_path_forces_full_ci() -> None:
     module = load_script()
-    module.verify_pass_stub_workflow(PASS_STUB_FIXTURE)
-    step_if_fixture = PASS_STUB_FIXTURE.replace(
-        "      - name: Classify changed files",
-        "      - name: Optional diagnostic\n        if: always()\n        run: echo ok\n      - name: Classify changed files",
-    )
-    module.verify_pass_stub_workflow(step_if_fixture)
-    assert_raises("pass-stub required stub job gate must be named gate", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("name: gate", "name: docs-gate")))
-    assert_raises("pass-stub required stub job build must run changed-file classifier", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("python3 scripts/verify_ci_path_filters.py", "echo ok", 1)))
-    require_docs_only_fixture = PASS_STUB_FIXTURE.replace("$GITHUB_OUTPUT", "$GITHUB_OUTPUT\" --require-docs-only")
-    assert_raises("pass-stub must not require docs-only", lambda: module.verify_pass_stub_workflow(require_docs_only_fixture))
-    assert_raises("pass-stub build job must fail directly", lambda: module.verify_pass_stub_workflow(PASS_STUB_FIXTURE.replace("runs-on: ubuntu-latest", "needs: classify-docs-only\n    runs-on: ubuntu-latest", 1)))
-    job_if_fixture = PASS_STUB_FIXTURE.replace("    runs-on: ubuntu-latest", "    if: always()\n    runs-on: ubuntu-latest", 1)
-    assert_raises("pass-stub build job must not use job-level if", lambda: module.verify_pass_stub_workflow(job_if_fixture))
-
-
-def assert_rejects_missing_required_pass_stub_contexts() -> None:
-    module = load_script()
-    assert_raises("pass-stub workflow missing required stub job build", lambda: module.verify_pass_stub_workflow(PASS_STUB_GATE_ONLY_FIXTURE))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = pathlib.Path(tmpdir)
+        output = tmp_path / "github-output"
+        changed = tmp_path / "changed.txt"
+        config = write_config(tmp_path)
+        changed.write_text(".claude/rust-verification.toml\n", encoding="utf-8")
+        assert_raises(
+            "changed files are not docs-only ignored-safe",
+            lambda: module.classify_changed_file_path(
+                changed,
+                output,
+                config_path=config,
+                require_docs_only=True,
+                verbose=False,
+            ),
+        )
+        text = output.read_text(encoding="utf-8")
+    if "docs_only=false" not in text:
+        raise AssertionError(text)
 
 
 def assert_verifies_docs_rows() -> None:
     module = load_script()
     module.verify_docs_table(DOCS_FIXTURE)
-    assert_raises("docs missing required scenario", lambda: module.verify_docs_table(DOCS_FIXTURE.replace("mixed docs and source", "mixed row removed")))
+    assert_raises(
+        "docs missing required scenario",
+        lambda: module.verify_docs_table(DOCS_FIXTURE.replace("mixed docs and source", "mixed row removed")),
+    )
+    assert_raises(
+        "docs table scenario is not enforced",
+        lambda: module.verify_docs_table(
+            DOCS_FIXTURE
+            + "| future docs-only row | `AGENTS.md` | docs | untracked behavior |\n"
+        ),
+    )
 
 
 def assert_writes_github_output() -> None:
@@ -217,8 +205,9 @@ def assert_writes_github_output() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         output = pathlib.Path(tmpdir) / "github-output"
         changed = pathlib.Path(tmpdir) / "changed.txt"
+        config = write_config(pathlib.Path(tmpdir))
         changed.write_text("AGENTS.md\n.codex/config.toml\n", encoding="utf-8")
-        module.classify_changed_file_path(changed, output, verbose=False)
+        module.classify_changed_file_path(changed, output, config_path=config, verbose=False)
         text = output.read_text(encoding="utf-8")
     if "docs_only=true" not in text:
         raise AssertionError(text)
@@ -238,10 +227,17 @@ def assert_require_docs_only_fails_closed() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         output = pathlib.Path(tmpdir) / "github-output"
         changed = pathlib.Path(tmpdir) / "changed.txt"
+        config = write_config(pathlib.Path(tmpdir))
         changed.write_text("AGENTS.md\nsrc/lib.rs\n", encoding="utf-8")
         assert_raises(
             "changed files are not docs-only ignored-safe",
-            lambda: module.classify_changed_file_path(changed, output, require_docs_only=True, verbose=False),
+            lambda: module.classify_changed_file_path(
+                changed,
+                output,
+                config_path=config,
+                require_docs_only=True,
+                verbose=False,
+            ),
         )
         text = output.read_text(encoding="utf-8")
     if "docs_only=false" not in text:
@@ -266,10 +262,9 @@ def assert_verifies_rust_policy_location() -> None:
 
 
 def main() -> int:
-    assert_extracts_ci_paths_ignore()
+    assert_loads_registry_safe_paths()
     assert_classifies_changed_paths()
-    assert_rejects_missing_required_pass_stub_contexts()
-    assert_verifies_pass_stub_workflow()
+    assert_forbidden_rust_policy_path_forces_full_ci()
     assert_verifies_docs_rows()
     assert_writes_github_output()
     assert_input_reads_are_bounded()

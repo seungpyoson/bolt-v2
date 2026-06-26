@@ -36,6 +36,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
+from ci_test_manifest import build_test_manifest
 
 try:
     import tomllib as _toml
@@ -77,10 +78,10 @@ RUST_PROBE_HELP_EPILOG = """\
 Examples:
   just rust-probe suggest
   just rust-probe check-lib
-  just rust-probe check-test-target <test_target>
-  just rust-probe nextest-no-run-test-target <test_target>
-  just rust-probe nextest-test-target <test_target>
-  just rust-probe nextest-test-target-name <test_target> <test_name>
+  just rust-probe check-test-target <harness_target>
+  just rust-probe nextest-no-run-test-target <harness_target>
+  just rust-probe nextest-test-target <harness_target>
+  just rust-probe nextest-test-target-name <harness_target> <member_stem>::
 
 Rust Probe is targeted remote debugging feedback only. It is not merge proof.
 Use just verify-remote for full remote feedback; mark the PR ready before treating it as merge proof.
@@ -3476,7 +3477,7 @@ def validate_rust_probe_selection(mode: str, test_target: str, test_name: str) -
     return None
 
 
-def rust_probe_test_target_for_path(path: str) -> str | None:
+def rust_probe_test_stem_for_path(path: str) -> str | None:
     normalized = path.strip().replace("\\", "/")
     if not normalized:
         return None
@@ -3487,6 +3488,22 @@ def rust_probe_test_target_for_path(path: str) -> str | None:
     return parsed.stem
 
 
+def rust_probe_test_target_for_path(
+    path: str,
+    *,
+    manifest_path: pathlib.Path | None = None,
+    tests_root: pathlib.Path | None = None,
+) -> str | None:
+    stem = rust_probe_test_stem_for_path(path)
+    if stem is None:
+        return None
+    manifest = build_test_manifest(
+        manifest_path or SCRIPT_DIR.parent / "Cargo.toml",
+        tests_root or SCRIPT_DIR.parent / "tests",
+    )
+    return manifest.member_to_harness.get(stem)
+
+
 def rust_probe_separate_workspace_for_path(path: str, separate_workspaces: dict[str, Any]) -> tuple[str, ...] | None:
     normalized = path.strip().replace("\\", "/")
     for prefix, suggestion in separate_workspaces.items():
@@ -3495,15 +3512,31 @@ def rust_probe_separate_workspace_for_path(path: str, separate_workspaces: dict[
     return None
 
 
-def rust_probe_suggestions(changed_files: list[str], separate_workspaces: dict[str, Any]) -> list[str]:
+def rust_probe_suggestions(
+    changed_files: list[str],
+    separate_workspaces: dict[str, Any],
+    *,
+    manifest_path: pathlib.Path | None = None,
+    tests_root: pathlib.Path | None = None,
+) -> list[str]:
     normalized = sorted({path.strip().replace("\\", "/") for path in changed_files if path.strip()})
-    targets = sorted(
+    test_stems = sorted(
         {
-            target
+            stem
             for path in normalized
-            if (target := rust_probe_test_target_for_path(path)) is not None
+            if (stem := rust_probe_test_stem_for_path(path)) is not None
         }
     )
+    target_to_stems: dict[str, list[str]] = {}
+    if test_stems:
+        manifest = build_test_manifest(
+            manifest_path or SCRIPT_DIR.parent / "Cargo.toml",
+            tests_root or SCRIPT_DIR.parent / "tests",
+        )
+        for stem in test_stems:
+            target = manifest.member_to_harness.get(stem)
+            if target is not None:
+                target_to_stems.setdefault(target, []).append(stem)
     suggestions: list[str] = []
     lib_or_workspace_changed = any(
         path == "Cargo.toml"
@@ -3522,15 +3555,16 @@ def rust_probe_suggestions(changed_files: list[str], separate_workspaces: dict[s
         }
     ):
         suggestions.extend(suggestion_lines)
-    for target in targets:
+    for target, stems in sorted(target_to_stems.items()):
         suggestions.extend(
             [
                 f"just rust-probe check-test-target {target}",
                 f"just rust-probe nextest-no-run-test-target {target}",
                 f"just rust-probe nextest-test-target {target}",
-                f"just rust-probe nextest-test-target-name {target} <test_name>",
             ]
         )
+        for stem in sorted(stems):
+            suggestions.append(f"just rust-probe nextest-test-target-name {target} {stem}::")
     if suggestions:
         return suggestions
     if any(path.startswith("crates/") for path in normalized):

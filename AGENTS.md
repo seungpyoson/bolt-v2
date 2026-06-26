@@ -77,6 +77,7 @@ These repo-level rules are in addition to any higher-level agent instructions.
 - Ready PR or merge-queue full CI is proof. Draft workflow_dispatch full CI is feedback. Rust Probe is debugging.
 - Agents may use Rust Probe only when cheap local checks cannot answer the question.
 - Use `just rust-probe suggest` before dispatching a probe to choose the smallest targeted remote Rust debugging command.
+- Suggested integration-test probes use the Cargo `[[test]]` harness as `test_target`; when a changed file is a harness member module, the suggested `test_name` is `<member_stem>::` so nextest stays scoped to that module.
 - Use dispatching `just rust-probe ...` modes only from a clean named branch whose `HEAD` is pushed to its upstream. Those modes dispatch the exact pushed SHA to GitHub Actions/Ubicloud and refuse unsafe local state.
 - Before running Rust Probe, state: (1) changed files, (2) suspected failure class, (3) selected mode, (4) selected test target/name, (5) why this is the smallest sufficient probe.
 - Limits: max 2 Rust Probe runs before stopping to explain root cause; full CI may run only after the slice is coherent; Rust Probe success is not merge readiness; Rust Probe must not replace the required `gate`; do not run full CI just to discover ordinary compiler errors.

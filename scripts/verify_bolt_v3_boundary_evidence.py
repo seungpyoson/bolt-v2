@@ -342,7 +342,7 @@ def github_issue_state(repo: str, issue: int, token: str | None) -> str:
 
 
 def scan_exemption_issue_state(root: Path, findings: list[str]) -> None:
-    if os.environ.get("GITHUB_ACTIONS") != "true":
+    if root.resolve() != REPO_ROOT.resolve() or os.environ.get("GITHUB_ACTIONS") != "true":
         return
     repo = os.environ.get("GITHUB_REPOSITORY", "seungpyoson/bolt-v2")
     token = os.environ.get("GITHUB_TOKEN")

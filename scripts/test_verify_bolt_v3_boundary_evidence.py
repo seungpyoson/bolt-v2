@@ -7,6 +7,7 @@ import datetime as dt
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -665,6 +666,32 @@ def test_capture_workflow_must_not_use_run_id_as_check_suite_id() -> None:
 
 def test_expired_deferral_fails() -> None:
     assert_finding(scan_temp(today=dt.date(2026, 8, 1)), "expired on 2026-07-31")
+
+
+def test_temp_root_does_not_verify_github_issue_state_in_actions_env() -> None:
+    verifier = load_verifier()
+    original_github_actions = os.environ.get("GITHUB_ACTIONS")
+    original_issue_state = verifier.github_issue_state
+
+    def fail_issue_state(*_args, **_kwargs):
+        raise AssertionError("temp-root self-tests must not call GitHub issue state")
+
+    try:
+        os.environ["GITHUB_ACTIONS"] = "true"
+        verifier.github_issue_state = fail_issue_state
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clean_files(root)
+            findings: list[str] = []
+            verifier.scan_exemption_issue_state(root, findings)
+        if findings:
+            raise AssertionError(f"unexpected temp-root issue-state findings {findings}")
+    finally:
+        verifier.github_issue_state = original_issue_state
+        if original_github_actions is None:
+            os.environ.pop("GITHUB_ACTIONS", None)
+        else:
+            os.environ["GITHUB_ACTIONS"] = original_github_actions
 
 
 def test_new_http_feeder_fails_closed() -> None:

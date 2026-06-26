@@ -90,7 +90,7 @@ enum Command {
     },
     Ops {
         #[command(subcommand)]
-        command: OpsCommand,
+        command: Box<OpsCommand>,
     },
     ProviderArtifacts {
         #[command(subcommand)]
@@ -169,37 +169,43 @@ enum OpsCommand {
         config: PathBuf,
     },
     CaptureReferenceBoundaryFixture {
-        #[arg(long = "root-config")]
-        root_config: PathBuf,
-        #[arg(long)]
-        client_key: String,
-        #[arg(long)]
-        output_dir: PathBuf,
-        #[arg(long)]
-        wait_timeout_secs: u64,
-        #[arg(long)]
-        repository: String,
-        #[arg(long)]
-        workflow_path: String,
-        #[arg(long)]
-        workflow_digest: String,
-        #[arg(long)]
-        provenance_config_digest: String,
-        #[arg(long)]
-        head_sha: String,
-        #[arg(long)]
-        head_branch: String,
-        #[arg(long)]
-        run_id: u64,
-        #[arg(long)]
-        run_attempt: u64,
-        #[arg(long)]
-        check_suite_id: u64,
-        #[arg(long)]
-        event: String,
-        #[arg(long)]
-        created_at: String,
+        #[command(flatten)]
+        args: Box<CaptureReferenceBoundaryFixtureArgs>,
     },
+}
+
+#[derive(clap::Args)]
+struct CaptureReferenceBoundaryFixtureArgs {
+    #[arg(long = "root-config")]
+    root_config: PathBuf,
+    #[arg(long)]
+    client_key: String,
+    #[arg(long)]
+    output_dir: PathBuf,
+    #[arg(long)]
+    wait_timeout_secs: u64,
+    #[arg(long)]
+    repository: String,
+    #[arg(long)]
+    workflow_path: String,
+    #[arg(long)]
+    workflow_digest: String,
+    #[arg(long)]
+    provenance_config_digest: String,
+    #[arg(long)]
+    head_sha: String,
+    #[arg(long)]
+    head_branch: String,
+    #[arg(long)]
+    run_id: u64,
+    #[arg(long)]
+    run_attempt: u64,
+    #[arg(long)]
+    check_suite_id: u64,
+    #[arg(long)]
+    event: String,
+    #[arg(long)]
+    created_at: String,
 }
 
 #[derive(clap::Subcommand)]
@@ -273,7 +279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Command::Run { config } => run_live_node(config),
         Command::Secrets { command } => run_secrets_command(command),
-        Command::Ops { command } => run_ops_command(command),
+        Command::Ops { command } => run_ops_command(*command),
         Command::ProviderArtifacts { command } => run_provider_artifacts_command(*command),
     }
 }
@@ -344,43 +350,46 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::ReferenceCurrentPriceHealth { config } => {
             run_reference_current_price_health_command(&config)
         }
-        OpsCommand::CaptureReferenceBoundaryFixture {
-            root_config,
-            client_key,
-            output_dir,
-            wait_timeout_secs,
-            repository,
-            workflow_path,
-            workflow_digest,
-            provenance_config_digest,
-            head_sha,
-            head_branch,
-            run_id,
-            run_attempt,
-            check_suite_id,
-            event,
-            created_at,
-        } => run_capture_chainlink_reference_fixture_command(
-            &root_config,
-            BoundaryFixtureCaptureRequest {
+        OpsCommand::CaptureReferenceBoundaryFixture { args } => {
+            let CaptureReferenceBoundaryFixtureArgs {
+                root_config,
                 client_key,
                 output_dir,
-                wait_timeout: std::time::Duration::from_secs(wait_timeout_secs),
-                provenance: BoundaryFixtureCaptureProvenance {
-                    repository,
-                    workflow_path,
-                    workflow_digest,
-                    provenance_config_digest,
-                    head_sha,
-                    head_branch,
-                    run_id,
-                    run_attempt,
-                    check_suite_id,
-                    event,
-                    created_at,
+                wait_timeout_secs,
+                repository,
+                workflow_path,
+                workflow_digest,
+                provenance_config_digest,
+                head_sha,
+                head_branch,
+                run_id,
+                run_attempt,
+                check_suite_id,
+                event,
+                created_at,
+            } = *args;
+            run_capture_chainlink_reference_fixture_command(
+                &root_config,
+                BoundaryFixtureCaptureRequest {
+                    client_key,
+                    output_dir,
+                    wait_timeout: std::time::Duration::from_secs(wait_timeout_secs),
+                    provenance: BoundaryFixtureCaptureProvenance {
+                        repository,
+                        workflow_path,
+                        workflow_digest,
+                        provenance_config_digest,
+                        head_sha,
+                        head_branch,
+                        run_id,
+                        run_attempt,
+                        check_suite_id,
+                        event,
+                        created_at,
+                    },
                 },
-            },
-        ),
+            )
+        }
     }
 }
 
@@ -1722,6 +1731,13 @@ mod tests {
     use bolt_v2::bolt_v3_prod_profile::GENERATED_MARKER_PREFIX;
     use std::fs;
 
+    fn parsed_ops_command(cli: Cli) -> OpsCommand {
+        match cli.command {
+            Command::Ops { command } => *command,
+            _ => panic!("expected ops command"),
+        }
+    }
+
     #[test]
     fn ops_data_client_probe_cli_parses_config_and_client_key() {
         let cli = Cli::try_parse_from([
@@ -1735,10 +1751,8 @@ mod tests {
         ])
         .expect("data-client probe command should parse");
 
-        match cli.command {
-            Command::Ops {
-                command: OpsCommand::DataClientProbe { config, client_key },
-            } => {
+        match parsed_ops_command(cli) {
+            OpsCommand::DataClientProbe { config, client_key } => {
                 assert_eq!(config, PathBuf::from("config/root.toml"));
                 assert_eq!(client_key, "bybit_data");
             }
@@ -1759,13 +1773,10 @@ mod tests {
         ])
         .expect("ops launch command should parse");
 
-        match cli.command {
-            Command::Ops {
-                command:
-                    OpsCommand::Launch {
-                        profile,
-                        config_root,
-                    },
+        match parsed_ops_command(cli) {
+            OpsCommand::Launch {
+                profile,
+                config_root,
             } => {
                 assert_eq!(profile, "example");
                 assert_eq!(config_root, PathBuf::from("/opt/bolt-v2/config"));
@@ -1856,13 +1867,10 @@ mod tests {
         ])
         .expect("generate-live-config command should parse");
 
-        match cli.command {
-            Command::Ops {
-                command:
-                    OpsCommand::GenerateLiveConfig {
-                        profile,
-                        config_root,
-                    },
+        match parsed_ops_command(cli) {
+            OpsCommand::GenerateLiveConfig {
+                profile,
+                config_root,
             } => {
                 assert_eq!(profile, "example");
                 assert_eq!(config_root, PathBuf::from("config"));
@@ -1884,13 +1892,10 @@ mod tests {
         ])
         .expect("verify-live-config command should parse");
 
-        match cli.command {
-            Command::Ops {
-                command:
-                    OpsCommand::VerifyLiveConfig {
-                        profile,
-                        config_root,
-                    },
+        match parsed_ops_command(cli) {
+            OpsCommand::VerifyLiveConfig {
+                profile,
+                config_root,
             } => {
                 assert_eq!(profile, "example");
                 assert_eq!(config_root, PathBuf::from("/opt/bolt-v2/config"));
@@ -2167,10 +2172,8 @@ mod tests {
         ])
         .expect("data-client census command should parse");
 
-        match cli.command {
-            Command::Ops {
-                command: OpsCommand::DataClientCensus { config, client_key },
-            } => {
+        match parsed_ops_command(cli) {
+            OpsCommand::DataClientCensus { config, client_key } => {
                 assert_eq!(config, PathBuf::from("config/root.toml"));
                 assert_eq!(client_key, "bybit_data");
             }
@@ -2189,10 +2192,8 @@ mod tests {
         ])
         .expect("reference live probe command should parse");
 
-        match cli.command {
-            Command::Ops {
-                command: OpsCommand::ReferenceLiveProbe { config },
-            } => {
+        match parsed_ops_command(cli) {
+            OpsCommand::ReferenceLiveProbe { config } => {
                 assert_eq!(config, PathBuf::from("config/root.toml"));
             }
             _ => panic!("expected ops reference-live-probe command"),
@@ -2210,10 +2211,8 @@ mod tests {
         ])
         .expect("reference current price health command should parse");
 
-        match cli.command {
-            Command::Ops {
-                command: OpsCommand::ReferenceCurrentPriceHealth { config },
-            } => {
+        match parsed_ops_command(cli) {
+            OpsCommand::ReferenceCurrentPriceHealth { config } => {
                 assert_eq!(config, PathBuf::from("config/root.toml"));
             }
             _ => panic!("expected ops reference-current-price-health command"),
@@ -2580,14 +2579,11 @@ mod tests {
         ])
         .expect("ops status command should parse");
 
-        match cli.command {
-            Command::Ops {
-                command:
-                    OpsCommand::Status {
-                        profile,
-                        config_root,
-                        intended_sha,
-                    },
+        match parsed_ops_command(cli) {
+            OpsCommand::Status {
+                profile,
+                config_root,
+                intended_sha,
             } => {
                 assert_eq!(profile, "example");
                 assert_eq!(config_root, PathBuf::from("/opt/bolt-v2/config"));
@@ -2613,10 +2609,8 @@ mod tests {
         ])
         .expect("ops status command should parse without --intended-sha");
 
-        match cli.command {
-            Command::Ops {
-                command: OpsCommand::Status { intended_sha, .. },
-            } => assert!(intended_sha.is_none()),
+        match parsed_ops_command(cli) {
+            OpsCommand::Status { intended_sha, .. } => assert!(intended_sha.is_none()),
             _ => panic!("expected ops status command"),
         }
     }

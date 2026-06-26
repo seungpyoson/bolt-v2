@@ -39,10 +39,6 @@ name = "bolt_v3_dead_gate_removal"
 path = "tests/bolt_v3_dead_gate_removal.rs"
 
 [[test]]
-name = "bolt_v3_fair_value_pricing"
-path = "tests/bolt_v3_fair_value_pricing.rs"
-
-[[test]]
 name = "bolt_v3_instrument_filters"
 path = "tests/bolt_v3_instrument_filters.rs"
 
@@ -63,6 +59,10 @@ name = "kill_switch_loss"
 path = "tests/kill_switch_loss.rs"
 
 [[test]]
+name = "pricing"
+path = "tests/pricing.rs"
+
+[[test]]
 name = "bolt_v3_order_intent"
 path = "tests/bolt_v3_order_intent.rs"
 
@@ -75,44 +75,8 @@ name = "bolt_v3_polyresearch_auth"
 path = "tests/bolt_v3_polyresearch_auth.rs"
 
 [[test]]
-name = "bolt_v3_realized_volatility"
-path = "tests/bolt_v3_realized_volatility.rs"
-
-[[test]]
-name = "bolt_v3_realized_volatility_runtime"
-path = "tests/bolt_v3_realized_volatility_runtime.rs"
-
-[[test]]
-name = "bolt_v3_realized_volatility_source_fence"
-path = "tests/bolt_v3_realized_volatility_source_fence.rs"
-
-[[test]]
-name = "bolt_v3_reference_price"
-path = "tests/bolt_v3_reference_price.rs"
-
-[[test]]
-name = "bolt_v3_reference_price_config"
-path = "tests/bolt_v3_reference_price_config.rs"
-
-[[test]]
-name = "bolt_v3_reference_price_runtime"
-path = "tests/bolt_v3_reference_price_runtime.rs"
-
-[[test]]
-name = "bolt_v3_reference_provider_registration"
-path = "tests/bolt_v3_reference_provider_registration.rs"
-
-[[test]]
-name = "bolt_v3_static_binary_event_reference_price"
-path = "tests/bolt_v3_static_binary_event_reference_price.rs"
-
-[[test]]
 name = "bolt_v3_submit_admission"
 path = "tests/bolt_v3_submit_admission.rs"
-
-[[test]]
-name = "bolt_v3_taker_pricing"
-path = "tests/bolt_v3_taker_pricing.rs"
 
 [[test]]
 name = "build_script_git_head_rerun_paths"

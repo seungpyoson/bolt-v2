@@ -3962,6 +3962,271 @@ fn s8c_reconciliation_required_exits_on_corrected_terminal_truth_and_releases_to
 }
 
 #[test]
+fn s8c_later_open_status_fault_blocks_older_terminal_release() {
+    let pool_id = "pool-s8c-later-open-fault";
+    let idempotency_key = "idempotency-s8c-later-open-fault";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-later-open-fault",
+        "intent-s8c-later-open-fault",
+        idempotency_key,
+        "S8C-LATER-OPEN-FAULT",
+    );
+    record_live_submission_for_test(&owner, idempotency_key, client_order_id);
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-later-open-fault-open-1",
+            1_150,
+            Some(1),
+        ))
+        .expect("first open status should apply");
+    let before_fault_totals = owner
+        .reserved_risk_totals()
+        .expect("reserved totals should be readable before the later open fault");
+
+    let fault = reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-later-open-fault-open-3",
+            1_170,
+            Some(3),
+        ))
+        .expect("gapped later open truth should fail closed into reconciliation");
+    assert_eq!(
+        fault.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+
+    let terminal = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-later-open-fault-cancel-2",
+            1_160,
+            Some(2),
+        ))
+        .expect("older terminal truth should be processed without releasing live-order risk");
+    assert_eq!(
+        terminal.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+
+    let record_after_terminal = only_reservation_record(&owner);
+    assert_eq!(
+        record_after_terminal.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    assert_eq!(
+        record_after_terminal.remaining_fillable_quantity,
+        dec(2),
+        "a later open-status fault must keep the live order's open remainder reserved"
+    );
+    assert!(
+        record_after_terminal.open_order_remainder_held,
+        "a later open-status fault must keep the open-order reservation held"
+    );
+    assert!(
+        record_after_terminal
+            .unresolved_lifecycle_reconciliation_faults
+            .values()
+            .any(
+                |fault| fault.kind == LifecycleReconciliationFaultKind::OrderStatus
+                    && fault.order_status == Some(ReservationLifecycleState::Open)
+                    && fault.ts_event_unix_nanos == 1_170
+                    && fault.event_sequence == Some(3)
+            ),
+        "older terminal truth must not clear a later non-terminal order-status fault"
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should remain readable after stale terminal truth"),
+        before_fault_totals,
+        "stale terminal truth must not release open-order risk while later open truth is unresolved"
+    );
+
+    let mut sink = RecordingLiveSubmitBoundary::default();
+    let error = reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect_err("the retained later-open fault must keep reconciliation fail-closed");
+    assert_eq!(
+        error,
+        LifecycleReconciliationError::State(RiskSubmissionMutationError::State(
+            RiskStateMutationError::ReconciliationRequired,
+        )),
+    );
+}
+
+#[test]
+fn s8c_terminal_status_clears_stale_earlier_open_status_fault() {
+    let pool_id = "pool-s8c-stale-open-fault";
+    let idempotency_key = "idempotency-s8c-stale-open-fault";
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        pool_id,
+        "owner-s8c-stale-open-fault",
+        "intent-s8c-stale-open-fault",
+        idempotency_key,
+        "S8C-STALE-OPEN-FAULT",
+    );
+    record_live_submission_for_test(&owner, idempotency_key, client_order_id);
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-stale-open-fault-open-1",
+            1_150,
+            Some(1),
+        ))
+        .expect("first open status should apply");
+    reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-stale-open-fault-open-2",
+            1_160,
+            Some(2),
+        ))
+        .expect("second open status should apply");
+
+    let fault = reconciler
+        .apply_order_status_truth(nt_open_status_with_ordering(
+            client_order_id,
+            "s8c-stale-open-fault-duplicate-open-1",
+            1_150,
+            Some(1),
+        ))
+        .expect("stale distinct open truth should fail closed into reconciliation");
+    assert_eq!(
+        fault.lifecycle_state,
+        ReservationLifecycleState::ReconciliationRequired
+    );
+    assert!(
+        only_reservation_record(&owner)
+            .unresolved_lifecycle_reconciliation_faults
+            .values()
+            .any(
+                |fault| fault.kind == LifecycleReconciliationFaultKind::OrderStatus
+                    && fault.order_status == Some(ReservationLifecycleState::Open)
+                    && fault.ts_event_unix_nanos == 1_150
+                    && fault.event_sequence == Some(1)
+            ),
+        "test setup must create the stale earlier order-status fault"
+    );
+
+    let terminal = reconciler
+        .apply_order_status_truth(nt_cancel_confirmed_status_with_ordering(
+            client_order_id,
+            "s8c-stale-open-fault-cancel-3",
+            1_170,
+            Some(3),
+        ))
+        .expect("later terminal truth should make stale earlier open truth irrelevant");
+    assert_eq!(
+        terminal.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+
+    let record_after_terminal = only_reservation_record(&owner);
+    assert_eq!(
+        record_after_terminal.lifecycle_state,
+        ReservationLifecycleState::CancelConfirmed
+    );
+    assert!(
+        record_after_terminal
+            .unresolved_lifecycle_reconciliation_faults
+            .is_empty(),
+        "later terminal truth must clear stale earlier order-status faults"
+    );
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after terminal truth")
+            .open_order_count(),
+        0
+    );
+
+    let mut sink = RecordingLiveSubmitBoundary::default();
+    reconciler
+        .reconcile_restart(
+            NtExecutionTruth {
+                order_status_reports: Vec::new(),
+                fill_reports: Vec::new(),
+                settlement_reports: Vec::new(),
+            },
+            &mut sink,
+            1_200,
+        )
+        .expect("stale earlier order-status fault must not wedge reconciliation");
+}
+
+#[test]
+fn s8c_fill_and_settlement_may_share_event_id_without_cross_kind_idempotency() {
+    let (_reservation, owner, reconciler, client_order_id) = submitted_reservation_context(
+        "pool-s8c-cross-kind-event-id",
+        "owner-s8c-cross-kind-event-id",
+        "intent-s8c-cross-kind-event-id",
+        "idempotency-s8c-cross-kind-event-id",
+        "S8C-CROSS-KIND-EVENT-ID",
+    );
+    reconciler
+        .apply_order_status_truth(nt_open_status(
+            client_order_id,
+            "s8c-cross-kind-event-id-open",
+        ))
+        .expect("authoritative open status should move the order to Open");
+    reconciler
+        .apply_fill_truth(nt_fill(
+            client_order_id,
+            "s8c-cross-kind-event-id-shared",
+            dec(2),
+            dec(0),
+            dec(24),
+            dec(26),
+            vec![dec(1), dec(99)],
+        ))
+        .expect("fill truth should apply even with a reusable caller event id");
+
+    let settlement = reconciler
+        .apply_settlement_truth(nt_settlement(
+            client_order_id,
+            "s8c-cross-kind-event-id-shared",
+            true,
+            true,
+            dec(28),
+            dec(30),
+            vec![dec(-2), dec(99)],
+        ))
+        .expect("settlement truth must not be skipped by a same-id fill event");
+
+    assert_eq!(
+        settlement.lifecycle_state,
+        ReservationLifecycleState::Settled
+    );
+    let record = only_reservation_record(&owner);
+    assert_eq!(record.lifecycle_state, ReservationLifecycleState::Settled);
+    let exposure = record
+        .filled_position_exposure
+        .expect("settlement should revise the filled exposure before release");
+    assert_eq!(exposure.conservative_liquidation_value, dec(28));
+    assert_eq!(exposure.governor_cost_basis, dec(30));
+    assert_eq!(exposure.terminal_cash_flows, vec![dec(-2), dec(99)]);
+    assert_eq!(
+        owner
+            .reserved_risk_totals()
+            .expect("reserved totals should be readable after final settlement")
+            .position_quantity(),
+        Decimal::ZERO,
+        "final settlement should apply and release the filled-position reservation"
+    );
+}
+
+#[test]
 fn s8c_faulted_fill_is_not_cleared_by_later_terminal_truth() {
     let pool_id = "pool-s8c-fill-fault-retained";
     let idempotency_key = "idempotency-s8c-fill-fault-retained";
@@ -4002,9 +4267,15 @@ fn s8c_faulted_fill_is_not_cleared_by_later_terminal_truth() {
     let record_after_fill_fault = only_reservation_record(&owner);
     let fill_fault = record_after_fill_fault
         .unresolved_lifecycle_reconciliation_faults
-        .get("s8c-fill-fault-retained-fill")
+        .values()
+        .find(|fault| {
+            fault.kind == LifecycleReconciliationFaultKind::Fill
+                && fault.ts_event_unix_nanos == 1_170
+                && fault.event_sequence == Some(3)
+        })
         .expect("the unresolved fill fault must retain its ordering key");
     assert_eq!(fill_fault.kind, LifecycleReconciliationFaultKind::Fill);
+    assert_eq!(fill_fault.order_status, None);
     assert_eq!(fill_fault.ts_event_unix_nanos, 1_170);
     assert_eq!(fill_fault.event_sequence, Some(3));
 
@@ -4029,7 +4300,10 @@ fn s8c_faulted_fill_is_not_cleared_by_later_terminal_truth() {
     assert!(
         record_after_terminal
             .unresolved_lifecycle_reconciliation_faults
-            .contains_key("s8c-fill-fault-retained-fill"),
+            .values()
+            .any(|fault| fault.kind == LifecycleReconciliationFaultKind::Fill
+                && fault.ts_event_unix_nanos == 1_170
+                && fault.event_sequence == Some(3)),
         "terminal status must not drop an unresolved fill fault"
     );
 

@@ -156,11 +156,27 @@ pub enum RiskReservationWorkDimension {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleReconciliationFault {
     pub kind: LifecycleReconciliationFaultKind,
+    pub order_status: Option<ReservationLifecycleState>,
     pub ts_event_unix_nanos: u64,
     pub event_sequence: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LifecycleReconciliationEventIdentity {
+    pub kind: LifecycleReconciliationFaultKind,
+    pub event_id: String,
+}
+
+impl LifecycleReconciliationEventIdentity {
+    pub fn new(kind: LifecycleReconciliationFaultKind, event_id: &str) -> Self {
+        Self {
+            kind,
+            event_id: event_id.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LifecycleReconciliationFaultKind {
     OrderStatus,
     Fill,
@@ -183,8 +199,9 @@ pub struct SubstrateReservationRecord {
     pub filled_position_equity_floor_stress_loss: Decimal,
     pub filled_position_governor_realized_loss: Decimal,
     pub filled_position_held: bool,
-    pub applied_lifecycle_event_ids: BTreeSet<String>,
-    pub unresolved_lifecycle_reconciliation_faults: BTreeMap<String, LifecycleReconciliationFault>,
+    pub applied_lifecycle_event_ids: BTreeSet<LifecycleReconciliationEventIdentity>,
+    pub unresolved_lifecycle_reconciliation_faults:
+        BTreeMap<LifecycleReconciliationEventIdentity, LifecycleReconciliationFault>,
     pub last_lifecycle_ts_event_unix_nanos: Option<u64>,
     pub last_lifecycle_event_sequence: Option<u64>,
 }

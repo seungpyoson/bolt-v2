@@ -14,10 +14,10 @@ use crate::bolt_v3_risk_reservation_substrate::contracts::{
 };
 use crate::bolt_v3_risk_reservation_substrate::{
     reservation_ledger::{
-        LifecycleReconciliationFault, LifecycleReconciliationFaultKind, RiskReservationCommit,
-        RiskReservationError, RiskReservationRejection, RiskReservationTotals,
-        RiskReservationTransaction, SubstrateReservationRecord, build_admission_token,
-        evaluate_stateful_caps,
+        LifecycleReconciliationEventIdentity, LifecycleReconciliationFault,
+        LifecycleReconciliationFaultKind, RiskReservationCommit, RiskReservationError,
+        RiskReservationRejection, RiskReservationTotals, RiskReservationTransaction,
+        SubstrateReservationRecord, build_admission_token, evaluate_stateful_caps,
     },
     risk_classifier::ConcentrationBucket,
     risk_kernel::{RiskExposure, RiskKernel, RiskKernelError},
@@ -849,10 +849,13 @@ impl FencedRiskStateStore {
             &mut inner,
             lease,
             record_index,
-            event_id,
-            ts_event_unix_nanos,
-            event_sequence,
-            LifecycleReconciliationFaultKind::OrderStatus,
+            LifecycleEventInput {
+                event_id,
+                ts_event_unix_nanos,
+                event_sequence,
+                kind: LifecycleReconciliationFaultKind::OrderStatus,
+                order_status: Some(target_state),
+            },
         )? {
             return Ok(result);
         }
@@ -861,6 +864,41 @@ impl FencedRiskStateStore {
             && !order_status_transition_allowed(current_state, target_state)
         {
             return Err(RiskSubmissionMutationError::InvalidLifecycleTransition);
+        }
+        if open_remainder_release_state(target_state)
+            && terminal_order_status_has_blocking_fault(
+                &inner.reservation_records[record_index],
+                ts_event_unix_nanos,
+                event_sequence,
+            )
+        {
+            let version = next_pool_version(&mut inner, lease.pool_id())
+                .map_err(RiskSubmissionMutationError::State)?;
+            let lifecycle_state = {
+                let record = &mut inner.reservation_records[record_index];
+                record_lifecycle_event_success(
+                    record,
+                    event_id,
+                    ts_event_unix_nanos,
+                    event_sequence,
+                    LifecycleReconciliationFaultKind::OrderStatus,
+                    Some(target_state),
+                );
+                record.lifecycle_state
+            };
+            inner.mutations.push(DurableRiskMutationRecord {
+                pool_id: lease.pool_id().clone(),
+                fencing_token: lease.fencing_token(),
+                mutation: DurableRiskMutation::new(
+                    event_id.to_string(),
+                    RiskMutationKind::Lifecycle,
+                ),
+                risk_state_version: version,
+            });
+            return Ok(LifecycleMutationResult {
+                risk_state_version: version,
+                lifecycle_state,
+            });
         }
         let state_changed = current_state != target_state;
         let release_open_remainder = state_changed
@@ -985,10 +1023,13 @@ impl FencedRiskStateStore {
             &mut inner,
             lease,
             record_index,
-            event_id,
-            ts_event_unix_nanos,
-            event_sequence,
-            LifecycleReconciliationFaultKind::Fill,
+            LifecycleEventInput {
+                event_id,
+                ts_event_unix_nanos,
+                event_sequence,
+                kind: LifecycleReconciliationFaultKind::Fill,
+                order_status: None,
+            },
         )? {
             return Ok(result);
         }
@@ -1103,10 +1144,13 @@ impl FencedRiskStateStore {
             &mut inner,
             lease,
             record_index,
-            event_id,
-            ts_event_unix_nanos,
-            event_sequence,
-            LifecycleReconciliationFaultKind::Settlement,
+            LifecycleEventInput {
+                event_id,
+                ts_event_unix_nanos,
+                event_sequence,
+                kind: LifecycleReconciliationFaultKind::Settlement,
+                order_status: None,
+            },
         )? {
             return Ok(result);
         }
@@ -1869,17 +1913,30 @@ fn validate_lifecycle_mutation_id(mutation_id: &str) -> Result<(), RiskSubmissio
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct LifecycleEventInput<'a> {
+    event_id: &'a str,
+    ts_event_unix_nanos: u64,
+    event_sequence: Option<u64>,
+    kind: LifecycleReconciliationFaultKind,
+    order_status: Option<ReservationLifecycleState>,
+}
+
+impl LifecycleEventInput<'_> {
+    fn identity(&self) -> LifecycleReconciliationEventIdentity {
+        LifecycleReconciliationEventIdentity::new(self.kind, self.event_id)
+    }
+}
+
 fn lifecycle_event_preflight(
     inner: &mut FencedRiskStateStoreInner,
     lease: &PoolOwnershipLease,
     record_index: usize,
-    event_id: &str,
-    ts_event_unix_nanos: u64,
-    event_sequence: Option<u64>,
-    fault_kind: LifecycleReconciliationFaultKind,
+    event: LifecycleEventInput<'_>,
 ) -> Result<Option<LifecycleMutationResult>, RiskSubmissionMutationError> {
     let record = &inner.reservation_records[record_index];
-    if record.applied_lifecycle_event_ids.contains(event_id) {
+    let event_identity = event.identity();
+    if record.applied_lifecycle_event_ids.contains(&event_identity) {
         return Ok(Some(LifecycleMutationResult {
             risk_state_version: current_pool_version(inner, lease.pool_id()),
             lifecycle_state: record.lifecycle_state,
@@ -1887,25 +1944,16 @@ fn lifecycle_event_preflight(
     }
     if record
         .unresolved_lifecycle_reconciliation_faults
-        .contains_key(event_id)
-        && lifecycle_event_ordering_fault(record, ts_event_unix_nanos, event_sequence)
+        .contains_key(&event_identity)
+        && lifecycle_event_ordering_fault(record, event.ts_event_unix_nanos, event.event_sequence)
     {
         return Ok(Some(LifecycleMutationResult {
             risk_state_version: current_pool_version(inner, lease.pool_id()),
             lifecycle_state: ReservationLifecycleState::ReconciliationRequired,
         }));
     }
-    if lifecycle_event_ordering_fault(record, ts_event_unix_nanos, event_sequence) {
-        return mark_lifecycle_reconciliation_required(
-            inner,
-            lease,
-            record_index,
-            event_id,
-            ts_event_unix_nanos,
-            event_sequence,
-            fault_kind,
-        )
-        .map(Some);
+    if lifecycle_event_ordering_fault(record, event.ts_event_unix_nanos, event.event_sequence) {
+        return mark_lifecycle_reconciliation_required(inner, lease, record_index, event).map(Some);
     }
     Ok(None)
 }
@@ -1934,10 +1982,7 @@ fn mark_lifecycle_reconciliation_required(
     inner: &mut FencedRiskStateStoreInner,
     lease: &PoolOwnershipLease,
     record_index: usize,
-    event_id: &str,
-    ts_event_unix_nanos: u64,
-    event_sequence: Option<u64>,
-    fault_kind: LifecycleReconciliationFaultKind,
+    event: LifecycleEventInput<'_>,
 ) -> Result<LifecycleMutationResult, RiskSubmissionMutationError> {
     let version =
         next_pool_version(inner, lease.pool_id()).map_err(RiskSubmissionMutationError::State)?;
@@ -1945,11 +1990,12 @@ fn mark_lifecycle_reconciliation_required(
         let record = &mut inner.reservation_records[record_index];
         record.lifecycle_state = ReservationLifecycleState::ReconciliationRequired;
         record.unresolved_lifecycle_reconciliation_faults.insert(
-            event_id.to_string(),
+            event.identity(),
             LifecycleReconciliationFault {
-                kind: fault_kind,
-                ts_event_unix_nanos,
-                event_sequence,
+                kind: event.kind,
+                order_status: event.order_status,
+                ts_event_unix_nanos: event.ts_event_unix_nanos,
+                event_sequence: event.event_sequence,
             },
         );
     }
@@ -1957,7 +2003,7 @@ fn mark_lifecycle_reconciliation_required(
     inner.mutations.push(DurableRiskMutationRecord {
         pool_id: lease.pool_id().clone(),
         fencing_token: lease.fencing_token(),
-        mutation: DurableRiskMutation::new(event_id.to_string(), RiskMutationKind::Lifecycle),
+        mutation: DurableRiskMutation::new(event.event_id.to_string(), RiskMutationKind::Lifecycle),
         risk_state_version: version,
     });
     Ok(LifecycleMutationResult {
@@ -1974,12 +2020,13 @@ fn record_lifecycle_event_success(
     applied_kind: LifecycleReconciliationFaultKind,
     applied_state: Option<ReservationLifecycleState>,
 ) {
+    let event_identity = LifecycleReconciliationEventIdentity::new(applied_kind, event_id);
     record
         .applied_lifecycle_event_ids
-        .insert(event_id.to_string());
+        .insert(event_identity.clone());
     record
         .unresolved_lifecycle_reconciliation_faults
-        .remove(event_id);
+        .remove(&event_identity);
     if applied_kind == LifecycleReconciliationFaultKind::OrderStatus
         && applied_state.is_some_and(open_remainder_release_state)
     {
@@ -2001,8 +2048,27 @@ fn terminal_order_status_supersedes_fault(
     event_sequence: Option<u64>,
 ) -> bool {
     fault.kind == LifecycleReconciliationFaultKind::OrderStatus
-        && (fault.ts_event_unix_nanos, fault.event_sequence)
-            >= (ts_event_unix_nanos, event_sequence)
+        && (fault.order_status.is_some_and(open_remainder_release_state)
+            || (fault.ts_event_unix_nanos, fault.event_sequence)
+                < (ts_event_unix_nanos, event_sequence))
+}
+
+fn terminal_order_status_has_blocking_fault(
+    record: &SubstrateReservationRecord,
+    ts_event_unix_nanos: u64,
+    event_sequence: Option<u64>,
+) -> bool {
+    record
+        .unresolved_lifecycle_reconciliation_faults
+        .values()
+        .any(|fault| {
+            fault.kind == LifecycleReconciliationFaultKind::OrderStatus
+                && !terminal_order_status_supersedes_fault(
+                    fault,
+                    ts_event_unix_nanos,
+                    event_sequence,
+                )
+        })
 }
 
 fn current_pool_version(inner: &FencedRiskStateStoreInner, pool_id: &PoolId) -> RiskStateVersion {

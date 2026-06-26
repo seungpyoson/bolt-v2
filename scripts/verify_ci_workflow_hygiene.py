@@ -9617,6 +9617,22 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "id: bvs-bin-sidecars-cache",
         ),
         (
+            "backtester bvs-test archive must upload the run-scoped test payload artifact",
+            "uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        ),
+        (
+            "backtester bvs-test archive must publish the bvs-test-payload artifact",
+            "name: bvs-test-payload",
+        ),
+        (
+            "backtester bvs-test archive payload upload must include hidden files (.nextest-archive dot-dir)",
+            "include-hidden-files: true",
+        ),
+        (
+            "backtester bvs-test archive payload upload must fail closed when the payload is empty",
+            "if-no-files-found: error",
+        ),
+        (
             "backtester bvs-test sidecar cache key must be exact and content-addressed",
             "key: bvs-bin-sidecars-v1-${{ runner.os }}-${{ runner.arch }}-test-profile-shards-4-${{ hashFiles(",
         ),
@@ -9685,20 +9701,12 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
         ("backtester bvs-test shards must declare sidecar path", "BVS_BIN_SIDECARS_PATH: .nextest-archive/bvs-bin-sidecars.tar.gz"),
         ("backtester bvs-test shards must declare four archive partitions", 'BVS_NEXTEST_SHARDS: "4"'),
         (
-            "backtester bvs-test shards must restore nextest archive cache",
-            "id: bvs-nextest-archive-cache",
+            "backtester bvs-test shards must download the run-scoped test payload artifact",
+            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
         ),
         (
-            "backtester bvs-test shards must fail closed if archive cache is absent",
-            "Require BVS nextest archive cache",
-        ),
-        (
-            "backtester bvs-test shards must restore binary sidecar cache",
-            "id: bvs-bin-sidecars-cache",
-        ),
-        (
-            "backtester bvs-test shards must fail closed if sidecar cache is absent",
-            "Require BVS binary sidecars cache",
+            "backtester bvs-test shards must download the bvs-test-payload artifact by name",
+            "name: bvs-test-payload",
         ),
         (
             "backtester bvs-test shards must extract binary sidecars",
@@ -9738,20 +9746,12 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
             "BOLT_ISSUE_789_RESULT_PATH:",
         ),
         (
-            "backtester bvs-test issue-789 must restore nextest archive cache",
-            "id: bvs-nextest-archive-cache",
+            "backtester bvs-test issue-789 must download the run-scoped test payload artifact",
+            "uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
         ),
         (
-            "backtester bvs-test issue-789 must fail closed if archive cache is absent",
-            "Require BVS nextest archive cache",
-        ),
-        (
-            "backtester bvs-test issue-789 must restore binary sidecar cache",
-            "id: bvs-bin-sidecars-cache",
-        ),
-        (
-            "backtester bvs-test issue-789 must fail closed if sidecar cache is absent",
-            "Require BVS binary sidecars cache",
+            "backtester bvs-test issue-789 must download the bvs-test-payload artifact by name",
+            "name: bvs-test-payload",
         ),
         (
             "backtester bvs-test issue-789 must extract binary sidecars",
@@ -9780,10 +9780,130 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     for message, fragment in test_fragments:
         if fragment not in job_text:
             errors.append(message)
+    for scope_name, scope_job in (("bvs-test shards", test_job), ("bvs-test issue-789", issue_job)):
+        if scope_job is None:
+            continue
+        for var_name, payload_name in (
+            ("BVS_NEXTEST_ARCHIVE_PATH", "archive"),
+            ("BVS_BIN_SIDECARS_PATH", "sidecars"),
+        ):
+            guard_prefix = f'test -s "${var_name}"'
+            guard_lines: list[str] = []
+            for block in step_blocks(scope_job):
+                for line in block_run_body(block).splitlines():
+                    guard_line = strip_comment(line).strip()
+                    if guard_line.startswith(guard_prefix) and (
+                        len(guard_line) == len(guard_prefix)
+                        or guard_line[len(guard_prefix)] in " \t;|&)"
+                    ):
+                        guard_lines.append(guard_line)
+            if not guard_lines:
+                errors.append(
+                    f"backtester consumer must fail closed if the downloaded {payload_name} "
+                    f"is missing or empty ({scope_name})"
+                )
+                continue
+            for guard_line in guard_lines:
+                if not EXIT_ONE_RE.search(guard_line):
+                    errors.append(
+                        f"backtester consumer guard is not fail-closed for downloaded "
+                        f"{payload_name} ({scope_name}): {guard_line}"
+                    )
     if issue_job is not None:
         for message, fragment in issue_fragments:
             if fragment not in issue_text:
                 errors.append(message)
+    return errors
+
+
+CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE = (
+    "workflow must not use cache as a fail-closed same-run transport (fail-on-cache-miss: true); "
+    "use upload/download-artifact for same-run cross-job handoff"
+)
+CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE = (
+    "workflow must not fail a job on a cache miss (cache-hit guard + exit 1); cache is "
+    "best-effort and may be evicted before the consumer runs — use upload/download-artifact "
+    "for same-run cross-job handoff"
+)
+CACHE_MISS_IF_RE = re.compile(r"\bcache-hit\b\s*(?:!=\s*[\"']?true[\"']?|==\s*[\"']?false[\"']?)")
+# A cache-miss-guarded build step may contain nested validation failures (e.g.
+# the producer's `if [ count -eq 0 ]; then ... exit 1; fi`), which are NOT the
+# banned shape. The banned same-run transport shape is a fail-closed `exit 1`
+# reached unconditionally: at top level, or chained after a command via `||`,
+# `&&`, or `;` (covering `test -s x || exit 1` and `... || { ...; exit 1; }`).
+# The producer's nested `exit 1` is indented and not operator-chained, so it is
+# correctly excluded. A cache-miss guard expressed inside the run body (rather
+# than the step `if:`) or delegated to a separate script is outside this line
+# scanner's scope; see cache_same_run_transport_errors.
+EXIT_ONE_RE = re.compile(
+    r"(?m)(?:^exit\s+1\b|\|\|\s*exit\s+1\b|&&\s*exit\s+1\b|;\s*exit\s+1\b)"
+)
+# `fail-on-cache-miss: <truthy>` in same-line YAML forms, including flow-style
+# (`with: { fail-on-cache-miss: true }`), optional `!!bool` tag, optional quotes,
+# flexible spacing, case-insensitive truthy value. Folded/block scalars are
+# handled by a continuation-line peek below. Not anchored to the whole line, so
+# flow-style maps are caught; a negative lookbehind avoids matching a longer key
+# such as `my-fail-on-cache-miss`. The caller strips comments before matching.
+# `true`/`!!bool true` enable the directive; `yes`/`on` are rejected loudly by
+# actions/cache's boolean input parser — either way it is not a silent same-run
+# transport and must not ship.
+FAIL_ON_CACHE_MISS_TRUE_RE = re.compile(
+    r"(?<![\w-])fail-on-cache-miss:\s*(?:!!bool\s+)?[\"']?(?:true|yes|on)\b",
+    re.IGNORECASE,
+)
+FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE = re.compile(
+    r"(?<![\w-])fail-on-cache-miss:\s*(?:!!\S+\s+)?[>|][-+0-9]*\s*(?:#.*)?$",
+    re.IGNORECASE,
+)
+FAIL_ON_CACHE_MISS_BLOCK_TRUTHY_RE = re.compile(r"^[\"']?(?:true|yes|on)[\"']?$", re.IGNORECASE)
+
+
+def is_workflow_yaml(file_name: str) -> bool:
+    normalized = file_name.replace("\\", "/")
+    return normalized.startswith(".github/workflows/") and normalized.endswith((".yml", ".yaml"))
+
+
+def step_has_cache_miss_guard(block: list[str]) -> bool:
+    for line in block:
+        clean = strip_comment(line).rstrip()
+        if re.match(r"^\s*(?:-\s*)?if:\s*", clean) and CACHE_MISS_IF_RE.search(clean):
+            return True
+    return False
+
+
+def has_fail_on_cache_miss_true(text: str) -> bool:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if FAIL_ON_CACHE_MISS_TRUE_RE.search(strip_comment(line)):
+            return True
+        if not FAIL_ON_CACHE_MISS_BLOCK_SCALAR_RE.search(strip_comment(line)):
+            continue
+        key_indent = len(line) - len(line.lstrip(" "))
+        for continuation in lines[index + 1:]:
+            continuation_indent = len(continuation) - len(continuation.lstrip(" "))
+            if continuation_indent <= key_indent:
+                break
+            continuation_value = strip_comment(continuation).strip()
+            if not continuation_value:
+                continue
+            if FAIL_ON_CACHE_MISS_BLOCK_TRUTHY_RE.fullmatch(continuation_value):
+                return True
+            break
+    return False
+
+
+def cache_same_run_transport_errors(file_name: str, text: str) -> list[str]:
+    if not is_workflow_yaml(file_name):
+        return []
+    errors: list[str] = []
+    if has_fail_on_cache_miss_true(text):
+        errors.append(CACHE_SAME_RUN_TRANSPORT_FAIL_ON_MISS_MESSAGE)
+    if any(
+        step_has_cache_miss_guard(block) and EXIT_ONE_RE.search(block_run_body(block))
+        for job_lines in parse_jobs(text).values()
+        for block in step_blocks(job_lines)
+    ):
+        errors.append(CACHE_SAME_RUN_TRANSPORT_GUARD_MESSAGE)
     return errors
 
 
@@ -10060,6 +10180,10 @@ def verify_repo_automation_texts(texts: dict[str, str]) -> list[str]:
         add_unique_errors(
             errors,
             (f"{file_name}: {error}" for error in backtester_draft_deferral_errors(file_name, text)),
+        )
+        add_unique_errors(
+            errors,
+            (f"{file_name}: {error}" for error in cache_same_run_transport_errors(file_name, text)),
         )
         if file_name == "actionlint.yml" or file_name.endswith("/actionlint.yml"):
             add_unique_errors(

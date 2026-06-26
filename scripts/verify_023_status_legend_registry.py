@@ -14,7 +14,8 @@ CONTRACTS_PATH = Path("specs/023-nt-research-analytics-platform/reference/contra
 TASKS_PATH = Path("specs/023-nt-research-analytics-platform/tasks.md")
 JUSTFILE_PATH = Path("justfile")
 
-REGISTRY_SECTION = "## Cross-Project Status And Legend Registry"
+REGISTRY_SECTION_ID = "023-status-legend-registry"
+REGISTRY_SECTION_ANCHOR = f'<a id="{REGISTRY_SECTION_ID}"></a>'
 CHECKED_ROOT009 = re.compile(r"^- \[[xX]\] ROOT-009\b", re.MULTILINE)
 REGISTRY_ROW = re.compile(
     r"^\|\s*`(?P<key>[^`]+)`\s*\|\s*(?P<concept>[^|]+?)\s*\|\s*(?P<label>[^|]+?)\s*\|"
@@ -118,7 +119,7 @@ def scan_root(root: Path) -> list[str]:
     tasks_text = require_file(root, TASKS_PATH, findings)
     justfile_text = require_file(root, JUSTFILE_PATH, findings)
 
-    require_snippets(CONTRACTS_PATH, contracts_text, (REGISTRY_SECTION, *REQUIRED_COLUMNS), findings)
+    require_snippets(CONTRACTS_PATH, contracts_text, (REGISTRY_SECTION_ANCHOR, *REQUIRED_COLUMNS), findings)
     require_snippets(CONTRACTS_PATH, contracts_text, REQUIRED_CONCEPTS, findings)
     require_snippets(CONTRACTS_PATH, contracts_text, REQUIRED_VALUES, findings)
     require_snippets(CONTRACTS_PATH, contracts_text, REQUIRED_OWNER_SNIPPETS, findings)

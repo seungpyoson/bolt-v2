@@ -125,6 +125,8 @@ The workflow concurrency group remains PR-scoped and cancellation remains limite
 
 If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to allow at most two full CI runs at once: 8 concurrent `managed_heavy` runners, or 32 `managed_heavy` vCPUs if the cap is vCPU-based. Keep `managed_light` at 4 concurrent runners or 8 vCPUs. This queues excess verification instead of silently multiplying spend.
 
+<a id="ci-operator-policy"></a>
+
 ## Operator Policy
 
 - Keep at most two active full remote-verification PRs/sessions running at once.
@@ -134,7 +136,7 @@ If Ubicloud exposes a per-repo or project runner/vCPU cap, set the first cap to 
 - During the first week, run the meter daily and compare the runner-minute trend to the Ubicloud dashboard. After the first week, run weekly or before/after CI topology changes.
 - Default to a **draft** PR while iterating. Draft pushes defer the full-CI merge proof — the full-CI merge-proof lanes skip and the gate publishes `gate-deferred`, so a draft cannot merge — though always-on feedback (clippy on `managed_heavy`, deny on `managed_light`) still runs (see [Lever B](#lever-b-full-ci-on-demand)). Iterate on it freely. Mark the PR ready only when its head is the intended merge candidate; `ready_for_review` then triggers the full-CI merge proof on that exact head SHA. This is a major run-volume lever: draft-stage was ~26% of `managed_heavy` minutes in the slice 2b meter (2374.694 / 9023.518) — an upper bound that mixes always-on clippy minutes with full-proof dispatches, i.e. heavy work spent on intermediate commits a later push replaces.
 - Do not push exploratory or fixup commits to a **ready** PR. Each push re-runs full heavy CI on the new SHA and a prior green does not carry over, so return the PR to draft (or keep iterating on draft) until the next coherent slice.
-- Treat `just verify-remote` / full CI as a high-cost feedback run once per coherent draft slice, not a debug loop or merge proof. Use draft deferred runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#rust-probe-policy)) for mid-iteration feedback rather than repeated full dispatches.
+- Treat `just verify-remote` / full CI as a high-cost feedback run once per coherent draft slice, not a debug loop or merge proof. Use draft deferred runs or `just rust-probe` (max two, per the [Rust Probe Policy](../../AGENTS.md#agent-rust-probe-policy)) for mid-iteration feedback rather than repeated full dispatches.
 
 ## Lever Decisions
 

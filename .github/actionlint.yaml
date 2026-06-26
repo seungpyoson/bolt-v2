@@ -4,6 +4,7 @@ self-hosted-runner:
     - ubicloud-standard-4-arm
 
 config-variables:
+  - AWS_CAPTURE_ROLE_ARN
   - AWS_DEPLOY_ROLE_ARN
   - CI_DEBUG_SSH_WAIT_MINUTES
   - CI_RUNNER_GITHUB_HOSTED

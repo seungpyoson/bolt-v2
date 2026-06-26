@@ -3491,8 +3491,8 @@ def assert_runner_contract_requires_meter_workflows_for_managed_workflows() -> N
         config_text = original_config.read_text()
         config_path.write_text(
             config_text.replace(
-                'included_workflows = ["ci", "backtester_ci", "ci_runner_debug", "rust_probe"]',
-                'included_workflows = ["ci", "ci_runner_debug", "rust_probe"]',
+                '  "backtester_ci",\n',
+                "",
             ),
             encoding="utf-8",
         )

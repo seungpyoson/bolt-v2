@@ -2517,6 +2517,14 @@ classification = "cli_binary_name"
 reason = "This is the stable command name exposed by the Rust binary, not an operator runtime value."
 
 [[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"root-config"'''
+context = '''#[arg(long = "root-config")]'''
+classification = "cli_argument_name"
+reason = "This is a stable application CLI flag name for the capture command's tracked root TOML path; the runtime values remain TOML-owned."
+
+[[allowed]]
 path = "src/nt_runtime_capture.rs"
 kind = "string"
 literal = '''"://"'''
@@ -15480,6 +15488,118 @@ literal = '''"key"'''
 context = '''validate_provenance_component(key, "key")?;'''
 classification = "reference_price_data_contract"
 reason = "Reference-price normalized data/health contract literal; configured source selection remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "number"
+literal = '''0'''
+context = '''let observed_binary_frames = Arc::new(AtomicUsize::new(0));'''
+classification = "chainlink_fixture_capture_counter_initial_value"
+reason = "Initializes a diagnostic frame counter in the gated fixture-capture command; the captured endpoint, client, and wait bound are command/config inputs."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "number"
+literal = '''0'''
+context = '''let observed_text_frames = Arc::new(AtomicUsize::new(0));'''
+classification = "chainlink_fixture_capture_counter_initial_value"
+reason = "Initializes a diagnostic frame counter in the gated fixture-capture command; the captured endpoint, client, and wait bound are command/config inputs."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "number"
+literal = '''1'''
+context = '''const CHAINLINK_REFERENCE_CAPTURE_SCHEMA_VERSION: u32 = 1;'''
+classification = "chainlink_fixture_capture_artifact_schema"
+reason = "Stable artifact schema version for the Chainlink reference fixture-capture record; it does not configure runtime trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "number"
+literal = '''1'''
+context = '''observed_binary_frames.fetch_add(1, Ordering::SeqCst);'''
+classification = "chainlink_fixture_capture_counter_increment"
+reason = "Increments a diagnostic frame counter when the gated capture command observes one binary frame event."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "number"
+literal = '''1'''
+context = '''observed_text_frames.fetch_add(1, Ordering::SeqCst);'''
+classification = "chainlink_fixture_capture_counter_increment"
+reason = "Increments a diagnostic frame counter when the gated capture command observes one text frame event."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"base_sha"'''
+context = '''"base_sha": null,'''
+classification = "chainlink_fixture_capture_provenance_schema_field"
+reason = "Required ci_provenance-compatible pull_request field in the capture artifact; the value is null outside pull_request events."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"binary"'''
+context = '''const CHAINLINK_REFERENCE_CAPTURE_FRAME_KIND: &str = "binary";'''
+classification = "chainlink_fixture_capture_frame_kind"
+reason = "Stable artifact classification for the Chainlink fixture frame kind; the command records observed provider frames and does not configure runtime trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"capture"'''
+context = '''required_jobs: serde_json::json!({ "capture": "success" }),'''
+classification = "chainlink_fixture_capture_provenance_job_key"
+reason = "ci_provenance-compatible logical job key for the manual capture workflow artifact."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"chainlink-reference-fixture-capture"'''
+context = '''const CHAINLINK_REFERENCE_CAPTURE_KIND: &str = "chainlink-reference-fixture-capture";'''
+classification = "chainlink_fixture_capture_artifact_schema"
+reason = "Stable artifact record kind for the Chainlink reference fixture-capture command."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"chainlink-reference-frame.bin"'''
+context = '''const CHAINLINK_REFERENCE_CAPTURE_FRAME_FILENAME: &str = "chainlink-reference-frame.bin";'''
+classification = "chainlink_fixture_capture_artifact_filename"
+reason = "Stable artifact filename inside the gated capture output directory; captured bytes come from the configured provider connection."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"ci-provenance.json"'''
+context = '''const CHAINLINK_REFERENCE_CAPTURE_PROVENANCE_FILENAME: &str = "ci-provenance.json";'''
+classification = "chainlink_fixture_capture_artifact_filename"
+reason = "Required ci_provenance-compatible artifact filename consumed by the fixture-origin fence."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"full-ci"'''
+context = '''kind: "full-ci",'''
+classification = "chainlink_fixture_capture_provenance_schema_field"
+reason = "Required ci_provenance-compatible kind value in the capture artifact; this does not claim full CI merge readiness."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"number"'''
+context = '''"number": null,'''
+classification = "chainlink_fixture_capture_provenance_schema_field"
+reason = "Required ci_provenance-compatible pull_request field in the capture artifact; the value is null outside pull_request events."
+
+[[allowed]]
+path = "src/bolt_v3_providers/reference_boundary_capture.rs"
+kind = "string"
+literal = '''"success"'''
+context = '''required_jobs: serde_json::json!({ "capture": "success" }),'''
+classification = "chainlink_fixture_capture_provenance_job_result"
+reason = "ci_provenance-compatible capture job result written only after the Rust capture command returns successfully."
 
 [[allowed]]
 path = "src/bolt_v3_providers/reference_live_probe.rs"

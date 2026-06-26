@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+"""Verify bolt-v3 provider/runtime boundary evidence wiring."""
+
+from __future__ import annotations
+
+import dataclasses
+import datetime as dt
+import json
+import os
+import re
+import sys
+import tomllib
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+import ci_provenance
+from verify_bolt_v3_provider_leaks import production_text
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+EXPECTED_NT_REV = "6be5a5094716790a8ca2875445fde4fa2586107e"
+REGISTRY = Path("src/bolt_v3_providers/boundary_registry.rs")
+WIRE_BOUNDARY = Path("src/bolt_v3_wire_boundary.rs")
+EXEMPTIONS = Path("ci/bolt-v3-boundary-exemptions.toml")
+CAPTURE_PROVENANCE_CONFIG = Path("ci/chainlink-reference-fixture-capture-provenance.toml")
+FIXTURE_DIR = Path("tests/fixtures/bolt_v3/boundary_evidence")
+
+REQUIRED_CLASSES = {
+    "WebSocketFrame",
+    "ImdsMetadata",
+    "AwsSdkResponse",
+    "HttpResponseBody",
+}
+REQUIRED_REGISTRY_ENTRIES = {
+    ("chainlink_reference::KEY", "WebSocketFrame", "ReferenceCurrentPriceHealth"),
+    ("polyresearch::KEY", "WebSocketFrame", "ReferenceCurrentPriceHealth"),
+    ("chainlink_reference::KEY", "WebSocketFrame", "ReferenceLiveProbe"),
+    ("polyresearch::KEY", "WebSocketFrame", "ReferenceLiveProbe"),
+    ("IMDS_METADATA_ADAPTER_ID", "ImdsMetadata", "DeployTargetHostFacts"),
+    ("AWS_SSM_SECRET_SOURCE_ADAPTER_ID", "AwsSdkResponse", "SecretResolution"),
+}
+REQUIRED_NON_WS_EXEMPTIONS = {
+    ("Imdsv2HostFactsSource", "ImdsMetadata", "DeployTargetHostFacts"),
+    ("AwsSsmSecretSource", "AwsSdkResponse", "SecretResolution"),
+}
+FORBIDDEN_CONNECT_PATTERNS = {
+    r"\bWebSocketClient::connect\(": "WebSocketClient::connect",
+    r"\bWebSocketClient::connect_url\(": "WebSocketClient::connect_url",
+    r"\bWebSocketClient::connect_with_server\(": "WebSocketClient::connect_with_server",
+    r"\bWebSocketClient::connect_stream\(": "WebSocketClient::connect_stream",
+    r"\bWebSocketClient::connect_with_rate_limiter\(": "WebSocketClient::connect_with_rate_limiter",
+    r"(?<!Web)\bSocketClient::connect\(": "SocketClient::connect",
+}
+ALLOWED_AWS_SSM_PATHS = {
+    "src/secrets.rs",
+}
+ALLOWED_IMDS_CONSTRUCTION_CONTEXTS = {
+    "Box::new(Imdsv2HostFactsSource::new())",
+    "deploy_target_status(config_root, &Imdsv2HostFactsSource::new())",
+}
+
+
+def read(root: Path, rel: Path | str) -> str:
+    return (root / rel).read_text(encoding="utf-8")
+
+
+def line_number(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
+def line_at(text: str, pos: int) -> str:
+    return text.splitlines()[line_number(text, pos) - 1].strip()
+
+
+def registry_entries(text: str) -> set[tuple[str, str, str]]:
+    entries: set[tuple[str, str, str]] = set()
+    for match in re.finditer(r"BoundaryRegistryEntry\s*\{(?P<body>.*?)\}", text, re.DOTALL):
+        body = match.group("body")
+        adapter = re.search(r"adapter_id:\s*([^,\n]+)", body)
+        klass = re.search(r"class:\s*BoundaryEvidenceClass::([A-Za-z0-9_]+)", body)
+        feeder = re.search(r"feeder:\s*BoundaryFeeder::([A-Za-z0-9_]+)", body)
+        if adapter and klass and feeder:
+            entries.add((adapter.group(1).strip(), klass.group(1), feeder.group(1)))
+    return entries
+
+
+def manifest_exemptions(root: Path) -> list[dict[str, object]]:
+    manifest = tomllib.loads(read(root, EXEMPTIONS))
+    if manifest.get("schema_version") != 1:
+        raise ValueError(f"{EXEMPTIONS}: schema_version must be 1")
+    rows = manifest.get("evidence_deferred")
+    if not isinstance(rows, list):
+        raise ValueError(f"{EXEMPTIONS}: evidence_deferred must be a list")
+    return rows
+
+
+def scan_registry(root: Path, findings: list[str]) -> set[tuple[str, str, str]]:
+    text = read(root, REGISTRY)
+    for klass in REQUIRED_CLASSES:
+        if f"{klass}," not in text:
+            findings.append(f"{REGISTRY}: missing BoundaryEvidenceClass::{klass}")
+    if re.search(r"class:\s*\"", text):
+        findings.append(f"{REGISTRY}: registry class tags must use enum variants, not strings")
+
+    entries = registry_entries(text)
+    missing = sorted(REQUIRED_REGISTRY_ENTRIES - entries)
+    for entry in missing:
+        findings.append(f"{REGISTRY}: missing registry entry {entry}")
+
+    extra_http = sorted(entry for entry in entries if entry[1] == "HttpResponseBody")
+    if extra_http:
+        findings.append(f"{REGISTRY}: http_response_body is an empty enforcing variant, got {extra_http}")
+
+    provider_mod = read(root, "src/bolt_v3_providers/mod.rs")
+    cross_checks = {
+        "reference_price_provider_metadata": (
+            "client_venue_key: chainlink_reference::KEY",
+            "client_venue_key: polyresearch::KEY",
+        ),
+        "validate_reference_live_probe_block": (
+            "chainlink_reference::KEY",
+            "polyresearch::KEY",
+        ),
+        "PROVIDER_BINDINGS": (
+            "key: chainlink_reference::KEY",
+            "key: polyresearch::KEY",
+        ),
+    }
+    for label, needles in cross_checks.items():
+        for needle in needles:
+            if needle not in provider_mod:
+                findings.append(f"src/bolt_v3_providers/mod.rs: {label} missing {needle}")
+
+    return entries
+
+
+def scan_exemptions(
+    root: Path,
+    entries: set[tuple[str, str, str]],
+    findings: list[str],
+    *,
+    today: dt.date,
+) -> None:
+    rows = manifest_exemptions(root)
+    seen: set[tuple[str, str, str]] = set()
+    registry_by_resolved_adapter = {
+        ("Imdsv2HostFactsSource", "ImdsMetadata", "DeployTargetHostFacts"),
+        ("AwsSsmSecretSource", "AwsSdkResponse", "SecretResolution"),
+    }
+    registry_by_resolved_adapter.update(entries)
+    for index, row in enumerate(rows):
+        key = (str(row.get("adapter_id")), str(row.get("class")), str(row.get("feeder")))
+        if key in seen:
+            findings.append(f"{EXEMPTIONS}: duplicate evidence_deferred row {key}")
+        seen.add(key)
+        if key[1] == "WebSocketFrame":
+            findings.append(f"{EXEMPTIONS}: WebSocketFrame must not be exempted: {key}")
+        if key not in registry_by_resolved_adapter:
+            findings.append(f"{EXEMPTIONS}: orphan evidence_deferred row {key}")
+        issue = row.get("issue")
+        if not isinstance(issue, int) or issue <= 0:
+            findings.append(f"{EXEMPTIONS}: row {index} issue must be a positive integer")
+        expires = row.get("expires_on")
+        if not isinstance(expires, str):
+            findings.append(f"{EXEMPTIONS}: row {index} expires_on must be an ISO date")
+            continue
+        try:
+            expires_on = dt.date.fromisoformat(expires)
+        except ValueError:
+            findings.append(f"{EXEMPTIONS}: row {index} expires_on must be an ISO date")
+            continue
+        if expires_on < today:
+            findings.append(f"{EXEMPTIONS}: row {index} expired on {expires_on.isoformat()}")
+
+    missing = sorted(REQUIRED_NON_WS_EXEMPTIONS - seen)
+    for key in missing:
+        findings.append(f"{EXEMPTIONS}: missing required non-WS deferral {key}")
+
+
+def github_issue_state(repo: str, issue: int, token: str | None) -> str:
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/issues/{issue}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            **({"Authorization": f"Bearer {token}"} if token else {}),
+        },
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    state = payload.get("state")
+    if not isinstance(state, str):
+        raise RuntimeError(f"GitHub issue #{issue} response has no state")
+    return state
+
+
+def scan_exemption_issue_state(root: Path, findings: list[str]) -> None:
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    repo = os.environ.get("GITHUB_REPOSITORY", "seungpyoson/bolt-v2")
+    token = os.environ.get("GITHUB_TOKEN")
+    for row in manifest_exemptions(root):
+        issue = row.get("issue")
+        if not isinstance(issue, int):
+            continue
+        try:
+            state = github_issue_state(repo, issue, token)
+        except (OSError, urllib.error.URLError, RuntimeError) as exc:
+            findings.append(f"{EXEMPTIONS}: could not verify issue #{issue} state: {exc}")
+            continue
+        if state != "open":
+            findings.append(f"{EXEMPTIONS}: issue #{issue} is {state}; remove or replace the deferral")
+
+
+def scan_wire_boundary(root: Path, findings: list[str]) -> None:
+    cargo_toml = read(root, "Cargo.toml")
+    if f'rev = "{EXPECTED_NT_REV}"' not in cargo_toml:
+        findings.append(f"Cargo.toml: nautilus_network rev must remain pinned to {EXPECTED_NT_REV}")
+
+    for path in (root / "src").rglob("*.rs"):
+        rel = path.relative_to(root).as_posix()
+        text = production_text(path.read_text(encoding="utf-8"))
+        for pattern, label in FORBIDDEN_CONNECT_PATTERNS.items():
+            for match in re.finditer(pattern, text):
+                if rel == WIRE_BOUNDARY.as_posix() and label == "WebSocketClient::connect":
+                    continue
+                findings.append(f"{rel}:{line_number(text, match.start())}: raw NT connect call {label}")
+
+        if rel not in ALLOWED_AWS_SSM_PATHS and re.search(r"\baws_sdk_ssm::|\baws_sdk_ssm\b", text):
+            findings.append(f"{rel}: aws_sdk_ssm usage must go through the registered SSM boundary")
+        if re.search(r"\breqwest::|\bhyper::", text):
+            findings.append(f"{rel}: HTTP response-body feeder must be registered before reqwest/hyper use")
+        for match in re.finditer(r"Imdsv2HostFactsSource::new\(\)", text):
+            context = line_at(text, match.start())
+            if not any(allowed in context for allowed in ALLOWED_IMDS_CONSTRUCTION_CONTEXTS):
+                findings.append(f"{rel}:{line_number(text, match.start())}: unregistered IMDS construction")
+
+
+def scan_chainlink_tests(root: Path, findings: list[str]) -> None:
+    chainlink = read(root, "src/bolt_v3_providers/chainlink_reference.rs")
+    required_names = (
+        "binary_report_frame_for_active_subscription_emits_custom_reference_update",
+        "invalid_utf8_binary_report_frame_emits_no_custom_data",
+        "binary_report_frame_through_text_only_handler_emits_no_custom_data",
+        "planted_drop_binary_arm_mutation_would_fail_the_binary_observation_test",
+    )
+    for name in required_names:
+        if f"fn {name}" not in chainlink:
+            findings.append(f"src/bolt_v3_providers/chainlink_reference.rs: missing test {name}")
+    production = production_text(chainlink)
+    if "Message::Text(bytes) | Message::Binary(bytes)" not in production:
+        findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must accept Text and Binary frames")
+    if re.search(r"\.as_text\(", production):
+        findings.append("src/bolt_v3_providers/chainlink_reference.rs: Chainlink handler must not use parser-only as_text")
+
+    health = read(root, "src/bolt_v3_reference_price_health.rs")
+    if "chainlink_binary_loopback_observes_reference_update_through_health_msgbus" not in health:
+        findings.append("src/bolt_v3_reference_price_health.rs: missing Chainlink loopback health/msgbus test")
+    forbidden_shortcuts = (
+        "ReferenceCurrentPriceHealthObservedUpdate {",
+        "ReferencePriceUpdate::try_new",
+    )
+    loopback_match = re.search(
+        r"async fn chainlink_binary_loopback_observes_reference_update_through_health_msgbus\(\).*?\n    \}",
+        health,
+        re.DOTALL,
+    )
+    if loopback_match:
+        body = loopback_match.group(0)
+        for shortcut in forbidden_shortcuts:
+            if shortcut in body:
+                findings.append(f"src/bolt_v3_reference_price_health.rs: loopback harness uses shortcut {shortcut}")
+
+
+def remote_fixture_context(root: Path, findings: list[str]) -> tuple[str, str, str | None] | None:
+    if root.resolve() != REPO_ROOT.resolve() or os.environ.get("GITHUB_ACTIONS") != "true":
+        return None
+
+    token = os.environ.get("GITHUB_TOKEN")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    if not token or not repo:
+        findings.append(
+            f"{FIXTURE_DIR}: GitHub Actions fixture-origin check requires GITHUB_TOKEN and GITHUB_REPOSITORY"
+        )
+        return None
+    return repo, token, os.environ.get("GITHUB_RUN_ID")
+
+
+def scan_fixture_origin(root: Path, findings: list[str]) -> None:
+    directory = root / FIXTURE_DIR
+    sidecars = sorted(directory.glob("*.toml")) if directory.exists() else []
+    if not sidecars:
+        findings.append(f"{FIXTURE_DIR}: missing Chainlink fixture sidecar")
+        return
+
+    remote_context = remote_fixture_context(root, findings)
+    config_path = root / CAPTURE_PROVENANCE_CONFIG
+    config = ci_provenance.load_config(config_path)
+    for sidecar in sidecars:
+        rel = sidecar.relative_to(root).as_posix()
+        data = tomllib.loads(sidecar.read_text(encoding="utf-8"))
+        required = {
+            "schema_version",
+            "adapter_id",
+            "class",
+            "feeder",
+            "frame_kind",
+            "signature_verified",
+            "fixture",
+            "fixture_sha256",
+            "capture_artifact",
+            "capture_head_sha",
+            "capture_head_branch",
+        }
+        missing = sorted(key for key in required if key not in data)
+        if missing:
+            findings.append(f"{rel}: missing fields {missing}")
+            continue
+        if data["schema_version"] != 1:
+            findings.append(f"{rel}: schema_version must be 1")
+        if data["adapter_id"] != "CHAINLINK_REFERENCE_PRICE":
+            findings.append(f"{rel}: adapter_id must be CHAINLINK_REFERENCE_PRICE")
+        if data["class"] != "WebSocketFrame" or data["frame_kind"] != "binary":
+            findings.append(f"{rel}: Chainlink fixture sidecar must declare WebSocketFrame/binary")
+        if data["signature_verified"] is not False:
+            findings.append(f"{rel}: signature_verified must be false")
+
+        fixture = sidecar.parent / str(data["fixture"])
+        artifact = sidecar.parent / str(data["capture_artifact"])
+        try:
+            fixture_digest = ci_provenance.sha256_file(fixture)
+        except ci_provenance.ProvenanceError as exc:
+            findings.append(f"{rel}: {exc}")
+            continue
+        if fixture_digest != data["fixture_sha256"]:
+            findings.append(f"{rel}: fixture_sha256 does not match fixture bytes")
+        if not artifact.exists():
+            findings.append(f"{rel}: capture_artifact is missing")
+            continue
+        try:
+            record = ci_provenance.artifact_record_from_zip(artifact.read_bytes())
+            sidecar_config = dataclasses.replace(
+                config,
+                deploy_source_branch=str(data["capture_head_branch"]),
+            )
+            ci_provenance.validate_exact_sha_record(
+                record,
+                sidecar_config,
+                requested_sha=str(data["capture_head_sha"]),
+                config_path=config_path,
+                expected_workflow_digest=ci_provenance.sha256_file(root / config.workflow_path),
+            )
+        except ci_provenance.ProvenanceError as exc:
+            findings.append(f"{rel}: invalid capture artifact provenance: {exc}")
+            continue
+        run = {
+            "id": record.get("run_id"),
+            "path": record.get("workflow_path"),
+            "event": record.get("event"),
+            "head_branch": record.get("head_branch"),
+            "head_sha": record.get("head_sha"),
+            "status": "completed",
+            "conclusion": "success",
+        }
+        if not ci_provenance.run_matches_exact_sha(
+            run,
+            dataclasses.replace(config, deploy_source_branch=str(data["capture_head_branch"])),
+            str(data["capture_head_sha"]),
+            current_run_id=None,
+        ):
+            findings.append(f"{rel}: capture run metadata does not match exact SHA")
+        capture = record.get("capture")
+        if not isinstance(capture, dict):
+            findings.append(f"{rel}: capture record is missing capture object")
+            continue
+        if capture.get("fixture_sha256") != fixture_digest:
+            findings.append(f"{rel}: capture artifact digest does not match fixture")
+        if capture.get("frame_kind") != data["frame_kind"]:
+            findings.append(f"{rel}: capture artifact frame_kind does not match sidecar")
+        if capture.get("signature_verified") is not False:
+            findings.append(f"{rel}: capture artifact must not claim signature verification")
+        if remote_context is not None:
+            repo, token, current_run_id = remote_context
+            try:
+                resolved = ci_provenance.resolve_exact_sha_evidence(
+                    repo=repo,
+                    token=token,
+                    requested_sha=str(data["capture_head_sha"]),
+                    config=sidecar_config,
+                    config_path=config_path,
+                    current_run_id=current_run_id,
+                )
+            except ci_provenance.ProvenanceError as exc:
+                findings.append(f"{rel}: GitHub capture provenance resolution failed: {exc}")
+                continue
+            if resolved.record != record:
+                findings.append(f"{rel}: committed capture artifact record does not match GitHub artifact")
+            remote_capture = resolved.record.get("capture")
+            if not isinstance(remote_capture, dict):
+                findings.append(f"{rel}: GitHub capture artifact is missing capture object")
+                continue
+            if remote_capture.get("fixture_sha256") != fixture_digest:
+                findings.append(f"{rel}: GitHub capture artifact digest does not match fixture")
+            if remote_capture.get("frame_kind") != data["frame_kind"]:
+                findings.append(f"{rel}: GitHub capture artifact frame_kind does not match sidecar")
+
+
+def scan_static_wiring(root: Path, findings: list[str]) -> None:
+    justfile = read(root, "justfile")
+    for command in (
+        "python3 scripts/test_verify_bolt_v3_boundary_evidence.py",
+        "python3 scripts/verify_bolt_v3_boundary_evidence.py",
+    ):
+        if command not in justfile:
+            findings.append(f"justfile: source-fence-static-inner missing {command}")
+
+    lane_config = tomllib.loads(read(root, "ci/rust-verification.toml"))
+    labels = lane_config["local_lane_policy"]["cheap_lane_labels"]
+    for label in (
+        "test_verify_bolt_v3_boundary_evidence.py",
+        "verify_bolt_v3_boundary_evidence.py",
+    ):
+        if label not in labels:
+            findings.append(f"ci/rust-verification.toml: cheap_lane_labels missing {label}")
+
+    workflow_path = ".github/workflows/ci.yml"
+    workflow = read(root, workflow_path)
+    if "schedule:" in workflow:
+        findings.append(f"{workflow_path}: recurring schedule is out of scope")
+    for needle in (
+        "capture_reference_boundary_fixture",
+        "credential_ssm_gate",
+        "CREDENTIAL-SSM",
+        "capture-gate",
+        "ops capture-reference-boundary-fixture",
+        "--root-config",
+        "GITHUB_TOKEN: ${{ github.token }}",
+        "GITHUB_REPOSITORY: ${{ github.repository }}",
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    ):
+        if needle not in workflow:
+            findings.append(f"{workflow_path}: missing {needle}")
+
+
+def scan_root(root: Path, *, today: dt.date | None = None) -> list[str]:
+    if today is None:
+        today = dt.date.today()
+    findings: list[str] = []
+    entries = scan_registry(root, findings)
+    scan_exemptions(root, entries, findings, today=today)
+    scan_exemption_issue_state(root, findings)
+    scan_wire_boundary(root, findings)
+    scan_chainlink_tests(root, findings)
+    scan_fixture_origin(root, findings)
+    scan_static_wiring(root, findings)
+    return findings
+
+
+def main() -> int:
+    findings = scan_root(REPO_ROOT)
+    if findings:
+        for finding in findings:
+            print(f"FAIL: {finding}", file=sys.stderr)
+        return 1
+    print("OK: bolt-v3 boundary evidence audit passed.")
+    return 0
+
+
+if __name__ == "__main__":
+    import lane_governor
+
+    lane_governor.acquire()
+    raise SystemExit(main())

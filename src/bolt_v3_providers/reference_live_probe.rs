@@ -10,7 +10,7 @@ use anyhow::{Context, anyhow};
 use nautilus_network::{
     mode::ConnectionMode,
     transport::Message,
-    websocket::{MessageHandler, PingHandler, WebSocketClient},
+    websocket::{MessageHandler, PingHandler},
 };
 use serde::Serialize;
 
@@ -18,6 +18,7 @@ use crate::{
     bolt_v3_config::LoadedBoltV3Config,
     bolt_v3_providers::{chainlink_reference, polyresearch},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
+    bolt_v3_wire_boundary,
 };
 
 #[derive(Debug, Serialize)]
@@ -164,7 +165,7 @@ async fn probe_chainlink_reference(
     });
     let websocket_config = chainlink_reference::reference_price_websocket_config(config)
         .context("build Chainlink reference WebSocket config")?;
-    let websocket = WebSocketClient::connect(
+    let websocket = bolt_v3_wire_boundary::connect_websocket(
         websocket_config,
         Some(handler),
         Some(ping_handler),
@@ -219,7 +220,7 @@ async fn probe_polyresearch_reference(
     let websocket_config = polyresearch::reference_price_websocket_config(config)
         .map_err(anyhow::Error::msg)
         .context("build PolyResearch reference WebSocket config")?;
-    let websocket = WebSocketClient::connect(
+    let websocket = bolt_v3_wire_boundary::connect_websocket(
         websocket_config,
         Some(handler),
         Some(ping_handler),

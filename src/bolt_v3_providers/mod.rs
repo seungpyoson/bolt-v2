@@ -16,6 +16,7 @@
 //! stay in core and are called from the per-provider modules.
 
 pub mod binance;
+pub mod boundary_registry;
 pub mod chainlink;
 pub mod chainlink_reference;
 pub mod hyperliquid;
@@ -23,6 +24,7 @@ pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
 pub mod polyresearch;
+pub mod reference_boundary_capture;
 pub mod reference_live_probe;
 
 // Neutral resolution-oracle seam. Core config resolution

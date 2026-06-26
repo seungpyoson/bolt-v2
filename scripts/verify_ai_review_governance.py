@@ -95,6 +95,19 @@ MIRRORED_RULES = (
         ),
     ),
     MirrorRule(
+        "provider runtime boundary evidence",
+        (
+            "**PROVIDER/RUNTIME BOUNDARY EVIDENCE IS REGISTERED**",
+            "every deploy/readiness feeder that depends on provider runtime bytes or metadata must be represented in the authoritative boundary registry",
+            "WebSocket-frame evidence must not be deferred",
+        ),
+        (
+            "Provider/runtime boundary evidence is registered",
+            "every deploy/readiness feeder that depends on provider runtime bytes or metadata must be in the boundary registry",
+            "WebSocket-frame evidence must not be deferred",
+        ),
+    ),
+    MirrorRule(
         "evidence-driven verification",
         (
             "Every claim must map to evidence",

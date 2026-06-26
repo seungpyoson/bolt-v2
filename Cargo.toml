@@ -60,6 +60,7 @@ zeroize = "1.8.2"
 arrow = "58.3.0"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
+tokio-tungstenite = "=0.29.0"
 # Already a runtime dependency; mirrored here so integration tests can assert on the
 # composed runtime config's TOML structure (e.g. deterministic key ordering, #768).
 toml = "1.1"

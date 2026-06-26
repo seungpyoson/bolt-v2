@@ -1,0 +1,11 @@
+schema_version = 1
+adapter_id = "CHAINLINK_REFERENCE_PRICE"
+class = "WebSocketFrame"
+feeder = "ReferenceCurrentPriceHealth"
+frame_kind = "binary"
+signature_verified = false
+fixture = "chainlink-reference-frame.bin"
+fixture_sha256 = "5b61aedee2d3d2af4bc273af1cf786e178bc8a7c9c437f2673f69767851cb3ef"
+capture_artifact = "chainlink-reference-capture.zip"
+capture_head_sha = "0ab44fecf1d5e67b1b7b19d11ad9f39ed78dfe52"
+capture_head_branch = "fix/874-provider-runtime-boundary-evidence"

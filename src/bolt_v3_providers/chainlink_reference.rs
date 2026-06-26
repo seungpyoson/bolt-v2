@@ -60,6 +60,7 @@ use crate::{
         ReferenceQuoteProvenance,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    bolt_v3_wire_boundary,
 };
 
 pub const KEY: &str = "CHAINLINK_REFERENCE_PRICE";
@@ -328,9 +329,15 @@ impl DataClient for ChainlinkReferencePriceClient {
             Arc::clone(&self.subscriptions),
             self.data_sender.clone(),
         );
-        let websocket =
-            WebSocketClient::connect(websocket_config, Some(handler), None, None, vec![], None)
-                .await?;
+        let websocket = bolt_v3_wire_boundary::connect_websocket(
+            websocket_config,
+            Some(handler),
+            None,
+            None,
+            vec![],
+            None,
+        )
+        .await?;
         self.websocket = Some(websocket);
         self.connected = true;
         Ok(())
@@ -450,6 +457,10 @@ fn validate_chainlink_reference_websocket_endpoint(value: &str) -> anyhow::Resul
     let url = Url::parse(value).map_err(|_| {
         anyhow::anyhow!("Chainlink reference websocket_endpoint must be a valid wss URL")
     })?;
+    #[cfg(test)]
+    if chainlink_reference_test_loopback_endpoint_is_valid(value, &url) {
+        return Ok(url);
+    }
     let path = url.path();
     if value.trim() != value
         || url.scheme() != "wss"
@@ -465,6 +476,22 @@ fn validate_chainlink_reference_websocket_endpoint(value: &str) -> anyhow::Resul
         );
     }
     Ok(url)
+}
+
+#[cfg(test)]
+fn chainlink_reference_test_loopback_endpoint_is_valid(value: &str, url: &Url) -> bool {
+    value.trim() == value
+        && url.scheme() == "ws"
+        && url.host_str() == Some("127.0.0.1")
+        && url.port().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && {
+            let path = url.path();
+            path.is_empty() || path == "/"
+        }
 }
 
 fn chainlink_reference_websocket_headers(
@@ -1376,6 +1403,180 @@ mod tests {
             update.observed_ts_ms(),
             u64::from(TEST_OBSERVATIONS_SECONDS) * 1_000
         );
+    }
+
+    #[test]
+    fn binary_report_frame_for_active_subscription_emits_custom_reference_update() {
+        let (mut client, mut data_receiver) = fixture_client();
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                TEST_ASSET,
+                TEST_SOURCE_ID,
+                TEST_INSTRUMENT_ID,
+            ))
+            .expect("catalog-backed Chainlink reference subscription should be accepted");
+        let handler = chainlink_reference_message_handler(
+            client.config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+        );
+
+        handler(Message::binary(chainlink_report_frame_json()));
+
+        assert_chainlink_reference_update(
+            data_receiver
+                .try_recv()
+                .expect("matched binary Chainlink report frame should emit one data event"),
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_binary_report_frame_emits_no_custom_data() {
+        let (mut client, mut data_receiver) = fixture_client();
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                TEST_ASSET,
+                TEST_SOURCE_ID,
+                TEST_INSTRUMENT_ID,
+            ))
+            .expect("catalog-backed Chainlink reference subscription should be accepted");
+        let handler = chainlink_reference_message_handler(
+            client.config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+        );
+
+        handler(Message::binary(vec![0xff, 0xfe, 0xfd]));
+
+        let error = data_receiver
+            .try_recv()
+            .expect_err("invalid UTF-8 binary Chainlink frame must not emit data");
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "invalid UTF-8 binary Chainlink frame should leave the data channel open and empty, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn binary_report_frame_through_text_only_handler_emits_no_custom_data() {
+        let (mut client, mut data_receiver) = fixture_client();
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                TEST_ASSET,
+                TEST_SOURCE_ID,
+                TEST_INSTRUMENT_ID,
+            ))
+            .expect("catalog-backed Chainlink reference subscription should be accepted");
+        let handler = chainlink_reference_text_only_mutation_handler(
+            client.config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+        );
+
+        handler(Message::binary(chainlink_report_frame_json()));
+
+        let error = data_receiver.try_recv().expect_err(
+            "text-only Chainlink handler mutation must drop the provider's binary frame",
+        );
+        assert!(
+            matches!(error, tokio::sync::mpsc::error::TryRecvError::Empty),
+            "text-only mutation should leave the data channel open and empty, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn planted_drop_binary_arm_mutation_would_fail_the_binary_observation_test() {
+        let (mut client, mut data_receiver) = fixture_client();
+        client
+            .subscribe(reference_price_subscribe_cmd(
+                TEST_ASSET,
+                TEST_SOURCE_ID,
+                TEST_INSTRUMENT_ID,
+            ))
+            .expect("catalog-backed Chainlink reference subscription should be accepted");
+        let handler = chainlink_reference_text_only_mutation_handler(
+            client.config.feed_bindings.clone(),
+            Arc::clone(&client.subscriptions),
+            client.data_sender.clone(),
+        );
+
+        handler(Message::binary(chainlink_report_frame_json()));
+
+        assert!(
+            data_receiver.try_recv().is_err(),
+            "dropping the Chainlink Binary arm must make the binary observation path fail"
+        );
+    }
+
+    fn assert_chainlink_reference_update(event: DataEvent) {
+        let DataEvent::Data(Data::Custom(custom)) = event else {
+            panic!("matched Chainlink report frame should emit custom data, got {event:?}");
+        };
+        let update = ReferencePriceUpdate::from_custom_data(&custom)
+            .expect("custom data should contain a reference price update");
+        assert_eq!(update.asset(), TEST_ASSET);
+        assert_eq!(update.source_id(), TEST_SOURCE_ID);
+        assert_eq!(update.provider(), REFERENCE_PRICE_PROVIDER_KEY);
+        assert_eq!(update.provider_instrument(), TEST_INSTRUMENT_ID);
+        assert!(
+            (update.price() - TEST_BENCHMARK_PRICE).abs() < TEST_PRICE_TOLERANCE,
+            "benchmark price should round-trip, got {}",
+            update.price()
+        );
+        let quote = update
+            .to_reference_quote()
+            .expect("Chainlink update should convert to a reference quote");
+        assert!(
+            (quote.bid().expect("Chainlink quote should carry bid") - TEST_BID_PRICE).abs()
+                < TEST_PRICE_TOLERANCE,
+            "bid price should round-trip, got {:?}",
+            quote.bid()
+        );
+        assert!(
+            (quote.ask().expect("Chainlink quote should carry ask") - TEST_ASK_PRICE).abs()
+                < TEST_PRICE_TOLERANCE,
+            "ask price should round-trip, got {:?}",
+            quote.ask()
+        );
+        assert_eq!(
+            update.observed_ts_ms(),
+            u64::from(TEST_OBSERVATIONS_SECONDS) * 1_000
+        );
+    }
+
+    fn chainlink_reference_text_only_mutation_handler(
+        feed_bindings: Vec<ChainlinkStrikeFeedBinding>,
+        subscriptions: Arc<
+            Mutex<BTreeMap<ChainlinkReferenceSubscriptionKey, ChainlinkReferenceSubscription>>,
+        >,
+        data_sender: tokio::sync::mpsc::UnboundedSender<DataEvent>,
+    ) -> MessageHandler {
+        Arc::new(move |message: Message| {
+            let Message::Text(bytes) = message else {
+                return;
+            };
+            let frame = match std::str::from_utf8(bytes.as_ref()) {
+                Ok(frame) => frame,
+                Err(_) => return,
+            };
+            let updates = match subscriptions.lock() {
+                Ok(subscriptions) => chainlink_reference_updates_from_report_frame(
+                    &feed_bindings,
+                    &subscriptions,
+                    frame,
+                    u64::from(TEST_OBSERVATIONS_SECONDS) * 1_000,
+                ),
+                Err(error) => Err(format!(
+                    "Chainlink reference subscription state poisoned: {error}"
+                )),
+            };
+            if let Ok(updates) = updates {
+                for update in updates {
+                    let _ =
+                        data_sender.send(DataEvent::Data(Data::Custom(update.to_custom_data())));
+                }
+            }
+        })
     }
 
     fn reference_price_subscribe_cmd(

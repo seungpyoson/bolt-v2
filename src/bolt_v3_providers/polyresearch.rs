@@ -61,6 +61,7 @@ use crate::{
         ReferenceQuoteProvenance,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    bolt_v3_wire_boundary,
 };
 
 const POLYRESEARCH_API_KEY_QUERY_FIELD: &str = "apiKey";
@@ -476,7 +477,7 @@ impl DataClient for PolyResearchReferencePriceClient {
             outbound.clone(),
             self.config.subscribe_ack_timeout_ms,
         );
-        let websocket = WebSocketClient::connect(
+        let websocket = bolt_v3_wire_boundary::connect_websocket(
             config,
             Some(message_handler),
             None,

@@ -38,6 +38,10 @@ use bolt_v2::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
         ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
         ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
+        reference_boundary_capture::{
+            BoundaryFixtureCaptureProvenance, BoundaryFixtureCaptureRequest,
+            capture_reference_boundary_fixture,
+        },
         reference_live_probe::run_reference_live_probe,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
@@ -163,6 +167,38 @@ enum OpsCommand {
     ReferenceCurrentPriceHealth {
         #[arg(short, long)]
         config: PathBuf,
+    },
+    CaptureReferenceBoundaryFixture {
+        #[arg(long = "root-config")]
+        root_config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        wait_timeout_secs: u64,
+        #[arg(long)]
+        repository: String,
+        #[arg(long)]
+        workflow_path: String,
+        #[arg(long)]
+        workflow_digest: String,
+        #[arg(long)]
+        provenance_config_digest: String,
+        #[arg(long)]
+        head_sha: String,
+        #[arg(long)]
+        head_branch: String,
+        #[arg(long)]
+        run_id: u64,
+        #[arg(long)]
+        run_attempt: u64,
+        #[arg(long)]
+        check_suite_id: u64,
+        #[arg(long)]
+        event: String,
+        #[arg(long)]
+        created_at: String,
     },
 }
 
@@ -308,6 +344,43 @@ fn run_ops_command(command: OpsCommand) -> Result<(), Box<dyn std::error::Error>
         OpsCommand::ReferenceCurrentPriceHealth { config } => {
             run_reference_current_price_health_command(&config)
         }
+        OpsCommand::CaptureReferenceBoundaryFixture {
+            root_config,
+            client_key,
+            output_dir,
+            wait_timeout_secs,
+            repository,
+            workflow_path,
+            workflow_digest,
+            provenance_config_digest,
+            head_sha,
+            head_branch,
+            run_id,
+            run_attempt,
+            check_suite_id,
+            event,
+            created_at,
+        } => run_capture_chainlink_reference_fixture_command(
+            &root_config,
+            BoundaryFixtureCaptureRequest {
+                client_key,
+                output_dir,
+                wait_timeout: std::time::Duration::from_secs(wait_timeout_secs),
+                provenance: BoundaryFixtureCaptureProvenance {
+                    repository,
+                    workflow_path,
+                    workflow_digest,
+                    provenance_config_digest,
+                    head_sha,
+                    head_branch,
+                    run_id,
+                    run_attempt,
+                    check_suite_id,
+                    event,
+                    created_at,
+                },
+            },
+        ),
     }
 }
 
@@ -605,6 +678,28 @@ fn run_reference_current_price_health_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_bolt_v3_config(config)?;
     run_loaded_reference_current_price_health(&loaded)
+}
+
+fn run_capture_chainlink_reference_fixture_command(
+    config: &Path,
+    request: BoundaryFixtureCaptureRequest,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let loaded = load_bolt_v3_config(config)?;
+    check_no_forbidden_credential_env_vars(&loaded.root)?;
+    let ssm_resolver_session = SsmResolverSession::new()?;
+    let resolved = resolve_bolt_v3_client_secrets(
+        &ssm_resolver_session,
+        &loaded,
+        request.client_key.as_str(),
+    )?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let report = runtime.block_on(capture_reference_boundary_fixture(
+        &loaded, &resolved, request,
+    ))?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 fn run_loaded_reference_current_price_health(

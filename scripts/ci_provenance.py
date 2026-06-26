@@ -1801,6 +1801,10 @@ def gate_carry_forward_dominance_key(run: dict[str, object]) -> tuple[str, int]:
     )
 
 
+def gate_run_is_proven_success(run: dict[str, object]) -> bool:
+    return as_text(run.get("status")) == "completed" and as_text(run.get("conclusion")) == "success"
+
+
 def require_newest_gate_carry_forward_bucket_success(candidates: list[dict[str, object]]) -> None:
     if not candidates:
         return
@@ -1812,7 +1816,7 @@ def require_newest_gate_carry_forward_bucket_success(candidates: list[dict[str, 
     for run in newest_candidates:
         status = as_text(run.get("status"))
         conclusion = as_text(run.get("conclusion"))
-        if status != "completed" or conclusion != "success":
+        if not gate_run_is_proven_success(run):
             run_id = positive_int_value(run.get("id"), "workflow run id")
             raise ProvenanceError(
                 f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
@@ -1879,19 +1883,12 @@ def resolve_gate_carry_forward(
                 workflow_path=workflow_path,
             )
             if parse_timestamp(created_at) < cutoff:
-                # The age cutoff bounds which prior *success* may be carried
-                # forward: a carried success must still have its provenance
-                # artifact within retention. A completed non-success run, by
-                # contrast, dominates by its conclusion alone -- that signal is
-                # in the run metadata and does not depend on artifact retention.
-                # Keep an old same-SHA run that was re-run to failure so the
-                # dominance sort below still blocks a newer carry-forward; skip
-                # only old successes and not-yet-completed runs.
-                if (
-                    matches
-                    and as_text(run.get("status")) == "completed"
-                    and as_text(run.get("conclusion")) != "success"
-                ):
+                # The age cutoff bounds only proven-success runs, whose value
+                # depends on retained provenance artifacts. Every same-SHA run
+                # that is not a proven success stays in the candidate set so
+                # the newest updated_at bucket remains the single dominance
+                # authority for failures and in-flight reruns.
+                if matches and not gate_run_is_proven_success(run):
                     candidates.append(run)
                 continue
             if matches:
@@ -1919,7 +1916,7 @@ def resolve_gate_carry_forward(
         run_id = positive_int_value(run.get("id"), "workflow run id")
         status = as_text(run.get("status"))
         conclusion = as_text(run.get("conclusion"))
-        if status != "completed" or conclusion != "success":
+        if not gate_run_is_proven_success(run):
             if saw_successful_gate_without_provenance:
                 last_error = f"older same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
                 continue

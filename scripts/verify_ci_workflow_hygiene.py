@@ -9780,18 +9780,20 @@ def backtester_test_shard_errors(file_name: str, text: str) -> list[str]:
     for message, fragment in test_fragments:
         if fragment not in job_text:
             errors.append(message)
-    for scope_name, scope_text in (("bvs-test shards", job_text), ("bvs-test issue-789", issue_text)):
-        if not scope_text:
+    for scope_name, scope_job in (("bvs-test shards", test_job), ("bvs-test issue-789", issue_job)):
+        if scope_job is None:
             continue
         for var_name, payload_name in (
             ("BVS_NEXTEST_ARCHIVE_PATH", "archive"),
             ("BVS_BIN_SIDECARS_PATH", "sidecars"),
         ):
-            guard_lines = [
-                line.strip()
-                for line in scope_text.splitlines()
-                if f'test -s "${var_name}"' in strip_comment(line)
-            ]
+            guard_prefix = f'test -s "${var_name}"'
+            guard_lines: list[str] = []
+            for block in step_blocks(scope_job):
+                for line in block_run_body(block).splitlines():
+                    guard_line = strip_comment(line).strip()
+                    if guard_line.startswith(guard_prefix):
+                        guard_lines.append(guard_line)
             if not guard_lines:
                 errors.append(
                     f"backtester consumer must fail closed if the downloaded {payload_name} "

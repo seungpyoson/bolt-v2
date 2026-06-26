@@ -7198,6 +7198,17 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "",
         1,
     )
+    expected_missing_shards_archive = (
+        "backtester consumer must fail closed if the downloaded archive is missing or empty "
+        "(bvs-test shards)"
+    )
+
+    def assert_missing_shards_archive_guard(workflow: str) -> None:
+        workflow_errors = verifier.verify_repo_automation_texts(
+            {".github/workflows/backtester-ci.yml": workflow}
+        )
+        assert any(expected_missing_shards_archive in error for error in workflow_errors), workflow_errors
+
     missing_errors = verifier.verify_repo_automation_texts(
         {".github/workflows/backtester-ci.yml": missing_archive_guard}
     )
@@ -7205,6 +7216,32 @@ def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
         "backtester consumer must fail closed if the downloaded archive is missing or empty" in error
         for error in missing_errors
     ), missing_errors
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '      BVS_NEXTEST_SHARDS: "4"\n',
+            '      BVS_NEXTEST_SHARDS: "4"\n'
+            '      ARCHIVE_DECOY: \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
+            1,
+        )
+    )
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n',
+            '          mkdir -p "$RUNNER_TEMP/bvs-nextest-archive-extract"\n'
+            '          echo \'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\'\n',
+            1,
+        )
+    )
+    assert_missing_shards_archive_guard(
+        missing_archive_guard.replace(
+            '      BVS_NEXTEST_SHARDS: "4"\n',
+            '      BVS_NEXTEST_SHARDS: "4"\n'
+            "      DECOY: |\n"
+            "        ignored\n"
+            '        test -s "$BVS_NEXTEST_ARCHIVE_PATH" || exit 1\n',
+            1,
+        )
+    )
 
     exit_one_archive_guard = good.replace(
         'test -s "$BVS_NEXTEST_ARCHIVE_PATH" || { echo "BVS nextest archive missing or empty after artifact download"; exit 1; }',

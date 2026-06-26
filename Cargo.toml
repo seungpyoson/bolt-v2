@@ -59,40 +59,8 @@ name = "maker_taker"
 path = "tests/maker_taker.rs"
 
 [[test]]
-name = "bolt_v3_kill_switch"
-path = "tests/bolt_v3_kill_switch.rs"
-
-[[test]]
-name = "bolt_v3_kill_switch_action_router"
-path = "tests/bolt_v3_kill_switch_action_router.rs"
-
-[[test]]
-name = "bolt_v3_kill_switch_cancel"
-path = "tests/bolt_v3_kill_switch_cancel.rs"
-
-[[test]]
-name = "bolt_v3_kill_switch_config"
-path = "tests/bolt_v3_kill_switch_config.rs"
-
-[[test]]
-name = "bolt_v3_kill_switch_flatten"
-path = "tests/bolt_v3_kill_switch_flatten.rs"
-
-[[test]]
-name = "bolt_v3_kill_switch_runtime"
-path = "tests/bolt_v3_kill_switch_runtime.rs"
-
-[[test]]
-name = "bolt_v3_kill_switch_store"
-path = "tests/bolt_v3_kill_switch_store.rs"
-
-[[test]]
-name = "bolt_v3_loss_protection"
-path = "tests/bolt_v3_loss_protection.rs"
-
-[[test]]
-name = "bolt_v3_loss_runtime_feed"
-path = "tests/bolt_v3_loss_runtime_feed.rs"
+name = "kill_switch_loss"
+path = "tests/kill_switch_loss.rs"
 
 [[test]]
 name = "bolt_v3_order_intent"

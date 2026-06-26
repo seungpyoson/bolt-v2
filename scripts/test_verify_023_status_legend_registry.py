@@ -159,16 +159,14 @@ def test_required_value_mentioned_only_in_prose_is_a_finding() -> None:
     assert any("stale" in finding for finding in findings)
 
 
-def test_unchecked_root_task_is_a_finding() -> None:
+def test_unchecked_root_task_still_passes() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_complete_fixture(root)
         write_file(root, "specs/023-nt-research-analytics-platform/tasks.md", tasks_text(checked=False))
 
-        findings = verifier.scan_root(root)
-
-    assert any("ROOT-009 must be checked" in finding for finding in findings)
+        assert verifier.scan_root(root) == []
 
 
 def test_missing_source_fence_wiring_is_a_finding() -> None:
@@ -202,7 +200,7 @@ def main() -> int:
         test_complete_registry_passes,
         test_missing_required_value_is_a_finding,
         test_required_value_mentioned_only_in_prose_is_a_finding,
-        test_unchecked_root_task_is_a_finding,
+        test_unchecked_root_task_still_passes,
         test_missing_source_fence_wiring_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

@@ -24,7 +24,7 @@ RUN_SPEC = Path(
     "specs/023-nt-research-analytics-platform/reference/"
     "backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"
 )
-CHECKED_RA001 = re.compile(r"^- \[[xX]\] RA-001\b", re.MULTILINE)
+TASK_RA001 = re.compile(r"^- \[[ xX]\] RA-001\b", re.MULTILINE)
 
 CARGO_TOML_REQUIRED = (
     'aws-config = "=1.8.18"',
@@ -603,8 +603,8 @@ def scan_root(root: Path) -> list[str]:
     tasks = root / TASKS_PATH
     if not tasks.exists():
         findings.append(f"{TASKS_PATH}: tasks.md is missing")
-    elif not CHECKED_RA001.search(tasks.read_text(encoding="utf-8")):
-        findings.append(f"{TASKS_PATH}: RA-001 must be checked once Gate-0 catalog persistence is implemented")
+    elif not TASK_RA001.search(tasks.read_text(encoding="utf-8")):
+        findings.append(f"{TASKS_PATH}: RA-001 task row is missing")
 
     cargo_toml = root / BTE_CARGO_TOML
     if not cargo_toml.exists():

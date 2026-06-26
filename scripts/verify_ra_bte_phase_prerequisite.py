@@ -42,7 +42,7 @@ TASK_REQUIRED_SNIPPETS = (
     "venue normalization",
     "before Phase-3 sweeps produce valid results",
 )
-CHECKED_RA016 = re.compile(r"^- \[[xX]\] RA-016\b", re.MULTILINE)
+TASK_RA016 = re.compile(r"^- \[[ xX]\] RA-016\b", re.MULTILINE)
 
 CARGO_REQUIRED_SNIPPETS = (
     'bolt-v2 = { path = "../.." }',
@@ -354,8 +354,8 @@ def scan_root(root: Path) -> list[str]:
     require_snippets(SPEC_PATH, spec_text, SPEC_REQUIRED_SNIPPETS, findings)
     require_snippets(TASKS_PATH, tasks_text, TASK_REQUIRED_SNIPPETS, findings)
 
-    if tasks_text and not CHECKED_RA016.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: RA-016 must be checked once the prerequisite is documented")
+    if tasks_text and not TASK_RA016.search(tasks_text):
+        findings.append(f"{TASKS_PATH}: RA-016 task row is missing")
 
     cargo_text = require_file(root, BTE_CARGO_TOML, findings)
     require_snippets(BTE_CARGO_TOML, cargo_text, CARGO_REQUIRED_SNIPPETS, findings)

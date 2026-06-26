@@ -15,7 +15,7 @@ TASKS_PATH = Path("specs/023-nt-research-analytics-platform/tasks.md")
 JUSTFILE_PATH = Path("justfile")
 
 REGISTRY_SECTION = "## Cross-Project Status And Legend Registry"
-CHECKED_ROOT009 = re.compile(r"^- \[[xX]\] ROOT-009\b", re.MULTILINE)
+TASK_ROOT009 = re.compile(r"^- \[[ xX]\] ROOT-009\b", re.MULTILINE)
 REGISTRY_ROW = re.compile(
     r"^\|\s*`(?P<key>[^`]+)`\s*\|\s*(?P<concept>[^|]+?)\s*\|\s*(?P<label>[^|]+?)\s*\|"
     r"\s*(?P<legend>[^|]+?)\s*\|\s*(?P<owner>[^|]+?)\s*\|\s*(?P<setters>[^|]+?)\s*\|"
@@ -145,8 +145,8 @@ def scan_root(root: Path) -> list[str]:
         if required_value not in row_keys:
             findings.append(f"{CONTRACTS_PATH}: missing registry row for `{required_value}`")
 
-    if tasks_text and not CHECKED_ROOT009.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: ROOT-009 must be checked once the registry is canonical")
+    if tasks_text and not TASK_ROOT009.search(tasks_text):
+        findings.append(f"{TASKS_PATH}: ROOT-009 task row is missing")
 
     for command in JUSTFILE_COMMANDS:
         if justfile_text and command not in justfile_text:

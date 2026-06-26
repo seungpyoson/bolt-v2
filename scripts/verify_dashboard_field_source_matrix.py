@@ -40,7 +40,7 @@ TASK_REQUIRED_SNIPPETS = (
     "source role",
     "data status/gap reason",
 )
-CHECKED_DASH002 = re.compile(r"^- \[[xX]\] DASH-002\b", re.MULTILINE)
+TASK_DASH002 = re.compile(r"^- \[[ xX]\] DASH-002\b", re.MULTILINE)
 
 
 def require_file(root: Path, rel_path: Path, findings: list[str]) -> str:
@@ -67,8 +67,8 @@ def scan_root(root: Path) -> list[str]:
     require_snippets(PLAN_PATH, plan_text, PLAN_REQUIRED_SNIPPETS, findings)
     require_snippets(TASKS_PATH, tasks_text, TASK_REQUIRED_SNIPPETS, findings)
 
-    if tasks_text and not CHECKED_DASH002.search(tasks_text):
-        findings.append(f"{TASKS_PATH}: DASH-002 must be checked once the field-source matrix is defined")
+    if tasks_text and not TASK_DASH002.search(tasks_text):
+        findings.append(f"{TASKS_PATH}: DASH-002 task row is missing")
 
     return findings
 

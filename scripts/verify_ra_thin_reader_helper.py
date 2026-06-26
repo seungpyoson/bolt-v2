@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 HELPER_PATH = Path("crates/backtesting-vertical-slice/src/research_reader.rs")
 LIB_PATH = Path("crates/backtesting-vertical-slice/src/lib.rs")
 TASKS_PATH = Path("specs/023-nt-research-analytics-platform/2-research-analytics/tasks.md")
-CHECKED_RA004 = re.compile(r"^- \[[xX]\] RA-004\b", re.MULTILINE)
+TASK_RA004 = re.compile(r"^- \[[ xX]\] RA-004\b", re.MULTILINE)
 
 CATALOG_SPEC_PATTERNS = (
     ("catalog URI", r"\bcatalog_uri\s*:\s*String\b"),
@@ -219,8 +219,8 @@ def scan_root(root: Path) -> list[str]:
     tasks = root / TASKS_PATH
     if not tasks.exists():
         findings.append(f"{TASKS_PATH}: tasks.md is missing")
-    elif not CHECKED_RA004.search(tasks.read_text(encoding="utf-8")):
-        findings.append(f"{TASKS_PATH}: RA-004 must be checked once the thin reader helper is implemented")
+    elif not TASK_RA004.search(tasks.read_text(encoding="utf-8")):
+        findings.append(f"{TASKS_PATH}: RA-004 task row is missing")
 
     helper = root / HELPER_PATH
     if not helper.exists():

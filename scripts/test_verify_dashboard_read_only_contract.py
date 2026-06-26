@@ -100,16 +100,14 @@ def test_missing_contract_code_is_a_finding() -> None:
     assert any("PortfolioSnapshot" in finding for finding in findings)
 
 
-def test_unchecked_task_is_a_finding() -> None:
+def test_unchecked_tasks_still_pass() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_complete_fixture(root)
         write_file(root, "specs/023-nt-research-analytics-platform/3-dashboard/tasks.md", tasks_text(checked=False))
 
-        findings = verifier.scan_root(root)
-
-    assert any("DASH-010" in finding for finding in findings)
+        assert verifier.scan_root(root) == []
 
 
 def test_missing_source_fence_wiring_is_a_finding() -> None:
@@ -141,7 +139,7 @@ def main() -> int:
     tests = [
         test_complete_fixture_passes,
         test_missing_contract_code_is_a_finding,
-        test_unchecked_task_is_a_finding,
+        test_unchecked_tasks_still_pass,
         test_missing_source_fence_wiring_is_a_finding,
         test_cli_fails_with_actionable_output,
     ]

@@ -12,7 +12,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{ClientBlock, LoadedBoltV3Config},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
     bolt_v3_wire_boundary::{self, WireMessage, WireMessageHandler},
 };
@@ -93,16 +93,43 @@ struct ChainlinkReferenceFixtureCaptureFields<'a> {
     observed_text_frames: usize,
 }
 
+fn chainlink_reference_capture_client<'a>(
+    loaded: &'a LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<&'a ClientBlock> {
+    let client = loaded
+        .root
+        .clients
+        .get(client_key)
+        .ok_or_else(|| anyhow::anyhow!("capture client_key is not configured"))?;
+    let metadata = super::reference_price_provider_metadata_entries()
+        .iter()
+        .find(|metadata| {
+            metadata.provider_key == chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY
+                && metadata.client_venue_key == chainlink_reference::KEY
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Chainlink reference provider metadata is not registered for provider `{}`",
+                chainlink_reference::REFERENCE_PRICE_PROVIDER_KEY
+            )
+        })?;
+    if client.venue.as_str() != metadata.client_venue_key {
+        return Err(anyhow::anyhow!(
+            "capture client_key `{client_key}` must reference Chainlink reference provider `{}`; got `{}`",
+            metadata.client_venue_key,
+            client.venue.as_str()
+        ));
+    }
+    Ok(client)
+}
+
 pub async fn capture_reference_boundary_fixture(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     request: BoundaryFixtureCaptureRequest,
 ) -> Result<BoundaryFixtureCaptureReport> {
-    let client = loaded
-        .root
-        .clients
-        .get(&request.client_key)
-        .ok_or_else(|| anyhow::anyhow!("capture client_key is not configured"))?;
+    let client = chainlink_reference_capture_client(loaded, &request.client_key)?;
     let config = chainlink_reference::reference_price_client_config(
         &loaded.root,
         &request.client_key,
@@ -212,6 +239,84 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use zeroize::Zeroizing;
+
+    use super::*;
+    use crate::{
+        bolt_v3_config::LoadedBoltV3Config,
+        bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
+    };
+
+    fn fixture_loaded_config() -> LoadedBoltV3Config {
+        LoadedBoltV3Config {
+            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
+            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
+            root: toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
+                .expect("fixture root should parse"),
+            strategies: Vec::new(),
+        }
+    }
+
+    fn fixture_provenance() -> BoundaryFixtureCaptureProvenance {
+        BoundaryFixtureCaptureProvenance {
+            repository: "seungpyoson/bolt-v2".to_string(),
+            workflow_path: ".github/workflows/ci.yml".to_string(),
+            workflow_digest: "a".repeat(64),
+            provenance_config_digest: "b".repeat(64),
+            head_sha: "c".repeat(40),
+            head_branch: "test-branch".to_string(),
+            run_id: 1,
+            run_attempt: 1,
+            check_suite_id: 1,
+            event: "workflow_dispatch".to_string(),
+            created_at: "2026-06-27T00:00:00Z".to_string(),
+        }
+    }
+
+    fn fixture_polyresearch_resolved_secrets() -> ResolvedBoltV3Secrets {
+        let mut clients = BTreeMap::new();
+        clients.insert(
+            "polyresearch_reference".to_string(),
+            Arc::new(
+                super::super::polyresearch::ResolvedBoltV3PolyResearchSecrets {
+                    api_key: Zeroizing::new("polyresearch-api-key".to_string()),
+                },
+            ) as ResolvedBoltV3ClientSecrets,
+        );
+        ResolvedBoltV3Secrets { clients }
+    }
+
+    #[tokio::test]
+    async fn capture_rejects_non_chainlink_reference_client_key_before_builder() {
+        let loaded = fixture_loaded_config();
+        let resolved = fixture_polyresearch_resolved_secrets();
+        let err = capture_reference_boundary_fixture(
+            &loaded,
+            &resolved,
+            BoundaryFixtureCaptureRequest {
+                client_key: "polyresearch_reference".to_string(),
+                output_dir: PathBuf::from("target/test-chainlink-reference-capture"),
+                wait_timeout: Duration::from_secs(1),
+                provenance: fixture_provenance(),
+            },
+        )
+        .await
+        .expect_err("non-Chainlink reference client must fail before capture");
+
+        let message = err.to_string();
+        assert!(
+            message.contains(
+                "capture client_key `polyresearch_reference` must reference Chainlink reference provider `CHAINLINK_REFERENCE_PRICE`; got `POLYRESEARCH_REFERENCE_PRICE`"
+            ),
+            "unexpected error: {message}"
+        );
+    }
 }
 
 fn display_path(path: &Path) -> String {

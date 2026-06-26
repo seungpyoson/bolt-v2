@@ -103,7 +103,7 @@ MIRRORED_RULES = (
         ),
         (
             "Provider/runtime boundary evidence is registered",
-            "every deploy/readiness feeder that depends on provider runtime bytes or metadata must be in the boundary registry",
+            "every deploy/readiness feeder that depends on provider runtime bytes or metadata must be in the boundary registry and source-fence guarded or issue-bound, expiring non-WebSocket deferral",
             "WebSocket-frame evidence must not be deferred",
         ),
     ),

@@ -1113,6 +1113,29 @@ def assert_top_level_help_is_supported() -> None:
         raise AssertionError(f"expected top-level usage output, got {combined!r}")
     if "resolve-exact-sha" not in combined:
         raise AssertionError(f"expected supported modes in help output, got {combined!r}")
+    if "artifact-metadata" not in combined:
+        raise AssertionError(f"expected artifact metadata mode in help output, got {combined!r}")
+
+
+def assert_artifact_metadata_outputs_configured_name_and_retention() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        config = write_config(pathlib.Path(tmp), CONFIG_TOML)
+        code, stdout, stderr = run_cli(
+            [
+                "artifact-metadata",
+                "--config",
+                str(config),
+                "--run-attempt",
+                "7",
+            ]
+        )
+    if code != 0:
+        raise AssertionError(f"artifact-metadata failed with {code}: stdout={stdout!r} stderr={stderr!r}")
+    lines = stdout.strip().splitlines()
+    if "artifact_name=ci-provenance-attempt-7" not in lines:
+        raise AssertionError(f"artifact metadata must derive artifact name from config, got {stdout!r}")
+    if "retention_days=30" not in lines:
+        raise AssertionError(f"artifact metadata must derive retention from config, got {stdout!r}")
 
 
 def assert_ci_policy_outputs_matrix() -> None:
@@ -3292,6 +3315,7 @@ def main() -> int:
     assert_fingerprint_reuse_api_errors_fail_closed()
     assert_fingerprint_reuse_selects_newest_valid_prior_green()
     assert_top_level_help_is_supported()
+    assert_artifact_metadata_outputs_configured_name_and_retention()
     assert_ci_policy_outputs_matrix()
     assert_ready_noop_rows_emit_full_event_class_when_configured_full()
     assert_ci_policy_gate_names_are_event_based()

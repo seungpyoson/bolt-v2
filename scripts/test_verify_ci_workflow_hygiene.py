@@ -2145,6 +2145,41 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
         raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
 
 
+def assert_capture_artifact_metadata_is_config_derived() -> None:
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    metadata_command = (
+        '          python3 scripts/ci_provenance.py artifact-metadata \\\n'
+        '            --config "$CAPTURE_PROVENANCE_CONFIG" \\\n'
+        '            --run-attempt "${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"\n'
+    )
+    output_name = "          name: ${{ steps.provenance.outputs.artifact_name }}"
+    output_retention = "          retention-days: ${{ steps.provenance.outputs.retention_days }}"
+    assert_error(
+        "capture must derive artifact metadata from ci_provenance.py artifact-metadata",
+        workflow.replace(metadata_command, "") if metadata_command in workflow else workflow,
+    )
+    assert_error(
+        "capture upload artifact name must come from provenance config",
+        replace_once(
+            workflow,
+            output_name,
+            "          name: chainlink-reference-fixture-capture-attempt-${{ github.run_attempt }}",
+        )
+        if output_name in workflow
+        else workflow,
+    )
+    assert_error(
+        "capture upload retention-days must come from provenance config",
+        replace_once(
+            workflow,
+            output_retention,
+            "          retention-days: 30",
+        )
+        if output_retention in workflow
+        else workflow,
+    )
+
+
 def assert_ci_detector_docs_only_archive_includes_runtime_dependencies() -> None:
     verifier = load_verifier()
     workflow = repo_workflow_text(".github/workflows/ci.yml")
@@ -10453,6 +10488,7 @@ def main() -> int:
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_detector_forces_build_on_workflow_dispatch()
+    assert_capture_artifact_metadata_is_config_derived()
     assert_ci_detector_docs_only_archive_includes_runtime_dependencies()
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_config_gaps_are_reported()

@@ -23,6 +23,7 @@ import zipfile
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "ci" / "github-actions-runners.toml"
 SUPPORTED_MODES = {
+    "artifact-metadata",
     "check-backtester-gate",
     "check-ci-gate",
     "ci-policy",
@@ -2404,6 +2405,8 @@ def emit_full_ci_record(
 def parser_for_mode(mode: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=f"ci_provenance.py {mode}")
     parser.add_argument("--config", type=pathlib.Path, default=DEFAULT_CONFIG)
+    if mode == "artifact-metadata":
+        parser.add_argument("--run-attempt", required=True)
     if mode == "ci-policy":
         parser.add_argument("--event-name", required=True)
         parser.add_argument("--event-action", default="")
@@ -2475,7 +2478,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(rest)
         config = load_config(args.config)
-        if mode == "ci-policy":
+        if mode == "artifact-metadata":
+            run_attempt = positive_int_value(args.run_attempt, "run_attempt")
+            print(f"artifact_name={provenance_artifact_name(config, run_attempt)}")
+            print(f"retention_days={config.artifact_retention_days}")
+        elif mode == "ci-policy":
             result = evaluate_ci_policy(
                 config,
                 event_name=args.event_name,

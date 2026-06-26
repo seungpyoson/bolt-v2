@@ -14,6 +14,8 @@ import sys
 import tempfile
 import textwrap
 
+from ci_test_manifest import CiTestManifest
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VERIFIER_PATH = REPO_ROOT / "scripts" / "verify_ci_workflow_hygiene.py"
@@ -172,6 +174,8 @@ def load_verifier(
         raise AssertionError("could not load verify_ci_workflow_hygiene.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if hasattr(module, "build_test_manifest"):
+        module.build_test_manifest = lambda _manifest_path, _tests_root: all_standalone_live_node_manifest(module)
     return module
 
 
@@ -1153,6 +1157,48 @@ test-group = 'live-node'
 filter = 'binary(=bolt_v3_adapter_mapping) | binary(=bolt_v3_client_registration) | binary(=bolt_v3_controlled_connect) | binary(=bolt_v3_credential_log_suppression) | binary(=bolt_v3_readiness) | binary(=bolt_v3_strategy_registration) | binary(=bolt_v3_submit_admission) | binary(=config_parsing) | binary(=lake_batch) | binary(=nt_runtime_capture) | binary(=venue_contract)'
 test-group = 'live-node'
 """
+
+
+def all_standalone_live_node_manifest(verifier=None) -> CiTestManifest:
+    if verifier is None:
+        verifier = load_verifier()
+    member_to_harness = {member: member for member in verifier.LIVE_NODE_NEXTEST_BINARIES}
+    harness_to_members = {member: (member,) for member in verifier.LIVE_NODE_NEXTEST_BINARIES}
+    return CiTestManifest(member_to_harness=member_to_harness, harness_to_members=harness_to_members)
+
+
+def live_node_manifest_with(
+    verifier,
+    *,
+    consolidated: dict[str, str] | None = None,
+) -> CiTestManifest:
+    member_to_harness = {member: member for member in verifier.LIVE_NODE_NEXTEST_BINARIES}
+    for member, harness in (consolidated or {}).items():
+        member_to_harness[member] = harness
+        member_to_harness.setdefault(harness, harness)
+
+    harness_members: dict[str, list[str]] = {}
+    for member, harness in member_to_harness.items():
+        harness_members.setdefault(harness, []).append(member)
+    harness_to_members = {
+        harness: tuple(members)
+        for harness, members in harness_members.items()
+    }
+    return CiTestManifest(member_to_harness=member_to_harness, harness_to_members=harness_to_members)
+
+
+def assert_nextest_clean(nextest_config: str, manifest: CiTestManifest) -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_nextest_config(nextest_config, manifest=manifest)
+    if errors:
+        raise AssertionError(f"expected no nextest errors, got: {errors}")
+
+
+def assert_nextest_error(fragment: str, nextest_config: str, manifest: CiTestManifest) -> None:
+    verifier = load_verifier()
+    errors = verifier.verify_nextest_config(nextest_config, manifest=manifest)
+    if not any(fragment in error for error in errors):
+        raise AssertionError(f"expected nextest error containing {fragment!r}, got: {errors}")
 
 LOCAL_COMPILE_POLICY_TOML = """
 [local_compile_policy]
@@ -4541,41 +4587,82 @@ def assert_body_exits_requires_top_level_exit() -> None:
 
 
 def assert_nextest_live_node_group_required() -> None:
-    assert_error(
+    verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
+    assert_nextest_error(
         "nextest config missing live-node test group",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("live-node = { max-threads = 1 }", ""),
+        BASE_NEXTEST_CONFIG.replace("live-node = { max-threads = 1 }", ""),
+        manifest,
     )
-    assert_error(
+    assert_nextest_error(
         "nextest live-node test group max-threads must be 1",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("max-threads = 1", "max-threads = 2"),
+        BASE_NEXTEST_CONFIG.replace("max-threads = 1", "max-threads = 2"),
+        manifest,
     )
-    assert_error(
+    assert_nextest_error(
         "nextest config must assign LiveNode test paths to live-node group",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("binary(=venue_contract)", "binary(=config_schema)"),
+        BASE_NEXTEST_CONFIG.replace("binary(=venue_contract)", "binary(=config_schema)"),
+        manifest,
     )
-    assert_error(
+    assert_nextest_error(
         "nextest config must assign LiveNode test paths to live-node group",
-        nextest_config=BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
+        BASE_NEXTEST_CONFIG.replace("test-group = 'live-node'", "test-group = 'other'"),
+        manifest,
     )
-    assert_error(
+    assert_nextest_error(
         "missing test(~bolt_v3_live_node::tests::)",
-        nextest_config=BASE_NEXTEST_CONFIG.replace(
+        BASE_NEXTEST_CONFIG.replace(
             " | test(~bolt_v3_live_node::tests::)",
             "",
         ),
+        manifest,
     )
 
 
 def assert_nextest_live_node_group_covers_bolt_v3_builders() -> None:
     verifier = load_verifier()
+    manifest = all_standalone_live_node_manifest(verifier)
     for binary in verifier.LIVE_NODE_NEXTEST_BINARIES:
-        assert_error(
+        assert_nextest_error(
             f"missing binary(={binary})",
-            nextest_config=BASE_NEXTEST_CONFIG.replace(f"binary(={binary}) | ", "").replace(
+            BASE_NEXTEST_CONFIG.replace(f"binary(={binary}) | ", "").replace(
                 f" | binary(={binary})",
                 "",
             ),
+            manifest,
         )
+
+
+def assert_nextest_live_node_group_uses_manifest_harness_scope() -> None:
+    verifier = load_verifier()
+    member = "bolt_v3_client_registration"
+    harness = "wiring_registration"
+    manifest = live_node_manifest_with(verifier, consolidated={member: harness})
+    expected_clause = f"(binary(={harness}) & test(/^{member}::/))"
+    canonical_config = BASE_NEXTEST_CONFIG.replace(
+        f"binary(={member})",
+        expected_clause,
+    )
+    assert_nextest_clean(canonical_config, manifest)
+    assert_nextest_error(
+        f"missing {expected_clause}",
+        BASE_NEXTEST_CONFIG,
+        manifest,
+    )
+    assert_nextest_error(
+        f"missing {expected_clause}",
+        BASE_NEXTEST_CONFIG.replace(f"binary(={member})", f"binary(={harness})"),
+        manifest,
+    )
+
+
+def assert_nextest_live_node_group_accepts_manifest_standalone_member() -> None:
+    verifier = load_verifier()
+    manifest = live_node_manifest_with(
+        verifier,
+        consolidated={"bolt_v3_client_registration": "bolt_v3_client_registration"},
+    )
+    assert_nextest_clean(BASE_NEXTEST_CONFIG, manifest)
 
 
 # Pin-consistency fixtures. The base SHA already appears throughout BASE_WORKFLOW
@@ -8069,6 +8156,8 @@ def main() -> int:
     assert_body_exits_requires_top_level_exit()
     assert_nextest_live_node_group_required()
     assert_nextest_live_node_group_covers_bolt_v3_builders()
+    assert_nextest_live_node_group_uses_manifest_harness_scope()
+    assert_nextest_live_node_group_accepts_manifest_standalone_member()
     for job in (
         "detector",
         "deny",

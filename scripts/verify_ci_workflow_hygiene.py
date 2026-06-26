@@ -42,6 +42,7 @@ from command_understanding import (
     python_constant_string,
     python_inline_command_payloads,
 )
+from ci_test_manifest import CiTestManifest, build_test_manifest
 from rust_verification import CARGO_ALIAS_SUBCOMMANDS, CARGO_DISK_PREFLIGHT_SUBCOMMANDS
 
 
@@ -9464,12 +9465,30 @@ def verify_setup_action(action_text: str) -> list[str]:
     return errors
 
 
-def verify_nextest_config(config_text: str) -> list[str]:
+def live_node_nextest_expected_clause(member: str, manifest: CiTestManifest) -> str:
+    harness = manifest.member_to_harness.get(member, member)
+    if harness == member:
+        return f"binary(={member})"
+    return f"(binary(={harness}) & test(/^{member}::/))"
+
+
+def live_node_nextest_filter_matches(member: str, manifest: CiTestManifest, filter_expr: object) -> bool:
+    if not isinstance(filter_expr, str):
+        return False
+    harness = manifest.member_to_harness.get(member, member)
+    if harness == member:
+        return f"binary(={member})" in filter_expr
+    return f"binary(={harness})" in filter_expr and f"test(/^{member}::/)" in filter_expr
+
+
+def verify_nextest_config(config_text: str, *, manifest: CiTestManifest | None = None) -> list[str]:
     errors: list[str] = []
     try:
         config = tomllib.loads(config_text)
     except tomllib.TOMLDecodeError as exc:
         return [f"nextest config invalid TOML: {exc}"]
+    if manifest is None:
+        manifest = build_test_manifest(REPO_ROOT / "Cargo.toml", REPO_ROOT / "tests")
 
     groups = config.get("test-groups", {})
     if not isinstance(groups, dict):
@@ -9490,19 +9509,19 @@ def verify_nextest_config(config_text: str) -> list[str]:
         for override in overrides
         if isinstance(override, dict) and override.get("test-group") == LIVE_NODE_TEST_GROUP
     ]
-    missing_binaries = [
-        binary
-        for binary in LIVE_NODE_NEXTEST_BINARIES
-        if not any(isinstance(filter_expr, str) and f"binary(={binary})" in filter_expr for filter_expr in live_node_filters)
+    missing_live_node_filters = [
+        live_node_nextest_expected_clause(member, manifest)
+        for member in LIVE_NODE_NEXTEST_BINARIES
+        if not any(live_node_nextest_filter_matches(member, manifest, filter_expr) for filter_expr in live_node_filters)
     ]
     missing_unit_filters = [
         fragment
         for fragment in LIVE_NODE_UNIT_TEST_FILTERS
         if not any(isinstance(filter_expr, str) and fragment in filter_expr for filter_expr in live_node_filters)
     ]
-    if missing_binaries or missing_unit_filters:
+    if missing_live_node_filters or missing_unit_filters:
         missing = ", ".join(
-            [f"binary(={binary})" for binary in missing_binaries] + missing_unit_filters
+            missing_live_node_filters + missing_unit_filters
         )
         errors.append(f"nextest config must assign LiveNode test paths to live-node group: missing {missing}")
     return errors

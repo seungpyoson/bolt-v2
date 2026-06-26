@@ -93,15 +93,6 @@ Given that feature description, do this:
    - `mkdir -p SPECIFY_FEATURE_DIRECTORY`
    - Copy `.specify/templates/spec-template.md` to `SPECIFY_FEATURE_DIRECTORY/spec.md` as the starting point
    - Set `SPEC_FILE` to `SPECIFY_FEATURE_DIRECTORY/spec.md`
-   - Persist the resolved path to `.specify/feature.json`:
-     ```json
-     {
-       "feature_directory": "<resolved feature dir>"
-     }
-     ```
-     Write the actual resolved directory path value (for example, `specs/003-user-auth`), not the literal string `SPECIFY_FEATURE_DIRECTORY`.
-     This allows downstream commands (`/speckit.plan`, `/speckit.tasks`, etc.) to locate the feature directory without relying on git branch name conventions.
-
    **IMPORTANT**:
    - You must only create one feature per `/speckit.specify` invocation
    - The spec directory name and the git branch name are independent — they may be the same but that is the user's choice

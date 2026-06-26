@@ -73,8 +73,8 @@ def assert_ci_provenance_gate_name_helpers_stay_in_parity() -> None:
         if owner_result != provenance_result:
             raise AssertionError((value, owner_result, provenance_result))
     collision_cases = (
-        {"gate_required": "gate", "gate_noop": "gate"},
-        {"gate_required": "gate", "backtester_noop": "gate"},
+        {"gate_required": "gate", "gate_iteration": "gate"},
+        {"gate_required": "gate", "backtester_required": "gate"},
         {"gate_dispatch_full": "gate-dispatch", "backtester_dispatch_full": "gate-dispatch"},
     )
     for gate_names in collision_cases:

@@ -32,17 +32,13 @@ SUPPORTED_MODES = {
     "resolve-fingerprint",
     "validate-record",
 }
-POLICY_VALUES = {"full", "defer", "iteration", "noop", "tag_reuse"}
+POLICY_VALUES = {"full", "docs", "defer", "iteration", "noop", "tag_reuse"}
 GATE_NAME_KEYS = (
     "gate_required",
-    "gate_defer",
     "gate_iteration",
-    "gate_noop",
     "gate_dispatch_full",
     "backtester_required",
-    "backtester_defer",
     "backtester_iteration",
-    "backtester_noop",
     "backtester_dispatch_full",
 )
 POLICY_ROWS = (
@@ -55,6 +51,7 @@ POLICY_ROWS = (
     "ready_pr_edited_no_base",
     "ready_pr_reopened",
     "ready_for_review",
+    "docs",
     "workflow_dispatch",
     "workflow_dispatch_full_ci",
     "main_push",
@@ -71,6 +68,7 @@ POLICY_REQUIRED_VALUES = {
     "converted_to_draft": "defer",
     "ready_pr": "full",
     "ready_for_review": "full",
+    "docs": "docs",
     "workflow_dispatch": "iteration",
     "workflow_dispatch_full_ci": "full",
     "main_push": "full",
@@ -86,6 +84,7 @@ POLICY_ALLOWED_VALUES = {
     "ready_pr_edited_no_base": {"noop", "full"},
     "ready_pr_reopened": {"noop", "full"},
 }
+FORBIDDEN_DOCS_SAFE_PATH_PATTERNS = frozenset({"docs/**", "specs/**"})
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 NEXTEST_FINGERPRINT_RE = re.compile(
@@ -148,6 +147,9 @@ class ProvenanceConfig:
     policy: dict[str, str]
     gate_names: dict[str, str]
     mergify_temp_pr_head_ref_prefix: str
+    docs_safe_paths: tuple[str, ...]
+    docs_forbidden_ignored_build_paths: tuple[str, ...]
+    docs_non_heavy_required_jobs: tuple[str, ...]
     force_full_ci: bool
     ignore_emit_failure: bool
 
@@ -160,7 +162,6 @@ class CiPolicyResult:
     gate_name: str
     backtester_gate_name: str
     expected_event_class: str
-    is_mergify_temp_pr: bool
     reason: str
 
 
@@ -177,6 +178,15 @@ class FingerprintReuseResolution:
     source_run_id: str
     source_sha: str
     source_artifact_id: str
+    reason: str
+
+
+@dataclasses.dataclass(frozen=True)
+class GateCarryForwardResolution:
+    carry_forward_verified: bool
+    source_run_id: str
+    source_sha: str
+    gate_name: str
     reason: str
 
 
@@ -215,12 +225,8 @@ def gate_name_collision_errors(gate_names: dict[str, str]) -> list[str]:
     keys = (
         "gate_required",
         "backtester_required",
-        "gate_defer",
-        "backtester_defer",
         "gate_iteration",
         "backtester_iteration",
-        "gate_noop",
-        "backtester_noop",
         "gate_dispatch_full",
         "backtester_dispatch_full",
     )
@@ -251,6 +257,16 @@ def require_string_list(parent: dict[str, object], key: str, prefix: str) -> tup
     return tuple(value)
 
 
+def require_lookback_natural_boundary(
+    *,
+    last_page_len: int,
+    workflow_runs_per_page: int,
+    exhausted_message: str,
+) -> None:
+    if last_page_len >= workflow_runs_per_page:
+        raise ProvenanceError(exhausted_message)
+
+
 def policy_contract_errors(policy: dict[str, object]) -> list[str]:
     errors: list[str] = []
     missing_contract = sorted(
@@ -274,6 +290,18 @@ def policy_contract_errors(policy: dict[str, object]) -> list[str]:
             errors.append(
                 f"ci_provenance.policy.{row} must be one of {sorted(allowed)!r}"
             )
+    return errors
+
+
+def docs_safe_path_contract_errors(safe_paths: tuple[str, ...]) -> list[str]:
+    errors: list[str] = []
+    for forbidden in sorted(FORBIDDEN_DOCS_SAFE_PATH_PATTERNS):
+        if forbidden in safe_paths:
+            errors.append(
+                f"ci_provenance.docs.safe_paths must not include build-input path {forbidden}"
+            )
+    if len(set(safe_paths)) != len(safe_paths):
+        errors.append("ci_provenance.docs.safe_paths must not contain duplicates")
     return errors
 
 
@@ -410,8 +438,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
 
     deploy = require_table(ci_provenance, "deploy", "ci_provenance")
     dispatch = require_table(ci_provenance, "dispatch", "ci_provenance")
-    mergify = require_table(ci_provenance, "mergify", "ci_provenance")
     gate_names_table = require_table(ci_provenance, "gate_names", "ci_provenance")
+    docs_table = require_table(ci_provenance, "docs", "ci_provenance")
+    mergify = require_table(ci_provenance, "mergify", "ci_provenance")
     api_limits = require_table(ci_provenance, "api_limits", "ci_provenance")
     artifacts = require_table(ci_provenance, "artifacts", "ci_provenance")
     policy_table = require_table(ci_provenance, "policy", "ci_provenance")
@@ -433,7 +462,7 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         value = policy_table.get(row)
         if value not in POLICY_VALUES:
             raise ProvenanceError(
-                f"ci_provenance.policy.{row} must be full, defer, iteration, noop, or tag_reuse"
+                f"ci_provenance.policy.{row} must be full, docs, defer, iteration, noop, or tag_reuse"
             )
         policy[row] = value
     contract_errors = policy_contract_errors(policy)
@@ -456,6 +485,27 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
     gate_name_errors = gate_name_collision_errors(gate_names)
     if gate_name_errors:
         raise ProvenanceError("; ".join(gate_name_errors))
+
+    docs_safe_paths = require_string_list(docs_table, "safe_paths", "ci_provenance.docs")
+    docs_forbidden_ignored_build_paths = require_string_list(
+        docs_table,
+        "forbidden_ignored_build_paths",
+        "ci_provenance.docs",
+    )
+    docs_non_heavy_required_jobs = require_string_list(
+        docs_table,
+        "non_heavy_required_jobs",
+        "ci_provenance.docs",
+    )
+    docs_path_errors = docs_safe_path_contract_errors(docs_safe_paths)
+    if docs_path_errors:
+        raise ProvenanceError("; ".join(docs_path_errors))
+    unknown_non_heavy = sorted(set(docs_non_heavy_required_jobs) - set(required_jobs))
+    if unknown_non_heavy:
+        raise ProvenanceError(
+            "ci_provenance.docs.non_heavy_required_jobs must be configured full-CI jobs: "
+            + ", ".join(unknown_non_heavy)
+        )
 
     force_full_ci = overrides.get("force_full_ci")
     ignore_emit_failure = overrides.get("ignore_emit_failure")
@@ -505,6 +555,9 @@ def load_config(path: pathlib.Path = DEFAULT_CONFIG) -> ProvenanceConfig:
         mergify_temp_pr_head_ref_prefix=require_string(
             mergify, "temp_pr_head_ref_prefix", "ci_provenance.mergify"
         ),
+        docs_safe_paths=docs_safe_paths,
+        docs_forbidden_ignored_build_paths=docs_forbidden_ignored_build_paths,
+        docs_non_heavy_required_jobs=docs_non_heavy_required_jobs,
         force_full_ci=force_full_ci,
         ignore_emit_failure=ignore_emit_failure,
     )
@@ -517,72 +570,6 @@ def parse_bool(value: str) -> bool:
     if normalized == "false":
         return False
     raise ProvenanceError(f"expected boolean true or false, got {value!r}")
-
-
-def expected_event_class_for(reason: str, path: str) -> str:
-    if reason in {
-        "draft_pr_synchronize",
-        "draft_pr_opened",
-        "draft_pr_reopened",
-        "draft_pr_edited",
-        "converted_to_draft",
-    }:
-        return "defer"
-    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"} and path == "noop":
-        return "noop"
-    if reason == "workflow_dispatch":
-        return "iteration"
-    if reason == "tag":
-        return "tag_reuse"
-    if reason in {"ready_pr", "ready_for_review"} and path == "iteration":
-        return "iteration"
-    return "full"
-
-
-def gate_name_suffix_for(reason: str, path: str) -> str:
-    if reason == "workflow_dispatch_full_ci":
-        return "dispatch_full"
-    if path in {"full", "tag_reuse"}:
-        return "required"
-    if path == "defer":
-        return "defer"
-    if path == "iteration":
-        return "iteration"
-    if path == "noop":
-        return "noop"
-    raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
-
-
-def is_mergify_temp_pr(
-    *,
-    event_name: str,
-    pull_request_draft: bool,
-    pull_request_head_ref: str,
-    temp_pr_head_ref_prefix: str,
-) -> bool:
-    return (
-        event_name == "pull_request"
-        and pull_request_draft
-        and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
-    )
-
-
-MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
-
-
-def bool_like(value: bool | str) -> bool:
-    if isinstance(value, bool):
-        return value
-    return value.strip().lower() == "true"
-
-
-def mergify_temp_pr_requires_full_ci(
-    *, event_action: str, pull_request_base_changed: bool | str
-) -> bool:
-    base_changed = bool_like(pull_request_base_changed)
-    return event_action in MERGIFY_TEMP_PR_FULL_ACTIONS or (
-        event_action == "edited" and base_changed
-    )
 
 
 def require_job_result(
@@ -611,10 +598,10 @@ def require_job_result_in(
 def require_jobs_skipped(job_results: dict[str, str], jobs: tuple[str, ...], label: str) -> None:
     for job in jobs:
         actual = job_results.get(job)
-        if actual is None:
-            raise ProvenanceError(f"{job} missing during {label}; expected skipped")
         if actual != "skipped":
-            raise ProvenanceError(f"{job} unexpectedly resolved {actual!r} during {label}; expected skipped")
+            if actual is None:
+                raise ProvenanceError(f"{job} missing or not skipped during {label}: {actual}")
+            raise ProvenanceError(f"{job} unexpectedly ran during {label}: {actual}")
 
 
 CI_HEAVY_JOBS = (
@@ -629,32 +616,10 @@ CI_HEAVY_JOBS = (
     "build",
 )
 
-CI_FULL_REQUIRED_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test")
-CI_ARCHIVE_REQUIRED_JOBS = ("nextest-fingerprint", "test-archive")
-BACKTESTER_SKIPPED_PROOF_JOBS = ("clippy", "test-archive", "test")
-BACKTESTER_REQUIRED_PROOF_JOBS = (
-    ("fmt", "bvs-fmt"),
-    ("clippy", "bvs-clippy"),
-    ("test-archive", "bvs-test archive"),
-    ("test", "bvs-test"),
-)
 
-
-def require_deferred_flag_consistency(policy_path: str, full_ci_deferred: bool) -> None:
-    expected = policy_path == "defer"
-    if full_ci_deferred != expected:
-        actual = str(full_ci_deferred).lower()
-        if full_ci_deferred:
-            message = "full_ci_deferred=true is only valid when policy_path is 'defer'"
-        else:
-            message = "full_ci_deferred=false is invalid when policy_path is 'defer'"
-        raise ProvenanceError(
-            f"{message}; got policy_path={policy_path!r}, full_ci_deferred={actual}"
-        )
-
-
-def require_gate_rollout(policy_path: str) -> None:
-    raise ProvenanceError(f"{policy_path} gate proof requires the merge-readiness workflow rollout")
+def require_verified_carry_forward(carry_forward_verified: bool) -> None:
+    if not carry_forward_verified:
+        raise ProvenanceError("verified carry-forward proof is required for this policy path")
 
 
 def evaluate_ci_gate_verdict(
@@ -664,14 +629,16 @@ def evaluate_ci_gate_verdict(
     full_ci_deferred: bool,
     ignore_emit_failure: bool,
     reuse_found: bool,
+    carry_forward_verified: bool,
     job_results: dict[str, str],
     build_required: bool,
 ) -> str:
     require_job_result(job_results, "ci-policy", "success", "ci-policy did not succeed")
     require_job_result(job_results, "detector", "success", "detector did not succeed")
-    require_deferred_flag_consistency(policy_path, full_ci_deferred)
+    if full_ci_deferred != (policy_path == "defer"):
+        raise ProvenanceError("full_ci_deferred must match policy_path == 'defer'")
     if ignore_emit_failure:
-        raise ProvenanceError("ignore_emit_failure=true requires the merge-readiness workflow rollout")
+        raise ProvenanceError("ignore_emit_failure cannot satisfy the required gate")
 
     if policy_path == "tag_reuse":
         if expected_event_class != "tag_reuse":
@@ -708,24 +675,26 @@ def evaluate_ci_gate_verdict(
         require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "iteration")
         return "iteration CI policy; no required full proof published by this run"
 
-    if policy_path == "defer":
+    if policy_path == "defer" or full_ci_deferred:
         if expected_event_class != "defer":
             raise ProvenanceError(f"deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "defer")
-        require_gate_rollout("deferred CI policy")
+        require_verified_carry_forward(carry_forward_verified)
+        return "deferred CI policy carried forward prior same-SHA gate proof"
 
     if policy_path == "noop":
         if expected_event_class != "noop":
             raise ProvenanceError(f"noop CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_jobs_skipped(job_results, (*CI_HEAVY_JOBS, "ci-provenance-emit"), "noop")
-        require_gate_rollout("no-code CI policy")
+        require_verified_carry_forward(carry_forward_verified)
+        return "no-code CI policy carried forward prior same-SHA gate proof"
 
     if policy_path == "docs":
         if expected_event_class != "docs":
             raise ProvenanceError(f"docs CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_jobs_skipped(job_results, CI_HEAVY_JOBS, "docs")
         require_job_result(job_results, "ci-provenance-emit", "success", "ci-provenance-emit did not succeed for docs")
-        require_gate_rollout("docs CI policy")
+        return "docs CI proof passed"
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown CI policy path {policy_path!r}")
@@ -737,7 +706,7 @@ def evaluate_ci_gate_verdict(
             job_results,
             "nextest-fingerprint",
             "success",
-            "nextest fingerprint did not succeed before reuse",
+            "nextest fingerprint did not succeed during reuse",
         )
         require_job_result(
             job_results,
@@ -759,13 +728,17 @@ def evaluate_ci_gate_verdict(
         )
     else:
         emit_result = job_results.get("ci-provenance-emit")
-        if emit_result != "success":
+        if emit_result != "success" and not ignore_emit_failure:
             raise ProvenanceError("ci-provenance-emit did not succeed")
+        require_job_result(
+            job_results,
+            "nextest-fingerprint",
+            "success",
+            "nextest fingerprint did not succeed",
+        )
+        require_job_result(job_results, "test-archive", "success", "test-archive did not succeed")
 
-    required_full_jobs = CI_FULL_REQUIRED_JOBS
-    if not reuse_found:
-        required_full_jobs = (*required_full_jobs, *CI_ARCHIVE_REQUIRED_JOBS)
-    for job in required_full_jobs:
+    for job in ("deny", "clippy", "check-aarch64", "source-fence", "test"):
         require_job_result(job_results, job, "success", f"{job} did not succeed")
     if build_required:
         require_job_result(job_results, "build", "success", "build did not succeed when build_required=true")
@@ -789,44 +762,130 @@ def evaluate_backtester_gate_verdict(
 ) -> str:
     require_job_result(job_results, "ci-policy", "success", "bvs-ci-policy did not succeed")
     require_job_result(job_results, "detect", "success", "bvs-detect did not succeed")
-    require_deferred_flag_consistency(policy_path, full_ci_deferred)
+    if full_ci_deferred != (policy_path == "defer"):
+        raise ProvenanceError("backtester full_ci_deferred must match policy_path == 'defer'")
 
     if policy_path == "iteration":
         if expected_event_class != "iteration":
             raise ProvenanceError(f"backtester iteration CI policy outside resolver-permitted event class {expected_event_class!r}")
         require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during iteration")
-        require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester iteration")
+        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester iteration")
         return "backtester iteration CI policy; no required full proof published by this run"
+
+    if not bvs_changed:
+        allowed_no_crate_paths = frozenset({"full", "noop", "defer"})
+        if policy_path not in allowed_no_crate_paths:
+            raise ProvenanceError(f"backtester no-crate path does not support policy_path {policy_path!r}")
+        if expected_event_class != policy_path:
+            raise ProvenanceError(
+                "backtester no-crate path requires expected_event_class to match "
+                f"policy_path {policy_path!r}, got {expected_event_class!r}"
+            )
+        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
+        require_jobs_skipped(job_results, ("clippy", "test-archive", "test"), "backtester no-crate")
+        return "backtester no-crate proof passed"
 
     if policy_path == "noop":
         if expected_event_class != "noop":
             raise ProvenanceError(f"backtester noop CI policy outside resolver-permitted event class {expected_event_class!r}")
-        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during backtester noop")
-        require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester noop")
-        require_gate_rollout("backtester no-code policy")
+        for job, label in (
+            ("fmt", "bvs-fmt"),
+            ("clippy", "bvs-clippy"),
+            ("test-archive", "bvs-test archive"),
+            ("test", "bvs-test"),
+        ):
+            require_job_result(job_results, job, "success", f"{label} did not succeed")
+        return "backtester no-code policy recomputed proof passed"
 
-    if policy_path == "defer":
+    if policy_path == "defer" or full_ci_deferred:
         if expected_event_class != "defer":
             raise ProvenanceError(f"backtester deferred CI policy outside resolver-permitted event class {expected_event_class!r}")
-        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip during backtester defer")
-        require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester defer")
-        require_gate_rollout("backtester deferred policy")
+        for job, label in (
+            ("fmt", "bvs-fmt"),
+            ("clippy", "bvs-clippy"),
+            ("test-archive", "bvs-test archive"),
+            ("test", "bvs-test"),
+        ):
+            require_job_result(job_results, job, "success", f"{label} did not succeed")
+        return "backtester deferred policy recomputed proof passed"
 
     if policy_path != "full":
         raise ProvenanceError(f"unknown backtester CI policy path {policy_path!r}")
     if expected_event_class != "full":
         raise ProvenanceError(f"backtester full CI policy outside resolver-permitted event class {expected_event_class!r}")
-
-    if not bvs_changed:
-        require_job_result_in(job_results, "fmt", {"success", "skipped"}, "bvs-fmt did not succeed or skip on non-crate PR")
-        require_jobs_skipped(job_results, BACKTESTER_SKIPPED_PROOF_JOBS, "backtester no-crate")
-        return "backtester no-crate proof passed"
-
-    # issue_789 is intentionally downstream of backtester-gate; requiring it here
-    # would make the diagnostic lane part of the merge gate and create a cycle.
-    for job, label in BACKTESTER_REQUIRED_PROOF_JOBS:
+    for job, label in (
+        ("fmt", "bvs-fmt"),
+        ("clippy", "bvs-clippy"),
+        ("test-archive", "bvs-test archive"),
+        ("test", "bvs-test"),
+    ):
         require_job_result(job_results, job, "success", f"{label} did not succeed")
-    return "backtester full proof passed"
+    return "backtester lanes passed"
+
+
+def expected_event_class_for(reason: str, path: str) -> str:
+    if reason == "docs" or path == "docs":
+        return "docs"
+    if reason in {
+        "draft_pr_synchronize",
+        "draft_pr_opened",
+        "draft_pr_reopened",
+        "draft_pr_edited",
+        "converted_to_draft",
+    }:
+        return "defer"
+    if reason in {"ready_pr_edited_no_base", "ready_pr_reopened"} and path == "noop":
+        return "noop"
+    if reason == "workflow_dispatch":
+        return "iteration"
+    if reason == "tag":
+        return "tag_reuse"
+    if reason in {"ready_pr", "ready_for_review"} and path == "iteration":
+        return "iteration"
+    return "full"
+
+
+def gate_name_suffix_for(event_name: str, reason: str, path: str) -> str:
+    if event_name == "workflow_dispatch" and reason == "workflow_dispatch_full_ci":
+        return "dispatch_full"
+    if event_name == "workflow_dispatch":
+        return "iteration"
+    if path in POLICY_VALUES:
+        return "required"
+    raise ProvenanceError(f"cannot resolve gate name for ci_policy_path {path!r}")
+
+
+def mergify_temp_pr_matches(
+    *,
+    event_name: str,
+    pull_request_draft: bool,
+    pull_request_head_ref: str,
+    temp_pr_head_ref_prefix: str,
+) -> bool:
+    return (
+        event_name == "pull_request"
+        and pull_request_draft
+        and pull_request_head_ref.startswith(temp_pr_head_ref_prefix)
+    )
+
+
+MERGIFY_TEMP_PR_FULL_ACTIONS = frozenset({"opened", "synchronize", "reopened", "ready_for_review"})
+
+
+def bool_like(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() == "true"
+
+
+def mergify_temp_pr_requires_full_ci(
+    *,
+    event_action: str,
+    pull_request_base_changed: bool | str,
+) -> bool:
+    base_changed = bool_like(pull_request_base_changed)
+    return event_action in MERGIFY_TEMP_PR_FULL_ACTIONS or (event_action == "edited" and base_changed)
+
 
 def evaluate_ci_policy(
     config: ProvenanceConfig,
@@ -837,9 +896,10 @@ def evaluate_ci_policy(
     pull_request_head_ref: str = "",
     pull_request_base_changed: bool = False,
     workflow_dispatch_full_ci: str = "",
+    docs_only: bool = False,
     ref: str,
 ) -> CiPolicyResult:
-    mergify_temp_pr = is_mergify_temp_pr(
+    mergify_temp_pr = mergify_temp_pr_matches(
         event_name=event_name,
         pull_request_draft=pull_request_draft,
         pull_request_head_ref=pull_request_head_ref,
@@ -910,9 +970,16 @@ def evaluate_ci_policy(
         path = config.policy["unknown_event"]
         reason = "unknown_event"
 
+    if event_name == "pull_request" and docs_only and path == "full" and reason not in {
+        "force_full_ci",
+        "mergify_temp_pr",
+    }:
+        path = config.policy["docs"]
+        reason = "docs"
+
     if path not in POLICY_VALUES:
         raise ProvenanceError(f"resolved invalid ci_policy_path {path!r}")
-    gate_name_suffix = gate_name_suffix_for(reason, path)
+    gate_name_suffix = gate_name_suffix_for(event_name, reason, path)
     return CiPolicyResult(
         ci_policy_path=path,
         full_ci_required=path == "full",
@@ -920,7 +987,6 @@ def evaluate_ci_policy(
         gate_name=config.gate_names[f"gate_{gate_name_suffix}"],
         backtester_gate_name=config.gate_names[f"backtester_{gate_name_suffix}"],
         expected_event_class=expected_event_class_for(reason, path),
-        is_mergify_temp_pr=mergify_temp_pr,
         reason=reason,
     )
 
@@ -1087,6 +1153,8 @@ def require_complete_first_page(
 
 
 def sha256_file(path: pathlib.Path) -> str:
+    if path.is_symlink():
+        raise ProvenanceError(f"file must not be a symlink for digest: {path}")
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except FileNotFoundError as exc:
@@ -1095,8 +1163,10 @@ def sha256_file(path: pathlib.Path) -> str:
         raise ProvenanceError(f"file could not be read for digest: {path}: {exc}") from exc
 
 
-def workflow_file_digest(config: ProvenanceConfig) -> str:
-    return sha256_file(REPO_ROOT / config.workflow_path)
+def workflow_file_digest(config: ProvenanceConfig, workflow_file: pathlib.Path | None = None) -> str:
+    if workflow_file is None:
+        workflow_file = REPO_ROOT / config.workflow_path
+    return sha256_file(workflow_file)
 
 
 def require_record_string(record: dict[str, object], key: str) -> str:
@@ -1153,18 +1223,24 @@ def validate_pull_request_metadata(record: dict[str, object]) -> None:
         raise ProvenanceError("record pull_request metadata must be null outside pull_request events")
 
 
-def validate_required_jobs(record: dict[str, object], config: ProvenanceConfig) -> None:
+def validate_required_jobs(record: dict[str, object], config: ProvenanceConfig, kind: str) -> None:
     required_jobs = record.get("required_jobs")
     if not isinstance(required_jobs, dict):
         raise ProvenanceError("record required_jobs must be an object")
     if set(required_jobs) != set(config.required_jobs):
         raise ProvenanceError("record required_jobs must match configured full-CI jobs")
     for job, conclusion in required_jobs.items():
-        if conclusion != "success":
+        if kind == "docs-ci":
+            if job in config.docs_non_heavy_required_jobs:
+                if conclusion != "success":
+                    raise ProvenanceError(f"record docs required job {job} must be success")
+            elif conclusion != "skipped":
+                raise ProvenanceError(f"record docs required job {job} must be skipped")
+        elif conclusion != "success":
             raise ProvenanceError(f"record required_jobs.{job} must be success")
 
 
-def validate_conditional_jobs(record: dict[str, object], config: ProvenanceConfig) -> None:
+def validate_conditional_jobs(record: dict[str, object], config: ProvenanceConfig, kind: str) -> None:
     conditional_jobs = record.get("conditional_jobs")
     if not isinstance(conditional_jobs, dict):
         raise ProvenanceError("record conditional_jobs must be an object")
@@ -1178,6 +1254,8 @@ def validate_conditional_jobs(record: dict[str, object], config: ProvenanceConfi
         result = payload.get("result")
         if result is not None and not isinstance(result, str):
             raise ProvenanceError(f"record conditional_jobs.{job}.result must be string or null")
+        if kind == "docs-ci" and (payload.get("required") is not False or result != "skipped"):
+            raise ProvenanceError(f"record docs conditional job {job} must be not required and skipped")
 
 
 def validate_record_schema(
@@ -1189,8 +1267,9 @@ def validate_record_schema(
 ) -> None:
     if record.get("schema_version") != config.schema_version:
         raise ProvenanceError(f"unknown provenance schema {record.get('schema_version')!r}")
-    if record.get("kind") != "full-ci":
-        raise ProvenanceError("record kind must be full-ci")
+    kind = record.get("kind")
+    if kind not in {"full-ci", "docs-ci"}:
+        raise ProvenanceError("record kind must be full-ci or docs-ci")
     require_record_string(record, "repository")
     if require_record_string(record, "workflow_path") != config.workflow_path:
         raise ProvenanceError("record workflow_path does not match config")
@@ -1213,9 +1292,11 @@ def validate_record_schema(
         raise ProvenanceError("record head_branch must be string or null")
     if event == "push" and not head_branch:
         raise ProvenanceError("record head_branch must be present for push events")
+    if kind == "docs-ci" and event != "pull_request":
+        raise ProvenanceError("docs-ci records must come from pull_request events")
     validate_pull_request_metadata(record)
-    validate_required_jobs(record, config)
-    validate_conditional_jobs(record, config)
+    validate_required_jobs(record, config, kind)
+    validate_conditional_jobs(record, config, kind)
     nextest_fingerprint = record.get("nextest_fingerprint")
     if nextest_fingerprint is not None and (
         not isinstance(nextest_fingerprint, str) or not nextest_fingerprint
@@ -1524,8 +1605,11 @@ def resolve_exact_sha_evidence(
             break
 
     if not candidates:
-        if last_page_len >= config.workflow_runs_per_page:
-            raise ProvenanceError("lookback page limit exhausted before candidate evidence was found")
+        require_lookback_natural_boundary(
+            last_page_len=last_page_len,
+            workflow_runs_per_page=config.workflow_runs_per_page,
+            exhausted_message="lookback page limit exhausted before candidate evidence was found",
+        )
         raise ProvenanceError(f"no candidate provenance evidence found for exact SHA {requested_sha}")
 
     candidates.sort(
@@ -1615,6 +1699,285 @@ def resolve_exact_sha_evidence(
         return ResolvedEvidence(run=run, artifact=artifact, record=record)
 
     raise ProvenanceError(f"no valid provenance evidence found for exact SHA {requested_sha}")
+
+
+def run_matches_gate_carry_forward(
+    run: dict[str, object],
+    *,
+    requested_sha: str,
+    current_run_id: int | str | None,
+    workflow_path: str,
+) -> bool:
+    if current_run_id is not None and as_text(run.get("id")) == as_text(current_run_id):
+        return False
+    return (
+        as_text(run.get("path")) == workflow_path
+        and as_text(run.get("event")) == "pull_request"
+        and as_text(run.get("head_sha")) == requested_sha
+    )
+
+
+def validate_gate_carry_forward_provenance(
+    *,
+    repo: str,
+    token: str,
+    run: dict[str, object],
+    requested_sha: str,
+    base_sha: str,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path,
+    api_json,
+    api_bytes,
+) -> None:
+    if SHA_RE.fullmatch(base_sha) is None:
+        raise ProvenanceError("base_sha must be a 40-character lowercase hex SHA")
+    run_id = positive_int_value(run.get("id"), "workflow run id")
+    run_attempt = positive_int_value(run.get("run_attempt"), "workflow run run_attempt")
+    artifacts_payload = api_json(
+        repo,
+        token,
+        f"actions/runs/{run_id}/artifacts",
+        {"per_page": str(config.run_artifacts_per_page)},
+    )
+    artifacts = artifacts_payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ProvenanceError(f"source run {run_id} artifacts payload is malformed")
+    require_complete_first_page(
+        artifacts_payload,
+        artifacts,
+        per_page=config.run_artifacts_per_page,
+        label=f"source run {run_id} artifacts",
+    )
+    expected_name = provenance_artifact_name(config, run_attempt)
+    matches = [
+        artifact
+        for artifact in artifacts
+        if isinstance(artifact, dict) and as_text(artifact.get("name")) == expected_name
+    ]
+    if len(matches) != 1:
+        if not matches:
+            raise ProvenanceError(f"source run {run_id} has no provenance artifact")
+        raise ProvenanceError(f"source run {run_id} has ambiguous provenance artifacts")
+    artifact = matches[0]
+    validate_artifact_run_metadata(artifact, run, label="provenance")
+    archive_url = require_record_string(artifact, "archive_download_url")
+    record = artifact_record_from_zip(api_bytes(repo, token, archive_url))
+    if positive_int_value(record.get("run_attempt"), "record run_attempt") != run_attempt:
+        raise ProvenanceError("record run_attempt does not match source run attempt")
+    tested_sha = require_record_sha(record, "tested_sha")
+    expected_workflow_digest = workflow_digest_from_github(
+        repo,
+        token,
+        config,
+        tested_sha,
+        api_bytes,
+    )
+    validate_record_schema(
+        record,
+        config,
+        config_path=config_path,
+        expected_workflow_digest=expected_workflow_digest,
+    )
+    validate_record_matches_run(record, run)
+    if record.get("event") != "pull_request":
+        raise ProvenanceError("carry-forward provenance must come from a pull_request run")
+    if record.get("head_sha") != requested_sha:
+        raise ProvenanceError("carry-forward provenance head_sha does not match requested SHA")
+    pull_request = record.get("pull_request")
+    if not isinstance(pull_request, dict):
+        raise ProvenanceError("carry-forward provenance pull_request metadata is malformed")
+    if pull_request.get("base_sha") != base_sha:
+        raise ProvenanceError("base_sha does not match current PR base")
+
+
+def missing_gate_carry_forward_provenance_error(exc: ProvenanceError, run_id: int) -> bool:
+    return str(exc) == f"source run {run_id} has no provenance artifact"
+
+
+def gate_carry_forward_dominance_key(run: dict[str, object]) -> tuple[str, int]:
+    return (
+        as_text(run.get("updated_at")),
+        positive_int_value(run.get("id"), "workflow run id"),
+    )
+
+
+def gate_run_is_proven_success(run: dict[str, object]) -> bool:
+    return as_text(run.get("status")) == "completed" and as_text(run.get("conclusion")) == "success"
+
+
+def require_newest_gate_carry_forward_bucket_success(candidates: list[dict[str, object]]) -> None:
+    if not candidates:
+        return
+    newest_updated_at = max(as_text(run.get("updated_at")) for run in candidates)
+    newest_candidates = [
+        run for run in candidates if as_text(run.get("updated_at")) == newest_updated_at
+    ]
+    newest_candidates.sort(key=gate_carry_forward_dominance_key, reverse=True)
+    for run in newest_candidates:
+        status = as_text(run.get("status"))
+        conclusion = as_text(run.get("conclusion"))
+        if not gate_run_is_proven_success(run):
+            run_id = positive_int_value(run.get("id"), "workflow run id")
+            raise ProvenanceError(
+                f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
+            )
+
+
+def resolve_gate_carry_forward(
+    *,
+    repo: str,
+    token: str,
+    requested_sha: str,
+    base_sha: str,
+    current_run_id: int | str | None,
+    gate_name: str,
+    workflow_path: str,
+    config: ProvenanceConfig,
+    config_path: pathlib.Path = DEFAULT_CONFIG,
+    require_provenance_base: bool,
+    api_json=github_api_json,
+    api_bytes=github_api_bytes,
+    now: datetime.datetime | None = None,
+) -> GateCarryForwardResolution:
+    if SHA_RE.fullmatch(requested_sha) is None:
+        raise ProvenanceError("requested_sha must be a 40-character lowercase hex SHA")
+    if not github_actions_output_safe_check_name(gate_name):
+        raise ProvenanceError("gate_name must be a GitHub Actions output-safe check name")
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(seconds=config.max_lookback_age_seconds)
+    last_error = f"no prior successful {gate_name} check found for exact SHA {requested_sha}"
+
+    candidates: list[dict[str, object]] = []
+    last_page_len = 0
+    for page in range(1, config.max_lookback_pages + 1):
+        runs_payload = api_json(
+            repo,
+            token,
+            "actions/runs",
+            {
+                "event": "pull_request",
+                "head_sha": requested_sha,
+                "per_page": str(config.workflow_runs_per_page),
+                "page": str(page),
+                "sort": "created",
+                "direction": "desc",
+            },
+        )
+        runs = runs_payload.get("workflow_runs")
+        if not isinstance(runs, list):
+            raise ProvenanceError("workflow runs payload is malformed")
+        last_page_len = len(runs)
+        if not runs:
+            break
+        for run in runs:
+            if not isinstance(run, dict):
+                raise ProvenanceError("workflow runs payload is malformed")
+            created_at = run.get("created_at")
+            if not isinstance(created_at, str):
+                raise ProvenanceError("workflow run created_at must be a string")
+            matches = run_matches_gate_carry_forward(
+                run,
+                requested_sha=requested_sha,
+                current_run_id=current_run_id,
+                workflow_path=workflow_path,
+            )
+            if parse_timestamp(created_at) < cutoff:
+                # The age cutoff bounds only proven-success runs, whose value
+                # depends on retained provenance artifacts. Every same-SHA run
+                # that is not a proven success stays in the candidate set so
+                # the newest updated_at bucket remains the single dominance
+                # authority for failures and in-flight reruns.
+                if matches and not gate_run_is_proven_success(run):
+                    candidates.append(run)
+                continue
+            if matches:
+                candidates.append(run)
+        # Old failures legitimately live on all-old created_at pages after a
+        # later success page. Keep scanning through the bounded lookback so a
+        # re-run failure can dominate by updated_at; the residual depth bound is
+        # max_lookback_pages, the same bound that limits the success search.
+        if len(runs) < config.workflow_runs_per_page:
+            break
+
+    require_lookback_natural_boundary(
+        last_page_len=last_page_len,
+        workflow_runs_per_page=config.workflow_runs_per_page,
+        exhausted_message="lookback page limit exhausted before candidate evidence was found",
+    )
+
+    candidates.sort(
+        key=gate_carry_forward_dominance_key,
+        reverse=True,
+    )
+    require_newest_gate_carry_forward_bucket_success(candidates)
+    saw_successful_gate_without_provenance = False
+    for run in candidates:
+        run_id = positive_int_value(run.get("id"), "workflow run id")
+        status = as_text(run.get("status"))
+        conclusion = as_text(run.get("conclusion"))
+        if not gate_run_is_proven_success(run):
+            if saw_successful_gate_without_provenance:
+                last_error = f"older same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
+                continue
+            raise ProvenanceError(
+                f"newest same-SHA carry-forward run {run_id} was {status!r}/{conclusion!r}"
+            )
+        jobs_payload = api_json(
+            repo,
+            token,
+            f"actions/runs/{run_id}/jobs",
+            {"per_page": str(config.run_jobs_per_page)},
+        )
+        jobs = jobs_payload.get("jobs")
+        if not isinstance(jobs, list):
+            raise ProvenanceError(f"source run {run_id} jobs payload is malformed")
+        require_complete_first_page(
+            jobs_payload,
+            jobs,
+            per_page=config.run_jobs_per_page,
+            label=f"source run {run_id} jobs",
+        )
+        try:
+            require_job_success(jobs_by_name(jobs_payload), gate_name)
+        except ProvenanceError as exc:
+            if saw_successful_gate_without_provenance:
+                last_error = f"older same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
+                continue
+            raise ProvenanceError(
+                f"newest same-SHA carry-forward run {run_id} did not prove {gate_name}: {exc}"
+            ) from exc
+        if require_provenance_base:
+            try:
+                validate_gate_carry_forward_provenance(
+                    repo=repo,
+                    token=token,
+                    run=run,
+                    requested_sha=requested_sha,
+                    base_sha=base_sha,
+                    config=config,
+                    config_path=config_path,
+                    api_json=api_json,
+                    api_bytes=api_bytes,
+                )
+            except ProvenanceError as exc:
+                if missing_gate_carry_forward_provenance_error(exc, run_id):
+                    saw_successful_gate_without_provenance = True
+                    last_error = str(exc)
+                    continue
+                if saw_successful_gate_without_provenance:
+                    last_error = str(exc)
+                    continue
+                raise
+        return GateCarryForwardResolution(
+            carry_forward_verified=True,
+            source_run_id=str(run_id),
+            source_sha=requested_sha,
+            gate_name=gate_name,
+            reason=f"matched prior {gate_name} run {run_id}",
+        )
+
+    raise ProvenanceError(last_error)
 
 
 def no_fingerprint_reuse(reason: str) -> FingerprintReuseResolution:
@@ -1889,14 +2252,19 @@ def parse_job_result_values(values: list[str]) -> dict[str, str]:
     for value in values:
         key, parsed_value = parse_key_value(value)
         if key in results:
-            raise ProvenanceError(f"duplicate --job result for {key!r}")
+            raise ProvenanceError(f"duplicate --job result for {key}")
         results[key] = parsed_value
     if not results:
         raise ProvenanceError("at least one --job result is required")
     return results
 
 
-def parse_required_job_results(values: list[str], config: ProvenanceConfig) -> dict[str, str]:
+def parse_required_job_results(
+    values: list[str],
+    config: ProvenanceConfig,
+    *,
+    ci_policy_path: str = "full",
+) -> dict[str, str]:
     results = dict(parse_key_value(value) for value in values)
     expected = set(config.required_jobs)
     if set(results) != expected:
@@ -1904,12 +2272,23 @@ def parse_required_job_results(values: list[str], config: ProvenanceConfig) -> d
         extra = sorted(set(results) - expected)
         raise ProvenanceError(f"required job result keys mismatch; missing={missing} extra={extra}")
     for job, result in results.items():
-        if result != "success":
+        if ci_policy_path == "docs":
+            if job in config.docs_non_heavy_required_jobs:
+                if result != "success":
+                    raise ProvenanceError(f"docs required job {job} did not succeed: {result}")
+            elif result != "skipped":
+                raise ProvenanceError(f"docs required job {job} must be skipped: {result}")
+        elif result != "success":
             raise ProvenanceError(f"required job {job} did not succeed: {result}")
     return results
 
 
-def parse_conditional_job_results(values: list[str], config: ProvenanceConfig) -> dict[str, dict[str, object]]:
+def parse_conditional_job_results(
+    values: list[str],
+    config: ProvenanceConfig,
+    *,
+    ci_policy_path: str = "full",
+) -> dict[str, dict[str, object]]:
     parsed = dict(parse_key_value(value) for value in values)
     conditional_jobs: dict[str, dict[str, object]] = {}
     for job in config.conditional_jobs:
@@ -1919,6 +2298,11 @@ def parse_conditional_job_results(values: list[str], config: ProvenanceConfig) -
             raise ProvenanceError(f"conditional job {job} must provide required and result")
         required = parse_bool(parsed[required_key])
         result = parsed[result_key]
+        if ci_policy_path == "docs":
+            if required or result != "skipped":
+                raise ProvenanceError(f"docs conditional job {job} must be not required and skipped")
+            conditional_jobs[job] = {"required": required, "result": result}
+            continue
         if required and result != "success":
             raise ProvenanceError(f"conditional job {job} did not succeed while required: {result}")
         if not required and result not in {"success", "skipped"}:
@@ -1949,11 +2333,15 @@ def emit_full_ci_record(
     *,
     config: ProvenanceConfig,
     config_path: pathlib.Path,
+    ci_policy_path: str = "full",
+    workflow_file: pathlib.Path | None = None,
     required_job_values: list[str],
     conditional_job_values: list[str],
     nextest_fingerprint: str | None,
     api_json=github_api_json,
 ) -> dict[str, object]:
+    if ci_policy_path not in {"full", "docs"}:
+        raise ProvenanceError(f"emit-full-ci only supports full or docs policy paths, got {ci_policy_path!r}")
     repo = require_env("GITHUB_REPOSITORY")
     token = require_env("GITHUB_TOKEN")
     run_id = require_env("GITHUB_RUN_ID")
@@ -1970,15 +2358,18 @@ def emit_full_ci_record(
     if head_branch is not None and not isinstance(head_branch, str):
         raise ProvenanceError("current workflow run head_branch is malformed")
 
+    if not nextest_fingerprint:
+        nextest_fingerprint = None
     if nextest_fingerprint is not None:
         nextest_fingerprint = parse_nextest_fingerprint(nextest_fingerprint, label="current")
+    workflow_digest = workflow_file_digest(config, workflow_file)
 
     record = {
         "schema_version": config.schema_version,
-        "kind": "full-ci",
+        "kind": "docs-ci" if ci_policy_path == "docs" else "full-ci",
         "repository": repo,
         "workflow_path": config.workflow_path,
-        "workflow_digest": workflow_file_digest(config),
+        "workflow_digest": workflow_digest,
         "provenance_config_digest": provenance_config_digest(config_path),
         "head_sha": head_sha,
         "tested_sha": tested_sha,
@@ -1988,12 +2379,25 @@ def emit_full_ci_record(
         "event": event_name,
         "head_branch": head_branch,
         "pull_request": pull_request_metadata_from_env(event_name),
-        "required_jobs": parse_required_job_results(required_job_values, config),
-        "conditional_jobs": parse_conditional_job_results(conditional_job_values, config),
+        "required_jobs": parse_required_job_results(
+            required_job_values,
+            config,
+            ci_policy_path=ci_policy_path,
+        ),
+        "conditional_jobs": parse_conditional_job_results(
+            conditional_job_values,
+            config,
+            ci_policy_path=ci_policy_path,
+        ),
         "nextest_fingerprint": nextest_fingerprint,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
     }
-    validate_record_schema(record, config, config_path=config_path)
+    validate_record_schema(
+        record,
+        config,
+        config_path=config_path,
+        expected_workflow_digest=workflow_digest,
+    )
     return record
 
 
@@ -2015,6 +2419,7 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--full-ci-deferred", default="false")
         parser.add_argument("--ignore-emit-failure", default="false")
         parser.add_argument("--reuse-found", default="false")
+        parser.add_argument("--carry-forward-verified", default="false")
         parser.add_argument("--build-required", default="false")
         parser.add_argument("--job", action="append", default=[])
     if mode == "check-backtester-gate":
@@ -2034,6 +2439,8 @@ def parser_for_mode(mode: str) -> argparse.ArgumentParser:
         parser.add_argument("--require-provenance-base", default="false")
     if mode == "emit-full-ci":
         parser.add_argument("--output", type=pathlib.Path)
+        parser.add_argument("--ci-policy-path", default="full")
+        parser.add_argument("--workflow-file", type=pathlib.Path)
         parser.add_argument("--required-job", action="append", default=[])
         parser.add_argument("--conditional-job", action="append", default=[])
         parser.add_argument("--nextest-fingerprint")
@@ -2069,9 +2476,6 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(rest)
         config = load_config(args.config)
         if mode == "ci-policy":
-            docs_only = parse_bool(args.docs_only)
-            if docs_only:
-                raise ProvenanceError("docs-only policy requires the merge-readiness workflow rollout")
             result = evaluate_ci_policy(
                 config,
                 event_name=args.event_name,
@@ -2080,6 +2484,7 @@ def main(argv: list[str] | None = None) -> int:
                 pull_request_head_ref=args.pull_request_head_ref,
                 pull_request_base_changed=parse_bool(args.pull_request_base_changed),
                 workflow_dispatch_full_ci=args.workflow_dispatch_full_ci,
+                docs_only=parse_bool(args.docs_only),
                 ref=args.ref,
             )
             print(f"ci_policy_path={result.ci_policy_path}")
@@ -2088,7 +2493,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"gate_name={result.gate_name}")
             print(f"backtester_gate_name={result.backtester_gate_name}")
             print(f"expected_event_class={result.expected_event_class}")
-            print(f"is_mergify_temp_pr={str(result.is_mergify_temp_pr).lower()}")
             print(f"reason={result.reason}")
             print(f"ignore_emit_failure={str(config.ignore_emit_failure).lower()}")
         elif mode == "check-ci-gate":
@@ -2099,6 +2503,7 @@ def main(argv: list[str] | None = None) -> int:
                     full_ci_deferred=parse_bool(args.full_ci_deferred),
                     ignore_emit_failure=parse_bool(args.ignore_emit_failure),
                     reuse_found=parse_bool(args.reuse_found),
+                    carry_forward_verified=parse_bool(args.carry_forward_verified),
                     job_results=parse_job_result_values(args.job),
                     build_required=parse_bool(args.build_required),
                 )
@@ -2114,11 +2519,29 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         elif mode == "resolve-gate-carry-forward":
-            raise ProvenanceError("gate carry-forward requires the merge-readiness workflow rollout")
+            result = resolve_gate_carry_forward(
+                repo=args.repo or require_env("GITHUB_REPOSITORY"),
+                token=args.token or require_env("GITHUB_TOKEN"),
+                requested_sha=args.sha,
+                base_sha=args.base_sha,
+                current_run_id=args.current_run_id,
+                gate_name=args.gate_name,
+                workflow_path=args.workflow_path,
+                config=config,
+                config_path=args.config,
+                require_provenance_base=parse_bool(args.require_provenance_base),
+            )
+            print(f"carry_forward_verified={str(result.carry_forward_verified).lower()}")
+            print(f"source_run_id={result.source_run_id}")
+            print(f"source_sha={result.source_sha}")
+            print(f"gate_name={result.gate_name}")
+            print(f"reason={result.reason}")
         elif mode == "emit-full-ci":
             record = emit_full_ci_record(
                 config=config,
                 config_path=args.config,
+                ci_policy_path=args.ci_policy_path,
+                workflow_file=args.workflow_file,
                 required_job_values=args.required_job,
                 conditional_job_values=args.conditional_job,
                 nextest_fingerprint=args.nextest_fingerprint,

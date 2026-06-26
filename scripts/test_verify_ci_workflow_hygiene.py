@@ -117,15 +117,32 @@ proof_gate_job = "gate"
 
 [ci_provenance.gate_names]
 gate_required = "gate"
-gate_defer = "gate-deferred"
 gate_iteration = "gate-iteration"
-gate_noop = "gate-noop"
 gate_dispatch_full = "gate-dispatch"
 backtester_required = "backtester-gate"
-backtester_defer = "backtester-gate-deferred"
 backtester_iteration = "backtester-gate-iteration"
-backtester_noop = "backtester-gate-noop"
 backtester_dispatch_full = "backtester-gate-dispatch"
+
+[ci_provenance.docs]
+safe_paths = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  "REASONIX.md",
+  "LICENSE",
+  "SECURITY.md",
+  ".github/ISSUE_TEMPLATE/**",
+  ".claude/**",
+  ".codex/**",
+  ".gemini/**",
+  ".opencode/**",
+  ".pi/**",
+  ".specify/**",
+]
+forbidden_ignored_build_paths = [
+  ".claude/rust-verification.toml",
+]
+non_heavy_required_jobs = ["detector"]
 
 [ci_provenance.api_limits]
 workflow_runs_per_page = 100
@@ -147,6 +164,7 @@ ready_pr = "full"
 ready_pr_edited_no_base = "noop"
 ready_pr_reopened = "noop"
 ready_for_review = "full"
+docs = "docs"
 workflow_dispatch = "iteration"
 workflow_dispatch_full_ci = "full"
 main_push = "full"
@@ -213,20 +231,6 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]
-    paths-ignore:
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - 'GEMINI.md'
-      - 'REASONIX.md'
-      - 'LICENSE'
-      - 'SECURITY.md'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.claude/**'
-      - '.codex/**'
-      - '.gemini/**'
-      - '.opencode/**'
-      - '.pi/**'
-      - '.specify/**'
   push:
     branches: [main]
     tags: ["v*"]
@@ -278,6 +282,7 @@ permissions:
 jobs:
   ci-policy:
     name: ci-policy
+    needs: detector
     outputs:
       ci_policy_path: ${{ steps.policy.outputs.ci_policy_path }}
       full_ci_required: ${{ steps.policy.outputs.full_ci_required }}
@@ -285,7 +290,6 @@ jobs:
       gate_name: ${{ steps.policy.outputs.gate_name }}
       backtester_gate_name: ${{ steps.policy.outputs.backtester_gate_name }}
       expected_event_class: ${{ steps.policy.outputs.expected_event_class }}
-      is_mergify_temp_pr: ${{ steps.policy.outputs.is_mergify_temp_pr }}
       reason: ${{ steps.policy.outputs.reason }}
       ignore_emit_failure: ${{ steps.policy.outputs.ignore_emit_failure }}
     runs-on: ${{ vars.CI_RUNNER_GITHUB_HOSTED }}
@@ -294,30 +298,94 @@ jobs:
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
+      - name: Prepare trusted base policy tree
+        id: policy_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          base_ref="refs/remotes/origin/ci-policy-base-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          git check-ref-format "refs/heads/$base_branch"
+          base_tree="$RUNNER_TEMP/ci-policy-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+          echo "config=$base_tree/ci/github-actions-runners.toml" >> "$GITHUB_OUTPUT"
       - name: Compute CI policy
         id: policy
         shell: bash
         env:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref || '' }}
-        run: >
-          python3 scripts/ci_provenance.py ci-policy
-          --event-name "${{ github.event_name }}"
-          --event-action "${{ github.event.action || '' }}"
-          --pull-request-draft "${{ github.event.pull_request.draft || false }}"
-          --pull-request-head-ref "$PR_HEAD_REF"
-          --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}"
-          --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}"
-          --ref "${{ github.ref }}"
-          | tee -a "$GITHUB_OUTPUT"
+        run: |
+          policy_script="${{ steps.policy_base.outputs.script }}"
+          if [[ -z "$policy_script" ]]; then
+            policy_script="scripts/ci_provenance.py"
+          fi
+          policy_config="${{ steps.policy_base.outputs.config }}"
+          if [[ -z "$policy_config" ]]; then
+            policy_config="ci/github-actions-runners.toml"
+          fi
+          python3 "$policy_script" ci-policy \
+            --config "$policy_config" \
+            --event-name "${{ github.event_name }}" \
+            --event-action "${{ github.event.action || '' }}" \
+            --pull-request-draft "${{ github.event.pull_request.draft || false }}" \
+            --pull-request-head-ref "$PR_HEAD_REF" \
+            --pull-request-base-changed "${{ github.event.changes.base.ref.from != '' }}" \
+            --workflow-dispatch-full-ci "${{ github.event.inputs.full_ci || '' }}" \
+            --docs-only "${{ needs.detector.outputs.docs_only || 'false' }}" \
+            --ref "${{ github.ref }}" \
+            | tee -a "$GITHUB_OUTPUT"
 
   detector:
     name: detector
     outputs:
       build_required: ${{ steps.build_required.outputs.value }}
       fingerprint_reuse_allowed: ${{ steps.fingerprint_reuse_allowed.outputs.value }}
+      docs_only: ${{ steps.docs_only.outputs.docs_only }}
     runs-on: ubuntu-latest
     steps:
       # detector probe insertion point
+      - name: Fetch PR base/head refs
+        id: pr_refs
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
+          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
+            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
+          echo "head_ref=${head_ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect docs-only safe changes
+        id: docs_only
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
+          changed_files="$RUNNER_TEMP/docs-safe-changed-files.txt"
+          git diff --name-only "${base_ref}...${head_ref}" > "$changed_files"
+          base_tree="$RUNNER_TEMP/ci-policy-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" \
+            scripts/verify_ci_path_filters.py \
+            scripts/ci_provenance.py \
+            scripts/lane_governor.py \
+            scripts/rust_verification.py \
+            scripts/command_understanding.py \
+            ci/rust-verification.toml \
+            ci/github-actions-runners.toml \
+            .github/workflows/ci.yml \
+            | tar -x -C "$base_tree"
+          python3 "$base_tree/scripts/verify_ci_path_filters.py" \
+            --changed-files "$changed_files" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Detect build-affecting changes
         id: build_inputs_changed
         if: github.event_name == 'pull_request'
@@ -329,11 +397,8 @@ jobs:
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
-          base_ref="refs/remotes/origin/pr-base-${{ github.event.pull_request.number }}"
-          head_ref="refs/remotes/origin/pr-head-${{ github.event.pull_request.number }}"
-          git fetch --no-tags origin \
-            "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}" \
-            "+refs/pull/${{ github.event.pull_request.number }}/head:${head_ref}"
+          base_ref="${{ steps.pr_refs.outputs.base_ref }}"
+          head_ref="${{ steps.pr_refs.outputs.head_ref }}"
           changed="$(git diff --name-only "${base_ref}...${head_ref}" -- \
             .github/workflows/ci.yml \
             .github/actions/setup-environment/action.yml \
@@ -814,24 +879,58 @@ jobs:
   ci-provenance-emit:
     name: ci-provenance-emit
     needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]
-    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
+    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Prepare trusted base provenance tree
+        id: provenance_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          git check-ref-format "refs/heads/$base_branch"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml
+          tested_workflow="$GITHUB_WORKSPACE/.github/workflows/ci.yml"
+          echo "tested workflow file is missing or not a regular file"
+          cp "$tested_workflow" "$base_tree/.github/workflows/ci.yml"
+          {
+            echo "script=$base_tree/scripts/ci_provenance.py"
+            echo "config=$base_tree/ci/github-actions-runners.toml"
+            echo "workflow=$base_tree/.github/workflows/ci.yml"
+          } >> "$GITHUB_OUTPUT"
       - name: Emit CI provenance
-        run: >
-          python3 scripts/ci_provenance.py emit-full-ci
-          --output ci-provenance.json
-          --required-job detector=${{ needs.detector.result }}
-          --required-job deny=${{ needs.deny.result }}
-          --required-job clippy=${{ needs.clippy.result }}
-          --required-job check-aarch64=${{ needs.check-aarch64.result }}
-          --required-job source-fence=${{ needs.source-fence.result }}
-          --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}
-          --required-job test-archive=${{ needs.test-archive.result }}
-          --required-job test=${{ needs.test.result }}
-          --conditional-job build.required=${{ needs.detector.outputs.build_required }}
-          --conditional-job build.result=${{ needs.build.result }}
-          --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
+        run: |
+          provenance_script="${{ steps.provenance_base.outputs.script }}"
+          provenance_config="${{ steps.provenance_base.outputs.config }}"
+          provenance_workflow="${{ steps.provenance_base.outputs.workflow }}"
+          ci_policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
+          policy_args=()
+          if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--ci-policy-path"; then
+            policy_args+=(--ci-policy-path "$ci_policy_path")
+          elif [[ "$ci_policy_path" != "full" ]]; then
+            echo "trusted base provenance emitter does not support ci_policy_path=$ci_policy_path" >&2
+            exit 1
+          fi
+          workflow_args=()
+          if python3 "$provenance_script" emit-full-ci --help | grep -q -- "--workflow-file"; then
+            workflow_args+=(--workflow-file "$provenance_workflow")
+          fi
+          python3 "$provenance_script" emit-full-ci \
+            --config "$provenance_config" \
+            "${policy_args[@]}" \
+            "${workflow_args[@]}" \
+            --output ci-provenance.json \
+            --required-job detector=${{ needs.detector.result }} \
+            --required-job deny=${{ needs.deny.result }} \
+            --required-job clippy=${{ needs.clippy.result }} \
+            --required-job check-aarch64=${{ needs.check-aarch64.result }} \
+            --required-job source-fence=${{ needs.source-fence.result }} \
+            --required-job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+            --required-job test-archive=${{ needs.test-archive.result }} \
+            --required-job test=${{ needs.test.result }} \
+            --conditional-job build.required=${{ needs.detector.outputs.build_required }} \
+            --conditional-job build.result=${{ needs.build.result }} \
+            --nextest-fingerprint "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"
       - name: Upload CI provenance
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -861,158 +960,70 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          policy_path="${{ needs.ci-policy.outputs.ci_policy_path }}"
-          full_ci_deferred="${{ needs.ci-policy.outputs.full_ci_deferred }}"
-          expected_event_class="${{ needs.ci-policy.outputs.expected_event_class }}"
-          ignore_emit_failure="${{ needs.ci-policy.outputs.ignore_emit_failure }}"
-          reuse_found="${{ needs.nextest-fingerprint-reuse.outputs.reuse_found }}"
-          if [[ "${{ needs.ci-policy.result }}" != "success" ]]; then
-            exit 1
+      - name: Prepare trusted base verdict tree
+        id: verdict_base
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        env:
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}
+        run: |
+          base_ref="refs/remotes/origin/ci-gate-base-${{ github.event.pull_request.number }}"
+          git fetch --no-tags origin "+refs/heads/${{ github.event.pull_request.base.ref }}:${base_ref}"
+          git check-ref-format "refs/heads/$base_branch"
+          base_tree="$RUNNER_TEMP/ci-gate-base-tree"
+          mkdir -p "$base_tree"
+          git archive "$base_ref" scripts/ ci/github-actions-runners.toml | tar -x -C "$base_tree"
+          echo "script=$base_tree/scripts/ci_provenance.py" >> "$GITHUB_OUTPUT"
+      - name: Resolve gate carry-forward
+        id: carry_forward
+        if: ${{ needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true' }}
+        shell: bash
+        run: |
+          verdict_script="${{ steps.verdict_base.outputs.script }}"
+          if [[ -z "$verdict_script" ]]; then
+            verdict_script="scripts/ci_provenance.py"
           fi
-          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 1
+          python3 "$verdict_script" resolve-gate-carry-forward \
+            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --base-sha "${{ github.event.pull_request.base.sha || '' }}" \
+            --current-run-id "${{ github.run_id }}" \
+            --gate-name "${{ needs.ci-policy.outputs.gate_name }}" \
+            --workflow-path ".github/workflows/ci.yml" \
+            --require-provenance-base true \
+            | tee -a "$GITHUB_OUTPUT"
+      - name: Check required lanes
+        shell: bash
+        run: |
+          verdict_script="${{ steps.verdict_base.outputs.script }}"
+          if [[ -z "$verdict_script" ]]; then
+            verdict_script="scripts/ci_provenance.py"
           fi
-          if [[ "$policy_path" == "tag_reuse" ]]; then
-            if [[ "${{ needs.same-sha-main-evidence.result }}" != "success" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            exit 0
+          carry_forward_args=()
+          carry_forward_verified="${{ steps.carry_forward.outputs.carry_forward_verified }}"
+          if [[ -n "$carry_forward_verified" ]]; then
+            carry_forward_args+=(--carry-forward-verified "$carry_forward_verified")
           fi
-          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then
-            exit 1
-          fi
-          if [[ "$policy_path" == "iteration" ]]; then
-            if [[ "$expected_event_class" != "iteration" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.clippy.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.check-aarch64.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.source-fence.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.test.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.build.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              exit 1
-            fi
-            echo "iteration CI policy; no required full proof published by this run"
-            exit 0
-          fi
-          if [[ "$policy_path" == "defer" || "$full_ci_deferred" == "true" ]]; then
-            if [[ "$expected_event_class" != "defer" ]]; then
-              echo "deferred CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "full CI deferred for draft PR; use just rust-probe suggest for debugging; run just verify-remote for full feedback or mark ready for merge proof"
-            exit 0
-          fi
-          if [[ "$policy_path" == "noop" ]]; then
-            if [[ "$expected_event_class" != "noop" ]]; then
-              echo "noop CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-            echo "no code-change CI event; preserving prior required same-SHA gate conclusion"
-            exit 0
-          fi
-          if [[ "$policy_path" == "full" ]]; then
-            echo "full CI required"
-          else
-            exit 1
-          fi
-          if [[ "$reuse_found" == "true" ]]; then
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "skipped" ]]; then
-              echo "ci-provenance-emit unexpectedly ran during nextest fingerprint reuse"
-              exit 1
-            fi
-            echo "nextest archive reused from run ${{ needs.nextest-fingerprint-reuse.outputs.source_run_id }} at ${{ needs.nextest-fingerprint-reuse.outputs.source_sha }}"
-          else
-            if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then
-              if [[ "$ignore_emit_failure" == "true" ]]; then
-                echo "ci-provenance-emit did not succeed; continuing because ignore_emit_failure=true"
-              else
-                exit 1
-              fi
-            fi
-          fi
-          if [[ "${{ needs.deny.result }}" != "success" ]]; then
-            exit 1
-          fi
-          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
-            exit 1
-          fi
-          if [[ "${{ needs.check-aarch64.result }}" != "success" ]]; then
-            exit 1
-          fi
-          if [[ "${{ needs.source-fence.result }}" != "success" ]]; then
-            exit 1
-          fi
-          if [[ "${{ needs.test.result }}" != "success" ]]; then
-            exit 1
-          fi
-          build_required="${{ needs.detector.outputs.build_required }}"
-          build_result="${{ needs.build.result }}"
-          if [[ "$build_required" == "true" ]]; then
-            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-          fi
+          python3 "$verdict_script" check-ci-gate \
+            --policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}" \
+            --expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}" \
+            --full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}" \
+            --ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}" \
+            --reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || 'false' }}" \
+            "${carry_forward_args[@]}" \
+            --build-required "${{ needs.detector.outputs.build_required || 'false' }}" \
+            --job ci-policy=${{ needs.ci-policy.result }} \
+            --job detector=${{ needs.detector.result }} \
+            --job deny=${{ needs.deny.result }} \
+            --job clippy=${{ needs.clippy.result }} \
+            --job check-aarch64=${{ needs.check-aarch64.result }} \
+            --job source-fence=${{ needs.source-fence.result }} \
+            --job nextest-fingerprint=${{ needs.nextest-fingerprint.result }} \
+            --job test-archive=${{ needs.test-archive.result }} \
+            --job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }} \
+            --job test=${{ needs.test.result }} \
+            --job build=${{ needs.build.result }} \
+            --job ci-provenance-emit=${{ needs.ci-provenance-emit.result }} \
+            --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}
 
   deploy:
     name: deploy
@@ -1425,24 +1436,24 @@ check_name = "test"
             valid.replace('gate_required = "gate"', 'gate_required = "renamed-gate"'),
         ),
         (
+            "ci_provenance.gate_names.gate_iteration must not equal backtester_required",
+            valid.replace('gate_iteration = "gate-iteration"', 'gate_iteration = "backtester-gate"'),
+        ),
+        (
+            "ci_provenance.gate_names.gate_iteration must not equal gate_required",
+            valid.replace('gate_iteration = "gate-iteration"', 'gate_iteration = "gate"'),
+        ),
+        (
+            "ci_provenance.gate_names.backtester_iteration must not equal backtester_required",
+            valid.replace('backtester_iteration = "backtester-gate-iteration"', 'backtester_iteration = "backtester-gate"'),
+        ),
+        (
             "ci_provenance.gate_names.gate_dispatch_full must not equal gate_required",
             valid.replace('gate_dispatch_full = "gate-dispatch"', 'gate_dispatch_full = "gate"'),
         ),
         (
-            "ci_provenance.gate_names.gate_noop must not equal gate_iteration",
-            valid.replace('gate_noop = "gate-noop"', 'gate_noop = "gate-iteration"'),
-        ),
-        (
-            "ci_provenance.gate_names.backtester_noop must not equal backtester_iteration",
-            valid.replace('backtester_noop = "backtester-gate-noop"', 'backtester_noop = "backtester-gate-iteration"'),
-        ),
-        (
-            "ci_provenance.gate_names.gate_noop must not equal backtester_required",
-            valid.replace('gate_noop = "gate-noop"', 'gate_noop = "backtester-gate"'),
-        ),
-        (
-            "ci_provenance.gate_names.backtester_noop must not equal gate_required",
-            valid.replace('backtester_noop = "backtester-gate-noop"', 'backtester_noop = "gate"'),
+            "ci_provenance.gate_names.backtester_dispatch_full must not equal backtester_required",
+            valid.replace('backtester_dispatch_full = "backtester-gate-dispatch"', 'backtester_dispatch_full = "backtester-gate"'),
         ),
         (
             "ci_provenance.gate_names.gate_dispatch_full must be a GitHub Actions output-safe check name",
@@ -1550,6 +1561,7 @@ check_name = "test"
         "ready_pr_edited_no_base": "noop",
         "ready_pr_reopened": "noop",
         "ready_for_review": "iteration",
+        "docs": "docs",
         "workflow_dispatch": "iteration",
         "workflow_dispatch_full_ci": "full",
         "main_push": "full",
@@ -1673,7 +1685,6 @@ def assert_ci_policy_matrix() -> None:
         mergify_result.ci_policy_path != "full"
         or mergify_result.gate_name != "gate"
         or mergify_result.backtester_gate_name != "backtester-gate"
-        or not mergify_result.is_mergify_temp_pr
         or mergify_result.reason != "mergify_temp_pr"
     ):
         raise AssertionError(f"Mergify temp PR must resolve to required full CI: {mergify_result}")
@@ -1694,7 +1705,6 @@ def assert_ci_policy_matrix() -> None:
         mergify_sync_result.ci_policy_path != "full"
         or mergify_sync_result.gate_name != "gate"
         or mergify_sync_result.backtester_gate_name != "backtester-gate"
-        or not mergify_sync_result.is_mergify_temp_pr
         or mergify_sync_result.reason != "mergify_temp_pr"
     ):
         raise AssertionError(f"Mergify temp PR synchronize must resolve to required full CI: {mergify_sync_result}")
@@ -1713,13 +1723,12 @@ def assert_ci_policy_matrix() -> None:
     )
     if (
         mergify_edited_result.ci_policy_path != "defer"
-        or mergify_edited_result.gate_name != "gate-deferred"
-        or mergify_edited_result.backtester_gate_name != "backtester-gate-deferred"
-        or not mergify_edited_result.is_mergify_temp_pr
+        or mergify_edited_result.gate_name != "gate"
+        or mergify_edited_result.backtester_gate_name != "backtester-gate"
         or mergify_edited_result.reason != "draft_pr_edited"
     ):
         raise AssertionError(
-            f"Mergify temp PR metadata edits must remain observable but non-required: {mergify_edited_result}"
+            f"Mergify temp PR metadata edits must remain deferred: {mergify_edited_result}"
         )
 
     forced = dict(policy)
@@ -1808,7 +1817,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             ver.gate_name,
             ver.backtester_gate_name,
             ver.expected_event_class,
-            ver.is_mergify_temp_pr,
             ver.reason,
         )
         prov_tuple = (
@@ -1818,7 +1826,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             prov.gate_name,
             prov.backtester_gate_name,
             prov.expected_event_class,
-            prov.is_mergify_temp_pr,
             prov.reason,
         )
         if ver_tuple != prov_tuple:
@@ -1893,7 +1900,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             ver.gate_name,
             ver.backtester_gate_name,
             ver.expected_event_class,
-            ver.is_mergify_temp_pr,
             ver.reason,
         )
         prov_tuple = (
@@ -1903,7 +1909,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             prov.gate_name,
             prov.backtester_gate_name,
             prov.expected_event_class,
-            prov.is_mergify_temp_pr,
             prov.reason,
         )
         if ver_tuple != prov_tuple:
@@ -1911,7 +1916,7 @@ def assert_ci_policy_resolvers_agree() -> None:
                 f"ci_policy resolver drift under force_full_ci for {event_name}/{action!r}: "
                 f"verifier={ver_tuple} provenance={prov_tuple}"
             )
-        if ver_tuple != ("full", True, False, "gate", "backtester-gate", "full", False, "force_full_ci"):
+        if ver_tuple != ("full", True, False, "gate", "backtester-gate", "full", "force_full_ci"):
             raise AssertionError(
                 f"force_full_ci must short-circuit {event_name}/{action!r} to full CI; got {ver_tuple}"
             )
@@ -1945,7 +1950,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         ver.gate_name,
         ver.backtester_gate_name,
         ver.expected_event_class,
-        ver.is_mergify_temp_pr,
         ver.reason,
     )
     prov_tuple = (
@@ -1955,7 +1959,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         prov.gate_name,
         prov.backtester_gate_name,
         prov.expected_event_class,
-        prov.is_mergify_temp_pr,
         prov.reason,
     )
     if ver_tuple != prov_tuple:
@@ -1990,7 +1993,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         ver.gate_name,
         ver.backtester_gate_name,
         ver.expected_event_class,
-        ver.is_mergify_temp_pr,
         ver.reason,
     )
     prov_tuple = (
@@ -2000,7 +2002,6 @@ def assert_ci_policy_resolvers_agree() -> None:
         prov.gate_name,
         prov.backtester_gate_name,
         prov.expected_event_class,
-        prov.is_mergify_temp_pr,
         prov.reason,
     )
     if ver_tuple != prov_tuple:
@@ -2011,13 +2012,12 @@ def assert_ci_policy_resolvers_agree() -> None:
         "defer",
         False,
         True,
-        "gate-deferred",
-        "backtester-gate-deferred",
+        "gate",
+        "backtester-gate",
         "defer",
-        True,
         "draft_pr_edited",
     ):
-        raise AssertionError(f"Mergify temp PR metadata edits must not publish required gates: {ver_tuple}")
+        raise AssertionError(f"Mergify temp PR metadata edits must stay deferred: {ver_tuple}")
     for string_base_changed, expected in [
         (
             "false",
@@ -2025,10 +2025,9 @@ def assert_ci_policy_resolvers_agree() -> None:
                 "defer",
                 False,
                 True,
-                "gate-deferred",
-                "backtester-gate-deferred",
+                "gate",
+                "backtester-gate",
                 "defer",
-                True,
                 "draft_pr_edited",
             ),
         ),
@@ -2041,7 +2040,6 @@ def assert_ci_policy_resolvers_agree() -> None:
                 "gate",
                 "backtester-gate",
                 "full",
-                True,
                 "mergify_temp_pr",
             ),
         ),
@@ -2075,7 +2073,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             ver.gate_name,
             ver.backtester_gate_name,
             ver.expected_event_class,
-            ver.is_mergify_temp_pr,
             ver.reason,
         )
         prov_tuple = (
@@ -2085,7 +2082,6 @@ def assert_ci_policy_resolvers_agree() -> None:
             prov.gate_name,
             prov.backtester_gate_name,
             prov.expected_event_class,
-            prov.is_mergify_temp_pr,
             prov.reason,
         )
         if ver_tuple != prov_tuple:
@@ -2197,6 +2193,19 @@ def assert_ci_detector_forces_build_on_workflow_dispatch() -> None:
     errors = verifier.verify_workflow(mutated)
     if not any("detector must force build_required=true for workflow_dispatch full CI" in error for error in errors):
         raise AssertionError(f"expected workflow_dispatch detector guard error, got: {errors}")
+
+
+def assert_ci_detector_docs_only_archive_includes_runtime_dependencies() -> None:
+    verifier = load_verifier()
+    workflow = repo_workflow_text(".github/workflows/ci.yml")
+    for dependency in ("scripts/rust_verification.py", "scripts/command_understanding.py", "ci/rust-verification.toml"):
+        mutated = replace_once(workflow, f"            {dependency} \\\n", "")
+        errors = verifier.verify_workflow(mutated)
+        if not any(
+            f"detector docs-only classifier base archive must include {dependency}" in error
+            for error in errors
+        ):
+            raise AssertionError(f"expected detector docs-only base archive dependency error for {dependency}, got: {errors}")
 
 
 def assert_merge_group_support_gaps_are_reported() -> None:
@@ -3095,7 +3104,7 @@ def assert_ci_policy_heavy_lane_gaps_are_reported() -> None:
             "ci-provenance-emit must gate on full_ci_required",
             replace_once(
                 workflow,
-                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+                "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
                 "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && !startsWith(github.ref, 'refs/tags/v') }}",
             ),
         ),
@@ -3214,104 +3223,72 @@ def assert_gate_policy_truth_table_gaps_are_reported() -> None:
             replace_once(workflow, GATE_NAME, "name: gate"),
         ),
         (
-            "gate must check needs.ci-policy.result",
+            "gate shared verdict call must include --job ci-policy=${{ needs.ci-policy.result }}",
             replace_once(
                 workflow,
-                '"${{ needs.ci-policy.result }}" != "success"',
-                '"${{ omitted.ci-policy.result }}" != "success"',
+                "--job ci-policy=${{ needs.ci-policy.result }}",
+                "--job ci-policy=${{ needs.omitted.result }}",
             ),
         ),
         (
-            "gate must pass resolver-permitted iteration runs",
-            replace_once(workflow, 'if [[ "$policy_path" == "iteration" ]]; then', 'if [[ "$policy_path" == "iter" ]]; then'),
+            "gate shared verdict call must include --policy-path",
+            replace_once(workflow, '--policy-path "${{ needs.ci-policy.outputs.ci_policy_path }}"', '--policy-path "full"'),
         ),
         (
-            "gate must read resolver expected_event_class",
+            "gate shared verdict call must include --expected-event-class",
             replace_once(
                 workflow,
-                GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT,
-                'expected_event_class="iteration"',
+                '--expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"',
+                '--expected-event-class "iteration"',
             ),
         ),
         (
-            "gate must fail iteration policy outside resolver-permitted event class",
-            replace_once(workflow, '"$expected_event_class" != "iteration"', '"$expected_event_class" == "iteration"'),
-        ),
-        (
-            "gate must require nextest-fingerprint skipped on iteration",
+            "gate shared verdict call must include --full-ci-deferred",
             replace_once(
                 workflow,
-                """            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              echo "nextest-fingerprint unexpectedly ran during iteration"
-              exit 1
-            fi
-""",
-                "",
+                '--full-ci-deferred "${{ needs.ci-policy.outputs.full_ci_deferred }}"',
+                '--full-ci-deferred "false"',
             ),
         ),
         (
-            "gate must require test-archive skipped on iteration",
+            "gate shared verdict call must include carry_forward_args=()",
             replace_once(
                 workflow,
-                """            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              echo "test-archive unexpectedly ran during iteration"
-              exit 1
-            fi
-""",
-                "",
+                "carry_forward_args=()",
+                "carry_forward_args=(--carry-forward-verified false)",
             ),
         ),
         (
-            "gate must require nextest-fingerprint skipped on tag reuse",
+            "gate shared verdict call must include --job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}",
             replace_once(
                 workflow,
-                """            if [[ "${{ needs.nextest-fingerprint.result }}" != "skipped" ]]; then
-              echo "nextest-fingerprint unexpectedly ran during tag reuse"
-              exit 1
-            fi
-""",
-                "",
+                "--job nextest-fingerprint=${{ needs.nextest-fingerprint.result }}",
+                "--job nextest-fingerprint=${{ needs.omitted.result }}",
             ),
         ),
         (
-            "gate must require test-archive skipped on tag reuse",
+            "gate shared verdict call must include --job test-archive=${{ needs.test-archive.result }}",
             replace_once(
                 workflow,
-                """            if [[ "${{ needs.test-archive.result }}" != "skipped" ]]; then
-              echo "test-archive unexpectedly ran during tag reuse"
-              exit 1
-            fi
-""",
-                "",
+                "--job test-archive=${{ needs.test-archive.result }}",
+                "--job test-archive=${{ needs.omitted.result }}",
             ),
         ),
         (
-            "gate must pass deferred full CI without failing stale draft checks",
-            replace_once(workflow, GATE_DEFER_BLOCK, ""),
+            "gate shared verdict call must include --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}",
+            replace_once(
+                workflow,
+                "--job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}",
+                "--job same-sha-main-evidence=${{ needs.omitted.result }}",
+            ),
         ),
         (
-            "gate must pass deferred full CI without failing stale draft checks",
-            replace_once(workflow, GATE_DEFER_BLOCK, GATE_DEFER_BLOCK.replace("            exit 0\n", "            exit 1\n")),
-        ),
-        (
-            "gate must fail deferred policy outside resolver-permitted event class",
-            replace_once(workflow, GATE_DEFER_CONTEXT_GUARD, ""),
-        ),
-        (
-            "gate must fail deferred policy outside resolver-permitted event class",
-            replace_once(workflow, '"$expected_event_class" != "defer"', '"$expected_event_class" == "defer"'),
-        ),
-        (
-            "gate must branch on ci_policy_path full",
-            replace_once(workflow, 'if [[ "$policy_path" == "full" ]]; then', 'if [[ "$policy_path" != "defer" ]]; then'),
-        ),
-        (
-            "gate must branch on ci_policy_path tag_reuse",
-            replace_once(workflow, 'if [[ "$policy_path" == "tag_reuse" ]]; then', 'if [[ "$tag_ref" == "true" ]]; then'),
-        ),
-        (
-            "gate must read ignore_emit_failure only for ci-provenance-emit",
-            replace_once(workflow, '            if [[ "$ignore_emit_failure" == "true" ]]; then\n', ""),
+            "gate shared verdict call must include --ignore-emit-failure",
+            replace_once(
+                workflow,
+                '--ignore-emit-failure "${{ needs.ci-policy.outputs.ignore_emit_failure }}"',
+                '--ignore-emit-failure "false"',
+            ),
         ),
     ]
     for fragment, mutated_workflow in cases:
@@ -3878,8 +3855,7 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_required_gate_note = replace_once(
         workflow,
-        "`backtester-gate` is required-capable; `backtester-gate-deferred` and\n"
-        "# `backtester-gate-iteration` are feedback-only and must not be marked required. ",
+        verifier.BACKTESTER_REQUIRED_GATE_COMMENT,
         "",
     )
     missing_required_gate_note_errors = verifier.verify_repo_automation_texts({workflow_name: missing_required_gate_note})
@@ -3903,21 +3879,12 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_policy_gate = replace_once(
         workflow,
-        "if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' && needs.detect.outputs.bvs_changed == 'true' }}",
+        "if: ${{ needs.detect.outputs.bvs_changed == 'true' && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'noop' || needs.ci-policy.outputs.full_ci_deferred == 'true') }}",
         "if: ${{ needs.detect.outputs.bvs_changed == 'true' }}",
     )
     missing_policy_errors = verifier.verify_repo_automation_texts({workflow_name: missing_policy_gate})
     if not any("backtester draft deferral managed-heavy jobs must require full CI policy" in error for error in missing_policy_errors):
         raise AssertionError(f"backtester-ci workflow must reject unmanaged heavy policy gates, got: {missing_policy_errors}")
-
-    missing_gate_message = replace_once(
-        workflow,
-        "backtester proof deferred for draft PR; dispatch Backtester CI with full_ci=true for full feedback or mark ready for merge proof",
-        "backtester proof deferred",
-    )
-    missing_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_gate_message})
-    if not any("backtester draft deferral gate must explain how to request proof" in error for error in missing_gate_errors):
-        raise AssertionError(f"backtester-ci workflow must reject vague deferred proof messages, got: {missing_gate_errors}")
 
     static_gate_name = replace_once(
         workflow,
@@ -3930,101 +3897,43 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
 
     missing_expected_event_class = replace_once(
         workflow,
-        verifier.BACKTESTER_EXPECTED_EVENT_CLASS_ASSIGNMENT,
-        'expected_event_class="iteration"',
+        '--expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"',
+        '--expected-event-class "iteration"',
     )
     missing_expected_event_class_errors = verifier.verify_repo_automation_texts({workflow_name: missing_expected_event_class})
     if not any(
-        "backtester draft deferral gate must read resolver expected_event_class" in error
+        "backtester draft deferral shared gate call must include --expected-event-class" in error
         for error in missing_expected_event_class_errors
     ):
         raise AssertionError(
             f"backtester-ci workflow must reject missing resolver event class, got: {missing_expected_event_class_errors}"
         )
 
-    missing_iteration_branch = replace_once(
+    missing_shared_gate = replace_once(
         workflow,
-        'if [[ "$policy_path" == "iteration" ]]; then',
-        'if [[ "$policy_path" == "iter" ]]; then',
+        'python3 "$verdict_script" check-backtester-gate',
+        'python3 "$verdict_script" check-not-backtester-gate',
     )
-    missing_iteration_branch_errors = verifier.verify_repo_automation_texts({workflow_name: missing_iteration_branch})
-    if not any("backtester draft deferral gate must pass resolver-permitted iteration runs" in error for error in missing_iteration_branch_errors):
+    missing_shared_gate_errors = verifier.verify_repo_automation_texts({workflow_name: missing_shared_gate})
+    if not any("backtester draft deferral gate must use trusted base-tree check-backtester-gate verdict" in error for error in missing_shared_gate_errors):
         raise AssertionError(
-            f"backtester-ci workflow must reject missing iteration branch, got: {missing_iteration_branch_errors}"
+            f"backtester-ci workflow must reject missing shared gate command, got: {missing_shared_gate_errors}"
         )
 
-    backtester_iteration_context_guard = """            if [[ "$expected_event_class" != "iteration" ]]; then
-              echo "backtester iteration CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-"""
-    missing_iteration_guard = replace_once(workflow, backtester_iteration_context_guard, "")
-    missing_iteration_guard_errors = verifier.verify_repo_automation_texts({workflow_name: missing_iteration_guard})
-    if not any(
-        "backtester draft deferral gate must fail iteration policy outside resolver-permitted event class" in error
-        for error in missing_iteration_guard_errors
-    ):
-        raise AssertionError(
-            f"backtester-ci workflow must reject missing iteration context guard, got: {missing_iteration_guard_errors}"
-        )
-
-    backtester_noop_context_guard = """            if [[ "$expected_event_class" != "noop" ]]; then
-              echo "backtester noop CI policy outside resolver-permitted event class '$expected_event_class'"
-              exit 1
-            fi
-"""
-    backtester_noop_block = f"""          if [[ "$policy_path" == "noop" ]]; then
-{backtester_noop_context_guard}            echo "backtester no code-change CI event; preserving prior required same-SHA gate conclusion"
-            exit 0
-          fi
-"""
-    failing_noop_block = replace_once(
+    carry_forward_reintroduced = replace_once(
         workflow,
-        backtester_noop_block,
-        backtester_noop_block.replace("            exit 0\n", "            exit 1\n"),
+        'python3 "$verdict_script" check-backtester-gate',
+        'python3 "$verdict_script" resolve-gate-carry-forward\n          python3 "$verdict_script" check-backtester-gate',
     )
-    failing_noop_block_errors = verifier.verify_repo_automation_texts({workflow_name: failing_noop_block})
+    missing_carry_forward_errors = verifier.verify_repo_automation_texts({workflow_name: carry_forward_reintroduced})
     if not any(
-        "backtester draft deferral gate must pass ready PR no-code runs under backtester-gate-noop" in error
-        for error in failing_noop_block_errors
+        "backtester draft deferral gate must recompute instead of carrying forward unavailable provenance" in error
+        for error in missing_carry_forward_errors
     ):
         raise AssertionError(
-            f"backtester-ci workflow must reject failing noop gate branches, got: {failing_noop_block_errors}"
+            f"backtester-ci workflow must reject carry-forward resolver, got: {missing_carry_forward_errors}"
         )
 
-    missing_noop_guard = replace_once(workflow, backtester_noop_context_guard, "")
-    missing_noop_guard_errors = verifier.verify_repo_automation_texts({workflow_name: missing_noop_guard})
-    if not any(
-        "backtester draft deferral gate must fail noop policy outside resolver-permitted event class" in error
-        for error in missing_noop_guard_errors
-    ):
-        raise AssertionError(
-            f"backtester-ci workflow must reject missing noop context guards, got: {missing_noop_guard_errors}"
-        )
-
-    for job, display_name in (
-        ("fmt", "bvs-fmt"),
-        ("clippy", "bvs-clippy"),
-        ("test-archive", "bvs-test archive"),
-        ("test", "bvs-test"),
-    ):
-        result_check = (
-            f'          if [[ "${{{{ needs.{job}.result }}}}" != "success" ]]; then\n'
-            f'            echo "{display_name} did not succeed (${{{{ needs.{job}.result }}}})"\n'
-            "            exit 1\n"
-            "          fi\n"
-        )
-        missing_result = replace_once(workflow, result_check, "")
-        missing_result_errors = verifier.verify_repo_automation_texts({workflow_name: missing_result})
-        if not any(f"backtester draft deferral gate must require {job} success on full proof path" in error for error in missing_result_errors):
-            raise AssertionError(f"backtester-ci workflow must reject missing full-proof {job} gate checks, got: {missing_result_errors}")
-
-    issue_gate_check = (
-        '          if [[ "${{ needs.issue_789.result }}" != "success" ]]; then\n'
-        '            echo "bvs-test issue-789 did not succeed (${{ needs.issue_789.result }})"\n'
-        "            exit 1\n"
-        "          fi\n"
-    )
     issue_gate_workflow = workflow
     if "needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]" not in issue_gate_workflow:
         issue_gate_workflow = replace_once(
@@ -4032,12 +3941,11 @@ def assert_backtester_ci_defers_managed_heavy_on_draft_prs() -> None:
             "needs: [ci-policy, detect, fmt, clippy, test-archive, test]",
             "needs: [ci-policy, detect, fmt, clippy, test-archive, test, issue_789]",
         )
-    if issue_gate_check not in issue_gate_workflow:
-        issue_gate_workflow = replace_once(
-            issue_gate_workflow,
-            '          echo "backtester lanes passed"\n',
-            issue_gate_check + '          echo "backtester lanes passed"\n',
-        )
+    issue_gate_workflow = replace_once(
+        issue_gate_workflow,
+        "--job test=${{ needs.test.result }}",
+        "--job test=${{ needs.test.result }} \\\n            --job issue_789=${{ needs.issue_789.result }}",
+    )
     issue_gate_errors = verifier.verify_repo_automation_texts({workflow_name: issue_gate_workflow})
     if not any("backtester diagnostic issue-789 lane must not gate merge proof" in error for error in issue_gate_errors):
         raise AssertionError(
@@ -4136,23 +4044,10 @@ def assert_actionlint_requires_pr_event_types() -> None:
             )
 
 
-def assert_ci_docs_pass_stub_requires_pr_event_types() -> None:
-    verifier = load_verifier()
-    workflow_name = ".github/workflows/ci-docs-pass-stub.yml"
-    workflow = repo_workflow_text(workflow_name)
-    errors = verifier.verify_repo_automation_texts({workflow_name: workflow})
-    if any("pull_request types must include" in error for error in errors):
-        raise AssertionError(f"ci-docs-pass-stub workflow must satisfy PR type policy, got: {errors}")
-    for missing_type, fragment in (
-        ("ready_for_review", "types: [opened, synchronize, reopened, edited]"),
-        ("edited", "types: [opened, synchronize, reopened, ready_for_review]"),
-    ):
-        bad = replace_once(workflow, "types: [opened, synchronize, reopened, ready_for_review, edited]", fragment)
-        bad_errors = verifier.verify_repo_automation_texts({workflow_name: bad})
-        if not any(f"pull_request types must include {missing_type}" in error for error in bad_errors):
-            raise AssertionError(
-                f"ci-docs-pass-stub workflow must require {missing_type} in pull_request types, got: {bad_errors}"
-            )
+def assert_ci_docs_pass_stub_is_absent() -> None:
+    workflow_path = REPO_ROOT / ".github/workflows/ci-docs-pass-stub.yml"
+    if workflow_path.exists():
+        raise AssertionError("ci-docs-pass-stub workflow must stay deleted")
 
 
 def assert_source_fence_static_ignores_comments() -> None:
@@ -7148,39 +7043,18 @@ def assert_v6_red_backtester_cache_keys_include_crate_sources() -> None:
 
 def assert_v6_red_backtester_gate_fails_when_detect_fails() -> None:
     verifier = load_verifier()
-    bad = """jobs:
-  detect:
-    name: bvs-detect
-    outputs:
-      bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
-    steps:
-      - id: detect
-        run: echo "bvs_changed=false" >> "$GITHUB_OUTPUT"
-  gate:
-    name: backtester-gate
-    needs: [detect, fmt, clippy, test]
-    if: ${{ always() }}
-    steps:
-      - run: |
-          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
-            echo "no crate changes; gate is a no-op"
-            exit 0
-          fi
-"""
-    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
-    assert any("backtester-gate must check needs.detect.result" in error for error in errors), errors
-    good = bad.replace(
-        '          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then',
-        '          if [[ "${{ needs.detect.result }}" != "success" ]]; then\n'
-        '            echo "bvs-detect did not succeed (${{ needs.detect.result }})"\n'
-        "            exit 1\n"
-        "          fi\n"
-        '          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then',
+    workflow = repo_workflow_text(".github/workflows/backtester-ci.yml")
+    bad = replace_once(
+        workflow,
+        "--job detect=${{ needs.detect.result }}",
+        "--job detect=${{ needs.detect.outputs.bvs_changed }}",
     )
-    good_errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": good})
-    assert not [
-        error for error in good_errors if "backtester-gate must check needs.detect.result" in error
-    ], good_errors
+    errors = verifier.verify_repo_automation_texts({".github/workflows/backtester-ci.yml": bad})
+    assert any("backtester-gate shared verdict call must include needs.detect.result" in error for error in errors), errors
+    assert any(
+        "backtester draft deferral shared gate call must include --job detect=${{ needs.detect.result }}" in error
+        for error in errors
+    ), errors
 
 
 def assert_v6_red_backtester_test_uses_nextest_archive() -> None:
@@ -8102,44 +7976,27 @@ def assert_nextest_fingerprint_reuse_adversarial_gaps_are_reported() -> None:
     )
 
     assert_error(
-        "gate must require nextest fingerprint reuse resolver success",
-        replace_once_after(
+        "gate shared verdict call must include --job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }}",
+        replace_once(
             BASE_WORKFLOW,
-            "  gate:",
-            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi""",
-            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-            fi""",
+            "--job nextest-fingerprint-reuse=${{ needs.nextest-fingerprint-reuse.result }}",
+            "--job nextest-fingerprint-reuse=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must require nextest fingerprint reuse resolver success",
-        replace_once_after(
+        "gate shared verdict call must include --reuse-found",
+        replace_once(
             BASE_WORKFLOW,
-            "  gate:",
-            """            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi""",
-            """            false || exit 0
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then
-              echo "nextest fingerprint reuse resolver did not succeed"
-              exit 1
-            fi""",
+            '--reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || \'false\' }}"',
+            '--reuse-omitted "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || \'false\' }}"',
         ),
     )
     assert_error(
-        "gate must use canonical nextest fingerprint reuse branch",
-        replace_once_after(
+        "gate shared verdict call must include needs.nextest-fingerprint-reuse.outputs.reuse_found",
+        replace_once(
             BASE_WORKFLOW,
-            "  gate:",
-            """          if [[ "$reuse_found" == "true" ]]; then
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
-            """          if [[ "$reuse_found" == "true" ]]; then
-            eval 'exit 0'
-            if [[ "${{ needs.nextest-fingerprint-reuse.result }}" != "success" ]]; then""",
+            '--reuse-found "${{ needs.nextest-fingerprint-reuse.outputs.reuse_found || \'false\' }}"',
+            '--reuse-found "${{ needs.nextest-fingerprint.outputs.nextest_fingerprint }}"',
         ),
     )
 
@@ -8502,21 +8359,58 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, GATE_NAME, "name: gate"),
     )
     assert_error(
-        "gate must read resolver expected_event_class",
-        replace_once(BASE_WORKFLOW, GATE_EXPECTED_EVENT_CLASS_ASSIGNMENT, 'expected_event_class="noop"'),
-    )
-    assert_error(
-        "gate must pass ready PR no-code runs under gate-noop",
+        "gate shared verdict call must include --expected-event-class",
         replace_once(
             BASE_WORKFLOW,
-            GATE_NOOP_BLOCK,
-            GATE_NOOP_BLOCK.replace("            exit 0\n", "            exit 1\n"),
+            '--expected-event-class "${{ needs.ci-policy.outputs.expected_event_class }}"',
+            '--expected-event-class "noop"',
         ),
     )
     assert_error(
-        "gate must fail noop policy outside resolver-permitted event class",
-        replace_once(BASE_WORKFLOW, GATE_NOOP_CONTEXT_GUARD, ""),
+        "gate shared verdict call must include carry_forward_args=()",
+        replace_once(
+            BASE_WORKFLOW,
+            "carry_forward_args=()",
+            "carry_forward_args=(--carry-forward-verified false)",
+        ),
     )
+    assert_error(
+        "gate must verify carry-forward through trusted base-tree ci_provenance.py",
+        replace_once(BASE_WORKFLOW, 'python3 "$verdict_script" resolve-gate-carry-forward', 'python3 "$verdict_script" skip-carry-forward'),
+    )
+    for marker, replacement in (
+        (
+            "if: github.event_name == 'pull_request' || github.event_name == 'merge_group'",
+            "if: github.event_name == 'pull_request'",
+        ),
+        (
+            "MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref || '' }}",
+            "MERGE_GROUP_BASE_REF: ''",
+        ),
+        (
+            'git check-ref-format "refs/heads/$base_branch"',
+            "echo skip-base-ref-format-check",
+        ),
+        (
+            'git archive "$base_ref" scripts/ ci/github-actions-runners.toml',
+            'git archive "$base_ref" scripts/',
+        ),
+        (
+            "steps.verdict_base.outputs.script",
+            "steps.verdict_base.outputs.local_script",
+        ),
+        (
+            'python3 "$verdict_script" check-ci-gate',
+            'python3 "$verdict_script" unchecked-ci-gate',
+        ),
+    ):
+        mutated_workflow = replace_once_after(BASE_WORKFLOW, "  gate:\n", marker, replacement)
+        if marker == "steps.verdict_base.outputs.script":
+            mutated_workflow = replace_once_after(mutated_workflow, "  gate:\n", marker, replacement)
+        assert_error(
+            f"gate must use trusted base-tree ci_provenance.py check-ci-gate verdict ({marker})",
+            mutated_workflow,
+        )
     assert_error(
         "concurrency group must split deferred PR runs from full CI runs",
         replace_once(BASE_WORKFLOW, "format('pr-{0}-deferred', github.event.number)", "github.ref_name"),
@@ -8627,23 +8521,12 @@ def main() -> int:
         assert_error(f"missing required job {job}", without_job(BASE_WORKFLOW, job))
     for job in ("detector", "deny", "clippy", "check-aarch64", "source-fence", "test", "build"):
         assert_error("gate needs " + job, replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, job)))
-        if job == "build":
-            continue
-        if job == "check-aarch64":
-            assert_error(
-                f"gate must check needs.{job}.result",
-                BASE_WORKFLOW.replace(
-                    f'"${{{{ needs.{job}.result }}}}" != "success"',
-                    f'"${{{{ omitted.{job}.result }}}}" != "success"',
-                ),
-            )
-            continue
         assert_error(
-            f"gate must check needs.{job}.result",
+            f"gate shared verdict call must include --job {job}=${{{{ needs.{job}.result }}}}",
             replace_once(
                 BASE_WORKFLOW,
-                f'"${{{{ needs.{job}.result }}}}" != "success"',
-                f'"${{{{ omitted.{job}.result }}}}" != "success"',
+                f"--job {job}=${{{{ needs.{job}.result }}}}",
+                f"--job {job}=${{{{ omitted.{job}.result }}}}",
             ),
         )
     for job in (
@@ -9532,27 +9415,13 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, "- run: just build", "- run: echo skip build"),
     )
     assert_error(
-        "pull_request paths-ignore must match baseline",
+        "on.pull_request must have no paths-ignore",
         replace_once(
             BASE_WORKFLOW,
-            "      - '.specify/**'\n",
-            "      - '.specify/**'\n      - 'docs/**'\n",
-        ),
-    )
-    assert_error(
-        "pull_request paths-ignore must match baseline",
-        replace_once(BASE_WORKFLOW, "      - '.claude/**'\n", ""),
-    )
-    assert_error(
-        "pull_request paths-ignore must match baseline",
-        replace_once(BASE_WORKFLOW, "      - '.specify/**'\n", ""),
-    )
-    assert_error(
-        "pull_request paths-ignore must match baseline",
-        replace_once(
-            BASE_WORKFLOW,
-            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n    paths-ignore:\n",
-            "    branches: [main]\n    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n    # paths-ignore:\n",
+            "    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n",
+            "    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft, edited]\n"
+            "    paths-ignore:\n"
+            "      - 'AGENTS.md'\n",
         ),
     )
     assert_error(
@@ -9603,8 +9472,16 @@ def main() -> int:
         "ci-provenance-emit must use always()",
         replace_once(
             BASE_WORKFLOW,
-            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && needs.ci-policy.outputs.full_ci_required == 'true' && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
+            "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ always() && (needs.ci-policy.outputs.full_ci_required == 'true' || needs.ci-policy.outputs.ci_policy_path == 'docs') && needs.nextest-fingerprint-reuse.outputs.reuse_found != 'true' }}",
             "  ci-provenance-emit:\n    name: ci-provenance-emit\n    needs: [ci-policy, detector, deny, clippy, check-aarch64, source-fence, nextest-fingerprint, test-archive, nextest-fingerprint-reuse, test, build]\n    if: ${{ needs.ci-policy.outputs.full_ci_required == 'true' }}",
+        ),
+    )
+    assert_error(
+        "ci-provenance-emit must run provenance emitter",
+        replace_once(
+            BASE_WORKFLOW,
+            'python3 "$provenance_script" emit-full-ci',
+            "python3 scripts/ci_provenance.py emit-full-ci",
         ),
     )
     assert_error(
@@ -9667,8 +9544,8 @@ def main() -> int:
         "gate must not read nextest_fingerprint",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "${{ needs.ci-provenance-emit.result }}" != "success" ]]; then\n',
-            '          if [[ "${{ needs.ci-provenance-emit.outputs.nextest_fingerprint }}" != "" ]]; then\n',
+            "--job ci-provenance-emit=${{ needs.ci-provenance-emit.result }}",
+            "--job ci-provenance-emit=${{ needs.ci-provenance-emit.outputs.nextest_fingerprint }}",
         ),
     )
     assert_error("same-sha-main-evidence needs detector", replace_once(BASE_WORKFLOW, "    needs: detector\n    if: startsWith(github.ref, 'refs/tags/v')", "    if: startsWith(github.ref, 'refs/tags/v')"))
@@ -9686,81 +9563,43 @@ def main() -> int:
         replace_once(BASE_WORKFLOW, GATE_NEEDS, without_inline_need(GATE_NEEDS, "same-sha-main-evidence")),
     )
     assert_error(
-        "gate must check same-sha-main-evidence success",
+        "gate shared verdict call must include --job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '"${{ needs.same-sha-main-evidence.result }}" != "success"',
-            '"${{ needs.same-sha-main-evidence.result }}" != "skipped"',
+            "--job same-sha-main-evidence=${{ needs.same-sha-main-evidence.result }}",
+            "--job same-sha-main-evidence=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must require build skipped on tag reuse",
+        "gate shared verdict call must include --job build=${{ needs.build.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '"${{ needs.build.result }}" != "skipped"',
-            '"${{ needs.build.result }}" != "success"',
+            "--job build=${{ needs.build.result }}",
+            "--job build=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must check same-sha-main-evidence success",
+        "gate shared verdict call must include --job deny=${{ needs.deny.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n',
-            '          if [[ "$policy_path" == "tag_reuse" ]]; then\n            exit 0\n',
+            "--job deny=${{ needs.deny.result }}",
+            "--job deny=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must check same-sha-main-evidence skip on non-tag",
+        "gate shared verdict call must include --job check-aarch64=${{ needs.check-aarch64.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
-            '          exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
+            "--job check-aarch64=${{ needs.check-aarch64.result }}",
+            "--job check-aarch64=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must require deny skipped on tag reuse",
+        "gate shared verdict call must include --job ci-provenance-emit=${{ needs.ci-provenance-emit.result }}",
         replace_once(
             BASE_WORKFLOW,
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              echo "deny failed" && exit 0\n              exit 1\n',
-        ),
-    )
-    assert_error(
-        "gate must require deny skipped on tag reuse",
-        replace_once(
-            BASE_WORKFLOW,
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              true || exit 1\n',
-        ),
-    )
-    assert_error(
-        "gate must require deny skipped on tag reuse",
-        replace_once(
-            BASE_WORKFLOW,
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              exit 1\n',
-            '            if [[ "${{ needs.deny.result }}" != "skipped" ]]; then\n              echo \\\n              exit 1\n',
-        ),
-    )
-    assert_error(
-        "gate must check same-sha-main-evidence skip on non-tag",
-        replace_once(
-            BASE_WORKFLOW,
-            '          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
-            '          true && exit 0\n          if [[ "${{ needs.same-sha-main-evidence.result }}" != "skipped" ]]; then\n',
-        ),
-    )
-    check_aarch64_condition = '"${{ needs.check-aarch64.result }}" != "success"'
-    tag_check = BASE_WORKFLOW.find(check_aarch64_condition)
-    standard_check = BASE_WORKFLOW.find(check_aarch64_condition, tag_check + len(check_aarch64_condition))
-    if tag_check < 0 or standard_check < 0:
-        raise AssertionError("gate check-aarch64 fixture must include tag and standard topology checks")
-    assert_error(
-        "gate must check needs.check-aarch64.result",
-        BASE_WORKFLOW[:standard_check]
-        + BASE_WORKFLOW[standard_check:].replace(
-            check_aarch64_condition,
-            '"${{ omitted.check-aarch64.result }}" != "success"',
-            1,
+            "--job ci-provenance-emit=${{ needs.ci-provenance-emit.result }}",
+            "--job ci-provenance-emit=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
@@ -10483,130 +10322,32 @@ def main() -> int:
                 f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    if: ${{{{ always() }}}}\n",
                 f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n",
             ),
-            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - run: |",
-            f"  gate:\n    {GATE_NAME}\n    {GATE_NEEDS}\n    runs-on: ubuntu-latest\n    steps:\n      - if: ${{{{ always() }}}}\n        run: |",
+            "    runs-on: ubuntu-latest\n    steps:\n      - name: Prepare trusted base verdict tree",
+            "    runs-on: ubuntu-latest\n    steps:\n      - if: ${{ always() }}\n      - name: Prepare trusted base verdict tree",
         ),
     )
     assert_error(
-        "gate must check needs.detector.result",
+        "gate shared verdict call must include --job detector=${{ needs.detector.result }}",
         replace_once(
             BASE_WORKFLOW,
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            echo "detector failed"
-          fi
-""",
+            "--job detector=${{ needs.detector.result }}",
+            "--job detector=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
-        "gate must check needs.detector.result",
+        "gate shared verdict call must include --build-required",
         replace_once(
             BASE_WORKFLOW,
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 0
-            exit 1
-          fi
-""",
+            '--build-required "${{ needs.detector.outputs.build_required || \'false\' }}"',
+            '--build-required "false"',
         ),
     )
     assert_error(
-        "gate must check needs.detector.result",
+        "gate shared verdict call must include --job build=${{ needs.build.result }}",
         replace_once(
             BASE_WORKFLOW,
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "${{ needs.detector.result }}" != "success" ]]; then
-            if [[ "$inner_result" != "success" ]]; then
-              exit 1
-            fi
-          fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-""",
-            """            if [[ "$build_result" != "success" ]]; then
-              echo "build failed"
-            fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-""",
-            """            if [[ "$build_result" != "success" ]]; then
-              exit 0
-              exit 1
-            fi
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-""",
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            echo "build failed"
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-""",
-            """          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 0
-            exit 1
-""",
-        ),
-    )
-    assert_error(
-        "gate must check needs.build.result",
-        replace_once(
-            BASE_WORKFLOW,
-            """          if [[ "$build_required" == "true" ]]; then
-            if [[ "$build_result" != "success" ]]; then
-              exit 1
-            fi
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-          fi
-""",
-            """          if [[ "$build_required" == "true" ]]; then
-            echo "build required"
-          fi
-          if [[ "$build_result" != "success" ]]; then
-            exit 1
-          elif [[ "$build_result" != "success" && "$build_result" != "skipped" ]]; then
-            exit 1
-          fi
-""",
+            "--job build=${{ needs.build.result }}",
+            "--job build=${{ needs.omitted.result }}",
         ),
     )
     assert_error(
@@ -10841,7 +10582,7 @@ def main() -> int:
     assert_backtester_ci_defers_managed_heavy_on_draft_prs()
     assert_actionlint_rejects_stale_config_variables()
     assert_actionlint_requires_pr_event_types()
-    assert_ci_docs_pass_stub_requires_pr_event_types()
+    assert_ci_docs_pass_stub_is_absent()
     assert_source_fence_static_ignores_comments()
     assert_local_verification_gate_recipes_are_enforced()
     assert_nextest_fingerprint_reuse_governance_covers_sidecar_helper()
@@ -10851,6 +10592,7 @@ def main() -> int:
     assert_pull_request_type_parser_accepts_block_list_indentation()
     assert_ci_workflow_requires_policy_trigger_and_dispatch_input()
     assert_ci_detector_forces_build_on_workflow_dispatch()
+    assert_ci_detector_docs_only_archive_includes_runtime_dependencies()
     assert_merge_group_support_gaps_are_reported()
     assert_mergify_config_gaps_are_reported()
     assert_ci_policy_heavy_lane_gaps_are_reported()

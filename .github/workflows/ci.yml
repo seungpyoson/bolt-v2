@@ -846,9 +846,11 @@ jobs:
           workflow_digest="$(python3 -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path(".github/workflows/ci.yml").read_bytes()).hexdigest())')"
           config_digest="$(PYTHONPATH=scripts python3 -c 'import pathlib, ci_provenance; print(ci_provenance.provenance_config_digest(pathlib.Path("ci/chainlink-reference-fixture-capture-provenance.toml")))')"
           created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "workflow_digest=$workflow_digest" >> "$GITHUB_OUTPUT"
-          echo "config_digest=$config_digest" >> "$GITHUB_OUTPUT"
-          echo "created_at=$created_at" >> "$GITHUB_OUTPUT"
+          {
+            echo "workflow_digest=$workflow_digest"
+            echo "config_digest=$config_digest"
+            echo "created_at=$created_at"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Capture Chainlink reference binary fixture
         shell: bash

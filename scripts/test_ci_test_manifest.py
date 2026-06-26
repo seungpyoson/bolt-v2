@@ -12,7 +12,7 @@ SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from ci_test_manifest import build_test_manifest
+from ci_test_manifest import _mask_rust_non_code, build_test_manifest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -103,7 +103,30 @@ def assert_live_top_level_tests_resolve_to_real_harnesses() -> None:
     print(f"OK: live CI test manifest maps {len(root_stems)} root tests to real harness targets.")
 
 
+def assert_quote_char_literals_do_not_desync_rust_masker() -> None:
+    expected_survivors = ("mod foo;", "#[test]", "#![feature(x)]")
+    failures: list[str] = []
+    for quote_literal in ("'\"'", "'\\\"'", "b'\"'", "b'\\\"'"):
+        source = textwrap.dedent(
+            f"""\
+            const BEFORE: u8 = {quote_literal};
+            mod foo;
+            #[test]
+            fn survives_quote_char_literals() {{}}
+            #![feature(x)]
+            const AFTER: u8 = {quote_literal};
+            """
+        )
+        masked = _mask_rust_non_code(source)
+        missing = [survivor for survivor in expected_survivors if survivor not in masked]
+        if missing:
+            failures.append(f"{quote_literal} lost {missing!r}:\n{masked}")
+    if failures:
+        raise AssertionError("masked Rust code lost top-level markers:\n\n" + "\n\n".join(failures))
+
+
 def main() -> int:
+    assert_quote_char_literals_do_not_desync_rust_masker()
     assert_fixture_manifest_maps_members_to_harnesses()
     assert_live_top_level_tests_resolve_to_real_harnesses()
     print("OK: CI test manifest self-tests passed.")

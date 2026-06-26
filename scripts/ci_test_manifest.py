@@ -191,6 +191,15 @@ def _mask_rust_non_code(text: str) -> str:
             _blank(chars, i, end)
             i = end
             continue
+        quote_char_literal_end = None
+        for quote_char_literal in ("'\"'", "'\\\"'", "b'\"'", "b'\\\"'"):
+            if text.startswith(quote_char_literal, i):
+                quote_char_literal_end = i + len(quote_char_literal)
+                break
+        if quote_char_literal_end is not None:
+            _blank(chars, i, quote_char_literal_end)
+            i = quote_char_literal_end
+            continue
         if text.startswith('b"', i) or text[i] == '"':
             start = i
             i += 2 if text.startswith('b"', i) else 1
